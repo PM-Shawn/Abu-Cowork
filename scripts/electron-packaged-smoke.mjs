@@ -41,7 +41,11 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import { isValidNativeHelperIdentity } from './electron-packaged-smoke-contract.mjs';
+import {
+  isValidNativeHelperIdentity,
+  planWindowsDragFit,
+  WINDOWS_DRAG_DELTA,
+} from './electron-packaged-smoke-contract.mjs';
 
 const require = createRequire(import.meta.url);
 const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
@@ -2331,49 +2335,93 @@ async function main() {
       // CSS app-region checks cannot prove that Windows' native hit testing
       // actually starts a system move. Drag the packaged window through the
       // renderer-owned title-bar lane with the bundled native helper, assert
-      // its native bounds changed, then restore the original position so the
+      // its native bounds changed, then restore the original bounds so the
       // rest of the smoke remains stable. DevTools mouse events stay inside
       // Chromium and cannot prove Windows' WM_NCHITTEST/HTCAPTION path.
-      let dragPlan = null;
+      //
+      // Both ends of the drag have to land inside the window, so the window
+      // has to be inside the display first: see planWindowsDragFit. The move
+      // is then asserted against the position the drag started from, which is
+      // where the fit left the window rather than where the smoke found it.
+      const measureDragWindow = () => app.evaluate(({ BrowserWindow, screen }) => {
+        const mainWindow = BrowserWindow.getAllWindows()
+          .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+        if (!mainWindow) throw new Error('main window missing for Windows drag check');
+        if (mainWindow.isMaximized() || mainWindow.isFullScreen()) {
+          throw new Error('main window must be restored for Windows drag check');
+        }
+        const bounds = mainWindow.getBounds();
+        const nativeHandle = mainWindow.getNativeWindowHandle();
+        const nativeValue = nativeHandle.length >= 8
+          ? nativeHandle.readBigUInt64LE(0)
+          : BigInt(nativeHandle.readUInt32LE(0));
+        mainWindow.focus();
+        mainWindow.moveTop();
+        return {
+          bounds,
+          contentBounds: mainWindow.getContentBounds(),
+          workArea: screen.getDisplayMatching(bounds).workArea,
+          windowId: `0x${nativeValue.toString(16).toUpperCase()}`,
+        };
+      });
+      const placeDragWindow = (target) => app.evaluate(({ BrowserWindow }, bounds) => {
+        const mainWindow = BrowserWindow.getAllWindows()
+          .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+        if (!mainWindow) throw new Error('main window missing for Windows drag check');
+        mainWindow.setBounds(bounds);
+      }, target);
+      // The drag start point is read from the renderer and aimed at the screen,
+      // so the two have to agree on how large the window is before it is used.
+      const waitForDragWindowLayout = () => waitUntil(
+        async () => {
+          const contentSize = await app.evaluate(({ BrowserWindow }) => {
+            const mainWindow = BrowserWindow.getAllWindows()
+              .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+            if (!mainWindow) return null;
+            const { width, height } = mainWindow.getContentBounds();
+            return { width, height };
+          });
+          if (!contentSize) return false;
+          const viewport = await window.evaluate(() => ({
+            width: window.innerWidth,
+            height: window.innerHeight,
+          }));
+          return viewport.width === contentSize.width && viewport.height === contentSize.height;
+        },
+        'the packaged window layout to follow its native bounds',
+        10_000,
+      );
+      let restoreBounds = null;
+      const dragGeometry = {};
       try {
-        dragPlan = await app.evaluate(({ BrowserWindow, screen }) => {
-          const mainWindow = BrowserWindow.getAllWindows()
-            .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
-          if (!mainWindow) throw new Error('main window missing for Windows drag check');
-          if (mainWindow.isMaximized() || mainWindow.isFullScreen()) {
-            throw new Error('main window must be restored for Windows drag check');
-          }
-          const bounds = mainWindow.getBounds();
-          const contentBounds = mainWindow.getContentBounds();
-          const nativeHandle = mainWindow.getNativeWindowHandle();
-          const nativeValue = nativeHandle.length >= 8
-            ? nativeHandle.readBigUInt64LE(0)
-            : BigInt(nativeHandle.readUInt32LE(0));
-          const workArea = screen.getDisplayMatching(bounds).workArea;
-          const roomRight = workArea.x + workArea.width - (bounds.x + bounds.width);
-          const roomDown = workArea.y + workArea.height - (bounds.y + bounds.height);
-          mainWindow.focus();
-          mainWindow.moveTop();
-          return {
-            originalX: bounds.x,
-            originalY: bounds.y,
-            contentX: contentBounds.x,
-            contentY: contentBounds.y,
-            processId: process.pid,
-            windowId: `0x${nativeValue.toString(16).toUpperCase()}`,
-            deltaX: roomRight >= 64 ? 48 : -48,
-            deltaY: roomDown >= 48 ? 32 : -32,
-          };
-        });
+        const initial = await measureDragWindow();
+        restoreBounds = initial.bounds;
+        dragGeometry.workArea = initial.workArea;
+        dragGeometry.initialBounds = initial.bounds;
+        const fit = planWindowsDragFit(initial.bounds, initial.workArea);
+        let dragWindow = initial;
+        if (!fit.fits) {
+          dragGeometry.requestedBounds = fit.bounds;
+          await placeDragWindow(fit.bounds);
+          await waitForDragWindowLayout();
+          dragWindow = await measureDragWindow();
+        }
+        dragGeometry.dragFromBounds = dragWindow.bounds;
         const dragLane = window.locator('[data-abu-windows-drag-region="titlebar"]');
         const dragBox = await dragLane.boundingBox();
         if (!dragBox || dragBox.width < 32 || dragBox.height < 20) {
           throw new Error(`Windows title-bar drag lane is unusable: ${JSON.stringify(dragBox)}`);
         }
+        dragGeometry.dragBox = dragBox;
         const startX = dragBox.x + dragBox.width / 2;
         const startY = dragBox.y + dragBox.height / 2;
-        const screenStartX = Math.round(dragPlan.contentX + startX);
-        const screenStartY = Math.round(dragPlan.contentY + startY);
+        const screenStartX = Math.round(dragWindow.contentBounds.x + startX);
+        const screenStartY = Math.round(dragWindow.contentBounds.y + startY);
+        dragGeometry.start = { x: screenStartX, y: screenStartY };
+        dragGeometry.end = {
+          x: screenStartX + WINDOWS_DRAG_DELTA.x,
+          y: screenStartY + WINDOWS_DRAG_DELTA.y,
+        };
         const dragHelperName = process.platform === 'win32' ? 'native-helper.exe' : 'native-helper';
         const dragHelperPath = path.join(found.resources, 'native-helper', dragHelperName);
         const helper = createNativeHelperClient(dragHelperPath);
@@ -2383,7 +2431,7 @@ async function main() {
         try {
           await helper.call('input_lease_begin', { lease_id: inputLeaseId });
           inputLeaseStarted = true;
-          const target = await helper.call('get_window', { window_id: dragPlan.windowId });
+          const target = await helper.call('get_window', { window_id: dragWindow.windowId });
           await helper.call('activate_window', { window_id: target.window_id });
           const state = await helper.call('ax_snapshot', {
             app_name: target.app_name,
@@ -2414,8 +2462,8 @@ async function main() {
             await helper.call('mouse_drag', {
               start_x: screenStartX,
               start_y: screenStartY,
-              end_x: screenStartX + dragPlan.deltaX,
-              end_y: screenStartY + dragPlan.deltaY,
+              end_x: dragGeometry.end.x,
+              end_y: dragGeometry.end.y,
               screenshot_id: capture.screenshot_id,
               expected_bundle_id: target.app_id,
               expected_process_id: target.process_id,
@@ -2435,27 +2483,24 @@ async function main() {
           helper.close();
         }
         await waitUntil(
-          () => app.evaluate(({ BrowserWindow }, original) => {
+          () => app.evaluate(({ BrowserWindow }, dragFrom) => {
             const mainWindow = BrowserWindow.getAllWindows()
               .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
             if (!mainWindow) return false;
             const [x, y] = mainWindow.getPosition();
-            return x !== original.x || y !== original.y;
-          }, { x: dragPlan.originalX, y: dragPlan.originalY }),
+            return x !== dragFrom.x || y !== dragFrom.y;
+          }, { x: dragWindow.bounds.x, y: dragWindow.bounds.y }),
           'the packaged Windows title-bar drag to move the native window',
           5_000,
         );
         checks.packagedWindowsWindowDrag = true;
       } catch (err) {
         checks.packagedWindowsWindowDrag = false;
-        errors.windowsWindowDrag = String(err);
+        errors.windowsWindowDrag = `${err} geometry=${JSON.stringify(dragGeometry)}`;
       } finally {
-        if (dragPlan) {
-          await app.evaluate(({ BrowserWindow }, original) => {
-            const mainWindow = BrowserWindow.getAllWindows()
-              .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
-            mainWindow?.setPosition(original.x, original.y);
-          }, { x: dragPlan.originalX, y: dragPlan.originalY });
+        if (restoreBounds) {
+          await placeDragWindow(restoreBounds);
+          await waitForDragWindowLayout();
         }
       }
       const overlayHelperName = process.platform === 'win32' ? 'native-helper.exe' : 'native-helper';

@@ -120,6 +120,23 @@ vi.mock('@/core/team/roleIdentity', () => ({
 // real component's one contract with TeamView: it opens a blank editor from an
 // effect whenever it sees `manualCreateTrigger > 0` (counted in `editorOpens`),
 // and exposes the value it received as `data-trigger`.
+// Personal by default, so every case below sees Abu's own shelves. The one
+// case that needs a bound client flips this before rendering.
+const enterpriseState: { mode: Record<string, unknown> } = { mode: { kind: 'personal' } };
+vi.mock('@/stores/enterpriseStore', () => ({
+  useEnterpriseStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector(enterpriseState),
+    { subscribe: () => () => {}, getState: () => enterpriseState },
+  ),
+}));
+vi.mock('@/core/enterprise/mounts-registry', () => ({
+  getEnterpriseMount: (slot: string) => (slot === 'agentMarket'
+    ? ({ searchQuery = '' }: { searchQuery?: string }) => (
+      <div data-testid="organization-experts">Organization experts: {searchQuery}</div>
+    )
+    : undefined),
+}));
+
 const editorOpens = vi.fn();
 vi.mock('@/components/customize/AgentsSection', async () => {
   const { useEffect } = await import('react');
@@ -523,6 +540,31 @@ describe('TeamView', () => {
     settingsState.activeTeamTab = 'members';
     render(<TeamView />);
     expect(screen.getByTestId('agents-section')).toBeTruthy();
+  });
+
+  // A bound client's 「市场」 is the organization's catalog on every surface —
+  // skills, connectors, plugins, and experts alike. 「我的」 stays this user's.
+  it('members tab: a bound client gets the organization experts on 市场', () => {
+    settingsState.activeTeamTab = 'members';
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    try {
+      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'market' } });
+      const { rerender } = render(<TeamView />);
+      expect(screen.getByTestId('organization-experts')).toBeTruthy();
+      expect(screen.queryByTestId('agents-section')).toBeNull();
+
+      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine' } });
+      rerender(<TeamView />);
+      expect(screen.getByTestId('agents-section')).toBeTruthy();
+      expect(screen.queryByTestId('organization-experts')).toBeNull();
+    } finally {
+      enterpriseState.mode = { kind: 'personal' };
+      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    }
   });
 
   it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', () => {

@@ -9,6 +9,8 @@ import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { teamIdentity } from '@/core/team/expertContact';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
 import { useI18n, format } from '@/i18n';
@@ -388,6 +390,13 @@ export default function TeamView() {
   // the two pages show the same pair over different rosters).
   const sources = useExtensionSourceStore((s) => s.sources);
   const setSource = useExtensionSourceStore((s) => s.setSource);
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseConfig = enterpriseMode.kind === 'enterprise'
+    ? enterpriseMode.config
+    : enterpriseMode.kind === 'offline' ? enterpriseMode.lastConfig : null;
   const teams = useTeamStore((s) => s.teams);
   // Roles resolve through the agent registry, which is not a React-reactive
   // source; subscribe to discovery so the card grid re-renders when the roster
@@ -504,9 +513,18 @@ export default function TeamView() {
 
   const renderContent = () => {
     switch (activeTeamTab) {
-      case 'members':
+      case 'members': {
+        // A bound client's 「市场」 is the organization's expert catalog, the
+        // same way it already is for skills, connectors and plugins. The slot
+        // is optional, so a build without one falls through to Abu's own
+        // shelf.
+        const Market = enterpriseBinding ? getEnterpriseMount('agentMarket') : undefined;
+        if (sources.members === 'market' && Market && enterpriseBinding) {
+          return <Market binding={enterpriseBinding} config={enterpriseConfig} searchQuery={search} />;
+        }
         // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} />;
+      }
       case 'teams': {
         const source = sources.teams;
         // One shelf at a time — which one is the sub-nav's job to say, so the

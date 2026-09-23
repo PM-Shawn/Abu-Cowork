@@ -411,7 +411,6 @@ export default function TeamView() {
       ? enterpriseMode.lastConfig
       : null;
   const OrganizationAgents = getEnterpriseMount('agentMarket');
-  const hasOrganizationAgents = !!enterpriseBinding && !!OrganizationAgents;
 
   // Prepare a draft; opening an expert never creates an empty history entry.
   const startChatWithTeam = (team: Team, prompt?: string) => {
@@ -449,19 +448,6 @@ export default function TeamView() {
     () => selectVisibleTeams({ teams, managedTeamSources }),
     [teams, managedTeamSources],
   );
-  const hasManagedTeams = activeTeams.some((team) => !!team.managed);
-
-  useEffect(() => {
-    if (activeTeamTab === 'teams' && sources.teams === 'organization' && !hasManagedTeams) {
-      setSource('teams', 'market');
-    }
-  }, [activeTeamTab, hasManagedTeams, setSource, sources.teams]);
-
-  useEffect(() => {
-    if (activeTeamTab === 'members' && sources.members === 'organization' && !hasOrganizationAgents) {
-      setSource('members', 'market');
-    }
-  }, [activeTeamTab, hasOrganizationAgents, setSource, sources.members]);
 
   // `_agents` / `_ready` are unused by value — they exist only to make
   // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
@@ -509,8 +495,10 @@ export default function TeamView() {
       </div>
     ) : null;
 
+    // 「市场」 is somebody else's catalog — Abu's own or the organization's —
+    // so creating belongs to 「我的」 and only there.
     let createControl: ReactNode = null;
-    if (activeTeamTab === 'members' && sources.members !== 'organization') {
+    if (activeTeamTab === 'members' && sources.members === 'mine') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateMember}
@@ -518,7 +506,7 @@ export default function TeamView() {
           triggerTestId="member-create-trigger"
         />
       );
-    } else if (activeTeamTab === 'teams' && sources.teams !== 'organization') {
+    } else if (activeTeamTab === 'teams' && sources.teams === 'mine') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateTeam}
@@ -534,7 +522,9 @@ export default function TeamView() {
   const renderContent = () => {
     switch (activeTeamTab) {
       case 'members':
-        if (sources.members === 'organization' && OrganizationAgents && enterpriseBinding) {
+        // A bound client's 「市场」 is the organization's expert catalog, the
+        // same way it already is for skills, connectors and plugins.
+        if (sources.members === 'market' && OrganizationAgents && enterpriseBinding) {
           return (
             <OrganizationAgents
               binding={enterpriseBinding}
@@ -548,12 +538,13 @@ export default function TeamView() {
       case 'teams': {
         const source = sources.teams;
         // One shelf at a time — which one is the sub-nav's job to say, so the
-        // group heading that used to name it here is gone. 「市场」 is the teams
-        // Abu ships; 「我的」 the ones this user assembled.
-        const list = source === 'organization'
-          ? activeTeams.filter((team) => !!team.managed)
-          : source === 'mine'
-            ? activeTeams.filter((team) => !isBuiltinTeam(team) && !team.managed)
+        // group heading that used to name it here is gone. 「市场」 names
+        // whoever is offering: the organization's teams in a bound client, the
+        // teams Abu ships otherwise. 「我的」 is the ones this user assembled.
+        const list = source === 'mine'
+          ? activeTeams.filter((team) => !isBuiltinTeam(team) && !team.managed)
+          : enterpriseBinding
+            ? activeTeams.filter((team) => !!team.managed)
             : activeTeams.filter(isBuiltinTeam);
         // Same grid + card the 专家 tab uses (ToolGrid/ToolCard), not a
         // hand-rolled row: a team and a member are peers in this surface.
@@ -606,12 +597,6 @@ export default function TeamView() {
           onChange={(next) => setSource(activeTeamTab, next)}
           marketLabel={t.toolbox.sourceMarket}
           mineLabel={t.toolbox.categoryMine}
-          organizationLabel={
-            (activeTeamTab === 'members' && hasOrganizationAgents)
-            || (activeTeamTab === 'teams' && hasManagedTeams)
-              ? t.toolbox.organizationSource
-              : undefined
-          }
           testIdPrefix="team-source"
           panelId={TEAM_PANEL_ID}
         />

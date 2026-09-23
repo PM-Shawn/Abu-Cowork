@@ -11,7 +11,6 @@ import MCPSection from '../customize/MCPSection';
 import TopTabNav, { type TopTabNavItem } from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
-import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { useToastStore } from '@/stores/toastStore';
 import { Input } from '@/components/ui/input';
@@ -58,26 +57,23 @@ export default function ExtensionsView() {
   const creatingPlugin = usePluginAuthorStore(s => s.creating);
   const [pluginAddTrigger, setPluginAddTrigger] = useState(0);
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
-  const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('personal');
   const [skillUploadModalOpen, setSkillUploadModalOpen] = useState(false);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
   // Consume existing deep links without leaving an accepted skill behind a catalog.
   useEffect(() => {
     if (!pendingExtensionsSource) return;
-    setCapabilityScope(pendingExtensionsSource === 'mine' ? 'personal' : 'organization');
-    // …and the same word now also names a shelf inside 个人: a deep link to a
-    // skill the user just accepted must land on the shelf that skill is on,
-    // not on whichever one they last looked at.
+    // A deep link to a skill the user just accepted must land on the shelf
+    // that skill is on, not on whichever one they last looked at.
     useExtensionSourceStore.getState().setSource(activeTab, pendingExtensionsSource);
     clearPendingExtensionsSource();
   }, [pendingExtensionsSource, activeTab, clearPendingExtensionsSource]);
 
-  const lastView = useRef({ activeTab, capabilityScope });
+  const lastView = useRef({ activeTab });
   useEffect(() => {
-    if (lastView.current.activeTab === activeTab && lastView.current.capabilityScope === capabilityScope) return;
-    lastView.current = { activeTab, capabilityScope };
+    if (lastView.current.activeTab === activeTab) return;
+    lastView.current = { activeTab };
     setManualCreateTrigger(0);
-  }, [activeTab, capabilityScope]);
+  }, [activeTab]);
 
   // Handler for creating a skill with AI (the only tab with an AI-create entry)
   const handleAICreate = () => {
@@ -121,8 +117,7 @@ export default function ExtensionsView() {
     const mount = isEnterprise && binding
       ? { plugins: getEnterpriseMount('pluginTab'), skills: getEnterpriseMount('skillTab'), mcp: getEnterpriseMount('mcpTab') }[tab]
       : null;
-    const showOrganization = capabilityScope === 'organization';
-    if (showOrganization && mount && binding) {
+    if (sources[tab] === 'market' && mount && binding) {
       const Market = mount;
       return <Market binding={binding} config={config} searchQuery={extensionsSearchQuery} />;
     }
@@ -162,8 +157,13 @@ export default function ExtensionsView() {
       </div>
     );
 
+    // 「市场」 is somebody else's catalog on every tab — Abu's own, a plugin
+    // marketplace, or the organization's — so creating belongs to 「我的」 and
+    // only there.
+    const canCreateHere = sources[activeTab] === 'mine';
+
     let createControl: ReactNode = null;
-    if (activeTab === 'skills' && (!isEnterprise || capabilityScope === 'personal')) {
+    if (activeTab === 'skills' && canCreateHere) {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}
@@ -174,10 +174,10 @@ export default function ExtensionsView() {
           menuTestId="skill-create-menu"
         />
       );
-    } else if (activeTab === 'mcp' && (!isEnterprise || capabilityScope === 'personal')) {
+    } else if (activeTab === 'mcp' && canCreateHere) {
       createControl = <ToolboxCreateMenu onClick={() => setMcpAddFormOpen(true)} />;
     }
-    if (activeTab === 'plugins' && (!isEnterprise || capabilityScope === 'personal')) {
+    if (activeTab === 'plugins' && canCreateHere) {
       createControl = <ToolboxCreateMenu triggerTestId="plugin-create-trigger" menuTestId="plugin-create-menu" items={[
         // The new package lands under 「我的」 — go there, or the create reads
         // as a create that did nothing.
@@ -186,15 +186,7 @@ export default function ExtensionsView() {
       ]} />;
     }
 
-    return <>
-      {isEnterprise && <CapabilityScopeToggle
-        value={capabilityScope}
-        onChange={setCapabilityScope}
-        personalLabel={t.toolbox.personalSource}
-        organizationLabel={t.toolbox.organizationSource}
-      />}
-      {searchBox}{createControl}
-    </>;
+    return <>{searchBox}{createControl}</>;
   };
 
   return (
@@ -213,22 +205,20 @@ export default function ExtensionsView() {
       />
 
       {/* 市场 | 我的 — one row, directly under the tabs and inset to the same
-          grid the cards use. The organization catalog IS the enterprise market,
-          so it carries no shelf of its own. */}
-      {!(isEnterprise && capabilityScope === 'organization') && (
-        <div className="px-8"><div className="max-w-5xl mx-auto">
-          <SourceSubNav
-            value={sources[activeTab]}
-            onChange={(next) => setSource(activeTab, next)}
-            marketLabel={t.toolbox.sourceMarket}
-            mineLabel={t.toolbox.categoryMine}
-            panelId={sourcePanelId(activeTab)}
-          />
-        </div></div>
-      )}
+          grid the cards use. A bound client's 「市场」 is the organization
+          catalog, so the same two shelves serve OSS and enterprise alike. */}
+      <div className="px-8"><div className="max-w-5xl mx-auto">
+        <SourceSubNav
+          value={sources[activeTab]}
+          onChange={(next) => setSource(activeTab, next)}
+          marketLabel={t.toolbox.sourceMarket}
+          mineLabel={t.toolbox.categoryMine}
+          panelId={sourcePanelId(activeTab)}
+        />
+      </div></div>
 
       <div tabIndex={0} className="flex-1 overflow-hidden">
-        {capabilityScope === 'organization' ? renderContent() : visitedTabs.map(tab => (
+        {visitedTabs.map(tab => (
           <div
             key={tab}
             id={sourcePanelId(tab)}

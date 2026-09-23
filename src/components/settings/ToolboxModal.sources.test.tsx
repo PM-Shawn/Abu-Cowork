@@ -115,11 +115,16 @@ describe('Extensions retains the released capability pages', () => {
     expect(plugins).toBeVisible();
   });
 
-  it.each(['skills', 'mcp'] as const)('opens the original %s page directly with its add control', (activeExtensionsTab) => {
+  // 「市场」 is somebody else's catalog on every tab, so the add control lives
+  // on 「我的」 and only there.
+  it.each(['skills', 'mcp'] as const)('opens the original %s page with its add control on 我的', (activeExtensionsTab) => {
     useSettingsStore.setState({ activeExtensionsTab });
     render(<ExtensionsView />);
-    expect(screen.getByTestId('create-control')).toBeVisible();
     expect(screen.getByTestId('extensions-source-market')).toBeVisible();
+    expect(screen.queryByTestId('create-control')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('extensions-source-mine'));
+    expect(screen.getByTestId('create-control')).toBeVisible();
     if (activeExtensionsTab === 'mcp') {
       fireEvent.click(screen.getByTestId('create-control'));
       expect(screen.getByRole('dialog')).toHaveTextContent('Add connector');
@@ -156,6 +161,7 @@ describe('Extensions retains the released capability pages', () => {
     expect(tab('技能')).toBeVisible();
     expect(tab('连接器')).toBeVisible();
     expect(screen.queryByRole('button', { name: '专家' })).toBeNull();
+    fireEvent.click(screen.getByTestId('extensions-source-mine'));
     expect(screen.getByTestId('create-control')).toBeVisible();
   });
 });

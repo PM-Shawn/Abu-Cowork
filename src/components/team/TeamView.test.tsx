@@ -347,6 +347,14 @@ describe('TeamView', () => {
 
   it('shows why an unavailable organization team cannot start', () => {
     settingsState.activeTeamTab = 'teams';
+    // A bound client's 「市场」 is the organization's teams — the shelf the
+    // view already opens on.
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
     useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
@@ -366,7 +374,6 @@ describe('TeamView', () => {
       },
     }]);
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-source-organization'));
     fireEvent.click(screen.getByTestId('team-row-组织数据小队'));
 
     expect(screen.getByTestId('team-managed-unavailable')).toHaveTextContent('成员不可用：分析师');
@@ -578,7 +585,9 @@ describe('TeamView', () => {
     expect(screen.getByTestId('agents-section')).toBeTruthy();
   });
 
-  it('members tab exposes the organization catalog for a bound enterprise client', () => {
+  // A bound client's 「市场」 IS the organization catalog — there is no third
+  // shelf, and 「我的」 keeps meaning what this user wrote.
+  it('members tab: a bound enterprise client gets the organization catalog on 市场', () => {
     enterpriseState.mode = {
       kind: 'enterprise',
       binding: { serverUrl: 'https://enterprise.example' },
@@ -588,11 +597,7 @@ describe('TeamView', () => {
     useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
     render(<TeamView />);
 
-    expect(screen.getByTestId('team-source-organization')).toHaveTextContent('组织');
-    expect(screen.getByTestId('member-create-trigger')).toBeVisible();
-
-    fireEvent.click(screen.getByTestId('team-source-organization'));
-
+    expect(screen.queryByTestId('team-source-organization')).toBeNull();
     expect(screen.getByTestId('organization-agents')).toBeVisible();
     expect(screen.queryByTestId('agents-section')).toBeNull();
     expect(screen.queryByTestId('member-create-trigger')).toBeNull();
@@ -600,13 +605,17 @@ describe('TeamView', () => {
     expect(screen.getByTestId('organization-agents')).toHaveAttribute('data-query', '审阅');
     fireEvent.click(screen.getByRole('button', { name: 'Open organization expert' }));
     expect(settingsState.closeTeam).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('team-source-mine'));
+    expect(screen.getByTestId('agents-section')).toBeVisible();
+    expect(screen.getByTestId('member-create-trigger')).toBeVisible();
   });
 
-  it('members tab recovers a stale organization source when no enterprise catalog is mounted', async () => {
-    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'organization' } });
+  // An unbound client keeps Abu's own shelf under the same name.
+  it('members tab: an unbound client gets Abu’s own experts on 市场', () => {
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
     render(<TeamView />);
-    await waitFor(() => expect(useExtensionSourceStore.getState().sources.members).toBe('market'));
-    expect(screen.queryByTestId('team-source-organization')).toBeNull();
+    expect(screen.queryByTestId('organization-agents')).toBeNull();
     expect(screen.getByTestId('agents-section')).toBeVisible();
   });
 

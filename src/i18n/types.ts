@@ -2652,8 +2652,6 @@ export interface TranslationDict {
     // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
-    personalSource: string;
-    organizationSource: string;
   };
 
   // Permission Dialog

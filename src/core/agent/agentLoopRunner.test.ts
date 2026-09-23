@@ -1701,6 +1701,32 @@ describe('agentLoopRunner', () => {
       expect(context).not.toHaveProperty('browserDenials');
     });
 
+    it('the runs of one team task share the refusal streak; a new task starts it over', async () => {
+      const { ensureHandlersRegistered, registerRunSession, unregisterRunSession } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+
+      const first = { ...makeSession({ loopId: 'loop-a' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-a', first);
+      (await invokeOnce('run-a')).reportBrowserDenial!();
+      unregisterRunSession('run-a');
+
+      // The strip's retry continues the task: one more refusal reaches the threshold.
+      const second = { ...makeSession({ loopId: 'loop-b' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-b', second);
+      (await invokeOnce('run-b')).reportBrowserDenial!();
+      expect(second.shellAbortController.signal.aborted).toBe(true);
+      unregisterRunSession('run-b');
+
+      // A request the user types starts a new task, and a fresh streak.
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+      const third = { ...makeSession({ loopId: 'loop-c' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-c', third);
+      (await invokeOnce('run-c')).reportBrowserDenial!();
+      expect(third.shellAbortController.signal.aborted).toBe(false);
+    });
+
     it('two denials in a row abort the run, append the closing message and record the cause', async () => {
       const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
       ensureHandlersRegistered();

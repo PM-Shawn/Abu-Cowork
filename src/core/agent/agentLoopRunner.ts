@@ -146,8 +146,10 @@ import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
 import {
   BROWSER_DENIAL_ABORT_CAUSE,
+  createBrowserDenialStreak,
   createBrowserDenialTracker,
   type BrowserDenialAbortCause,
+  type BrowserDenialStreak,
   type BrowserDenialTracker,
 } from './browserDenialTracker';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
@@ -1470,6 +1472,24 @@ function trustedTeamContext(conversationId: string): Pick<ToolExecutionContext, 
  * uses, so every downstream fence (sidecar abort, frame drop, dialog drain,
  * `assertRunNotStopping` on the next tool.invoke) fires exactly as for Stop.
  */
+/**
+ * Refusal streaks of team tasks. Every run the confirmation strip starts
+ * continues its task, so the runs share one streak; a new task retires the
+ * previous one's entry (see where `beginTask` is called).
+ */
+const browserDenialStreaksByTask = new Map<string, BrowserDenialStreak>();
+
+function browserDenialStreakFor(session: RunSession): BrowserDenialStreak | undefined {
+  const taskId = session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined;
+  if (!taskId) return undefined;
+  let streak = browserDenialStreaksByTask.get(taskId);
+  if (!streak) {
+    streak = createBrowserDenialStreak();
+    browserDenialStreaksByTask.set(taskId, streak);
+  }
+  return streak;
+}
+
 function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
   session.browserDenials ??= createBrowserDenialTracker(() => {
     session.abortCause = BROWSER_DENIAL_ABORT_CAUSE;
@@ -1487,7 +1507,7 @@ function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
       conversationId: session.conversationId,
     });
     session.shellAbortController.abort(new Error('Run stopped after consecutive browser denials'));
-  });
+  }, undefined, browserDenialStreakFor(session));
   return session.browserDenials;
 }
 
@@ -3199,7 +3219,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     ? useTeamConfirmationStore.getState().beginTask(conversationId,
       Boolean(options.teamConfirmationRetryId || options.continuesTeamTask))
     : undefined;
-  if (teamTask?.retiredTaskId) clearRunBounds(teamTask.retiredTaskId);
+  if (teamTask?.retiredTaskId) {
+    clearRunBounds(teamTask.retiredTaskId);
+    browserDenialStreaksByTask.delete(teamTask.retiredTaskId);
+  }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
   if (inProcessEnvironment) {

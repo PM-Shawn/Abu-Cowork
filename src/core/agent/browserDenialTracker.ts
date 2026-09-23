@@ -1,5 +1,8 @@
 /**
- * Consecutive browser-authorization denial counter for ONE run.
+ * Consecutive browser-authorization denial counter for ONE team task, or for
+ * one run outside a team task. The runs of a team task share the count (see
+ * `BrowserDenialStreak`), so approving a retry from the confirmation strip
+ * does not wipe a streak of refusals.
  *
  * A model that keeps asking for browser actions the user keeps refusing is
  * not going to converge — it either misread the task or is looping on the
@@ -49,12 +52,12 @@ export type BrowserDenialKind = 'scripting' | 'other';
  * - `'dialog'` — they answered THIS request (a confirmation dialog, an IM
  *   approval). Full consent, resets everything.
  * - `'grant'` — a standing site verdict or the conversation TTL grant applied
- *   without a new question. Real consent, but a NARROWER one: a grant is
- *   minted from approving a click and can structurally never authorize
- *   `execute_js` (`isScriptingBrowserTool` is excluded from every grant path).
- *   So a grant must not clear a streak that contains a SCRIPTING refusal —
- *   otherwise the guard is dodged by alternating `execute_js` (refused) with a
- *   click the grant waves through (R1, U4 re-review).
+ *   without a new question. Real consent, but a NARROWER one: a browse or
+ *   upload grant, or the conversation TTL grant, never covers `execute_js`;
+ *   only the site's own script permission does. So a grant must not clear a
+ *   streak that contains a SCRIPTING refusal — otherwise the guard is dodged
+ *   by alternating `execute_js` (refused) with a click the grant waves
+ *   through (R1, U4 re-review).
  */
 export type BrowserAllowConsent = 'dialog' | 'grant';
 
@@ -69,20 +72,34 @@ export interface BrowserDenialTracker {
   readonly tripped: boolean;
 }
 
+/**
+ * The count itself, separate from the tracker that acts on it: the runs of
+ * one team task share a streak (each run the confirmation strip starts
+ * continues the task), while each run keeps its own tracker because the
+ * abort action stops that run and no other.
+ */
+export interface BrowserDenialStreak {
+  consecutiveDenials: number;
+  /** Latches while the current streak contains at least one scripting refusal. */
+  streakHasScripting: boolean;
+}
+
+export function createBrowserDenialStreak(): BrowserDenialStreak {
+  return { consecutiveDenials: 0, streakHasScripting: false };
+}
+
 export function createBrowserDenialTracker(
   onThreshold: () => void,
   threshold: number = BROWSER_DENIAL_ABORT_THRESHOLD,
+  streak: BrowserDenialStreak = createBrowserDenialStreak(),
 ): BrowserDenialTracker {
-  let consecutiveDenials = 0;
   let tripped = false;
-  /** Latches while the current streak contains at least one scripting refusal. */
-  let streakHasScripting = false;
   return {
     reportDenial(kind: BrowserDenialKind = 'other'): void {
       if (tripped) return;
-      consecutiveDenials += 1;
-      if (kind === 'scripting') streakHasScripting = true;
-      if (consecutiveDenials >= threshold) {
+      streak.consecutiveDenials += 1;
+      if (kind === 'scripting') streak.streakHasScripting = true;
+      if (streak.consecutiveDenials >= threshold) {
         tripped = true;
         onThreshold();
       }
@@ -90,12 +107,12 @@ export function createBrowserDenialTracker(
     reportAllow(consent: BrowserAllowConsent = 'dialog'): void {
       if (tripped) return;
       // R1: a grant cannot answer for a capability it can never cover.
-      if (consent === 'grant' && streakHasScripting) return;
-      consecutiveDenials = 0;
-      streakHasScripting = false;
+      if (consent === 'grant' && streak.streakHasScripting) return;
+      streak.consecutiveDenials = 0;
+      streak.streakHasScripting = false;
     },
     get consecutiveDenials(): number {
-      return consecutiveDenials;
+      return streak.consecutiveDenials;
     },
     get tripped(): boolean {
       return tripped;

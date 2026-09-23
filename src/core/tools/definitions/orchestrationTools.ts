@@ -23,6 +23,7 @@ import { withDispatchController } from '../../agent/subagentAbort';
 import { takeDispatchInstructionReport } from '../../agent/dispatchInstructionReport';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { surfaceStoppedDispatch } from '../../team/stoppedDispatch';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
 import { createDelegateProgressRecorder } from '../../agent/delegateProgressRecorder';
@@ -520,6 +521,7 @@ export const runAgentBatchTool: ToolDefinition = {
     if (boundsKey) {
       const admission = admitDispatches(boundsKey, resolvedTasks.map((task) => task.agent.name));
       if (!admission.ok) {
+        surfaceStoppedDispatch(toolExecContext, admission);
         return admission.reason === 'run_cap'
           ? format(ot.errBatchDispatchCapReached, { max: admission.max })
           : format(ot.errBatchMemberBlocked, { agentName: admission.member, n: admission.failures });

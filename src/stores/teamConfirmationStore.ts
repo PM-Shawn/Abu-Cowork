@@ -66,6 +66,20 @@ export interface TaskRule {
   category: string;
   createdAt: number;
 }
+/**
+ * A hand-off the task's bounds stopped (teamRunBounds.ts). It waits on the
+ * strip for the user to choose: try another way, or skip the step.
+ */
+export interface StoppedDispatch {
+  id: string;
+  conversationId: string;
+  taskId: string;
+  reason: 'run_cap' | 'member_blocked';
+  member?: string;
+  count: number;
+  lastFailure?: string;
+  createdAt: number;
+}
 interface RetrySelection { item: TeamConfirmation; mode: TeamApprovalMode }
 
 export function confirmationKey(item: Pick<TeamConfirmation, 'conversationId' | 'member' | 'kind' | 'identity'>): string {
@@ -80,6 +94,8 @@ interface TeamConfirmationState {
   taskRules: Record<string, TaskRule>;
   /** The team task each conversation is in. Runtime only. */
   currentTaskByConversation: Record<string, string>;
+  /** Hand-offs the current task stopped. Runtime only. */
+  stopped: Record<string, StoppedDispatch>;
   /** UI-owned handoff, inert until its specific queued turn starts. Never persisted. */
   retrySelections: Record<string, RetrySelection>;
 }
@@ -96,6 +112,9 @@ interface TeamConfirmationActions {
   approveForTask: (id: string) => boolean;
   /** "Allow all": every pending request of the conversation that has a category. Returns how many. */
   approveAllForTask: (conversationId: string) => number;
+  /** One entry per task, reason and member; null when that stop is already shown. */
+  addStopped: (entry: Omit<StoppedDispatch, 'id' | 'createdAt'>) => StoppedDispatch | null;
+  removeStopped: (id: string) => void;
   selectRetry: (id: string) => string | undefined;
   beginRetry: (conversationId: string, loopId: string, selectionId?: string) => void;
   claimDispatch: (conversationId: string, loopId: string, dispatchId: string, fingerprint: string, member: string) => void;
@@ -110,7 +129,7 @@ export function pendingFor(pending: Record<string, TeamConfirmation>, conversati
 }
 export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
   persist(immer((set, get) => ({
-    pending: {}, approvedOnce: {}, taskRules: {}, currentTaskByConversation: {}, retrySelections: {},
+    pending: {}, approvedOnce: {}, taskRules: {}, currentTaskByConversation: {}, stopped: {}, retrySelections: {},
     add: (item) => {
       // Keep separate calls separate, even when their presentation/parameters match.
       const duplicate = Object.values(get().pending).some((old) => confirmationKey(old) === confirmationKey(item)
@@ -130,6 +149,9 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
         s.currentTaskByConversation[conversationId] = taskId;
         for (const [id, rule] of Object.entries(s.taskRules)) {
           if (rule.item.conversationId === conversationId) delete s.taskRules[id];
+        }
+        for (const [id, stop] of Object.entries(s.stopped)) {
+          if (stop.conversationId === conversationId) delete s.stopped[id];
         }
       });
       return current ? { taskId, retiredTaskId: current } : { taskId };
@@ -159,6 +181,15 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
       }
       return approved;
     },
+    addStopped: (entry) => {
+      const shown = Object.values(get().stopped).some((stop) => stop.conversationId === entry.conversationId
+        && stop.taskId === entry.taskId && stop.reason === entry.reason && (stop.member ?? null) === (entry.member ?? null));
+      if (shown) return null;
+      const stopped: StoppedDispatch = { ...entry, id: generateId(), createdAt: Date.now() };
+      set((s) => { s.stopped[stopped.id] = stopped; });
+      return stopped;
+    },
+    removeStopped: (id) => set((s) => { delete s.stopped[id]; }),
     selectRetry: (id) => {
       const item = get().pending[id];
       if (!item || !isRetryableTeamIdentity(item.identity)) return undefined;
@@ -215,6 +246,7 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
       clearTeamConfirmationIdentities(conversationId);
       delete s.currentTaskByConversation[conversationId];
       for (const [id, item] of Object.entries(s.pending)) if (item.conversationId === conversationId) delete s.pending[id];
+      for (const [id, stop] of Object.entries(s.stopped)) if (stop.conversationId === conversationId) delete s.stopped[id];
       for (const grants of [s.approvedOnce, s.taskRules, s.retrySelections]) {
         for (const [id, approval] of Object.entries(grants)) if (approval.item.conversationId === conversationId) delete grants[id];
       }
@@ -230,7 +262,7 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
     // Explicitly discard old persisted approvedOnce tickets as well as new runtime fields.
     merge: (persisted, current) => ({ ...current,
       pending: (persisted as Partial<TeamConfirmationState> | undefined)?.pending ?? {},
-      approvedOnce: {}, taskRules: {}, currentTaskByConversation: {}, retrySelections: {},
+      approvedOnce: {}, taskRules: {}, currentTaskByConversation: {}, stopped: {}, retrySelections: {},
     }),
   }),
 );

@@ -12,7 +12,46 @@ function select() {
   return id;
 }
 const resetStore = () => useTeamConfirmationStore.setState({
-  pending: {}, approvedOnce: {}, taskRules: {}, retrySelections: {}, currentTaskByConversation: {},
+  pending: {}, approvedOnce: {}, taskRules: {}, retrySelections: {}, currentTaskByConversation: {}, stopped: {},
+});
+
+describe('stopped hand-offs', () => {
+  beforeEach(resetStore);
+
+  it('records one stop per task, reason and member', () => {
+    const { taskId } = store().beginTask('c1', false);
+    const entry = { conversationId: 'c1', taskId, reason: 'member_blocked' as const, member: 'A', count: 3, lastFailure: 'missing out.md' };
+    expect(store().addStopped(entry)).not.toBeNull();
+    expect(store().addStopped(entry)).toBeNull();
+    expect(store().addStopped({ ...entry, member: 'B' })).not.toBeNull();
+    expect(Object.keys(store().stopped)).toHaveLength(2);
+  });
+
+  it('a new task clears the previous task stops; a continuation keeps them', () => {
+    const { taskId } = store().beginTask('c1', false);
+    store().addStopped({ conversationId: 'c1', taskId, reason: 'run_cap', count: 40 });
+    store().beginTask('c1', true);
+    expect(Object.keys(store().stopped)).toHaveLength(1);
+    store().beginTask('c1', false);
+    expect(Object.keys(store().stopped)).toHaveLength(0);
+  });
+
+  it('removing a stop and deleting the conversation both clear it', () => {
+    const { taskId } = store().beginTask('c1', false);
+    const stopped = store().addStopped({ conversationId: 'c1', taskId, reason: 'run_cap', count: 40 })!;
+    store().removeStopped(stopped.id);
+    expect(store().stopped).toEqual({});
+    store().addStopped({ conversationId: 'c1', taskId, reason: 'run_cap', count: 40 });
+    store().clearConversation('c1');
+    expect(store().stopped).toEqual({});
+  });
+
+  it('never persists stops', () => {
+    const { taskId } = store().beginTask('c1', false);
+    store().addStopped({ conversationId: 'c1', taskId, reason: 'run_cap', count: 40 });
+    const persisted = JSON.parse(localStorage.getItem('abu-team-confirmations')!).state;
+    expect(Object.keys(persisted)).toEqual(['pending']);
+  });
 });
 
 describe('teamConfirmationStore', () => {

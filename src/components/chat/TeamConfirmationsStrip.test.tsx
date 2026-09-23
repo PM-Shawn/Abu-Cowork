@@ -22,7 +22,7 @@ function conversation(status: Conversation['status']): Conversation {
 }
 
 const identity = { toolName: 'run_command', parametersDigest: 'p', cwd: '/project', loopId: 'original', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 };
-const emptyConfirmations = { pending: {}, approvedOnce: {}, taskRules: {}, retrySelections: {}, currentTaskByConversation: {} };
+const emptyConfirmations = { pending: {}, approvedOnce: {}, taskRules: {}, retrySelections: {}, currentTaskByConversation: {}, stopped: {} };
 
 const originalLocksDescriptor = Object.getOwnPropertyDescriptor(navigator, 'locks');
 function restoreNavigatorLocks() {

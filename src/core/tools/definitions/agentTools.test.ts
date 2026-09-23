@@ -1019,6 +1019,39 @@ describe('delegateToAgentTool', () => {
     clearRunBounds('loop-bounds');
   });
 
+  it('counts a team task across runs and puts the stopped member on the strip', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const { clearRunBounds } = await import('../../team/teamRunBounds');
+    const { useTeamConfirmationStore } = await import('../../../stores/teamConfirmationStore');
+    clearRunBounds('task-strip');
+    useTeamConfirmationStore.setState({ stopped: {} });
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'gave up', stopReason: 'error', toolCallCount: 1 } as never);
+    const inRun = (loopId: string) => {
+      vi.mocked(getCurrentLoopContext).mockReturnValue({
+        toolCallToStepId: new Map(), loopId, conversationId: 'conv-1',
+        eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+      } as never);
+      return { conversationId: 'conv-1', loopId, teamRoster: ['researcher'], teamTaskId: 'task-strip' } as never;
+    };
+    // Three different runs of one team task, as when the strip starts each retry.
+    for (const loopId of ['run-a', 'run-b', 'run-c']) {
+      await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'try' }, inRun(loopId));
+    }
+    const refused = String(await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'again' }, inRun('run-d')));
+
+    expect(refused).toContain('researcher');
+    expect(Object.values(useTeamConfirmationStore.getState().stopped)).toEqual([expect.objectContaining({
+      conversationId: 'conv-1', taskId: 'task-strip', reason: 'member_blocked', member: 'researcher', count: 3, lastFailure: 'error',
+    })]);
+    clearRunBounds('task-strip');
+  });
+
   it('prefers the shell-owned tool execution authorization scope for nested delegation', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getCurrentLoopContext } = await import('../../agent/permissionBridge');

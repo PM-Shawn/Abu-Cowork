@@ -2,6 +2,7 @@ import { exists, readDir, readTextFile, writeTextFile } from '@tauri-apps/plugin
 import { readAgentIdentity, wantedAgentIdentity, withAgentIdentity } from '@/core/agent/agentIdentityCarry';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { surfaceStoppedDispatch } from '../../team/stoppedDispatch';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
 import {
@@ -275,6 +276,7 @@ export const delegateToAgentTool: ToolDefinition = {
     if (boundsKey && agentName) {
       const admission = admitDispatches(boundsKey, [agentName]);
       if (!admission.ok) {
+        surfaceStoppedDispatch(toolExecContext, admission);
         const t = getI18n().toolResult.agent;
         return admission.reason === 'run_cap'
           ? format(t.errDispatchCapReached, { max: admission.max })

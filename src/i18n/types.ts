@@ -1923,6 +1923,7 @@ export interface TranslationDict {
       aiAuth: string;
       aiContentPolicy: string;
       aiRateLimit: string;
+      aiQuotaExceeded: string;
       aiOverloaded: string;
       aiServerError: string;
       aiNetworkError: string;

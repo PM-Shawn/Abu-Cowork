@@ -108,6 +108,10 @@ export function mapAIServiceError(opts: MapAIErrorOpts): FriendlyError {
         message: t.diagnostic.errMap.aiRateLimit,
         action: { type: 'retry', label: t.diagnostic.errMap.actionRetry },
       };
+    // No retry button: the budget is an administrator's setting, and waiting
+    // changes nothing until they raise it.
+    case 'quota_exceeded':
+      return { message: t.diagnostic.errMap.aiQuotaExceeded };
     case 'overloaded':
       return {
         message: t.diagnostic.errMap.aiOverloaded,

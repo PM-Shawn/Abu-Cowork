@@ -1474,6 +1474,7 @@ const enUS: TranslationDict = {
       aiAuth: 'API key is invalid or expired',
       aiContentPolicy: 'The upstream content-safety system rejected the request (often triggered by conversation history; try continuing in a new conversation)',
       aiRateLimit: 'Rate limit exceeded, try again shortly',
+      aiQuotaExceeded: 'This period\'s allowance is used up. Ask an administrator to raise it.',
       aiOverloaded: 'Provider is busy, try again shortly',
       aiServerError: 'Provider returned a server error',
       aiNetworkError: 'Cannot reach the provider — check your network',

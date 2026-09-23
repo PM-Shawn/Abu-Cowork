@@ -1162,6 +1162,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Team mode: roster the leader may delegate to (enforced in the dispatch tools).
     teamRoster: route.team ? teamRosterNames(route.team) : undefined,
     teamRequirePlanApproval: route.team?.requirePlanApproval === true ? true : undefined,
+    teamTaskId: route.team ? options?.teamTaskId : undefined,
     authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     reportBrowserDenial: (kind) => browserDenials.reportDenial(kind),
@@ -3288,7 +3289,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
-  clearRunBounds(loopId);
+  if (!options?.teamTaskId) clearRunBounds(loopId);
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
   if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {
     abortController.abort(new Error('Scoped agent run finished'));

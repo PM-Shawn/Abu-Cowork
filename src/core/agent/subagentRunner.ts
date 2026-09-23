@@ -407,6 +407,9 @@ function buildTrustedSubagentToolContext(
     agentRunId: session.runId,
     agentName: session.options.agent.name,
     teamApprovalDispatch: session.options.teamApprovalDispatch,
+    // The team task keys the leader's hand-off bounds; a member never
+    // dispatches, and a sidecar-supplied value must not reach that key.
+    teamTaskId: undefined,
     imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
     interactionMode: resolveSubagentInteractionMode(session.options),
     // Inherited from the parent run at delegation time — the sidecar's copy

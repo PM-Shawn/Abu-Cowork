@@ -1664,6 +1664,30 @@ describe('agentLoopRunner', () => {
       }));
     });
 
+    it('stamps the shell team task onto a team run tool context, ignoring a forged wire value', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      const { taskId } = useTeamConfirmationStore.getState().beginTask('conv-1', false);
+      registerRunSession('run-1', { ...makeSession(), teamSnapshot: { teamRoster: ['A'] } });
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-1', toolName: 'read_file', input: { path: '/tmp/x' }, context: { teamTaskId: 'forged' } });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({ teamTaskId: taskId }));
+    });
+
+    it('gives a run outside a team no team task, even when the wire names one', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-1', toolName: 'read_file', input: { path: '/tmp/x' }, context: { teamTaskId: 'forged' } });
+
+      expect((executeAnyToolMock.mock.calls.at(-1)?.[4] as { teamTaskId?: string }).teamTaskId).toBeUndefined();
+    });
+
     it('exposes only the two report functions — never the abort controller', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

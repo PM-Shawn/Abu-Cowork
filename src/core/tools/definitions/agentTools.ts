@@ -265,9 +265,12 @@ export const delegateToAgentTool: ToolDefinition = {
     }
     // Hard bounds for the run (teamRunBounds.ts): refuse loudly so the leader
     // stops dispatching and reports instead of looping.
-    const boundsLoopId = toolExecContext?.teamRoster && agentName && toolExecContext.loopId ? toolExecContext.loopId : undefined;
-    if (boundsLoopId && agentName) {
-      const admission = admitDispatches(boundsLoopId, [agentName]);
+    // The team task spans the runs the confirmation strip starts, so approving
+    // a retry does not reset these bounds (teamRunBounds.ts).
+    const boundsKey = toolExecContext?.teamRoster && agentName && toolExecContext.loopId
+      ? (toolExecContext.teamTaskId ?? toolExecContext.loopId) : undefined;
+    if (boundsKey && agentName) {
+      const admission = admitDispatches(boundsKey, [agentName]);
       if (!admission.ok) {
         const t = getI18n().toolResult.agent;
         return admission.reason === 'run_cap'
@@ -440,8 +443,9 @@ export const delegateToAgentTool: ToolDefinition = {
         ? await findMissingExpectedFiles(expectedFiles, toolExecContext?.workspacePath)
         : [];
       toolExecContext?.reportMetadata?.({ subagentStopReason: missingFiles.length > 0 ? 'error' : result.stopReason });
-      if (boundsLoopId && agentName) {
-        recordDispatchOutcome(boundsLoopId, agentName, result.stopReason === 'completed' && missingFiles.length === 0);
+      if (boundsKey && agentName) {
+        recordDispatchOutcome(boundsKey, agentName, result.stopReason === 'completed' && missingFiles.length === 0,
+          missingFiles.length > 0 ? `missing ${missingFiles.join(', ')}` : result.stopReason);
         outcomeRecorded = true;
       }
       if (missingFiles.length > 0) {
@@ -474,7 +478,9 @@ export const delegateToAgentTool: ToolDefinition = {
       // The run never reached drainProgress — settle the member's progress
       // here so the coalesced snapshot is written and no timer is left armed.
       finalizeProgress?.();
-      if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);
+      if (boundsKey && agentName && !outcomeRecorded) {
+        recordDispatchOutcome(boundsKey, agentName, false, err instanceof Error ? err.message : String(err));
+      }
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }

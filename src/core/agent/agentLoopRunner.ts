@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { assertPluginEnabled, assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
 import { agentToolPolicyForRoute, checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { clearRunBounds } from '../team/teamRunBounds';
-import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
+import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Shell-side channel handler module for the main agent loop's sidecar run —
  * the main-loop twin of `subagentRunner.ts` (P1-3a). Built up in two
@@ -1519,6 +1519,9 @@ function contextForSession(
     // Security boundary: the shell session owns the ceiling. Never trust a
     // sidecar-provided context to omit or widen it.
     runPermissionCeiling: session.options.runPermissionCeiling,
+    // Security boundary: the team task keys the hand-off bounds and the
+    // refusal streak, so it is shell-owned like the run identity above.
+    teamTaskId: session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined,
     // Security boundary: outbound identity is authority-bearing. A sidecar may
     // describe a tool call, but it may not choose a different IM recipient or
     // manufacture one for a non-IM run.
@@ -3209,7 +3212,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       const result = await runAgentLoop(
         conversationId,
         userMessage,
-        rendererRuntimeOptions(options, (messageId) => {
+        rendererRuntimeOptions({ ...options, ...(teamTask ? { teamTaskId: teamTask.taskId } : {}) }, (messageId) => {
           ownership.messageTaken = true;
           localUserMessageId = messageId;
           if (messageId) {
@@ -4008,7 +4011,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   }
   } finally {
     useTeamConfirmationStore.getState().clearRun(conversationId, ownedLoopId);
-    clearRunBounds(ownedLoopId);
+    // A team task's bounds outlive this run and are retired when the next
+    // task starts; only a run outside a task owns its own entry.
+    if (!teamTask) clearRunBounds(ownedLoopId);
   }
 }
 

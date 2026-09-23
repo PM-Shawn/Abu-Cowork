@@ -514,9 +514,11 @@ export const runAgentBatchTool: ToolDefinition = {
 
     // Hard bounds for a team run (teamRunBounds.ts): the whole batch is admitted
     // or refused as one, so a refusal never starts a partial fan-out.
-    const boundsLoopId = toolExecContext?.teamRoster && toolExecContext.loopId ? toolExecContext.loopId : undefined;
-    if (boundsLoopId) {
-      const admission = admitDispatches(boundsLoopId, resolvedTasks.map((task) => task.agent.name));
+    // Keyed by the team task, like delegate_to_agent (teamRunBounds.ts).
+    const boundsKey = toolExecContext?.teamRoster && toolExecContext.loopId
+      ? (toolExecContext.teamTaskId ?? toolExecContext.loopId) : undefined;
+    if (boundsKey) {
+      const admission = admitDispatches(boundsKey, resolvedTasks.map((task) => task.agent.name));
       if (!admission.ok) {
         return admission.reason === 'run_cap'
           ? format(ot.errBatchDispatchCapReached, { max: admission.max })
@@ -704,8 +706,10 @@ export const runAgentBatchTool: ToolDefinition = {
       if (result.status === 'rejected' && !latestTerminalSummary?.tasks.some((task) => task.taskIndex === i)) {
         terminalizeTask(i, terminalForSettledResult(result, structuredEntries?.[i]?.ok));
       }
-      if (boundsLoopId) {
-        recordDispatchOutcome(boundsLoopId, resolvedTasks[i].agent.name, result.status === 'fulfilled' && result.value.stopReason === 'completed');
+      if (boundsKey) {
+        recordDispatchOutcome(boundsKey, resolvedTasks[i].agent.name,
+          result.status === 'fulfilled' && result.value.stopReason === 'completed',
+          result.status === 'rejected' ? String(result.reason) : result.value.stopReason);
       }
     }
 

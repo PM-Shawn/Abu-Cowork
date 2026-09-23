@@ -54,6 +54,15 @@ describe('team confirmation parameter identity', () => {
       expect(identity?.scope).toBe('https://a.test');
     });
 
+    it('scopes an embedded frame to the page embedding it', async () => {
+      const inA = await buildTeamConfirmationIdentity('browser__fill', { value: 'x' }, ctx,
+        { origin: 'https://frame.test', pageOrigin: 'https://host-a.test', embeddedOrigins: ['https://frame.test'] });
+      const inB = await buildTeamConfirmationIdentity('browser__fill', { value: 'x' }, ctx,
+        { origin: 'https://frame.test', pageOrigin: 'https://host-b.test', embeddedOrigins: ['https://frame.test'] });
+      expect(inA?.scope).toBe('https://frame.test in https://host-a.test');
+      expect(inA?.scope).not.toBe(inB?.scope);
+    });
+
     it('has no scope when nothing trusted names one', async () => {
       const identity = await buildTeamConfirmationIdentity('some_mcp_tool', { a: 1 }, ctx);
       expect(identity?.scope).toBeNull();

@@ -573,6 +573,10 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 export interface AgentLoopOptions {
   /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
   teamConfirmationRetryId?: string;
+  /** Trusted UI flag: this run continues the conversation's current team task. Never sent to the sidecar. */
+  continuesTeamTask?: boolean;
+  /** Shell-resolved team task, handed to the in-process loop only. Never sent to the sidecar. */
+  teamTaskId?: string;
   /** Override the command confirmation callback (e.g. auto-deny for scheduled tasks) */
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   /** Override the file permission callback (e.g. auto-deny for scheduled tasks) */

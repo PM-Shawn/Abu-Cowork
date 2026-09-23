@@ -22,6 +22,7 @@ function conversation(status: Conversation['status']): Conversation {
 }
 
 const identity = { toolName: 'run_command', parametersDigest: 'p', cwd: '/project', loopId: 'original', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 };
+const emptyConfirmations = { pending: {}, approvedOnce: {}, taskRules: {}, retrySelections: {}, currentTaskByConversation: {} };
 
 const originalLocksDescriptor = Object.getOwnPropertyDescriptor(navigator, 'locks');
 function restoreNavigatorLocks() {
@@ -32,7 +33,7 @@ function restoreNavigatorLocks() {
 describe('TeamConfirmationsStrip', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
-    useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
+    useTeamConfirmationStore.setState(emptyConfirmations);
     usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
     useChatStore.setState({ activeConversationId: 'c1', conversations: { c1: conversation('idle') }, agentStates: new Map() });
     vi.clearAllMocks();
@@ -72,15 +73,14 @@ describe('TeamConfirmationsStrip', () => {
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
   });
-  it('shows a revocable rule with run scope and cwd, and disables legacy approvals', () => {
-    const item = useTeamConfirmationStore.getState().add({ identity, conversationId: 'c1', kind: 'command', detail: 'npm publish', member: 'A' })!;
+  it('shows a revocable task rule, and disables legacy approvals', () => {
+    useTeamConfirmationStore.getState().add({ identity: { ...identity, scope: 'prefix:npm run' }, conversationId: 'c1', kind: 'command', level: 'warn', detail: 'npm run build', member: 'A' });
     render(<TeamConfirmationsStrip conversationId="c1" />);
-    fireEvent.click(screen.getByRole('button', { name: '本次补跑运行内都允许此请求: npm publish' }));
-    act(() => useTeamConfirmationStore.getState().beginRetry('c1', 'retry', item.id));
-    expect(screen.getByTestId('team-confirmations-strip')).toHaveTextContent('结束即失效');
-    expect(screen.getByTestId('team-confirmations-strip')).toHaveTextContent('/project');
+    fireEvent.click(screen.getByRole('button', { name: '本次补跑运行内都允许此请求: npm run build' }));
+    expect(Object.keys(useTeamConfirmationStore.getState().taskRules)).toHaveLength(1);
+    expect(runAgentLoopDispatched.mock.calls[0][2]).toMatchObject({ continuesTeamTask: true });
     fireEvent.click(screen.getByRole('button', { name: '撤销规则' }));
-    expect(useTeamConfirmationStore.getState().runRules).toEqual({});
+    expect(useTeamConfirmationStore.getState().taskRules).toEqual({});
     act(() => { useTeamConfirmationStore.getState().add({ conversationId: 'c1', kind: 'command', detail: 'legacy' }); });
     expect(screen.getByRole('button', { name: '仅本次补跑允许: legacy' })).toBeDisabled();
   });
@@ -119,7 +119,7 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
 
   beforeEach(() => {
     initLanguage('zh-CN');
-    useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
+    useTeamConfirmationStore.setState(emptyConfirmations);
     useChatStore.setState({ activeConversationId: 'c1', conversations: { c1: conversation('idle') }, agentStates: new Map() });
     // `browserSitePermissions` is branded so only the store's own action can
     // mint one; a test reset has to go around the brand, not through it.
@@ -212,14 +212,14 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     await waitFor(() => expect(useSettingsStore.getState().browserPermissionConfigV2.sites[ORIGIN]).toEqual({ ...emptyBrowserSiteRule(), browse: 'allow' }));
     await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
     // The grant covers the site; it mints no reusable run rule.
-    expect(useTeamConfirmationStore.getState().runRules).toEqual({});
+    expect(useTeamConfirmationStore.getState().taskRules).toEqual({});
     setSite.mockRestore();
   });
 });
 
 import {createBrowserPermissionConfig as auditTeamConfig} from '@/core/permissions/browserPermissionConfig';
 describe('audit-review team save cancellation',()=>{
- beforeEach(()=>{initLanguage('zh-CN');useSettingsStore.setState({browserPermissionConfigV2:auditTeamConfig()});useTeamConfirmationStore.setState({pending:{},approvedOnce:{},runRules:{},retrySelections:{}});useChatStore.setState({conversations:{c1:conversation('running')}});vi.clearAllMocks();});
+ beforeEach(()=>{initLanguage('zh-CN');useSettingsStore.setState({browserPermissionConfigV2:auditTeamConfig()});useTeamConfirmationStore.setState(emptyConfirmations);useChatStore.setState({conversations:{c1:conversation('running')}});vi.clearAllMocks();});
  afterEach(()=>{cleanup();vi.restoreAllMocks();});
  it.each(['removed','replaced'])('audit-cancel: team %s request cannot finish its pending upload grant',async(condition)=>{
   let release!: (value: boolean) => void; let guard!: () => boolean;

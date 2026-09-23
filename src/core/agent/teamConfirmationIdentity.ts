@@ -93,10 +93,16 @@ function scopeFor(toolName: string, input: Record<string, unknown>, target: unkn
     return typeof input.command === 'string' && input.command.trim() ? commandScope(input.command) : null;
   }
   if (!target || typeof target !== 'object') return null;
-  const t = target as { origin?: unknown; path?: unknown; capabilities?: unknown };
+  const t = target as { origin?: unknown; pageOrigin?: unknown; path?: unknown; capabilities?: unknown };
   if (typeof t.path === 'string' && Array.isArray(t.capabilities)) {
     const caps = t.capabilities.filter((c): c is 'read' | 'write' => c === 'read' || c === 'write');
     return caps.length > 0 ? fileScope(t.path, caps) : null;
   }
-  return typeof t.origin === 'string' && t.origin ? t.origin : null;
+  if (typeof t.origin !== 'string' || !t.origin) return null;
+  // An embedded frame is scoped to the page embedding it, the same way a
+  // standing site grant for an embedded origin is (browserPermissionConfig's
+  // embeddedSites): allowing a frame inside one host never reaches another.
+  return typeof t.pageOrigin === 'string' && t.pageOrigin && t.pageOrigin !== t.origin
+    ? `${t.origin} in ${t.pageOrigin}`
+    : t.origin;
 }

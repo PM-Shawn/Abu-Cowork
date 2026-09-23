@@ -22,7 +22,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
   const [saveFailed, setSaveFailed] = useState(false);
   const pending = useTeamConfirmationStore((s) => s.pending);
   const items = useMemo(() => pendingFor(pending, conversationId), [pending, conversationId]);
-  const runRules = useTeamConfirmationStore((s) => s.runRules);
+  const taskRules = useTeamConfirmationStore((s) => s.taskRules);
   /**
    * Read REACTIVELY, not through `getState()`: a row in `pending` is persisted
    * and can outlive the verdict it was captured under, so the button has to
@@ -31,24 +31,29 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
    * retracts the button live, without this strip remounting.
    */
   const permissions = useSettingsStore((s) => s.browserPermissionConfigV2);
-  const rules = Object.entries(runRules).filter(([, rule]) => rule.item.conversationId === conversationId);
+  const rules = Object.entries(taskRules).filter(([, rule]) => rule.item.conversationId === conversationId);
   if (items.length === 0 && rules.length === 0) return null;
 
   const followUp = (text: string, teamConfirmationRetryId?: string) => {
     const running = useChatStore.getState().conversations[conversationId]?.status === 'running';
     if (running) {
-      enqueueUserInput(conversationId, text, false, teamConfirmationRetryId);
+      enqueueUserInput(conversationId, text, false, teamConfirmationRetryId, true);
       return;
     }
-    void runAgentLoopDispatched(conversationId, text, { initiatedBy: 'user', teamConfirmationRetryId }).catch(() => {
+    void runAgentLoopDispatched(conversationId, text, { initiatedBy: 'user', teamConfirmationRetryId, continuesTeamTask: true }).catch(() => {
       // Runtime grants are cleared by dispatch's finally; an unrelated later
       // message cannot pick up this failed retry's approval.
     });
   };
   const memberLabel = (item: TeamConfirmation) => item.member ?? t.team.confirmationLeader;
 
-  const approve = (item: TeamConfirmation, mode: TeamApprovalMode) => {
-    const selection = useTeamConfirmationStore.getState().selectRetry(item.id, mode);
+  const approve = (item: TeamConfirmation, mode: TeamApprovalMode | 'task') => {
+    if (mode === 'task') {
+      if (!useTeamConfirmationStore.getState().approveForTask(item.id)) return;
+      followUp(format(t.team.confirmationApprovedFollowUp, { member: memberLabel(item), detail: item.detail }));
+      return;
+    }
+    const selection = useTeamConfirmationStore.getState().selectRetry(item.id);
     if (!selection) return;
     followUp(format(t.team.confirmationApprovedFollowUp, { member: memberLabel(item), detail: item.detail }), selection);
   };
@@ -127,7 +132,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
               {t.team.confirmationApprove}
             </button>
             {item.kind !== 'browser' && item.kind !== 'browser-upload' && <button type="button" disabled={saving !== null || !isRetryableTeamIdentity(item.identity)}
-              onClick={() => approve(item, 'run')}
+              onClick={() => approve(item, 'task')}
               title={t.team.confirmationRunRule}
               className="shrink-0 rounded-md border px-2 py-0.5 text-caption"
               aria-label={`${t.team.confirmationApproveRun}: ${item.detail}`}>

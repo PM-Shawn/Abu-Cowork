@@ -3139,8 +3139,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             messageTaken: false,
           };
         }
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -3160,8 +3161,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
         // calls (userInputQueue.ts, unchanged).
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -3187,6 +3189,14 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       });
     }
   }
+  // A team conversation's task spans every run the confirmation strip starts;
+  // any other run (a request the user typed, a schedule, an IM message)
+  // starts a new task and retires the previous one's rules and bounds.
+  const teamTask = entryConversation?.teamId
+    ? useTeamConfirmationStore.getState().beginTask(conversationId,
+      Boolean(options.teamConfirmationRetryId || options.continuesTeamTask))
+    : undefined;
+  if (teamTask?.retiredTaskId) clearRunBounds(teamTask.retiredTaskId);
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
   if (inProcessEnvironment) {
@@ -4102,7 +4112,8 @@ async function runDispatchedTurns(
         // or incorrectly retain a lower ceiling. System-authored wake-ups never
         // reach this dequeue path (`dequeueNextUserInput` skips them). What
         // they ARE is human-typed, so the handoff run is user-initiated.
-        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId },
+        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
+          continuesTeamTask: queuedInput.continuesTeamTask },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);

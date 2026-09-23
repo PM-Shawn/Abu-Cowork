@@ -12,15 +12,19 @@ describe('new permission execution gate', () => {
     expect(evaluateBrowserPermissionGate({ ...base, runMode }).ask).toBeNull();
     expect(evaluateBrowserPermissionGate({ ...base, runMode }).outcome).toBe('allow');
   });
-  it.each(['interactive', 'read-only', 'upload'] as const)('offers an exact-resource persistent grant for ordinary %s ask', (opClass) => {
+  it.each(['interactive', 'read-only', 'upload', 'scripting'] as const)('offers an exact-resource persistent grant for ordinary %s ask', (opClass) => {
     expect(evaluateBrowserPermissionGate({ ...base, opClass, configured: { decision: 'ask', source: 'default' } }).ask?.offersPersistentGrant).toBe(true);
+  });
+  it('offers no persistent grant for scripts on a high-risk site', () => {
+    expect(evaluateBrowserPermissionGate({ ...base, opClass: 'scripting', highRisk: true, configured: { decision: 'ask', source: 'default' } })
+      .ask?.offersPersistentGrant).not.toBe(true);
   });
   it('sends unattended ask to the approval channel without then requiring a site grant', () => {
     const result = evaluateBrowserPermissionGate({ ...base, runMode: 'unattended', configured: { decision: 'ask', source: 'default' } });
     expect(result.outcome).toBe('allow');
     expect(result.ask?.channel).toBe('im');
   });
-  it.each([{ opClass: 'scripting' as const }, { highRisk: true }, { originKnown: false }])('never offers persistent grants for %j', (facts) => {
+  it.each([{ highRisk: true }, { originKnown: false }])('never offers persistent grants for %j', (facts) => {
     expect(evaluateBrowserPermissionGate({ ...base, ...facts, configured: { decision: 'ask', source: 'default' } }).ask?.offersPersistentGrant).not.toBe(true);
   });
   it('retains site block, missing approval channel, high-risk and origin boundaries', () => {

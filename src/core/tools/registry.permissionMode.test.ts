@@ -435,7 +435,7 @@ describe('browser site permission verdicts', () => {
     expect(decision.decision).toBe('deny');
   });
 
-  it('execute_js never rides a site grant — scripts ask every time', async () => {
+  it('execute_js never rides a browse grant — it asks, offering a grant for scripts on that site', async () => {
     browserFixture({ 'https://example.com': 'allowed' });
     const infos: Array<{ command: string; allowPersistentGrant?: boolean }> = [];
     const confirm = async (info: { command: string; allowPersistentGrant?: boolean }) => {
@@ -449,7 +449,7 @@ describe('browser site permission verdicts', () => {
     );
 
     expect(infos).toHaveLength(1);
-    expect(infos[0].allowPersistentGrant).toBe(false);
+    expect(infos[0].allowPersistentGrant).toBe(true);
   });
 
   it('offers the persistent grant only when the origin is known', async () => {

@@ -758,6 +758,7 @@ const zhCN: TranslationDict = {
   settings: {
     browserResourceGrantBrowse: '以后允许在此网站浏览',
     browserResourceGrantUpload: '以后允许向此网站上传',
+    browserResourceGrantScript: '以后在此网站允许执行脚本',
     browserRequestOnce: '仅允许这次',
     browserDownloadsCompleted: '已完成',
     browserDownloadsUnavailable: '原位置不可用',
@@ -2979,7 +2980,7 @@ const zhCN: TranslationDict = {
     browserTitle: '浏览器操作确认',
     browserDescription: '阿布要在你已登录的浏览器里执行下面这个操作：',
     browserSiteDenied: '该网站已被你设为禁止操作（可在 设置 → 能力 中修改）',
-    browserScriptReason: '将在页面里运行一段脚本。脚本拥有该页面的全部权限（可读取内容、代表你操作），因此每次运行都会单独询问，不提供"以后都允许"。',
+    browserScriptReason: '将在页面里运行一段脚本。脚本能读取这个页面的内容，并以你的身份在页面上操作。',
     browserDialogAnswerReason: '网页弹出了它自己的对话框，阿布要替你按下「确定」或「取消」——按下「确定」就等于提交它背后的东西。这个对话框已经被阿布接管，页面上不会显示出来，所以请看阿布上一条消息里转述的内容，拿不准就拒绝。里面的问题是网页写的，不是阿布写的。这一步与引发它的那次点击分开询问。',
     browserDialogArmReason: '通过 Chrome 扩展，阿布看不到已经弹出来的对话框，所以这一步是**预先**给页面下一次弹窗准备好答案——在任何人读到它问什么之前。该答案 60 秒后失效、只用一次。如果页面此刻已经弹着框，请你自己回答，或改用阿布的内置浏览器。',
     browserBatchScriptStep: '一批浏览器操作里不允许夹带页面脚本。脚本每次运行都要单独询问，夹在批次里等于一次允许换来多次脚本执行。整批已被拒绝——请把脚本单独执行。',

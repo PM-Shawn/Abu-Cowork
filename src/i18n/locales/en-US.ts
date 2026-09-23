@@ -757,6 +757,7 @@ const enUS: TranslationDict = {
   settings: {
     browserResourceGrantBrowse: 'Always allow browsing on this site',
     browserResourceGrantUpload: 'Always allow uploads to this site',
+    browserResourceGrantScript: 'Always allow scripts on this site',
     browserRequestOnce: 'Allow once',
     browserDownloadsCompleted: 'Completed',
     browserDownloadsUnavailable: 'Original location unavailable',
@@ -2977,7 +2978,7 @@ const enUS: TranslationDict = {
     browserTitle: 'Confirm browser action',
     browserDescription: 'Abu wants to run this action inside your logged-in browser:',
     browserSiteDenied: 'You have blocked automation on this site (change it in Settings → Capabilities)',
-    browserScriptReason: 'This runs a script inside the page. Scripts act with the page\'s full authority (reading content, acting as you), so each run asks separately — there is no "always allow".',
+    browserScriptReason: 'This runs a script inside the page. It can read the page and act on it as you.',
     browserDialogAnswerReason: 'The page put up its own dialog, and Abu is about to press OK or Cancel on it for you — accepting a confirm submits whatever is behind it. Abu has intercepted that dialog, so it is NOT on screen: go by what Abu reported it says, and refuse if you are unsure. The question it asks was written by the web page, not by Abu. This is asked separately from the click that may have raised it.',
     browserDialogArmReason: 'Through the Chrome extension Abu cannot see a dialog that is already open, so this pre-arms the answer for the NEXT one the page puts up — before anyone has read what it asks. It expires in 60 seconds and is used once. If the page is already showing a dialog, answer it yourself, or use Abu\'s built-in browser instead.',
     browserBatchScriptStep: 'A batch of browser actions may not contain a page script. Scripts are approved one run at a time, so a script inside a batch would let a single approval buy many runs. The whole batch was refused — run the script on its own instead.',

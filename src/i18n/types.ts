@@ -1043,6 +1043,7 @@ export interface TranslationDict {
   settings: {
     browserResourceGrantBrowse: string;
     browserResourceGrantUpload: string;
+    browserResourceGrantScript: string;
     browserRequestOnce: string;
     browserDownloadsCompleted: string;
     browserDownloadsUnavailable: string;

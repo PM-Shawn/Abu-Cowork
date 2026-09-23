@@ -37,7 +37,7 @@ export function evaluateBrowserPermissionGate(facts: BrowserPermissionGateFacts)
   if (runMode === 'attended' && !facts.confirmationChannelAvailable) return deny('approval-refused');
   return { ...result, ask: {
     channel: runMode === 'attended' ? 'dialog' : 'im',
-    offersPersistentGrant: runMode === 'attended' && opClass !== 'scripting' && !highRisk && !facts.answersPageDialog && facts.originKnown,
+    offersPersistentGrant: runMode === 'attended' && !highRisk && !facts.answersPageDialog && facts.originKnown,
     refusedReason: runMode === 'attended' ? 'user-cancelled' : 'approval-refused',
   } };
 }

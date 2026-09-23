@@ -94,8 +94,7 @@ export function grantBrowserPermissionTargets(
   value: unknown, resource: BrowserPermissionResource, targets: readonly BrowserPermissionTarget[],
 ): BrowserPermissionConfig | null {
   const config = parseBrowserPermissionConfig(value);
-  if (!config || (resource !== 'browse' && resource !== 'upload')
-    || resolveBrowserPermissionConfig(config, resource, targets).decision === 'deny') return null;
+  if (!config || resolveBrowserPermissionConfig(config, resource, targets).decision === 'deny') return null;
   const next = { ...config, sites: { ...config.sites }, embeddedSites: { ...config.embeddedSites } };
   for (const { origin, embeddedIn } of targets) {
     // The resolver has validated both origins and the necessary host page.

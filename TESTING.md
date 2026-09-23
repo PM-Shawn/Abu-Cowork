@@ -69,6 +69,7 @@ These rules are **mandatory** for every new test:
 | Real timers (`setTimeout`, `setInterval`, `sleep`) | `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()` |
 | Real file system / Tauri FS plugin | Global Tauri mocks in `src/test/setup.ts` (already wired) |
 | `crypto.randomUUID()` / entropy-sourced IDs as assertions | Stub via `vi.spyOn` or accept any string with `expect.any(String)` |
+| The host OS display language (`navigator.language`, i18n's `'system'` default) | Pinned to `en-US` by `src/test/setup.ts` — see §6 *Locale*. A suite that needs another locale sets it in its own hook and restores it in `afterEach` / `finally` |
 
 Global Tauri API mocks live in `src/test/setup.ts` and are applied automatically to every test file.
 Add new Tauri plugin mocks there rather than per-test.
@@ -277,6 +278,30 @@ Storage, selection, or DOM events (currently 20 files — stores with persist, `
 🔴 A new component test **without** that line fails on `document is not defined`. Add the docblock —
 do **not** flip the global default back; that re-imposes the happy-dom cost on all ~320 DOM-free
 files. `src/test/setup.ts` already polyfills `localStorage`, so Zustand `persist` works under `node`.
+
+### Locale — the test host is `en-US`
+
+`src/i18n` resolves the default `'system'` language through `navigator.language`. happy-dom
+hard-codes that to `'en-US'`, so while every file ran under happy-dom the suite was
+locale-independent by construction. Under `node`, Node ≥ 21 fills `navigator.language` from the
+OS — `en-US` on CI's runners, `zh-CN` on a Chinese Windows machine — and 95 tests across 18 files
+that assert English tool-result copy read Chinese instead. `src/test/setup.ts` therefore pins
+`navigator.language` (and `languages`) to `en-US` in every worker, which is exactly what CI sees.
+
+Two things follow:
+
+- **Asserting English product copy in a test is fine** — it is the repository's contract, not a
+  machine accident. Prefer `getI18n().<key>` over a literal when the wording itself is not the point.
+- **A suite that switches locale must put it back.** `setLanguage('zh-CN')` / `initLanguage('zh-CN')`
+  is module state shared by every file the worker runs afterwards; restore the previous value in
+  `afterEach` or a `finally` (`scheduler.test.ts`, `orchestrationTools.test.ts` show the pattern).
+  Pinning `initLanguage('en-US')` in `setup.ts` instead would **not** work: `settingsStore`'s
+  `onRehydrateStorage` re-applies the persisted default `'system'`, so only the system answer can
+  be pinned.
+
+A suite that wants the real OS-locale code path stubs `navigator` itself (`vi.stubGlobal`) and
+unstubs afterwards — the pin is `configurable`. `src/i18n/index.test.ts` locks the contract: if it
+fails on your machine, the pin was removed or bypassed; do not "fix" the suites that broke.
 
 ### Store tests
 

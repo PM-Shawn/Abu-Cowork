@@ -423,6 +423,7 @@ are a different concern from semantic status — keep those raw with a scoped
 - **Vitest**, `environment: 'node'` by default; component tests opt in per file with `// @vitest-environment happy-dom` (see TESTING.md §6). Config in `vitest.config.ts`.
 - **Test files co-located** next to source: `chatStore.ts` → `chatStore.test.ts`.
 - **Global mocks** in `src/test/setup.ts`: All Tauri APIs and external SDKs are mocked globally.
+- **Locale**: `src/test/setup.ts` pins `navigator.language` to `en-US`, so i18n's `'system'` default resolves the same on every machine as on CI (English tool-result copy is the contract). A suite that switches locale restores it in `afterEach`/`finally` (see TESTING.md §6 *Locale*).
 - **Store tests**: Call `useXxxStore.setState({...})` in `beforeEach` to reset. Test via `useXxxStore.getState().action()` — no React rendering needed.
 - **Timer tests**: Use `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()`, not `runAllTimers`.
 - **Structure**: `describe('feature') > describe('action') > it('description')`.

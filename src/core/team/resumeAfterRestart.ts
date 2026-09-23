@@ -31,6 +31,9 @@ export async function resumeTeamRunAfterRestart(conversationId: string, turnCoun
       content: format(getI18n().team.resumeAfterRestartFailed, { error }),
       timestamp: Date.now(),
       isSystem: true,
+      // A plain system row is filtered out of the transcript; this one has to
+      // be read, because the run it explains never produced anything (#549).
+      isRecoveryNotice: true,
     });
   };
   try {

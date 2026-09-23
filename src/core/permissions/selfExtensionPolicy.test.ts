@@ -69,4 +69,36 @@ describe('classifySelfExtension', () => {
       expect(t().selfExtensionSaveAgentNew).not.toBe(t().selfExtensionSaveAgentReplace);
     });
   });
+
+  // `save_team` overwrites by name and writes `leaderNote` — free text that is
+  // injected into this team's instructions on every later run. Same durable
+  // foothold as a subagent, so the same gate and the same create/replace split.
+  describe('save_team says whether it creates or replaces', () => {
+    const t = () => getI18n().commandConfirm;
+
+    it('says "new" when no team carries that name', () => {
+      expect(classifySelfExtension('save_team', { name: '数据小队', leader: 'a', members: [] }, { saveTeamReplaces: false }))
+        .toEqual({ summary: `save_team (${t().selfExtensionSaveTeamNew}): 数据小队` });
+    });
+
+    it('says "replaces" when a team of that name already exists', () => {
+      expect(classifySelfExtension('save_team', { name: '数据小队', leader: 'a', members: [] }, { saveTeamReplaces: true }))
+        .toEqual({ summary: `save_team (${t().selfExtensionSaveTeamReplace}): 数据小队` });
+    });
+
+    it('says "replaces" when the caller could not tell', () => {
+      expect(classifySelfExtension('save_team', { name: '数据小队' }))
+        .toEqual({ summary: `save_team (${t().selfExtensionSaveTeamReplace}): 数据小队` });
+    });
+
+    it('still classifies a call with no usable name, so it cannot slip the gate', () => {
+      expect(classifySelfExtension('save_team', {}, { saveTeamReplaces: false }))
+        .toEqual({ summary: `save_team (${t().selfExtensionSaveTeamNew})` });
+    });
+
+    it('keeps the two labels distinct, and apart from the expert ones', () => {
+      expect(t().selfExtensionSaveTeamNew).not.toBe(t().selfExtensionSaveTeamReplace);
+      expect(t().selfExtensionSaveTeamNew).not.toBe(t().selfExtensionSaveAgentNew);
+    });
+  });
 });

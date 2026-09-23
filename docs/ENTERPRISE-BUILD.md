@@ -40,6 +40,32 @@ Both Electron development commands rebuild the renderer for the intended
 target before launching. This prevents a previous Enterprise build from being
 mistaken for OSS, or an OSS renderer from being mistaken for Enterprise.
 
+### macOS development deep links
+
+Both dev commands prepare a signed local `.dev-shell/Electron.app` with
+`abu-dev` in its Info.plist and a checkout-specific `com.abu.cowork.dev.*`
+bundle ID. They register the bundle with LaunchServices, set its default
+handler, and read the binding back before launching. Runtime
+`setAsDefaultProtocolClient()` alone cannot add the missing Info.plist entry
+to the stock Electron bundle. This setup requires Xcode Command Line Tools.
+
+The shell is rebuilt only when its Electron version, identity, or signature
+changes. Dependency reinstalls do not remove it. Do not delete it routinely:
+re-signing can prompt for Keychain access again. Other platforms continue to
+use their installed Electron binary. Production `abu://` is unchanged.
+
+For macOS deep-link acceptance, use `npm run electron:dev:enterprise`, keep
+that instance running, and complete browser login and consent. A subsequent
+`[deepLink] delivered running-app deep links` entry plus successful binding
+is the acceptance evidence. Directly running the stock `electron` binary
+bypasses the protocol shell and does not validate OS delivery.
+
+Only the most recently launched checkout owns `abu-dev://`; avoid overlapping
+browser login flows from different worktrees. Development cold launches are
+not supported: LaunchServices starts the bare shell without the application
+entry point. Start the dev command first. Test production cold starts with a
+packaged application instead.
+
 ## Enterprise Build Smoke Verification (manual steps, run by Shawn)
 
 ```bash
@@ -78,6 +104,24 @@ removed from runtime lookup, and the KB tool is
 unregistered. Local installation metadata is retained so a valid renewal can
 restore the capability without reinstalling it. Personal Skill/MCP behavior is
 not affected.
+
+### What the organization MCP blacklist covers
+
+The console's MCP blacklist names servers by their organization-catalog
+registry id, and the console only accepts ids from that catalog. It therefore
+applies to organization MCP servers: the private installer refuses a
+blacklisted one, the private loader disconnects an installed one on the next
+policy refresh while keeping its install record (so lifting the rule reconnects
+it), and the organization tab marks it as disabled. Personal MCP servers — the
+built-in catalog and custom URL/stdio servers — have no registry id and are
+outside this list. That is why the public MCP add paths do not call `checkMcp`:
+a name match there would almost never fire and could block an unrelated server
+that happens to share an id. Restricting personal MCP would be a separate
+policy, not a wider reading of this one.
+
+The blacklist is a client-side policy control, not an access boundary: whoever
+holds a server's credential can reach its endpoint. Cutting access for real has
+to happen on the console and MCP side.
 
 ## What's in / out of OSS
 

@@ -33,6 +33,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { sanitizePath } from '../memdir/paths';
 import { atomicWrite } from '../../utils/atomicFs';
+import { assertSkillNameAllowed } from './skillPolicy';
 import type { ProactivityLevel } from '../agent/prompts/skillsGuidance';
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -263,6 +264,10 @@ export async function readDraft(
  * Enumerate all drafts for `workspacePath`. Skips the `.trash/` subdir.
  * Entries without a sidecar are surfaced with legacy defaults so the UI
  * can still offer accept / reject on them.
+ *
+ * Every draft on disk, including ones under a name the organization's skill
+ * blacklist blocks. Anything that shows drafts to someone must drop those;
+ * skillDraftsStore does.
  */
 export async function listDrafts(workspacePath: string): Promise<DraftRecord[]> {
   const draftsRoot = await getDraftsRoot(workspacePath);
@@ -303,6 +308,10 @@ export async function acceptDraft(
   skillName: string,
   workspacePath: string,
 ): Promise<{ targetDir: string }> {
+  // A draft may predate the organization's policy, or have been proposed on a
+  // machine that had none — accepting it is what makes the skill live.
+  assertSkillNameAllowed(skillName);
+
   const draftsRoot = await getDraftsRoot(workspacePath);
   const sourceDir = joinPath(draftsRoot, skillName);
   const skillsRoot = await getProjectSkillsDir(workspacePath);

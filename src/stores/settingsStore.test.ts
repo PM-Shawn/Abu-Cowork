@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets, __resetBrowserConfigPersistenceForTests } from './settingsStore';
 import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
@@ -9,6 +9,13 @@ import {
 } from '@/core/permissions/browserToolPolicy';
 
 // ─── Test fixture helpers ─────────────────────────────────────
+
+// These synchronous legacy-store tests have no competing window. Concurrency
+// is exercised with queued lock callbacks in settingsStore.browserPermissions.
+beforeEach(() => {
+  vi.stubGlobal('navigator', { locks: { request: (_name: string, callback: () => unknown) => Promise.resolve(callback()) } });
+});
+afterEach(() => { vi.unstubAllGlobals(); });
 
 function makeProvider(overrides: Partial<ProviderInstance> = {}): ProviderInstance {
   return {
@@ -453,6 +460,70 @@ describe('settingsStore partialize', () => {
   });
 });
 
+describe('settingsStore account login dialog', () => {
+  it('opens and closes without changing the current view or settings selection', () => {
+    const previous = useSettingsStore.getState();
+    const surroundingUi = () => {
+      const state = useSettingsStore.getState();
+      return {
+        viewMode: state.viewMode,
+        activeSystemTab: state.activeSystemTab,
+        systemSettingsOpen: state.systemSettingsOpen,
+      };
+    };
+
+    try {
+      useSettingsStore.setState({
+        viewMode: 'automation',
+        activeSystemTab: 'sandbox',
+        systemSettingsOpen: true,
+        accountLoginOpen: false,
+      });
+      const before = surroundingUi();
+
+      useSettingsStore.getState().openAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(surroundingUi()).toEqual(before);
+
+      useSettingsStore.getState().closeAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      expect(surroundingUi()).toEqual(before);
+    } finally {
+      useSettingsStore.setState({
+        viewMode: previous.viewMode,
+        activeSystemTab: previous.activeSystemTab,
+        systemSettingsOpen: previous.systemSettingsOpen,
+        accountLoginOpen: previous.accountLoginOpen,
+      });
+    }
+  });
+
+  it('does not restore an open account dialog from persisted settings', async () => {
+    const previous = useSettingsStore.getState();
+    const previousStoredSettings = localStorage.getItem('abu-settings');
+    __resetBrowserConfigPersistenceForTests();
+
+    try {
+      useSettingsStore.setState({ accountLoginOpen: true });
+      const storedSettings = localStorage.getItem('abu-settings');
+      expect(storedSettings).not.toBeNull();
+      expect(JSON.parse(storedSettings!).state).not.toHaveProperty('accountLoginOpen');
+
+      await useSettingsStore.persist.rehydrate();
+
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+    } finally {
+      useSettingsStore.setState({ accountLoginOpen: previous.accountLoginOpen });
+      if (previousStoredSettings === null) {
+        localStorage.removeItem('abu-settings');
+      } else {
+        localStorage.setItem('abu-settings', previousStoredSettings);
+      }
+      __resetBrowserConfigPersistenceForTests();
+    }
+  });
+});
+
 const OA = 'https://oa.example.com';
 const PORTAL = 'https://portal.example.org';
 
@@ -847,6 +918,48 @@ describe('settingsStore labs flags', () => {
       expect(migrated.browserOperationPolicy).toEqual({
         readOnly: 'allow', interactive: 'allow', scripting: 'ask', upload: 'ask',
       });
+    });
+
+    /**
+     * V52. An install that already carries a heartbeat plugin was binding
+     * 0.0.0.0 without ever being asked; the upgrade must CLOSE that listener,
+     * not grandfather it — so the default is false for every existing store.
+     */
+    it('defaults the LAN webhook opt-in to false, including for a store that predates the field', () => {
+      expect(getMigrate()({ theme: 'light' }, 45).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: {} }, 49).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: { allowLanWebhook: 'yes' } }, 49).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: null }, 49).imChannel).toEqual({ allowLanWebhook: false });
+    });
+
+    it('keeps an explicit LAN webhook opt-in and any sibling field beside it', () => {
+      const migrated = getMigrate()({ imChannel: { allowLanWebhook: true, other: 1 } }, 49);
+      expect(migrated.imChannel).toEqual({ allowLanWebhook: true, other: 1 });
+    });
+
+    /**
+     * The gap this port has to close: the field was authored against v50, but
+     * dev shipped v51 first, so it lands at v52. A store written by the
+     * released v51 build has never seen `imChannel` and must still have the
+     * listener closed on upgrade — a migration left at `version < 51` would
+     * skip it and leave 0.0.0.0 bound.
+     */
+    it('closes the LAN listener for a store persisted by the released v51 build', () => {
+      expect(getMigrate()({ theme: 'light' }, 51).imChannel).toEqual({ allowLanWebhook: false });
+    });
+
+    /**
+     * The action behind that opt-in. It is the only way the flag ever turns
+     * true, so it has to write exactly the boolean it was handed — an object
+     * replaced wholesale here would drop any sibling field a later version
+     * adds beside it.
+     */
+    it('setIMAllowLanWebhook writes the opt-in without disturbing the rest of imChannel', () => {
+      useSettingsStore.setState({ imChannel: { allowLanWebhook: false } });
+      useSettingsStore.getState().setIMAllowLanWebhook(true);
+      expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(true);
+      useSettingsStore.getState().setIMAllowLanWebhook(false);
+      expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(false);
     });
 
     it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
@@ -1472,6 +1585,58 @@ describe('bootstrapSecrets — orphaned imagegen:<id> secret sweep', () => {
   });
 });
 
+describe('clearAllStoredKeys — API key scope', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'p1', apiKey: 'sk-provider' })],
+      auxiliaryServices: {
+        webSearch: { provider: 'tavily', apiKey: 'sk-search', baseUrl: 'https://search.example.com' },
+        imageGen: { apiKey: 'sk-image', baseUrl: '', model: '' },
+      },
+      imageGeneration: {
+        backends: [{
+          id: 'bk1',
+          name: 'Image',
+          vendor: 'custom',
+          baseUrl: 'https://images.example.com',
+          apiKey: 'sk-backend',
+          model: 'image-model',
+        }],
+        defaultId: 'bk1',
+      },
+    });
+  });
+
+  it('deletes only API keys and preserves an existing account credential', async () => {
+    const secrets = new Map([
+      ['provider:p1', 'sk-provider'],
+      ['aux:webSearch', 'sk-search'],
+      ['aux:imageGen', 'sk-image'],
+      ['imagegen:bk1', 'sk-backend'],
+      ['account:credentials:v1', 'account-secret'],
+    ]);
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_delete') {
+        secrets.delete((args as { key: string }).key);
+        return undefined;
+      }
+      if (cmd === 'secret_clear_all') throw new Error('must not clear the account store');
+      return undefined;
+    });
+
+    await useSettingsStore.getState().clearAllStoredKeys();
+
+    expect(secrets).toEqual(new Map([['account:credentials:v1', 'account-secret']]));
+    expect(invokeMock).not.toHaveBeenCalledWith('secret_clear_all', expect.anything());
+    expect(useSettingsStore.getState().providers[0].apiKey).toBe('');
+    expect(useSettingsStore.getState().auxiliaryServices.webSearch?.apiKey).toBe('');
+    expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('');
+  });
+});
+
 describe('secret write-through failure fallback', () => {
   const invokeMock = vi.mocked(invoke);
 
@@ -1640,5 +1805,33 @@ describe('default activeModel stays in the curated list', () => {
     const provider = PROVIDER_CONFIGS[activeModel.providerId as keyof typeof PROVIDER_CONFIGS];
     expect(provider).toBeDefined();
     expect(provider.models.map((m) => m.id)).toContain(activeModel.modelId);
+  });
+});
+
+describe('touchRecentModel', () => {
+  it('moves the model to the front of recents without changing activeModel', () => {
+    useSettingsStore.setState({
+      activeModel: { providerId: 'p-default', modelId: 'm-default' },
+      recentModels: [
+        { providerId: 'p1', modelId: 'a' },
+        { providerId: 'p2', modelId: 'b' },
+      ],
+    });
+    useSettingsStore.getState().touchRecentModel('p2', 'b');
+    const s = useSettingsStore.getState();
+    expect(s.activeModel).toEqual({ providerId: 'p-default', modelId: 'm-default' });
+    expect(s.recentModels).toEqual([
+      { providerId: 'p2', modelId: 'b' },
+      { providerId: 'p1', modelId: 'a' },
+    ]);
+  });
+
+  it('caps recents at 5 entries', () => {
+    useSettingsStore.setState({
+      recentModels: ['1', '2', '3', '4', '5'].map((m) => ({ providerId: 'p', modelId: m })),
+    });
+    useSettingsStore.getState().touchRecentModel('p', '6');
+    const ids = useSettingsStore.getState().recentModels.map((r) => r.modelId);
+    expect(ids).toEqual(['6', '1', '2', '3', '4']);
   });
 });

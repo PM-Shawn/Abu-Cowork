@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { openBundledChromeExtensionSetup } from './chromeSetup';
+import { getChromeExtensionInstallation, openBundledChromeExtensionSetup } from './chromeSetup';
 
 const openPath = vi.fn();
 const openUrl = vi.fn();
@@ -57,6 +57,23 @@ describe('openBundledChromeExtensionSetup', () => {
     expect(openUrl).not.toHaveBeenCalled();
   });
 
+  it('opens only the requested extension manager, without opening a folder', async () => {
+    setElectronHost(true);
+    invoke.mockResolvedValue(undefined);
+    await expect(openBundledChromeExtensionSetup('', 'page')).resolves.toEqual({ extensionFolderOpened: false, extensionsPageOpened: true });
+    expect(invoke).toHaveBeenCalledWith('open_chrome_extensions');
+    expect(openPath).not.toHaveBeenCalled();
+  });
+
+  it('opens only the extension folder, without launching Chrome', async () => {
+    setElectronHost(true);
+    openPath.mockResolvedValue(undefined);
+    await expect(openBundledChromeExtensionSetup('/resources/browser-extension', 'folder')).resolves.toEqual({ extensionFolderOpened: true, extensionsPageOpened: false });
+    expect(openPath).toHaveBeenCalledWith('/resources');
+    expect(invoke).not.toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
   it('reports each failed handoff independently', async () => {
     openPath.mockRejectedValue(new Error('missing'));
     openUrl.mockRejectedValue(new Error('unsupported'));
@@ -65,5 +82,26 @@ describe('openBundledChromeExtensionSetup', () => {
       extensionFolderOpened: false,
       extensionsPageOpened: false,
     });
+  });
+});
+
+
+describe('Chrome installation metadata contract', () => {
+  beforeEach(() => { setElectronHost(true); invoke.mockReset(); });
+  it.each(['installed', 'not-installed'] as const)('accepts the installation result %s', async (status) => {
+    invoke.mockResolvedValue(status);
+    await expect(getChromeExtensionInstallation()).resolves.toBe(status);
+    expect(invoke).toHaveBeenCalledWith('get_chrome_extension_installation');
+  });
+  it.each([undefined, null, {}, true, 'connected', 'unknown'])('does not infer installation from invalid metadata %s', async (status) => {
+    invoke.mockResolvedValue(status);
+    await expect(getChromeExtensionInstallation()).resolves.toBe('unknown');
+  });
+  it('returns unknown on IPC failure or an unsupported shell', async () => {
+    invoke.mockRejectedValue(new Error('unavailable'));
+    await expect(getChromeExtensionInstallation()).resolves.toBe('unknown');
+    invoke.mockClear(); setElectronHost(false);
+    await expect(getChromeExtensionInstallation()).resolves.toBe('unknown');
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

@@ -50,13 +50,15 @@ vi.mock('@/i18n', () => ({
         importConflictTitle: 'Exists', importConflictMessage: '{name} exists',
         importConflictOverwrite: 'Overwrite',
         importUnsafeName: 'the package declares an unusable folder name ("{name}"); Abu refused it',
+        importPolicyDenied: 'your organization blocks the skill name "{name}"',
       },
     },
   }),
 }));
 
 import { installSkillFromFolder } from '@/core/skill/installer';
-import { validateArchive } from '@/core/skill/packager';
+import { unpackSkill, validateArchive } from '@/core/skill/packager';
+import { SkillPolicyDeniedError } from '@/core/skill/skillPolicy';
 import SkillUploadModal from './SkillUploadModal';
 
 const mockInstall = vi.mocked(installSkillFromFolder);
@@ -162,6 +164,35 @@ describe('SkillUploadModal archive refusal', () => {
     expect(addToast.mock.calls[0][0]).toMatchObject({
       type: 'error',
       message: 'File is not a valid zip archive',
+    });
+  });
+});
+
+describe("SkillUploadModal and the organization's skill policy", () => {
+  it('explains a folder the policy refused in the user\'s language', async () => {
+    mockInstall.mockResolvedValue({
+      ok: false, code: 'POLICY_DENIED', message: "[policy] skill 'blocked-skill' blocked by policy", skillName: 'blocked-skill',
+    });
+
+    renderAndPickFolder();
+
+    await waitFor(() => expect(addToast).toHaveBeenCalled());
+    expect(addToast.mock.calls[0][0]).toMatchObject({
+      type: 'error',
+      message: 'your organization blocks the skill name "blocked-skill"',
+    });
+  });
+
+  it('explains an archive the policy refused in the user\'s language', async () => {
+    mockValidateArchive.mockReturnValue(null);
+    vi.mocked(unpackSkill).mockRejectedValue(new SkillPolicyDeniedError('blocked-skill', 'blocked by policy'));
+
+    renderAndPickFolder('/Users/test/blocked.askill');
+
+    await waitFor(() => expect(addToast).toHaveBeenCalled());
+    expect(addToast.mock.calls[0][0]).toMatchObject({
+      type: 'error',
+      message: 'your organization blocks the skill name "blocked-skill"',
     });
   });
 });

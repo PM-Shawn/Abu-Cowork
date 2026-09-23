@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { gzipSync } from 'fflate';
 import { fetch } from '@tauri-apps/plugin-http';
-import { exists, mkdir, writeFile, remove, rename } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, writeFile, remove, rename, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
 // ── Mocks ──────────────────────────────────────────────────────────
@@ -20,10 +20,18 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
     writeFile: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     rename: vi.fn().mockResolvedValue(undefined),
+    readTextFile: vi.fn(),
   };
 });
 
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
+
 import { installSkillFromNpm } from './npmInstaller';
+import { SkillPolicyDeniedError } from './skillPolicy';
 
 const mockFetch = vi.mocked(fetch);
 const mockExists = vi.mocked(exists);
@@ -31,6 +39,7 @@ const mockMkdir = vi.mocked(mkdir);
 const mockWriteFile = vi.mocked(writeFile);
 const mockRemove = vi.mocked(remove);
 const mockRename = vi.mocked(rename);
+const mockReadTextFile = vi.mocked(readTextFile);
 const mockHomeDir = vi.mocked(homeDir);
 
 // ── A disk small enough to assert against ──────────────────────────
@@ -66,6 +75,11 @@ function useFakeDisk() {
     return undefined as never;
   });
   mockExists.mockImplementation(async (p: string | URL) => underPrefix(String(p)).length > 0);
+  mockReadTextFile.mockImplementation(async (p: string | URL) => {
+    const content = disk.files.get(String(p));
+    if (content === undefined) throw new Error(`ENOENT: ${String(p)}`);
+    return content;
+  });
   mockRemove.mockImplementation(async (p: string | URL) => {
     for (const gone of underPrefix(String(p))) {
       disk.dirs.delete(gone);
@@ -109,7 +123,16 @@ function tarEntry(path: string, body: string): Uint8Array {
 }
 
 function tgz(files: Record<string, string>): Uint8Array {
-  const blocks = Object.entries(files).map(([p, body]) => tarEntry(p, body));
+  // Stored, not deflated: the installer must still gunzip a valid stream, and
+  // every assertion here is about what is INSIDE the archive, not how well it
+  // packs. The oversized-file case carries a real 10 MB member, and deflating
+  // that at the default level is ~1 s of CPU alone — enough to trip the 5 s
+  // test timeout on a loaded machine.
+  return gzipSync(concatTar(Object.entries(files).map(([p, body]) => tarEntry(p, body))), { level: 0 });
+}
+
+/** Tar blocks in the given order, repeats allowed (a Record cannot repeat a path). */
+function concatTar(blocks: Uint8Array[]): Uint8Array {
   const end = new Uint8Array(1024); // two zero blocks terminate the archive
   const total = blocks.reduce((n, b) => n + b.length, 0) + end.length;
   const tar = new Uint8Array(total);
@@ -119,12 +142,7 @@ function tgz(files: Record<string, string>): Uint8Array {
     at += b.length;
   }
   tar.set(end, at);
-  // Stored, not deflated: the installer must still gunzip a valid stream, and
-  // every assertion here is about what is INSIDE the archive, not how well it
-  // packs. The oversized-file case carries a real 10 MB member, and deflating
-  // that at the default level is ~1 s of CPU alone — enough to trip the 5 s
-  // test timeout on a loaded machine.
-  return gzipSync(tar, { level: 0 });
+  return tar;
 }
 
 const TARBALL_URL = 'https://registry.npmjs.org/evil/-/evil-1.0.0.tgz';
@@ -191,6 +209,49 @@ describe('installSkillFromNpm', () => {
     await expect(installSkillFromNpm('evil')).rejects.toMatchObject({ code: 'PATH_TRAVERSAL' });
     expect(mockMkdir).not.toHaveBeenCalled();
     expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses a skill name the organization's policy blocks, writing nothing", async () => {
+    useFakeDisk();
+    serve(tgz({ 'package/SKILL.md': '---\nname: blocked-skill\n---\n# body' }));
+
+    const err = await installSkillFromNpm('evil').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SkillPolicyDeniedError);
+    expect((err as SkillPolicyDeniedError).skillName).toBe('blocked-skill');
+    expect(mockMkdir).not.toHaveBeenCalled();
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(liveEntries()).toEqual([]);
+  });
+
+  // The name is read from the first SKILL.md, but every entry is written in
+  // archive order — a second manifest at the same path (tar allows repeats;
+  // `skill.md` is the same file on APFS / NTFS) would be the one that goes live.
+  it.each(['package/SKILL.md', 'package/skill.md', 'package/./SKILL.md'])(
+    'refuses a package whose later %s would replace the checked manifest, writing nothing',
+    async (second) => {
+      useFakeDisk();
+      const tarball = gzipSync(concatTar([
+        tarEntry('package/SKILL.md', '---\nname: my-skill\n---\n# body'),
+        tarEntry(second, '---\nname: blocked-skill\n---\n# body'),
+      ]), { level: 0 });
+      serve(tarball);
+
+      await expect(installSkillFromNpm('evil')).rejects.toMatchObject({ code: 'AMBIGUOUS_SKILL_MD' });
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(liveEntries()).toEqual([]);
+    },
+  );
+
+  it('does not go live when the manifest that landed on disk declares another name', async () => {
+    // Stands in for any path resolution a disk applies that the up-front count
+    // does not model: whatever SKILL.md ended up in staging is what would go live.
+    useFakeDisk();
+    serve(tgz({ 'package/SKILL.md': '---\nname: my-skill\n---\n# body' }));
+    mockReadTextFile.mockResolvedValueOnce('---\nname: blocked-skill\n---\n# body');
+
+    await expect(installSkillFromNpm('evil')).rejects.toMatchObject({ code: 'AMBIGUOUS_SKILL_MD' });
+    expect(liveEntries()).toEqual([]);
   });
 });
 

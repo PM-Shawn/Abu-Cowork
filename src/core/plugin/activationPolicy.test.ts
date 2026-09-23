@@ -13,7 +13,7 @@ const plugin: InstalledPlugin = {
   componentLayoutVersion: 1, skillPaths: ['skills/hello'],
   contributed: { skills: ['hello'], agents: ['reviewer'], mcpServers: ['docs'] },
 };
-const prefs = { skills: [{ name: 'hello', skillDir: `${root}/skills/hello` }], agents: [{ name: 'reviewer', filePath: `${home}/.abu/agents/reviewer/AGENT.md` }], disabledSkills: [] as string[], disabledAgents: [] as string[], servers: {} as Record<string, { config: { enabled?: boolean } }> };
+const prefs = { skills: [{ name: 'hello', skillDir: `${root}/skills/hello` }], agents: [{ name: 'reviewer', filePath: `${home}/.abu/agents/reviewer/AGENT.md` }], disabledSkills: [] as string[], servers: {} as Record<string, { config: { enabled?: boolean } }> };
 function snapshot(enabled = false): Record<string, PluginActivation> {
   const state = reconcilePluginActivation({}, [plugin], home, prefs);
   state[plugin.key].enabled = enabled;
@@ -27,9 +27,12 @@ describe('plugin activation policy', () => {
     expect(next[plugin.key].enabled).toBe(false);
     expect(next[plugin.key].root).toContain('/demo/2');
   });
-  it('initializes a legacy master switch from existing child preferences', () => {
-    const next = reconcilePluginActivation({}, [plugin], home, { ...prefs, disabledSkills: ['hello'], disabledAgents: ['reviewer'] });
-    expect(next[plugin.key].enabled).toBe(false);
+  it('initializes a legacy master switch from skills and MCP preferences only', () => {
+    // A present agent file proves the plugin is in use; its auto-dispatch preference says nothing about that.
+    const withAgent = reconcilePluginActivation({}, [plugin], home, { ...prefs, disabledSkills: ['hello'], disabledAgents: ['reviewer'] });
+    expect(withAgent[plugin.key].enabled).toBe(true);
+    const noAgent = reconcilePluginActivation({}, [plugin], home, { ...prefs, agents: [], disabledSkills: ['hello'] });
+    expect(noAgent[plugin.key].enabled).toBe(false);
     expect(reconcilePluginActivation({}, [plugin], home, prefs)[plugin.key].enabled).toBe(true);
   });
   it('migrates legacy directory names using the actual skill name and ownership', () => {

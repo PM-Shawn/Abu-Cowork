@@ -51,7 +51,10 @@ import {
 
 import { atomicWrite, restoreFromBackup } from '../../utils/atomicFs';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
+import { getI18n } from '../../i18n';
 import { isSafeSkillDirName } from './skillDirName';
+import { parseSkillFile } from './loader';
+import { skillPolicyDenial } from './skillPolicy';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -318,6 +321,17 @@ export async function revertTurn(
       continue;
     }
     try {
+      // Restoring a manifest is a write like any other: it may not bring back a
+      // name the organization's policy blocks (a skill renamed away from one).
+      if (change.relPath === 'SKILL.md' && change.action !== 'created' && snapshotPath
+        && (await exists(snapshotPath).catch(() => false))) {
+        const restoredName = parseSkillFile(await readTextFile(snapshotPath), 'SKILL.md')?.name;
+        if (restoredName && skillPolicyDenial(restoredName)) {
+          failed.push({ relPath: change.relPath, reason: getI18n().toolbox.skillNamePolicyHint });
+          continue;
+        }
+      }
+
       if (change.action === 'modified') {
         if (!snapshotPath) {
           failed.push({ relPath: change.relPath, reason: 'snapshot missing' });

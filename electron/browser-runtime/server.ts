@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     version: '0.1.0',
   });
 
-  registerTools(server, transport);
+  registerTools(server, transport, { backend: 'built-in' });
   await server.connect(new StdioServerTransport());
 }
 

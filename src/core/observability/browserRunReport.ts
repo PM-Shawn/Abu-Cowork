@@ -352,6 +352,7 @@ function nextStepForDenial(
   reason: BrowserDenialReasonCode,
 ): BrowserRunReportNextStep | undefined {
   switch (reason) {
+    case 'server-disabled': return undefined;
     case 'master-switch-off': return 'enable-master-switch';
     case 'site-denied': return 'unblock-site';
     case 'high-risk-site': return 'do-high-risk-yourself';

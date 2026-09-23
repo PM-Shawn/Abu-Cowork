@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * The dialog pair at the permission gate — through the REAL entry,
  * `checkToolApproval`.
@@ -18,7 +20,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import zhCN from '../../i18n/locales/zh-CN';
 import enUS from '../../i18n/locales/en-US';
@@ -96,7 +97,7 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set('abu-browser', fakeServer);
 
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard', browserSitePermissions: {} });
+    setMigratedBrowserSettings({ permissionMode: 'standard', browserSitePermissions: {} });
     __resetBrowserGrantsForTests();
   });
 
@@ -105,7 +106,7 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     __resetBrowserGrantsForTests();
   });
 
-  it('lets get_dialog through without asking — reading what the page said is free', async () => {
+  it('asks before reading a dialog when browse requires confirmation', async () => {
     const decision = await checkToolApproval(
       'abu-browser__get_dialog',
       { tabId: TAB },
@@ -114,7 +115,8 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     );
 
     expect(decision.decision).toBe('allow');
-    expect(asked).toEqual([]);
+    expect(asked).toHaveLength(1);
+    expect(asked[0].browserPermissionResource).toBe('browse');
   });
 
   it('asks before handle_dialog — answering a confirm presses the page\'s own button', async () => {
@@ -129,8 +131,8 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     expect(asked).toHaveLength(1);
     expect(asked[0].browserOrigin).toBe(SITE);
     expect(asked[0].command).toContain('handle_dialog');
-    // Ordinary page authority, not scripting: the site may be allowed for it.
-    expect(asked[0].allowPersistentGrant).toBe(true);
+    // Answering a page dialog is an individual consent, never a standing grant.
+    expect(asked[0].allowPersistentGrant).toBe(false);
   });
 
   it('reading a dialog never mints the grant that answering one would', async () => {
@@ -147,8 +149,8 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     );
 
     expect(click.decision).toBe('allow');
-    expect(asked).toHaveLength(1);
-    expect(asked[0].command).toContain('click');
+    expect(asked).toHaveLength(2);
+    expect(asked[1].command).toContain('click');
   });
 
   it('refuses to answer a dialog with nobody to ask, on a site nobody allowed', async () => {
@@ -170,11 +172,11 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     const read = await checkToolApproval(
       'abu-browser__get_dialog', { tabId: TAB }, { conversationId: OWNER } as never, undefined as never,
     );
-    expect(read.decision).toBe('allow');
+    expect(read.decision).toBe('deny');
   });
 
   it('lets a site the user allowed answer its own dialogs unattended', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'allowed' } });
+    setMigratedBrowserSettings({ browserPermissionConfigV2: { ...createBrowserPermissionConfig(), sites: { [SITE]: { ...emptyBrowserSiteRule(), browse: 'allow' } } } });
 
     const decision = await checkToolApproval(
       'abu-browser__handle_dialog',
@@ -230,7 +232,7 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     // The 2026-09-04 ruling's lever, the same one scripting rides (R1): a
     // permission the user granted in so many words is granted. The interactive
     // row ships 'allow', so marking the site 始终允许 is the whole opt-in.
-    useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'allowed' } });
+    setMigratedBrowserSettings({ browserPermissionConfigV2: { ...createBrowserPermissionConfig(), sites: { [SITE]: { ...emptyBrowserSiteRule(), browse: 'allow' } } } });
 
     const decision = await answerDialog('accept');
 
@@ -261,7 +263,7 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
 
   it('asks on a money-movement page even on a site the user always allows', async () => {
     pageUrl = `${BANK_SITE}/transfer`;
-    useSettingsStore.setState({ browserSitePermissions: { [BANK_SITE]: 'allowed' } });
+    setMigratedBrowserSettings({ browserSitePermissions: { [BANK_SITE]: 'allowed' } });
 
     const decision = await answerDialog('accept');
 
@@ -272,7 +274,7 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
   });
 
   it('asks every single time under 「每次询问」, allowed site or not', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [SITE]: 'allowed' },
       browserOperationPolicy: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
     });
@@ -342,7 +344,7 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
   });
 
   it('keeps a blocked site blocked, dialog or no dialog', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'denied' } });
+    setMigratedBrowserSettings({ browserSitePermissions: { [SITE]: 'denied' } });
 
     const decision = await checkToolApproval(
       'abu-browser__handle_dialog',

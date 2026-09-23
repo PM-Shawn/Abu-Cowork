@@ -1,13 +1,27 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { test } = require('node:test');
+const { describe, test } = require('node:test');
 
 const {
   QUIET_WINDOW_ENV,
   resolveWindowShowPolicy,
+  configureWindowShowPolicy,
+  getWindowShowPolicy,
   revealWindow,
+  withWindowInFront,
 } = require('./windowShowPolicy.cjs');
+
+/** A window that records which reveal method was called. */
+function recordingWindow(calls) {
+  return {
+    show: () => calls.push('show'),
+    showInactive: () => calls.push('showInactive'),
+  };
+}
+
+const QUIET_INPUT = { env: { [QUIET_WINDOW_ENV]: '1' }, allowE2E: true, platform: 'darwin' };
+const NORMAL_INPUT = { env: {}, allowE2E: true, platform: 'darwin' };
 
 test('normal launches (flag unset) reveal windows the user-facing way', () => {
   assert.deepEqual(
@@ -81,4 +95,123 @@ test('revealWindow picks showInactive() only under the quiet policy', () => {
   revealWindow(win, { quiet: false });
 
   assert.deepEqual(calls, ['showInactive', 'show']);
+});
+
+// The consequential-action dialog is asked while Abu is driving another app,
+// which by then owns the foreground; the dialog is modal to Abu's window,
+// behind it. Windows will not let a background process take the foreground,
+// so the most consequential question of a run was the one most likely to be
+// answered without being seen.
+describe('withWindowInFront', () => {
+  function fakeWindow(overrides = {}) {
+    const calls = [];
+    return {
+      calls,
+      alwaysOnTop: false,
+      minimized: false,
+      isAlwaysOnTop() { return this.alwaysOnTop; },
+      isMinimized() { return this.minimized; },
+      restore() { calls.push('restore'); this.minimized = false; },
+      setAlwaysOnTop(value) { calls.push(`onTop:${value}`); this.alwaysOnTop = value; },
+      show() { calls.push('show'); },
+      ...overrides,
+    };
+  }
+
+  test('raises the window, runs, and puts it back', async () => {
+    const win = fakeWindow();
+    const result = await withWindowInFront(win, async () => 'answered');
+    assert.equal(result, 'answered');
+    assert.deepEqual(win.calls, ['onTop:true', 'show', 'onTop:false']);
+    assert.equal(win.alwaysOnTop, false);
+  });
+
+  // A dialog that throws must not leave the app pinned over everything the
+  // user owns.
+  test('puts it back when the dialog throws', async () => {
+    const win = fakeWindow();
+    await assert.rejects(
+      withWindowInFront(win, async () => { throw new Error('dialog failed'); }),
+      /dialog failed/,
+    );
+    assert.equal(win.alwaysOnTop, false);
+  });
+
+  test('respects a window the user had already pinned', async () => {
+    const win = fakeWindow({ alwaysOnTop: true });
+    await withWindowInFront(win, async () => null);
+    assert.equal(win.alwaysOnTop, true, 'restored to pinned, not forced off');
+  });
+
+  test('un-minimizes before asking', async () => {
+    const win = fakeWindow({ minimized: true });
+    await withWindowInFront(win, async () => null);
+    assert.ok(win.calls.includes('restore'));
+  });
+
+  // Asking from behind another window still beats not asking at all.
+  test('still asks when the window cannot be raised', async () => {
+    const win = fakeWindow({
+      setAlwaysOnTop() { throw new Error('window destroyed'); },
+    });
+    assert.equal(await withWindowInFront(win, async () => 'asked'), 'asked');
+  });
+
+  test('asks without a window at all', async () => {
+    assert.equal(await withWindowInFront(null, async () => 'asked'), 'asked');
+  });
+});
+
+test('a process that never configured the policy reveals the user-facing way', () => {
+  // Fresh module instance: the shared one may already have been configured by
+  // an earlier test in this file.
+  const id = require.resolve('./windowShowPolicy.cjs');
+  const cached = require.cache[id];
+  delete require.cache[id];
+  try {
+    const fresh = require('./windowShowPolicy.cjs');
+    assert.deepEqual(fresh.getWindowShowPolicy(), { quiet: false, hideDock: false });
+    const calls = [];
+    fresh.revealWindow(recordingWindow(calls));
+    assert.deepEqual(calls, ['show']);
+  } finally {
+    delete require.cache[id];
+    if (cached) require.cache[id] = cached;
+  }
+});
+
+test('configureWindowShowPolicy resolves once and revealWindow() without a policy reads that resolution', () => {
+  const calls = [];
+  const win = recordingWindow(calls);
+
+  const quiet = configureWindowShowPolicy(QUIET_INPUT);
+  assert.deepEqual(quiet, { quiet: true, hideDock: true });
+  assert.equal(getWindowShowPolicy(), quiet);
+  revealWindow(win);
+
+  const normal = configureWindowShowPolicy(NORMAL_INPUT);
+  assert.deepEqual(normal, { quiet: false, hideDock: false });
+  assert.equal(getWindowShowPolicy(), normal);
+  revealWindow(win);
+
+  assert.deepEqual(calls, ['showInactive', 'show']);
+});
+
+test('an explicit policy argument still wins over the configured one', () => {
+  const calls = [];
+  const win = recordingWindow(calls);
+  configureWindowShowPolicy(NORMAL_INPUT);
+  revealWindow(win, { quiet: true });
+  configureWindowShowPolicy(QUIET_INPUT);
+  revealWindow(win, { quiet: false });
+  configureWindowShowPolicy(NORMAL_INPUT);
+  assert.deepEqual(calls, ['showInactive', 'show']);
+});
+
+test('the configured policy is frozen so a caller cannot flip it by mutation', () => {
+  const policy = configureWindowShowPolicy(NORMAL_INPUT);
+  assert.throws(() => {
+    policy.quiet = true; // file is strict-mode, so writing a frozen property throws
+  }, TypeError);
+  assert.equal(getWindowShowPolicy().quiet, false);
 });

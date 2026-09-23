@@ -70,6 +70,44 @@ function writeAll(fd, content) {
   }
 }
 
+/**
+ * Opens a file for a plugin:fs write the way tauri-plugin-fs 2.5.1 does
+ * (`commands.rs` `write_file_inner` builds a Rust `std::fs::OpenOptions` whose
+ * `create` defaults to TRUE and whose `truncate` is `!append`):
+ *   - `createNew` → `'wx'`/`'ax'` (`O_CREAT|O_EXCL`), and it wins over
+ *     `create`: the create itself is the existence check, so an existing file
+ *     fails with EEXIST atomically — never a probe, then a write.
+ *   - `create: false` → `O_WRONLY` with NO `O_CREAT`: a missing file fails with
+ *     ENOENT and is not created, so a file deleted since the caller last read
+ *     it is refused rather than recreated (`src/core/team/roleIdentity.ts`'s
+ *     `ensureRoleId` and `src/utils/itemStorage.ts` rely on exactly that).
+ *     Node has no flag string for "write but never create", and the two
+ *     obvious stand-ins are both wrong: `O_TRUNC` without `O_CREAT` is
+ *     rejected on Windows with EINVAL instead of opening the existing file
+ *     (CI's `test-windows` caught that on the first cut of the sibling sidecar
+ *     shim), and `'r+'` is `O_RDWR`, which fails with EACCES on a file whose
+ *     owner left it write-only — one the plugin's `O_WRONLY` opens fine. So
+ *     the truncation happens after the open instead (see the caller).
+ *   - otherwise → `'w'`/`'a'` (`O_CREAT`, truncating only when not appending).
+ * Appends always carry `O_APPEND` (`'a'`, `'ax'`, or the flag itself), so the
+ * kernel positions every write at the end, as the plugin does — never a
+ * seek-then-write that a concurrent appender could interleave with.
+ * `mode` is passed only on the paths that can CREATE the file, which is the
+ * only thing it applies to, and never on Windows: the plugin's own
+ * `opts.mode(mode)` sits inside a `#[cfg(unix)]` block (`lib.rs`'s
+ * `From<OpenOptions> for std::fs::OpenOptions`), while Node would turn a mode
+ * without the owner write bit into a read-only file there.
+ */
+function openForPluginWrite(resolved, options) {
+  const append = !!options.append;
+  const mode = process.platform === 'win32' ? undefined : options.mode;
+  if (options.createNew) return fs.openSync(resolved, append ? 'ax' : 'wx', mode);
+  if (options.create === false) {
+    return fs.openSync(resolved, fs.constants.O_WRONLY | (append ? fs.constants.O_APPEND : 0));
+  }
+  return fs.openSync(resolved, append ? 'a' : 'w', mode);
+}
+
 function openExclusiveSibling(parent, prefix) {
   const flags =
     fs.constants.O_WRONLY |
@@ -297,6 +335,8 @@ function resolveValidatedPath(rawPath) {
  */
 function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
   const norm = resolveValidatedPath(rawPath);
+  // 相对路径会被接到主进程 cwd 上，与渲染进程的策略判断不一致，直接拒绝
+  if (!path.isAbsolute(rawPath)) throw new Error('fs: path must be an absolute path');
   // Windows capabilities intentionally remain broad, but policy decisions must
   // still see junction/reparse-point targets rather than the lexical spelling.
   if (process.platform === 'win32') return canonicalizeForScope(norm, followFinalSymlink);
@@ -344,6 +384,21 @@ function assertAllowed(resolvedPath, opts) {
 }
 
 /**
+ * With no baseDir the path is used as given, so it must already be absolute:
+ * path.resolve() would otherwise anchor it at main's cwd, which sits inside an
+ * allowed root for a dev launch from the repo. Names the argument, never its
+ * value.
+ * @param {unknown} p
+ * @param {number | undefined} baseDirNum
+ * @param {string} key
+ */
+function assertAbsoluteWithoutBaseDir(p, baseDirNum, key) {
+  if (baseDirNum == null && typeof p === 'string' && p.length > 0 && !path.isAbsolute(p)) {
+    throw new Error(`fs: ${key} must be an absolute path when no baseDir is given`);
+  }
+}
+
+/**
  * Resolve a frontend-supplied path against a Tauri BaseDirectory number (if
  * given) and enforce the capability scope. Lazily requires tauriHost.cjs
  * (which requires this module at its top level — a module-scope require here
@@ -351,9 +406,10 @@ function assertAllowed(resolvedPath, opts) {
  * @param {import('electron').App} app
  * @param {string} p
  * @param {number | undefined} baseDirNum
- * @param {{ remove?: boolean }} [opts]
+ * @param {{ remove?: boolean; followFinalSymlink?: boolean; key?: string }} [opts]
  */
 function resolveScoped(app, p, baseDirNum, opts) {
+  assertAbsoluteWithoutBaseDir(p, baseDirNum, opts?.key ?? 'path');
   let resolved = p;
   if (baseDirNum != null) {
     const { baseDir } = require('./tauriHost.cjs');
@@ -394,28 +450,70 @@ function msecOrNull(ms) {
 }
 
 /** Convert Node's fs.Stats into @tauri-apps/plugin-fs FileInfo wire shape. */
+/**
+ * plugin-fs's `FileInfo.readonly` is Rust's `std::fs::Permissions::readonly()`
+ * — on Unix `mode & 0o222 == 0` (ANY write bit), on Windows the
+ * `FILE_ATTRIBUTE_READONLY` attribute. `node:fs` synthesizes `mode` on Windows
+ * from that same attribute, so ONE expression serves both; this used to
+ * hardcode `false` on Windows, i.e. "no file is ever readonly".
+ * `electron/fsHost.readonly.test.ts` pins it on both platforms (it runs on the
+ * `test-windows` job too).
+ *
+ * ## Identity arrives as a bigint and goes out as a decimal string
+ *
+ * The stat behind this is taken with `{ bigint: true }`, so `dev` and `ino`
+ * hold the whole 64-bit value the OS reported. An NTFS file id packs a record
+ * sequence number above the record index and passes 2^53 once records have
+ * been reused enough — 62 of 7621 files in a Windows install directory on this
+ * machine — and the only number JSON has is the double. So the pair goes on
+ * the wire as exact decimal strings, which is what a 64-bit id crossing JSON
+ * is written as wherever the question is specified: protobuf's JSON mapping,
+ * Google's Discovery type table, Discord snowflakes, every Chrome DevTools
+ * Protocol handle. Upload approval freezes this value and compares it against
+ * an `fstat` of the descriptor it reads from, so two ids one rounding step
+ * apart stay two files. The decimal string also stretches to the 128-bit id
+ * ReFS uses, where Microsoft states the 64-bit identifier is not guaranteed
+ * unique.
+ *
+ * Every other field is a number on the wire and is converted back here. The
+ * bigint `mtimeMs` is already whole truncated milliseconds, which is the value
+ * Rust's `as_millis()` produces — see `msecOrNull`.
+ * POSIX ownership/mode fields retain the existing platform behavior.
+ */
 function toFileInfo(info) {
   const unix = process.platform !== 'win32';
   return {
     isFile: info.isFile(),
     isDirectory: info.isDirectory(),
     isSymlink: info.isSymbolicLink(),
-    size: info.size,
-    mtime: msecOrNull(info.mtimeMs),
-    atime: msecOrNull(info.atimeMs),
-    birthtime: msecOrNull(info.birthtimeMs),
-    readonly: unix ? (info.mode & 0o222) === 0 : false,
+    size: Number(info.size),
+    mtime: msecOrNull(Number(info.mtimeMs)),
+    atime: msecOrNull(Number(info.atimeMs)),
+    birthtime: msecOrNull(Number(info.birthtimeMs)),
+    readonly: (info.mode & 0o222n) === 0n,
     fileAttributes: null,
-    dev: unix ? info.dev : null,
-    ino: unix ? info.ino : null,
-    mode: unix ? info.mode : null,
-    nlink: unix ? info.nlink : null,
-    uid: unix ? info.uid : null,
-    gid: unix ? info.gid : null,
-    rdev: unix ? info.rdev : null,
-    blksize: unix ? info.blksize : null,
-    blocks: unix ? info.blocks : null,
+    dev: fileIdText(info.dev, 0n),
+    ino: fileIdText(info.ino, 1n),
+    mode: unix ? Number(info.mode) : null,
+    nlink: unix ? Number(info.nlink) : null,
+    uid: unix ? Number(info.uid) : null,
+    gid: unix ? Number(info.gid) : null,
+    rdev: unix ? Number(info.rdev) : null,
+    blksize: unix ? Number(info.blksize) : null,
+    blocks: unix ? Number(info.blocks) : null,
   };
+}
+
+/**
+ * One half of a file identity, exactly as the OS reported it.
+ *
+ * `minimum` is what the field means when it is absent: a device id of 0 is a
+ * real device, a file id of 0 is a filesystem that does not number its files,
+ * and the latter reaches the gate as `null` so an upload is refused for having
+ * no identity rather than approved against a placeholder.
+ */
+function fileIdText(value, minimum) {
+  return typeof value === 'bigint' && value >= minimum ? String(value) : null;
 }
 
 /**
@@ -449,13 +547,19 @@ function fsDispatch(app, cmd, payload) {
       // it was missing before (image rehydration / skill unzip / share bundle).
       return fs.readFileSync(resolveScoped(app, a.path, baseOf(a.options)));
 
+    // `{ bigint: true }` for both: ONE stat whose file id is the whole 64-bit
+    // value. Taking a second, plain stat for the other fields would be a
+    // second observation of a path that can change between the two.
     case 'plugin:fs|stat':
-      return toFileInfo(fs.statSync(resolveScoped(app, a.path, baseOf(a.options))));
+      return toFileInfo(
+        fs.statSync(resolveScoped(app, a.path, baseOf(a.options)), { bigint: true })
+      );
 
     case 'plugin:fs|lstat':
       return toFileInfo(
         fs.lstatSync(
-          resolveScoped(app, a.path, baseOf(a.options), { followFinalSymlink: false })
+          resolveScoped(app, a.path, baseOf(a.options), { followFinalSymlink: false }),
+          { bigint: true }
         )
       );
 
@@ -488,9 +592,14 @@ function fsDispatch(app, cmd, payload) {
     case 'plugin:fs|rename': {
       // RenameOptions carries oldPathBaseDir/newPathBaseDir — NOT baseDir.
       const o = a.options || {};
-      const noFollow = { followFinalSymlink: false };
-      const oldResolved = resolveScoped(app, a.oldPath, o.oldPathBaseDir, noFollow);
-      const newResolved = resolveScoped(app, a.newPath, o.newPathBaseDir, noFollow);
+      const oldResolved = resolveScoped(app, a.oldPath, o.oldPathBaseDir, {
+        followFinalSymlink: false,
+        key: 'oldPath',
+      });
+      const newResolved = resolveScoped(app, a.newPath, o.newPathBaseDir, {
+        followFinalSymlink: false,
+        key: 'newPath',
+      });
       fs.renameSync(oldResolved, newResolved);
       return null;
     }
@@ -498,8 +607,8 @@ function fsDispatch(app, cmd, payload) {
     case 'plugin:fs|copy_file': {
       // CopyFileOptions carries fromPathBaseDir/toPathBaseDir — NOT baseDir.
       const o = a.options || {};
-      const fromResolved = resolveScoped(app, a.fromPath, o.fromPathBaseDir);
-      const toResolved = resolveScoped(app, a.toPath, o.toPathBaseDir);
+      const fromResolved = resolveScoped(app, a.fromPath, o.fromPathBaseDir, { key: 'fromPath' });
+      const toResolved = resolveScoped(app, a.toPath, o.toPathBaseDir, { key: 'toPath' });
       fs.copyFileSync(fromResolved, toResolved);
       return null;
     }
@@ -512,19 +621,34 @@ function fsDispatch(app, cmd, payload) {
       const options = JSON.parse(h.options || '{}');
       const resolved = resolveScoped(app, p, options.baseDir);
       const buf = Buffer.from(body);
-      const exists = fs.existsSync(resolved);
-      // Honor Tauri's create/createNew: create:false rejects a missing file
-      // (used as an existence guard); createNew rejects an existing file.
-      if (options.create === false && !exists) {
-        throw new Error(`fs: file does not exist and create is false: ${resolved}`);
+      // The open decides create/createNew — see openForPluginWrite — so there
+      // is no check-then-write window for either: a file that appears after a
+      // probe is never overwritten, and one deleted after a probe is never
+      // recreated.
+      let fd;
+      try {
+        fd = openForPluginWrite(resolved, options);
+      } catch (err) {
+        // Keep the messages callers already see; the open, not a probe, is what
+        // produced the errno.
+        if (options.createNew && err && err.code === 'EEXIST') {
+          throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
+        }
+        if (options.create === false && err && err.code === 'ENOENT') {
+          throw new Error(`fs: file does not exist and create is false: ${resolved}`);
+        }
+        throw err;
       }
-      if (options.createNew && exists) {
-        throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
-      }
-      if (options.append) {
-        fs.appendFileSync(resolved, buf);
-      } else {
-        fs.writeFileSync(resolved, buf);
+      try {
+        // The plugin's `truncate = !append`. Every other path got it from its
+        // open flags; create:false could not carry `O_TRUNC` (see above), and
+        // an append needs no truncation at all, so this is the only leftover.
+        if (options.create === false && !options.createNew && !options.append) {
+          fs.ftruncateSync(fd, 0);
+        }
+        writeAll(fd, buf);
+      } finally {
+        fs.closeSync(fd);
       }
       return null;
     }
@@ -535,14 +659,19 @@ function fsDispatch(app, cmd, payload) {
     case 'append_file_text': {
       // Native O(1) append: mkdir parent + open in append mode + write only
       // `data`. Mirrors append_file.rs::append_sync. The message-JSONL hot path.
+      // Raw form (#549): the validated UTF-8 bytes arrive in `body` — it is a
+      // Buffer only when securityBoundary's validateTextRawBody produced it.
       const resolved = resolveScoped(app, a.path, undefined);
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
-      fs.appendFileSync(resolved, String(a.data));
+      fs.appendFileSync(resolved, Buffer.isBuffer(body) ? body : String(a.data));
       return null;
     }
 
     case 'atomic_write_text': {
-      writeAtomic(resolveScoped(app, a.path, undefined), String(a.content));
+      writeAtomic(
+        resolveScoped(app, a.path, undefined),
+        Buffer.isBuffer(body) ? body : String(a.content),
+      );
       return null;
     }
 
@@ -577,9 +706,14 @@ function fsDispatch(app, cmd, payload) {
       // Restore target from a prior backup; the backup is consumed (renamed
       // away). Cross-device rename falls back to copy + unlink. Mirrors
       // atomic_write.rs::restore_from_backup.
-      const noFollow = { followFinalSymlink: false };
-      const targetPath = resolveScoped(app, a.target, undefined, noFollow);
-      const backupPath = resolveScoped(app, a.backup, undefined, noFollow);
+      const targetPath = resolveScoped(app, a.target, undefined, {
+        followFinalSymlink: false,
+        key: 'target',
+      });
+      const backupPath = resolveScoped(app, a.backup, undefined, {
+        followFinalSymlink: false,
+        key: 'backup',
+      });
       if (!fs.existsSync(backupPath)) {
         throw new Error(`backup not found: ${a.backup}`);
       }
@@ -621,7 +755,7 @@ function fsDispatch(app, cmd, payload) {
       // files matching that pattern, so arbitrary user files are never removed.
       // A per-file removal error is logged and skipped, not fatal. Returns the
       // count removed. Mirrors atomic_write.rs::cleanup_old_backups.
-      const dir = resolveScoped(app, a.dir, undefined);
+      const dir = resolveScoped(app, a.dir, undefined, { key: 'dir' });
       if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
         return 0; // dir may not exist yet on first run — silent success
       }
@@ -666,6 +800,7 @@ function fsDispatch(app, cmd, payload) {
 module.exports = {
   fsDispatch,
   FS_MISS,
+  assertAbsoluteWithoutBaseDir,
   assertAllowed,
   canonicalizeForScope,
   canonicalizeForPathPolicy,

@@ -12,6 +12,7 @@ export const TOOL_NAMES = {
   LIST_DIRECTORY: 'list_directory',
   SEARCH_FILES: 'search_files',
   FIND_FILES: 'find_files',
+  CHECK_OPEN_DOCUMENT: 'check_open_document',
   RUN_COMMAND: 'run_command',
   DELETE_FILE: 'delete_file',
 
@@ -40,6 +41,7 @@ export const TOOL_NAMES = {
    *  bespoke implementation. */
   SAVE_SKILL: 'save_skill',
   SAVE_AGENT: 'save_agent',
+  SAVE_TEAM: 'save_team',
   TEST_SKILL_TRIGGER: 'test_skill_trigger',
   IMPROVE_SKILL_DESCRIPTION: 'improve_skill_description',
 

@@ -250,6 +250,27 @@ test('tauri://move reaches only the moved window\'s own subscriptions', () => {
   tauriHost.__test.clearSubscriptions();
 });
 
+test('__test.subscribedEvents reports the live subscriptions of one sender only', () => {
+  tauriHost.__test.clearSubscriptions();
+  const pet = new FakeWindow({ x: 100, y: 200, width: 80, height: 80 });
+  const main = new FakeWindow({ x: 0, y: 33, width: 1200, height: 800 });
+  assert.deepEqual(tauriHost.__test.subscribedEvents(pet.webContents), []);
+
+  tauriHost.__test.subscribe('tauri://move', 11, pet.webContents);
+  tauriHost.__test.subscribe('pet-status-update', 33, pet.webContents);
+  tauriHost.__test.subscribe('pet-position-changed', 22, main.webContents);
+  assert.deepEqual(tauriHost.__test.subscribedEvents(pet.webContents), ['tauri://move', 'pet-status-update']);
+  assert.deepEqual(tauriHost.__test.subscribedEvents(main.webContents), ['pet-position-changed']);
+
+  // The E2E helper windowListenerRegistered() polls this; it must reflect the
+  // registry that deliver() consults, not a record of past registrations —
+  // a renderer reload purges its sender's subscriptions and nobody else's.
+  tauriHost.clearSubscriptionsForSender(pet.webContents);
+  assert.deepEqual(tauriHost.__test.subscribedEvents(pet.webContents), []);
+  assert.deepEqual(tauriHost.__test.subscribedEvents(main.webContents), ['pet-position-changed']);
+  tauriHost.__test.clearSubscriptions();
+});
+
 test('set_position moves the CALLING window (the pet restoring itself), not the main window', () => {
   useDisplays([RETINA]);
   const main = new FakeWindow({ x: 0, y: 33, width: 1200, height: 800 });

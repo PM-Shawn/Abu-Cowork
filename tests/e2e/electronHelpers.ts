@@ -6,6 +6,7 @@
  * headless IPC harness. See electron/main.cjs for the full launch story.
  */
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,9 +20,13 @@ import { _electron as electron, type ElectronApplication, type Page } from 'play
  */
 export const REPO_ROOT = process.cwd();
 export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
+const MAIN_PROCESS_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'mainProcessRecorder.cjs');
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
+const { withoutLiveEvalCredential } = createRequire(import.meta.url)('../../scripts/computer-use-live-eval.cjs') as {
+  withoutLiveEvalCredential: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+};
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
@@ -34,6 +39,30 @@ export interface ElectronDataRoot {
 
 export interface LaunchedApp extends ElectronDataRoot {
   app: ElectronApplication;
+}
+
+export interface LaunchOptions {
+  /**
+   * Extra main-process env for a single launch. Only for the gated #549 test
+   * hooks (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`),
+   * which electron/e2eTestHooks.cjs reads only in an unpackaged build.
+   */
+  extraEnv?: Record<string, string>;
+  /**
+   * Inject tests/e2e/mainProcessRecorder.cjs into the main process ahead of
+   * electron/main.cjs, so `firstShowRecordFor()` can report where a window was
+   * the moment it was first revealed and `windowListenerRegistered()` can read
+   * the host's live event subscriptions. Opt-in: only the specs that assert on
+   * a window's first frame or must sequence a main-process action after a
+   * renderer's `listen()` need it.
+   */
+  recordMainProcess?: boolean;
+}
+
+/** One window's first reveal, as tests/e2e/mainProcessRecorderCore.cjs saw it. */
+export interface WindowShowRecord {
+  id: number;
+  shownBounds: { x: number; y: number; width: number; height: number } | null;
 }
 
 /**
@@ -72,7 +101,10 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
  * NO_PROXY) also covers HTTP clients that honor `http_proxy` but not
  * `no_proxy`. CI runners set no proxy vars, so this is a no-op there.
  */
-function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
+function buildLaunchEnv(
+  dataRoot: ElectronDataRoot,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     if (/_proxy$/i.test(key)) delete env[key];
@@ -91,7 +123,7 @@ function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
   // machine. Windows are still real and rendered: drag-region and
   // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
   env.ABU_E2E_QUIET_WINDOW = '1';
-  return env;
+  return { ...env, ...extraEnv };
 }
 
 /**
@@ -116,13 +148,26 @@ function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
  * for non-packaged builds, so the renderer-facing appData subfolder and any
  * Electron service using app.getPath('appData') remain inside this same root.
  */
-export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Promise<LaunchedApp> {
+export async function launchAbuElectron(
+  dataRoot = createElectronDataRoot(),
+  options: LaunchOptions = {},
+): Promise<LaunchedApp> {
   fs.mkdirSync(dataRoot.userDataDir, { recursive: true });
   fs.mkdirSync(dataRoot.appDataDir, { recursive: true });
   const app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`, '--lang=zh-CN'],
+    args: [
+      // `-r` modules are required BEFORE the entry point, so a recorder
+      // installed here sees every window the app ever creates. Playwright's own
+      // loader is unshifted ahead of these args the same way.
+      ...(options.recordMainProcess ? ['-r', MAIN_PROCESS_RECORDER] : []),
+      MAIN_ENTRY,
+      `--user-data-dir=${dataRoot.userDataDir}`,
+      '--lang=zh-CN',
+    ],
     cwd: REPO_ROOT,
-    env: buildLaunchEnv(dataRoot),
+    // buildLaunchEnv isolates the profile and strips proxies; the live-eval
+    // credential must never reach a launched shell either.
+    env: withoutLiveEvalCredential(buildLaunchEnv(dataRoot, options.extraEnv)),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
@@ -133,32 +178,99 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
   return { ...dataRoot, app };
 }
 
-async function reloadAndWaitForApp(page: Page): Promise<void> {
-  await page.reload();
-  await page.waitForLoadState('domcontentloaded');
-  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+/**
+ * The first-reveal record for the currently-open window whose URL ends with
+ * `urlSuffix` (e.g. '/pet.html'), or null when no such window is open.
+ *
+ * The live window is matched by URL — settled by the time a spec asserts — and
+ * the record is looked up by `BrowserWindow.id`. The record is complete as
+ * soon as the app has called `show()` / `showInactive()` on the window
+ * (mainProcessRecorderCore.cjs captures at the call, not at Electron's
+ * asynchronous macOS `show` event), so a spec may read it the moment
+ * `isVisible()` reports true. Requires
+ * `launchAbuElectron(root, { recordMainProcess: true })`; without it the
+ * recorder is absent and this throws rather than reporting a missing window as
+ * if it were a product regression.
+ */
+export async function firstShowRecordFor(
+  app: ElectronApplication,
+  urlSuffix: string,
+): Promise<WindowShowRecord | null> {
+  return app.evaluate(({ BrowserWindow }, suffix) => {
+    const records = (globalThis as typeof globalThis & {
+      __abuWindowShowRecords?: WindowShowRecord[];
+    }).__abuWindowShowRecords;
+    if (!records) {
+      throw new Error(
+        'mainProcessRecorder.cjs was not injected — launch with { recordMainProcess: true }',
+      );
+    }
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith(suffix));
+    if (!win) return null;
+    return records.find((record) => record.id === win.id) ?? null;
+  }, urlSuffix);
+}
+
+/**
+ * Whether the renderer of the currently-open window whose URL ends with
+ * `urlSuffix` currently holds a `listen(event)` subscription in the Tauri
+ * bridge. Reads electron/tauriHost.cjs's live registry — the same map its
+ * `deliver()` consults, pruned on `unlisten` and on renderer reload — so a
+ * true answer means a main-process emit of `event` reaches this renderer now.
+ *
+ * Main-process window events (`tauri://move`, …) are delivered only to
+ * subscriptions that already exist, so a spec that triggers one right after
+ * the window appears must poll this first: the renderer's `listen()` is an
+ * IPC round-trip issued from a React effect, and under load it can trail the
+ * window's reveal by seconds (electron/guiHost.cjs `showWhenReady` reveals on
+ * a 1.5 s timeout even if the renderer has not painted). Returns false while
+ * no such window is open. Requires `launchAbuElectron(root, { recordMainProcess: true })`.
+ */
+export async function windowListenerRegistered(
+  app: ElectronApplication,
+  urlSuffix: string,
+  event: string,
+): Promise<boolean> {
+  return app.evaluate(({ BrowserWindow }, { suffix, name }) => {
+    const tauriHostForE2E = (globalThis as typeof globalThis & {
+      __abuTauriHostForE2E?: () => { __test: { subscribedEvents: (sender: unknown) => string[] } };
+    }).__abuTauriHostForE2E;
+    if (!tauriHostForE2E) {
+      throw new Error(
+        'mainProcessRecorder.cjs was not injected — launch with { recordMainProcess: true }',
+      );
+    }
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith(suffix));
+    if (!win) return false;
+    return tauriHostForE2E().__test.subscribedEvents(win.webContents).includes(name);
+  }, { suffix: urlSuffix, name: event });
 }
 
 /** Persist the common first-run acknowledgements used by Electron E2E journeys. */
 export async function dismissFirstRunOverlays(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    Object.assign(persisted.state, {
-      guideShown: true,
-      guideOpen: false,
-      hasAcknowledgedDisclaimer: true,
-      hasRunSensitiveAudit_v015: true,
+  // Settings writes are serialized now. Seed under the same lock and reload
+  // before returning control, so a queued pre-seed save cannot restore overlays.
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async () => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
+      const raw = window.localStorage.getItem('abu-settings');
+      if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+      const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+      Object.assign(persisted.state, {
+        guideShown: true, guideOpen: false,
+        hasAcknowledgedDisclaimer: true, hasRunSensitiveAudit_v015: true,
+      });
+      window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+      window.location.reload();
     });
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(/^(想让阿布帮你做点什么？|What can Abu help you with\?)$/)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 export interface LocalMockProviderOptions {
   apiKey?: string;
   contextWindowSize?: number;
+  /** Additional models offered by the same provider, after the default one. */
+  extraModels?: ReadonlyArray<{ id: string; label: string }>;
   maxOutputTokens?: number;
   modelId?: string;
   modelLabel?: string;
@@ -178,6 +290,7 @@ export async function configureLocalMockProvider(
   const {
     apiKey = 'abu-e2e-test-key-not-a-real-secret',
     contextWindowSize,
+    extraModels = [],
     maxOutputTokens,
     modelId = 'abu-e2e-local-model',
     modelLabel = 'Abu E2E deterministic model',
@@ -188,7 +301,8 @@ export async function configureLocalMockProvider(
     supportsTools = false,
   } = options;
 
-  await page.evaluate((configuration) => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
@@ -208,12 +322,10 @@ export async function configureLocalMockProvider(
       apiFormat: 'openai-compatible',
       baseUrl: configuration.baseUrl,
       apiKey: configuration.apiKey,
-      models: [{
-        id: configuration.modelId,
-        label: configuration.modelLabel,
-        isCustom: true,
-        declaredCapabilities,
-      }],
+      models: [
+        { id: configuration.modelId, label: configuration.modelLabel },
+        ...configuration.extraModels,
+      ].map((model) => ({ ...model, isCustom: true, declaredCapabilities })),
       defaultModelId: configuration.modelId,
       status: 'verified',
       sortOrder: 0,
@@ -237,10 +349,13 @@ export async function configureLocalMockProvider(
     // reload below — so a future migrate branch that rewrites one of these
     // fields would silently clobber every spec's provider setup.
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+    window.location.reload();
+    });
   }, {
     apiKey,
     baseUrl,
     contextWindowSize,
+    extraModels,
     maxOutputTokens,
     modelId,
     modelLabel,
@@ -249,8 +364,8 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 /**
@@ -362,7 +477,7 @@ export async function appRegionAt(page: Page, x: number, y: number): Promise<str
   return page.evaluate(({ px, py }) => {
     let state = 'none';
     for (const element of document.querySelectorAll('*')) {
-      const region = getComputedStyle(element).webkitAppRegion;
+      const region = getComputedStyle(element).getPropertyValue('-webkit-app-region');
       if (region !== 'drag' && region !== 'no-drag') continue;
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;

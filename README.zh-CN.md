@@ -87,7 +87,7 @@
 </tr>
 <tr>
 <td align="center"><b>个人记忆</b><br/>记住你的偏好和工作习惯<br/><br/><img src="website/assets/screenshot-memory.png" width="100%" /></td>
-<td align="center"><b>安全沙箱</b><br/>Seatbelt 沙箱 + 网络隔离，保护隐私<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
+<td align="center"><b>安全沙箱</b><br/>Seatbelt 沙箱（macOS）+ 基于代理的网络隔离<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
 </tr>
 <tr>
 <td align="center"><b>性格设置（Soul）</b><br/>主动度三档预设 + SOUL.md 自定义语气、称呼、回复风格<br/><br/><img src="website/assets/screenshot-soul.png" width="100%" /></td>
@@ -174,10 +174,10 @@
 
 - **三档权限模式** — 请求批准（工作区内自由读写，越界写入和危险命令需确认，默认）/ 替我审批（越界操作交 AI 审核：放行低风险、拦截高风险、不确定才问你）/ 完全自主（除系统红线外全部自动执行）；可设全局默认，也能在对话输入框上方按对话临时切换
 - **内容安全扫描** — 扫描 agent 写入的 skill / 记忆，拦截危险指令、prompt 注入、硬件指令等 120+ 类风险
-- **OS 沙箱** — macOS Seatbelt (`sandbox-exec`) / Windows PowerShell ConstrainedLanguage，隔离 shell 命令的文件访问范围
-- **网络隔离** — 本地代理 + 域名白名单 + 私有网络访问开关，可控制每条请求的目标
+- **OS 沙箱（仅 macOS）** — macOS Seatbelt (`sandbox-exec`) 把 shell 命令的文件访问限制在工作区内。**Windows 上没有 OS 强制的沙箱**：PowerShell ConstrainedLanguage 限制的是进程内的语言特性，不限制文件访问，子 `powershell.exe` 也不继承该限制。Windows 上请把 shell 隔离视为提示性的，不是安全边界
+- **网络隔离** — 本地代理 + 域名白名单 + 私有网络访问开关。**靠环境变量生效，不是 OS 强制**：绕过代理的命令（`curl --noproxy`、自带代理设置的运行时）仍能联网。Windows 上该开关未在设置界面暴露，默认关闭
 - **路径与命令双重校验** — 敏感目录（系统目录、SSH 密钥等）默认拦截；危险命令（`rm -rf /` 等）静态识别
-- **电脑操控防护** — 敏感应用黑名单（钥匙串/系统设置/微信/Slack 等 15+）、危险按键拦截（Cmd+Q、Cmd+Tab、Force Quit 等）、会话级窗口隐藏、5 分钟超时熔断
+- **电脑操控防护** — 敏感应用红线（终端、系统设置、凭据管理器、IDE 等）、危险按键拦截（Cmd+Q、Cmd+Tab、Force Quit、Win+R 等）、可撤销的按应用授权、有后果动作逐次确认、5 分钟超时熔断。这些管的是「操作电脑」工具；**它们不约束 shell 工具**——在没有 OS 沙箱的情况下，shell 仍有别的途径触达桌面
 - **API Key 加密存储** — Windows DPAPI / macOS AES-256-GCM（硬件 UUID 派生），不再明文写 localStorage
 - **本地优先** — 数据存在本地，API Key 存在本地，不经过第三方服务器
 - **跨平台** — 支持 macOS (Apple Silicon / Intel) 和 Windows
@@ -363,7 +363,6 @@ src/
 └── utils/            # 工具函数
 
 builtin-skills/       # 29 个内置技能（每个为独立目录）
-builtin-agents/       # 内置 Agent 定义（预留）
 abu-browser-bridge/   # 浏览器桥接 MCP Server
 abu-chrome-extension/ # Chrome 扩展（Abu-Chrome-Bridge 技能依赖）
 electron/             # Electron 主进程、preload 桥和原生 host

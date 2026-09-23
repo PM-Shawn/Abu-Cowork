@@ -3,7 +3,7 @@ import { preparePluginTool } from './definitions/pluginTools';
 import { toolRegistry } from './registry';
 
 // --- File tools ---
-import { readFileTool, writeFileTool, editFileTool, deleteFileTool, listDirectoryTool, searchFilesTool, findFilesTool } from './definitions/fileTools';
+import { readFileTool, writeFileTool, editFileTool, deleteFileTool, listDirectoryTool, searchFilesTool, findFilesTool, checkOpenDocumentTool } from './definitions/fileTools';
 
 // --- Command tools ---
 import { runCommandTool } from './definitions/commandTools';
@@ -12,6 +12,7 @@ import { runCommandTool } from './definitions/commandTools';
 // save_skill was deprecated in favor of skill_manage (Module E self-evolution).
 // save_agent is kept — no equivalent agent_manage yet.
 import { useSkillTool, delegateToAgentTool, readSkillFileTool, saveAgentTool, requestWorkspaceTool } from './definitions/agentTools';
+import { saveTeamTool } from './definitions/teamTools';
 export {
   clearAllSkillHooks,
   clearSkillHooksByConversation,
@@ -73,6 +74,11 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(runCommandTool);
   toolRegistry.register(searchFilesTool);
   toolRegistry.register(findFilesTool);
+  // Registered on every platform, like computerTool, rather than behind
+  // isWindows() — registration runs at startup and must not depend on
+  // initPlatform() having landed first. The description leads with "Windows
+  // only" so a model on macOS drops it after one read.
+  toolRegistry.register(checkOpenDocumentTool);
   toolRegistry.register(useSkillTool);
   toolRegistry.register(readSkillFileTool);
   toolRegistry.register(reportPlanTool);
@@ -90,6 +96,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(manageScheduledTaskTool);
   toolRegistry.register(manageTriggerTool);
   toolRegistry.register(saveAgentTool);
+  toolRegistry.register(saveTeamTool);
   toolRegistry.register(logTaskCompletionTool);
   toolRegistry.register(manageMCPServerTool);
   toolRegistry.register(manageFileWatchTool);

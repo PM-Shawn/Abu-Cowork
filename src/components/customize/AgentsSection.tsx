@@ -1,11 +1,14 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
-import { useChatStore } from '@/stores/chatStore';
+import { prepareExpertEntry } from '@/core/team/expertEntry';
+import { expertIdentity } from '@/core/team/expertContact';
 import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
+import DialogShell from '@/components/team/DialogShell';
 import { Toggle } from '@/components/ui/toggle';
+import { Button } from '@/components/ui/button';
 import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check } from 'lucide-react';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { remove } from '@tauri-apps/plugin-fs';
@@ -15,6 +18,7 @@ import type { SubagentDefinition } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import { getAgentToolSummary } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
+import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { getAllTools } from '@/core/tools/registry';
@@ -24,12 +28,14 @@ import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useTeamStore } from '@/stores/teamStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 function isSystemAgent(agent: SubagentDefinition): boolean {
-  // System / builtin agents ship with the app (registered in registry.ts) —
-  // they live under "Examples" and can't be edited or deleted. Everything
-  // discovered from user / project directories is a user agent.
-  return agent.filePath === '__builtin__';
+  // 市场 = shipped with the app OR brought in by a plugin; both are read-only
+  // here. 「我的」 is what this user wrote — a plugin's expert is someone else's
+  // work, and removing it is uninstalling the plugin, not deleting a file.
+  return isBuiltinAgentPath(agent.filePath) || isPluginOwnedAgent(agent);
 }
 
 
@@ -56,9 +62,12 @@ interface AgentsSectionProps {
   manualCreateTrigger?: number;
   /** Overrides the Extensions store query when a host view owns the search box. */
   searchQuery?: string;
+  /** Which shelf this render is showing — the sub-nav's current pick.
+   *  Defaults to 市场, the shelf a fresh install has something on. */
+  source?: ExtensionSource;
 }
 
-export default function AgentsSection({ manualCreateTrigger, searchQuery }: AgentsSectionProps) {
+export default function AgentsSection({ manualCreateTrigger, searchQuery, source = 'market' }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
   const installedPlugins = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
@@ -68,9 +77,9 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
   // passes it instead, rather than writing into another view's state.
   const storeSearchQuery = useExtensionsSearchQuery();
   const extensionsSearchQuery = searchQuery ?? storeSearchQuery;
-  const startNewConversation = useChatStore((s) => s.startNewConversation);
-  const setPendingInput = useChatStore((s) => s.setPendingInput);
-  const setPendingAgent = useChatStore((s) => s.setPendingAgent);
+  // An expert the user just saved is on the other shelf: land them where it
+  // actually is, or the save reads as a save that did nothing.
+  const setSource = useExtensionSourceStore((s) => s.setSource);
   const { t, locale } = useI18n();
 
   const [installedAgents, setInstalledAgents] = useState<SubagentDefinition[]>([]);
@@ -147,10 +156,20 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
 
   const disabledSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
+  // Selectable agents, before search. Excludes the 'abu' default agent — it's
+  // the fallback, not a selectable agent.
+  const visibleAgents = useMemo(
+    () => installedAgents.filter((a) => a.name !== 'abu' && !a.managed),
+    [installedAgents],
+  );
+  // Nothing of the user's own at all ("还没有你创建的专家") reads differently
+  // from "your experts, none matching" — so the empty state asks the
+  // UNFILTERED 我的 bucket, the way SkillsSection does.
+  const mineTotal = useMemo(() => visibleAgents.filter((a) => !isSystemAgent(a)).length, [visibleAgents]);
+
   // Filter by search across both visible names (zh + en) + description.
-  // Excludes the 'abu' default agent — it's the fallback, not a selectable agent.
   const filteredAgents = useMemo(() => {
-    const visible = installedAgents.filter((a) => a.name !== 'abu' && !a.managed);
+    const visible = visibleAgents;
     if (!extensionsSearchQuery) return visible;
     const q = extensionsSearchQuery.toLowerCase();
     return visible.filter((a) => {
@@ -164,10 +183,10 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       ];
       return haystack.some((s) => s && s.toLowerCase().includes(q));
     });
-  }, [installedAgents, extensionsSearchQuery]);
+  }, [visibleAgents, extensionsSearchQuery]);
 
-  // Split into user-defined vs builtin/system agents. Builtins go under the
-  // "Examples" section, user agents under "My agents".
+  // Split into the two shelves: 「我的」 is what the user wrote, 「市场」 what
+  // shipped with Abu or arrived with a plugin.
   const userAgents = filteredAgents
     .filter((a) => !isSystemAgent(a))
     // Newest first (user feedback 2026-08-31); agents predating the created
@@ -182,7 +201,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
 
   // Delete a user-installed agent
   const handleDelete = async (agent: SubagentDefinition) => {
-    if (agent.filePath === '__builtin__' || agent.filePath.includes('builtin-agents')) return;
+    if (isBuiltinAgentPath(agent.filePath)) return;
     // A plugin owns this file: removing it belongs to uninstalling the plugin,
     // and the next refresh would bring it back anyway. The menu entry is
     // disabled for the same reason — this keeps the invariant local to the
@@ -208,12 +227,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
   }, [menuAgent]);
 
   const renderAgentCard = (agent: SubagentDefinition) => {
+    // The card carries no tool count or source line — both live in the detail
+    // view — so the name keeps the row's width at four columns. What is left is
+    // reporting: a tools field Abu could not read, and — since the switch moved
+    // into the detail — a quiet tag when Abu may not hand this expert work on
+    // its own. No switch here: on the card it read as a kill switch, which is
+    // not what it does.
     const toolSummary = getAgentToolSummary(agent.tools, agent.disallowedTools, knownToolNames);
-    const toolLabel = toolSummary.invalidField
-      ? t.toolbox.agentInvalidTools
-      : toolSummary.isUnrestricted
-        ? t.toolbox.agentAllTools
-        : format(t.toolbox.toolCount, { count: toolSummary.toolNames.length });
+    const offAutoDispatch = disabledSet.has(agent.name);
 
     return (
       <ToolCard
@@ -222,25 +243,31 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
         id: agent.name,
         name: displayName(agent, locale),
         description: localizedDescription(agent, locale),
-        avatar: <AgentAvatar agent={agent} />,
-        badge: (
-          <span
-            className="rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
-            title={toolSummary.invalidField ? t.toolbox.agentInvalidTools : toolSummary.toolNames.join(', ')}
-          >
-            {toolLabel}
+        avatar: <AgentAvatar agent={agent} size="xl" className="bg-[var(--abu-bg-active)]" />,
+        badge: offAutoDispatch || toolSummary.invalidField ? (
+          // Chips wrap rather than clip: the badge box is the slot that yields
+          // width (ToolCard row 1), and a clipped 「工具配置无效」 would hide the one
+          // chip the user has to act on.
+          <span className="flex items-center gap-1.5 flex-wrap justify-end">
+            {offAutoDispatch && (
+              <span
+                className="rounded-full bg-[var(--abu-bg-muted)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                title={t.toolbox.agentAutoDispatchHint}
+                data-testid="agent-auto-dispatch-off"
+              >
+                {t.toolbox.agentAutoDispatchOff}
+              </span>
+            )}
+            {toolSummary.invalidField && (
+              <span
+                className="rounded-full bg-[var(--abu-warning-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-warning)]"
+                title={t.toolbox.agentInvalidTools}
+              >
+                {t.toolbox.agentInvalidTools}
+              </span>
+            )}
           </span>
-        ),
-        toggle: (
-          <span onClick={(e) => e.stopPropagation()}>
-            <Toggle
-              checked={!disabledSet.has(agent.name)}
-              onChange={() => toggleAgentEnabled(agent.name)}
-              size="sm"
-              tone="green"
-            />
-          </span>
-        ),
+        ) : undefined,
       }}
       onClick={() => setSelectedAgent(agent.name)}
       />
@@ -252,47 +279,52 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
    *  the agent persona. Optional promptText pre-fills the textarea for the
    *  one-click "Try asking" flow. */
   const startChatWithAgent = (agent: SubagentDefinition, promptText?: string) => {
-    const input = promptText ? `@${agent.name} ${promptText}` : `@${agent.name} `;
-    startNewConversation();
-    setPendingInput(input);
-    setPendingAgent(agent.name);
+    prepareExpertEntry({ identity: expertIdentity(agent, locale), introduction: localizedIntro(agent, locale) }, promptText);
     closeExtensions();
   };
 
-  // If editor is open, show editor full-width
-  if (editorAgent !== null) {
-    return (
-      <AgentEditor
-        agent={editorAgent === 'new' ? null : editorAgent}
-        onClose={() => setEditorAgent(null)}
-        onSave={async () => { await refresh(); setEditorAgent(null); }}
-      />
-    );
-  }
-
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
+      {/* Editor — a dialog over the list, the same shell the team editor uses,
+          rather than a page that replaces the list. */}
+      <DialogShell
+        open={editorAgent !== null}
+        onClose={() => setEditorAgent(null)}
+        title={editorAgent === 'new' ? t.toolbox.agentEditorTitleNew : t.toolbox.agentEditorTitleEdit}
+        maxWidth="max-w-2xl"
+      >
+        {editorAgent !== null && (
+          <AgentEditor
+            agent={editorAgent === 'new' ? null : editorAgent}
+            onClose={() => setEditorAgent(null)}
+            onSave={async () => { await refresh(); setEditorAgent(null); setSource('members', 'mine'); }}
+          />
+        )}
+      </DialogShell>
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
-      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {filteredAgents.length === 0 ? (
+      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6">
+        {/* One shelf at a time — which one is the sub-nav's job to say, so the
+            group heading that used to name it here is gone. */}
+        {source === 'mine' ? (
+          userAgents.length === 0 ? (
+            mineTotal === 0 ? (
+              <div className="py-16 text-center">
+                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.agentsMineEmpty}</p>
+              </div>
+            ) : (
+              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>
+            )
+          ) : (
+            <div className="max-w-5xl mx-auto">
+              <ToolGrid>{userAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
+            </div>
+          )
+        ) : systemAgents.length === 0 ? (
           <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>
         ) : (
-          <div className="max-w-5xl mx-auto space-y-6">
-            {/* My agents (user-created) */}
-            {userAgents.length > 0 && (
-              <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.myAgents}</div>
-                <ToolGrid>{userAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
-              </div>
-            )}
-            {/* System agents (builtin/marketplace) */}
-            {systemAgents.length > 0 && (
-              <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.exampleAgents}</div>
-                <ToolGrid>{systemAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
-              </div>
-            )}
+          <div className="max-w-5xl mx-auto">
+            <ToolGrid>{systemAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
           </div>
         )}
       </div>
@@ -305,27 +337,32 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
         // otherwise one press dismisses both it and the detail behind it.
         disableEscape={!!confirmDeleteAgent}
         maxWidth="max-w-2xl"
-        avatar={selected ? <AgentAvatar agent={selected} /> : undefined}
+        avatar={selected ? <AgentAvatar agent={selected} size="2xl" className="bg-[var(--abu-bg-active)]" /> : undefined}
         title={selected ? displayName(selected, locale) : undefined}
+        // Primary action in the sticky footer, solid, exactly where the plugin
+        // and connector details put theirs — the header keeps only the 「…」
+        // menu. Always live: an expert Abu may not hand work to on its own is
+        // still an expert you can talk to.
+        footer={selected && selected.name !== 'abu' ? (
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              size="sm"
+              className="rounded-xl"
+              onClick={() => startChatWithAgent(selected)}
+              data-testid="agent-detail-start-chat"
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              {t.toolbox.agentStartChat}
+            </Button>
+          </div>
+        ) : undefined}
         headerActions={selected && selected.name !== 'abu' ? (
           <>
-            {/* Start Chat — clay-tinted pill primary CTA, hidden when disabled. */}
-            {!disabledSet.has(selected.name) && (
-              <button
-                onClick={() => startChatWithAgent(selected)}
-                className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-minor font-medium text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)] border border-[var(--abu-clay-40)] hover:border-[var(--abu-clay)] transition-colors"
-                title={t.toolbox.agentStartChat}
-              >
-                <MessageCircle className="h-3.5 w-3.5" />
-                <span>{t.toolbox.agentStartChat}</span>
-              </button>
-            )}
-            <Toggle
-              checked={!disabledSet.has(selected.name)}
-              onChange={() => toggleAgentEnabled(selected.name)}
-              tone="green"
-            />
-            {/* "..." menu — only for user agents (edit / delete). */}
+            {/* "..." menu — edit / delete, for the user's own experts only.
+                市场 experts (the app's own builtins and the ones a plugin brings)
+                have nothing to offer here: there is no file of the user's to edit,
+                and removing a plugin's expert is uninstalling that plugin. Showing
+                the menu greyed out only invited clicks, so it is withheld. */}
             {!isSystemAgent(selected) && (
               <div className="relative">
                 <button
@@ -337,18 +374,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                 {menuAgent === selected.name && (
                   <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                      disabled={!!selectedPluginSource}
-                      title={selectedPluginSource ? t.toolbox.agentFromPluginEditDisabled : undefined}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
                       onClick={() => { setEditorAgent(selected); setMenuAgent(null); setSelectedAgent(null); }}
                     >
                       <Pencil className="h-3 w-3" />
                       {t.toolbox.agentEdit}
                     </button>
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                      disabled={!!selectedPluginSource}
-                      title={selectedPluginSource ? t.toolbox.agentFromPluginDeleteDisabled : undefined}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                       onClick={() => {
                         const using = teamsReferencing(selected);
                         if (using.teams.length > 0) setConfirmDeleteAgent({ agent: selected, ...using });
@@ -357,7 +390,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                       }}
                     >
                       <Trash2 className="h-3 w-3" />
-                      {t.toolbox.uninstall}
+                      {t.toolbox.deleteItem}
                     </button>
                   </div>
                 )}
@@ -373,9 +406,24 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
               <div className="text-minor text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
               <div className="text-body font-medium text-[var(--abu-text-primary)]" data-testid="agent-added-by">
                 {selectedPluginSource
-                  ? format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
+                  ? format(t.toolbox.agentFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
                   : isSystemAgent(selected) ? t.toolbox.sourceBuiltin : t.toolbox.sourceUser}
               </div>
+            </div>
+
+            {/* Auto-dispatch — the one setting this detail owns. It governs
+                whether Abu picks this expert by itself; @ mentions and expert
+                teams reach it either way, which is what the hint says. */}
+            <div className="flex items-start justify-between gap-4" data-testid="agent-auto-dispatch-setting">
+              <div className="min-w-0">
+                <div className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.agentAutoDispatch}</div>
+                <p className="mt-0.5 text-caption text-[var(--abu-text-tertiary)] leading-relaxed">{t.toolbox.agentAutoDispatchHint}</p>
+              </div>
+              <Toggle
+                checked={!disabledSet.has(selected.name)}
+                onChange={() => toggleAgentEnabled(selected.name)}
+                tone="green"
+              />
             </div>
 
             {/* Description */}
@@ -418,16 +466,6 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                 </div>
               );
             })()}
-
-            {/* Intro — agent self-introduction shown when there's an intro paragraph */}
-            {localizedIntro(selected, locale) && (
-              <div>
-                <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.agentIntro}</span>
-                <p className="text-body text-[var(--abu-text-primary)] leading-relaxed mt-1.5">
-                  {localizedIntro(selected, locale)}
-                </p>
-              </div>
-            )}
 
             {/* Expertise — bullet list of what the agent is good at */}
             {(() => {

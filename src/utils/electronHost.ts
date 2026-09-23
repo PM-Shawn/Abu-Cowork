@@ -11,7 +11,7 @@ interface AbuShellBridge {
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
   authorizeUserAttachment?: (file: File, request: ElectronUserAttachmentAuthorizeRequest) => Promise<ElectronUserAttachmentToken>;
-  selectUserAttachments?: (request: ElectronUserAttachmentSelectRequest) => Promise<ElectronUserAttachmentToken[]>;
+  selectUserAttachments?: (request: ElectronUserAttachmentSelectRequest) => Promise<ElectronUserAttachmentSelection[]>;
   readUserAttachment?: (request: ElectronUserAttachmentReadRequest) => Promise<Uint8Array>;
   releaseUserAttachment?: (request: ElectronUserAttachmentReleaseRequest) => Promise<ElectronUserAttachmentReleaseResult>;
   persistDelegatedMedia?: (request: ElectronDelegatedMediaPersistRequest) => Promise<MediaRef>;
@@ -59,8 +59,17 @@ export type ElectronUserAttachmentMediaType =
   | 'image/webp';
 
 export interface ElectronUserAttachmentSelectRequest {
-  mediaTypes?: ElectronUserAttachmentMediaType[];
+  mediaTypes?: (ElectronUserAttachmentMediaType | 'application/pdf')[];
 }
+
+/** Native picker file references do not grant access; read_file enforces permissions. */
+export interface ElectronUserAttachmentFileReference {
+  path: string;
+  name: string;
+  mediaType: 'application/pdf';
+}
+
+export type ElectronUserAttachmentSelection = ElectronUserAttachmentToken | ElectronUserAttachmentFileReference;
 
 export interface ElectronUserAttachmentToken {
   token: string;
@@ -120,6 +129,8 @@ export interface ElectronRuntimeDiagnostics {
   sidecars: Array<Record<string, unknown>>;
   pendingRendererAcks: Array<Record<string, unknown>>;
   nativeHelpers: Array<Record<string, unknown>>;
+  /** Host's pure, privacy-allowlisted projection; not executable recovery state. */
+  computerUseReplay?: Record<string, unknown>;
 }
 
 function getRuntime() {
@@ -136,6 +147,15 @@ export function hasElectronCommandHost(): boolean {
     runtime.process?.env?.ABU_ELECTRON_COMMAND_HOST === '1' ||
     runtime.process?.env?.ELECTRON_RUN_AS_NODE === '1'
   );
+}
+
+/**
+ * True only in the Electron RENDERER (preload exposes `__ABU_SHELL__`). Unlike
+ * `hasElectronCommandHost`, never true inside the Node sidecar, whose
+ * `invoke` shim forwards JSON and cannot carry a binary body (#549).
+ */
+export function hasElectronRawBodyInvoke(): boolean {
+  return getRuntime().__ABU_SHELL__?.mainSupervisesSidecar === true;
 }
 
 /** Resolve the native path of a user-provided Electron File object. */
@@ -208,7 +228,7 @@ export async function authorizeElectronUserAttachment(
 
 export async function selectElectronUserAttachments(
   request: ElectronUserAttachmentSelectRequest = {},
-): Promise<ElectronUserAttachmentToken[]> {
+): Promise<ElectronUserAttachmentSelection[]> {
   const select = getRuntime().__ABU_SHELL__?.selectUserAttachments;
   if (!select) throw new Error('Electron attachment picker host is unavailable');
   return await select(request);

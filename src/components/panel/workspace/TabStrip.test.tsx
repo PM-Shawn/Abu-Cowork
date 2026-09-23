@@ -140,14 +140,14 @@ describe('TabStrip pointer interactions', () => {
     expect(screen.queryByText(/base64/)).not.toBeInTheDocument();
   });
 
-  it('uses the selected-state token for the active tab background', () => {
+  it('uses the raised surface for a lighter selected tab', () => {
     renderTabs();
 
     const summary = screen.getByRole('tab', { name: /Task Summary/ });
     const terminal = screen.getByRole('tab', { name: /Terminal/ });
-    expect(terminal.closest('[data-tab-id]')).toHaveClass('bg-[var(--abu-bg-active)]');
-    expect(terminal.closest('[data-tab-id]')).not.toHaveClass('bg-[var(--abu-bg-base)]');
-    expect(summary.closest('[data-tab-id]')).not.toHaveClass('bg-[var(--abu-bg-active)]');
+    expect(terminal.closest('[data-tab-id]')).toHaveClass('bg-[var(--abu-bg-base)]');
+    expect(terminal.closest('[data-tab-id]')).not.toHaveClass('bg-[var(--abu-bg-active)]');
+    expect(summary.closest('[data-tab-id]')).not.toHaveClass('bg-[var(--abu-bg-base)]');
   });
 
   it('exposes a real tablist with roving tabIndex and aria tabpanel linkage', () => {

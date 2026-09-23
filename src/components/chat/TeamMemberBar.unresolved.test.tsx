@@ -124,7 +124,7 @@ describe('TeamMemberBar — unresolved members', () => {
     teamRef.team = ctx({ members: [{ name: 'a', description: '', systemPrompt: '', filePath: '/a' }] });
     render(<TeamMemberBar conversationId="c1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Collapse member bar' }));
-    expect(screen.getByTestId('team-member-bar')).toHaveTextContent('1 member');
-    expect(screen.queryByTestId('team-member-bar')?.textContent).not.toContain('1 members');
+    expect(screen.getByTestId('team-member-bar')).toHaveTextContent('1 expert');
+    expect(screen.queryByTestId('team-member-bar')?.textContent).not.toContain('1 experts');
   });
 });

@@ -21,6 +21,11 @@ import { pluginInstallDir, pluginRoot, PluginPathError } from './paths';
 const SEPARATORS = ['a/b', String.raw`a\b`, 'a\u0000b', 'a\bb'];
 const TRAVERSALS = ['..', '../..', '../../Library', 'a/../..', './..'];
 const DEGENERATE = ['.', '', '   '];
+// C0, DEL and C1. None is part of a real package name, and one embedded in a
+// name hides what the path is from whoever reads the install confirmation —
+// the same rule `isSafeSkillDirName` and `isPlainSegment` apply to the names
+// they turn into directories under $HOME.
+const CONTROLS = ['a\u0001b', 'a\u007fb', 'a\u0080b', 'a\u0085b', 'a\u009fb'];
 
 describe('install-path segment safety', () => {
   describe.each([
@@ -37,6 +42,10 @@ describe('install-path segment safety', () => {
     });
 
     it.each(SEPARATORS)('rejects a separator or NUL in %j', (evil) => {
+      expect(build(evil)).toThrow(PluginPathError);
+    });
+
+    it.each(CONTROLS)('rejects the control character in %j', (evil) => {
       expect(build(evil)).toThrow(PluginPathError);
     });
   });

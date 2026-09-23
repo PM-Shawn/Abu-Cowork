@@ -13,33 +13,15 @@ export const MAX_TURNS_NOTICE_ID_PREFIX = 'max-turns-';
 /**
  * What the GLOBAL 「最大轮次」 setting offers, in order.
  *
- * A fixed list rather than a free number field, so the two values that would
- * defeat the cap can't be entered at all: `0` (which `resolveMaxTurns` reads as
- * `Infinity`) and a number so large it is unlimited in practice. The ceiling
- * makes "the run always stops" true rather than nominal.
- *
- * `resolveMaxTurns` itself is NOT restricted — a skill's `max-turns`, an agent
- * definition and a hand-edited config keep the opt-in unlimited path.
+ * Finite presets followed by explicit unlimited (`0`, resolved as `Infinity`).
  */
-export const AGENT_MAX_TURNS_OPTIONS: readonly number[] = [50, 100, 200, 500, 1000];
+export const AGENT_MAX_TURNS_OPTIONS: readonly number[] = [50, 100, 200, 500, 1000, 0];
 
-/**
- * The values the setting should show, given what is currently stored.
- *
- * Normally just the presets. A value that is NOT one of them can only come from
- * outside this control — a hand-edited config, or an older build — and it is
- * kept in the list rather than rounded away, because the menu has to show the
- * cap that is actually in force. A non-positive stored value is that same case
- * at its extreme: it means unlimited, and hiding it would leave the user
- * reading "200" while the loop runs without a cap.
- *
- * Sorted ascending with unlimited (`0`) last, where "no cap" belongs.
- */
+/** Keep legacy custom caps visible, with unlimited last and never duplicated. */
 export function buildAgentMaxTurnsOptions(stored: number | undefined): number[] {
   const presets = [...AGENT_MAX_TURNS_OPTIONS];
-  if (stored === undefined || presets.includes(stored)) return presets;
-  if (stored <= 0) return [...presets, 0];
-  return [...presets, stored].sort((a, b) => a - b);
+  if (stored === undefined || stored <= 0 || presets.includes(stored)) return presets;
+  return [...presets.filter(value => value > 0), stored].sort((a, b) => a - b).concat(0);
 }
 
 /** What the user did with a notice card. Absent = still actionable. */

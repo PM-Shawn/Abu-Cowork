@@ -80,7 +80,7 @@ describe('InstalledPluginList', () => {
     // The dialog names the collateral (2 skills, 1 connector, 0 agents), not
     // just the plugin — uninstall withdraws all three.
     expect(document.body.textContent).toMatch(
-      /2 skills, 1 connectors and 0 agents|2 个技能、1 个连接器和 0 个代理/,
+      /2 skills, 1 connectors and 0 experts|2 个技能、1 个连接器和 0 个专家/,
     );
 
     fireEvent.click(screen.getByRole('button', { name: /^(Uninstall|卸载)$/ }));

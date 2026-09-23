@@ -9,12 +9,14 @@
 
 import { fetch } from '@tauri-apps/plugin-http';
 import { gunzipSync, strFromU8 } from 'fflate';
-import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
+import { writeFile, mkdir, exists, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { parse as parseYaml } from 'yaml';
 import { atomicInstallDir } from '@/core/fsAtomic';
 import { isSafeSkillDirName } from './skillDirName';
+import { assertSkillNameAllowed } from './skillPolicy';
+import { rootManifestCount } from './rootManifest';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -53,7 +55,8 @@ export type NpmInstallErrorCode =
   | 'PATH_TRAVERSAL'
   | 'FILE_TOO_LARGE'
   | 'EXTRACT_FAILED'
-  | 'ALREADY_EXISTS';
+  | 'ALREADY_EXISTS'
+  | 'AMBIGUOUS_SKILL_MD';
 
 export class NpmInstallError extends Error {
   code: NpmInstallErrorCode;
@@ -118,6 +121,12 @@ export async function installSkillFromNpm(
   if (!isSafeSkillDirName(skillName)) {
     throw new NpmInstallError('PATH_TRAVERSAL', `SKILL.md declares an unsafe skill name: "${skillName}"`);
   }
+  // The name checked here must be the name that goes live — see rootManifest.ts.
+  if (rootManifestCount(fileEntryPaths(entries, prefix)) > 1) {
+    throw new NpmInstallError('AMBIGUOUS_SKILL_MD', `Package "${packageName}" has more than one SKILL.md at its root`);
+  }
+  // The organization's skill blacklist, before anything reaches disk.
+  assertSkillNameAllowed(skillName);
 
   // Step 5: Write to ~/.abu/skills/<name>/
   progress('installing', skillName);
@@ -175,6 +184,7 @@ export async function installSkillFromNpm(
         await writeFile(targetPath, entry.data);
         files.push(relativePath);
       }
+      await assertStagedManifestIs(stagingDir, skillName);
     },
   });
 
@@ -369,6 +379,29 @@ export function stripPrefix(path: string, prefix: string): string {
     return path.slice(prefix.length);
   }
   return path;
+}
+
+/**
+ * The manifest that goes live is whatever the disk made of the written
+ * entries, so it must declare the name that was checked — before the staging
+ * directory is swapped in. Holds for any path resolution a disk applies,
+ * including ones `rootManifestCount` does not model.
+ */
+export async function assertStagedManifestIs(stagingDir: string, checkedName: string): Promise<void> {
+  const landed = extractNameFromSkillMd(await readTextFile(joinPath(stagingDir, 'SKILL.md')));
+  if (landed !== checkedName) {
+    throw new NpmInstallError(
+      'AMBIGUOUS_SKILL_MD',
+      `The SKILL.md written to disk declares "${landed ?? ''}", not the checked name "${checkedName}"`,
+    );
+  }
+}
+
+/** The skill-relative paths of the files the write loop will write, in archive order. */
+export function fileEntryPaths(entries: TarEntry[], prefix: string): string[] {
+  return entries
+    .map((entry) => stripPrefix(entry.path, prefix))
+    .filter((rel) => rel && !rel.endsWith('/'));
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

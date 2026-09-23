@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
+  dismissFirstRunOverlays,
   launchAbuElectron,
   removeElectronDataRoot,
   REPO_ROOT,
@@ -27,46 +28,40 @@ function iaScreenshot(name: string): string {
 
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
-const ACCOUNT = /^(我|Me)$/;
+const ACCOUNT = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 const SETTINGS = /^(设置|Settings)$/;
 const CAPABILITIES = /^(能力|Capabilities)$/;
 const BUILTIN_BROWSER = /^(阿布内置浏览器|Abu built-in browser)$/;
 const MY_CHROME = /^(我的 Chrome|My Chrome)$/;
 const COMPUTER_USE = /^(电脑操控|Computer Use)$/;
 const READY = /^(已就绪|Ready)$/;
-const CONNECTED = /^(已连接|Connected)$/;
-const NOT_CONNECTED = /^(未连接|Not connected)$/;
-const SETUP_REQUIRED = /^(需要设置|Setup required)$/;
 const OFF = /^(已关闭|Off)$/;
 const START_SETUP = /^(开始设置|Start setup)$/;
 const ENABLE = /^(开启电脑操控|Enable Computer Use)$/;
 const CONNECT_CHROME = /^(连接 Chrome|Connect Chrome)$/;
 const CHROME_HEADER = /^(我的 Chrome|My Chrome)$/;
-const DISCONNECT = /^(断开我的 Chrome|Disconnect My Chrome)$/;
-const INSTALL_STEPS = /^(安装扩展|Install the extension)$/;
 const BACK_TO_CAPABILITIES = /^(返回能力|Back to Capabilities)$/;
 const COMPUTER_SETUP = /^(开启电脑操控|Enable Computer Use)$/;
 const QUICK_START = /^(快速入门|Quick Start)$/;
 const MANAGE = /^(管理|Manage)$/;
-const ACTION_PERMISSIONS = /^(操作权限|Action permissions)$/;
+const ACTION_PERMISSIONS = /^(浏览器权限|Browser permissions)$/;
 const AUTOMATIC_TASKS = /^(自动任务|Automatic tasks)$/;
-const RUN_SCRIPTS = /^(运行脚本（高级）|Run scripts \(advanced\))$/;
-const SITE_PERMISSIONS = /^(网站授权|Site permissions)$/;
-const VIEW_PAGES = /^(只看页面|View pages)$/;
-const CLICK_AND_FILL = /^(点击和填写|Click and fill in)$/;
-const CHROME_CAVEAT = /(登录失效|expired sign-in)/;
+const SITE_PERMISSIONS = /^(网站权限|Site permissions)$/;
 const ADD_SITE_LABEL = /^(网站地址|Site address)$/;
 const ADD_SITE_BUTTON = /^(添加|Add)$/;
 const AUTOMATION_NAV = /^(自动化|Automation)$/;
 const SCHEDULED_TASKS_TAB = /^(定时任务|Scheduled Tasks)$/;
 const NEW_TASK = /^(新建任务|New Task)$/;
 
-/** Seeded site verdicts, so the list page has something to show. */
-const SEEDED_SITES = {
-  'https://example.com': 'denied',
-  'https://reports.example.com': 'allowed',
-  'https://www.baidu.com': 'allowed',
-} as const;
+/** Exact-origin resource rules persisted by the current settings schema. */
+const SEEDED_CONFIG = {
+  schemaVersion: 2,
+  defaults: { browse: 'allow', upload: 'ask', script: 'ask' },
+  sites: {
+    'https://example.com': { blocked: true, browse: 'inherit', upload: 'inherit', script: 'inherit' },
+    'https://reports.example.com': { blocked: false, browse: 'allow', upload: 'inherit', script: 'inherit' },
+  }, embeddedSites: {},
+};
 
 async function waitForWelcomeScreen(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
@@ -74,6 +69,11 @@ async function waitForWelcomeScreen(page: Page): Promise<void> {
     page.getByText(WELCOME).or(page.getByPlaceholder(CHAT_PLACEHOLDER)).first(),
   ).toBeVisible({ timeout: READY_TIMEOUT });
 
+  const acknowledged = await page.evaluate(() => {
+    const state = JSON.parse(localStorage.getItem('abu-settings') ?? '{}').state;
+    return state?.hasAcknowledgedDisclaimer && state?.guideShown;
+  });
+  if (!acknowledged) await dismissFirstRunOverlays(page);
   const quickStart = page.getByText(QUICK_START, { exact: true });
   await quickStart.waitFor({ state: 'visible', timeout: 1_500 }).catch(() => {});
   if (await quickStart.isVisible()) {
@@ -92,20 +92,11 @@ function capabilityCard(page: Page, title: RegExp) {
   return page.getByRole('button', { name: new RegExp(title.source.replace(/\$$/, '')) });
 }
 
-/** Assert the status/action pair without changing the external Chrome session. */
-async function expectChromeConnectionActions(page: Page): Promise<boolean> {
-  await expect(page.getByText(CONNECTED).or(page.getByText(NOT_CONNECTED)))
-    .toBeVisible({ timeout: READY_TIMEOUT });
-  const connected = await page.getByText(CONNECTED).isVisible();
-  await expect(page.getByText(connected ? NOT_CONNECTED : CONNECTED)).toHaveCount(0);
-  if (connected) {
-    await expect(page.getByRole('button', { name: DISCONNECT })).toBeVisible();
-    await expect(page.getByText(INSTALL_STEPS)).toHaveCount(0);
-  } else {
-    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
-    await expect(page.getByText(INSTALL_STEPS)).toBeVisible();
-  }
-  return connected;
+/** Installation is independent of whether Chrome is currently running. */
+async function expectChromeInstallation(page: Page) {
+  await expect(page.getByRole('status').filter({ hasText: /已安装|未安装扩展|无法确认安装状态|Installed|Extension not installed|Unable to verify/ })).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(page.getByRole('button', { name: /^(检查连接|断开|重新连接 Chrome|Check connection|Disconnect)$/ })).toHaveCount(0);
+  await expect(page.getByText(ACTION_PERMISSIONS)).toHaveCount(0);
 }
 
 /**
@@ -116,14 +107,14 @@ async function seedSettings(
   page: Page,
   patch: Record<string, unknown>,
 ): Promise<void> {
-  await page.evaluate((state) => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate((state) => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
     Object.assign(persisted.state, state);
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  }, patch);
-  await page.reload();
+    window.location.reload();
+  }, patch)]);
 }
 
 async function openCapabilities(page: Page): Promise<void> {
@@ -135,7 +126,7 @@ async function openCapabilities(page: Page): Promise<void> {
 let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 
-test.describe.serial('Electron capability overview', () => {
+test.describe('Electron capability overview', () => {
   test.afterEach(async () => {
     if (app) {
       await closeAbuElectron(app);
@@ -217,18 +208,8 @@ test.describe.serial('Electron capability overview', () => {
     await expect(builtinBrowser.getByText(READY)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(computerUse.getByText(OFF)).toBeVisible({ timeout: READY_TIMEOUT });
 
-    // The real Chrome extension uses a machine-wide bridge, outside this
-    // test's isolated app data. Both settled states are valid; neither is a
-    // setup fault. Do not disconnect a developer's Chrome to force a fixture.
-    await expect(myChrome.getByText(NOT_CONNECTED).or(myChrome.getByText(READY)))
+    await expect(myChrome.getByText(/^(已安装|未安装扩展|暂时无法确认安装状态|Installed|Extension not installed|Unable to verify installation)$/))
       .toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(myChrome.getByText(SETUP_REQUIRED)).toHaveCount(0);
-    if (await myChrome.getByText(NOT_CONNECTED).isVisible()) {
-      await expect(myChrome.getByText(READY)).toHaveCount(0);
-      await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
-    } else {
-      await expect(myChrome.getByText(NOT_CONNECTED)).toHaveCount(0);
-    }
     // The overview carries decisions ABOUT capabilities, never the rules
     // inside them — those all live one level down now.
     await expect(page.getByText(ACTION_PERMISSIONS)).toHaveCount(0);
@@ -254,18 +235,7 @@ test.describe.serial('Electron capability overview', () => {
     // first-party local bridge is already prepared in the background.
     await myChrome.click();
     await expect(page.getByRole('heading', { name: CHROME_HEADER })).toBeVisible();
-    const chromeConnected = await expectChromeConnectionActions(page);
-    if (!chromeConnected) {
-      await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
-      await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
-      const chromeCheckButton = page.getByRole('button', {
-        name: /^(检查连接|Check connection)$/,
-      });
-      await expect(chromeCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
-      await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
-      await page.waitForTimeout(2_500);
-      await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
-    }
+    await expectChromeInstallation(page);
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     await computerUse.click();
@@ -307,8 +277,7 @@ test.describe.serial('Electron capability overview', () => {
     // The master switch is seeded on because the scripting risk warning only
     // fires while it is, and that warning is what screenshot 08 is about.
     await seedSettings(page, {
-      browserSitePermissions: SEEDED_SITES,
-      allowUnattendedBrowser: true,
+      browserPermissionConfigV2: SEEDED_CONFIG,
     });
     await waitForWelcomeScreen(page);
     await openCapabilities(page);
@@ -323,193 +292,60 @@ test.describe.serial('Electron capability overview', () => {
     await capabilityCard(page, BUILTIN_BROWSER).click();
 
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
-    await expect(page.getByText(VIEW_PAGES)).toBeVisible();
-    await expect(page.getByText(CLICK_AND_FILL)).toBeVisible();
-    // Scripting is its own card, not a third row of the matrix.
-    const matrix = page.locator('div.rounded-lg.border').filter({
-      has: page.getByText(ACTION_PERMISSIONS, { exact: true }),
-    }).first();
-    await expect(matrix.getByText(RUN_SCRIPTS)).toHaveCount(0);
-    await expect(page.getByText(RUN_SCRIPTS).first()).toBeVisible();
-    await expect(page.getByText(AUTOMATIC_TASKS).first()).toBeVisible();
-    // The Chrome-channel caveat belongs to the Chrome page only.
-    await expect(page.getByText(CHROME_CAVEAT)).toHaveCount(0);
-    // U1 — a working built-in browser reports no status: the badge and the
-    // "its own session" note were the title and the card badge said twice.
-    await expect(page.getByText(READY)).toHaveCount(0);
+    await expect(page.getByText(AUTOMATIC_TASKS)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^浏览网页:/ })).toContainText('允许');
+    const scriptCell = page.getByRole('button', { name: /^运行脚本:/ });
+    await expect(scriptCell).toContainText('每次询问');
+    await scriptCell.click();
+    const allowOption = page.getByRole('button', { name: /^允许 允许此类操作/ });
+    await expect(allowOption).toBeVisible();
+    const menu = page.locator(`#${await scriptCell.getAttribute('aria-controls')}`);
+    const [menuBox, triggerBox] = await Promise.all([menu.boundingBox(), scriptCell.boundingBox()]);
+    expect(Math.abs(menuBox!.width - triggerBox!.width)).toBeLessThanOrEqual(1);
+    const box = await allowOption.boundingBox();
+    expect(await page.evaluate(({x,y}) => document.elementFromPoint(x,y)?.closest('button')?.textContent, { x: box!.x + box!.width/2, y: box!.y + box!.height/2 })).toContain('允许');
+    await allowOption.click();
+    await expect(scriptCell).toContainText('允许');
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.defaults.script)).toBe('allow');
+    await scriptCell.click();
+    await page.getByRole('button', { name: /^每次询问 / }).click();
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.defaults.script)).toBe('ask');
+    await page.mouse.move(10, 10);
     await page.screenshot({ path: iaScreenshot('02-builtin-browser-detail-zh') });
 
-    // The page is taller than the settings pane, and the scripting card plus
-    // the site-authorization card are the half a reviewer most needs to see.
-    const siteCardHeading = page.getByText(SITE_PERMISSIONS, { exact: true }).first();
-    await siteCardHeading.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(150);
-    await page.screenshot({ path: iaScreenshot('02b-builtin-browser-detail-scrolled-zh') });
-
-    /*
-      What each option MEANS lives inside the option — the reason there is no
-      ⓘ anywhere on this page — and that is only visible with a menu open.
-
-      The scripting card is the one worth photographing: it is the menu that
-      used to be painted over by the site-permissions card directly below it,
-      and since the 2026-09-04 column collapse there is exactly ONE dropdown
-      on it, not one per run mode.
-    */
-    const scriptCard = page
-      .locator('div.rounded-lg.border')
-      .filter({ has: page.getByText(RUN_SCRIPTS, { exact: true }) })
-      .first();
-    const scriptCell = scriptCard.locator('button[aria-expanded]');
-    await expect(scriptCell).toHaveCount(1);
-    await scriptCell.scrollIntoViewIfNeeded();
-    await scriptCell.click();
-
-    /*
-      One setting, one intent (acceptance F4). This row answers 「这个权限档
-      位是什么意思」, and the answer is a promise about what Abu will do —
-      「每次执行前先征得你的同意」 — not a tour of the two places the question
-      can appear. Where it is asked is the approval channel's business, and
-      「你在场 / 自动任务 / IM」 left a reader wondering whether one upload
-      permission secretly has a second set of rules. The two withdrawn
-      per-column strings must still not survive anywhere on this surface.
-    */
-    const askOption = page.getByText(
-      /每次执行前先征得你的同意|Asks for your go-ahead before each one/,
-    );
-    await expect(askOption).toBeVisible();
-    await expect(page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/))
-      .toHaveCount(0);
-    await expect(page.getByText(/发到任务绑定的 IM 频道确认|Asks in the task's IM channel/))
-      .toHaveCount(0);
-
-    /*
-      The menu is exactly as wide as the trigger that opened it. It used to be
-      shrink-to-fit with a min-width floor, so this description — one unbroken
-      line — set the width and the menu spilled ~560px across a 185px control.
-    */
-    const [menuBox, triggerBox] = await Promise.all([
-      page.locator(`#${await scriptCell.getAttribute('aria-controls')}`).boundingBox(),
-      scriptCell.boundingBox(),
-    ]);
-    expect(menuBox).not.toBeNull();
-    expect(Math.abs(menuBox!.width - triggerBox!.width)).toBeLessThanOrEqual(1);
-
-    /*
-      Unclipped is the whole point of the portal fix, and "visible" does not
-      prove it — the card below used to paint straight over this menu while
-      every element in it stayed "visible" to the DOM. So ask the document
-      what is actually on top at the option's own centre.
-    */
-    const askBox = await askOption.boundingBox();
-    expect(askBox).not.toBeNull();
-    const topmostText = await page.evaluate(({ x, y }) => {
-      const el = document.elementFromPoint(x, y);
-      return el?.closest('button')?.textContent?.trim() ?? el?.textContent?.trim() ?? '';
-    }, {
-      x: askBox!.x + askBox!.width / 2,
-      y: askBox!.y + askBox!.height / 2,
-    });
-    expect(topmostText).toMatch(/每次询问|Ask every time/);
-
-    /*
-      The ⚠ line the 2026-09-04 ruling requires: it must NOT be sitting there
-      by default (scripting ships as 「每次询问」), and it must appear directly
-      under this select the moment 「允许」 is the selected value.
-      Photographed for the IA record.
-    */
-    const riskWarning = page.getByText(/风险升高|Elevated risk/);
-    await expect(riskWarning).toHaveCount(0);
-    await page.getByText(/^在允许的网站上不再询问$|^Never asks again on allowed sites$/).click();
-    await expect(riskWarning).toBeVisible();
-    await page.waitForTimeout(150);
-    await page.screenshot({ path: iaScreenshot('08-script-allow-warning-zh') });
-
-    // Put the row back to the SHIPPED DEFAULT — 「每次询问」, not 「拒绝」 —
-    // so the shot below photographs the surface a new install actually shows.
-    // (It used to click 「拒绝」, which was the default only until the ruling
-    // moved the automatic-task scripting cell to 「每次询问」.)
-    await scriptCell.click();
-    await askOption.click();
-    await expect(scriptCell).toContainText(/每次询问|Ask every time/);
-    await expect(riskWarning).toHaveCount(0);
-    await scriptCell.click();
-    await expect(askOption).toBeVisible();
-
-    await page.waitForTimeout(150);
-    await page.screenshot({ path: iaScreenshot('07-select-open-zh') });
-
-    // Dismiss by clicking outside, NOT with Escape: the settings dialog closes
-    // itself on Escape regardless of what is open inside it, so Escape here
-    // would take the whole page down rather than just this menu.
-    await page.getByText(ACTION_PERMISSIONS).first().click();
-    await expect(askOption).toHaveCount(0);
-
-    // ---- Site list, two levels down -------------------------------------
-    // Same rule as the overview: the row drills in, no text button.
-    await expect(page.getByRole('button', { name: MANAGE })).toHaveCount(0);
     await page.getByRole('button', { name: SITE_PERMISSIONS }).click();
-
     await expect(page.getByTitle('https://reports.example.com')).toBeVisible();
     await expect(page.getByTitle('https://example.com')).toBeVisible();
-    await page.screenshot({ path: iaScreenshot('03-site-permissions-list-zh') });
-
-    /*
-      F1 — the list is also where a verdict is CREATED. Until this row existed
-      the only road to 「始终允许」 ran through the confirmation dialog, so
-      preparing a scheduled task meant running it attended, being refused,
-      clicking allow, and re-running. Driven here through the real keyboard,
-      because "Enter submits" is the interaction a user actually performs and
-      no unit test exercises the real shell's key handling.
-    */
-    const addField = page.getByLabel(ADD_SITE_LABEL);
-    await expect(addField).toBeVisible();
-    await addField.fill('https://Added.Example.com/reports?q=1');
-    await addField.press('Enter');
-
-    // Normalized the same way the gate resolves a live tab: lowercased host,
-    // no path, no query.
-    await expect(page.getByTitle('https://added.example.com')).toBeVisible();
-    await expect(addField).toHaveValue('');
-    await page.screenshot({ path: iaScreenshot('09-site-list-add-zh') });
-
-    // A bank cannot be given a standing grant by typing its address, the same
-    // way the confirmation dialog withholds one there.
-    await addField.fill('https://www.paypal.com');
+    await expect(page.getByPlaceholder(/搜索域名|搜索文件名/)).toHaveCount(0);
     await page.getByRole('button', { name: ADD_SITE_BUTTON }).click();
-    await expect(
-      page.getByText(/不能设为「始终允许」|cannot be set to Always allow/),
-    ).toBeVisible();
-    await expect(page.getByTitle('https://www.paypal.com')).toHaveCount(0);
-    await addField.fill('');
+    const dialog = page.getByRole('dialog').last();
+    await dialog.getByLabel(ADD_SITE_LABEL).fill('https://Added.Example.com/reports?q=1');
+    await dialog.getByRole('button', { name: ADD_SITE_BUTTON }).click();
+    await expect(page.getByTitle('https://added.example.com')).toBeVisible();
+    const site = page.getByRole('region', { name: 'https://added.example.com', exact: true });
+    await site.getByRole('button', { name: /^https:\/\/added.example.com 网站访问:/ }).click();
+    await page.getByRole('button', { name: '自定义', exact: true }).click();
+    const custom = page.getByRole('dialog').last();
+    await custom.getByRole('button', { name: /^上传文件:/ }).click();
+    await page.getByRole('button', { name: /^禁止 / }).click();
+    await custom.getByRole('button', { name: '保存更改' }).click();
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.sites['https://added.example.com']?.upload)).toBe('deny');
+    await page.screenshot({ path: iaScreenshot('03-site-permissions-list-zh') });
+    await site.getByRole('button', { name: '删除 https://added.example.com 的设置' }).click();
+    await page.getByRole('dialog').last().getByRole('button', { name: '删除例外' }).click();
+    await expect(page.getByTitle('https://added.example.com')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.sites['https://added.example.com'])).toBeUndefined();
 
-    // One step up lands on the page we came from, not the overview.
     await page.getByRole('button', { name: BUILTIN_BROWSER }).click();
-    await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
-    await expect(page.getByTitle('https://example.com')).toHaveCount(0);
-
+    await page.getByRole('button', { name: /^(下载记录|Download history)$/ }).click();
+    await expect(page.getByText(/^(暂无下载记录|No downloads yet)$/)).toBeVisible();
+    await expect(page.getByPlaceholder(/搜索域名|搜索文件名/)).toHaveCount(0);
+    await page.screenshot({ path: iaScreenshot('04-downloads-empty-zh') });
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
-    await expect(capabilityCard(page, MY_CHROME)).toBeVisible();
-
-    // ---- My Chrome detail: same skeleton, one extra warning -------------
     await capabilityCard(page, MY_CHROME).click();
-    await expect(page.getByRole('heading', { name: CHROME_HEADER })).toBeVisible();
-    // Header carries the one-liner, not the paragraph it used to open with.
-    await expect(page.getByText(/复用你已登录的 Chrome 标签页/)).toBeVisible();
-    await expect(page.getByText(/让阿布在你明确要求时使用现有标签页/)).toHaveCount(0);
-    // Re-read live state here: Chrome may connect after the overview opens.
-    await expectChromeConnectionActions(page);
-    await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
-    await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
-    await page.screenshot({ path: iaScreenshot('04-my-chrome-detail-zh') });
-
-    // The one warning this page exists to carry sits below the fold, so the
-    // visual record scrolls to it rather than proving only that it rendered.
-    const caveat = page.getByText(CHROME_CAVEAT).first();
-    await expect(caveat).toBeVisible();
-    await caveat.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(150);
-    await page.screenshot({ path: iaScreenshot('04b-my-chrome-caveat-zh') });
-
+    await expectChromeInstallation(page);
+    await expect(page.getByText(SITE_PERMISSIONS)).toHaveCount(0);
+    await page.screenshot({ path: iaScreenshot('05-chrome-detail-zh') });
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     // ---- Computer Use detail: now owns the active-model block -----------

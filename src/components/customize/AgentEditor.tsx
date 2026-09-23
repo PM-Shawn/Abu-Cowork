@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { ArrowLeft, Save, Play } from 'lucide-react';
+import { Save, Play } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { useI18n, format } from '@/i18n';
 import { serializeAgentMd, agentRegistry, getBuiltinAgentNames } from '@/core/agent/registry';
 import { getAllTools } from '@/core/tools/registry';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import { useSettingsStore, getActiveProvider } from '@/stores/settingsStore';
 import { navigateToChatWithInput } from '@/utils/navigation';
@@ -14,6 +16,8 @@ import { cn } from '@/lib/utils';
 import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
+import AvatarPicker from '@/components/common/AvatarPicker';
+import AgentAvatar from '@/components/common/AgentAvatar';
 
 /**
  * Every name an agent already answers to — builtins, the user's own, and
@@ -39,8 +43,11 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
 
-  // Name validation via shared hook
+  // Name validation via shared hook. `mode: 'agent'` keeps unicode and letter
+  // case, the rule `save_agent` and the built-in experts use — without it the
+  // editor falls back to the skill slug rule and cannot spell 数据分析师.
   const { name, setName, nameValid, nameTaken, nameChanged } = useItemName(agent?.name ?? null, {
+    mode: 'agent',
     takenNames: agentNamesInUse(),
   });
   // The name the disk refused at save time (a file appeared after the registry
@@ -149,16 +156,17 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       const md = serializeAgentMd(metadata, systemPrompt);
       // Always the file being edited, renamed or not: its folder need not be
       // named after the agent, so an unchanged name could still point at another
-      // agent's folder. saveItemToAbuDir writes in place when the folder already
-      // matches, moves the agent's own ~/.abu folder to the name otherwise (a
-      // move onto an occupied folder fails instead of overwriting), and only
-      // copies from anywhere else.
+      // agent's folder. saveItemToAbuDir writes this agent's own file in place,
+      // wherever it lives (a project agent stays in its project), and on a
+      // rename — and only a rename — moves its folder to the name within the
+      // same parent (a move onto an occupied folder fails instead of
+      // overwriting).
       const oldPath = agent?.filePath;
       // A letter-case-only rename moves this agent's own folder: on the
       // case-insensitive file systems the manifest already "at" the target is
       // its own, so the must-be-new probe would wrongly refuse it.
       const mustBeNew = !agent || (nameChanged && trimmed.toLowerCase() !== agent.name.toLowerCase());
-      await saveItemToAbuDir('agents', 'AGENT.md', trimmed, md, oldPath, { mustBeNew });
+      await saveItemToAbuDir('agents', 'AGENT.md', trimmed, md, oldPath, { mustBeNew, renaming: !!agent && nameChanged });
       await onSave();
       return true;
     } catch (err) {
@@ -187,78 +195,39 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* Header */}
-      <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-[var(--abu-border)]">
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <h2 className="text-body font-semibold text-[var(--abu-text-primary)] flex-1">{t.toolbox.agentEditorTitle}</h2>
-        <div className="flex flex-wrap justify-end gap-x-2 gap-y-1">
-          <button
-            onClick={handleSave}
-            disabled={!isValid || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-minor font-medium bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] hover:bg-[var(--abu-text-primary)] disabled:opacity-50 transition-colors"
-          >
-            <Save className="h-3.5 w-3.5" />
-            {t.toolbox.agentSave}
-          </button>
-          <button
-            onClick={handleSaveAndTest}
-            disabled={!isValid || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-minor font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 transition-colors"
-          >
-            <Play className="h-3.5 w-3.5" />
-            {t.toolbox.agentSaveAndTest}
-          </button>
-          {saveFailed && (
-            <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
-          )}
-        </div>
-      </div>
-
+    <div className="space-y-4">
       {/* Body */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div className="space-y-4">
         {/* Metadata Section */}
         <div className="space-y-3">
           <h3 className="text-minor font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
             {t.toolbox.agentEditorMetadata}
           </h3>
 
-          {/* Name + Avatar row */}
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorName}</label>
-              <input
+          {/* Name and avatar */}
+          <div>
+            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorName}</label>
+            <div className="flex items-center gap-2">
+              <AvatarPicker value={avatar} onChange={setAvatar}>
+                <AgentAvatar agent={{ name: agent?.name ?? name, filePath: agent?.filePath, avatar }} size="lg" />
+              </AvatarPicker>
+              <Input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="my-agent"
                 className={cn(
-                  'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
+                  'min-w-0 flex-1',
                   name.trim() && (!nameValid || nameConflict || nameRefusedAsInvalid) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
                 )}
               />
-              {name.trim() && (!nameValid || nameRefusedAsInvalid) && (
-                <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
-              )}
-              {nameConflict && (
-                <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.agentNameTakenHint}</p>
-              )}
             </div>
-            <div className="w-20">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentAvatar}</label>
-              <input
-                type="text"
-                value={avatar}
-                onChange={(e) => setAvatar(e.target.value)}
-                placeholder="🤖"
-                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all text-center"
-              />
-            </div>
+            {name.trim() && (!nameValid || nameRefusedAsInvalid) && (
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
+            )}
+            {nameConflict && (
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.agentNameTakenHint}</p>
+            )}
           </div>
 
           {/* Description */}
@@ -466,6 +435,22 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
             />
           )}
         </div>
+      </div>
+
+      {/* Footer — same row as the team dialog: cancel, then the actions. */}
+      <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+        {saveFailed && (
+          <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
+        )}
+        <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
+        <Button variant="tint" onClick={handleSaveAndTest} disabled={!isValid || saving}>
+          <Play className="h-3.5 w-3.5" />
+          {t.toolbox.agentSaveAndTest}
+        </Button>
+        <Button onClick={handleSave} disabled={!isValid || saving} data-testid="agent-editor-save">
+          <Save className="h-3.5 w-3.5" />
+          {t.toolbox.agentSave}
+        </Button>
       </div>
     </div>
   );

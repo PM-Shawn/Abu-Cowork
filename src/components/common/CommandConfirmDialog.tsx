@@ -1,8 +1,9 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { AlertTriangle, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format, useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { grantBrowserPermissionTargets } from '@/core/permissions/browserPermissionConfig';
 import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
 import type { DangerLevel } from '@/core/tools/commandSafety';
 
@@ -28,6 +29,8 @@ export interface CommandConfirmRequest {
    */
   browserPageOrigin?: string;
   /** Browser confirmations: whether "always allow this site" may be offered. */
+  browserPermissionResource?: import('@/core/permissions/browserPermissionDefaults').BrowserPermissionResource;
+  browserPermissionTargets?: import('@/core/permissions/browserPermissionConfig').BrowserPermissionTarget[];
   allowPersistentGrant?: boolean;
 }
 
@@ -47,6 +50,7 @@ interface CommandConfirmDialogProps {
   request: CommandConfirmRequest;
   onConfirm: () => void;
   onCancel: () => void;
+  isRequestActive?: () => boolean;
 }
 
 const levelConfig = {
@@ -86,10 +90,23 @@ const levelConfig = {
 
 export default function CommandConfirmDialog({
   request,
-  onConfirm,
-  onCancel,
+  onConfirm: confirm,
+  onCancel: cancel,
+  isRequestActive,
 }: CommandConfirmDialogProps) {
   const { t } = useI18n();
+  const active = useRef<CommandConfirmRequest | null>(request);
+  const [savingRequest, setSavingRequest] = useState<CommandConfirmRequest | null>(null);
+  const [failedRequest, setFailedRequest] = useState<CommandConfirmRequest | null>(null);
+  const saving = savingRequest === request;
+  const saveFailed = failedRequest === request;
+  const setSaving = useCallback((value: boolean) => setSavingRequest(value ? request : null), [request]);
+  const setSaveFailed = useCallback((value: boolean) => setFailedRequest(value ? request : null), [request]);
+  useLayoutEffect(() => { active.current = request; return () => { active.current = null; }; }, [request]);
+  const current = useCallback(() => active.current === request && (isRequestActive?.() ?? true), [request, isRequestActive]);
+  const onCancel = useCallback(() => { active.current = null; cancel(); }, [cancel]);
+  const onConfirm = useCallback(() => { if (!saving && current()) confirm(); }, [saving, current, confirm]);
+  const permissions = useSettingsStore((state) => state.browserPermissionConfigV2);
   const config = levelConfig[request.level];
   const Icon = config.icon;
   const isBlocked = request.level === 'block';
@@ -138,7 +155,10 @@ export default function CommandConfirmDialog({
   // is the floor that high-consequence actions can never rise above. Both must
   // agree before a "forever" button appears.
   const offerSiteGrant =
-    isBrowserKind && !!request.browserOrigin && mayOfferPersistentGrant(request);
+    isBrowserKind && !!request.browserOrigin && mayOfferPersistentGrant(request)
+    && !!request.browserPermissionResource && !!request.browserPermissionTargets?.length
+    && grantBrowserPermissionTargets(permissions, request.browserPermissionResource, request.browserPermissionTargets) !== null
+    && (request.browserEmbeddedOrigins?.length ?? 0) <= MAX_LISTED_EMBEDDED_ORIGINS;
   /**
    * The other sites this page embeds as regions the automation can address.
    *
@@ -158,69 +178,15 @@ export default function CommandConfirmDialog({
   /** The regions this dialog names — and, exactly, the ones it grants. */
   const embeddedOrigins = allEmbeddedOrigins.slice(0, MAX_LISTED_EMBEDDED_ORIGINS);
   const unlistedEmbeddedCount = allEmbeddedOrigins.length - embeddedOrigins.length;
-  const handleAlwaysAllowSite = useCallback(() => {
-    const store = useSettingsStore.getState();
-    /**
-     * Which of these grants the user gave DIRECTLY, and — for the rest — WHICH
-     * PAGE they gave it on.
-     *
-     * `browserPageOrigin` is set only when the action's own target is a region
-     * inside some other page, so its presence is exactly the question "is the
-     * origin this dialog is about the page the user is on?". Absent, the
-     * dialog's own origin IS the page — which makes it both the direct grant
-     * above and the page every merged region grant below is scoped to.
-     *
-     * A region grant is the user allowing a site because the page in front of
-     * them embeds it. That is real consent, and it is consent for THIS page:
-     * it stays valid inside this page's embedded regions whoever is watching,
-     * and is not a standing grant for visiting that site on its own. See
-     * `settingsStore`'s `browserSiteGrantViaEmbed`.
-     */
-    const pageOrigin = request.browserPageOrigin ?? request.browserOrigin;
-    const viaEmbedPage = pageOrigin !== undefined ? { viaEmbedPage: pageOrigin } : undefined;
-    if (request.browserOrigin) {
-      store.setBrowserSitePermission(
-        request.browserOrigin,
-        'allowed',
-        request.browserPageOrigin !== undefined ? viaEmbedPage : undefined,
-      );
-    }
-    // One click, one grant per origin — written individually, never as a
-    // pattern, so what is stored is exactly the list the user just read. The
-    // cap is applied HERE as well as in the list, from the same array: a grant
-    // that reached past what the dialog printed would be a wildcard wearing a
-    // count.
-    // With no page origin to scope them to there is nothing honest to write:
-    // an unscoped grant would be wider than the click, and a made-up page
-    // narrower. Unreachable from the UI (the button only appears once
-    // `request.browserOrigin` is known), and fail-closed if it ever is not.
-    for (const embedded of viaEmbedPage === undefined ? [] : embeddedOrigins) {
-      store.setBrowserSitePermission(embedded, 'allowed', viaEmbedPage);
-    }
-    onConfirm();
-  // `embeddedOrigins` is derived from the same request fields each render.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request.browserOrigin, request.browserPageOrigin, request.browserEmbeddedOrigins, onConfirm]);
-  // ...and say what the verdict opens. A scripting dialog may never mint this
-  // verdict (Ruling-I: one click must not open both the attended no-dialog door
-  // and the automatic-task scripting door), but the click/fill dialog mints the
-  // very same one — and once the scripting row is set to 'allow', an 'allowed'
-  // site is the entire remaining precondition on both of those doors
-  // (`registry.ts`'s `scriptAllowedByPolicy` / `decideBrowserOperation`). The
-  // grant is unchanged; only the label stops understating it, and only in the
-  // configuration where the second door actually exists.
-  const scriptingPolicy = useSettingsStore((s) => s.browserOperationPolicy.scripting);
-  // Two independent facts about the SAME click: how many sites it covers, and
-  // whether it also opens the scripting door. Composed rather than enumerated
-  // — as a nested ternary the regions branch short-circuited the scripting one
-  // and the warning silently disappeared on any page with an iframe (round-2
-  // F2), which is precisely the configuration where the click grants most.
-  const alwaysAllowSiteBase = embeddedOrigins.length > 0
-    ? format(t.commandConfirm.browserAlwaysAllowSiteWithEmbedded, { count: embeddedOrigins.length })
-    : t.commandConfirm.browserAlwaysAllowSite;
-  const alwaysAllowSiteLabel = scriptingPolicy === 'allow'
-    ? `${alwaysAllowSiteBase}${t.commandConfirm.browserAlwaysAllowSiteScriptsSuffix}`
-    : alwaysAllowSiteBase;
+  const handleAlwaysAllowSite = useCallback(async () => {
+    if (!current() || saving || !offerSiteGrant || !request.browserPermissionResource || !request.browserPermissionTargets) return;
+    setSaving(true); setSaveFailed(false);
+    const saved = await useSettingsStore.getState().grantBrowserPermissionTargets(request.browserPermissionResource, request.browserPermissionTargets, current);
+    if (!current()) return;
+    setSaving(false);
+    if (saved) confirm(); else setSaveFailed(true);
+  }, [current, saving, offerSiteGrant, request, confirm, setSaving, setSaveFailed]);
+  const alwaysAllowSiteLabel = request.browserPermissionResource === 'upload' ? t.settings.browserResourceGrantUpload : t.settings.browserResourceGrantBrowse;
 
   // "Block this site" is the mirror of "always allow", and it is offered
   // wherever an origin is known — including the cases that may NOT be granted
@@ -228,14 +194,14 @@ export default function CommandConfirmDialog({
   // safe to make one click away; the asymmetry is deliberate, since the only
   // way a user can currently stop being asked is to approve.
   const offerSiteBlock = isBrowserKind && !!request.browserOrigin;
-  const handleBlockSite = useCallback(() => {
-    if (request.browserOrigin) {
-      useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'denied');
-    }
-    // Blocking also refuses the pending action — the user said "not this site",
-    // which necessarily includes the request they are looking at.
-    onCancel();
-  }, [request.browserOrigin, onCancel]);
+  const handleBlockSite = useCallback(async () => {
+    if (!current() || saving || !request.browserOrigin) return;
+    setSaving(true); setSaveFailed(false);
+    const saved = await useSettingsStore.getState().setBrowserSiteBlocked(request.browserOrigin, true);
+    if (!current()) return;
+    setSaving(false);
+    if (saved) onCancel(); else setSaveFailed(true);
+  }, [request.browserOrigin, current, saving, onCancel, setSaving, setSaveFailed]);
 
   // Close on Escape key
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -252,6 +218,8 @@ export default function CommandConfirmDialog({
   return (
     <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="w-full max-w-md mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
+        {saveFailed && <p role="alert" className="px-6 pt-4 text-minor text-[var(--abu-danger)]">{t.settings.browserSaveFailed}</p>}
+
         {/* Header */}
         <div className="relative px-6 pt-6 pb-4 shrink-0">
           <button
@@ -297,11 +265,13 @@ export default function CommandConfirmDialog({
             </code>
           </div>
 
+          {isBrowserKind && request.browserPermissionTargets && <div className="mt-3 text-minor break-all text-[var(--abu-text-muted)]">{request.browserPermissionTargets.map((target, index) => <p key={index}>{target.origin}{target.embeddedIn ? ` (${format(t.settings.browserEmbeddedScope, { origin: target.embeddedIn })})` : ''}</p>)}</div>}
+
           {/* Which PAGE this is happening on. For an action aimed into a
               third-party region the command line above names the REGION, and
               without this the user would be approving something for a page the
               dialog never mentions. */}
-          {isBrowserKind
+          {isBrowserKind && !request.browserPermissionTargets
             && request.browserPageOrigin
             && request.browserPageOrigin !== request.browserOrigin && (
             <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
@@ -312,7 +282,7 @@ export default function CommandConfirmDialog({
           {/* The page's embedded regions — named before, not after, the click
               that would authorize them. Capped: what is not printed here is
               not granted, and the overflow says so rather than going quiet. */}
-          {embeddedOrigins.length > 0 && (
+          {!request.browserPermissionTargets && embeddedOrigins.length > 0 && (
             <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
               {format(t.commandConfirm.browserEmbeddedOrigins, { origins: embeddedOrigins.join('、') })}
               {unlistedEmbeddedCount > 0 && (
@@ -346,7 +316,7 @@ export default function CommandConfirmDialog({
           </Button>
           {!isBlocked && (
             <Button
-              onClick={onConfirm}
+              disabled={saving} onClick={onConfirm}
               className={`flex-1 h-10 text-body ${
                 request.level === 'danger'
                   ? 'bg-[var(--abu-danger-solid)] hover:opacity-90'
@@ -357,7 +327,7 @@ export default function CommandConfirmDialog({
                 ? (offerSiteGrant
                     ? t.commandConfirm.browserUploadConfirmOnce
                     : t.commandConfirm.browserUploadConfirm)
-                : offerSiteGrant ? t.commandConfirm.browserAllowOnce : t.commandConfirm.confirm}
+                : isBrowserKind ? t.settings.browserRequestOnce : t.commandConfirm.confirm}
             </Button>
           )}
           {!isBlocked && offerSiteGrant && (
@@ -366,7 +336,7 @@ export default function CommandConfirmDialog({
             // safer default is the visually dominant one.
             <Button
               variant="outline"
-              onClick={handleAlwaysAllowSite}
+              disabled={saving} onClick={() => void handleAlwaysAllowSite()}
               className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
               title={request.browserOrigin}
             >
@@ -380,7 +350,7 @@ export default function CommandConfirmDialog({
             // while remaining reachable without leaving the dialog.
             <Button
               variant="ghost"
-              onClick={handleBlockSite}
+              disabled={saving} onClick={() => void handleBlockSite()}
               className="h-8 w-full text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
               title={request.browserOrigin}
             >

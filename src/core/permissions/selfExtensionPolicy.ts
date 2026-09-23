@@ -41,6 +41,11 @@ export interface SelfExtensionFacts {
    * replace — never the model's `overwrite` flag.
    */
   saveAgentReplaces?: boolean;
+  /**
+   * save_team: a team of this name already exists (`saveTeamWouldReplace`).
+   * Anything but an explicit `false` reads as a replace.
+   */
+  saveTeamReplaces?: boolean;
 }
 
 /**
@@ -59,6 +64,15 @@ export function classifySelfExtension(
     const mode = facts.saveAgentReplaces === false ? t.selfExtensionSaveAgentNew : t.selfExtensionSaveAgentReplace;
     const agentName = typeof input.name === 'string' ? input.name : '';
     return { summary: agentName ? `save_agent (${mode}): ${agentName}` : `save_agent (${mode})` };
+  }
+
+  if (name === TOOL_NAMES.SAVE_TEAM) {
+    // Same durable foothold as an expert: the team is overwritten by name, and
+    // `leaderNote` is free text handed to the leader on every later run of it.
+    const t = getI18n().commandConfirm;
+    const mode = facts.saveTeamReplaces === false ? t.selfExtensionSaveTeamNew : t.selfExtensionSaveTeamReplace;
+    const teamName = typeof input.name === 'string' ? input.name.trim() : '';
+    return { summary: teamName ? `save_team (${mode}): ${teamName}` : `save_team (${mode})` };
   }
 
   if (name === TOOL_NAMES.UPDATE_SOUL) {

@@ -8,69 +8,102 @@ on:
     # Re-evaluate body/label-based gate exemptions when their inputs change.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
+# Cancel a superseded run when the same pull request is pushed again. Keyed on
+# github.sha off pull requests (not github.ref): a ref-keyed group would make
+# successive dev pushes queue behind each other, because cancel-in-progress is
+# deliberately false there — a post-merge run is the signal that dev is healthy
+# and must never be cancelled by the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
+  # Runs without installing dependencies; its result independently gates check,
+  # so a build or test pass cannot mask a leak. Uses `git ls-files --cached --others`, which
+  # reads the index and working tree — a shallow checkout is enough.
+  leak-guard:
     runs-on: ubuntu-latest
-    # Least privilege, job-scoped: only this job's coverage comment and junit
-    # check need write on PRs/checks; nothing here needs contents write.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Enterprise leak guard (open-core)
+        run: bash scripts/enterprise-leak-guard.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        id: install
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci)
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        id: install
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci)
+      - name: Type check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run typecheck
+
+  # The only job that writes through GITHUB_TOKEN, and the only one that needs
+  # full git history (changed-line coverage diffs against the PR base).
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
       checks: write
-
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      # Fail fast if closed-source enterprise modules leaked into this public
-      # repo (open-core boundary). Runs before npm so a build/test pass can't
-      # mask it. See CLAUDE.md "Enterprise 代码隔离 — 防泄露红线（open-core）".
-      - name: Enterprise leak guard (open-core)
-        run: bash scripts/enterprise-leak-guard.sh
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          # Migration verification uses node:sqlite, matching the bundled
-          # desktop runtime and native release jobs.
           node-version: 24
           cache: npm
 
       - name: Install dependencies
         id: install
-        # abu-browser-bridge is its own package; its query_js tests build the
-        # sandbox worker with esbuild resolving linkedom/ses from the bridge's
-        # local node_modules, so it needs an install of its own.
-        # abu-chrome-extension likewise: `npm run typecheck` compiles it, and its
-        # `chrome.*` globals come from @types/chrome in the extension's own
-        # node_modules (typecheck:browser-extension in package.json).
         run: |
           npm ci
           (cd abu-browser-bridge && npm ci)
           (cd abu-chrome-extension && npm ci)
 
-      # The quarantine SLA meta-test reads this so the 28-day window advances
-      # on every CI run without any Date.now() inside the test.
       - name: Set quarantine SLA as-of date
         run: echo "QUARANTINE_ASOF=$(date -u +%F)" >> "$GITHUB_ENV"
-
-      # Gate steps run independently of EACH OTHER (so one red stage doesn't mask
-      # another) but are skipped when install failed or the job was cancelled —
-      # otherwise they'd fire against an empty node_modules and bury the real
-      # cause under cascading "command not found" noise.
-      - name: Lint
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: npm run lint
-
-      - name: Type check
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: npm run typecheck
-
-      # gen:models:check is intentionally omitted as a standalone step:
-      # it runs automatically via the `pretest` npm hook before test:coverage,
-      # and again inside `npm run build`. Keeping it separate would be redundant
-      # and add unnecessary latency.
 
       - name: Test with coverage
         id: test
@@ -95,7 +128,6 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run test:inventory:check
 
-      # ── Reports: always published, even when the test step is red ──
       - name: Upload coverage report
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -113,11 +145,10 @@ jobs:
           retention-days: 14
 
       # The two steps below write through GITHUB_TOKEN (checks / PR comments).
-      # That token is read-only on Dependabot PRs (same-repo branch, but
-      # dependabot's token) and on fork PRs, so the actions would fail with
-      # "Resource not accessible by integration" and red the whole job — which
-      # would also silently disable dependabot-auto-merge (it waits on `check`).
-      # Skip them there; the artifact uploads and job summary need no token.
+      # That token is read-only on Dependabot PRs and on fork PRs, so the
+      # actions would fail with "Resource not accessible by integration" and red
+      # this whole job — which would also silently disable dependabot-auto-merge
+      # (it waits on the `check` context, which this job feeds).
       - name: Test report (junit → check)
         if: ${{ !cancelled() && steps.install.outcome == 'success' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: dorny/test-reporter@v2
@@ -126,8 +157,6 @@ jobs:
           path: test-results/junit.xml
           reporter: java-junit
           fail-on-error: false
-          # Default (true) posts the report to the run's job summary and creates no
-          # check run, so it never shows up in the PR's checks list.
           use-actions-summary: false
 
       - name: Coverage summary (job summary)
@@ -148,6 +177,25 @@ jobs:
           json-final-path: coverage/coverage-final.json
           file-coverage-mode: changes
 
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        id: install
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci)
+
       - name: Build frontend
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build
@@ -156,15 +204,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         shell: bash
         run: |
-          # Rebuild the extension from source in a clean env, then compare the
-          # output against the committed src-tauri/browser-extension/ bundle.
-          # Any drift means someone changed abu-chrome-extension/src/ (or
-          # abu-browser-shared/types.ts) without rebuilding + syncing the
-          # committed artifact — so the released app would ship a stale extension.
           npm run build:electron-browser-runtime
-
-          # .map files excluded: non-behavioral, sourcemap paths can have minor
-          # environmental variance. .js/.html/manifest.json are what users run.
           if ! diff -r --exclude='*.map' \
               abu-chrome-extension/dist \
               src-tauri/browser-extension > /tmp/ext-diff.txt 2>&1; then
@@ -180,11 +220,39 @@ jobs:
             exit 1
           fi
           echo "OK: Chrome extension bundle matches source"
-
-          # Only stamp the tracked copy after the comparison succeeds. Copying
-          # resources here would hide precisely the drift this gate must catch.
           node --input-type=module -e "import { recordSourceDigest } from './scripts/check-browser-artifacts.mjs'; recordSourceDigest('src-tauri/browser-extension/content.js');"
           npm run check:browser-artifacts
+
+  # Facade carrying the required check context `check`. Branch protection on
+  # dev requires this exact name, so the parallel jobs above deliberately do
+  # NOT use it. `if: always()` is load-bearing: without it this job is SKIPPED
+  # when an upstream job fails, and a skipped required check can be treated as
+  # success — silently bypassing the gate.
+  check:
+    needs: [leak-guard, lint, typecheck, test, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require every gate job to have succeeded
+        env:
+          RESULTS: >-
+            leak-guard=${{ needs['leak-guard'].result }}
+            lint=${{ needs['lint'].result }}
+            typecheck=${{ needs['typecheck'].result }}
+            test=${{ needs['test'].result }}
+            build=${{ needs['build'].result }}
+        run: |
+          echo "gate results: $RESULTS"
+          for pair in $RESULTS; do
+            if [ "${pair#*=}" != "success" ]; then
+              echo "::error::A required gate job did not succeed — $RESULTS"
+              exit 1
+            fi
+          done
+          echo "All gate jobs succeeded."
 
   # Windows unit tests — ADVISORY for now. This suite has never run on Windows
   # in CI; the first runs will surface path-sensitive tests. Triage them
@@ -233,6 +301,8 @@ jobs:
   # Not a required status check yet (branch protection only requires `check`).
   audit:
     runs-on: ubuntu-latest
+    # Normally seconds; see `check`.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

@@ -1,3 +1,4 @@
+import { BrowserDownloadHistoryEntry, BrowserDownloadHistoryPage } from './BrowserDownloadHistoryPage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
@@ -44,7 +45,7 @@ import {
   ensureMCPServer,
   resolveMCPCompanionResource,
 } from '@/core/agent/mcpDiscovery';
-import { openBundledChromeExtensionSetup } from '@/core/capabilityPlugins/chromeSetup';
+import { getChromeExtensionInstallation, type ChromeExtensionInstallation, openBundledChromeExtensionSetup } from '@/core/capabilityPlugins/chromeSetup';
 import { restartApp } from '@/core/updates/checker';
 import { isMacOS } from '@/utils/platform';
 import { resolveAgentModelCapabilities } from '@/core/llm/modelCapabilities';
@@ -70,7 +71,7 @@ import {
  * user-driven drill-ins with no task counterpart, so they live in local view
  * state only and the store keeps the exact shape it had.
  */
-type CapabilityDetailView = CapabilitySetupTarget | 'builtin' | 'sites' | null;
+type CapabilityDetailView = CapabilitySetupTarget | 'builtin' | 'sites' | 'downloads' | null;
 
 
 interface CapabilitiesSectionProps {
@@ -176,7 +177,6 @@ export default function CapabilitiesSection({
     (state) => state.servers[CAPABILITY_IDS.chromeBridge],
   );
   const updateMCPServer = useMCPStore((state) => state.updateServer);
-  const disconnectMCPServer = useMCPStore((state) => state.disconnectServer);
   const chromeBridgeEnabled = chromeBridge?.config.enabled ?? true;
   const chromeBridgeStatus = chromeBridge?.status;
   const chromeRuntimeChecking = (
@@ -225,6 +225,7 @@ export default function CapabilitiesSection({
   const [chromeInstallerOpening, setChromeInstallerOpening] = useState(false);
   const [chromeExtensionPath, setChromeExtensionPath] = useState<string | null>();
   const [chromeSetupError, setChromeSetupError] = useState<string>();
+  const [chromeInstallation, setChromeInstallation] = useState<ChromeExtensionInstallation>();
   const [requestingComputerPermission, setRequestingComputerPermission] =
     useState<ComputerUsePermission>();
   const [revealingComputerUseApp, setRevealingComputerUseApp] = useState(false);
@@ -382,24 +383,6 @@ export default function CapabilitiesSection({
     }
   }, [chromeBridge, chromeBridgeEnabled, probeChromeExtension, updateMCPServer]);
 
-  const disconnectChromeBridge = useCallback(async () => {
-    setChromeSetupWorking(true);
-    setChromeSetupError(undefined);
-    updateMCPServer(CAPABILITY_IDS.chromeBridge, { enabled: false });
-    try {
-      await disconnectMCPServer(CAPABILITY_IDS.chromeBridge);
-      // Invalidate anything in flight, then forget the handshake: after an
-      // explicit disconnect this is "not connected", not "connection lost".
-      chromeProbeSeqRef.current += 1;
-      setChromeExtensionConnected(undefined);
-      setChromeExtensionEverConnected(false);
-    } catch (error) {
-      setChromeSetupError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setChromeSetupWorking(false);
-    }
-  }, [disconnectMCPServer, setChromeExtensionEverConnected, updateMCPServer]);
-
   const openChromeSetup = () => {
     setSetupRequestedByTask(false);
     setSetupView('chrome');
@@ -407,16 +390,15 @@ export default function CapabilitiesSection({
     void resolveMCPCompanionResource(CAPABILITY_IDS.chromeBridge)
       .then(setChromeExtensionPath)
       .catch(() => setChromeExtensionPath(null));
-    void prepareChromeBridge();
   };
 
-  const openChromeInstaller = async () => {
-    if (!chromeExtensionPath) return;
+  const openChromeInstaller = async (target: 'page' | 'folder' = 'page') => {
+    if (target === 'folder' && !chromeExtensionPath) return;
     setChromeInstallerOpening(true);
     setChromeSetupError(undefined);
-    const result = await openBundledChromeExtensionSetup(chromeExtensionPath);
+    const result = await openBundledChromeExtensionSetup(chromeExtensionPath ?? '', target);
     setChromeInstallerOpening(false);
-    if (!result.extensionFolderOpened || !result.extensionsPageOpened) {
+    if (target === 'folder' ? !result.extensionFolderOpened : !result.extensionsPageOpened) {
       useToastStore.getState().addToast({
         type: 'warning',
         title: t.settings.capabilityChromeSetupTitle,
@@ -562,6 +544,29 @@ export default function CapabilitiesSection({
   ]);
 
   useEffect(() => {
+    let active = true;
+    let pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const installation = await getChromeExtensionInstallation();
+        if (active) setChromeInstallation(installation);
+      } finally {
+        pending = false;
+      }
+    };
+    void refresh();
+    const poll = window.setInterval(() => { void refresh(); }, 5_000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      active = false;
+      window.clearInterval(poll);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [setupView]);
+
+  useEffect(() => {
     if (setupView !== 'computer') return;
     const refresh = () => void syncComputerPermissions(false);
     window.addEventListener('focus', refresh);
@@ -573,7 +578,6 @@ export default function CapabilitiesSection({
   }, [setupView, syncComputerPermissions]);
 
   const browserStatus = statuses[CAPABILITY_IDS.builtinBrowser];
-  const chromeStatus = statuses[CAPABILITY_IDS.chromeBridge];
   const computerStatus = statuses[CAPABILITY_IDS.computerUse];
   const screenPermission = permissions?.screenRead;
   const controlPermission = permissions?.uiControl;
@@ -614,36 +618,17 @@ export default function CapabilitiesSection({
     ? t.settings.capabilityBuiltinBrowserUnavailable
     : t.settings.capabilityBuiltinBrowserDisconnected;
 
-  const chromeChecking_ = chromeChecking || chromeRuntimeChecking;
-  // The Chrome bridge is optional and has a "never set up" state that is not a
-  // problem, so it reads as not-connected rather than needs-setup.
-  const chromeNeverConnected = !chromeBridge
-    || !chromeBridgeEnabled
-    || chromeStatus.code === 'setup-required';
-  const chromeStatusLabel = chromeChecking_
-    ? t.settings.capabilityStatusChecking
-    : chromeNeverConnected
-      ? t.settings.capabilityStatusNotConnected
-      : statusLabels[chromeStatus.code];
-  const chromeStatusTone: StatusBadgeTone = chromeNeverConnected
-    ? 'neutral'
-    : badgeToneFor(chromeStatus.code);
-  /*
-    Never having connected Chrome is not a fault — the badge already says
-    "not connected" and the button already says "Connect Chrome", so restating
-    it in the subtitle would spend the card's one line on nothing. That line
-    goes to what connecting would BUY. A channel that was connected and then
-    broke is a different matter, and keeps its diagnosis.
-  */
-  const chromeSubtitle = chromeChecking_
-    ? t.settings.capabilityStatusChecking
-    : chromeStatus.code === 'connection-lost'
-      ? t.settings.capabilityChromeDisconnected
-      : chromeStatus.code === 'unavailable'
-        ? t.settings.capabilityChromeProbeUnavailable
-        : chromeNeverConnected
-          ? t.settings.capabilityMyChromeSubtitle
-          : t.settings.capabilityMyChromeScope;
+  // Installation survives Chrome closing; transport health belongs to task execution.
+  const chromeStatusLabel = chromeInstallation === 'installed'
+    ? t.settings.capabilityChromeInstalled
+    : chromeInstallation === 'not-installed'
+      ? t.settings.capabilityChromeNotInstalled
+      : chromeInstallation === 'unknown'
+        ? t.settings.capabilityChromeInstallationUnknown
+        : t.settings.capabilityStatusChecking;
+  const chromeStatusTone: StatusBadgeTone = chromeInstallation === 'installed'
+    ? 'ready'
+    : 'neutral';
 
   // Computer Use being switched off is not a fault and not a missing
   // connection; it renders in the neutral tone with its own word for it.
@@ -656,6 +641,7 @@ export default function CapabilitiesSection({
     ? 'neutral'
     : badgeToneFor(computerDisplayStatus.code);
 
+  const [browserDownloadsQuery, setBrowserDownloadsQuery] = useState('');
   const overviewLabel = t.settings.capabilityOverview;
   const builtinTrail = [overviewLabel, t.settings.capabilityBuiltinBrowser];
   const chromeTrail = [overviewLabel, t.settings.capabilityMyChrome];
@@ -683,6 +669,11 @@ export default function CapabilitiesSection({
       />
     );
   }
+
+  if (setupView === 'downloads') return <BrowserDownloadHistoryPage
+    trail={[...builtinTrail, t.settings.browserDownloadsTitle]}
+    onNavigate={(index) => { if (index === 0) cancelSetup(); else setSetupView('builtin'); }}
+    query={browserDownloadsQuery} onQueryChange={setBrowserDownloadsQuery} />;
 
   if (setupView === 'builtin') {
     return (
@@ -734,6 +725,7 @@ export default function CapabilitiesSection({
           backend="builtin"
           onManageSites={() => openSitePermissions('builtin')}
         />
+        <BrowserDownloadHistoryEntry onOpen={() => setSetupView('downloads')} />
       </div>
     );
   }
@@ -745,24 +737,17 @@ export default function CapabilitiesSection({
         requestedByTask={setupRequestedByTask}
         runtimeReady={chromeBridgeEnabled && chromeBridgeStatus === 'connected'}
         extensionConnected={chromeExtensionConnected === true}
-        everConnected={chromeExtensionEverConnected}
+        installation={chromeInstallation}
         extensionPath={chromeExtensionPath}
-        working={chromeSetupWorking || chromeChecking || chromeRuntimeChecking}
+        connecting={chromeSetupWorking || chromeChecking || chromeRuntimeChecking}
         openingInstaller={chromeInstallerOpening}
         error={chromeSetupError}
         breadcrumb={chromeTrail}
         onBack={cancelSetup}
         onPrepare={prepareChromeBridge}
         onOpenInstaller={openChromeInstaller}
-        onCheck={refreshChromeConnection}
         onDone={completeSetup}
-        onDisconnect={disconnectChromeBridge}
-      >
-        <BrowserPermissionCards
-          backend="chrome"
-          onManageSites={() => openSitePermissions('chrome')}
-        />
-      </ChromeSetupView>
+      />
     );
   }
 
@@ -863,12 +848,10 @@ export default function CapabilitiesSection({
           <ChannelCard
             icon={Chrome}
             title={t.settings.capabilityMyChrome}
-            subtitle={chromeStatus.code === 'ready' && !chromeChecking_
-              ? t.settings.capabilityMyChromeSubtitle
-              : chromeSubtitle}
+            subtitle={t.settings.capabilityMyChromeSubtitle}
             statusLabel={chromeStatusLabel}
             statusTone={chromeStatusTone}
-            checking={chromeChecking_}
+            checking={chromeInstallation === undefined}
             onOpen={openChromeSetup}
           />
         </div>

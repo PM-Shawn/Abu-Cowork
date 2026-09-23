@@ -33,6 +33,7 @@
 
 /** The fields this module arbitrates, by their `SettingsState` key. */
 export const BROWSER_CONFIG_FIELDS = [
+  'browserPermissionConfigV2',
   'browserOperationPolicy',
   'browserSitePermissions',
   'allowUnattendedBrowser',
@@ -93,6 +94,7 @@ export function browserConfigCompanionsOf(field: BrowserConfigField): readonly s
 export type BrowserConfigRevisions = Record<BrowserConfigField, number>;
 
 export const INITIAL_BROWSER_CONFIG_REVISIONS: BrowserConfigRevisions = {
+  browserPermissionConfigV2: 0,
   browserOperationPolicy: 0,
   browserSitePermissions: 0,
   allowUnattendedBrowser: 0,

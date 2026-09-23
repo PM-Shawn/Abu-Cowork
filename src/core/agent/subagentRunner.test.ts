@@ -41,6 +41,33 @@ vi.mock('../sidecar/sidecarManager', () => ({
   SidecarRequestError: MockSidecarRequestError,
 }));
 
+// #549: the venue is an ENVIRONMENT choice, never a failure fallback. The
+// default mirrors the old status-derived routing so the existing suite keeps
+// exercising both venues; a test that needs "Electron, but the sidecar is not
+// ready yet" overrides `inProcessEnvironmentMock` directly (a `vi.spyOn` on a
+// factory-mocked module namespace is not reliable in this Vitest version).
+const inProcessEnvironmentMock = vi.fn(() => getSidecarStatus() !== 'running');
+const waitForSidecarVenueMock = vi.fn().mockResolvedValue(undefined);
+class MockSidecarUnavailableError extends Error {
+  readonly reason: 'timeout' | 'failed';
+  constructor(reason: 'timeout' | 'failed' = 'timeout') {
+    super(`Agent sidecar unavailable (${reason})`);
+    this.name = 'SidecarUnavailableError';
+    this.reason = reason;
+  }
+}
+vi.mock('../sidecar/sidecarReadiness', () => ({
+  isInProcessAgentEnvironment: (...a: unknown[]) => inProcessEnvironmentMock(...a),
+  waitForSidecarVenue: (...a: unknown[]) => waitForSidecarVenueMock(...a),
+  SidecarUnavailableError: MockSidecarUnavailableError,
+}));
+
+const traceRuntimeEventMock = vi.fn();
+vi.mock('../observability/runtimeTrace', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../observability/runtimeTrace')>();
+  return { ...actual, traceRuntimeEvent: (...a: unknown[]) => traceRuntimeEventMock(...a) };
+});
+
 const runSubagentLoopMock = vi.fn();
 vi.mock('./subagentLoop', () => {
   class SubagentResult {
@@ -219,6 +246,12 @@ vi.mock('./lifecycleHooks', () => ({
   emitHook: (...a: unknown[]) => emitHookMock(...a),
 }));
 
+// #549 FINAL copy (Shawn 2026-09-17). Kept as constants so the expectations
+// below and the i18n mock can never drift apart.
+const PAYLOAD_TOO_LARGE_COPY = '这段对话太长，无法继续。';
+const SIDECAR_NOT_READY_COPY = '后台服务没有启动成功，这条消息还没有发出。可点重试。';
+const GATEWAY_UNREACHABLE = '无法连接企业 AI 网关。';
+
 vi.mock('../../i18n', () => ({
   getLocale: () => 'zh-CN',
   getI18n: () => ({
@@ -230,15 +263,18 @@ vi.mock('../../i18n', () => ({
         cancelled: '已取消',
         hookBlocked: '被拦截',
         noContent: '无内容',
-        mcpRequiredUnavailable: 'Error: 无法启动代理“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
-        invalidToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
-        invalidToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
-        invalidEmptyToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
-        invalidDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
-        invalidDisallowedToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
-        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        mcpRequiredUnavailable: 'Error: 无法启动专家“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
+        invalidToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidToolsField: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        invalidDisallowedToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidDisallowedToolsField: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
       },
       errorEmptyBody: '空响应',
+      payloadTooLarge: PAYLOAD_TOO_LARGE_COPY,
+      sidecarNotReady: SIDECAR_NOT_READY_COPY,
+      gatewayUnreachable: GATEWAY_UNREACHABLE,
     },
   }),
   format: (template: string, values: Record<string, string | number>) =>
@@ -274,6 +310,16 @@ async function importFresh() {
 }
 
 describe('subagentRunner', () => {
+  it('preserves the execution contract across the wire-safe tool projection', async () => {
+    const { toSerializableTool } = await importFresh();
+    const wire = JSON.parse(JSON.stringify(toSerializableTool({
+      name: 'computer', description: '', inputSchema: { type: 'object', properties: {} },
+      execute: async () => '', execution: { presentation: 'computer-use' },
+    })));
+    expect(wire.execution).toEqual({ presentation: 'computer-use' });
+    expect(wire.execute).toBeUndefined();
+  });
+
   // Same cold-transform hazard as agentLoopRunner.test.ts: left in the first
   // test body, the first importFresh() here measured 2.7 s against the 5 s
   // testTimeout — and a timed-out body is not cancelled, so it keeps mutating
@@ -285,6 +331,11 @@ describe('subagentRunner', () => {
 
   beforeEach(() => {
     getSidecarStatus.mockReset();
+    inProcessEnvironmentMock.mockReset();
+    inProcessEnvironmentMock.mockImplementation(() => getSidecarStatus() !== 'running');
+    waitForSidecarVenueMock.mockReset();
+    waitForSidecarVenueMock.mockResolvedValue(undefined);
+    traceRuntimeEventMock.mockReset();
     sidecarRequestMock.mockReset();
     notifySidecar.mockReset();
     onSidecarRequest.mockReset();
@@ -601,7 +652,7 @@ describe('subagentRunner', () => {
       expect(sidecarRequestMock).not.toHaveBeenCalled();
     });
 
-    it('runs in-process (runSubagentLoop) when the sidecar is not running', async () => {
+    it('runs in-process only in the non-desktop environment', async () => {
       getSidecarStatus.mockReturnValue('stopped');
       const { runSubagent } = await importFresh();
 
@@ -738,8 +789,11 @@ describe('subagentRunner', () => {
 
       const result = await runSubagent({ agent, task: 'do the thing' });
 
-      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result.text).toBe('in-process result');
+      // #549: a malformed response is a transport failure like any other —
+      // a visible error, never a silent rerun. The private body never crosses.
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe('error');
+      expect(result.text).not.toContain('private prompt text');
       expect(result.upstream).toBeUndefined();
     });
 
@@ -766,8 +820,9 @@ describe('subagentRunner', () => {
 
       const result = await runSubagent({ agent, task: 'do the thing' });
 
-      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result.text).toBe('in-process result');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe('error');
+      expect(result.text).not.toContain('private prompt text');
     });
 
     it('rejects a completed sidecar result carrying failure-only upstream details', async () => {
@@ -785,8 +840,9 @@ describe('subagentRunner', () => {
 
       const result = await runSubagent({ agent, task: 'do the thing' });
 
-      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result.text).toBe('in-process result');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe('error');
+      expect(result.text).not.toContain('completed text');
       expect(result.upstream).toBeUndefined();
     });
 
@@ -882,9 +938,10 @@ describe('subagentRunner', () => {
 
         const result = await runSubagent({ agent, task: 'do the thing' });
 
-        expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-        expect(result.text).toBe('in-process result');
-        expect(result.stopReason).toBe('completed');
+        expect(runSubagentLoopMock).not.toHaveBeenCalled();
+        expect(result.stopReason).toBe('error');
+        // The unknown stopReason is never laundered into `completed`.
+        expect(result.text).not.toBe('ambiguous result');
       },
     );
 
@@ -1071,17 +1128,6 @@ describe('subagentRunner', () => {
       });
     });
 
-    it('falls back to runSubagentLoop when the dispatch-time projection fails (e.g. resolveEffectiveLlmCreds throws) — session never registered, sidecar never touched', async () => {
-      getSidecarStatus.mockReturnValue('running');
-      resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('EnterpriseLlmUnavailableError'); });
-      const { runSubagent } = await importFresh();
-
-      const result = await runSubagent({ agent, task: 'do the thing' });
-
-      expect(sidecarRequestMock).not.toHaveBeenCalled();
-      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result.text).toBe('in-process result');
-    });
   });
 
   describe('tool.invoke reverse-channel handler', () => {
@@ -1476,12 +1522,16 @@ describe('subagentRunner', () => {
       ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
       ['agent denylist', { disallowedTools: ['write_file'] }, 'write_file'],
       ['always-blocked orchestration roster', {}, 'run_agent_batch'],
+      ['explicitly allowed nested delegation', { tools: ['delegate_to_agent'] }, 'delegate_to_agent'],
+      ['forged leader protocol tool', { tools: ['read_file'] }, 'report_plan'],
     ])('refuses a reverse tool.invoke outside the frozen %s', async (_label, boundary, toolName) => {
       getSidecarStatus.mockReturnValue('running');
       getAllToolsMock.mockReturnValue([
         { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: async () => 'read' },
         { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: async () => 'write' },
         { name: 'run_agent_batch', description: 'batch', inputSchema: { type: 'object', properties: {} }, execute: async () => 'batch' },
+        { name: 'delegate_to_agent', description: 'delegate', inputSchema: { type: 'object', properties: {} }, execute: async () => 'delegate' },
+        { name: 'report_plan', description: 'plan', inputSchema: { type: 'object', properties: {} }, execute: async () => 'plan' },
       ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
@@ -1495,6 +1545,51 @@ describe('subagentRunner', () => {
       ).rejects.toThrow(/fixed tool boundary/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['role', { tools: ['run_command(npm run *)'] }, undefined],
+      ['task', { tools: [] }, ['run_command(npm run *)']],
+    ])('rechecks %s command inputs on reverse tool.invoke even when the schema was offered', async (_label, boundary, allowedTools) => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: async () => 'run' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent: { ...agent, ...boundary }, task: 'run a command', allowedTools });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.findLast((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'rm -rf /tmp/forbidden' } })).rejects.toThrow();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      await expect(toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'npm run test' } })).resolves.toBe('tool result');
+      expect(executeAnyToolMock).toHaveBeenCalledTimes(1);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['role deny', { disallowedTools: ['read_file'] }],
+      ['invalid allow metadata', { tools: 'read_file' }],
+      ['invalid deny metadata', { disallowedTools: [''] }],
+    ])('fails closed for %s that changed after the host roster was frozen', async (_label, changedMetadata) => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const activeAgent = { ...agent, tools: [] };
+      const runPromise = runSubagent({ agent: activeAgent, task: 'read a file' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.findLast((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      Object.assign(activeAgent, changedMetadata);
+
+      await expect(toolInvokeHandler({ runId, toolName: 'read_file', input: { path: '/tmp/x' } })).rejects.toThrow(/fixed tool boundary/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
       d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
@@ -1986,26 +2081,23 @@ describe('subagentRunner', () => {
     });
   });
 
-  describe('fallback discipline', () => {
-    it('a transport failure BEFORE any tool.invoke arrived falls back to runSubagentLoop', async () => {
+  describe('failure discipline (#549)', () => {
+    it('#549: a transport failure before any tool.invoke returns a visible error — no in-process rerun', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
       const { runSubagent } = await importFresh();
 
       const result = await runSubagent({ agent, task: 'do the thing' });
 
-      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result.text).toBe('in-process result');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('Sidecar process closed');
     });
 
-    // The transport-failure fallback re-runs the WHOLE agent in-process, so it
-    // must re-run it with the same prompt — including the section resolved
-    // shell-side before dispatch. This path is live in dev: `electron:dev`
-    // does not rebuild the sidecar, and a stale sidecar rejects the
-    // `preloadedSkills` wire field through its unknown-key guard, which lands
-    // exactly here. Dropping the section here silently runs the agent without
-    // its declared skills.
-    it('re-runs the transport fallback WITH the shell-resolved preloaded skills', async () => {
+    // `electron:dev` does not rebuild the sidecar, so a stale sidecar rejecting
+    // the `preloadedSkills` wire field through its unknown-key guard used to
+    // land in the silent rerun. It now shows the error instead.
+    it('#549: a stale sidecar rejecting a wire field is a visible error, not a silent rerun', async () => {
       getSidecarStatus.mockReturnValue('running');
       resolvePreloadedSkillsMock.mockResolvedValue(PRELOADED_SECTION);
       sidecarRequestMock.mockRejectedValue(new Error('unknown key: preloadedSkills'));
@@ -2016,44 +2108,132 @@ describe('subagentRunner', () => {
         task: 'preload me',
       });
 
-      expect(result.text).toBe('in-process result');
-      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
-      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
-      // Resolved once, before dispatch — the fallback reuses that section
-      // rather than paying for a second resolution.
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('unknown key: preloadedSkills');
+      // Resolved once, before dispatch — and never re-resolved for a rerun.
       expect(resolvePreloadedSkillsMock).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps a caller-supplied section on the transport fallback', async () => {
+    it('#549: oversize subagent.run reports the oversize copy', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockRejectedValue(new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"subagent.run"}'));
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'x' });
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ stopReason: 'error', text: `Error: ${PAYLOAD_TOO_LARGE_COPY}` });
+      // The raw wire JSON never reaches the parent.
+      expect(result.text).not.toContain('payload_too_large');
+      // Oversize gets its own stage: `errorType` is not stable for it (a
+      // renderer-side PayloadTooLargeError and a sidecar-returned
+      // SidecarRequestError both match), so Task 11 classifies on the stage.
+      const failures = traceRuntimeEventMock.mock.calls.filter((call) => call[0] === 'renderer.subagent_run_failed');
+      expect(failures).toHaveLength(1);
+      expect(failures[0][1]).toMatchObject({ stage: 'payload_too_large', reason: 'pre_first_tool' });
+      expect(JSON.stringify(failures[0][1])).not.toContain('"bytes"');
+    });
+
+    it('#549: a sidecar that never becomes ready fails the subagent visibly', async () => {
+      getSidecarStatus.mockReturnValue('starting');
+      // `starting` is still the Electron environment for this test.
+      inProcessEnvironmentMock.mockReturnValue(false);
+      waitForSidecarVenueMock.mockRejectedValue(new MockSidecarUnavailableError('timeout'));
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'x', parentConversationId: 'conv-1' });
+
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ stopReason: 'error', text: `Error: ${SIDECAR_NOT_READY_COPY}` });
+      const failures = traceRuntimeEventMock.mock.calls.filter((call) => call[0] === 'renderer.subagent_run_failed');
+      expect(failures).toHaveLength(1);
+      // The cold-start reason is classifiable, like the main loop's.
+      expect(failures[0][1]).toMatchObject({
+        conversationId: 'conv-1',
+        stage: 'sidecar_unavailable',
+        errorType: 'sidecar_timeout',
+      });
+    });
+
+    it('#549: never spends a restart attempt from inside a parent run', async () => {
+      // A subagent runs inside a parent run that already established the
+      // venue, so it waits for a cold sidecar but never restarts one.
+      getSidecarStatus.mockReturnValue('starting');
+      inProcessEnvironmentMock.mockReturnValue(false);
+      sidecarRequestMock.mockResolvedValue({
+        text: 'ok', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed',
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'x' });
+
+      expect(waitForSidecarVenueMock).toHaveBeenCalledTimes(1);
+      expect(waitForSidecarVenueMock.mock.calls[0][0]).toMatchObject({ allowRestart: false });
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toBe('ok');
+    });
+
+    it('#549: a running sidecar dispatches without waiting on the venue', async () => {
+      // The reverse-channel tests read `sidecarRequestMock.mock.calls[0]`
+      // synchronously after calling `runSubagent`, so the hot path must not
+      // grow an `await` before dispatch.
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'x' });
+
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+      expect(waitForSidecarVenueMock).not.toHaveBeenCalled();
+      d.reject(new Error('done with this test'));
+      await runPromise;
+    });
+
+    it('#549: a params-build failure is a visible error, not an in-process rerun', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      resolveEffectiveLlmCredsMock.mockImplementation(() => {
+        const err = new Error('gateway down');
+        err.name = 'EnterpriseLlmUnavailableError';
+        throw err;
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'x' });
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toBe(`Error: ${GATEWAY_UNREACHABLE}`);
+    });
+
+    it('#549: emits one terminal trace event for a pre-first-tool transport failure', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
       const { runSubagent } = await importFresh();
 
-      await runSubagent({
-        agent: { ...agent, skills: ['weekly-report'] },
-        task: 'preload me',
-        preloadedSkills: PRELOADED_SECTION,
-      });
+      await runSubagent({ agent, task: 'do the thing', parentConversationId: 'conv-1' });
 
-      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
-      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
-      expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
+      const failures = traceRuntimeEventMock.mock.calls.filter((call) => call[0] === 'renderer.subagent_run_failed');
+      expect(failures).toHaveLength(1);
+      expect(failures[0][1]).toMatchObject({
+        method: 'subagent.run',
+        // The trace layer cannot backfill a conversation for a subagent runId.
+        conversationId: 'conv-1',
+        stage: 'transport_failed',
+        outcome: 'error',
+        reason: 'pre_first_tool',
+      });
+      // Numbers / method names only — never the failure text.
+      expect(JSON.stringify(failures[0][1])).not.toContain('Sidecar process closed');
     });
 
-    it('drops pre-invoke sidecar progress and gives the local fallback a fresh scope', async () => {
+    it('#549: drops pre-invoke sidecar progress instead of publishing a ghost step', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
-      runSubagentLoopMock.mockImplementationOnce(async (options: SubagentLoopOptions) => {
-        options.onProgress?.({
-          type: 'tool-start',
-          id: 'call_1',
-          toolName: 'read_file',
-          toolInput: {},
-        });
-        return { text: 'fallback', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
-      });
       const { runSubagent } = await importFresh();
       const onProgress = vi.fn();
 
@@ -2069,11 +2249,9 @@ describe('subagentRunner', () => {
       d.reject(new Error('Sidecar process closed'));
       const result = await runPromise;
 
-      expect(result.text).toBe('fallback');
-      expect(onProgress).toHaveBeenCalledTimes(1);
-      const fallbackId = onProgress.mock.calls[0][0].id as string;
-      expect(fallbackId).toMatch(/^subagent-v1:sar-.*:call_1$/);
-      expect(fallbackId).not.toBe(`subagent-v1:${encodeURIComponent(runId)}:call_1`);
+      expect(result.stopReason).toBe('error');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(onProgress).not.toHaveBeenCalled();
     });
 
     it('does not commit or publish progress for a rejected reverse tool request', async () => {
@@ -2105,8 +2283,10 @@ describe('subagentRunner', () => {
 
       d.reject(new Error('Sidecar process closed'));
       const result = await runPromise;
-      expect(result.text).toBe('in-process result');
-      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      // A rejected reverse request executed nothing, so the run is still
+      // "pre first tool" — which since #549 means a visible error, not a rerun.
+      expect(result.stopReason).toBe('error');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(onProgress).not.toHaveBeenCalled();
     });
 

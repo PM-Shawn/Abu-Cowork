@@ -50,6 +50,7 @@ vi.mock('@/core/enterprise/policy/matcher', () => ({
 }));
 
 import { installSkillFromFolder } from './installer';
+import { checkSkill } from '@/core/enterprise/policy/matcher';
 
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockReadDir = vi.mocked(readDir);
@@ -269,6 +270,22 @@ describe('installSkillFromFolder', () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.code).toBe('NO_NAME');
+    });
+
+    it("fails with POLICY_DENIED, naming the skill, when the organization's policy blocks it", async () => {
+      installFakeSourceTree();
+      vi.mocked(checkSkill).mockReturnValueOnce({ decision: 'deny', reason: "skill 'dj-data-agent' blocked by policy" });
+
+      const result = await installSkillFromFolder(SRC);
+
+      expect(result).toEqual({
+        ok: false,
+        code: 'POLICY_DENIED',
+        message: "[policy] skill 'dj-data-agent' blocked by policy",
+        skillName: 'dj-data-agent',
+      });
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(mockRename).not.toHaveBeenCalled();
     });
   });
 });

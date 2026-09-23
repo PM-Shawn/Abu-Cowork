@@ -705,7 +705,9 @@ describe('Agent Pipeline Integration', () => {
           name: 'Anthropic',
           apiFormat: 'anthropic',
           apiKey: '', // Empty API key
-          models: [],
+          // The pinned model must still be listed, otherwise the availability
+          // guard (not the key check) is what refuses the run.
+          models: [{ id: 'claude-sonnet-4', name: 'Claude Sonnet 4', contextWindow: 200000, maxOutputTokens: 8192 }],
           enabled: true,
         },
       ],

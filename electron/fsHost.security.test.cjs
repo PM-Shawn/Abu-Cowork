@@ -12,6 +12,23 @@ const { fsWatchDispatch, cleanupFsWatchesForSender } = require('./fsWatchHost.cj
 
 const app = {};
 
+function canCreateSymlinks() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-fs-symlink-probe-'));
+  try {
+    const target = path.join(dir, 'target.txt');
+    fs.writeFileSync(target, 'probe');
+    fs.symlinkSync(target, path.join(dir, 'link.txt'), 'file');
+    return true;
+  } catch (error) {
+    if (error?.code === 'EPERM') return false;
+    throw error;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const SYMLINKS_AVAILABLE = canCreateSymlinks();
+
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-fs-security-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -120,7 +137,9 @@ test(
   }
 );
 
-test('symlinks whose canonical target remains in an allowed root keep working', (t) => {
+test('symlinks whose canonical target remains in an allowed root keep working', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const targetDir = tempDir(t);
   const target = path.join(targetDir, 'allowed.txt');
@@ -196,6 +215,29 @@ test('path-policy canonicalization rejects malformed renderer paths', () => {
   assert.throws(() => canonicalizeForPathPolicy('x'.repeat(33 * 1024)), /too long/);
 });
 
+test('path-policy canonicalization rejects relative paths instead of resolving them against the main-process cwd', { skip: process.platform === 'win32' }, (t) => {
+  const previousCwd = process.cwd();
+  // after hook 按注册顺序执行：先恢复 cwd，再删除临时目录
+  t.after(() => process.chdir(previousCwd));
+  const dir = tempDir(t);
+  process.chdir(dir);
+  fs.writeFileSync(path.join(dir, 'inside.txt'), 'inside');
+
+  for (const relativePath of ['inside.txt', './inside.txt', 'nested/missing.txt', '../escape.txt', '\\inside.txt']) {
+    for (const followFinalSymlink of [true, false]) {
+      assert.throws(
+        () => canonicalizeForPathPolicy(relativePath, followFinalSymlink),
+        (error) => error instanceof Error && error.message === 'fs: path must be an absolute path'
+      );
+    }
+  }
+
+  assert.equal(
+    canonicalizeForPathPolicy(path.join(dir, 'inside.txt')),
+    path.join(fs.realpathSync.native(dir), 'inside.txt')
+  );
+});
+
 test('remove deletes an escaping symlink entry without following its target', { skip: process.platform === 'win32' }, (t) => {
   const dir = tempDir(t);
   const link = path.join(dir, 'outside-link');
@@ -208,7 +250,9 @@ test('remove deletes an escaping symlink entry without following its target', { 
   assert.equal(fs.existsSync('/etc'), true);
 });
 
-test('writes use the canonical operation path through an allowed symlink parent', (t) => {
+test('writes use the canonical operation path through an allowed symlink parent', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const targetDir = tempDir(t);
   const linkDir = path.join(dir, 'linked-parent');
@@ -225,6 +269,140 @@ test('writes use the canonical operation path through an allowed symlink parent'
 
   assert.equal(fs.readFileSync(targetFile, 'utf8'), 'canonical');
 });
+
+function writeCreateNew(file, text) {
+  return fsDispatch(app, 'plugin:fs|write_text_file', {
+    body: Buffer.from(text),
+    headers: { path: encodeURIComponent(file), options: JSON.stringify({ createNew: true }) },
+  });
+}
+
+test('createNew creates a missing file and refuses an existing one without touching it', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+
+  writeCreateNew(file, 'first');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first');
+
+  assert.throws(() => writeCreateNew(file, 'second'), /already exists and createNew is set/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first');
+});
+
+test('createNew never overwrites a file that appears after an existence check', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+  fs.writeFileSync(file, 'someone else');
+  // The race: any "is it there?" probe answers no, yet the file exists by the
+  // time the bytes are written. Tauri's plugin opens with create_new (O_EXCL),
+  // so the create itself must be the check.
+  t.mock.method(fs, 'existsSync', () => false);
+
+  assert.throws(() => writeCreateNew(file, 'mine'), /already exists and createNew is set/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'someone else');
+});
+
+function writeWithOptions(file, text, options) {
+  return fsDispatch(app, 'plugin:fs|write_text_file', {
+    body: Buffer.from(text),
+    headers: { path: encodeURIComponent(file), options: JSON.stringify(options) },
+  });
+}
+
+test('create:false refuses a file deleted since the caller probed it, and creates nothing', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+  // The race `ensureRoleId()` depends on: the agent registry read this
+  // AGENT.md, so it existed then; it is gone by the time the roleId is written
+  // back. Tauri's plugin opens a handle that cannot create, so the open itself
+  // is the check. existsSync is pinned to the stale "yes, it's there" a probe
+  // would have returned, so reintroducing any probe-then-write brings the file
+  // back as a half-agent nobody asked for and fails this test.
+  t.mock.method(fs, 'existsSync', () => true);
+
+  assert.throws(
+    () => writeWithOptions(file, 'recreated', { create: false }),
+    /does not exist and create is false/
+  );
+  // Asserted through readdir, not existsSync — that one is mocked.
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('create:false still writes an existing file, truncating it the way the plugin does', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+  fs.writeFileSync(file, 'a much longer previous body');
+
+  writeWithOptions(file, 'short', { create: false });
+
+  assert.equal(fs.readFileSync(file, 'utf8'), 'short');
+});
+
+test('append adds to an existing file instead of truncating it', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'messages.jsonl');
+  fs.writeFileSync(file, 'first\n');
+
+  writeWithOptions(file, 'second\n', { append: true });
+
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first\nsecond\n');
+});
+
+test('create:false appends to an existing file without truncating it', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'messages.jsonl');
+  fs.writeFileSync(file, 'first\n');
+
+  writeWithOptions(file, 'second\n', { create: false, append: true });
+
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first\nsecond\n');
+});
+
+test('create:false refuses to append to a file that is not there', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'messages.jsonl');
+
+  assert.throws(
+    () => writeWithOptions(file, 'orphan\n', { create: false, append: true }),
+    /does not exist and create is false/
+  );
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test(
+  'create:false writes a file whose owner left it write-only',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const dir = tempDir(t);
+    const file = path.join(dir, 'AGENT.md');
+    fs.writeFileSync(file, 'old');
+    fs.chmodSync(file, 0o200);
+
+    // The plugin opens write-only (`O_WRONLY`), so it does not need read
+    // permission. Reaching for `'r+'` as the "never create" stand-in asks for
+    // `O_RDWR` and fails here with EACCES on a file Abu can legitimately write.
+    writeWithOptions(file, 'new', { create: false });
+
+    // Readable again only so this assertion can run — the write above is the
+    // part that had to work without read permission.
+    fs.chmodSync(file, 0o644);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'new');
+  }
+);
+
+test(
+  'a write honors the mode on the file it creates',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const dir = tempDir(t);
+    const file = path.join(dir, 'secret.json');
+
+    writeWithOptions(file, '{"token":"x"}', { mode: 0o600 });
+
+    // Ignoring `mode` hands a caller that asked for owner-only a
+    // world-readable secrets file instead, silently.
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
+);
 
 test(
   'custom append and atomic writes reject paths below an escaping symlink',
@@ -253,7 +431,9 @@ test(
   }
 );
 
-test('atomic writes retry an exclusive random tempfile collision without following its symlink', (t) => {
+test('atomic writes retry an exclusive random tempfile collision without following its symlink', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const target = path.join(dir, 'settings.json');
   const sentinel = path.join(dir, 'outside-sentinel.txt');
@@ -287,7 +467,9 @@ test('atomic writes retry an exclusive random tempfile collision without followi
   assert.equal(fs.lstatSync(planted).isSymbolicLink(), true);
 });
 
-test('EXDEV restore replaces a target symlink without writing through it', (t) => {
+test('EXDEV restore replaces a target symlink without writing through it', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const backup = path.join(dir, '.settings.json.backup.test');
   const target = path.join(dir, 'settings.json');
@@ -329,7 +511,9 @@ test('EXDEV restore replaces a target symlink without writing through it', (t) =
   assert.equal(fs.existsSync(backup), false);
 });
 
-test('restore rejects a symlink source instead of copying through it', (t) => {
+test('restore rejects a symlink source instead of copying through it', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const source = path.join(dir, 'source.txt');
   const backupLink = path.join(dir, '.settings.json.backup.link');
@@ -419,3 +603,160 @@ test('renderer reload cleanup closes every fs watch owned by that sender', (t) =
     })
   );
 });
+
+// A relative path with no baseDir used to be resolved against main's cwd, so
+// it was readable/writable whenever that cwd sat under an allowed root (a dev
+// launch from the repo). These run with cwd inside a temp dir to reproduce it.
+function chdirTemp(t) {
+  const previous = process.cwd();
+  // Registered first so cwd is restored before tempDir's cleanup removes it.
+  t.after(() => process.chdir(previous));
+  const dir = tempDir(t);
+  process.chdir(dir);
+  return dir;
+}
+
+const RELATIVE = 'abu-relative-probe/secret-name.txt';
+const REFUSED = /must be an absolute path/;
+
+function assertRefusedWithoutEcho(fn, key) {
+  assert.throws(fn, (err) => {
+    assert.match(err.message, REFUSED);
+    assert.match(err.message, new RegExp(`\\b${key}\\b`));
+    assert.equal(err.message.includes('secret-name'), false, 'error must not echo the path');
+    return true;
+  });
+}
+
+test(
+  'bare-name write commands refuse a relative path instead of resolving it against cwd',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const cwd = chdirTemp(t);
+    fs.mkdirSync(path.join(cwd, 'abu-relative-probe'));
+    fs.writeFileSync(path.join(cwd, 'abu-relative-probe', '.x.backup.1'), 'old');
+    const utimeOld = new Date(0);
+    fs.utimesSync(path.join(cwd, 'abu-relative-probe', '.x.backup.1'), utimeOld, utimeOld);
+
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'append_file_text', { args: { path: RELATIVE, data: 'x' } }),
+      'path'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'atomic_write_text', { args: { path: RELATIVE, content: 'x' } }),
+      'path'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'atomic_write_with_backup', { args: { path: RELATIVE, content: 'x' } }),
+      'path'
+    );
+    assertRefusedWithoutEcho(
+      () =>
+        fsDispatch(app, 'restore_from_backup', {
+          args: { target: RELATIVE, backup: path.join(cwd, 'abu-relative-probe', '.x.backup.1') },
+        }),
+      'target'
+    );
+    assertRefusedWithoutEcho(
+      () =>
+        fsDispatch(app, 'restore_from_backup', {
+          args: { target: path.join(cwd, 'restored.txt'), backup: RELATIVE },
+        }),
+      'backup'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'cleanup_old_backups', { args: { dir: 'abu-relative-probe', ttlHours: 0 } }),
+      'dir'
+    );
+
+    assert.equal(fs.existsSync(path.join(cwd, RELATIVE)), false);
+    assert.equal(fs.existsSync(path.join(cwd, 'abu-relative-probe', '.x.backup.1')), true);
+  }
+);
+
+test(
+  'plugin:fs raw writes refuse a relative path header when no baseDir is given',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const cwd = chdirTemp(t);
+    for (const cmd of ['plugin:fs|write_file', 'plugin:fs|write_text_file']) {
+      assertRefusedWithoutEcho(
+        () =>
+          fsDispatch(app, cmd, {
+            body: Buffer.from('blocked'),
+            headers: { path: encodeURIComponent('secret-name.txt'), options: '{}' },
+          }),
+        'path'
+      );
+    }
+    assert.equal(fs.existsSync(path.join(cwd, 'secret-name.txt')), false);
+  }
+);
+
+test(
+  'plugin:fs plain-arg commands refuse relative paths when no baseDir is given',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const cwd = chdirTemp(t);
+    fs.writeFileSync(path.join(cwd, 'secret-name.txt'), 'inside cwd');
+    const abs = path.join(cwd, 'other.txt');
+    fs.writeFileSync(abs, 'other');
+
+    for (const cmd of [
+      'plugin:fs|read_text_file',
+      'plugin:fs|read_file',
+      'plugin:fs|stat',
+      'plugin:fs|lstat',
+      'plugin:fs|read_dir',
+      'plugin:fs|mkdir',
+      'plugin:fs|remove',
+    ]) {
+      assertRefusedWithoutEcho(
+        () => fsDispatch(app, cmd, { args: { path: 'secret-name.txt' } }),
+        'path'
+      );
+    }
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'plugin:fs|rename', { args: { oldPath: abs, newPath: 'secret-name.txt' } }),
+      'newPath'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'plugin:fs|copy_file', { args: { fromPath: 'secret-name.txt', toPath: abs } }),
+      'fromPath'
+    );
+    assertRefusedWithoutEcho(
+      () =>
+        fsWatchDispatch(app, 'plugin:fs|watch', {
+          args: { paths: ['secret-name.txt'], options: {}, onEvent: '__CHANNEL__:9' },
+          event: { sender: null },
+        }),
+      'path'
+    );
+    // exists stays a probe: a refused path simply "doesn't exist".
+    assert.equal(fsDispatch(app, 'plugin:fs|exists', { args: { path: 'secret-name.txt' } }), false);
+    assert.equal(fs.readFileSync(path.join(cwd, 'secret-name.txt'), 'utf8'), 'inside cwd');
+    assert.equal(fs.readFileSync(abs, 'utf8'), 'other');
+  }
+);
+
+test(
+  'a relative path is still resolved against an explicit baseDir',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const home = tempDir(t);
+    const homeApp = { getPath: (name) => (name === 'home' ? home : os.tmpdir()) };
+    const HOME_BASE_DIR = 21; // Tauri BaseDirectory.Home
+    fsDispatch(homeApp, 'plugin:fs|write_text_file', {
+      body: Buffer.from('via baseDir'),
+      headers: {
+        path: encodeURIComponent('relative.txt'),
+        options: JSON.stringify({ baseDir: HOME_BASE_DIR }),
+      },
+    });
+    const bytes = fsDispatch(homeApp, 'plugin:fs|read_text_file', {
+      args: { path: 'relative.txt', options: { baseDir: HOME_BASE_DIR } },
+    });
+    assert.equal(bytes.toString('utf8'), 'via baseDir');
+    assert.equal(fs.readFileSync(path.join(home, 'relative.txt'), 'utf8'), 'via baseDir');
+  }
+);

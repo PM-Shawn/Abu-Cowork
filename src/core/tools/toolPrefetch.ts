@@ -8,6 +8,7 @@
 
 import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
+import { isWindows } from '../../utils/platform';
 
 /**
  * Hand-copied mirror of the tools `abu-browser-bridge/src/tools.ts` registers.
@@ -48,7 +49,9 @@ export const BROWSER_TOOL_SUFFIXES = [
   'stop_recording',
 ] as const;
 
-const BUILTIN_BROWSER_TOOLS = BROWSER_TOOL_SUFFIXES.map(
+export const BUILTIN_BROWSER_TOOL_SUFFIXES = [...BROWSER_TOOL_SUFFIXES, 'list_tabs', 'create_tab', 'close_tab', 'retain_tab'] as const;
+
+const BUILTIN_BROWSER_TOOLS = BUILTIN_BROWSER_TOOL_SUFFIXES.map(
   (name) => `abu-browser__${name}`,
 );
 const CHROME_BRIDGE_TOOLS = BROWSER_TOOL_SUFFIXES.map(
@@ -118,6 +121,17 @@ const PREFETCH_RULES: ReadonlyArray<{
   {
     keywords: ['剪贴板', '粘贴板', '复制的', '粘贴', 'clipboard'],
     tools: [TOOL_NAMES.CLIPBOARD_READ, TOOL_NAMES.CLIPBOARD_WRITE],
+  },
+  {
+    // Naming a document file is the moment it matters whether the user has it
+    // open: writing behind Office's back fails, or discards their unsaved
+    // edits. Left deferred, the model had to spend a tool_search round-trip
+    // discovering check_open_document first — measured in a real run. The
+    // extensions are the precise signal; '.doc' covers '.docx' by substring,
+    // as '.xls' and '.ppt' do for theirs. '.csv' earns its place because a csv
+    // open in Excel is the case that produced the original EBUSY defect.
+    keywords: ['.doc', '.xls', '.ppt', '.csv', 'excel', 'wps', '表格', '电子表格'],
+    tools: [TOOL_NAMES.CHECK_OPEN_DOCUMENT],
   },
   {
     keywords: ['创建技能', '保存技能', '新技能', '修改技能', '创建代理', '新代理'],
@@ -191,6 +205,14 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     if (rule.keywords.some(k => lower.includes(k))) {
       additionalTools.push(...rule.tools);
     }
+  }
+
+  // Windows is the only platform with an attach surface behind it, and
+  // promotion is session-sticky — prefetching it elsewhere would keep a tool
+  // in the roster for the rest of the conversation to answer "not supported".
+  if (!isWindows()) {
+    const index = additionalTools.indexOf(TOOL_NAMES.CHECK_OPEN_DOCUMENT);
+    if (index !== -1) additionalTools.splice(index, 1);
   }
 
   // Computer Use stays loaded while enabled. Keyword prefetch may expose the

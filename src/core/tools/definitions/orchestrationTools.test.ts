@@ -32,6 +32,8 @@ import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 import { useChatStore } from '../../../stores/chatStore';
 import { makeBatchKey, type BatchIdentity } from '../../../types';
 import { clearLoopContext, setLoopContext } from '../../agent/permissionBridge';
+import { agentRegistry } from '../../agent/registry';
+import { useSettingsStore } from '../../../stores/settingsStore';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
@@ -210,6 +212,48 @@ describe('runAgentBatchTool progress wiring', () => {
     }
   });
 
+  // Regression (2026-09-16, execution-steps-restart E2E): with the leader loop
+  // in the sidecar, the shell applies the batch step's addStep frame behind an
+  // awaited ledger write, while member progress arrives on its own channel. A
+  // whole member run could finish before the parent step was visible, and the
+  // unresolved events were dropped — the persisted batch step had no children.
+  it('records member progress that arrived before the batch step became visible', async () => {
+    const toolCallToStepId = new Map<string, string>();
+    const addChildStepToDelegate = vi.fn(() => 'child-late');
+    const completeChildStep = vi.fn();
+    setLoopContext('loop-late-parent', {
+      loopId: 'loop-late-parent',
+      conversationId: 'conv-late-parent',
+      signal: new AbortController().signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: { route: vi.fn(), getCurrentStepId: () => null, addChildStepToDelegate, completeChildStep } as never,
+      toolCallToStepId,
+    });
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
+      options.onProgress?.({ type: 'tool-start', id: 'sub-late-1', toolName: 'web_search', toolInput: { query: 'q' } });
+      options.onProgress?.({ type: 'tool-end', id: 'sub-late-1', toolName: 'web_search', result: 'no key', error: true });
+      // The parent's addStep frame lands only after the member already finished.
+      setTimeout(() => toolCallToStepId.set('batch-late-parent', 'batch-step-late'), 15);
+      return subagentResult('done', 'completed');
+    });
+    try {
+      await runAgentBatchTool.execute(
+        { tasks: [{ type: 'research', task: 'look it up' }] },
+        { conversationId: 'conv-late-parent', loopId: 'loop-late-parent', toolCallId: 'batch-late-parent' },
+      );
+      expect(addChildStepToDelegate).toHaveBeenCalledWith('loop-late-parent', 'batch-step-late', {
+        toolName: 'web_search',
+        toolInput: { query: 'q' },
+        toolCallId: 'sub-late-1',
+        batchTask: expect.objectContaining({ index: 0, label: 'look it up' }),
+      });
+      expect(completeChildStep).toHaveBeenCalledWith('loop-late-parent', 'batch-step-late', 'child-late', 'no key', true, undefined);
+    } finally {
+      clearLoopContext('loop-late-parent');
+    }
+  });
+
   it('fails a batch task whose declared expected file is missing', async () => {
     vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async () => new SubagentResult({
       text: 'done', stopReason: 'completed', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 1, output: 1 }, duration: 1,
@@ -233,6 +277,36 @@ describe('runAgentBatchTool progress wiring', () => {
       expect(findMissingExpectedFilesMock).toHaveBeenCalledTimes(2);
     } finally {
       clearLoopContext('loop-files');
+    }
+  });
+
+  // `disabledAgents` means only "not in the automatic-delegation pool". A batch
+  // task that names such an expert explicitly asked for it, so it is dispatched
+  // like any other — the tool must not refuse it.
+  it('dispatches a batch task naming an expert that is off the auto-dispatch pool', async () => {
+    const previousDisabledAgents = useSettingsStore.getState().disabledAgents;
+    useSettingsStore.setState({ disabledAgents: ['reviewer'] });
+    vi.spyOn(agentRegistry, 'getAgent').mockReturnValue({
+      name: 'reviewer',
+      description: 'test',
+      systemPrompt: 'test',
+    } as never);
+    vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(subagentResult('done', 'completed'));
+    installTrustedLoop('conv-off-pool', 'loop-off-pool');
+    try {
+      const report = await runAgentBatchTool.execute(
+        { tasks: [{ agent_name: 'reviewer', task: 'review this' }] },
+        { conversationId: 'conv-off-pool', loopId: 'loop-off-pool', toolCallId: 'batch-off-pool' },
+      );
+      expect(String(report)).not.toContain('已被停用');
+      expect(String(report)).not.toContain('is disabled');
+      expect(subagentRunner.runSubagent).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(subagentRunner.runSubagent).mock.calls[0][0]).toEqual(
+        expect.objectContaining({ agent: expect.objectContaining({ name: 'reviewer' }) }),
+      );
+    } finally {
+      useSettingsStore.setState({ disabledAgents: previousDisabledAgents });
+      clearLoopContext('loop-off-pool');
     }
   });
 
@@ -949,7 +1023,7 @@ describe('runWithTimeout', () => {
       3000,
     );
     // Pre-attach before advancing timer.
-    const assertion = expect(racePromise).rejects.toThrow('Sub-agent execution timed out (aborted)');
+    const assertion = expect(racePromise).rejects.toThrow('Subagent execution timed out (aborted)');
     await vi.advanceTimersByTimeAsync(3000);
     await assertion;
   });

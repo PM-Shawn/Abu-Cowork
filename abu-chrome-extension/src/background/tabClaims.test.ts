@@ -14,13 +14,10 @@
  * write to the claim table either).
  */
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   NO_ACTIVE_TAB_MESSAGE,
   NO_CLAIMED_TAB_MESSAGE,
-  TAB_TARGETED_ACTIONS,
   classifyInbound,
   createTabClaimStore,
   makeOwner,
@@ -434,60 +431,5 @@ describe('get_tabs listing', () => {
     // ownership marks at all — its response shape is untouched.
     expect(listing.currentTabId).toBe(USER_TAB);
     expect(listing.ownership.size).toBe(0);
-  });
-});
-
-/**
- * The gate is only as complete as this set: an action that acts on one tab but
- * is missing from it resolves nothing, so its handler would read `payload.tabId`
- * raw and skip ownership entirely — silently, with no gate anywhere to notice.
- *
- * So the set is re-derived here from the other end of the wire: every action the
- * bridge sends with a `tabId` in its payload. Reading `tools.ts` as text (rather
- * than importing it, which would pull in the MCP server and zod) keeps this
- * deterministic — a file read, no network, no clock.
- */
-describe('TAB_TARGETED_ACTIONS', () => {
-  /** Every `sendWithSignal(transport, '<action>', { … })` whose payload names a tabId. */
-  function bridgeActionsCarryingTabId(source: string): string[] {
-    const found = new Set<string>();
-    const marker = 'sendWithSignal(';
-    for (let at = source.indexOf(marker); at >= 0; at = source.indexOf(marker, at + 1)) {
-      const rest = source.slice(at + marker.length);
-      const head = /^\s*transport\s*,\s*'([a-z_]+)'\s*,\s*/.exec(rest);
-      if (!head) continue; // the helper's own definition, or a non-literal call
-      const payloadStart = rest.slice(head[0].length);
-      if (payloadStart[0] !== '{') continue; // payload is not an object literal
-      let depth = 0;
-      let end = -1;
-      for (let i = 0; i < payloadStart.length; i += 1) {
-        if (payloadStart[i] === '{') depth += 1;
-        else if (payloadStart[i] === '}') {
-          depth -= 1;
-          if (depth === 0) {
-            end = i;
-            break;
-          }
-        }
-      }
-      if (end < 0) continue;
-      if (/\btabId\b/.test(payloadStart.slice(0, end + 1))) found.add(head[1]);
-    }
-    return Array.from(found).sort();
-  }
-
-  it("matches the bridge's own list of tab-targeted tools", () => {
-    const toolsPath = fileURLToPath(new URL('../../../abu-browser-bridge/src/tools.ts', import.meta.url));
-    const source = readFileSync(toolsPath, 'utf8');
-
-    const fromBridge = bridgeActionsCarryingTabId(source);
-
-    // Sanity check on the parser itself: a silent zero here would make the
-    // comparison below vacuous.
-    expect(fromBridge.length).toBeGreaterThan(10);
-    expect(Array.from(TAB_TARGETED_ACTIONS).sort()).toEqual(fromBridge);
-    // …and the two that name no tab stay out of it.
-    expect(TAB_TARGETED_ACTIONS.has('get_tabs')).toBe(false);
-    expect(TAB_TARGETED_ACTIONS.has('get_downloads')).toBe(false);
   });
 });

@@ -108,10 +108,28 @@ export interface ApprovedUploadFile {
    * side reports sub-millisecond — the two must be comparable.
    */
   mtimeMs: number;
-  /** Inode, where the platform has one (`null` on Windows → omitted). */
-  ino?: number;
+  /**
+   * File id, omitted when the filesystem reports none.
+   *
+   * ## Why this is a string, and why it is still sometimes a number
+   *
+   * An NTFS file id packs a record sequence number above the record index and
+   * is 64 bits wide, which the only number JSON has — the double — holds to
+   * 2^53. So the Electron and sidecar filesystem hosts put the exact id on
+   * `FileInfo.ino` as a decimal string, which is the encoding every specified
+   * JSON protocol uses for a 64-bit integer (protobuf's JSON mapping, Google's
+   * Discovery type table, Discord snowflakes, Chrome DevTools Protocol
+   * handles). Two ids one rounding step apart — same record sequence number,
+   * adjacent record index — are then two files rather than one.
+   *
+   * The Tauri shell serializes a Rust u64 onto the same field, so a pin from
+   * there is a JSON number; a sender compares such a pin as a number, in the
+   * rounding both of its own sides went through. Accept both on the way in and
+   * emit one fixed type on the way out, as protobuf specifies.
+   */
+  ino?: number | string;
   /** Device id, paired with `ino`: an inode number is only unique per device. */
-  dev?: number;
+  dev?: number | string;
 }
 
 /**
@@ -124,10 +142,28 @@ export interface ApprovedUploadFile {
  */
 export function hasUploadIdentityPin(file: {
   mtimeMs?: number;
-  ino?: number;
+  ino?: number | string;
 }): boolean {
   return (typeof file.mtimeMs === 'number' && file.mtimeMs > 0)
-    || (typeof file.ino === 'number' && Number.isFinite(file.ino));
+    || readFileIdPin(file.ino) !== undefined;
+}
+
+/**
+ * A file id as it may be pinned: an exact decimal string, or the JSON number
+ * the Tauri shell puts on the same field. Anything else is no id at all.
+ *
+ * Canonical decimal only — a string with a leading zero or a sign would be a
+ * value no producer writes, and one a comparison could never match.
+ *
+ * Mirrored by `approvedFileId` in `electron/browserHost.cjs` and in
+ * `abu-browser-bridge/src/locators.ts`, which are the two senders that have to
+ * read back what this freezes.
+ */
+export function readFileIdPin(value: unknown): number | string | undefined {
+  if (typeof value === 'string') {
+    return /^(?:0|[1-9][0-9]*)$/.test(value) ? value : undefined;
+  }
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 export type BrowserUploadResolution =
@@ -156,9 +192,13 @@ export interface BrowserUploadDeps {
     size: number;
     /** Whole milliseconds, or 0 when the platform reported no mtime. */
     mtimeMs?: number;
-    /** `null`/absent on Windows, where there is no inode. */
-    ino?: number | null;
-    dev?: number | null;
+    /**
+     * `null`/absent where the filesystem reports no file id. A decimal string
+     * from the Electron and sidecar hosts, a number from the Tauri shell —
+     * see `ApprovedUploadFile.ino`.
+     */
+    ino?: number | string | null;
+    dev?: number | string | null;
   }>;
 }
 
@@ -284,8 +324,9 @@ export async function resolveUploadFiles(
     const mtimeMs = Number.isFinite(info.mtimeMs) && (info.mtimeMs as number) > 0
       ? Math.floor(info.mtimeMs as number)
       : 0;
-    const identified = mtimeMs > 0
-      || (typeof info.ino === 'number' && Number.isFinite(info.ino));
+    const ino = readFileIdPin(info.ino);
+    const dev = readFileIdPin(info.dev);
+    const identified = mtimeMs > 0 || ino !== undefined;
     if (!identified) {
       return { ok: false, code: 'unidentifiable', detail: displayName(resolved) };
     }
@@ -294,8 +335,8 @@ export async function resolveUploadFiles(
       name: displayName(resolved),
       size,
       mtimeMs,
-      ...(typeof info.ino === 'number' && Number.isFinite(info.ino) ? { ino: info.ino } : {}),
-      ...(typeof info.dev === 'number' && Number.isFinite(info.dev) ? { dev: info.dev } : {}),
+      ...(ino !== undefined ? { ino } : {}),
+      ...(dev !== undefined ? { dev } : {}),
     });
   }
   return { ok: true, files };

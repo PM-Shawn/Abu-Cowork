@@ -13,6 +13,8 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    # Normally ~2 min; see ci.yml's `check`.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -41,16 +43,22 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
-  # Real-Electron E2E (tests/e2e/, playwright.electron.config.ts). Until this
-  # job existed, the Electron suite ran nowhere in CI — a green "E2E Tests"
-  # check only covered the browser suite above, so desktop-only regressions
-  # (e.g. the composer pending-send drop fixed in 03c35086) shipped invisibly.
+  # Real-Electron E2E, fanned out across three macos-14 runners. The suite keeps
+  # workers: 1 / fullyParallel: false: concurrent launches on one machine race
+  # app.ready. Sharding across runners avoids reintroducing that race.
+  # The matrix job reports as `e2e-electron-shard (1)`; the facade below carries
+  # the required check context `e2e-electron`.
   # The suite pins the app to the zh-CN UI at launch (see
   # tests/e2e/electronHelpers.ts `--lang=zh-CN`), so the English system locale
   # of hosted runners does not change what the tests see.
-  e2e-electron:
+  e2e-electron-shard:
     runs-on: macos-14
     timeout-minutes: 60
+    strategy:
+      # Surface every failure in one round instead of cancelling sibling shards.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
 
@@ -88,7 +96,7 @@ jobs:
         run: npm run build:sandbox-launcher
 
       - name: Run Electron E2E tests
-        run: npm run test:e2e:electron
+        run: npm run test:e2e:electron -- --shard=${{ matrix.shard }}/3
         env:
           CI: true
 
@@ -96,6 +104,26 @@ jobs:
         uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: electron-e2e-test-results
+          name: electron-e2e-test-results-shard-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
+
+  # Keep the required check context. Without always(), an upstream failure can
+  # leave the facade skipped, silently bypassing the gate it exists to enforce.
+  e2e-electron:
+    needs: e2e-electron-shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require every Electron E2E shard to have succeeded
+        env:
+          SHARDS: ${{ needs['e2e-electron-shard'].result }}
+        run: |
+          echo "e2e-electron-shard result: $SHARDS"
+          if [ "$SHARDS" != "success" ]; then
+            echo "::error::Electron E2E shards did not all succeed ($SHARDS)"
+            exit 1
+          fi

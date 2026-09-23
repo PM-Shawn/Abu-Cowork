@@ -28,6 +28,7 @@ export function browserDenialReasonText(
   reason: BrowserDenialReasonCode,
 ): string {
   switch (reason) {
+    case 'server-disabled': return t.commandConfirm.browserServerDisabled;
     case 'master-switch-off': return t.commandConfirm.browserUnattendedDisabled;
     case 'site-denied': return t.commandConfirm.browserSiteDenied;
     case 'high-risk-site': return t.commandConfirm.browserUnattendedHighRiskSite;

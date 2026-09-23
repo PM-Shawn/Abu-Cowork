@@ -28,9 +28,16 @@ const MAX_PERSISTED_TEXT_LENGTH = 100_000;
 const MAX_PERSISTED_DRAFTS = 100;
 
 export interface ComposerSuggestion {
+  /** Inline skill position within plain draft text; session-only. */
+  offset?: number;
   name: string;
   description: string;
   trigger?: string;
+  /** Expert avatar carried into the chip (`icon:<icon>/<tint>` or a legacy
+   *  emoji). Session-only, like the rest of the selection: `partialize` keeps
+   *  just the draft text, so nothing here is written to disk and no persist
+   *  migration is involved. */
+  avatar?: string;
 }
 
 export interface ComposerFileAttachment {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { resolveSubagentToolNames } from '@/core/agent/subagentToolRoster';
 import {
   getAgentToolSummary,
   getUnmatchedAgentToolPatterns,
@@ -6,6 +7,37 @@ import {
 } from './agentToolPresentation';
 
 describe('agentToolPresentation', () => {
+  const runtimeTools = [
+    'read_file', 'write_file', 'abu-browser__screenshot', 'abu-browser__click',
+    'runtime-service__inspect', 'delegate_to_agent', 'run_agent_batch', 'update_soul', 'ask_user_question',
+  ];
+
+  it.each([
+    { label: 'omitted constraints', tools: undefined, disallowedTools: undefined },
+    { label: 'empty role lists', tools: [], disallowedTools: [] },
+  ])('summarizes $label using the actual member roster at each runtime', ({ tools, disallowedTools }) => {
+    for (const known of [runtimeTools, [...runtimeTools, 'new-runtime-service__search']]) {
+      const summary = getAgentToolSummary(tools, disallowedTools, known);
+      expect(summary).toEqual({
+        isUnrestricted: true,
+        ...resolveSubagentToolNames(known, { tools, disallowedTools }),
+      });
+      expect(summary.toolNames).toEqual(known.filter((name) => ![
+        'delegate_to_agent', 'run_agent_batch', 'update_soul', 'ask_user_question',
+      ].includes(name)));
+    }
+  });
+
+  it('shows inherited tools minus an explicit deny using the actual member roster', () => {
+    const disallowedTools = ['abu-browser__*', 'write_file'];
+    const summary = getAgentToolSummary(undefined, disallowedTools, runtimeTools);
+    expect(summary).toEqual({
+      isUnrestricted: false,
+      ...resolveSubagentToolNames(runtimeTools, { disallowedTools }),
+    });
+    expect(summary.toolNames).toEqual(['read_file', 'runtime-service__inspect']);
+  });
+
   it('parses trimmed comma-separated patterns', () => {
     expect(parseAgentToolPatterns(' read_file, abu-browser__* , ,write_file ')).toEqual([
       'read_file',

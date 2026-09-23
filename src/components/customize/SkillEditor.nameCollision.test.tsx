@@ -6,10 +6,12 @@
  * one) silently replaced it. A new or renamed skill must refuse any name
  * another skill already uses — case-insensitively — without colliding with itself.
  *
- * Saving now never deletes: it writes in place, or moves the skill's own
- * folder (scripts/ and references/ included) to its name — itemStorage.test.ts.
- * The last block runs the real storage layer for an edit whose folder is not
- * named after the skill.
+ * Saving now never deletes: it writes the skill's own file in place —
+ * wherever it lives, a project included — and only a rename moves the skill's
+ * own folder (scripts/ and references/ included), to its new name within the
+ * same parent — itemStorage.test.ts. The last block runs the real storage
+ * layer for a project skill, for a folder not named after the skill, and for
+ * a rename.
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -23,7 +25,7 @@ vi.mock('@/utils/itemStorage', () => ({
 }));
 
 import { saveItemToAbuDir } from '@/utils/itemStorage';
-import { exists, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, lstat, readTextFile, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { skillLoader } from '@/core/skill/loader';
 import { getI18n } from '@/i18n';
@@ -101,7 +103,7 @@ describe('SkillEditor — a new or renamed skill cannot take another skill\'s na
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(vi.mocked(saveItemToAbuDir)).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(saveItemToAbuDir).mock.calls[0][5]).toEqual({ mustBeNew: false });
+    expect(vi.mocked(saveItemToAbuDir).mock.calls[0][5]).toEqual({ mustBeNew: false, renaming: true });
   });
 
   it('allows a unique name and asks the disk to refuse if one appeared meanwhile', async () => {
@@ -116,7 +118,7 @@ describe('SkillEditor — a new or renamed skill cannot take another skill\'s na
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     const [folder, , savedName, , , options] = vi.mocked(saveItemToAbuDir).mock.calls[0];
     expect([folder, savedName]).toEqual(['skills', 'fresh-skill']);
-    expect(options).toEqual({ mustBeNew: true });
+    expect(options).toEqual({ mustBeNew: true, renaming: false });
   });
 
   it('shows the hint and does not close when the disk refuses the name at save time', async () => {
@@ -152,12 +154,20 @@ describe('SkillEditor — editing an existing skill saves through its own folder
     const actual = await vi.importActual<{ saveItemToAbuDir: typeof saveItemToAbuDir }>('@/utils/itemStorage');
     vi.mocked(saveItemToAbuDir).mockImplementation(actual.saveItemToAbuDir);
     vi.mocked(homeDir).mockResolvedValue(HOME);
+    // The skill's SKILL.md is a plain file in a plain folder, holding its previous text.
+    vi.mocked(lstat).mockImplementation(async (p) => ({ isFile: /\.md$/i.test(String(p)), isDirectory: !/\.md$/i.test(String(p)), isSymlink: false }) as Awaited<ReturnType<typeof lstat>>);
+    vi.mocked(readTextFile).mockResolvedValue('original');
   });
 
   afterEach(() => {
     vi.mocked(saveItemToAbuDir).mockImplementation(async () => undefined);
     vi.mocked(exists).mockResolvedValue(false);
+    vi.mocked(lstat).mockResolvedValue({ isSymlink: false } as Awaited<ReturnType<typeof lstat>>);
+    vi.mocked(readTextFile).mockResolvedValue('');
   });
+
+  /** Every path writeTextFile was called with. */
+  const writtenPaths = () => vi.mocked(writeTextFile).mock.calls.map(([p]) => String(p));
 
   const onDisk = (...paths: string[]) => vi.mocked(exists).mockImplementation(async (p) => paths.includes(String(p)));
   const mismatched: Skill = {
@@ -173,34 +183,66 @@ describe('SkillEditor — editing an existing skill saves through its own folder
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String), { create: false });
     expect(rename).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it('a skill whose folder is not named after it is moved (with its scripts) to its name when that folder is free', async () => {
+  it('a project skill is saved in its own file — the user\'s same-named skill in ~/.abu is never written', async () => {
+    const projectSkill: Skill = {
+      ...summarize,
+      source: 'project',
+      filePath: '/work/repo/.abu/skills/summarize/SKILL.md',
+      skillDir: '/work/repo/.abu/skills/summarize',
+    };
+    onDisk(`${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize/SKILL.md`);
+    const onSave = vi.fn(async () => undefined);
+    render(<SkillEditor skill={projectSkill} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(writtenPaths()).toEqual(['/work/repo/.abu/skills/summarize/SKILL.md']);
+    expect(rename).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('an ordinary save leaves a folder that is not named after the skill where it is', async () => {
+    // The folder is the user's; only the rename they asked for may rename it.
     onDisk(`${HOME}/.abu/skills/summarize-old`);
     const onSave = vi.fn(async () => undefined);
     render(<SkillEditor skill={mismatched} onClose={vi.fn()} onSave={onSave} />);
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize-old`, `${HOME}/.abu/skills/summarize`);
-    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize-old/SKILL.md`, expect.any(String), { create: false });
+    expect(rename).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it('when its name\'s folder holds another skill, the save fails visibly and that skill\'s file is untouched', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    onDisk(`${HOME}/.abu/skills/summarize-old`, `${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize/SKILL.md`);
-    vi.mocked(rename).mockRejectedValueOnce(new Error('ENOTEMPTY: directory not empty'));
+  it('renaming the skill writes in place, then moves its folder (and so its scripts/)', async () => {
+    onDisk(`${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize/SKILL.md`);
     const onSave = vi.fn(async () => undefined);
-    render(<SkillEditor skill={mismatched} onClose={vi.fn()} onSave={onSave} />);
+    render(<SkillEditor skill={summarize} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.change(nameInput(), { target: { value: 'summarize-v2' } });
     fireEvent.click(saveButton());
 
-    await waitFor(() => expect(screen.queryByText(getI18n().toolbox.itemSaveFailed)).not.toBeNull());
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.stringContaining('name: summarize-v2'), { create: false });
+    expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize-v2`);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('a rename onto a name whose SKILL.md is already on disk is refused — nothing written or moved', async () => {
+    onDisk(`${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize-v2/SKILL.md`);
+    const onSave = vi.fn(async () => undefined);
+    render(<SkillEditor skill={summarize} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.change(nameInput(), { target: { value: 'summarize-v2' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(takenHint()).not.toBeNull());
     expect(onSave).not.toHaveBeenCalled();
     expect(writeTextFile).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
 });

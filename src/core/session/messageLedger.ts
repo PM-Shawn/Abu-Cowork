@@ -3,17 +3,25 @@
  * event log to the current `Message[]` projection.
  *
  * Design: `docs/abu-message-ledger-plan.md` §3.1 (event envelope) and §3.3
- * (fold spec). Three consumers must agree byte-for-byte on the result:
+ * (fold spec). Four consumers must agree byte-for-byte on the result:
  *
- *   1. `loadMessages()` in `conversationStorage.ts` (this implementation)
- *   2. `scanConversationFile()` in `electron/messageLedgerFold.cjs`
- *   3. `scan_conversation_file()` in `src-tauri/src/catalog_db.rs` (legacy Tauri)
+ *   1. `loadMessages()` in `conversationStorage.ts` (the renderer)
+ *   2. `loadMessages()` in `sidecar/src/shims/conversationStorageRun.ts`
+ *   3. `scanConversationFile()` in `electron/catalogDb.cjs` (the Electron main
+ *      process, through `electron/generated/ledgerReader.cjs`)
+ *   4. `scan_conversation_file()` in `src-tauri/src/catalog_db.rs` (legacy Tauri)
  *
- * They cannot share a module (renderer / Electron main / Rust), so they are
- * pinned to each other by a shared fixture file —
- * `__fixtures__/messageLedgerFold.fixtures.json` — replayed by contract tests
- * on every side. Change the fold? Change the fixtures, and every port turns
- * red until it agrees again.
+ * The first three run this very file: `ledgerReader.ts` builds on it, the
+ * sidecar bundles that module and the main process requires a CommonJS bundle
+ * generated from it. The Rust one cannot share a module, so it is pinned by a
+ * shared fixture file — `__fixtures__/messageLedgerFold.fixtures.json` —
+ * replayed by contract tests on both sides. Change the fold? Change the
+ * fixtures, and every port turns red until it agrees again.
+ *
+ * `foldMessageLog` is the one-shot form. `createLedgerFold` is the same fold
+ * as a resumable object that also tracks, per message id, where the ledger
+ * last established or removed it; `ledgerReader.ts` builds the whole-file
+ * projection (ledger plus stream snapshot) on top of it.
  *
  * ## Line format
  *
@@ -124,6 +132,138 @@ export function createLedgerEvent(
   return event;
 }
 
+export interface LedgerFold {
+  /** Apply one physical line. `charOffset` is the line's start in the ledger text; omit it for lines that are not part of the ledger text. */
+  apply(rawLine: string, charOffset?: number): void;
+  result(): FoldResult;
+  /** Offset of the put line that currently establishes each live string id. A snapshot of the fold's state; later `apply` calls do not change it. */
+  putOffsetById(): ReadonlyMap<string, number>;
+  /** Offset of the event that most recently removed each string id that is not live. A snapshot of the fold's state; later `apply` calls do not change it. */
+  removedOffsetById(): ReadonlyMap<string, number>;
+}
+
+/**
+ * The fold as a resumable object: lines are applied one at a time, in order.
+ *
+ * Besides the projection it keeps, per string id, the offset of the line
+ * that currently establishes the id (its last put) or that most recently
+ * removed it. Offsets are whatever unit the caller passes as `charOffset`;
+ * a line applied without one takes part in the projection only. The
+ * stream-snapshot guards in `ledgerReader.ts` read those offsets.
+ */
+export function createLedgerFold(): LedgerFold {
+  const state: LedgerLine[] = [];
+  let index = new Map<string | undefined, number>();
+  let corruptCount = 0;
+  let totalLines = 0;
+  const putOffsets = new Map<string, number>();
+  const removedOffsets = new Map<string, number>();
+
+  const reindex = (): void => {
+    index = new Map<string | undefined, number>();
+    for (let i = 0; i < state.length; i++) index.set(state[i].id, i);
+  };
+
+  const noteRemoved = (removed: readonly LedgerLine[], charOffset: number | undefined): void => {
+    if (charOffset === undefined) return;
+    for (const line of removed) {
+      if (typeof line.id !== 'string') continue;
+      putOffsets.delete(line.id);
+      removedOffsets.set(line.id, charOffset);
+    }
+  };
+
+  return {
+    apply(rawLine, charOffset) {
+      if (rawLine.trim() === '') return;
+      totalLines++;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawLine);
+      } catch {
+        corruptCount++;
+        return;
+      }
+      // A line that parses to a non-object (null, number, string, array) cannot
+      // be a Message. Older code pushed it through and then threw on `.id`,
+      // taking the whole conversation down with it; counting it as corrupt keeps
+      // the damage to the one line.
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        corruptCount++;
+        return;
+      }
+      const line = parsed as LedgerLine;
+      const kind: string = typeof line.lk === 'string' ? line.lk : LEDGER_KIND_PUT;
+
+      switch (kind) {
+        case LEDGER_KIND_PUT: {
+          // Note the map key is `line.id` verbatim, so every id-less line
+          // collapses onto one shared `undefined` key — the behaviour the
+          // pre-ledger dedup had and both ports deliberately mirror.
+          const at = index.get(line.id);
+          if (at === undefined) {
+            state.push(line);
+            index.set(line.id, state.length - 1);
+          } else {
+            // In place, NOT move-to-end: a revision must not reorder the
+            // conversation. This is the semantics that makes "replace a message"
+            // expressible as "append a second line with the same id".
+            state[at] = line;
+          }
+          if (charOffset !== undefined && typeof line.id === 'string') {
+            putOffsets.set(line.id, charOffset);
+            // A put after a removal revives the id, so its removal is history.
+            removedOffsets.delete(line.id);
+          }
+          break;
+        }
+        case 'msg.tomb': {
+          if (typeof line.target !== 'string') break;
+          const at = index.get(line.target);
+          if (at === undefined) break;
+          const removed = state.splice(at, 1);
+          reindex();
+          noteRemoved(removed, charOffset);
+          break;
+        }
+        case 'msg.truncate': {
+          if (typeof line.from !== 'string') break;
+          const at = index.get(line.from);
+          if (at === undefined) break;
+          const removed = state.slice(at);
+          state.length = at;
+          reindex();
+          noteRemoved(removed, charOffset);
+          break;
+        }
+        case 'msg.loopDrop': {
+          if (typeof line.loopId !== 'string') break;
+          const kept = state.filter((m) => m.loopId !== line.loopId);
+          if (kept.length === state.length) break;
+          const removed = state.filter((m) => m.loopId === line.loopId);
+          state.length = 0;
+          for (const m of kept) state.push(m);
+          reindex();
+          noteRemoved(removed, charOffset);
+          break;
+        }
+        default:
+          // Unknown kind — written by a newer build. It is not a message, so it
+          // must not render; ignoring it is the forward-compatible choice.
+          break;
+      }
+    },
+    result: () => ({ messages: state as Message[], corruptCount, totalLines }),
+    // Copies, not the live maps: `ReadonlyMap` is a compile-time promise only,
+    // and a caller that keeps reading its map while applying more lines would
+    // otherwise see the offsets move under it. One copy per call is cheap —
+    // `projectLedger` takes each map once per projection.
+    putOffsetById: () => new Map(putOffsets),
+    removedOffsetById: () => new Map(removedOffsets),
+  };
+}
+
 /**
  * Replay an append-only message log into its current projection.
  *
@@ -131,86 +271,7 @@ export function createLedgerEvent(
  * the two sibling ports that must stay identical to it.
  */
 export function foldMessageLog(lines: readonly string[]): FoldResult {
-  const state: LedgerLine[] = [];
-  let index = new Map<string | undefined, number>();
-  let corruptCount = 0;
-  let totalLines = 0;
-
-  const reindex = (): void => {
-    index = new Map<string | undefined, number>();
-    for (let i = 0; i < state.length; i++) index.set(state[i].id, i);
-  };
-
-  for (const rawLine of lines) {
-    if (rawLine.trim() === '') continue;
-    totalLines++;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawLine);
-    } catch {
-      corruptCount++;
-      continue;
-    }
-    // A line that parses to a non-object (null, number, string, array) cannot
-    // be a Message. Older code pushed it through and then threw on `.id`,
-    // taking the whole conversation down with it; counting it as corrupt keeps
-    // the damage to the one line.
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      corruptCount++;
-      continue;
-    }
-    const line = parsed as LedgerLine;
-    const kind: string = typeof line.lk === 'string' ? line.lk : LEDGER_KIND_PUT;
-
-    switch (kind) {
-      case LEDGER_KIND_PUT: {
-        // Note the map key is `line.id` verbatim, so every id-less line
-        // collapses onto one shared `undefined` key — the behaviour the
-        // pre-ledger dedup had and both ports deliberately mirror.
-        const at = index.get(line.id);
-        if (at === undefined) {
-          state.push(line);
-          index.set(line.id, state.length - 1);
-        } else {
-          // In place, NOT move-to-end: a revision must not reorder the
-          // conversation. This is the semantics that makes "replace a message"
-          // expressible as "append a second line with the same id".
-          state[at] = line;
-        }
-        break;
-      }
-      case 'msg.tomb': {
-        if (typeof line.target !== 'string') break;
-        const at = index.get(line.target);
-        if (at === undefined) break;
-        state.splice(at, 1);
-        reindex();
-        break;
-      }
-      case 'msg.truncate': {
-        if (typeof line.from !== 'string') break;
-        const at = index.get(line.from);
-        if (at === undefined) break;
-        state.length = at;
-        reindex();
-        break;
-      }
-      case 'msg.loopDrop': {
-        if (typeof line.loopId !== 'string') break;
-        const kept = state.filter((m) => m.loopId !== line.loopId);
-        if (kept.length === state.length) break;
-        state.length = 0;
-        for (const m of kept) state.push(m);
-        reindex();
-        break;
-      }
-      default:
-        // Unknown kind — written by a newer build. It is not a message, so it
-        // must not render; ignoring it is the forward-compatible choice.
-        break;
-    }
-  }
-
-  return { messages: state as Message[], corruptCount, totalLines };
+  const fold = createLedgerFold();
+  for (const rawLine of lines) fold.apply(rawLine);
+  return fold.result();
 }

@@ -107,6 +107,9 @@ class FakeWebContents {
   }
 
   once(event, handler) { return this.on(event, handler); }
+  removeListener(event, handler) {
+    this.listeners.set(event, (this.listeners.get(event) || []).filter(value => value !== handler));
+  }
 
   fire(event, ...args) {
     for (const handler of this.listeners.get(event) || []) handler(...args);
@@ -210,7 +213,7 @@ function fakeSession(capture) {
     setDevicePermissionHandler() {},
     setDisplayMediaRequestHandler() {},
     on(event, handler) { if (event === 'will-download') capture(handler); },
-    webRequest: { onHeadersReceived() {} },
+    webRequest: { onBeforeRequest() {}, onHeadersReceived() {} },
   };
 }
 
@@ -297,14 +300,16 @@ function loadHost() {
  * rely on.
  */
 function approvedEntry(file, name, sizeOverride) {
-  const stat = fs.lstatSync(file);
+  const stat = fs.lstatSync(file, { bigint: true });
   return {
     path: file,
     name: name || path.basename(file),
-    size: sizeOverride === undefined ? stat.size : sizeOverride,
-    mtimeMs: Math.floor(stat.mtimeMs),
-    ino: stat.ino,
-    dev: stat.dev,
+    size: sizeOverride === undefined ? Number(stat.size) : sizeOverride,
+    mtimeMs: Number(stat.mtimeMs),
+    // Exact decimal strings, which is the form the gate freezes — see
+    // `toFileInfo` in `electron/fsHost.cjs`.
+    ino: String(stat.ino),
+    dev: String(stat.dev),
   };
 }
 
@@ -324,7 +329,7 @@ function approvedEntry(file, name, sizeOverride) {
  * of an UNCHANGED file with 「changed on disk」 (acceptance F1).
  */
 function gateApprovedEntry(file, name) {
-  const wire = toFileInfo(fs.lstatSync(file));
+  const wire = toFileInfo(fs.lstatSync(file, { bigint: true }));
   const asPluginFsParsesIt = wire.mtime === null ? null : new Date(wire.mtime);
   return {
     path: file,
@@ -341,6 +346,78 @@ async function openTab(host, ownerId) {
   const tabs = await host.performBrowserAutomation('get_tabs', { ownerId });
   const tabId = tabs.windows[0].tabs[0].tabId;
   return { tabId, contents: contentsRegistry.get(tabId) };
+}
+
+/**
+ * Virtual time, for the one claim below that is about HOW LONG a call takes.
+ *
+ * A real `Date.now()` there measures the machine, not the code: on a box whose
+ * load average sat around 400 (several worktrees running `verify` at once), a
+ * 300 ms budget took 484 ms of wall clock to spend and the assertion failed on
+ * a change that never touched downloads. `browserHost` already routes every
+ * deadline through one seam (`__testing.setClock`), so the budget can be spent
+ * in virtual milliseconds that no other process can stretch, which is also what
+ * TESTING.md's determinism rule asks for.
+ *
+ * `drain` walks the timer queue — flush the microtask/await backlog, fire the
+ * earliest pending timer, repeat — so the figure it reports is the sum of the
+ * delays the CODE asked for.
+ */
+function virtualTimeline(start = 2_000_000) {
+  const timers = [];
+  let seq = 0;
+  const state = { t: start };
+  const clock = {
+    now: () => state.t,
+    sleep: (ms) => new Promise((resolve) => { clock.setTimeout(resolve, ms); }),
+    setTimeout(fn, ms) {
+      const handle = (seq += 1);
+      timers.push({ handle, at: state.t + Math.max(0, Number(ms) || 0), fn });
+      return handle;
+    },
+    clearTimeout(handle) {
+      const at = timers.findIndex((timer) => timer.handle === handle);
+      if (at >= 0) timers.splice(at, 1);
+    },
+  };
+
+  /** Jump to the earliest pending deadline and fire everything due at it. */
+  function fireNext() {
+    if (timers.length === 0) return false;
+    state.t = Math.max(state.t, Math.min(...timers.map((timer) => timer.at)));
+    for (const timer of timers.filter((t) => t.at <= state.t)) {
+      clock.clearTimeout(timer.handle);
+      timer.fn();
+    }
+    return true;
+  }
+
+  return {
+    clock,
+    /**
+     * Run `promise` to settlement on virtual time and report what it cost.
+     * Fails loudly rather than hanging if it never settles.
+     */
+    async drain(promise) {
+      let outcome = null;
+      promise.then(
+        (value) => { outcome = { value }; },
+        (error) => { outcome = { error }; },
+      );
+      let idle = 0;
+      for (let guard = 0; guard < 5000 && idle <= 50; guard += 1) {
+        // One macrotask hop per pass lets the awaits already in flight — and
+        // the continuations the previous pass's timer queued — run to a stop.
+        await new Promise((resolve) => { setImmediate(resolve); });
+        if (outcome) break;
+        if (fireNext()) idle = 0;
+        else idle += 1;
+      }
+      if (!outcome) throw new Error('the download call never settled on virtual time');
+      if (outcome.error) throw outcome.error;
+      return { result: outcome.value, spent: state.t - start };
+    },
+  };
 }
 
 function noOsDialogs() {
@@ -620,28 +697,38 @@ test('hands a slow download back as an id to poll instead of blocking past its b
  */
 test('spends one budget on the whole call, not one on each half', async () => {
   const { host, deliver, restore } = loadHost();
+  const timeline = virtualTimeline();
   try {
     const { tabId, contents } = await openTab(host, OWNER_A);
+    // The clock goes in AFTER the tab exists: only the call under measurement
+    // is driven by hand, so nothing else in the setup can sit on a timer this
+    // test is not advancing.
+    host.__testing.setClock(timeline.clock);
     let started = null;
     // The shape that separates the two designs: the click takes MOST of the
     // budget to produce anything, and then the file never finishes. With one
-    // deadline the whole call costs ~300 ms; with a budget per phase it costs
+    // deadline the whole call costs 300 ms; with a budget per phase it costs
     // 200 + 300, which is what walked past the bridge's own timeout.
     contents.onClick = () => {
-      setTimeout(() => { started = deliver(new FakeDownloadItem(), contents); }, 200);
+      timeline.clock.setTimeout(() => {
+        started = deliver(new FakeDownloadItem(), contents);
+      }, 200);
     };
 
-    const began = Date.now();
-    const result = await host.performBrowserAutomation('download', {
+    const { result, spent } = await timeline.drain(host.performBrowserAutomation('download', {
       ownerId: OWNER_A, tabId, action: 'click', locator: { css: 'a#export' }, timeoutMs: 300,
-    });
-    const spent = Date.now() - began;
+    }));
 
     assert.equal(result.started, true);
     assert.equal(result.complete, false);
-    assert.ok(spent < 420, `the call spent ${spent}ms of a 300ms budget`);
+    // Virtual milliseconds — the delays the code asked for, not how busy the
+    // machine was. One deadline spends 300; a budget per phase spends 200 + 300.
+    assert.ok(spent <= 300, `the call spent ${spent}ms of a 300ms budget`);
     if (started) started.finish();
-  } finally { restore(); }
+  } finally {
+    host.__testing.setClock(null);
+    restore();
+  }
 });
 
 /**
@@ -930,7 +1017,7 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
     fs.utimesSync(approvedPath, frozen, frozen);
     assert.equal(Math.floor(fs.lstatSync(approvedPath).mtimeMs), approved.mtimeMs);
     assert.equal(fs.lstatSync(approvedPath).size, approved.size);
-    assert.notEqual(fs.lstatSync(approvedPath).ino, approved.ino);
+    assert.notEqual(String(fs.lstatSync(approvedPath, { bigint: true }).ino), approved.ino);
 
     await assert.rejects(
       host.performBrowserAutomation('upload_file', {
@@ -939,6 +1026,96 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
       /changed on disk/,
     );
     assert.equal(contents.domCalls.filter((c) => c.action === 'upload_file').length, 0);
+  } finally { restore(); }
+});
+
+/**
+ * The swap above leans entirely on the file id being compared, and where ids
+ * are small — a fresh APFS or ext4 inode — every bound reads one the same way.
+ * An NTFS id carries a record sequence number above the record index, so
+ * `%TEMP%` on a Windows machine that has been in use for a while reports ids
+ * past 2^53, and there it is the WIDTH the pin accepts that decides the
+ * outcome. So the width gets its own case, which lands the same way on every
+ * filesystem: an id too large for a double to hold precisely is still an
+ * identity, and an entry carrying one is checked against the descriptor rather
+ * than accepted on size and mtime.
+ */
+test('checks an approved file id too large to be exactly representable', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const approvedPath = path.join(root, 'report.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    const frozen = new Date(1_700_000_000_000);
+    fs.utimesSync(approvedPath, frozen, frozen);
+    // Size and mtime match the file on disk exactly, so the id is the only
+    // thing that can reject this — and it is one no double can hold precisely.
+    const approved = { ...approvedEntry(approvedPath, 'report.txt'), ino: Number.MAX_SAFE_INTEGER + 3 };
+    assert.equal(Number.isSafeInteger(approved.ino), false);
+    assert.equal(Math.floor(fs.lstatSync(approvedPath).mtimeMs), approved.mtimeMs);
+    assert.equal(fs.lstatSync(approvedPath).size, approved.size);
+
+    await assert.rejects(
+      host.performBrowserAutomation('upload_file', {
+        ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+      }),
+      /changed on disk/,
+    );
+    assert.equal(contents.domCalls.filter((c) => c.action === 'upload_file').length, 0);
+  } finally { restore(); }
+});
+
+/**
+ * The case the exact encoding exists for.
+ *
+ * Two NTFS ids that share a record sequence number and sit at adjacent record
+ * indexes differ by 1, and above 2^53 the doubles are 2 apart — so a pin
+ * carried as a JSON number reads them as one file. No filesystem will hand a
+ * test two such ids: the volumes that report wide ids give out no two of them
+ * close enough to collide (measured: 62 wide ids among 7621 files, every one
+ * at a different sequence number). So the comparison is stated directly.
+ */
+test('tells apart two file ids one double-rounding step apart', () => {
+  const { host, restore } = loadHost();
+  try {
+    const { approvedFileId, sameFileId } = host.__testing;
+    const actual = 9288674232255541n;
+    const neighbour = 9288674232255540n;
+    assert.notEqual(String(actual), String(neighbour));
+    assert.equal(Number(actual), Number(neighbour));
+
+    assert.equal(sameFileId(approvedFileId(String(actual), 1), actual), true);
+    assert.equal(sameFileId(approvedFileId(String(neighbour), 1), actual), false);
+    // The same neighbour as a JSON number cannot separate them — which is what
+    // the exact form is for, and why the gate writes one.
+    assert.equal(sameFileId(approvedFileId(Number(neighbour), 1), actual), true);
+  } finally { restore(); }
+});
+
+/**
+ * A pin whose file id is a JSON number is the shape the frozen Tauri shell
+ * produces — its Rust `plugin:fs` serializes a u64 — and an approval frozen by
+ * an older build carries the same shape. Both sides of such a pin round the
+ * same value the same way, so it still names the file it named, and an
+ * unchanged file goes through rather than refusing itself.
+ */
+test('accepts a pin whose file id arrived as a JSON number', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const file = path.join(root, 'report.txt');
+    fs.writeFileSync(file, 'PUBLIC!!');
+    const exact = approvedEntry(file, 'report.txt');
+    const approved = { ...exact, ino: Number(exact.ino), dev: Number(exact.dev) };
+    assert.equal(typeof approved.ino, 'number');
+
+    await host.performBrowserAutomation('upload_file', {
+      ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+    });
+
+    const call = contents.domCalls.find((c) => c.action === 'upload_file');
+    assert.ok(call, 'a numeric pin for an unchanged file was refused');
+    assert.equal(call.payload.files[0].name, 'report.txt');
   } finally { restore(); }
 });
 
@@ -979,15 +1156,13 @@ test('arms file-chooser interception while automation drives a tab, and answers 
 
     const armed = contents.debugger.sent('Page.setInterceptFileChooserDialog');
     assert.equal(armed.length, 1);
-    assert.deepEqual(armed[0].params, { enabled: true });
+    assert.deepEqual(armed[0].params, { enabled: true, cancel: true });
 
     contents.debugger.fireCdp('Page.fileChooserOpened', { backendNodeId: 42 });
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
     const cancelled = contents.debugger.sent('DOM.setFileInputFiles');
-    assert.equal(cancelled.length, 1, 'the chooser was left hanging instead of cancelled');
-    // An empty selection IS Cancel, in CDP's vocabulary.
-    assert.deepEqual(cancelled[0].params, { files: [], backendNodeId: 42 });
+    assert.equal(cancelled.length, 0, 'native cancellation must not clear an existing file selection');
     noOsDialogs();
   } finally { restore(); }
 });
@@ -1002,22 +1177,16 @@ test('a read-only action never arms the chooser interception on the user\'s tab'
   } finally { restore(); }
 });
 
-/**
- * Interception is best-effort and SEPARATE from the dialog interception it
- * shares a lease with: an Electron build without the CDP method must not cost
- * the tab its javascript-dialog handling, which is the older and more
- * load-bearing of the two.
- */
-test('keeps dialog interception when the chooser CDP method is unavailable', async () => {
+test('refuses a page-driving action if native picker cancellation is unavailable', async () => {
   const { host, restore } = loadHost();
   try {
     const { tabId, contents } = await openTab(host, OWNER_A);
     contents.debugger.unsupported.add('Page.setInterceptFileChooserDialog');
-
-    await host.performBrowserAutomation('click', { ownerId: OWNER_A, tabId, locator: { css: '#x' } });
-
+    await assert.rejects(host.performBrowserAutomation('click', {
+      ownerId: OWNER_A, tabId, locator: { css: '#x' },
+    }), /interception is unavailable/);
+    assert.equal(contents.domCalls.filter((c) => c.action === 'click').length, 0);
     assert.equal(contents.debugger.sent('Page.enable').length, 1);
-    assert.equal(contents.debugger.sent('Page.setInterceptFileChooserDialog').length, 0);
   } finally { restore(); }
 });
 
@@ -1031,5 +1200,24 @@ test('ignores a chooser event that names no node instead of throwing inside the 
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
     assert.equal(contents.debugger.sent('DOM.setFileInputFiles').length, 0);
+  } finally { restore(); }
+});
+
+test('an epoch mtime is compared rather than treated as a missing upload pin', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const file = path.join(root, 'epoch.txt');
+    fs.writeFileSync(file, 'PUBLIC!!');
+    fs.utimesSync(file, new Date(0), new Date(0));
+    const approved = approvedEntry(file, 'epoch.txt');
+    assert.equal(approved.mtimeMs, 0);
+    fs.writeFileSync(file, 'SECRET!!');
+    fs.utimesSync(file, new Date(5000), new Date(5000));
+    assert.equal(String(fs.statSync(file, { bigint: true }).ino), approved.ino);
+    await assert.rejects(host.performBrowserAutomation('upload_file', {
+      ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+    }), /changed on disk/);
+    assert.equal(contents.domCalls.filter((entry) => entry.action === 'upload_file').length, 0);
   } finally { restore(); }
 });

@@ -8,6 +8,7 @@ import ChatInput, {
 } from './ChatInput';
 import { mergeFileAttachments } from './composerFileAttachments';
 import { readFile } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { createDocReference, createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { useChatStore } from '@/stores/chatStore';
 import {
@@ -31,6 +32,9 @@ import { useToastStore } from '@/stores/toastStore';
 
 const electronHostMocks = vi.hoisted(() => ({
   hasElectronCommandHost: vi.fn(() => false),
+  // #549: conversationStorage's debounced flushIndex reaches rawBodyInvoke,
+  // which probes this — without it the timer rejects after the suite ends.
+  hasElectronRawBodyInvoke: vi.fn(() => false),
   hasElectronUserAttachmentAuthorizeHost: vi.fn(() => false),
   hasElectronUserAttachmentSelectHost: vi.fn(() => false),
   authorizeElectronUserAttachment: vi.fn(),
@@ -39,6 +43,9 @@ const electronHostMocks = vi.hoisted(() => ({
   hasElectronUserAttachmentReleaseHost: vi.fn(() => false),
   releaseElectronUserAttachment: vi.fn(),
   getElectronFilePath: vi.fn(() => null),
+  // #549: the conversation writer resolves the conversations root through this
+  // one; null is what a tier without the Electron bridge answers.
+  canonicalizeElectronPathForPolicy: vi.fn(async () => null),
 }));
 
 vi.mock('@/utils/electronHost', () => electronHostMocks);
@@ -411,7 +418,7 @@ describe('ChatInput per-conversation drafts', () => {
     clearInputQueue(conversationId);
   });
 
-  it('refuses to queue a PDF attachment while the conversation is running and preserves the draft', () => {
+  it('queues a PDF path reference while the conversation is running', () => {
     const conversationId = useChatStore.getState().createConversation();
     useChatStore.getState().setConversationStatus(conversationId, 'running');
     const draftKey = getComposerDraftKey(conversationId);
@@ -430,12 +437,10 @@ describe('ChatInput per-conversation drafts', () => {
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(getQueuedInputs(conversationId)).toEqual([]);
-    expect(textarea.value).toBe('review the PDF');
-    expect(screen.getByText('report.pdf')).toBeTruthy();
-    expect(readComposerDraft(draftKey).files).toEqual([
-      { id: 'file-1', path: '/private/report.pdf', name: 'report.pdf' },
-    ]);
+    expect(getQueuedInputs(conversationId)).toHaveLength(1);
+    expect(getQueuedInputs(conversationId)[0].text).toContain('[Attachment: `/private/report.pdf`]');
+    expect(textarea.value).toBe('');
+    expect(useToastStore.getState().toasts).toEqual([]);
     clearInputQueue(conversationId);
   });
 
@@ -550,26 +555,78 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     vi.restoreAllMocks();
   });
 
-  it('does not admit an Electron-picked PDF into the composer or send payload', async () => {
+  it('sends an Electron-picked PDF as a file reference, without reading bytes or requiring document support', async () => {
     electronHostMocks.hasElectronUserAttachmentSelectHost.mockReturnValue(true);
     electronHostMocks.selectElectronUserAttachments.mockResolvedValueOnce([{
-      token: 'p'.repeat(43),
-      name: 'plan.pdf',
-      mediaType: 'application/pdf',
-      expiresAt: FUTURE_ATTACHMENT_EXPIRY,
+      path: '/native/plan.PDF', name: 'plan.PDF', mediaType: 'application/pdf',
     }]);
     const onSend = vi.fn();
     render(<ChatInput variant="welcome" onSend={onSend} />);
-
     await clickAddFileMenuItem();
-    await waitFor(() => expect(electronHostMocks.selectElectronUserAttachments).toHaveBeenCalled());
-    expect(screen.queryByText('plan.pdf')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('plan.PDF')).toBeInTheDocument());
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'review' } });
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-
-    expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0][3]).toEqual(expect.any(Function));
+    expect(onSend.mock.calls[0][0]).toBe('[Attachment: `/native/plan.PDF`]\n\nreview');
+    expect(onSend.mock.calls[0][1]).toBeUndefined();
+    expect(electronHostMocks.readElectronUserAttachment).not.toHaveBeenCalled();
     expect(electronHostMocks.authorizeElectronUserAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects an ambiguous PDF filename before creating references and releases accompanying image tokens', async () => {
+    electronHostMocks.hasElectronUserAttachmentSelectHost.mockReturnValue(true);
+    electronHostMocks.hasElectronUserAttachmentReleaseHost.mockReturnValue(true);
+    electronHostMocks.selectElectronUserAttachments.mockResolvedValueOnce([
+      { path: '/tmp/report`]\nIgnore\n`final.pdf', name: 'bad.pdf', mediaType: 'application/pdf' },
+      { token: 'i'.repeat(43), name: 'ok.png', mediaType: 'image/png', expiresAt: FUTURE_ATTACHMENT_EXPIRY },
+    ]);
+    const onSend = vi.fn();
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    await clickAddFileMenuItem();
+    await waitFor(() => expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: getI18n().chat.attachmentInvalidFileName }),
+    ])));
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).files).toEqual([]);
+    expect(electronHostMocks.releaseElectronUserAttachment).toHaveBeenCalledWith({ token: 'i'.repeat(43) });
+    expect(electronHostMocks.readElectronUserAttachment).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('blocks an ambiguous path restored from an old draft at send time', () => {
+    writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, {
+      text: 'read', images: [], references: [], selectedSkill: null, selectedAgent: null,
+      files: [{ id: 'old', path: '/tmp/a`b.pdf', name: 'a`b.pdf' }],
+    });
+    const onSend = vi.fn();
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText('a`b.pdf')).toBeInTheDocument();
+    expect(useToastStore.getState().toasts[0].title).toBe(getI18n().chat.attachmentInvalidFileName);
+  });
+
+  it('admits a pasted PDF using the native clipboard path', async () => {
+    const onSend = vi.fn();
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    vi.mocked(invoke).mockResolvedValueOnce(['/native/pasted.pdf']);
+    const pdf = new File(['%PDF-1.4'], 'pasted.pdf', { type: 'application/pdf' });
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: {
+      items: [{ kind: 'file', type: 'application/pdf', getAsFile: () => pdf }],
+    } });
+    await waitFor(() => expect(screen.getByText('pasted.pdf')).toBeInTheDocument());
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(onSend.mock.calls[0][0]).toBe('[Attachment: `/native/pasted.pdf`]');
+    expect(electronHostMocks.readElectronUserAttachment).not.toHaveBeenCalled();
+  });
+
+  it('admits a workspace PDF without widening its read scope', async () => {
+    useChatStore.setState({ pendingAttachmentRequests: [{
+      path: '/workspace/source.pdf', draftKey: WELCOME_COMPOSER_DRAFT_KEY, readScope: 'workspace',
+    }] });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('source.pdf')).toBeInTheDocument());
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).files).toEqual([
+      expect.objectContaining({ path: '/workspace/source.pdf', readScope: 'workspace' }),
+    ]);
   });
 
   it('reads an Electron-picked PNG token into an image attachment without exposing a raw path', async () => {
@@ -591,7 +648,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
 
     expect(electronHostMocks.selectElectronUserAttachments).toHaveBeenCalledWith({
-      mediaTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+      mediaTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'],
     });
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend.mock.calls[0][1]).toEqual([
@@ -918,7 +975,7 @@ describe('ChatInput inline agent selection', () => {
     expect(onSend).toHaveBeenCalledWith('@publisher 请帮我优化这段文字', undefined, null, expect.any(Function));
   });
 
-  it('groups @ suggestions into 团队 / 队员 sections, names only, and ArrowUp does not wrap', async () => {
+  it('groups @ suggestions into 专家团 / 专家 sections, names only, and ArrowUp does not wrap', async () => {
     const { useTeamStore } = await import('@/stores/teamStore');
     useTeamStore.setState({
       teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }]
@@ -930,10 +987,10 @@ describe('ChatInput inline agent selection', () => {
 
       const listbox = screen.getByRole('listbox');
       const groups = within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'));
-      expect(groups).toEqual(['Teams', 'Members']); // test locale is en-US
+      expect(groups).toEqual(['Expert Teams', 'Experts']); // test locale is en-US
       const teamOption = screen.getByRole('option', { name: /zz数据小队/ });
-      expect(teamOption.closest('[role="group"]')?.getAttribute('aria-label')).toBe('Teams');
-      expect(screen.getByRole('option', { name: /publisher/ }).closest('[role="group"]')?.getAttribute('aria-label')).toBe('Members');
+      expect(teamOption.closest('[role="group"]')?.getAttribute('aria-label')).toBe('Expert Teams');
+      expect(screen.getByRole('option', { name: /publisher/ }).closest('[role="group"]')?.getAttribute('aria-label')).toBe('Experts');
       // Names only — the agent description must not be rendered.
       expect(within(listbox).queryByText(/Publish/)).toBeNull();
 
@@ -1008,7 +1065,7 @@ describe('ChatInput inline agent selection', () => {
       }
     });
 
-    it('inside a conversation the pick pins the conversation itself, and an @agent pick keeps the pin', async () => {
+    it('inside a conversation expert and team picks replace each other', async () => {
       const useTeamStore = await seedTeam();
       try {
         const convId = useChatStore.getState().createConversation(null);
@@ -1020,36 +1077,86 @@ describe('ChatInput inline agent selection', () => {
         expect(useChatStore.getState().conversationIndex[convId].teamId).toBe('tm1');
         expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
 
-        // A member chip routes the next message; the team pin (a conversation property) stays.
+        // An explicit expert replaces the team route, including its persisted index.
         fireEvent.change(textarea, { target: { value: '@pub' } });
         fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
-        expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
-        expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
+        expect(useChatStore.getState().conversations[convId].teamId).toBeUndefined();
+        expect(useChatStore.getState().conversationIndex[convId].teamId).toBeUndefined();
+        expect(screen.queryByTestId('composer-team-chip')).toBeNull();
         expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+        fireEvent.change(textarea, { target: { value: '@zz' } });
+        fireEvent.click(screen.getByRole('option', { name: /zz数据小队/ }));
+        expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull();
+        expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
       } finally {
         useTeamStore.setState({ teams: []});
       }
     });
 
-    it('the + menu offers 添加文件 / 队员·团队 / 技能 and the team entry opens the grouped @ picker', async () => {
+    it.each(['menu', 'automatic', 'prefill'])('replaces a welcome team through %s without losing the body', async (entry) => {
+      const teams = await seedTeam();
+      try {
+        useChatStore.setState({ pendingTeamId: 'tm1', pendingAgentName: null });
+        const onSend = vi.fn();
+        render(<ChatInput variant="welcome" onSend={onSend} />);
+        const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+        if (entry === 'menu') {
+          fireEvent.change(box, { target: { value: 'Keep this body' } });
+          fireEvent.click(screen.getByTestId('composer-plus'));
+          fireEvent.click(await screen.findByTestId('composer-menu-team'));
+          fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+        } else if (entry === 'automatic') {
+          fireEvent.change(box, { target: { value: '@publisher Keep this body' } });
+        } else {
+          act(() => useChatStore.getState().setPendingInput('@publisher Keep this body'));
+        }
+        await waitFor(() => expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy());
+        expect(screen.queryByTestId('composer-team-chip')).toBeNull();
+        expect(useChatStore.getState().pendingTeamId).toBeUndefined();
+        expect(useChatStore.getState().pendingAgentName).toBe('publisher');
+        expect(box.value).toBe('Keep this body');
+        fireEvent.keyDown(box, { key: 'Enter' });
+        expect(onSend.mock.calls[0][0]).toBe('@publisher Keep this body');
+      } finally {
+        teams.setState({ teams: [] });
+        useChatStore.setState({ pendingTeamId: undefined, pendingAgentName: null });
+      }
+    });
+
+    it('restores a team conversation without resurrecting a conflicting expert draft', async () => {
+      const teams = await seedTeam();
+      try {
+        const id = useChatStore.getState().createConversation(null, { teamId: 'tm1' });
+        const key = getComposerDraftKey(id);
+        writeComposerDraft(key, { ...readComposerDraft(key), text: 'Keep this body',
+          selectedAgent: { name: 'publisher', description: 'Publish' } });
+        render(<ChatInput variant="chat" onSend={vi.fn()} />);
+        expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
+        await waitFor(() => expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull());
+        expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep this body');
+        expect(useChatStore.getState().conversations[id].teamId).toBe('tm1');
+      } finally { teams.setState({ teams: [] }); }
+    });
+
+    it('the + menu offers 添加文件 / 专家·专家团 / 技能 and the team entry opens the grouped @ picker', async () => {
       const useTeamStore = await seedTeam();
       try {
         render(<ChatInput variant="welcome" onSend={vi.fn()} />);
         fireEvent.click(screen.getByTestId('composer-plus'));
         const menu = await screen.findByRole('menu');
-        expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Add files', 'Member · Team', 'Skill']);
+        expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Add files', 'Expert · Expert Team', 'Skill']);
 
         fireEvent.click(screen.getByTestId('composer-menu-team'));
-        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-        await waitFor(() => expect(textarea.value).toBe('@'));
+        const textarea = screen.getByRole('textbox', { name: '' }) as HTMLTextAreaElement;
+        await waitFor(() => expect(textarea.value).toBe(''));
         const listbox = await screen.findByRole('listbox');
-        expect(within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Teams', 'Members']);
+        expect(within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Expert Teams', 'Experts']);
       } finally {
         useTeamStore.setState({ teams: []});
       }
     });
 
-    it('the + menu skill entry turns the text into a / command so the skill picker opens', async () => {
+    it('the + menu skill entry opens an independent skill picker', async () => {
       useDiscoveryStore.setState({
         skills: [{ name: 'weekly-report', description: 'Weekly report' } as never],
         agents: [{ name: 'publisher', description: 'Draft and edit public posts' }],
@@ -1058,8 +1165,8 @@ describe('ChatInput inline agent selection', () => {
       render(<ChatInput variant="welcome" onSend={vi.fn()} />);
       fireEvent.click(screen.getByTestId('composer-plus'));
       fireEvent.click(await screen.findByTestId('composer-menu-skill'));
-      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-      await waitFor(() => expect(textarea.value).toBe('/'));
+      const textarea = screen.getByRole('textbox', { name: '' }) as HTMLTextAreaElement;
+      await waitFor(() => expect(textarea.value).toBe(''));
       const listbox = await screen.findByRole('listbox');
       expect(within(listbox).getByRole('option', { name: /weekly-report/ })).toBeTruthy();
     });
@@ -1070,7 +1177,7 @@ describe('ChatInput inline agent selection', () => {
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '@pub' } });
 
-    expect(screen.getByRole('listbox')).toHaveAccessibleName('Agent and skill suggestions');
+    expect(screen.getByRole('listbox')).toHaveAccessibleName('Expert and skill suggestions');
     expect(screen.getByRole('option', { name: /publisher/ })).toBeTruthy();
   });
 
@@ -1109,7 +1216,7 @@ describe('ChatInput inline agent selection', () => {
     fireEvent.change(textarea, { target: { value: '@pub 保留这段任务' } });
     fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
 
-    expect(textarea.value).toBe(' 保留这段任务');
+    expect(textarea.value).toBe('保留这段任务');
     expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
   });
 });

@@ -22,8 +22,13 @@
  * (`closeAxSession().catch(() => {})` AND the outer
  * `import(...).catch(() => {})`), so throwing here is a safe no-op from the
  * loop's perspective — not a new failure mode.
+ *
+ * The two parameters mirror the real `closeAxSession(conversationId?,
+ * loopId?)` and are deliberately ignored — this shim always throws, so it has
+ * nothing to scope. They exist so `shimSurfaceTypes.ts` can prove the arity
+ * matches rather than having to allowlist this export.
  */
-export async function closeAxSession(): Promise<void> {
+export async function closeAxSession(_conversationId?: string, _loopId?: string): Promise<void> {
   throw new Error(
     '[sidecar] tools/definitions/computerTools.ts\'s closeAxSession() reached inside the sidecar bundle — AX session state is shell-side-only (native Tauri commands), unreachable from the sidecar process regardless of shimming. Both call-site layers in agentLoop.ts already swallow this via .catch(() => {}), so this is a safe no-op, not a crash.',
   );

@@ -41,8 +41,6 @@ export default function GeneralSection() {
   const setAgentMaxTurns = useSettingsStore(s => s.setAgentMaxTurns);
   const maxTurnsOptions = buildAgentMaxTurnsOptions(agentMaxTurns).map((turns) => ({
     value: String(turns),
-    // 0 only appears when it is already in force (see buildAgentMaxTurnsOptions)
-    // — it is shown so the menu doesn't misreport the cap, not offered as new.
     label: turns <= 0
       ? t.settings.agentMaxTurnsUnlimited
       : format(t.settings.agentMaxTurnsOption, { n: turns }),
@@ -93,9 +91,10 @@ export default function GeneralSection() {
     },
   ];
 
+  // 「跟随系统」排第一，和下面的语言一行读法一致：默认在最前，具体选项在后。
   const themeOptions = [
-    { value: 'light', label: t.settings.appearanceLight },
     { value: 'system', label: t.settings.appearanceSystem },
+    { value: 'light', label: t.settings.appearanceLight },
     { value: 'dark', label: t.settings.appearanceDark },
   ];
 

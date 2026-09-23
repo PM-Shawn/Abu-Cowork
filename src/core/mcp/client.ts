@@ -1,3 +1,4 @@
+import { ensureBrowserRunRegistered } from '../browser/browserRunLifecycle';
 import { acquirePluginUse } from '../plugin/runtimeLease';
 import { pluginOwnerForMcp } from '../plugin/activationPolicy';
 import { format, getI18n } from '@/i18n';
@@ -1285,6 +1286,7 @@ export class MCPClientManager {
        * execution-time origin pin — see `ABU_EXPECTED_ORIGIN_META_KEY`.
        */
       expectedOrigin?: string;
+      popupOrigin?: string;
       unattended?: boolean;
       /**
        * Only meaningful for the browser server's `get_tabs`: include this
@@ -1307,8 +1309,13 @@ export class MCPClientManager {
         size: number;
         /** Identity pin (review F1) — the runtime refuses an entry without one. */
         mtimeMs: number;
-        ino?: number;
-        dev?: number;
+        /**
+         * A 64-bit file id: an exact decimal string from the Electron and
+         * sidecar hosts, a JSON number from the Tauri shell. See
+         * `ApprovedUploadFile.ino` in `permissions/browserUploadFiles.ts`.
+         */
+        ino?: number | string;
+        dev?: number | string;
       }>;
     }
   ): Promise<ToolResult> {
@@ -1328,6 +1335,10 @@ export class MCPClientManager {
         'app-only-tool',
         `Tool ${toolName} on ${serverName} is app-only and can only be called through its MCP App interface`
       );
+    }
+
+    if (serverName === 'abu-browser') {
+      await ensureBrowserRunRegistered(opts?.conversationId, opts?.agentRunId);
     }
 
     // Coerce string → number for numeric-typed parameters before sending to MCP server.
@@ -1378,6 +1389,9 @@ export class MCPClientManager {
       }
       if (opts?.expectedOrigin) {
         meta[ABU_EXPECTED_ORIGIN_META_KEY] = opts.expectedOrigin;
+      }
+      if (serverName === 'abu-browser' && opts?.popupOrigin) {
+        meta['abu/popupOrigin'] = opts.popupOrigin;
       }
       // Only when true: an attended call keeps its exact pre-U5 `_meta` shape,
       // and the host reads "absent ⇒ attended ⇒ no pin enforcement".

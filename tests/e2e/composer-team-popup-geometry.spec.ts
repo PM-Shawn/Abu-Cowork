@@ -1,6 +1,6 @@
 /**
  * Real-Electron geometry probe for the composer @ popup (user report
- * 2026-09-03: "卡片还是上面被截断了" — the 团队 section header was not visible
+ * 2026-09-03: "卡片还是上面被截断了" — the 专家团 section header was not visible
  * above the first team row). Seeds one team, opens the popup on the welcome
  * screen, and asserts the listbox starts inside the window with its first
  * group header fully visible and no initial scroll offset.
@@ -40,7 +40,7 @@ async function seedTeam(page: Page): Promise<void> {
 }
 
 test.describe('composer @ popup geometry', () => {
-  test('the 团队 header is fully visible and the list opens unscrolled', async () => {
+  test('the 专家团 header is fully visible and the list opens unscrolled', async () => {
     test.setTimeout(180_000);
     const dataRoot = createElectronDataRoot();
     try {
@@ -108,8 +108,8 @@ test.describe('composer @ popup geometry', () => {
         expect(g.boxTop).toBeGreaterThanOrEqual(0);
         // …open unscrolled…
         expect(g.scrollTop).toBe(0);
-        // …with the 团队 header the first thing in it, fully inside its own box.
-        expect(g.groupLabels[0]).toBe('团队');
+        // …with the 专家团 header the first thing in it, fully inside its own box.
+        expect(g.groupLabels[0]).toBe('专家团');
         expect(g.headerTop).not.toBeNull();
         expect(g.headerTop as number).toBeGreaterThanOrEqual(g.boxTop);
         expect(g.headerBottom as number).toBeLessThanOrEqual(g.boxBottom);
@@ -129,6 +129,9 @@ test.describe('composer @ popup geometry', () => {
       // depends on the builtin roster size vs. the popup's max height, which
       // dev changes over time — so the scroll itself is asserted only when the
       // list overflows; the reopen-unscrolled check below holds either way.
+      // Agent discovery lands the 专家 group after the teams; count only once the
+      // whole roster is in, or the walk stops short of the end and never scrolls.
+      await expect(listbox.getByRole('group', { name: '专家', exact: true })).toBeVisible();
       const optionCount = await page.getByRole('option').count();
       for (let i = 0; i < optionCount; i += 1) await textbox.press('ArrowDown');
       const beforeClose = await page.evaluate(() => {

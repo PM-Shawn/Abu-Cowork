@@ -5,15 +5,15 @@ export const agentTemplates: MarketplaceItem[] = [
   {
     id: 'researcher',
     name: 'researcher',
-    description: '专注于信息收集和研究分析的代理',
-    descriptionEn: 'An agent focused on information gathering and research analysis',
+    description: '专注于信息收集和研究分析的专家',
+    descriptionEn: 'An expert focused on information gathering and research analysis',
     author: 'ABU 团队',
     authorEn: 'ABU Team',
     category: '研究',
     content: `---
 name: researcher
 description: 专注于信息收集和研究分析
-avatar: 🔬
+avatar: icon:flask/teal
 model: inherit
 max-turns: 30
 tools:
@@ -46,15 +46,15 @@ memory: session
   {
     id: 'coder',
     name: 'coder',
-    description: '专注于代码开发和技术实现的代理',
-    descriptionEn: 'An agent focused on software development and technical implementation',
+    description: '专注于代码开发和技术实现的专家',
+    descriptionEn: 'An expert focused on software development and technical implementation',
     author: 'ABU 团队',
     authorEn: 'ABU Team',
     category: '开发',
     content: `---
 name: coder
 description: 专注于代码开发和技术实现
-avatar: 💻
+avatar: icon:code/blue
 model: inherit
 max-turns: 50
 tools:
@@ -88,15 +88,15 @@ memory: project
   {
     id: 'writer',
     name: 'writer',
-    description: '专注于文档撰写和内容创作的代理',
-    descriptionEn: 'An agent focused on document writing and content creation',
+    description: '专注于文档撰写和内容创作的专家',
+    descriptionEn: 'An expert focused on document writing and content creation',
     author: 'ABU 团队',
     authorEn: 'ABU Team',
     category: '写作',
     content: `---
 name: writer
 description: 专注于文档撰写和内容创作
-avatar: ✍️
+avatar: icon:pen/coral
 model: inherit
 max-turns: 20
 tools:
@@ -127,15 +127,15 @@ memory: session
   {
     id: 'reviewer',
     name: 'reviewer',
-    description: '专注于代码审查和质量保证的代理',
-    descriptionEn: 'An agent focused on code review and quality assurance',
+    description: '专注于代码审查和质量保证的专家',
+    descriptionEn: 'An expert focused on code review and quality assurance',
     author: 'ABU 团队',
     authorEn: 'ABU Team',
     category: '开发',
     content: `---
 name: reviewer
 description: 专注于代码审查和质量保证
-avatar: 🔍
+avatar: icon:search/purple
 model: inherit
 max-turns: 30
 tools:

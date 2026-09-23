@@ -57,8 +57,17 @@ vi.mock('@/core/skill/npmInstaller', () => ({
   },
 }));
 
+// The organization's skill blacklist hook (a pass-through in the OSS build):
+// here it blocks exactly one name, so every other test sees the OSS behavior.
+vi.mock('@/core/enterprise/policy/matcher', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/enterprise/policy/matcher')>()),
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
+
 // Import the mocked versions so tests can assert on them
 import { atomicWrite, atomicWriteWithBackup, restoreFromBackup } from '../../../utils/atomicFs';
+import { SkillPolicyDeniedError } from '../../skill/skillPolicy';
 
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockExists = vi.mocked(exists);
@@ -1280,5 +1289,148 @@ describe('skill_manage · install', () => {
     await skillManageTool.execute({ action: 'install', source: 'https://example.com/skill.tgz' }, {});
 
     expect(stableRefresh).toHaveBeenCalled();
+  });
+});
+
+// ── organization skill policy ─────────────────────────────────────────
+//
+// The blacklist is a name blacklist: no write may leave a SKILL.md that
+// answers to a blocked name. The mock above blocks exactly 'blocked-skill'.
+
+describe("skill_manage · the organization's skill policy", () => {
+  const refusal = () => format(getI18n().toolResult.skill.policyDenied, { name: 'blocked-skill' });
+  const run = async (input: Record<string, unknown>) =>
+    JSON.parse((await skillManageTool.execute(input, {})) as string);
+
+  function expectNothingWritten() {
+    expect(mockAtomicWrite).not.toHaveBeenCalled();
+    expect(mockAtomicWriteWithBackup).not.toHaveBeenCalled();
+  }
+
+  it('refuses to create a skill under a blocked name', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+
+    const result = await run({
+      action: 'create', name: 'blocked-skill',
+      frontmatter: { name: 'blocked-skill', description: 'x' }, content: '# body',
+    });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+    expectNothingWritten();
+  });
+
+  it('refuses to propose a draft under a blocked name', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+
+    const result = await run({
+      action: 'create', name: 'blocked-skill', agent_proposed: true,
+      frontmatter: { name: 'blocked-skill', description: 'x' }, content: '# body',
+    });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+    expectNothingWritten();
+  });
+
+  it('still creates a skill under any other name', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+
+    const result = await run({
+      action: 'create', name: 'allowed-skill',
+      frontmatter: { name: 'allowed-skill', description: 'x' }, content: '# body',
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each(['npm', 'url'] as const)('explains a %s install the policy refused', async (sourceType) => {
+    const urlMod = await import('../../skill/urlInstaller');
+    const npmMod = await import('../../skill/npmInstaller');
+    vi.mocked(urlMod.detectSourceType).mockReturnValue(sourceType);
+    const denied = new SkillPolicyDeniedError('blocked-skill', 'blocked by policy');
+    vi.mocked(npmMod.installSkillFromNpm).mockRejectedValue(denied);
+    vi.mocked(urlMod.installSkillFromUrl).mockRejectedValue(denied);
+
+    const result = await run({ action: 'install', source: 'some-source' });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+  });
+
+  it('explains a folder install the policy refused the same way', async () => {
+    const urlMod = await import('../../skill/urlInstaller');
+    const folderMod = await import('../../skill/installer');
+    vi.mocked(urlMod.detectSourceType).mockReturnValue('folder');
+    vi.mocked(folderMod.installSkillFromFolder).mockResolvedValue({
+      ok: false, code: 'POLICY_DENIED', message: "[policy] skill 'blocked-skill' blocked by policy", skillName: 'blocked-skill',
+    });
+
+    const result = await run({ action: 'install', source: '/path/to/blocked-skill' });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+  });
+
+  it('refuses a patch that renames a skill to a blocked name', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(
+      makeSkill('local-skill', { source: 'workspace-auto', skillDir: '/ws/skills/local-skill' }),
+    );
+    mockReadTextFile.mockResolvedValue('---\nname: local-skill\ndescription: x\n---\n\n# Body\n');
+
+    const result = await run({
+      action: 'patch', name: 'local-skill', old_string: 'name: local-skill', new_string: 'name: blocked-skill',
+    });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+    expectNothingWritten();
+  });
+
+  it('refuses to patch a skill that already answers to a blocked name, before forking a copy', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(makeSkill('blocked-skill', { source: 'user' }));
+    const { readDir } = await import('@tauri-apps/plugin-fs');
+
+    const result = await run({ action: 'patch', name: 'blocked-skill', old_string: 'a', new_string: 'b' });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+    expect(vi.mocked(readDir)).not.toHaveBeenCalled();
+    expectNothingWritten();
+  });
+
+  it('refuses an edit whose SKILL.md declares a blocked name', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(
+      makeSkill('wa-skill', { source: 'workspace-auto', skillDir: '/ws/skills/wa-skill' }),
+    );
+
+    const result = await run({
+      action: 'edit', name: 'wa-skill', content: '---\nname: blocked-skill\ndescription: x\n---\n\n# Body\n',
+    });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+    expectNothingWritten();
+  });
+
+  it('refuses to add a file to a skill that answers to a blocked name', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(
+      makeSkill('blocked-skill', { source: 'workspace-auto', skillDir: '/ws/skills/blocked-skill' }),
+    );
+
+    const result = await run({
+      action: 'write_file', name: 'blocked-skill', file_path: 'references/notes.md', file_content: 'x',
+    });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+    expectNothingWritten();
+  });
+
+  it('never refuses removing a skill under a blocked name', async () => {
+    const { remove } = await import('@tauri-apps/plugin-fs');
+    vi.mocked(remove).mockResolvedValueOnce(undefined);
+    // The loader hides a blocked skill from every lookup that does not ask
+    // for policy-blocked ones too — delete must ask.
+    const skill = makeSkill('blocked-skill', { source: 'workspace-auto', skillDir: '/ws/skills/blocked-skill' });
+    vi.spyOn(skillLoader, 'getSkill').mockImplementation((_name, options) =>
+      (options?.includePolicyBlocked ? skill : undefined));
+
+    const result = await run({ action: 'delete', name: 'blocked-skill' });
+
+    expect(result.success).toBe(true);
+    expect(remove).toHaveBeenCalledWith('/ws/skills/blocked-skill', { recursive: true });
   });
 });

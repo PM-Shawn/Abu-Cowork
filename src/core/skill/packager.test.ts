@@ -18,7 +18,16 @@ import {
   ConflictError,
   SkillPackSymlinkError,
   UnsafeSkillNameError,
+  AmbiguousManifestError,
 } from './packager';
+import { SkillPolicyDeniedError } from './skillPolicy';
+import { getI18n } from '@/i18n';
+
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -223,6 +232,36 @@ describe('unpackSkill', () => {
 
     expect(result.name).toBe('test-skill');
     expect(mockWriteFile).toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "refuses a skill name the organization's policy blocks, writing nothing (overwrite: %s)",
+    async (overwrite) => {
+      const zip = makeZip({ 'SKILL.md': VALID_SKILL_MD.replace('name: test-skill', 'name: blocked-skill') });
+
+      const err = await unpackSkill(zip, '/home/.abu/skills', { overwrite }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(SkillPolicyDeniedError);
+      expect((err as SkillPolicyDeniedError).skillName).toBe('blocked-skill');
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses an archive whose second SKILL.md, differing only in case, would replace the checked one', async () => {
+    // One file on APFS / NTFS: the entry written last is the manifest that
+    // goes live, and it declares a name nobody checked.
+    const zip = makeZip({
+      'SKILL.md': VALID_SKILL_MD,
+      'skill.md': VALID_SKILL_MD.replace('name: test-skill', 'name: blocked-skill'),
+    });
+
+    const err = await unpackSkill(zip, '/home/.abu/skills').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AmbiguousManifestError);
+    // Shown in the upload toast as-is, so it is the locale's text.
+    expect((err as Error).message).toBe(getI18n().toolbox.importAmbiguousManifest);
+    expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
   it('skips dotfiles from archives produced by older/external packagers', async () => {

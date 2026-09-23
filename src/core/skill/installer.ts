@@ -9,9 +9,8 @@ import { readTextFile, readDir, readFile, writeFile, mkdir, exists, lstat } from
 import { homeDir } from '@tauri-apps/api/path';
 import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
-import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
-import { checkSkill } from '@/core/enterprise/policy/matcher';
 import { atomicInstallDir } from '@/core/fsAtomic';
+import { skillPolicyDenial } from './skillPolicy';
 import { isSafeSkillDirName } from './skillDirName';
 
 export type InstallResult =
@@ -35,8 +34,15 @@ export type InstallResult =
     }
   | {
       ok: false;
-      code: 'NO_SKILL_MD' | 'NO_NAME' | 'ALREADY_EXISTS' | 'COPY_FAILED' | 'POLICY_DENIED' | 'SYMLINK_ROOT';
+      code: 'NO_SKILL_MD' | 'NO_NAME' | 'ALREADY_EXISTS' | 'COPY_FAILED' | 'SYMLINK_ROOT';
       message: string;
+    }
+  | {
+      ok: false;
+      code: 'POLICY_DENIED';
+      message: string;
+      /** The name the organization's policy blocks, for the caller's localized text. */
+      skillName: string;
     };
 
 /**
@@ -110,9 +116,9 @@ export async function installSkillFromFolder(
   }
 
   // 3a. Policy check: deny if skill name is blacklisted
-  const policyCheck = checkSkill(getCurrentPolicy(), name);
-  if (policyCheck.decision === 'deny') {
-    return { ok: false, code: 'POLICY_DENIED', message: `[policy] ${policyCheck.reason ?? `skill '${name}' blocked by policy`}` };
+  const policyReason = skillPolicyDenial(name);
+  if (policyReason) {
+    return { ok: false, code: 'POLICY_DENIED', message: `[policy] ${policyReason}`, skillName: name };
   }
 
   // 3. Determine target directory

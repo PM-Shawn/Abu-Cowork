@@ -23,7 +23,15 @@
  *       function that stays out of the sidecar bundle),
  *     conversationSnapshot, indexEntrySnapshot?,
  *     settingsSnapshot, capsSnapshot?: { providerId, modelId, caps },
- *     resolvedCreds, toolList, planMode?, locale }
+ *     resolvedCreds, toolList, planMode?, locale,
+ *     history?: { source: 'ledger', ledgerWatermark } }
+ *
+ * `history` names where the conversation's messages are instead of carrying
+ * them: `conversationSnapshot.messages` is empty on the wire and
+ * `handleAgentStart` reads the conversation's ledger up to the watermark
+ * (`hydrateFromLedger`). `agent.run` then takes either the full params or just
+ * `{ runId, clientMessageId, payloadDigest }` for a run whose start named a
+ * history source.
  */
 import type {
   SubagentStopReason,
@@ -32,7 +40,11 @@ import type {
   ToolResult,
   ToolExecutionContext,
   Conversation,
+  Message,
 } from '@/types';
+import type { TranslationDict } from '@/i18n/types';
+import zhCN from '@/i18n/locales/zh-CN';
+import enUS from '@/i18n/locales/en-US';
 import type { PlannedStep, TaskExecution } from '@/types/execution';
 import type { RouteResult, IMContext } from '@/core/agent/orchestrator';
 import type { PromptSection } from '@/core/llm/promptSections';
@@ -57,7 +69,18 @@ import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { setSettingsReader } from '@/core/agent/ports/settingsReader';
+import { LedgerWatermarkError } from '@/core/session/ledgerReader';
+import {
+  sanitizeLoadedLedgerMessages,
+  type LoadedMessageSanitizerText,
+} from '@/core/session/loadedMessageSanitizer';
+import {
+  HISTORY_UNAVAILABLE_CODE,
+  HISTORY_UNAVAILABLE_RPC_CODE,
+  historyUnavailableData,
+} from '@/core/ipc/historyUnavailable';
 import { RpcError } from './protocol';
+import { loadMessages } from './shims/conversationStorageRun';
 import { sendRequest, sendNotification, setPreRequestFlush } from './rpcClient';
 import { agentRunContext, type AgentRunContext } from './agentRunContext';
 import { createPortFrameCoalescer, type PortFrame } from './portFrameCoalescer';
@@ -78,6 +101,7 @@ interface SerializableToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
+  execution?: ToolDefinition['execution'];
 }
 
 interface CapsSnapshotEntry {
@@ -89,6 +113,13 @@ interface CapsSnapshotEntry {
 }
 
 const REVERSE_TOOL_MEDIA_DISPLAY_ERROR = 'Error: Could not prepare sidecar tool media for display.';
+
+/** Where a run's history comes from when the start does not carry it. */
+export interface AgentRunHistoryRef {
+  source: 'ledger';
+  /** Byte size of the conversation's `messages.jsonl` the shell measured after a flush. */
+  ledgerWatermark: number;
+}
 
 export interface AgentRunParams {
   runId: string;
@@ -128,6 +159,12 @@ export interface AgentRunParams {
    * already has, just bridged across the process boundary.
    */
   queuedInputs?: { id: string; text: string; isSystem?: boolean }[];
+  /**
+   * Present on a start whose `conversationSnapshot.messages` is empty on the
+   * wire: the history is this conversation's ledger, read up to the watermark
+   * (`hydrateFromLedger`). Absent on a start that carries its messages.
+   */
+  history?: AgentRunHistoryRef;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -186,6 +223,21 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   if (!isRecord(resolvedCreds)) throw new RpcError(-32602, 'Invalid params: resolvedCreds must be an object');
   if (!Array.isArray(toolList)) throw new RpcError(-32602, 'Invalid params: toolList must be an array');
   if (typeof locale !== 'string') throw new RpcError(-32602, 'Invalid params: locale must be a string');
+  if (params.history !== undefined) {
+    const history = params.history;
+    if (
+      !isRecord(history)
+      || history.source !== 'ledger'
+      || !Number.isSafeInteger(history.ledgerWatermark)
+      || (history.ledgerWatermark as number) < 0
+    ) {
+      throw new RpcError(-32602, "Invalid params: history must be { source: 'ledger', ledgerWatermark: non-negative integer }");
+    }
+    const wireMessages = (conversationSnapshot as { messages?: unknown }).messages;
+    if (!Array.isArray(wireMessages) || wireMessages.length !== 0) {
+      throw new RpcError(-32602, 'Invalid params: a start that names a history source carries no messages');
+    }
+  }
   return params as unknown as AgentRunParams;
 }
 
@@ -467,6 +519,7 @@ function createReverseToolInvoker(
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
+      ...(t.execution ? { execution: t.execution } : {}),
       execute: async () => {
         throw new Error(
           `[sidecar] ToolDefinition.execute() called directly for "${t.name}" — this should never happen; agentLoop.ts/toolExecutor.ts only call invoker.executeAnyTool(), which reverses to the shell via tool.invoke.`,
@@ -657,6 +710,18 @@ interface RunRegistryEntry {
 
 const RUN_REGISTRY_MAX_ENTRIES = 128;
 const RUN_REGISTRY_TERMINAL_TTL_MS = 60 * 60 * 1_000;
+/**
+ * How long an `accepted` entry may wait for its `agent.run`. The shell sends
+ * `agent.run` right after the start ACK (its ACK/state-query timeouts are a
+ * few seconds, and transport recovery re-polls every 2 s), so an entry still
+ * `accepted` after this long means the shell gave up on it (e.g. the ACK was
+ * lost and the user row was ended). Without a bound it would pin the whole
+ * `AgentRunParams` snapshot for the life of the process — the terminal
+ * TTL/max-entries sweeps below never touch non-terminal entries. Kept well
+ * below the terminal TTL; `running` entries are never pruned because they
+ * always reach `rememberTerminal`.
+ */
+const RUN_REGISTRY_ACCEPTED_TTL_MS = 10 * 60 * 1_000;
 const runRegistry = new Map<string, RunRegistryEntry>();
 
 function pruneRunRegistry(now = Date.now()): void {
@@ -666,6 +731,16 @@ function pruneRunRegistry(now = Date.now()): void {
       && now - (entry.terminalAt ?? entry.acceptedAt) > RUN_REGISTRY_TERMINAL_TTL_MS
     ) {
       runRegistry.delete(runId);
+    } else if (
+      entry.state === 'accepted'
+      && now - entry.acceptedAt > RUN_REGISTRY_ACCEPTED_TTL_MS
+    ) {
+      runRegistry.delete(runId);
+      traceSidecarRuntimeEvent('sidecar.agent_start_pruned', {
+        runId,
+        stage: 'accepted',
+        outcome: 'expired',
+      });
     }
   }
   if (runRegistry.size <= RUN_REGISTRY_MAX_ENTRIES) return;
@@ -699,13 +774,151 @@ function rememberTerminal(runId: string, terminal: AgentRunTerminal): void {
   pruneRunRegistry(entry.terminalAt);
 }
 
+type IdentifiedRunParams = AgentRunParams & { clientMessageId: string; payloadDigest: string };
+type LedgerRunParams = IdentifiedRunParams & { history: AgentRunHistoryRef };
+
+/** A ledger start whose history is still being read: not in `runRegistry` yet, but already owned. */
+interface PendingLedgerStart {
+  payloadDigest: string;
+  clientMessageId: string;
+  /** Set by `agent.abort`; carried into the registry entry so `agent.run` ends the run as aborted. */
+  cancel: { requested: boolean };
+  settled: Promise<RunRegistryEntry>;
+}
+const pendingLedgerStarts = new Map<string, PendingLedgerStart>();
+
+const LOCALE_DICTIONARIES: Readonly<Record<string, TranslationDict>> = { 'zh-CN': zhCN, 'en-US': enUS };
+
+/**
+ * The two strings the loaded-message sanitiser writes into a row. Read from
+ * the dictionaries by the start's own `locale`: `getI18n()` resolves its
+ * locale from a run's context, and a start runs before any run exists.
+ */
+function sanitizerTextFor(locale: string): LoadedMessageSanitizerText {
+  const dictionary = LOCALE_DICTIONARIES[locale];
+  if (!dictionary) throw new RpcError(-32602, `Invalid params: unsupported locale "${locale}"`);
+  return {
+    runRecoveredAfterRestart: dictionary.chat.runRecoveredAfterRestart,
+    errorEmptyBody: dictionary.chat.errorEmptyBody,
+  };
+}
+
+function registerAcceptedRun(params: IdentifiedRunParams, cancelRequested: boolean): RunRegistryEntry {
+  const entry: RunRegistryEntry = {
+    params,
+    payloadDigest: params.payloadDigest,
+    clientMessageId: params.clientMessageId,
+    acceptedAt: Date.now(),
+    state: 'accepted',
+    cancelRequested,
+  };
+  runRegistry.set(params.runId, entry);
+  traceSidecarRuntimeEvent('sidecar.agent_start_accepted', {
+    runId: params.runId,
+    method: 'agent.start',
+    stage: 'accepted',
+  });
+  return entry;
+}
+
+function historyUnavailable(
+  params: LedgerRunParams,
+  data: ReturnType<typeof historyUnavailableData>,
+  cause: unknown,
+): RpcError {
+  traceSidecarRuntimeEvent('sidecar.agent_start_history_unavailable', {
+    runId: params.runId,
+    method: 'agent.start',
+    stage: 'history_unavailable',
+    outcome: 'error',
+    reason: data.reason,
+    errorType: sidecarRuntimeErrorType(cause),
+  });
+  return new RpcError(HISTORY_UNAVAILABLE_RPC_CODE, HISTORY_UNAVAILABLE_CODE, data);
+}
+
+/**
+ * The start's params with the conversation's history in place: the ledger
+ * prefix up to the shell's watermark, cleaned by the same sanitiser the
+ * renderer runs when it loads a conversation. The run's own user row (state
+ * `pending`, id = `clientMessageId`) keeps its run state. Reads only; this
+ * process writes neither the ledger nor the stream snapshot.
+ */
+async function hydrateFromLedger(params: LedgerRunParams): Promise<IdentifiedRunParams> {
+  const startedAt = Date.now();
+  const uptoBytes = params.history.ledgerWatermark;
+  const text = sanitizerTextFor(params.locale);
+  let loaded: Message[];
+  try {
+    loaded = await loadMessages(params.conversationId, { strictRead: true, uptoBytes });
+  } catch (err) {
+    // Typed conversion: whatever kept the history from being read reaches the
+    // shell as one error it can act on, carrying numbers only.
+    throw historyUnavailable(
+      params,
+      err instanceof LedgerWatermarkError
+        ? historyUnavailableData(err.code, err.uptoBytes, err.fileBytes)
+        : historyUnavailableData('ledger_unreadable', uptoBytes, 0),
+      err,
+    );
+  }
+  const messages = sanitizeLoadedLedgerMessages(loaded, { text, currentRunMessageId: params.clientMessageId });
+  if (!messages.some((message) => message.id === params.clientMessageId && message.role === 'user')) {
+    // The loop runs on a row the shell wrote before dispatch
+    // (`prePersistedUserMessageId`); a prefix without it would answer the
+    // previous turn.
+    throw historyUnavailable(params, historyUnavailableData('current_turn_missing', uptoBytes, 0), new Error('current_turn_missing'));
+  }
+  traceSidecarRuntimeEvent('sidecar.agent_start_history_loaded', {
+    runId: params.runId,
+    method: 'agent.start',
+    stage: 'history_loaded',
+    durationMs: Date.now() - startedAt,
+  });
+  return { ...params, conversationSnapshot: { ...params.conversationSnapshot, messages } };
+}
+
+/** The acknowledgement of a start that repeats one whose history is still being read. */
+async function joinPendingLedgerStart(pending: PendingLedgerStart): Promise<AgentStartAck> {
+  return toStartAck(await pending.settled, true);
+}
+
+async function startFromLedger(params: LedgerRunParams): Promise<AgentStartAck> {
+  const cancel = { requested: false };
+  const settled = hydrateFromLedger(params).then((hydrated) => registerAcceptedRun(hydrated, cancel.requested));
+  pendingLedgerStarts.set(params.runId, {
+    payloadDigest: params.payloadDigest,
+    clientMessageId: params.clientMessageId,
+    cancel,
+    settled,
+  });
+  try {
+    return toStartAck(await settled, false);
+  } finally {
+    pendingLedgerStarts.delete(params.runId);
+  }
+}
+
 /**
  * Reliable Run Protocol V1 phase 1: acknowledge ownership immediately, then
  * execute independently from the request that carried the start command.
  * Replaying the same ids/digest returns the existing fact and never starts a
  * second loop; conflicting reuse of a runId fails closed.
+ *
+ * A start that carries its messages is registered and acknowledged
+ * synchronously. A start that names a ledger history is acknowledged once that
+ * history has been read and sanitised: its digest is checked on the wire form
+ * (the one with no messages), a replay arriving during the read shares that
+ * read, and a failed read registers nothing, so the same ids can start again.
+ *
+ * A runId whose history is still being read is already owned, in whatever form
+ * the next start for it arrives: only the identical start joins that read, and
+ * every other one is the same conflict a registered runId answers. The two
+ * forms of a start never share a digest — `history` and the messages are both
+ * part of it — so a start that carries its messages can never take a runId a
+ * ledger start is reading for.
  */
-export function handleAgentStart(rawParams: unknown): AgentStartAck {
+export function handleAgentStart(rawParams: unknown): AgentStartAck | Promise<AgentStartAck> {
   const params = parseAgentRunParams(rawParams);
   if (!params.clientMessageId || !params.payloadDigest) {
     throw new RpcError(-32602, 'Invalid params: agent.start requires clientMessageId and payloadDigest');
@@ -728,22 +941,25 @@ export function handleAgentStart(rawParams: unknown): AgentStartAck {
     return toStartAck(existing, true);
   }
 
-  const entry: RunRegistryEntry = {
-    params,
-    payloadDigest: params.payloadDigest,
-    clientMessageId: params.clientMessageId,
-    acceptedAt: Date.now(),
-    state: 'accepted',
-    cancelRequested: false,
-  };
-  runRegistry.set(params.runId, entry);
-  traceSidecarRuntimeEvent('sidecar.agent_start_accepted', {
-    runId: params.runId,
-    method: 'agent.start',
-    stage: 'accepted',
-  });
+  const pending = pendingLedgerStarts.get(params.runId);
+  if (pending) {
+    if (
+      pending.payloadDigest !== params.payloadDigest
+      || pending.clientMessageId !== params.clientMessageId
+    ) {
+      throw new RpcError(-32602, `Conflicting replay for runId "${params.runId}"`);
+    }
+    traceSidecarRuntimeEvent('sidecar.agent_start_replayed', {
+      runId: params.runId,
+      method: 'agent.start',
+      stage: 'reading_history',
+    });
+    return joinPendingLedgerStart(pending);
+  }
 
-  return toStartAck(entry, false);
+  const identified = params as IdentifiedRunParams;
+  if (!identified.history) return toStartAck(registerAcceptedRun(identified, false), false);
+  return startFromLedger(identified as LedgerRunParams);
 }
 
 export function handleAgentGetState(rawParams: unknown): AgentRunStateResult {
@@ -777,20 +993,59 @@ function flushAllCoalescers(): void {
 }
 setPreRequestFlush(flushAllCoalescers);
 
+const COMPACT_RUN_KEYS = ['runId', 'clientMessageId', 'payloadDigest'] as const;
+
+/**
+ * The three-field `agent.run`: `{ runId, clientMessageId, payloadDigest }` and
+ * nothing else. Null for any other shape, which the full-params parser judges.
+ *
+ * A field added to the compact form must be added to `COMPACT_RUN_KEYS` in the
+ * same change: a request carrying any other set of keys is read as the full
+ * form and fails on the fields the full form requires.
+ */
+function parseCompactAgentRunRequest(
+  params: unknown,
+): { runId: string; clientMessageId: string; payloadDigest: string } | null {
+  if (!isRecord(params)) return null;
+  if (Object.keys(params).length !== COMPACT_RUN_KEYS.length || !COMPACT_RUN_KEYS.every((key) => key in params)) {
+    return null;
+  }
+  for (const key of COMPACT_RUN_KEYS) {
+    if (typeof params[key] !== 'string' || !params[key]) {
+      throw new RpcError(-32602, `Invalid params: ${key} must be a non-empty string`);
+    }
+  }
+  return {
+    runId: params.runId as string,
+    clientMessageId: params.clientMessageId as string,
+    payloadDigest: params.payloadDigest as string,
+  };
+}
+
 export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
-  const rawParsedParams = parseAgentRunParams(rawParams);
-  assertAgentRunDigest(rawParsedParams);
-  const { runId } = rawParsedParams;
+  const compact = parseCompactAgentRunRequest(rawParams);
+  let identity: { runId: string; clientMessageId?: string; payloadDigest?: string };
+  if (compact) {
+    identity = compact;
+  } else {
+    const full = parseAgentRunParams(rawParams);
+    assertAgentRunDigest(full);
+    identity = full;
+  }
+  const { runId } = identity;
   const startedAt = Date.now();
   const registryEntry = runRegistry.get(runId);
   if (!registryEntry) {
     throw new RpcError(-32602, `Invalid params: agent.run requires prior agent.start for runId "${runId}"`);
   }
   if (
-    registryEntry.payloadDigest !== rawParsedParams.payloadDigest
-    || registryEntry.clientMessageId !== rawParsedParams.clientMessageId
+    registryEntry.payloadDigest !== identity.payloadDigest
+    || registryEntry.clientMessageId !== identity.clientMessageId
   ) {
     throw new RpcError(-32602, `Conflicting agent.run for runId "${runId}"`);
+  }
+  if (compact && !registryEntry.params.history) {
+    throw new RpcError(-32602, `Invalid params: the compact agent.run form needs a start that named a history source (runId "${runId}")`);
   }
   const params = registryEntry.params;
   const { conversationId } = params;
@@ -1161,6 +1416,13 @@ export async function handleAgentAbort(rawParams: unknown): Promise<AgentAbortAc
     stage: run ? 'aborting' : 'not_found',
   });
   if (!run) {
+    // A ledger start still reading its history owns the runId before the
+    // registry does; the flag it carries reaches the entry that read creates.
+    const pendingStart = pendingLedgerStarts.get(runId);
+    if (pendingStart) {
+      pendingStart.cancel.requested = true;
+      return { accepted: true, state: 'aborting' };
+    }
     const registered = runRegistry.get(runId);
     if (!registered || registered.state === 'terminal') {
       return { accepted: false, state: 'not_found' };
@@ -1249,6 +1511,10 @@ export function __getActiveAgentRunCount(): number {
 }
 
 /** Test-only reset for the bounded idempotency registry. */
+/** Test-only: the accepted-entry TTL, so tests don't duplicate the number. */
+export const __RUN_REGISTRY_ACCEPTED_TTL_MS = RUN_REGISTRY_ACCEPTED_TTL_MS;
+
 export function __resetAgentRunRegistryForTests(): void {
   runRegistry.clear();
+  pendingLedgerStarts.clear();
 }

@@ -80,8 +80,8 @@
  * browser.rs injects `NEW_WINDOW_SHIM` (an `initialization_script` that
  * redirects `window.open()`/blank-target link clicks into the SAME webview,
  * since a native child webview has no default popup handler). Electron's
- * `setWindowOpenHandler` achieves the same end (deny the popup, load the URL
- * in this view instead) without needing an injected script.
+ * `setWindowOpenHandler` instead adopts the native child as a separate tab.
+ * Automation needs a one-use browse lease; native POST/opener are preserved.
  *
  * Wired from electron/tauriHost.cjs via browserDispatch(app, cmd, args) —
  * see the wiring comment there for the dispatch-order slot (after
@@ -91,10 +91,62 @@
  */
 'use strict';
 
-const { WebContentsView, session } = require('electron');
+const { WebContentsView, session, dialog } = require('electron');
+const { createBrowserControl } = require('./browserControl.cjs');
+const { browserRunRegistry } = require('./browserRunRegistry.cjs');
+const { createBrowserDocuments } = require('./browserDocument.cjs');
+const browserDocuments = createBrowserDocuments();
+const { createBrowserFrames } = require('./browserFrames.cjs');
+const { runCancellableAction } = require('./browserActionCancellation.cjs');
+const { loadAutomationUrl } = require('./browserNavigation.cjs');
+const browserFrames = createBrowserFrames({ documents: browserDocuments, runtimeSource: loadAutomationRuntime });
+const { createBrowserFileChoosers } = require('./browserFileChoosers.cjs');
+const browserFileChoosers = createBrowserFileChoosers();
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { sendBrowserKey } = require('./browserKeyboard.cjs');
+const { createBrowserPopupPolicy, POPUP_BLOCKED } = require('./browserPopupPolicy.cjs');
+const nativePopupViews = new Set();
+const popupGuardReady = new Map();
+const popupGuardPending = new Set();
+const hasPendingPopupGuard = (contents) => [...popupPolicy.familyFor(contents)].some((member) => popupGuardPending.has(member.id));
+const popupPolicy = createBrowserPopupPolicy({
+  originOf: normalizedOriginOf,
+  onBlocked(contents) {
+    for (const [id, view] of views) {
+      if (view.webContents === contents) emit(`browser://popup-blocked/${id}`, null);
+    }
+  },
+});
+
+const browserControl = createBrowserControl({
+  familyFor: popupPolicy.familyFor,
+  async prepare(members) {
+    for (const [id, view] of views) {
+      if (!members.includes(view.webContents)) continue;
+      browserFileChoosers.release(view.webContents);
+      if (pendingDialogs.has(id)) await answerDialog(id, false, undefined, 'dismissed-for-takeover');
+    }
+  },
+  async finalize(members) {
+    for (const [id, view] of views) {
+      if (members.includes(view.webContents)) detachDialogWatcherIfIdle(id);
+    }
+  },
+  onChange(contents, phase) {
+    if (phase === 'human') { popupGuardReady.delete(contents.id); popupGuardPending.delete(contents.id); }
+    popupPolicy.documentChanged(contents); // invalidate every outstanding popup lease
+    browserDocuments.invalidate(contents, phase === 'ai');
+    automationRuntimeReady.delete(contents);
+    for (const [id, view] of views) {
+      if (view.webContents !== contents) continue;
+      protectedAutomationViews.add(id);
+      emit(`browser://control/${id}`, phase);
+    }
+  },
+});
+const controlLocales = new WeakMap();
 
 // Lazy-required (not at top-level) to avoid a circular-require footgun:
 // tauriHost.cjs requires THIS module (to wire browserDispatch into its
@@ -127,6 +179,8 @@ const BROWSER_CMDS = new Set([
   'browser_close',
   'browser_inspect_set',
   'browser_note_user_interaction',
+  'browser_control',
+  'browser_register_run',
   'browser_dispose_owner',
   'browser_clear_reclaim',
 ]);
@@ -258,6 +312,12 @@ function ownerInDisposeScope(owner, conversationId, runKey) {
 
 /** view id -> { owner, createdAt }. Absent ⇒ legacy (see `ownerOf`). */
 const viewMeta = new Map();
+// A hidden view is not necessarily disposable: retain the history of user
+// exposure and cross-run use for the lifetime of the view.
+const protectedAutomationViews = new Set();
+const activeAutomationViews = new Map();
+const { requestBrowserTabClose, isBrowserTabClosing } = require('./browserTabClose.cjs');
+
 
 /** owner key -> webContents.id of that owner's most recently touched tab. */
 const activeTabIdByOwner = new Map();
@@ -417,7 +477,7 @@ const TAKEOVER_GATED_ACTIONS = new Set([
  * `get_downloads`) only reads. It produces no guest event, so suppressing
  * during it can only ever hide the user — which is exactly what F0 was.
  */
-const ATTRIBUTION_SUPPRESSING_ACTIONS = new Set([...TAKEOVER_GATED_ACTIONS, 'get_tabs']);
+const ATTRIBUTION_SUPPRESSING_ACTIONS = new Set([...TAKEOVER_GATED_ACTIONS, 'get_tabs', 'create_tab']);
 
 /**
  * The actions that arm JavaScript-dialog interception on the tab they touch.
@@ -462,6 +522,8 @@ const DIALOG_WATCHED_ACTIONS = new Set([
  *   refuse every navigation away from anywhere.
  */
 const ORIGIN_PINNED_ACTIONS = new Set([
+  'close_tab',
+  'retain_tab',
   'click',
   'fill',
   'select',
@@ -715,7 +777,7 @@ function takeReclaimLiftedNotice(owner) {
 /** Synthetic native input and incidental focus need different attribution. */
 const aiActionDepthByView = new Map();
 const aiFocusDepthByView = new Map();
-const FOCUS_ONLY_ACTIONS = new Set(['navigate', 'execute_js', 'get_tabs']);
+const FOCUS_ONLY_ACTIONS = new Set(['navigate', 'create_tab', 'execute_js', 'get_tabs']);
 
 function aiOwnsGuestEvents(viewId, directInput = false) {
   return (aiActionDepthByView.get(viewId) || 0) > 0
@@ -934,7 +996,12 @@ function assertOriginPin(action, payload, view) {
         'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.'
     );
   }
-  const current = normalizedOriginOf(view.webContents.getURL());
+  const frameId = payload.frameId;
+  const current = frameId && frameId !== 'f0'
+    ? browserFrames.resolve(view.webContents, frameId).origin
+    : action === 'keyboard' && view.webContents.focusedFrame
+      ? normalizedOriginOf(view.webContents.focusedFrame.origin)
+      : normalizedOriginOf(view.webContents.getURL());
   if (current === expected) return;
   throw new Error(
     `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, ` +
@@ -1280,6 +1347,15 @@ function browserSessionForViews() {
     callback({ cancel: false });
   });
 
+  // The single request hook also covers 307/308 before POST data
+  // leaves the session. Never register a second listener: Electron replaces it.
+  browserSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
+    // A noopener renderer cannot ACK CDP until its original navigation starts.
+    // Holding this request for picker initialization would deadlock POST. The
+    // child stays hidden and its family cannot receive input until guard ACK.
+    callback({ cancel: !popupPolicy.permitsRequest(details.webContentsId, details.url, details.resourceType) });
+  });
+
   // T6. Every automation download is redirected into Abu's own per-task
   // folder and answered for by the run that asked for it — see
   // `handleWillDownload`, which also explains why `setSavePath` being
@@ -1330,38 +1406,182 @@ function loadAutomationRuntime() {
 function configureBrowserView(id, view) {
   const contents = view.webContents;
   const automationTabId = contents.id;
-  contents.setWindowOpenHandler(({ url: targetUrl }) => {
+  contents.setWindowOpenHandler(({ url: targetUrl, postBody }) => {
     let safeUrl;
-    try {
-      safeUrl = allowedAutomationUrl(targetUrl);
-    } catch {
+    try { safeUrl = allowedAutomationUrl(targetUrl); } catch {
+      popupPolicy.deny(contents);
       return { action: 'deny' };
     }
-    // Popups still navigate their source view; apply the navigation whitelist
-    // before loading untrusted window.open / target=_blank destinations.
-    void contents.loadURL(safeUrl);
-    return { action: 'deny' };
+    const human = browserControl.phase(contents) === 'human';
+    const sourceVersion = popupPolicy.documentVersion(contents);
+    const ticket = human ? browserControl.manualTicket(contents, ownerOf(id), () => {
+      const win = mainWindow();
+      if (!win || win.isDestroyed() || !dialog?.showMessageBoxSync) return false;
+      const zh = controlLocales.get(contents) === 'zh-CN';
+      // Synchronous native decision preserves Chromium's original POST/opener.
+      // Never display form contents and never rebuild a rejected request.
+      return dialog.showMessageBoxSync(win, {
+        type: 'question', noLink: true, defaultId: 0, cancelId: 0,
+        title: zh ? '打开新窗口' : 'Open new window',
+        message: zh ? '允许此页面打开新窗口？' : 'Allow this page to open a new window?',
+        detail: safeUrl + (postBody ? (zh ? '\n此操作会提交表单。' : '\nThis will submit a form.') : ''),
+        buttons: zh ? ['取消', '打开'] : ['Cancel', 'Open'],
+      }) === 1;
+    }) : browserControl.phase(contents) === 'yielding' ? null
+      : popupPolicy.request(contents, safeUrl, isLegacyOwner(ownerOf(id)) ? LEGACY_OWNER : null);
+    if (!ticket) return { action: 'deny' };
+    if (human) {
+      ticket.origin = normalizedOriginOf(safeUrl);
+      const stillControlled = ticket.valid;
+      ticket.valid = () => stillControlled() && popupPolicy.documentVersion(contents) === sourceVersion;
+    }
+    const win = mainWindow();
+    if (!win || win.isDestroyed()) return { action: 'deny' };
+    try { assertAutomationTabCapacity(ticket.owner); } catch (error) {
+      popupPolicy.deny(contents, error.message);
+      return { action: 'deny' };
+    }
+    const childId = `${AUTOMATION_VIEW_PREFIX}-${crypto.randomBytes(8).toString('hex')}`;
+    pendingAutomationOwners.set(childId, ticket.owner);
+    // Electron may checkpoint microtasks before createWindow. Keep the quota
+    // reservation across that handoff, with bounded cleanup if native creation
+    // fails; a microtask cleanup would cancel valid POST children prematurely.
+    const reservationTimer = armTimer(() => {
+      if (pendingAutomationOwners.has(childId)) cancelAutomationAdoption(childId);
+    }, 5000);
+    return {
+      action: 'allow',
+      outlivesOpener: true,
+      overrideBrowserWindowOptions: { webPreferences: {
+        sandbox: true, contextIsolation: true, nodeIntegration: false,
+        session: browserSessionForViews(),
+      } },
+      createWindow(options) {
+        disarmTimer(reservationTimer);
+        let child;
+        try {
+          if (!options.webContents || !pendingAutomationOwners.has(childId)
+              || !ticket.valid() || views.get(id) !== view || win.isDestroyed()) {
+            throw new Error(POPUP_BLOCKED);
+          }
+          // Adopt Chromium's actual child: rebuilding it with loadURL would
+          // discard POST/referrer/opener/noopener and silently turn POST to GET.
+          child = new WebContentsView({ webContents: options.webContents, webPreferences: options.webPreferences });
+          viewMeta.set(childId, { owner: ticket.owner, createdAt: Date.now() });
+          views.set(childId, child);
+          nativePopupViews.add(childId);
+          popupPolicy.attach(child.webContents, ticket);
+          browserControl.inherit(contents, child.webContents);
+          controlLocales.set(child.webContents, controlLocales.get(contents));
+          if (human) popupPolicy.approvedNavigation(child.webContents, safeUrl);
+          configureBrowserView(childId, child);
+          if (!human && ticket.origin) {
+            const childContents = child.webContents;
+            const childContentsId = childContents.id;
+            const lease = browserControl.acquire(childContents, ticket.signal);
+            popupGuardPending.add(child.webContents.id);
+            let interrupted = false;
+            const interrupt = () => {
+              if (interrupted) return;
+              interrupted = true;
+              childContents.removeListener('did-fail-load', failedNavigation);
+              // Only the unpublished child's initialization owns this load.
+              // Stop it and reject pending CDP before takeover waits for drain.
+              if (childContents.isDestroyed()) return;
+              childContents.stop();
+              if (childContents.debugger.isAttached()) childContents.debugger.detach();
+            };
+            const failedNavigation = (_event, _code, _description, _url, isMainFrame) => {
+              if (isMainFrame !== false && popupGuardPending.has(childContentsId)) interrupt();
+            };
+            childContents.on('did-fail-load', failedNavigation);
+            lease.signal.addEventListener('abort', interrupt, { once: true });
+            const ready = ensureDialogWatcher(childId, child).then(() => {
+              lease.assert();
+              popupGuardPending.delete(childContentsId);
+            }).finally(() => {
+              lease.signal.removeEventListener('abort', interrupt);
+              childContents.removeListener('did-fail-load', failedNavigation);
+              releaseDialogWatch(childId);
+              lease.end();
+            });
+            popupGuardReady.set(child.webContents.id, ready);
+            void ready.catch(() => {
+              popupPolicy.deny(contents, 'New page could not acquire browser control. Take over before continuing.');
+              cancelAutomationAdoption(childId);
+              if (views.get(childId) === child) closeView(childId, child);
+            });
+            childContents.once('destroyed', () => {
+              popupGuardReady.delete(childContentsId);
+              popupGuardPending.delete(childContentsId);
+            });
+          }
+          win.contentView.addChildView(child);
+          child.setBounds({ x: 0, y: 0, width: 1024, height: 768 });
+          child.setVisible(false);
+          pendingAutomationOwners.delete(childId);
+          // Renderer attachment must happen after the native callback returns.
+          // It adds a background tab without changing the source's active id.
+          const publishChild = () => {
+            if (views.get(childId) !== child || child.webContents.isDestroyed()) return;
+            emit('browser://automation-open', {
+              id: childId, sourceViewId: id, url: child.webContents.getURL() && child.webContents.getURL() !== 'about:blank' ? child.webContents.getURL() : safeUrl,
+              ...(isLegacyOwner(ticket.owner) ? {} : { ownerId: ticket.owner.conversationId }),
+            });
+          };
+          const guard = popupGuardReady.get(child.webContents.id);
+          if (guard) void guard.then(publishChild, () => {});
+          else queueMicrotask(publishChild);
+          return child.webContents;
+        } catch (error) {
+          popupPolicy.deny(contents, error.message);
+          cancelAutomationAdoption(childId);
+          const rejected = options.webContents;
+          if (!rejected || rejected.isDestroyed()) throw error;
+          // Expected cancellation is not an uncaught native callback error.
+          // Electron requires a live WebContents return value. Deny every
+          // request synchronously, then dispose after native creation returns.
+          popupPolicy.rejectChild(rejected);
+          setImmediate(() => {
+            if (child) closeView(childId, child);
+            else if (!rejected.isDestroyed()) rejected.close();
+          });
+          return rejected;
+        }
+      },
+    };
+  });
+  // onBeforeRequest covers HTTP redirects before body dispatch. This event
+  // additionally rejects page/opener navigations to non-network schemes.
+  contents.on('will-navigate', (event, url) => {
+    if (!popupPolicy.permitsRequest(contents.id, url)) event.preventDefault();
   });
 
   const resetAutomationRuntime = () => {
     automationRuntimeReady.delete(contents);
+    browserDocuments.invalidate(contents);
   };
   const onNav = (_event, navUrl) => {
     disarmInspect(id, false);
     emit(`browser://nav/${id}`, navUrl);
   };
   contents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
-    if (isMainFrame) resetAutomationRuntime();
+    if (isMainFrame) {
+      resetAutomationRuntime();
+      popupPolicy.documentChanged(contents);
+    }
   });
   // A committed main-frame navigation replaces the document, so any dialog
   // record describes a page that is gone. (A dialog still OPEN at this point
   // blocks the navigation itself, so there is nothing to strand.)
+  contents.on('did-frame-navigate', resetAutomationRuntime);
   contents.on('did-navigate', () => forgetDialogs(id));
   ensureMainWindowInputHook();
   // Attribution for the takeover backoff: outside an automation action, input
   // landing here is the user working in this view's owner's tab.
   const recordUserInteraction = () => {
     if (aiOwnsGuestEvents(id)) return;
+    protectedAutomationViews.add(id);
     userInteractionAt.set(ownerKeyOf(id), clock.now());
   };
   // Direct input on THIS view (keyboard or pointer) is what separates the
@@ -1369,9 +1589,15 @@ function configureBrowserView(id, view) {
   let lastDirectGuestInputAt = 0;
   const recordDirectGuestInput = () => {
     if (aiOwnsGuestEvents(id, true)) return;
+    protectedAutomationViews.add(id);
     lastDirectGuestInputAt = clock.now();
     userInteractionAt.set(ownerKeyOf(id), lastDirectGuestInputAt);
   };
+  const blockInitializingFamilyInput = (event) => {
+    if (hasPendingPopupGuard(contents)) event.preventDefault();
+  };
+  contents.on('before-input-event', blockInitializingFamilyInput);
+  contents.on('before-mouse-event', blockInitializingFamilyInput);
   contents.on('before-input-event', recordDirectGuestInput);
   // `before-input-event` is keyboard-only; a pointer entering the guest is
   // only visible here.
@@ -1383,6 +1609,16 @@ function configureBrowserView(id, view) {
     const userTypingInMainUi = now - mainWindowKeyInputAt < USER_INTERACT_QUIET_MS;
     const enteredGuestDirectly = lastDirectGuestInputAt >= mainWindowKeyInputAt
       && now - lastDirectGuestInputAt < GUEST_INPUT_ATTRIBUTION_MS;
+    if (nativePopupViews.has(id) && view.getVisible?.() === false) {
+      const currentId = activeTabIdByOwner.get(ownerKeyOf(id));
+      const current = [...views.values()].find((candidate) => candidate.webContents.id === currentId);
+      if (!userTypingInMainUi && current && current !== view && !current.webContents.isDestroyed()) current.webContents.focus();
+      else {
+        const win = mainWindow();
+        if (win && !win.isDestroyed()) win.webContents.focus();
+      }
+      return;
+    }
     if (userTypingInMainUi && !enteredGuestDirectly) {
       // Navigation-commit steal (F1): the user is typing in the main window
       // and never touched this view — hand focus straight back, and do not
@@ -1427,6 +1663,8 @@ function configureBrowserView(id, view) {
     // wiped — that would silently downgrade the live new view to legacy and
     // hand it to every other conversation.
     if (views.get(id) === view) {
+      if (nativePopupViews.delete(id)) cancelAutomationAdoption(id);
+      protectedAutomationViews.delete(id);
       const ownerKey = ownerKeyOf(id);
       viewMeta.delete(id);
       views.delete(id);
@@ -1463,6 +1701,7 @@ function findViewByTabId(tabId, owner = LEGACY_OWNER) {
       // doing so does NOT claim it — ownership stays legacy.
       if (tabOwner.key === owner.key || isLegacyOwner(tabOwner)) return { id, view };
       if (tabOwner.conversationId === owner.conversationId) {
+        protectedAutomationViews.add(id);
         console.log(
           `[browserHost] cross-run tab access: run ${owner.runKey} acting on tab ${tabId} `
             + `owned by run ${tabOwner.runKey} of the same conversation (explicit tabId hand-over)`
@@ -1488,7 +1727,23 @@ function findViewByTabId(tabId, owner = LEGACY_OWNER) {
  * @param {{global: boolean, viewId: string|null}} [scope] the caller's
  *   attribution scope, narrowed onto the id minted here — see below.
  */
+// Bounds apply to live/pending automation views, not to cumulative usage and
+// never to manually opened pages. Reserve synchronously before the first await.
+function assertAutomationTabCapacity(owner) {
+  const allocated = new Map(pendingAutomationOwners);
+  for (const [id, meta] of viewMeta) {
+    if (id.startsWith(AUTOMATION_VIEW_PREFIX) && views.has(id)) allocated.set(id, meta.owner);
+  }
+  const owners = [...allocated.values()];
+  if (owners.length >= 32
+      || owners.filter((entry) => entry.conversationId === owner.conversationId).length >= 16
+      || owners.filter((entry) => entry.key === owner.key).length >= 8) {
+    throw new Error('Browser tab limit reached. Reuse existing task tabs or ask the user to close unneeded pages.');
+  }
+}
+
 async function createAutomationView(owner = LEGACY_OWNER, signal, scope) {
+  assertAutomationTabCapacity(owner);
   const win = mainWindow();
   if (!win || win.isDestroyed()) throw new Error('main window not found');
 
@@ -1615,6 +1870,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       title: contents.getTitle(),
       legacy: isLegacyOwner(tabOwner),
       authState: authStateForUrl(contents.getURL()),
+      ...(popupPolicy.wasBlocked(contents) ? { popupBlocked: true } : {}),
     });
   }
   // The reclaim block lives HERE rather than at the call site so every path
@@ -1680,76 +1936,37 @@ function assertAutomationDocumentAllowed(view) {
   }
 }
 
+const automationRuntimeInstalling = new WeakMap();
 async function installAutomationRuntime(view) {
   const contents = view.webContents;
-  if (contents.isDestroyed()) throw new Error('browser tab is closed');
-  if (automationRuntimeReady.has(contents)) return;
-
-  await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
-    code: 'globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__ = {};',
-  }]);
-  await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
-    code: loadAutomationRuntime(),
-  }]);
-  const ready = await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
-    code: 'typeof globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__?.handleAction === "function"',
-  }]);
-  if (!ready) throw new Error('browser automation runtime failed to initialize');
-  automationRuntimeReady.add(contents);
+  const document = browserDocuments.current(contents);
+  browserDocuments.assertCurrent(contents, document);
+  if (automationRuntimeReady.has(contents)) return document;
+  const pending = automationRuntimeInstalling.get(document);
+  if (pending) return pending;
+  const install = (async () => {
+    await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
+      code: `globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__ = { referenceBase: ${document.referenceBase}, nativeFrames: true };`,
+    }]);
+    browserDocuments.assertCurrent(contents, document);
+    await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{ code: loadAutomationRuntime() }]);
+    browserDocuments.assertCurrent(contents, document);
+    const ready = await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
+      code: 'typeof globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__?.handleAction === "function"',
+    }]);
+    browserDocuments.assertCurrent(contents, document);
+    if (!ready) throw new Error('browser automation runtime failed to initialize');
+    automationRuntimeReady.add(contents);
+    return document;
+  })();
+  automationRuntimeInstalling.set(document, install);
+  try { return await install; } finally { automationRuntimeInstalling.delete(document); }
 }
 
 /**
- * Cross-check the runtime's frame list against the BROWSER's own.
- *
- * The runtime reaches same-origin child documents through `contentDocument`
- * and reads their real `location` — authoritative. A CROSS-origin frame is
- * opaque to it, so all it can offer is the `src` ATTRIBUTE, which the
- * embedding page writes and the frame can navigate away from. Reporting that
- * as an origin would let a page name any site it liked as "the region embedded
- * here", and the approval gate's merged grant reads this list.
- *
- * `webContents.mainFrame.framesInSubtree` is the main process's own view of
- * the frame tree, which no page authors. An unreachable frame keeps its origin
- * only if the browser agrees a frame with that origin is really embedded;
- * otherwise the origin is dropped and the region is reported without one —
- * still listed (so a refusal can name it) but never authorizable.
- */
-function validateFrameOrigins(view, frames) {
-  if (!Array.isArray(frames)) return frames;
-  const real = new Set();
-  try {
-    for (const frame of view.webContents.mainFrame.framesInSubtree) {
-      // `WebFrameMain.origin` over `url`: it is the browser's own answer, and
-      // it is honest about an opaque origin (a sandboxed frame reports the
-      // string "null", which normalizes away and so confirms nothing) where
-      // reverse-engineering one from the address would quietly manufacture a
-      // site. `url` remains the fallback for a frame that reports no origin.
-      const stated = typeof frame.origin === 'string' && frame.origin !== ''
-        ? frame.origin
-        : frame.url;
-      const origin = normalizedOriginOf(stated);
-      if (origin) real.add(origin);
-    }
-  } catch {
-    // A destroyed webContents has no frame tree; then nothing can be confirmed.
-  }
-  return frames.map((frame) => {
-    if (!frame || frame.accessible !== false || !frame.origin) return frame;
-    if (real.has(frame.origin)) return frame;
-    return { ...frame, origin: null };
-  });
-}
-
-/**
- * How long the frame probe is given before a listing gives up on it.
- *
- * A tab suspended inside `alert()`/`confirm()` runs NOTHING — not the page's
- * script, not the automation runtime — so an isolated-world call into it never
- * settles. `get_tabs` must stay answerable there (it is the one listing that
- * marks the frozen tab, so a model can avoid picking it), which means the
- * frame probe has to be bounded rather than trusted. Belt to the braces of the
- * `pendingDialogs` skip below: a tab can also freeze between the check and the
- * call, and a renderer can wedge for reasons that raise no dialog at all.
+ * A bounded native frame metadata probe. It does not execute page scripts,
+ * but the debugger/process may be unavailable. A late response is rejected by
+ * the operation/document/connection checks instead of publishing stale IDs.
  */
 const FRAME_PROBE_TIMEOUT_MS = 2000;
 
@@ -1773,52 +1990,62 @@ function viewHasChildFrames(view) {
   }
 }
 
-/** The page's embedded regions, or `[]` when the runtime could not be asked. */
-async function frameTreeFor(view) {
+/** The page's embedded regions, or [] when native metadata is unavailable. */
+async function frameTreeFor(view, scope) {
   try {
     assertAutomationDocumentAllowed(view);
     let timer;
+    scope.nativeWork = browserFrames.list(view.webContents, () => {
+      if (scope.finished) throw new Error('Browser frame probe already returned');
+      scope.controlLease.assert();
+    });
     const frames = await Promise.race([
-      runDomAutomation(view, 'frames', {}),
+      scope.nativeWork,
       new Promise((resolve) => {
         timer = armTimer(() => resolve(null), FRAME_PROBE_TIMEOUT_MS);
       }),
     ]).finally(() => disarmTimer(timer));
     if (frames === null) return [];
-    return validateFrameOrigins(view, frames) ?? [];
+    return frames ?? [];
   } catch {
     return [];
   }
 }
 
-async function runDomAutomation(view, action, payload) {
-  await installAutomationRuntime(view);
-  const code = `globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__.handleAction(
-    ${JSON.stringify(action)},
-    ${JSON.stringify(payload || {})}
-  )`;
-  // Never auto-retry an action: a click/fill can take effect just before its
-  // execution context is replaced. Replaying it could submit or delete twice.
-  // The next explicit tool call installs into the new document as needed.
-  const result = await view.webContents.executeJavaScriptInIsolatedWorld(
-    AUTOMATION_WORLD_ID,
-    [{ code }],
-  );
-  // A snapshot carries the page's frame list, and the runtime can only guess
-  // the origin of a region it cannot see into. Same cross-check as
-  // `frameTreeFor` — the model must never be shown an origin the browser does
-  // not confirm, because that list is what an approval is granted against.
-  if (action === 'snapshot' && result && typeof result === 'object' && Array.isArray(result.frames)) {
-    return { ...result, frames: validateFrameOrigins(view, result.frames) };
+async function runDomAutomation(view, action, payload, beforeDispatch = () => {}, signal) {
+  const frameId = payload.frameId;
+  if (frameId && frameId !== 'f0') return browserFrames.run(view.webContents, frameId, action, payload, beforeDispatch, signal);
+  const document = await installAutomationRuntime(view);
+  beforeDispatch();
+  browserDocuments.assertCurrent(view.webContents, document);
+  // Never replay a write after document replacement. Wait cancellation runs
+  // in this exact world and settles its observer/timers before control drains.
+  const result = await runCancellableAction({ action, payload,
+    referenceBase: document.referenceBase, signal,
+    dispatch: (code, enforceCurrent) => {
+      if (enforceCurrent) beforeDispatch();
+      return view.webContents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{ code }],
+        enforceCurrent && action === 'click' && popupPolicy.canActivate(view.webContents));
+    },
+  });
+  // The DOM runtime describes one document. Only native metadata supplies
+  // other regions and their permission origins; iframe src is page-authored.
+  if (action === 'snapshot' && result && typeof result === 'object') {
+    const { frames: _runtimeFrames, ...snapshot } = result;
+    return viewHasChildFrames(view)
+      ? { ...snapshot, frames: await browserFrames.list(view.webContents, beforeDispatch) }
+      : snapshot;
   }
   return result;
 }
 
-async function navigateAutomationTab(view, payload) {
+async function navigateAutomationTab(view, payload, beforeNavigate, signal) {
   const action = payload.action || 'goto';
   if (action === 'goto') {
     const url = allowedAutomationUrl(payload.url);
-    await view.webContents.loadURL(url);
+    if (beforeNavigate) beforeNavigate();
+    popupPolicy.approvedNavigation(view.webContents, url);
+    await loadAutomationUrl(view.webContents, url, signal);
   } else if (action === 'reload') {
     view.webContents.reload();
   } else if (action === 'back') {
@@ -1831,26 +2058,6 @@ async function navigateAutomationTab(view, payload) {
   return `Navigation: ${action}`;
 }
 
-function keyboardAutomation(view, payload) {
-  const key = String(payload.key || '');
-  if (!key) throw new Error('Keyboard key is required');
-  const modifiers = Array.isArray(payload.modifiers)
-    ? payload.modifiers.map((value) => {
-      if (value === 'ctrl') return 'control';
-      return String(value);
-    })
-    : [];
-  view.webContents.focus();
-  view.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
-  if (key.length === 1 && !modifiers.includes('control') && !modifiers.includes('meta')) {
-    view.webContents.sendInputEvent({ type: 'char', keyCode: key, modifiers });
-  }
-  view.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
-  return {
-    success: true,
-    message: `Key press: ${modifiers.length ? `${modifiers.join('+')}+` : ''}${key}`,
-  };
-}
 
 async function screenshotAutomation(view, fullPage) {
   const debug = view.webContents.debugger;
@@ -1917,32 +2124,12 @@ async function screenshotAutomation(view, fullPage) {
 // hands `prompt` an immediate cancel. Under CDP it is a real dialog with a real
 // text answer.
 //
-// ## Scope: armed for ONE action, on the tab that action drives
-//
-// Not at view creation, and not on first contact of any kind. Two rules, and
-// the second one exists because the first alone was not enough:
-//
-//  1. WHICH ACTIONS ARM IT — only the ones that can raise a dialog
-//     (`TAKEOVER_GATED_ACTIONS`: click / fill / select / keyboard / navigate /
-//     execute_js / …) plus the two dialog tools themselves. A read-only action
-//     cannot make a page call `confirm()`, so arming for one buys nothing —
-//     and costs the user every native dialog on that tab from then on.
-//  2. HOW LONG IT STAYS — for the duration of that one action, released in
-//     `performBrowserAutomation`'s `finally`. The exception is a tab holding a
-//     PENDING dialog: that watcher is the only thing that can answer it (and
-//     the only thing running the 60s fail-safe), so it is kept until the
-//     dialog is answered, dismissed, or times out.
-//
-// Rule 1 without rule 2 still leaves the user's tab permanently taken over
-// after one `click`; rule 2 without rule 1 still takes it over — briefly — on
-// every `extract_text`, which is what the model does constantly. Both, and the
-// window in which Abu owns the tab's dialogs is exactly the window in which
-// Abu is driving it.
-//
-// This matters most on a LEGACY tab — the pane tab the user opened themselves,
-// which `findViewByTabId` lets any run address. A watcher left on one is a user
-// who clicks their own 「确定」 and watches the page hang for 60 seconds and
-// then silently cancel, with no UI anywhere saying why.
+// ## Scope: page-driving actions acquire control; explicit takeover releases it.
+// Read-only first contact does not intercept native dialogs. Once AI drives a
+// page, interception remains between actions: callbacks can open a picker after
+// the initiating tool has returned. User takeover drains in-flight work and
+// detaches the debugger, restoring the page's native dialogs and file pickers.
+// Per-action depths below protect pending work while that handover is draining.
 
 /** Mirrors `JS_DIALOG_AUTO_DISMISS_MS` in `abu-browser-shared/types.ts` (a
  *  CommonJS main-process module cannot import it); the two are pinned together
@@ -2033,6 +2220,14 @@ function noteDialogOpened(id, params) {
   }, DIALOG_AUTO_DISMISS_MS);
   pendingDialogs.set(id, { info, timer });
   wakeDialogWaiters(id);
+  const contents = views.get(id)?.webContents;
+  if (contents && browserControl.phase(contents) === 'yielding') {
+    // An already-dispatched script can open its dialog after take() prepared
+    // the family. Never leave takeover waiting for the 60-second fail-safe.
+    void answerDialog(id, false, undefined, 'dismissed-for-takeover')
+      .then(() => detachDialogWatcherIfIdle(id))
+      .catch((error) => browserControl.fail(contents, error));
+  }
 }
 
 function forgetDialogs(id) {
@@ -2082,7 +2277,11 @@ async function ensureDialogWatcher(id, view) {
   // No debugger surface (an older or mocked contents) means interception is
   // simply unavailable — automation carries on exactly as it did before.
   if (!dbg || typeof dbg.sendCommand !== 'function' || typeof dbg.on !== 'function') return;
-  if (dialogWatched.has(contents)) return;
+  if (dialogWatched.has(contents)) {
+    await browserFileChoosers.enable(contents);
+    browserFileChoosers.assertReady(contents);
+    return;
+  }
   // Marked BEFORE the first await: two actions racing on the same fresh tab
   // must not both attach.
   dialogWatched.add(contents);
@@ -2093,19 +2292,6 @@ async function ensureDialogWatcher(id, view) {
     dialogListenersBound.add(contents);
     dbg.on('message', (_event, method, params) => {
       if (method === 'Page.javascriptDialogOpening') noteDialogOpened(id, params);
-      // T5 — the OS file picker, refused before it can appear.
-      //
-      // This is not how `upload_file` works (that writes the file into the
-      // input directly); it is the guard for the OTHER way a picker opens:
-      // the model clicks a 「选择文件」 button, or the page calls
-      // `input.click()` on its own while automation is driving. Without
-      // interception Chromium raises a NATIVE modal that nothing in this
-      // process can dismiss and no automated run can answer — the PRD's
-      // 「弹出即死锁」. With it, the chooser never renders and we answer it
-      // with an empty selection, which is exactly "the user pressed Cancel".
-      else if (method === 'Page.fileChooserOpened') {
-        cancelInterceptedFileChooser(dbg, id, params);
-      }
       // Also fired for a dialog that ended some other way (the frame went away
       // under it), so it is what keeps a stale "pending" from outliving one.
       else if (method === 'Page.javascriptDialogClosed') {
@@ -2135,51 +2321,16 @@ async function ensureDialogWatcher(id, view) {
   try {
     if (!dbg.isAttached()) dbg.attach('1.3');
     await dbg.sendCommand('Page.enable');
-    // T5 — arm the file-chooser interception on the same lease, so it lives
-    // exactly as long as automation is touching this tab. A tab the user is
-    // browsing on their own keeps its native picker, for the same reason F1
-    // gave it back its native dialogs.
-    //
-    // Best-effort and SEPARATE from the `Page.enable` above: an Electron/
-    // Chromium build without this CDP method must not cost the tab its dialog
-    // interception, which is the older and more load-bearing of the two.
-    try {
-      await dbg.sendCommand('DOM.enable');
-      await dbg.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true });
-    } catch (chooserError) {
-      console.log(
-        `[browserHost] file-chooser interception unavailable on view ${id}: `
-          + (chooserError instanceof Error ? chooserError.message : String(chooserError))
-      );
-    }
+    await browserFileChoosers.enable(contents);
+    browserFileChoosers.assertReady(contents);
   } catch (error) {
-    dialogWatched.delete(contents);
-    console.log(
-      `[browserHost] JavaScript-dialog interception unavailable on view ${id}: `
-        + (error instanceof Error ? error.message : String(error))
-    );
-  }
-}
+    // Keep attachment tracked until the final holder detaches. A takeover can
+    // interrupt initialization after Chromium enabled interception but before
+    // its ACK; deleting this mark would falsely hand back an attached page.
+    browserFileChoosers.release(contents);
+    throw new Error(`Browser dialog interception is unavailable: ${error instanceof Error ? error.message : String(error)}`);
 
-/**
- * Answer an intercepted file chooser with "nothing selected".
- *
- * `DOM.setFileInputFiles` with an empty list is how CDP says Cancel. Doing
- * nothing at all would also avoid the modal, but would leave the page waiting
- * on a chooser that never resolves; this way the page's own
- * `input.onchange`/promise settles and the model sees an empty input, which
- * is a state it can act on (「用 upload_file，别点选择文件」).
- */
-function cancelInterceptedFileChooser(dbg, id, params) {
-  const backendNodeId = params && params.backendNodeId;
-  if (typeof backendNodeId !== 'number') return;
-  Promise.resolve(dbg.sendCommand('DOM.setFileInputFiles', { files: [], backendNodeId }))
-    .catch((error) => {
-      console.log(
-        `[browserHost] could not cancel an intercepted file chooser on view ${id}: `
-          + (error instanceof Error ? error.message : String(error))
-      );
-    });
+  }
 }
 
 function holdDialogWatch(id) {
@@ -2216,9 +2367,10 @@ function detachDialogWatcherIfIdle(id) {
   const view = views.get(id);
   const contents = view && view.webContents;
   if (!contents || contents.isDestroyed()) return;
+  if (browserFileChoosers.held(contents) && browserControl.phase(contents) === 'ai') return;
   const dbg = contents.debugger;
   if (!dbg || typeof dbg.detach !== 'function') return;
-  if (!dialogWatched.has(contents)) return;
+  if (!dialogWatched.has(contents) && !browserFrames.attached(contents)) return;
   dialogWatched.delete(contents);
   try {
     if (typeof dbg.isAttached !== 'function' || dbg.isAttached()) dbg.detach();
@@ -2827,7 +2979,7 @@ function downloadResult(record) {
 }
 
 /** The `download` tool, built-in-browser half. */
-async function downloadAutomation(view, payload, owner, signal) {
+async function downloadAutomation(view, payload, owner, signal, beforeDispatch) {
   const timeoutMs = clampHostDownloadWait(payload.timeoutMs);
   // ONE deadline for the whole call, not one per phase (review F5).
   //
@@ -2876,7 +3028,7 @@ async function downloadAutomation(view, payload, owner, signal) {
       ...(payload.frameId ? { frameId: payload.frameId } : {}),
       ...(payload.expectedOrigin ? { expectedOrigin: payload.expectedOrigin } : {}),
       ...(payload.unattended ? { unattended: true } : {}),
-    });
+    }, beforeDispatch);
     if (!claimed) {
       await new Promise((resolve) => {
         let settled = false;
@@ -2920,6 +3072,43 @@ async function downloadAutomation(view, payload, owner, signal) {
 }
 
 /**
+ * One half of a frozen file identity, kept in the form it arrived in.
+ *
+ * `minimum` is what the field means when it is absent: a device id of 0 is a
+ * real device, a file id of 0 is a filesystem that does not number its files.
+ * Either way an unreadable value becomes `null`, which leaves the size and the
+ * timestamp to identify the file — and `readApprovedUploadFile` refuses
+ * outright when nothing at all is left.
+ *
+ * Mirrored by `approvedFileId` in `abu-browser-bridge/src/locators.ts`, which
+ * is the other sender; the two must read one pin the same way.
+ */
+function approvedFileId(value, minimum) {
+  if (typeof value === 'string') {
+    return /^(?:0|[1-9][0-9]*)$/.test(value) && BigInt(value) >= BigInt(minimum) ? value : null;
+  }
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum ? value : null;
+}
+
+/**
+ * The frozen half against what the descriptor actually reports, compared in
+ * the space the pin was written in.
+ *
+ * An exact pin is a decimal string and is compared exactly. A pin that came
+ * over the wire as a JSON number is compared as a number, which is the same
+ * rounding both of its own sides went through. No pin means nothing to check.
+ *
+ * Mirrored by `sameFileId` in `abu-browser-bridge/src/tools.ts`.
+ *
+ * @param {string | number | null} pin
+ * @param {bigint} actual
+ */
+function sameFileId(pin, actual) {
+  if (pin === null) return true;
+  return typeof pin === 'string' ? String(actual) === pin : Number(actual) === pin;
+}
+
+/**
  * Open ONE approved file and hand back its bytes, or refuse.
  *
  * ## Why this is not `statSync` + `readFileSync` any more (review F1)
@@ -2937,6 +3126,24 @@ async function downloadAutomation(view, payload, owner, signal) {
  * against the identity the gate froze (`mtimeMs`, and `ino`/`dev` where the
  * platform has them), and the bytes read from the same handle. Refusing costs
  * the upload; sending the wrong file costs the file.
+ *
+ * ## The file id is 64 bits wide
+ *
+ * An NTFS id packs a record sequence number above the record index, so it
+ * passes 2^53 on a volume whose records have been reused enough — 62 of the
+ * 7621 files in a Windows install directory on the machine this was measured
+ * on. Both ends therefore work in bigints: the gate puts the exact id on the
+ * wire as a decimal string (`electron/fsHost.cjs` `toFileInfo`), and the
+ * `fstat` below is taken with `{ bigint: true }`, so two ids one rounding step
+ * apart — same record sequence number, adjacent record index — stay two files.
+ *
+ * A pin that arrives as a JSON number is compared as a number. That is the
+ * only shape the frozen Tauri shell can produce, its Rust `plugin:fs` putting
+ * a u64 on the wire as a JSON number, and both of ITS sides round the same
+ * 64-bit value the same way, so such a pin decides exactly what it decided
+ * before. Emit one fixed type, accept both on the way in — the same asymmetry
+ * protobuf's JSON mapping specifies for a 64-bit integer. No expression here
+ * mixes a bigint with a number.
  */
 function readApprovedUploadFile(entry) {
   const filePath = entry && typeof entry.path === 'string' ? entry.path : '';
@@ -2944,19 +3151,15 @@ function readApprovedUploadFile(entry) {
   const size = entry && typeof entry.size === 'number' ? entry.size : -1;
   const mtimeMs = entry && typeof entry.mtimeMs === 'number' && Number.isFinite(entry.mtimeMs)
     ? Math.floor(entry.mtimeMs)
-    : 0;
-  const ino = entry && typeof entry.ino === 'number' && Number.isFinite(entry.ino)
-    ? entry.ino
     : null;
-  const dev = entry && typeof entry.dev === 'number' && Number.isFinite(entry.dev)
-    ? entry.dev
-    : null;
+  const ino = approvedFileId(entry && entry.ino, 1);
+  const dev = approvedFileId(entry && entry.dev, 0);
   if (!filePath || !name || size < 0) {
     throw new Error('Refused: the approved file list for this upload was not readable.');
   }
   // Fail closed on a stamp with no identity in it: comparing lengths is what
   // this whole function stopped doing.
-  if (mtimeMs <= 0 && ino === null) {
+  if (mtimeMs === null && ino === null) {
     throw new Error(
       `Refused: "${name}" was approved without anything that identifies it, so it could `
       + 'not be checked before sending. Nothing was uploaded.',
@@ -2980,15 +3183,18 @@ function readApprovedUploadFile(entry) {
     );
   }
   try {
-    const stat = fs.fstatSync(fd);
+    const stat = fs.fstatSync(fd, { bigint: true });
     // A directory opens fine on POSIX; it is the `fstat` that says so.
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error(`Refused: "${name}" is not an ordinary file.`);
     }
-    const changed = stat.size !== size
-      || (mtimeMs > 0 && Math.floor(stat.mtimeMs) !== mtimeMs)
-      || (ino !== null && stat.ino !== ino)
-      || (dev !== null && stat.dev !== dev);
+    // A bigint stat reports every field as a bigint, and the wire carries
+    // sizes and timestamps as numbers: `mtimeMs` is already whole truncated
+    // milliseconds here, which is the value the gate froze.
+    const changed = Number(stat.size) !== size
+      || (mtimeMs !== null && Number(stat.mtimeMs) !== mtimeMs)
+      || !sameFileId(ino, stat.ino)
+      || !sameFileId(dev, stat.dev);
     if (changed) {
       throw new Error(
         `Refused: "${name}" changed on disk between the confirmation and this upload. `
@@ -3013,7 +3219,7 @@ function readApprovedUploadFile(entry) {
  * `showOpenDialog`, and the page's own picker is intercepted for as long as
  * automation is touching the tab (see `ensureDialogWatcher`).
  */
-async function uploadAutomation(view, payload) {
+async function uploadAutomation(view, payload, beforeDispatch) {
   const declared = Array.isArray(payload.files) ? payload.files : [];
   if (declared.length === 0) {
     throw new Error('Refused: this upload named no approved file, so nothing was sent.');
@@ -3028,7 +3234,7 @@ async function uploadAutomation(view, payload) {
     ...(payload.frameId ? { frameId: payload.frameId } : {}),
     ...(payload.expectedOrigin ? { expectedOrigin: payload.expectedOrigin } : {}),
     ...(payload.unattended ? { unattended: true } : {}),
-  });
+  }, beforeDispatch);
 }
 
 /**
@@ -3047,8 +3253,15 @@ async function performBrowserAutomation(action, payload = {}, opts) {
   // OUTSIDE that one view, and every read-only action, stays the user's (F0).
   const scope = createAiActionScope(action);
   try {
-    return await runBrowserAutomation(action, payload, signal, scope);
+    const result = await runBrowserAutomation(action, payload, signal, scope);
+    const stoppedDownload = action === 'download' && result?.complete === false;
+    scope.controlLease?.assert({ allowExternalAbort: stoppedDownload });
+    if (!stoppedDownload) assertNotAborted(signal);
+    if (scope.observation) browserDocuments.observed(scope.observation.contents, scope.observation.owner, scope.observation.document);
+    return result;
   } finally {
+    scope.finished = true;
+    scope.popupLease?.end();
     endAiActionScope(scope);
     // Give the dialog watcher back. In the `finally` on purpose: an action
     // that threw (refused, aborted, timed out) must not leave the user's tab
@@ -3059,6 +3272,18 @@ async function performBrowserAutomation(action, payload = {}, opts) {
       scope.dialogWatchViewId = null;
       releaseDialogWatch(watchedViewId);
     }
+    // A dialog can make the tool return before its renderer script finishes.
+    // Do not tell takeover that the native work has settled prematurely.
+    const finishNativeWork = () => {
+      if (scope.activeViewId) {
+        const count = (activeAutomationViews.get(scope.activeViewId) || 0) - 1;
+        if (count > 0) activeAutomationViews.set(scope.activeViewId, count);
+        else activeAutomationViews.delete(scope.activeViewId);
+      }
+      scope.controlLease?.end();
+    };
+    if (scope.nativeWork) void scope.nativeWork.then(finishNativeWork, finishNativeWork);
+    else finishNativeWork();
   }
 }
 
@@ -3074,6 +3299,46 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   // Per-RUN: gates this caller's actions (see `conversationIsReclaimed` for why
   // the two halves are keyed differently).
   const runReclaimed = userReclaimedAt.has(ownerKey);
+
+  if (action === 'create_tab') {
+    // Check destination and authorization BEFORE allocating any view. Unlike
+    // ordinary page actions, the approved origin is the destination, not the
+    // current tab (which must remain untouched).
+    const url = allowedAutomationUrl(payload.url);
+    const origin = normalizedOriginOf(url);
+    if ((payload.expectedOrigin && payload.expectedOrigin !== origin)
+        || (payload.unattended === true && !payload.expectedOrigin)) {
+      throw new Error('Refused: the new tab destination does not match an approved origin.');
+    }
+    if (conversationIsReclaimed(owner.conversationId)) throw new Error(USER_RECLAIMED_MESSAGE);
+    const created = await createAutomationView(owner, signal, scope);
+    assertNotAborted(signal);
+    if (conversationIsReclaimed(owner.conversationId)) throw new Error(USER_RECLAIMED_MESSAGE);
+    if (created.webContents.isDestroyed()) throw new Error(RUN_STOPPED_MESSAGE);
+    // Adoption yields to the renderer: re-check that no user navigated the
+    // blank view while it was being attached before loading the requested URL.
+    const initialUrl = created.webContents.getURL();
+    if (initialUrl && initialUrl !== 'about:blank') throw new Error(USER_RECLAIMED_MESSAGE);
+    const tabId = created.webContents.id;
+    // Host-only closure: no request field can replace this final check. The
+    // dialog/idle waits below may yield while the user navigates or closes it.
+    scope.beforeNavigate = () => {
+      assertNotAborted(signal);
+      const target = findViewByTabId(tabId, owner);
+      if (!target || target.view !== created || ownerOf(target.id).key !== owner.key) {
+        throw new Error(RUN_STOPPED_MESSAGE);
+      }
+      const currentUrl = created.webContents.getURL();
+      if (conversationIsReclaimed(owner.conversationId) || (currentUrl && currentUrl !== 'about:blank')) {
+        throw new Error(USER_RECLAIMED_MESSAGE);
+      }
+    };
+    // Reuse the navigation executor's dialog lease, takeover/backoff checks
+    // and cancellation instead of introducing an unguarded loadURL path.
+    const navigation = await runBrowserAutomation('navigate', { ...payload, url, tabId }, signal, scope);
+    assertNotAborted(signal);
+    return { tabId, navigation };
+  }
 
   if (action === 'get_tabs') {
     // Conversation-wide: `automationTabs` refuses to provision, so the listing
@@ -3095,7 +3360,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // U6 / F2.4. Spread in ONLY when there is something to say, so a listing
     // for healthy tabs is byte-for-byte what it was before this existed.
     const currentAuthState = tabs.find((tab) => tab.tabId === currentTabId)?.authState ?? null;
-    // A frame tree costs one round trip INTO the page, so it is computed only
+    // Native frame discovery costs protocol round trips, so it is computed only
     // when a caller asked for it by name (`framesForTabId` — the approval
     // gate, and `batch`'s own between-step re-read when a step targets a
     // region), and only when the browser's own frame tree already says there
@@ -3118,9 +3383,11 @@ async function runBrowserAutomation(action, payload, signal, scope) {
       // exactly how a caller LEARNS the tab is frozen.
       if (pendingDialogs.has(target.id)) continue;
       const wantedView = views.get(target.id);
-      if (!wantedView) continue;
+      if (!wantedView || browserControl.phase(wantedView.webContents) !== 'ai') continue;
       if (!viewHasChildFrames(wantedView)) continue;
-      const tree = await frameTreeFor(wantedView);
+      scope.controlLease = browserControl.acquire(wantedView.webContents, signal);
+      const tree = await frameTreeFor(wantedView, scope);
+      scope.controlLease.assert();
       if (tree.length > 1) framesByTab.set(wantedTabId, tree);
     }
     return {
@@ -3151,6 +3418,8 @@ async function runBrowserAutomation(action, payload, signal, scope) {
             ? { dialogPending: pendingDialogs.get(tab.id).info.type }
             : {}),
           ...(tab.authState ? { authState: tab.authState } : {}),
+          ...(tab.popupBlocked ? { popupBlocked: true } : {}),
+          ...(browserControl.phase(tab.view.webContents) !== 'ai' ? { control: browserControl.phase(tab.view.webContents) } : {}),
           ...(framesByTab.has(tab.tabId) ? { frames: framesByTab.get(tab.tabId) } : {}),
         })),
       }],
@@ -3201,11 +3470,71 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     );
   }
   const { view } = match;
+  if (!scope.controlLease) scope.controlLease = browserControl.acquire(view.webContents, signal);
+  signal = scope.controlLease.signal;
+  scope.controlLease.assert();
+  const actionDocument = browserDocuments.current(view.webContents);
+  const assertPageCurrent = () => {
+    if (scope.finished) throw new Error('Browser action already returned. Observe the page; do not replay.');
+    scope.controlLease.assert();
+    browserFileChoosers.assertReady(view.webContents);
+    if (action !== 'navigate') browserDocuments.assertCurrent(view.webContents, actionDocument);
+    assertOriginPin(action, payload, view);
+  };
+  if (TAKEOVER_GATED_ACTIONS.has(action)) browserDocuments.assertObserved(view.webContents, owner.key);
+  if (['snapshot', 'get_html', 'extract_text', 'extract_table', 'find', 'locate', 'screenshot', 'screenshot_full_page'].includes(action)) {
+    scope.observation = { contents: view.webContents, owner: owner.key, document: actionDocument };
+  }
+  if (action === 'retain_tab') {
+    if (ownerOf(match.id).key !== owner.key || isLegacyOwner(ownerOf(match.id))) {
+      throw new Error('Only this run’s own tab can be retained. Leave other pages unchanged.');
+    }
+    assertNotAborted(signal);
+    assertOriginPin(action, payload, view);
+    if (isBrowserTabClosing(view.webContents)) throw new Error('This tab is closing. Do not retry actions on it.');
+    protectedAutomationViews.add(match.id);
+    return { tabId: view.webContents.id, status: 'retained' };
+  }
+  if (action === 'close_tab') {
+    const actualOwner = ownerOf(match.id);
+    if (isLegacyOwner(actualOwner) || actualOwner.key !== owner.key
+        || protectedAutomationViews.has(match.id) || pendingDialogs.has(match.id)
+        || dialogWatchHolders.has(match.id) || activeAutomationViews.has(match.id)
+        || conversationIsReclaimed(owner.conversationId) || userIsInteracting(match.id, actualOwner.key)) {
+      return { status: 'requires_user_action', reason: 'This page belongs to the user or is being retained. Leave it open for the user to close.' };
+    }
+    assertNotAborted(signal);
+    assertOriginPin(action, payload, view);
+    return requestBrowserTabClose(view.webContents, () => {
+      const win = mainWindow();
+      try {
+        if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
+      } finally {
+        cancelAutomationAdoption(match.id);
+      }
+    }, { onRetained: () => protectedAutomationViews.add(match.id) });
+  }
+  if (isBrowserTabClosing(view.webContents)) {
+    throw new Error('This tab is closing. Do not retry actions on it.');
+  }
+  if (!scope.activeViewId) {
+    scope.activeViewId = match.id;
+    activeAutomationViews.set(match.id, (activeAutomationViews.get(match.id) || 0) + 1);
+  }
   // The target is known: narrow attribution suppression from "every view" to
   // this one, still inside the same synchronous run as the call's entry — no
   // `await` has happened since `performBrowserAutomation` raised the global
   // phase, so nothing could have been swallowed by it.
   bindAiActionScope(scope, match.id);
+  // Includes early-return dialog answers: dismiss can also resume scripts.
+  popupPolicy.markDriven(view.webContents);
+  // No subsequent AI input may confer fresh activation through an opener
+  // while a new child is still initializing. Creation itself never waits here.
+  const dialogAction = action === 'get_dialog' || action === 'handle_dialog';
+  // Answering a dialog grants no activation and may be necessary to let the
+  // current renderer finish initializing. Never wait on that same dialog.
+  if (!dialogAction) await Promise.all([...popupPolicy.familyFor(view.webContents)]
+    .map((member) => popupGuardReady.get(member.id)).filter(Boolean));
 
   // Arm dialog interception on the tab this call is about to touch (see the
   // "Scope" note above `DIALOG_AUTO_DISMISS_MS`), before anything else: a
@@ -3217,7 +3546,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   // `performBrowserAutomation`'s `finally`, which gives it back. A read-only
   // action arms nothing at all, so the tab the user is browsing keeps its own
   // native dialogs (F1).
-  if (DIALOG_WATCHED_ACTIONS.has(action)) {
+  if (DIALOG_WATCHED_ACTIONS.has(action) && !(dialogAction && popupGuardPending.has(view.webContents.id))) {
     scope.dialogWatchViewId = match.id;
     await ensureDialogWatcher(match.id, view);
   }
@@ -3235,6 +3564,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   if (blocking && action !== 'get_dialog' && action !== 'handle_dialog') {
     throw dialogBlockedError(blocking.info);
   }
+  scope.controlLease.assert();
   if (action === 'get_dialog') return getDialogResult(view.webContents.id, match.id);
   if (action === 'handle_dialog') {
     /**
@@ -3261,6 +3591,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     if (payload && payload.action === 'accept' && targetIsUserTab) {
       throw new Error(USER_RECLAIMED_MESSAGE);
     }
+    if (payload.action === 'accept') protectedAutomationViews.add(match.id);
     return handleDialogAction(view.webContents.id, match.id, payload);
   }
 
@@ -3302,6 +3633,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   // compare against where the tab is at the moment of acting, and the idle wait
   // above can last long enough for the page to move under it. Nothing
   // side-effecting has happened yet at this line.
+  scope.controlLease.assert();
   assertOriginPin(action, payload, view);
 
   // Same rule as the listing's promotion: a read-only look at the user's pane
@@ -3313,8 +3645,25 @@ async function runBrowserAutomation(action, payload, signal, scope) {
 
   // Wrapped so an action that OPENS a dialog answers with the dialog instead of
   // hanging in the suspended renderer until its transport timeout.
-  return withDialogInterrupt(match.id, action, () => {
-    if (action === 'navigate') return navigateAutomationTab(view, payload);
+  const sourceUrl = view.webContents.getURL();
+  const popupEligible = ['click', 'keyboard'].includes(action) && !payload.frameId
+    && payload.popupOrigin && payload.popupOrigin === payload.expectedOrigin
+    && (action !== 'keyboard' || (view.webContents.focusedFrame
+      && view.webContents.focusedFrame === view.webContents.mainFrame));
+  scope.popupLease = popupPolicy.beginAction(view.webContents, {
+    owner, origin: popupEligible ? payload.popupOrigin : null, signal,
+    isCurrent: () => views.get(match.id) === view && view.webContents.getURL() === sourceUrl
+      && !conversationIsReclaimed(owner.conversationId) && !isBrowserTabClosing(view.webContents)
+      && (action !== 'keyboard' || view.webContents.focusedFrame === view.webContents.mainFrame),
+  });
+  const runNativeAction = () => {
+    assertPageCurrent();
+    // Page writes may leave drafts even without a beforeunload handler. Do
+    // not discard them merely because nobody has clicked this tab yet.
+    if (['click', 'fill', 'select', 'keyboard', 'execute_js', 'upload_file', 'download'].includes(action)) {
+      protectedAutomationViews.add(match.id);
+    }
+    if (action === 'navigate') return navigateAutomationTab(view, payload, scope.beforeNavigate, signal);
     assertAutomationDocumentAllowed(view);
     if (action === 'execute_js') {
       return view.webContents.executeJavaScript(String(payload.code || ''), true);
@@ -3323,14 +3672,23 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // need the main process: one opens a file, the other owns the session's
     // download stream. `upload_file` then hands the bytes to the SAME content
     // runtime the Chrome extension drives.
-    if (action === 'upload_file') return uploadAutomation(view, payload);
-    if (action === 'download') return downloadAutomation(view, payload, owner, signal);
+    if (action === 'upload_file') return uploadAutomation(view, payload, assertPageCurrent);
+    if (action === 'download') return downloadAutomation(view, payload, owner, signal, assertPageCurrent);
     if (action === 'screenshot') return screenshotAutomation(view, false);
     if (action === 'screenshot_full_page') return screenshotAutomation(view, true);
-    if (action === 'keyboard') return keyboardAutomation(view, payload);
-    if (domActions.has(action)) return runDomAutomation(view, action, payload);
+    if (action === 'keyboard') return sendBrowserKey(view.webContents, payload, {
+      beforeDispatch: assertPageCurrent,
+    });
+    if (domActions.has(action)) return runDomAutomation(view, action, payload, assertPageCurrent, signal);
     throw new Error(`Unknown browser action: ${action}`);
+  };
+  const result = await withDialogInterrupt(match.id, action, () => {
+    scope.nativeWork = Promise.resolve().then(runNativeAction);
+    return scope.nativeWork;
   });
+  scope.controlLease.assert({ allowExternalAbort: action === 'download' && result?.complete === false });
+  if (scope.popupLease.blocked) throw new Error(scope.popupLease.message);
+  return result;
 }
 
 /** Actions the injected DOM runtime performs, as opposed to the ones this
@@ -3411,15 +3769,27 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
 
   const existing = views.get(id);
   if (existing) {
+    if (popupGuardPending.has(existing.webContents.id)) return null;
     // Already created (e.g. StrictMode double-mount) — reuse it, matching
     // browser.rs's early-return-and-reuse branch.
-    if (url) {
+    if (url && !nativePopupViews.has(id)) {
       void existing.webContents.loadURL(parseUrl(url));
     }
+    if (nativePopupViews.has(id) && existing.webContents.getURL()) {
+      queueMicrotask(() => {
+        if (!existing.webContents.isDestroyed()) emit(`browser://nav/${id}`, existing.webContents.getURL());
+      });
+    }
+    if (popupPolicy.wasBlocked(existing.webContents)) {
+      queueMicrotask(() => emit(`browser://popup-blocked/${id}`, null));
+    }
     existing.setBounds(toRect(x, y, width, height));
+    if (visible !== false) protectedAutomationViews.add(id);
     existing.setVisible(visible !== false);
     return null;
   }
+
+  if (typeof id === 'string' && id.startsWith(AUTOMATION_VIEW_PREFIX) && !pendingAutomationOwners.has(id)) return null;
 
   const view = new WebContentsView({
     webPreferences: {
@@ -3442,6 +3812,7 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
   configureBrowserView(id, view);
 
   const shouldShow = visible !== false;
+  if (shouldShow) protectedAutomationViews.add(id);
   // Preserve Electron's proven add-then-bounds order. If a renderer dialog is
   // already open, hide synchronously in the same main-process call before IPC
   // returns; pre-hiding an unattached macOS WebContentsView can prevent it from
@@ -3472,7 +3843,9 @@ function browserNavigate({ id, url }) {
   // surface as an invoke() rejection on ordinary redirects (Chromium resolves
   // loadURL with ERR_ABORTED when a redirect/download interrupts the initial
   // navigation), which is not an error condition worth failing the command on.
+  protectedAutomationViews.add(id);
   void parseUrl(url); // validate eagerly so a malformed URL still throws synchronously
+  popupPolicy.approvedNavigation(view.webContents, url);
   view.webContents.loadURL(url).catch(() => {});
   return null;
 }
@@ -3480,6 +3853,7 @@ function browserNavigate({ id, url }) {
 function browserBack({ id }) {
   const view = getView(id);
   if (!view) throw new Error('not found');
+  protectedAutomationViews.add(id);
   // `webContents.goBack()` is deprecated in Electron 43+ in favor of the
   // `navigationHistory` object — same underlying session-history navigation.
   view.webContents.navigationHistory.goBack();
@@ -3489,6 +3863,7 @@ function browserBack({ id }) {
 function browserForward({ id }) {
   const view = getView(id);
   if (!view) throw new Error('not found');
+  protectedAutomationViews.add(id);
   view.webContents.navigationHistory.goForward();
   return null;
 }
@@ -3496,6 +3871,7 @@ function browserForward({ id }) {
 function browserReload({ id }) {
   const view = getView(id);
   if (!view) throw new Error('not found');
+  protectedAutomationViews.add(id);
   view.webContents.reload();
   return null;
 }
@@ -3529,7 +3905,8 @@ async function browserCapture({ id }) {
 
 function browserShow({ id }) {
   const view = getView(id);
-  if (view) {
+  if (view && !popupGuardPending.has(view.webContents.id)) {
+    protectedAutomationViews.add(id);
     view.setVisible(true);
     // The user switching pane tabs updates that tab OWNER's current tab only.
     if (view.webContents) activeTabIdByOwner.set(ownerKeyOf(id), view.webContents.id);
@@ -3538,6 +3915,8 @@ function browserShow({ id }) {
 }
 
 function closeView(id, view) {
+  nativePopupViews.delete(id);
+  protectedAutomationViews.delete(id);
   disarmInspect(id, false);
   forgetDialogs(id);
   try {
@@ -3609,9 +3988,29 @@ function browserClose({ id, reason }) {
  */
 function disposeOwnerViews(conversationId, runKey) {
   const cancelledIds = [];
+  const closing = [];
+  const retain = (id, view) => {
+    if (views.get(id) !== view || view.webContents.isDestroyed()) return;
+    const parent = resolveOwnerKey({ ownerId: conversationId });
+    viewMeta.set(id, { ...viewMeta.get(id), owner: parent });
+    protectedAutomationViews.add(id);
+    if (!activeTabIdByOwner.has(parent.key)) activeTabIdByOwner.set(parent.key, view.webContents.id);
+  };
   // Snapshot: closeView deletes from `views` as we go.
   for (const [id, view] of Array.from(views)) {
     if (!ownerInDisposeScope(ownerOf(id), conversationId, runKey)) continue;
+    if (runKey) {
+      if (protectedAutomationViews.has(id) || pendingDialogs.has(id) || activeAutomationViews.has(id)) {
+        retain(id, view);
+      } else {
+        closing.push(requestBrowserTabClose(view.webContents, () => {
+          const win = mainWindow();
+          if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
+          cancelAutomationAdoption(id);
+        }, { onRetained: () => retain(id, view) }));
+      }
+      continue;
+    }
     closeView(id, view);
     // Tombstone the closed view's id too: BrowserTab may have a create RETRY in
     // flight for it (its invoke failed once), which would otherwise rebuild the
@@ -3648,6 +4047,7 @@ function disposeOwnerViews(conversationId, runKey) {
   // Emitted last, so the renderer's reaction (dropping the tab record, which
   // fires `browser_close`) can never race the teardown above.
   for (const id of cancelledIds) cancelAutomationAdoption(id);
+  return Promise.all(closing).then(() => null);
 }
 
 function browserDisposeOwner({ conversationId, runKey }) {
@@ -3657,8 +4057,9 @@ function browserDisposeOwner({ conversationId, runKey }) {
   // named ''": the delete cascade sends no runKey at all, and a malformed one
   // must not silently narrow a full teardown into a no-op.
   const run = sanitizeOwnerPart(runKey) || undefined;
-  disposeOwnerViews(conversation, run);
-  return null;
+  if (run && run !== 'main') browserRunRegistry.unregister(conversation, run);
+  else if (!run) browserRunRegistry.disposeConversation(conversation);
+  return disposeOwnerViews(conversation, run);
 }
 
 /**
@@ -3696,6 +4097,7 @@ function browserClearReclaim({ conversationId }) {
 function browserNoteUserInteraction({ id }) {
   const view = getView(id);
   if (!view) return null;
+  protectedAutomationViews.add(id);
   userInteractionAt.set(ownerKeyOf(id), clock.now());
   return null;
 }
@@ -3735,6 +4137,23 @@ function browserDispatch(app, cmd, args) {
       return browserClose(a);
     case 'browser_inspect_set':
       return browserInspectSet(a);
+    case 'browser_register_run': {
+      const win = mainWindow();
+      if (!win || win.isDestroyed()) throw new Error('Browser application window is unavailable');
+      browserRunRegistry.bindRenderer(win.webContents);
+      browserRunRegistry.register(a.conversationId, a.runKey);
+      return null;
+    }
+    case 'browser_control': {
+      const view = getView(a.id);
+      if (!view) return 'ai';
+      if (a.action === 'take') {
+        controlLocales.set(view.webContents, a.locale === 'zh-CN' ? 'zh-CN' : 'en-US');
+        return browserControl.take(view.webContents);
+      }
+      if (a.action === 'release') return browserControl.release(view.webContents);
+      return browserControl.phase(view.webContents);
+    }
     case 'browser_note_user_interaction':
       return browserNoteUserInteraction(a);
     case 'browser_dispose_owner':
@@ -3748,6 +4167,7 @@ function browserDispatch(app, cmd, args) {
 
 /** No orphans: tear down every live browser view on app quit. */
 function closeAllBrowserViews() {
+  browserRunRegistry.clear();
   for (const [id, view] of views) {
     closeView(id, view);
   }
@@ -3761,6 +4181,17 @@ module.exports = {
   closeAllBrowserViews,
   performBrowserAutomation,
   __testing: {
+    /**
+     * The upload identity comparison, reachable without a filesystem.
+     *
+     * The case it exists for — two 64-bit ids one double-rounding step apart —
+     * needs file ids a test cannot make a real filesystem hand out: every id
+     * on a fresh ext4 or APFS volume is small, and the Windows volumes that do
+     * report wide ids give out no two of them close enough to collide. So the
+     * pair is stated here directly.
+     */
+    approvedFileId,
+    sameFileId,
     /** Swap the takeover backoff's clock; pass nothing to restore wall time. */
     setClock(next) { clock = next || REAL_CLOCK; },
     /**

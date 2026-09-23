@@ -249,10 +249,12 @@ function ownerPayloadFromExtra(extra: unknown): Record<string, unknown> {
   const expectedOrigin = metaString(extra, ABU_EXPECTED_ORIGIN_META_KEY);
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
   const unattended = meta?.[ABU_UNATTENDED_META_KEY] === true;
+  const popupOrigin = metaString(extra, 'abu/popupOrigin');
   return {
     ...(ownerId ? { ownerId } : {}),
     ...(runId ? { runId } : {}),
     ...(expectedOrigin ? { expectedOrigin } : {}),
+    ...(popupOrigin ? { popupOrigin } : {}),
     ...(unattended ? { unattended: true } : {}),
   };
 }
@@ -425,7 +427,9 @@ async function uploadPayloadFiles(
       );
     }
     try {
-      const stat = await handle.stat();
+      // `{ bigint: true }` so the descriptor's own 64-bit file id arrives
+      // whole; see `assertApprovedFileUnchanged`.
+      const stat = await handle.stat({ bigint: true });
       assertApprovedFileUnchanged(file, {
         isFile: stat.isFile(),
         isSymbolicLink: stat.isSymbolicLink(),
@@ -458,16 +462,23 @@ async function uploadPayloadFiles(
  * seen to enforce the same rule. Both refuse with the same sentence, and the
  * sentence names the fact — «确认之后被改动过» — rather than the field, because
  * which field changed is not the user's problem.
+ *
+ * `actual` comes off a bigint `fstat`, so the file id is the whole 64-bit
+ * value rather than the nearest double: an NTFS id passes 2^53 once its record
+ * sequence number grows, and two ids one rounding step apart are two files.
+ * Size and timestamp are numbers on the wire and convert back exactly — the
+ * bigint `mtimeMs` is already whole truncated milliseconds, which is what the
+ * gate froze.
  */
 export function assertApprovedFileUnchanged(
   file: ApprovedUploadFile,
   actual: {
     isFile: boolean;
     isSymbolicLink: boolean;
-    size: number;
-    mtimeMs: number;
-    ino: number;
-    dev: number;
+    size: bigint;
+    mtimeMs: bigint;
+    ino: bigint;
+    dev: bigint;
   },
 ): void {
   const refuse = (): never => {
@@ -478,10 +489,27 @@ export function assertApprovedFileUnchanged(
     );
   };
   if (!actual.isFile || actual.isSymbolicLink) refuse();
-  if (actual.size !== file.size) refuse();
-  if (file.mtimeMs > 0 && Math.floor(actual.mtimeMs) !== file.mtimeMs) refuse();
-  if (file.ino !== undefined && actual.ino !== file.ino) refuse();
-  if (file.dev !== undefined && actual.dev !== file.dev) refuse();
+  if (Number(actual.size) !== file.size) refuse();
+  if (file.mtimeMs > 0 && Number(actual.mtimeMs) !== file.mtimeMs) refuse();
+  if (!sameFileId(file.ino, actual.ino)) refuse();
+  if (!sameFileId(file.dev, actual.dev)) refuse();
+}
+
+/**
+ * The frozen half against what the descriptor actually reports, compared in
+ * the space the pin was written in.
+ *
+ * An exact pin is a decimal string and is compared exactly. A pin that arrived
+ * as a JSON number — the only shape the frozen Tauri shell can produce — is
+ * compared as a number, the same rounding both of its own sides went through,
+ * so it decides exactly what it decided before. Emit one fixed type, accept
+ * both on the way in, and never put a bigint and a number in one expression.
+ *
+ * Mirrored by `sameFileId` in `electron/browserHost.cjs`.
+ */
+export function sameFileId(pin: number | string | undefined, actual: bigint): boolean {
+  if (pin === undefined) return true;
+  return typeof pin === 'string' ? String(actual) === pin : Number(actual) === pin;
 }
 
 /**
@@ -531,7 +559,62 @@ function formatResult(response: BrowserTransportResponse): string {
 
 // --- Register all tools ---
 
-export function registerTools(server: McpServer, transport: BrowserTransport = chromeWsTransport): void {
+export interface BrowserToolRegistrationOptions {
+  backend: 'chrome' | 'built-in';
+}
+
+export function registerTools(
+  server: McpServer,
+  transport: BrowserTransport = chromeWsTransport,
+  options: BrowserToolRegistrationOptions = { backend: 'chrome' },
+): void {
+  if (options.backend === 'built-in') {
+    server.tool(
+      'retain_tab',
+      'Keep a result or handoff tab for the user after this child task ends. Use before finishing for pages the user should inspect or continue. Only marks this run’s own tab; does not navigate or transfer another run’s page.',
+      { tabId: z.coerce.number().int().positive().describe('An existing task tab ID') },
+      async ({ tabId }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'retain_tab', { tabId, ...ownerPayloadFromExtra(extra) }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+    server.tool(
+      'close_tab',
+      'Close an unused tab owned only by this task. Pages shown to or used by the user, shared with other runs, or preventing unload are retained. On requires_user_action, leave the page open; never force-close it. On closing, do not retry.',
+      { tabId: z.coerce.number().int().positive().describe('An existing task tab ID') },
+      async ({ tabId }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'close_tab', { tabId, ...ownerPayloadFromExtra(extra) }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+    server.tool(
+      'create_tab',
+      'Open an HTTP(S) URL in a NEW visible tab without replacing existing pages. Use separate tabs for pages the user wants to compare or revisit. Returns the new tab ID. To navigate an existing tab, use navigate instead.',
+      { url: z.string().url().refine((url) => /^https?:/i.test(url), 'Only HTTP(S) URLs are allowed') },
+      async ({ url }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'create_tab', {
+          url, ...ownerPayloadFromExtra(extra),
+        }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+    server.tool(
+      'list_tabs',
+      'List existing tabs available to this browser task, grouped by window. Never creates or navigates a tab. Use the returned tab IDs to select a target; do not guess IDs.',
+      async (extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'get_tabs', {
+          ...ownerPayloadFromExtra(extra),
+          createIfEmpty: false,
+        }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+  }
+
 
   // 1. browser_get_tabs
   server.tool(

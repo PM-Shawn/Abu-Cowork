@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { exists, mkdir, writeFile, remove, rename } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, writeFile, remove, rename, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
 // ── Mocks ──────────────────────────────────────────────────────────
@@ -15,6 +15,8 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
     writeFile: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     rename: vi.fn().mockResolvedValue(undefined),
+    // The staged SKILL.md re-read before going live (assertStagedManifestIs).
+    readTextFile: vi.fn(),
   };
 });
 
@@ -34,9 +36,16 @@ vi.mock('./npmInstaller', async (importOriginal) => {
   };
 });
 
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
+
 import { unzipSync, strFromU8 } from 'fflate';
 import { downloadTarball, extractTarball, findSkillEntries } from './npmInstaller';
 import { detectSourceType, installSkillFromUrl } from './urlInstaller';
+import { SkillPolicyDeniedError } from './skillPolicy';
 
 const mockExists = vi.mocked(exists);
 const mockMkdir = vi.mocked(mkdir);
@@ -124,6 +133,8 @@ beforeEach(() => {
   mockDownloadTarball.mockResolvedValue(DUMMY_BYTES);
   mockStrFromU8.mockReturnValue(SKILL_MD);
   mockFindSkillEntries.mockReturnValue([SKILL_LOC]);
+  // What staging holds after the writes: the same manifest that was checked.
+  vi.mocked(readTextFile).mockResolvedValue(SKILL_MD);
 });
 
 // ── detectSourceType ────────────────────────────────────────────────
@@ -265,6 +276,50 @@ describe('installSkillFromUrl', () => {
       });
       expect(mockMkdir).not.toHaveBeenCalled();
       expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("refuses a skill name the organization's policy blocks, writing nothing", async () => {
+      useFakeDisk();
+      mockStrFromU8.mockReturnValue('---\nname: blocked-skill\n---\n# body');
+      mockUnzipSync.mockReturnValue({ 'root/SKILL.md': SKILL_MD_BYTES });
+
+      const err = await installSkillFromUrl('https://github.com/user/my-skill').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(SkillPolicyDeniedError);
+      expect((err as SkillPolicyDeniedError).skillName).toBe('blocked-skill');
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(liveEntries()).toEqual([]);
+    });
+
+    it('refuses an archive whose second SKILL.md, differing only in case, would replace the checked one', async () => {
+      // One file on APFS / NTFS: the entry written last is the manifest that
+      // goes live, and it declares a name nobody checked.
+      useFakeDisk();
+      mockUnzipSync.mockReturnValue({ 'root/SKILL.md': SKILL_MD_BYTES, 'root/skill.md': DUMMY_BYTES });
+      mockFindSkillEntries.mockReturnValue([{
+        skillMdEntry: { path: 'root/SKILL.md', data: SKILL_MD_BYTES },
+        prefix: 'root/',
+      }]);
+
+      await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+        code: 'AMBIGUOUS_SKILL_MD',
+      });
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(liveEntries()).toEqual([]);
+    });
+
+    it('does not go live when the manifest that landed on disk declares another name', async () => {
+      // Stands in for any path resolution a disk applies that the up-front
+      // count does not model: whatever SKILL.md ended up in staging goes live.
+      useFakeDisk();
+      mockUnzipSync.mockReturnValue({ 'my-skill-main/SKILL.md': SKILL_MD_BYTES });
+      vi.mocked(readTextFile).mockResolvedValueOnce('---\nname: blocked-skill\n---\n# body');
+
+      await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+        code: 'AMBIGUOUS_SKILL_MD',
+      });
+      expect(liveEntries()).toEqual([]);
     });
 
     it('rejects path traversal in zip entries', async () => {

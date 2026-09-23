@@ -14,6 +14,19 @@ const buttonVariants = cva(
           "bg-[var(--abu-danger-solid)] text-white hover:bg-[var(--abu-danger)] focus-visible:ring-[var(--abu-danger-bg)]",
         outline:
           "border bg-background text-[var(--abu-text-primary)] shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-[var(--abu-bg-hover)]",
+        // `outline` carries `dark:` overrides, so a caller that wants the
+        // theme-aware --abu-* surface has to restate every class under `dark:`
+        // to out-specify them. This variant is that surface as a variant: the
+        // tokens already flip per theme (styles/index.css), so no `dark:` here
+        // and none needed at the call site.
+        subtle:
+          "border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] shadow-none hover:bg-[var(--abu-bg-hover)] hover:border-[var(--abu-border-hover)]",
+        // Clay-tinted: the brand colour as text on a light wash, not a solid
+        // fill. For an action that repeats on every card of a grid (安装,
+        // 开始对话) — a solid `default` on each would leave the page with no
+        // single primary action. Keep `default` for the one action per screen.
+        tint:
+          "border border-[var(--abu-clay-40)] bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] shadow-none hover:bg-[var(--abu-clay-bg-15)] hover:border-[var(--abu-clay)]",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost:

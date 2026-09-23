@@ -28,6 +28,7 @@
 import type { ToolDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { TOOL_NAMES } from '../toolNames';
+import { format, getI18n } from '../../../i18n';
 
 export const skillViewTool: ToolDefinition = {
   name: TOOL_NAMES.SKILL_VIEW,
@@ -56,6 +57,9 @@ export const skillViewTool: ToolDefinition = {
 
     const skill = skillLoader.getSkill(name);
     if (!skill) {
+      if (skillLoader.isBlockedByPolicy(name)) {
+        return format(getI18n().toolResult.agent.skillBlockedByPolicy, { skillName: name });
+      }
       const available = skillLoader
         .getAvailableSkills()
         .map((s) => s.name)

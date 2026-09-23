@@ -9,7 +9,8 @@
  *     is still visible without a separate category.
  *   - **agent-evolved** — draft only. Pending agent proposals awaiting
  *     user review. Shown via SkillDraftsPanel when draftsCount > 0.
- *   - **builtin** — bundled with the app binary.
+ *   - **builtin** — the 市场 bucket: bundled with the app binary, or brought
+ *     in by a plugin. Read-only either way.
  *
  * All Toolbox grouping goes through this function, so the enum-to-
  * bucket mapping stays in one place and it's hard to forget a new
@@ -33,11 +34,13 @@ export function sourceToUXCategory(source: SkillSource | undefined): SkillUXCate
       // A dedicated visual badge will distinguish them (spec 11.d, V1.5+).
       return 'mine';
     case 'plugin':
-      // Plugin-contributed skills share the "mine" bucket, same precedent as
-      // enterprise above: the bucket answers "is this something I can use
-      // here", while provenance ("which plugin brought this in") is a per-row
-      // badge. The Plugins tab is the place that lists them by package.
-      return 'mine';
+      // Plugin-contributed skills belong to the 市场 bucket: someone else
+      // shipped them, and 「我的」 means what this user wrote or installed by
+      // hand. Removing one is uninstalling its plugin, not deleting a file —
+      // the same read-only treatment every other 市场 card gets. Provenance
+      // ("which plugin brought this in") stays a per-row badge, and the
+      // Plugins tab is still the place that lists them by package.
+      return 'builtin';
     case 'draft':
       return 'agent-evolved';
     case 'builtin':

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { usePluginStore } from '@/stores/pluginStore';
+import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 // The real settings store drives plugin navigation and released capability pages.
 // Panels are stubbed here; their actions are covered by component and Electron tests.
@@ -16,9 +17,13 @@ vi.mock('@/stores/chatStore', () => ({
 }));
 
 vi.mock('@/stores/enterpriseStore', () => ({
-  useEnterpriseStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    mode: { kind: 'personal' },
-  }),
+  // A store, not just a selector: discoveryStore subscribes to it at import.
+  useEnterpriseStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({
+      mode: { kind: 'personal' },
+    }),
+    { subscribe: () => () => {} },
+  ),
 }));
 
 vi.mock('@/i18n', () => ({
@@ -26,9 +31,9 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       toolbox: {
-        skills: '技能', agents: '代理', mcp: 'MCP', plugins: '插件',
+        skills: '技能', agents: '专家', mcp: 'MCP', plugins: '插件',
         connectors: '连接器', pluginsEmptyState: '还没有安装任何插件',
-        sourceMarket: '市场', sourceMine: '我的',
+        sourceMarket: '市场', sourceMine: '我的', categoryMine: '我的',
         searchPlaceholder: '搜索...', importEntry: '导入',
         pluginsUpdatesAvailable: '{count} 个插件可更新',
         pluginsUpdatesAvailableOne: '1 个插件可更新',
@@ -85,17 +90,22 @@ describe('Extensions retains the released capability pages', () => {
   beforeEach(() => {
     useSettingsStore.setState({ viewMode: 'chat', activeExtensionsTab: 'plugins', extensionsSearchQueries: { plugins: '', skills: '', mcp: '' }, pendingExtensionsSource: null });
     usePluginStore.setState({ updateAvailableKeys: [], updateAvailableCount: 0 });
+    // The sub-nav's pick is remembered, so a deep-link test must not leak its
+    // shelf into the next one.
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
     vi.clearAllMocks();
   });
 
-  it('keeps the plugin panel without source subtabs across capability tabs', () => {
+  it('keeps one 市场 | 我的 sub-nav over every capability tab', () => {
     render(<ExtensionsView />);
     const plugins = screen.getByTestId('plugins-panel');
     expect(plugins).toBeVisible();
-    expect(screen.queryByTestId('extensions-source-mine')).toBeNull();
+    expect(screen.getByTestId('extensions-source-mine')).toBeVisible();
     fireEvent.click(tab('技能'));
     expect(screen.getByText('Personal skills')).toBeVisible();
-    expect(screen.queryByTestId('extensions-source-market')).toBeNull();
+    expect(screen.getByTestId('extensions-source-market')).toBeVisible();
+    // …and it is still the one pair, not a per-panel copy.
+    expect(screen.getAllByTestId('extensions-source-market')).toHaveLength(1);
     expect(screen.queryByTestId('skills-market')).toBeNull();
     fireEvent.click(tab('连接器'));
     expect(screen.getByText('Personal MCP')).toBeVisible();
@@ -109,7 +119,7 @@ describe('Extensions retains the released capability pages', () => {
     useSettingsStore.setState({ activeExtensionsTab });
     render(<ExtensionsView />);
     expect(screen.getByTestId('create-control')).toBeVisible();
-    expect(screen.queryByTestId('extensions-source-market')).toBeNull();
+    expect(screen.getByTestId('extensions-source-market')).toBeVisible();
     if (activeExtensionsTab === 'mcp') {
       fireEvent.click(screen.getByTestId('create-control'));
       expect(screen.getByRole('dialog')).toHaveTextContent('Add connector');
@@ -129,12 +139,13 @@ describe('Extensions retains the released capability pages', () => {
     expect(screen.getByPlaceholderText('搜索...')).toHaveValue('plugin words');
   });
 
-  it('honors a skill deep link without moving it behind a source tab', () => {
+  it('honors a skill deep link by landing on the shelf it named', () => {
     useSettingsStore.getState().openExtensions('skills', 'mine');
     useSettingsStore.getState().setExtensionsSearchQuery('skills', 'accepted-skill');
     render(<ExtensionsView />);
     expect(screen.getByText('Personal skills')).toBeVisible();
     expect(screen.getByPlaceholderText('搜索...')).toHaveValue('accepted-skill');
+    expect(screen.getByTestId('extensions-source-mine')).toHaveAttribute('aria-selected', 'true');
     expect(useSettingsStore.getState().pendingExtensionsSource).toBeNull();
   });
 
@@ -144,7 +155,7 @@ describe('Extensions retains the released capability pages', () => {
     expect(screen.getByTestId('plugins-tab-update-badge')).toHaveTextContent('9+');
     expect(tab('技能')).toBeVisible();
     expect(tab('连接器')).toBeVisible();
-    expect(screen.queryByRole('button', { name: '代理' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '专家' })).toBeNull();
     expect(screen.getByTestId('create-control')).toBeVisible();
   });
 });

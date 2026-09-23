@@ -43,10 +43,12 @@ function def(name: string, extra: Partial<SubagentDefinition> = {}): SubagentDef
 describe('roleIdentity', () => {
   beforeEach(() => { registry.agents = []; activation.owners = {}; activation.ready = true; vi.clearAllMocks(); });
 
-  it('recognises builtin agents by the in-memory marker or the bundled resource dir', () => {
+  it('recognises builtin agents by the in-memory marker, and nothing else', () => {
     expect(isBuiltinAgent({ filePath: '__builtin__' })).toBe(true);
-    expect(isBuiltinAgent({ filePath: '/app/Resources/builtin-agents/x/AGENT.md' })).toBe(true);
     expect(isBuiltinAgent({ filePath: '/Users/me/.abu/agents/x/AGENT.md' })).toBe(false);
+    // Nothing ships agents as files any more: a path that merely looks bundled
+    // is somebody's own agent, and must stay editable and deletable.
+    expect(isBuiltinAgent({ filePath: '/Users/me/.abu/agents/builtin-agents/AGENT.md' })).toBe(false);
   });
 
   it('effectiveRoleId is builtin:<name> for builtins and the stored roleId otherwise', () => {

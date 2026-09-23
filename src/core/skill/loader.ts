@@ -8,6 +8,8 @@ import { sanitizePath } from '../memdir/paths';
 import { pluginSkillLocations } from '../plugin/skillRoots';
 import { scanPluginPackage } from '../plugin/fsOps';
 import { isEnterpriseModuleActive } from '../enterprise/entitlement';
+import { isSafeSkillDirName } from './skillDirName';
+import { isSkillNameAllowed } from './skillNamePolicy';
 
 /**
  * Normalize tool list: accept both YAML array (Abu format) and
@@ -50,7 +52,14 @@ export function parseSkillFile(raw: string, filePath: string): Skill | null {
     const meta = parseYaml(match[1]) as Record<string, unknown>;
     const content = match[2].trim();
 
-    if (!meta.name || typeof meta.name !== 'string') return null;
+    if (typeof meta.name !== 'string') return null;
+    // The name is the skill's folder under ~/.abu/skills/, and this file may
+    // be a cloned repository's content: `joinPath` does not collapse `..`, so
+    // anything but one plain segment is refused here.
+    if (!isSafeSkillDirName(meta.name)) {
+      console.warn(`[SkillLoader] skipping ${filePath}: name ${JSON.stringify(meta.name)} is not a single path segment`);
+      return null;
+    }
 
     // Parse hooks from frontmatter
     const hooks = parseSkillHooks(meta.hooks as Record<string, unknown> | undefined);
@@ -133,6 +142,8 @@ export class SkillLoader {
    * same name. See {@link getNameClaims}.
    */
   private nameClaims: Array<{ name: string; source: SkillSource }> = [];
+  /** Skills the first-win rule dropped, with the source they came from. */
+  private shadowed: Skill[] = [];
   /** Last workspace this loader was discovered against (null = global-only). */
   private currentWorkspace: string | null = null;
 
@@ -159,6 +170,7 @@ export class SkillLoader {
   async discoverSkills(workspacePath?: string | null): Promise<SkillMetadata[]> {
     this.skills.clear();
     this.nameClaims = [];
+    this.shadowed = [];
     this.currentWorkspace = workspacePath ?? null;
 
     const home = await homeDir();
@@ -277,6 +289,7 @@ export class SkillLoader {
         if (skill) {
           this.nameClaims.push({ name: skill.name, source: 'plugin' });
           if (!this.skills.has(skill.name)) this.skills.set(skill.name, { ...skill, source: 'plugin' });
+          else this.shadowed.push({ ...skill, source: 'plugin' });
           break;
         }
       }
@@ -312,11 +325,10 @@ export class SkillLoader {
             const skill = parseSkillFile(raw, skillPath);
             if (skill) {
               this.nameClaims.push({ name: skill.name, source });
+              skill.source = source;
               // Earlier directories take priority — don't overwrite
-              if (!this.skills.has(skill.name)) {
-                skill.source = source;
-                this.skills.set(skill.name, skill);
-              }
+              if (!this.skills.has(skill.name)) this.skills.set(skill.name, skill);
+              else this.shadowed.push(skill);
               break; // Found a skill file, skip trying the other filename
             }
           } catch {
@@ -335,7 +347,19 @@ export class SkillLoader {
     return skill && this.isUsable(skill) ? skill : null;
   }
 
-  private isUsable(skill: Skill, includeDisabledPlugins = false): boolean {
+  /**
+   * The one gate every listing and lookup below goes through.
+   *
+   * A name the organization's skill blacklist blocks is refused first, and
+   * regardless of `includeDisabledPlugins`: the console promises such a skill
+   * does not appear in the client at all — not even as a disabled entry — and
+   * that holds however its SKILL.md reached disk. The policy is asked on every
+   * call, so a policy change applies to the next lookup without a rescan.
+   * `includePolicyBlocked` is for bookkeeping that must see every skill on
+   * disk (plugin activation), never for listing or running one.
+   */
+  private isUsable(skill: Skill, includeDisabledPlugins = false, includePolicyBlocked = false): boolean {
+    if (!includePolicyBlocked && !isSkillNameAllowed(skill.name)) return false;
     if (!includeDisabledPlugins && !isPluginSkillAllowed(skill)) return false;
     return skill.source !== 'enterprise' || isEnterpriseModuleActive('skills');
   }
@@ -348,10 +372,12 @@ export class SkillLoader {
    * index or agent-facing skill list. Pass `{ includeDrafts: true }` to
    * surface them (for the Settings → Skills → Drafts tab).
    */
-  getAvailableSkills(options: { includeDrafts?: boolean; includeDisabledPlugins?: boolean } = {}): SkillMetadata[] {
+  getAvailableSkills(
+    options: { includeDrafts?: boolean; includeDisabledPlugins?: boolean; includePolicyBlocked?: boolean } = {},
+  ): SkillMetadata[] {
     const includeDrafts = options.includeDrafts ?? false;
     return Array.from(this.skills.values())
-      .filter((skill) => this.isUsable(skill, options.includeDisabledPlugins) && (includeDrafts || skill.source !== 'draft'))
+      .filter((skill) => this.isUsable(skill, options.includeDisabledPlugins, options.includePolicyBlocked) && (includeDrafts || skill.source !== 'draft'))
       .map((skill) => {
         // Omit runtime-only fields not part of SkillMetadata
         const { content, filePath, skillDir, ...meta } = skill;
@@ -371,15 +397,45 @@ export class SkillLoader {
     return this.nameClaims;
   }
 
+  /**
+   * Skills the last scan found but did not use because an earlier directory
+   * already claimed the name. The 市场 grid shows a built-in one as "covered
+   * by a same-name skill" instead of letting it vanish.
+   *
+   * Filtered by the same `isUsable` predicate every other read path uses, so a
+   * name the organization blacklists is excluded here too: the losing copy must
+   * not put a blocked name and description back on screen after the winning one
+   * was filtered out. (Disabled-plugin and inactive-enterprise skills are
+   * likewise excluded, for parity — not listable anywhere else either.)
+   */
+  getShadowedSkills(): ReadonlyArray<Skill> {
+    return this.shadowed.filter((skill) => this.isUsable(skill));
+  }
+
+  /**
+   * Whether a skill the last scan found under `name` is hidden by the
+   * organization's skill blacklist. For telling the model a skill it asked
+   * for by name is blocked rather than missing, and for noticing when a policy
+   * change alters which scanned skills are hidden. A name nothing on disk
+   * claims is simply missing: answering "blocked" for any name would let the
+   * model enumerate the organization's list.
+   */
+  isBlockedByPolicy(name: string): boolean {
+    return this.nameClaims.some((claim) => claim.name === name) && !isSkillNameAllowed(name);
+  }
+
   /** Get full draft entries (includes content) for the review UI. */
   getDraftSkills(): Skill[] {
-    return Array.from(this.skills.values()).filter((s) => s.source === 'draft');
+    return Array.from(this.skills.values()).filter((s) => s.source === 'draft' && this.isUsable(s, true));
   }
 
   /** Get full skill by name */
-  getSkill(name: string, options: { includeDisabledPlugins?: boolean } = {}): Skill | undefined {
+  getSkill(
+    name: string,
+    options: { includeDisabledPlugins?: boolean; includePolicyBlocked?: boolean } = {},
+  ): Skill | undefined {
     const skill = this.skills.get(name);
-    return skill && this.isUsable(skill, options.includeDisabledPlugins) ? skill : undefined;
+    return skill && this.isUsable(skill, options.includeDisabledPlugins, options.includePolicyBlocked) ? skill : undefined;
   }
 
   /** Re-read a single skill from disk to get latest content */
@@ -394,7 +450,8 @@ export class SkillLoader {
       if (skill) {
         skill.source = existing.source;
         this.skills.set(skill.name, skill);
-        return skill;
+        // The file may now declare a different name — one the policy blocks.
+        return this.isUsable(skill) ? skill : undefined;
       }
     } catch { /* file might have been deleted */ }
     return this.isUsable(existing) ? existing : undefined;

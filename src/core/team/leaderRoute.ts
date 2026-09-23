@@ -16,6 +16,7 @@
  * entryOrchestration imports.
  */
 import { TEAM_LEADER_MAX_TURNS, TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER, TEAM_MAX_DISPATCHES_PER_RUN } from './teamRunBounds';
+import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { STALL_STOP_MINUTES } from './stallThreshold';
 import type { SubagentDefinition, ToolExecutionContext } from '@/types';
 import type { RouteResult } from '@/core/agent/orchestrator';
@@ -48,9 +49,25 @@ export interface TeamRouteContext {
  */
 export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext | null): RouteResult {
   if (!team || route.type !== 'general') return route;
-  // The leader runs as the root agent: it needs the root roster (delegate_to_agent,
-  // run_agent_batch, report_plan, …), so a member-style `tools` whitelist written
-  // for the old board flow must not shrink it. `disallowedTools` still applies.
+  // A `tools` whitelist on a USER-CREATED leader card survives the rewrite: it
+  // is the boundary that user drew, not a member-style leftover, so it is kept
+  // and `disallowedTools` still applies. The root roster it needs to
+  // orchestrate (report_plan, delegate_to_agent, run_agent_batch) is added back
+  // as protocol exceptions by `agentToolPolicyForRoute`, which grants them only
+  // to a trusted team route.
+  // The BUILTIN branch below is now a belt-and-braces guard rather than a live
+  // rewrite. Built-in experts used to carry a curated per-role `tools` list,
+  // written for a member doing one hand-off; it omitted tools the leader's own
+  // planning instruction (`core/agent/orchestrator.ts`, PLANNING_INSTRUCTION)
+  // tells a root agent to use — ask_user_question, list_directory — so keeping
+  // it made the leader refuse itself ("outside this agent's fixed tool
+  // boundary") the moment it followed its own prompt. Those lists are gone:
+  // `core/agent/registry.ts` writes no `tools` into any built-in expert, and
+  // `registry.managed.test.ts` pins that for every built-in the registry
+  // returns, so today the branch strips nothing. It stays as the guard that
+  // keeps a future built-in's role roster from silently becoming a leader
+  // boundary nobody chose. An explicit `disallowedTools` is untouched either
+  // way.
   // `maxTurns` gets a FLOOR rather than the same treatment: a member-sized card
   // value (e.g. 30, the budget for ONE hand-off) must not cap a leader that
   // plans, dispatches, reviews every result and reports — so a positive card
@@ -61,10 +78,14 @@ export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext 
   // user's explicit opt-in to UNLIMITED turns (resolveMaxTurns treats <= 0 as
   // Infinity); the floor must not clamp that down to 120, so it passes through
   // unchanged.
-  const { tools: _memberTools, maxTurns: cardMaxTurns, ...leaderAsRoot } = team.leader;
+  const { maxTurns: cardMaxTurns, ...leaderAsRoot } = team.leader;
   let definition = leaderAsRoot as typeof leaderAsRoot & { maxTurns?: number };
+  if (isBuiltinAgentPath(team.leader.filePath)) {
+    const { tools: _curatedRoleRoster, ...withoutCuratedTools } = definition;
+    definition = withoutCuratedTools;
+  }
   if (cardMaxTurns !== undefined) {
-    definition = { ...leaderAsRoot, maxTurns: cardMaxTurns > 0 ? Math.max(cardMaxTurns, TEAM_LEADER_MAX_TURNS) : cardMaxTurns };
+    definition = { ...definition, maxTurns: cardMaxTurns > 0 ? Math.max(cardMaxTurns, TEAM_LEADER_MAX_TURNS) : cardMaxTurns };
   }
   return {
     ...route,

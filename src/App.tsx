@@ -12,6 +12,7 @@ import ChatView from '@/components/chat/ChatView';
 import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
+import AccountLoginDialog from '@/components/account/AccountLoginDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
@@ -102,7 +103,6 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry
 import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
-import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
 import { useDeepLinkEnroll } from '@/core/enterprise/useDeepLinkEnroll';
 import {
   consumeComputerUseResumeToken,
@@ -279,7 +279,7 @@ function App() {
   const setShowCloseDialog = usePreviewStore((s) => s.setAppModalOpen);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
-  const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
+  useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -331,18 +331,19 @@ function App() {
   //
   // `ownerId` is the conversation main created the view for. It is what keeps a
   // background conversation's adoption out of whatever conversation happens to
-  // be on screen; absent (legacy owner) means "any conversation may see it".
+  // be on screen. Native user popups inherit their renderer source tab owner.
   useEffect(() => {
     if (!isTauriEnv()) return;
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<{ id: string; url: string; ownerId?: string }>('browser://automation-open', (event) => {
-      const { id, url, ownerId } = event.payload ?? {};
+    listen<{ id: string; url: string; ownerId?: string; sourceViewId?: string }>('browser://automation-open', (event) => {
+      const { id, url, ownerId, sourceViewId } = event.payload ?? {};
       if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
       usePreviewStore.getState().openBrowser(
         typeof url === 'string' ? url : 'about:blank',
         id,
         typeof ownerId === 'string' && ownerId ? ownerId : undefined,
+        typeof sourceViewId === 'string' && sourceViewId ? sourceViewId : undefined,
       );
     }).then((fn) => {
       if (cancelled) fn();
@@ -784,6 +785,9 @@ function App() {
     let cancel = false
     ;(async () => {
       await useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
+      // init() is where a managed provider gets registered, so a saved model
+      // selection that still has no provider after it really has none.
+      useSettingsStore.getState().markManagedProvidersReady()
       if (cancel) return
       if (useEnterpriseStore.getState().mode.kind !== 'personal') {
         const { activateEnterpriseRuntime } = await import('@/core/enterprise/runtime')
@@ -951,6 +955,9 @@ function App() {
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />
 
+        {/* Personal / enterprise account entry — centered, optional, and non-blocking. */}
+        <AccountLoginDialog />
+
         {/* Task-local capability setup — suspends the exact requesting tool call. */}
         <CapabilitySetupDialog />
 
@@ -988,16 +995,6 @@ function App() {
           />
         )}
 
-        {/* Deep-link enrollment: show BindToEnterpriseFlow pre-seeded with serverUrl
-            when the app is opened via abu://enroll?server=<URL>&token=<token>.
-            Renders above all other overlays (z-50 inside BindToEnterpriseFlow). */}
-        {pendingEnroll && (
-          <BindToEnterpriseFlow
-            initialServerUrl={pendingEnroll.serverUrl}
-            onDone={dismissEnroll}
-            onCancel={dismissEnroll}
-          />
-        )}
       </div>
     </TooltipProvider>
     </ErrorBoundary>

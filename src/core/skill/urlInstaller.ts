@@ -12,9 +12,13 @@ import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicInstallDir } from '@/core/fsAtomic';
 import { isSafeSkillDirName } from './skillDirName';
+import { assertSkillNameAllowed } from './skillPolicy';
+import { rootManifestCount } from './rootManifest';
 import {
+  assertStagedManifestIs,
   downloadTarball,
   extractTarball,
+  fileEntryPaths,
   findSkillEntries,
   stripPrefix,
   NpmInstallError,
@@ -104,6 +108,12 @@ export async function installSkillFromUrl(
   if (!isSafeSkillDirName(skillName)) {
     throw new NpmInstallError('PATH_TRAVERSAL', `SKILL.md declares an unsafe skill name: "${skillName}"`);
   }
+  // The name checked here must be the name that goes live — see rootManifest.ts.
+  if (rootManifestCount(fileEntryPaths(entries, prefix)) > 1) {
+    throw new NpmInstallError('AMBIGUOUS_SKILL_MD', 'Archive has more than one SKILL.md at its root');
+  }
+  // The organization's skill blacklist, before anything reaches disk.
+  assertSkillNameAllowed(skillName);
 
   // Write to ~/.abu/skills/<name>/
   const home = await homeDir();
@@ -147,6 +157,7 @@ export async function installSkillFromUrl(
         await writeFile(dest, entry.data);
         files.push(rel);
       }
+      await assertStagedManifestIs(stagingDir, skillName);
     },
   });
 

@@ -114,10 +114,10 @@ export function resolveRoleId(roleId: string): SubagentDefinition | null {
  *
  * The id is written IN PLACE, into `agent.filePath` — the file the registry
  * read. Never a path re-derived from the frontmatter `name`: an agent's folder
- * need not be named after it, and a project-level agent lives in its project,
- * so a derived path could overwrite another agent's AGENT.md or land outside
- * ~/.abu/agents/. Nothing is moved or removed. `create: false` keeps a file
- * deleted since the registry read it from being recreated.
+ * need not be named after it, so a derived path could overwrite another
+ * agent's AGENT.md or land outside ~/.abu/agents/. Nothing is moved or removed.
+ * `create: false` keeps a file deleted since the registry read it from being
+ * recreated.
  */
 export async function ensureRoleId(agent: SubagentDefinition): Promise<{ roleId: string; wrote: boolean }> {
   if (isBuiltinAgent(agent)) return { roleId: BUILTIN_ROLE_PREFIX + agent.name, wrote: false };

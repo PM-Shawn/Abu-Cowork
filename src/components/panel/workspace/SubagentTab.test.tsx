@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import {
@@ -8,6 +8,8 @@ import {
   BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES,
   useBatchProgressStore,
 } from '@/stores/batchProgressStore';
+import { useChatStore } from '@/stores/chatStore';
+import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import SubagentTab from './SubagentTab';
 
@@ -58,6 +60,12 @@ describe('SubagentTab', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    // Conversations and live executions seeded by a test must not leak into
+    // the next one — a failed assertion would otherwise skip the cleanup.
+    useTaskExecutionStore.getState().clearAll();
+    useChatStore.setState((state) => {
+      state.conversations = {};
+    });
   });
 
   it('renders live status, tool detail, token usage, and retained screenshot rich content', () => {
@@ -76,8 +84,7 @@ describe('SubagentTab', () => {
     );
   });
 
-  it('replays a member process from the message snapshot when the live batch is gone', async () => {
-    const { useChatStore } = await import('@/stores/chatStore');
+  it('replays a member process from the message snapshot when the live batch is gone', () => {
     const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
     useChatStore.getState().addMessage(convId, {
       id: 'assistant-1',
@@ -102,7 +109,89 @@ describe('SubagentTab', () => {
     // The stored label survives replay (toolInput is stripped from snapshots, so recomputing would degrade it).
     expect(steps).toHaveTextContent('Write report.md');
     expect(steps).not.toHaveTextContent('Read file');
-    expect(screen.queryByText('The full subagent process is only retained during this app run.')).toBeNull();
+    expect(screen.queryByText('The full subagent trace is only retained during this app run.')).toBeNull();
+  });
+
+  // Real message shape (2026-09-16): the batch tool call lives on the loop's
+  // dispatching assistant message (identity.assistantMessageId), while
+  // persistExecutionSnapshot writes the steps onto the loop's LAST assistant
+  // message. An earlier loop reusing the same provider tool-call id must not
+  // be picked up.
+  it('replays a member process when the steps snapshot and the batch tool call sit on different messages of the loop', () => {
+    const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
+    const batchStep = (label: string) => ({
+      id: `batch-step-${label}`, toolCallId: 'call_batch', type: 'delegate', label: 'batch', status: 'completed', toolName: 'run_agent_batch',
+      childSteps: [
+        { id: `c-${label}`, toolCallId: `s-${label}`, type: 'tool', label, status: 'completed', toolName: 'write_file', batchTask: { index: 0, label: 'writer' } },
+      ],
+    });
+    const add = (message: object) => useChatStore.getState().addMessage(convId, message as never);
+    add({ id: 'old-final', role: 'assistant', content: 'earlier', timestamp: 1, loopId: 'loop-old', executionSteps: [batchStep('Write stale.md')] });
+    add({
+      id: 'dispatch-msg', role: 'assistant', content: '', timestamp: 2, loopId: 'loop-new',
+      toolCalls: [{
+        id: 'call_batch', name: 'run_agent_batch', input: { tasks: [{ agent_name: 'writer', task: 'x' }] }, result: 'ok',
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: convId, assistantMessageId: 'dispatch-msg', batchToolCallId: 'call_batch' },
+          taskCount: 1,
+          counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+        },
+      }],
+    });
+    add({ id: 'final-msg', role: 'assistant', content: 'done', timestamp: 3, loopId: 'loop-new', executionSteps: [batchStep('Write fresh.md')] });
+
+    render(<SubagentTab identity={{ conversationId: convId, assistantMessageId: 'dispatch-msg', batchToolCallId: 'call_batch' }} taskIndex={0} title="writer" />);
+
+    const steps = screen.getByTestId('subagent-persisted-steps');
+    expect(steps).toHaveTextContent('Write fresh.md');
+    expect(steps).not.toHaveTextContent('Write stale.md');
+    expect(screen.getByText('Succeeded')).toBeInTheDocument();
+  });
+
+  it('keeps the child steps already shown when the next live update has zero steps', () => {
+    const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
+    useChatStore.getState().addMessage(convId, {
+      id: 'assistant-live-race',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 1,
+      executionSteps: [{
+        id: 'delegate-persisted', toolCallId: 'delegate-live-race', type: 'delegate', label: 'delegate', status: 'completed',
+        toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [{
+          id: 'child-persisted', toolCallId: 'child-call', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file',
+          detailBlocks: [], source: 'agent', executionId: 'delegate-persisted', toolInput: {},
+        }],
+        detailBlocks: [], source: 'agent', executionId: 'exec-live-race', toolInput: {},
+      }],
+    } as never);
+    const exec = useTaskExecutionStore.getState().createExecutionWithId(convId, 'loop-live-race', 'exec-live-race');
+    // First update: the live dispatch still carries the member's child step.
+    useTaskExecutionStore.getState().addStep(exec.id, {
+      id: 'delegate-live', executionId: exec.id, toolCallId: 'delegate-live-race', type: 'delegate', label: 'delegate', status: 'completed',
+      toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [{
+        id: 'child-live', toolCallId: 'child-call', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file',
+        detailBlocks: [], source: 'agent', executionId: exec.id, toolInput: {},
+      }], detailBlocks: [], source: 'agent', toolInput: {},
+    });
+
+    render(<SubagentTab identity={{ conversationId: convId, assistantMessageId: 'assistant-live-race', batchToolCallId: 'delegate-live-race' }} taskIndex={0} title="writer" />);
+
+    expect(screen.getByText('1 tool calls')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');
+
+    // Second update: the completed execution is re-published with its child
+    // steps already dropped, while the assistant message still holds them.
+    act(() => {
+      useTaskExecutionStore.setState((state) => {
+        const liveStep = state.executions[exec.id]?.steps.find((step) => step.id === 'delegate-live');
+        if (liveStep) liveStep.childSteps = [];
+      });
+    });
+
+    expect(screen.getByText('1 tool calls')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');
   });
 
   it('renders queued status with a static icon instead of a spinner', () => {
@@ -185,6 +274,6 @@ describe('SubagentTab', () => {
     render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
     expect(screen.getByText('Worker A')).toBeInTheDocument();
-    expect(screen.getByText('The full subagent process is only retained during this app run.')).toBeInTheDocument();
+    expect(screen.getByText('The full subagent trace is only retained during this app run.')).toBeInTheDocument();
   });
 });

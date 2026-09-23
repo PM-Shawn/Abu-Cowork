@@ -44,6 +44,7 @@ vi.mock('../../stores/workspaceStore', () => ({
 }));
 
 vi.mock('../../stores/settingsStore', () => ({
+  readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: {
     getState: vi.fn().mockReturnValue({
       computerUseEnabled: false,
@@ -83,6 +84,7 @@ import { loadAllRules } from './projectRules';
 import { loadMemoryIndex, scanMemoryFiles } from '../memdir/scan';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 const mockLoadAllRules = vi.mocked(loadAllRules);
 const mockLoadMemoryIndex = vi.mocked(loadMemoryIndex);
@@ -95,6 +97,16 @@ beforeEach(() => {
   mockScanMemoryFiles.mockResolvedValue([]);
   browserMocks.hasElectronCommandHost.mockReturnValue(true);
   browserMocks.isConnected.mockImplementation((name: string) => name === 'abu-browser');
+});
+
+describe('routeInput expert entry', () => {
+  it('routes a real @专家 mention to delegation rather than an agent root route', () => {
+    const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file'], filePath: '/agents/expert/AGENT.md' };
+    vi.mocked(agentRegistry.getAgent).mockReturnValueOnce(expert);
+    expect(routeInput('@专家 检查文档')).toEqual({
+      type: 'delegate', name: '专家', cleanInput: '检查文档', delegateAgent: expert,
+    });
+  });
 });
 
 describe('buildSystemPrompt - security features', () => {
@@ -131,6 +143,41 @@ describe('buildSystemPrompt - security features', () => {
     if (firstVolatileIdx !== -1) {
       expect(firstVolatileIdx).toBeGreaterThan(lastCacheableIdx);
     }
+  });
+
+  /// The gate says which channel a task belongs to; the computer-use section
+  /// says how to drive one. They ship together because with computer use off
+  /// there is no GUI to route away from, and the gate would be dead prompt on
+  /// every turn.
+  it('ships the channel gate exactly when the GUI channel exists', async () => {
+    const base = vi.mocked(useSettingsStore.getState).getMockImplementation();
+    const settings = {
+      computerUseEnabled: false,
+      disabledSkills: [],
+      disabledAgents: [],
+      contextWindowSize: 200000,
+      allowSkillCommands: false,
+    };
+
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, computerUseEnabled: false } as never);
+    const off = await buildSystemPromptSections(generalRoute, basePrompt, 'test-conv');
+    expect(off.map((s) => s.name)).not.toContain('channel-gate');
+    expect(off.map((s) => s.name)).not.toContain('computer-use');
+
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, computerUseEnabled: true } as never);
+    const on = await buildSystemPromptSections(generalRoute, basePrompt, 'test-conv');
+    const names = on.map((s) => s.name);
+    expect(names).toContain('channel-gate');
+    expect(names).toContain('computer-use');
+    // Which channel, before how to drive one.
+    expect(names.indexOf('channel-gate')).toBeLessThan(names.indexOf('computer-use'));
+
+    const gate = on.find((s) => s.name === 'channel-gate');
+    // The rule that stops the model reading a file to decide how to read it.
+    expect(gate?.text).toMatch(/wording of the request alone/i);
+    expect(gate?.cacheable).toBe(true);
+
+    if (base) vi.mocked(useSettingsStore.getState).mockImplementation(base);
   });
 
   it('wraps project rules in <user-rules> tags', async () => {
@@ -234,8 +281,9 @@ describe('buildSystemPrompt - structure', () => {
   it('routes web interaction to the built-in Electron browser instead of Computer Use', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).toContain('Abu-Browser and Abu-Chrome-Bridge are different capabilities');
-    expect(prompt).toContain('continue immediately with `abu-browser__get_tabs`');
-    expect(prompt).toContain('creates a visible tab in Abu');
+    expect(prompt).toContain('continue immediately with `abu-browser__list_tabs`');
+    expect(prompt).toContain('abu-browser__create_tab');
+    expect(prompt).toContain('each page that should remain separately visible');
     expect(prompt).toContain('existing Chrome tabs, cookies, extensions, or signed-in state');
     expect(prompt).toContain('Do not substitute the `computer` tool or launch a system browser');
   });
@@ -640,9 +688,51 @@ describe('Available Agents tool boundaries', () => {
     expect(prompt).toContain('they do not authorize any operation');
     expect(prompt).toContain('Tool approval and permission controls remain authoritative');
   });
+
+  // `disabledAgents` now means exactly one thing: this expert is out of the
+  // pool Abu picks from on its own. The only place that meaning is spent is
+  // this list — an expert that is off it must not be offered here, while
+  // staying fully usable by an explicit @ mention or as a team member. Assert
+  // the produced prompt, not the mock, so deleting the filter goes red.
+  it('leaves an expert that is off auto-dispatch out of the delegation list', async () => {
+    const route = routeInput('delegate this');
+    // buildSystemPrompt reads the settings snapshot more than once, so this
+    // has to be a standing return value rather than a `…Once` queue entry.
+    const settingsMock = vi.mocked(useSettingsStore.getState);
+    const baseline = settingsMock();
+    settingsMock.mockReturnValue({ ...baseline, disabledAgents: ['reviewer'] } as never);
+    vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([
+      { name: 'reviewer', description: 'reviews code', systemPrompt: '', filePath: '__test__' },
+      { name: 'planner', description: 'plans work', systemPrompt: '', filePath: '__test__' },
+    ] as never);
+
+    try {
+      const prompt = await buildSystemPrompt(route, 'base prompt', 'test-conv');
+
+      expect(prompt).toContain('- planner: plans work');
+      expect(prompt).not.toContain('reviewer');
+    } finally {
+      settingsMock.mockReturnValue(baseline);
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([]);
+    }
+  });
 });
 
 describe('routeInput', () => {
+  it('routes the explicit creation command even when the skill is hidden from suggestions', () => {
+    const settings = useSettingsStore.getState();
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, disabledSkills: ['create-agent'] });
+    const skill = { name: 'create-agent', description: 'Create an agent or team', content: 'Ask for the roster and display fields.', allowedTools: ['save_agent', 'save_team'], disableAutoInvoke: true, filePath: '/builtin-skills/create-agent/SKILL.md', skillDir: '/builtin-skills/create-agent' };
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce(skill);
+    try {
+      const route = routeInput('/create-agent 帮我组建一个专家团，我的需求是：');
+      expect(route).toMatchObject({ type: 'skill', name: 'create-agent', skill, skillContent: skill.content, args: '帮我组建一个专家团，我的需求是：' });
+      expect(skillLoader.getSkill).toHaveBeenCalledWith('create-agent');
+    } finally {
+      vi.mocked(useSettingsStore.getState).mockReturnValue(settings);
+    }
+  });
+
   it('returns general route for plain text', () => {
     const result = routeInput('你好');
     expect(result.type).toBe('general');
@@ -676,5 +766,20 @@ describe('buildSystemPrompt - memory index under concurrency', () => {
 
     expect(a).toContain('CONCURRENT-INDEX-MARKER');
     expect(b).toContain('CONCURRENT-INDEX-MARKER');
+  });
+});
+
+describe('audit: routing preserves user body', () => {
+  it('preserves multiline expert input', () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValueOnce({ name: 'expert', description: 'specialist', systemPrompt: 'help', tools: [], filePath: '/agents/expert/AGENT.md' });
+    expect(routeInput('@expert first\n  second').cleanInput).toBe('first\n  second');
+  });
+  it('preserves multiline skill input', () => {
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce({ name: 'brief', description: 'Brief', content: '', filePath: '/skills/brief/SKILL.md', skillDir: '/skills/brief' });
+    expect(routeInput('/brief first\n  second').cleanInput).toBe('first\n  second');
+  });
+  it('keeps the default skill instruction when its body contains only whitespace', () => {
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce({ name: 'brief', description: 'Brief', content: '', filePath: '/skills/brief/SKILL.md', skillDir: '/skills/brief' });
+    expect(routeInput('/brief  \n ').cleanInput).toBe('Execute the brief skill');
   });
 });

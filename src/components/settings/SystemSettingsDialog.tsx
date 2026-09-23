@@ -2,6 +2,8 @@ import { useEffect } from 'react';
 import { X } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
+import { cn } from '@/lib/utils';
+import { isMacOS } from '@/utils/platform';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 
 /**
@@ -25,16 +27,28 @@ export default function SystemSettingsDialog() {
 
   if (!open) return null;
 
+  // macOS paints the traffic lights natively over the top 44px band (see
+  // `trafficLightPosition` in electron/windowChrome.cjs and the `h-11` chrome
+  // overlay in WindowTitleBar). A card centred on the whole viewport starts at
+  // 5vh ≈ 40px on the default window and its corner lands under the green
+  // light, so the scrim keeps covering the viewport but the card is laid out
+  // below that band. Windows keeps its chrome rows in normal flow and is
+  // already covered by the no-drag marker, so it keeps full-viewport centring.
+  const mac = isMacOS();
+
   return (
     <div
       data-abu-settings-dialog
       data-electron-no-drag
-      className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/32 backdrop-blur-[2px]"
+      className={cn(
+        'fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/32 backdrop-blur-[2px]',
+        mac && 'pt-12',
+      )}
       onClick={(e) => {
         if (e.target === e.currentTarget) closeSystemSettings();
       }}
     >
-      <div className="relative w-[min(1180px,92vw)] h-[min(840px,90vh)] rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-2xl overflow-hidden">
+      <div className="relative w-[min(1180px,92vw)] h-full max-h-[840px] rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-2xl overflow-hidden">
         <button
           data-abu-settings-close
           onClick={closeSystemSettings}

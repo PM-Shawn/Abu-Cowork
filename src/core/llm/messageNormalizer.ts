@@ -12,6 +12,7 @@
  */
 
 import type { Message, MessageContent, ToolCall, ToolCallForContext, ToolResultContent } from '../../types';
+import { withIntroductionContext } from '../team/expertContact';
 
 // ─── Normalized types ────────────────────────────────────────────────
 
@@ -243,6 +244,7 @@ export function normalizeMessages(
   messages: Message[],
   options?: NormalizeOptions,
 ): PreparedTurn[] {
+  messages = withIntroductionContext(messages);
   const supportsVision = options?.supportsVision !== false;
   const turns: PreparedTurn[] = [];
 

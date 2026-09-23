@@ -30,7 +30,7 @@
  *  - `plugin:shell|open`                              — @tauri-apps/plugin-shell
  *  - `plugin:notification|is_permission_granted`
  *  - `plugin:process|restart`/`exit`
- *  - `plugin:deep-link|get_current`
+ *  - `plugin:deep-link|get_current`/`is_registered`
  *
  * NOTE on notification: `sendNotification()` and `requestPermission()` in
  * @tauri-apps/plugin-notification (checked in node_modules) call the
@@ -57,6 +57,7 @@
 const os = require('node:os');
 const { shell, clipboard, dialog, powerSaveBlocker, BrowserWindow } = require('electron');
 const { openChromeExtensionsPage } = require('./chromeExtensionsLauncher.cjs');
+const { readChromeExtensionInstallation } = require('./chromeExtensionInstallation.cjs');
 // Top-level is safe: updaterHost's only load-time require is 'electron' (its
 // tauriHost back-reference is lazy inside quitAndInstallIfPending), so there
 // is no cycle through this module.
@@ -490,6 +491,10 @@ function deepLinkGetCurrent() {
   return require('./deepLinkHost.cjs').getCurrentDeepLinks();
 }
 
+function deepLinkIsRegistered(app) {
+  return require('./deepLinkHost.cjs').isCurrentSchemeRegistered(app);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // dispatch
 // ─────────────────────────────────────────────────────────────────────────
@@ -539,6 +544,8 @@ function desktopDispatch(app, cmd, payload) {
       return openerRevealItemInDir(a);
     case 'open_chrome_extensions':
       return openChromeExtensionsPage();
+    case 'get_chrome_extension_installation':
+      return readChromeExtensionInstallation();
 
     case 'plugin:shell|open':
       return shellOpen(a);
@@ -553,6 +560,8 @@ function desktopDispatch(app, cmd, payload) {
 
     case 'plugin:deep-link|get_current':
       return deepLinkGetCurrent();
+    case 'plugin:deep-link|is_registered':
+      return deepLinkIsRegistered(app);
 
     default:
       return DESKTOP_MISS;

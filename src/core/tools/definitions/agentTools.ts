@@ -4,9 +4,19 @@ import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
+import {
+  createDelegateProgressRecorder,
+  DELEGATE_DRAIN_MAX_ATTEMPTS,
+  DELEGATE_DRAIN_POLL_MS,
+} from '../../agent/delegateProgressRecorder';
+import { getExecutionPort } from '../../agent/ports/executionPort';
+import { snapshotExecutionSteps } from '../../agent/executionSnapshot';
 import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } from '../../../types';
 import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
+import { parseAvatarValue } from '@/core/team/avatarPresets';
+import { resolveSubagentToolNames } from '../../agent/subagentToolRoster';
+import { matchesToolName, toolPatternName } from '../../skill/toolFilter';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -16,7 +26,6 @@ import { createSubagentController } from '../../agent/subagentAbort';
 import { takeDispatchInstructionReport } from '../../agent/dispatchInstructionReport';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
-import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { ITEM_NAME_RE, AGENT_NAME_RE, isItemNameTaken } from '../../../utils/validation';
@@ -87,6 +96,11 @@ export const useSkillTool: ToolDefinition = {
 
     const skill = skillLoader.getSkill(skillName);
     if (!skill) {
+      // Not "not found": the model may have seen the SKILL.md on disk, and a
+      // plain miss invites it to hunt the skill down some other way.
+      if (skillLoader.isBlockedByPolicy(skillName)) {
+        return format(getI18n().toolResult.agent.skillBlockedByPolicy, { skillName });
+      }
       const available = skillLoader.getAvailableSkills().map(s => s.name).join(', ');
       return `Error: Skill "${skillName}" not found. Available skills: ${available}`;
     }
@@ -209,6 +223,17 @@ function buildPresetAgent(type: string, _task: string): SubagentDefinition {
   };
 }
 
+/**
+ * Trailing-edge window for persisting a delegated member's step snapshot.
+ * Each persist rewrites the whole assistant message to disk
+ * (`setExecutionStepsSnapshot`), so a burst of child tool events has to
+ * collapse into one write — otherwise a long delegation costs O(n^2) I/O.
+ */
+export const DELEGATE_SNAPSHOT_COALESCE_MS = 250;
+/** Re-exported with the window above so the tests advance the clock by the
+ *  real drain budget rather than a number that can drift away from it. */
+export { DELEGATE_DRAIN_POLL_MS, DELEGATE_DRAIN_MAX_ATTEMPTS };
+
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
   description: 'Delegate a task to a single agent (synchronously waits for the result). Can specify agent_name (user-defined agent) or type (built-in role: research/writer/executor). When parallel processing of multiple independent sub-tasks is needed, use run_agent_batch instead (more reliable).',
@@ -265,13 +290,6 @@ export const delegateToAgentTool: ToolDefinition = {
         const t = getI18n().toolResult.agent;
         return format(t.errAgentNotFound, { agentName, available: available || getI18n().toolResult.valueNone, presetList });
       }
-
-      // Check if disabled
-      const { disabledAgents } = getSettingsReader().getSnapshot();
-      if (disabledAgents.includes(agentName)) {
-        const t = getI18n().toolResult.agent;
-        return format(t.errAgentDisabled, { agentName });
-      }
     } else {
       return getI18n().toolResult.agent.errMustSpecifyAgent;
     }
@@ -295,41 +313,72 @@ export const delegateToAgentTool: ToolDefinition = {
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
+    let drainProgress: (() => Promise<void>) | undefined;
+    let finalizeProgress: (() => void) | undefined;
 
     if (loopCtx?.eventRouter && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function') {
       // Parent step resolved lazily, by this call's tool_use id — see
       // delegateParentStep.ts (eager lookup lost the member process when the
       // leader loop ran in the sidecar).
-      const resolveParentStepId = createParentStepResolver(loopCtx, toolExecContext?.toolCallId);
-      const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
+      const resolveParentStepId = createParentStepResolver(
+        loopCtx,
+        toolExecContext?.toolCallId,
+        toolExecContext?.executionStepId,
+      );
+      let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+      let snapshotDirty = false;
 
-      onProgress = (event) => {
-        const parentStepId = resolveParentStepId();
-        if (!parentStepId) return;
-        if (event.type === 'tool-start') {
-          const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
-            loopCtx.loopId,
-            parentStepId,
-            { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
-          );
-          if (childStepId) {
-            childIdMap.set(event.id, childStepId);
-          }
-        } else if (event.type === 'tool-end') {
-          const childStepId = childIdMap.get(event.id);
-          childIdMap.delete(event.id);
-          if (childStepId) {
-            loopCtx.eventRouter.completeChildStep(
-              loopCtx.loopId,
-              parentStepId,
-              childStepId,
-              event.result,
-              event.error,
-              event.resultContent
-            );
-          }
-        }
+      // The live panel reads the in-memory execution, so child steps are
+      // applied the moment they arrive; only the persist is coalesced.
+      const persistSnapshot = (): void => {
+        if (!snapshotDirty) return;
+        const execution = getExecutionPort().getExecutionByLoopId(loopCtx.loopId);
+        if (!execution) return; // stays dirty — a later flush can still write it
+        snapshotDirty = false;
+        useChatStore.getState().setExecutionStepsSnapshot(
+          loopCtx.conversationId,
+          loopCtx.loopId,
+          snapshotExecutionSteps(execution.steps),
+        );
       };
+
+      const flushSnapshot = (): void => {
+        if (snapshotTimer !== undefined) {
+          clearTimeout(snapshotTimer);
+          snapshotTimer = undefined;
+        }
+        persistSnapshot();
+      };
+
+      const scheduleSnapshot = (): void => {
+        snapshotDirty = true;
+        // One timer per window, deliberately NOT reset by later events: a
+        // steady stream of child events must still reach disk on time rather
+        // than starve behind an ever-postponed debounce.
+        if (snapshotTimer !== undefined) return;
+        snapshotTimer = setTimeout(() => {
+          snapshotTimer = undefined;
+          persistSnapshot();
+        }, DELEGATE_SNAPSHOT_COALESCE_MS);
+      };
+
+      const recorder = createDelegateProgressRecorder({
+        loopCtx,
+        resolveParentStepId,
+        onChildStepChange: scheduleSnapshot,
+        // Last word on this delegation's progress: write the final snapshot.
+        // Runs on both exits (drained result and the catch path) so no timer
+        // outlives the call and the member's last child step reaches disk.
+        onSettle: flushSnapshot,
+        logLabel: 'delegate_to_agent',
+      });
+      finalizeProgress = recorder.settle;
+      // A sidecar delegate can finish its member run before the shell has
+      // applied the parent's addStep frame. Keep the delegate result behind a
+      // short bounded drain so the caller never observes "completed" while
+      // the member's child steps are still waiting in the recorder's queue.
+      drainProgress = recorder.drain;
+      onProgress = recorder.record;
     }
 
     // 6. Extract parent conversation summary for context injection
@@ -379,6 +428,7 @@ export const delegateToAgentTool: ToolDefinition = {
         ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
+      await drainProgress?.();
 
       // Clear this agent from tracking and cleanup
       subagentCleanup();
@@ -421,6 +471,9 @@ export const delegateToAgentTool: ToolDefinition = {
       return text;
     } catch (err) {
       subagentCleanup();
+      // The run never reached drainProgress — settle the member's progress
+      // here so the coalesced snapshot is written and no timer is left armed.
+      finalizeProgress?.();
       if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
@@ -505,14 +558,39 @@ function agentMdWithIdentity(
   filePath: string,
   existingRaw: string | null,
   content: string,
-): { md: string; name: string } | null {
+): { md: string; name: string; avatar: string | undefined } | null {
   const existing = existingRaw === null ? null : readAgentIdentity(existingRaw);
   const now = Date.now();
   const md = withAgentIdentity(content, existing, now);
   const wanted = wantedAgentIdentity(existing, now);
   const readBack = parseAgentFile(md, filePath);
   if (!readBack || readBack.roleId !== wanted.roleId || readBack.createdAt !== wanted.createdAt) return null;
-  return { md, name: readBack.name };
+  return { md, name: readBack.name, avatar: readBack.avatar };
+}
+
+/**
+ * Entries of a role card's `tools:` / `disallowed-tools:` that name a tool
+ * nothing answers to — a typo like `web_serach` used to be saved as written
+ * and then silently narrowed the expert to nothing at dispatch time.
+ *
+ * Only plain built-in names are checked. A `*` pattern covers names that
+ * cannot be enumerated up front, and an MCP `server__tool` name belongs to a
+ * connector that may simply be disconnected while the expert is saved —
+ * refusing either would make saving depend on what happens to be running.
+ *
+ * Both exemptions read the tool-NAME half only (`toolPatternName`): an entry
+ * such as `writ_file(/src/**)` or `run_command(a__b)` carries the `*` / `__`
+ * in its input constraint, which says nothing about whether the tool exists.
+ */
+function unknownAgentToolNames(agent: SubagentDefinition): string[] {
+  const builtinNames: string[] = Object.values(TOOL_NAMES);
+  const declared = [...(agent.tools ?? []), ...(agent.disallowedTools ?? [])];
+  return [...new Set(declared.filter((entry) => {
+    const declaredName = toolPatternName(entry);
+    return !declaredName.includes('*')
+      && !declaredName.includes('__')
+      && !builtinNames.some((name) => matchesToolName(name, entry));
+  }))];
 }
 
 /**
@@ -633,6 +711,21 @@ function isPlainPathSegment(segment: string): boolean {
 }
 
 /**
+ * New writes only: a preset icon reference, or exactly one visible emoji.
+ * Avatars already stored (an emoji a user typed by hand years ago, say) are
+ * never rewritten here — this only refuses what a model asks to write now,
+ * because anything else renders as raw text wherever the avatar is shown.
+ */
+export function isValidNewAvatar(value: string): boolean {
+  if (!value) return true;
+  const parsed = parseAvatarValue(value);
+  if (parsed.kind === 'icon') return true;
+  if (parsed.kind !== 'emoji' || value.length > 64) return false;
+  return [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(value)].length === 1
+    && /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[#*0-9]️?⃣)/u.test(value);
+}
+
+/**
  * The `files` to write, or why the whole call must be refused.
  *
  * Every entry is checked before anything touches disk: a refusal found
@@ -718,6 +811,24 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
         return format(t.errInvalidName, { label, name });
       }
 
+      // Content-only refusal, before any path is resolved or any file touched:
+      // a `tools:` / `disallowed-tools:` the roster resolver cannot parse would
+      // otherwise be written and then silently ignored at dispatch time, so the
+      // agent would run with no tool boundary at all. Content the registry
+      // cannot read is left to `agentMdWithIdentity` below, which refuses it
+      // with the detailed frontmatter message.
+      const declaredAgent = isSkill ? null : parseAgentFile(content, '');
+      if (declaredAgent) {
+        const { invalidField } = resolveSubagentToolNames([], declaredAgent);
+        if (invalidField) {
+          return format(t.errInvalidAgentTools, { field: invalidField === 'tools' ? 'tools' : 'disallowed-tools' });
+        }
+        const unknownTools = unknownAgentToolNames(declaredAgent);
+        if (unknownTools.length > 0) {
+          return format(t.errUnknownAgentTool, { names: unknownTools.join(', ') });
+        }
+      }
+
       const supporting = checkSupportingFiles(input.files, fileName, t);
       if ('refusal' in supporting) return supporting.refusal;
 
@@ -730,6 +841,7 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
 
       let mainContent = content;
       let manifestName: string | undefined;
+      let manifestAvatar: string | undefined;
       if (isSkill) {
         manifestName = parseSkillFile(content, filePath)?.name;
       } else {
@@ -737,11 +849,18 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
         if (agent === null) return format(t.errAgentFrontmatterInvalid, { name });
         mainContent = agent.md;
         manifestName = agent.name;
+        manifestAvatar = agent.avatar;
       }
       // The registry keys an item by its frontmatter name, not its folder: a
       // mismatch would file it under a name this call never checked.
       if (manifestName !== name) {
         return format(t.errManifestNameMismatch, { label, name, found: manifestName ?? '', fileName });
+      }
+      // Still nothing written: a refusal here leaves no half-saved agent.
+      // String(): YAML types `avatar: 123` as a number, which would reach the
+      // renderer as raw text just like any other unsupported value.
+      if (!isSkill && manifestAvatar !== undefined && !isValidNewAvatar(String(manifestAvatar).trim())) {
+        return t.errInvalidAvatar;
       }
 
       await ensureParentDir(filePath);

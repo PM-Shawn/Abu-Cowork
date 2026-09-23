@@ -35,4 +35,34 @@ describe('team confirmation parameter identity', () => {
     clearTeamConfirmationIdentities('c');
     expect((await build({ loopId: 'l2', toolCallId: 't3' }))?.requestOrdinal).toBe(1);
   });
+
+  describe('scope', () => {
+    it('scopes run_command on its command prefix', async () => {
+      const identity = await buildTeamConfirmationIdentity('run_command', { command: 'npm run build' }, ctx);
+      expect(identity?.scope).toBe('prefix:npm run');
+    });
+
+    it('scopes a file request on its folder and capabilities', async () => {
+      const identity = await buildTeamConfirmationIdentity('write_file', { path: '/a/out/x.md' }, ctx,
+        { path: '/a/out/x.md', capabilities: ['write'] });
+      expect(identity?.scope).toBe('write:/a/out');
+    });
+
+    it('scopes a browser request on the origin the gate resolved', async () => {
+      const identity = await buildTeamConfirmationIdentity('browser__execute_js', { script: 'x' }, ctx,
+        { origin: 'https://a.test', pageOrigin: 'https://a.test', embeddedOrigins: [] });
+      expect(identity?.scope).toBe('https://a.test');
+    });
+
+    it('has no scope when nothing trusted names one', async () => {
+      const identity = await buildTeamConfirmationIdentity('some_mcp_tool', { a: 1 }, ctx);
+      expect(identity?.scope).toBeNull();
+    });
+
+    it('leaves the parameters digest unchanged', async () => {
+      const a = await buildTeamConfirmationIdentity('run_command', { command: 'npm run build' }, ctx);
+      const b = await buildTeamConfirmationIdentity('run_command', { command: 'npm run build' }, { ...ctx, toolCallId: 't9' });
+      expect(a?.parametersDigest).toBe(b?.parametersDigest);
+    });
+  });
 });

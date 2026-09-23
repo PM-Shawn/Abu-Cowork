@@ -1,4 +1,5 @@
 import type { ToolExecutionContext } from '@/types';
+import { commandScope, fileScope } from './teamApprovalScope';
 
 /** Display strings never confer authority. Only the trusted executor builds this. */
 export interface TeamConfirmationIdentity {
@@ -11,6 +12,14 @@ export interface TeamConfirmationIdentity {
   dispatchFingerprint: string;
   /** Occurrence among identical requests in this dispatch (not across the run). */
   requestOrdinal: number;
+  /**
+   * What a "this task" rule for this request would cover (see
+   * teamApprovalScope.ts). Built here from the same trusted input as the
+   * digest; never from a display string or sidecar metadata. Missing on
+   * pending records persisted before task rules existed: those can only be
+   * allowed once.
+   */
+  scope?: string | null;
 }
 
 const requestOrdinals = new Map<string, Map<string, Map<string, number>>>();
@@ -75,5 +84,19 @@ export async function buildTeamConfirmationIdentity(
     dispatchId,
     dispatchFingerprint: context.teamApprovalDispatch?.fingerprint ?? 'leader',
     requestOrdinal,
+    scope: scopeFor(toolName, input, target),
   };
+}
+
+function scopeFor(toolName: string, input: Record<string, unknown>, target: unknown): string | null {
+  if (toolName === 'run_command') {
+    return typeof input.command === 'string' && input.command.trim() ? commandScope(input.command) : null;
+  }
+  if (!target || typeof target !== 'object') return null;
+  const t = target as { origin?: unknown; path?: unknown; capabilities?: unknown };
+  if (typeof t.path === 'string' && Array.isArray(t.capabilities)) {
+    const caps = t.capabilities.filter((c): c is 'read' | 'write' => c === 'read' || c === 'write');
+    return caps.length > 0 ? fileScope(t.path, caps) : null;
+  }
+  return typeof t.origin === 'string' && t.origin ? t.origin : null;
 }

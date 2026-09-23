@@ -3412,7 +3412,8 @@ const zhCN: TranslationDict = {
     listSeparator: '、',
     memory: {
       planApproved: '用户已批准计划，现在可以开始执行。',
-      planTimeout: '计划审批超时或已取消，处于计划模式（只读）。可修改后重新提交计划。',
+      planTimeout: '计划审批超时或已取消，当前仍是只读的计划模式。不要重新提交同一个计划；在回复里说明这一步在等用户处理，然后停下。',
+      planAwaitingUser: '这个计划已经等过一次用户审批并超时。不要再提交；在回复里说明这一步在等用户处理，然后停下。',
       planRejected: '用户未批准当前计划。请先向用户询问顾虑和期望的调整，在得到明确反馈之前不要重新提交相同的计划。当前为计划模式（只读）。',
       planRecorded: '已记录执行计划',
       planRecordedSteps: '已记录执行计划：{count}个步骤',

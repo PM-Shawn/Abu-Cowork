@@ -4129,6 +4129,8 @@ export interface TranslationDict {
       planApproved: string;
       /** Plan approval timed out or was cancelled. */
       planTimeout: string;
+      /** A plan approval already timed out in this task; the plan is not asked again. */
+      planAwaitingUser: string;
       /** User rejected the plan. */
       planRejected: string;
       /** Plan recorded (no steps). */

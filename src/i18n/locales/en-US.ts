@@ -3410,7 +3410,8 @@ const enUS: TranslationDict = {
     listSeparator: ', ',
     memory: {
       planApproved: 'The user approved the plan. Execution may now begin.',
-      planTimeout: 'Plan approval timed out or was cancelled. Currently in planning mode (read-only). You may revise the plan and resubmit.',
+      planTimeout: 'Plan approval timed out or was cancelled; you are still in read-only planning mode. Do not resubmit the same plan. Say in your reply that this step is waiting for the user, then stop.',
+      planAwaitingUser: 'This plan already timed out waiting for the user. Do not submit it again. Say in your reply that this step is waiting for the user, then stop.',
       planRejected: 'The user did not approve the current plan. Please ask the user about their concerns and desired changes — do not resubmit the same plan without explicit feedback. Currently in planning mode (read-only).',
       planRecorded: 'Execution plan recorded',
       planRecordedSteps: 'Execution plan recorded: {count} steps',

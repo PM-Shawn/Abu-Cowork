@@ -1613,6 +1613,7 @@ const zhCN: TranslationDict = {
     editInvalidMembers: '以下成员已失效。保存时会保留，除非你移除：',
     teamsEmpty: '还没有专家团',
     teamsEmptyHint: '专家团 = 一个队长带几名专家。在对话里 @专家团 派活，你只和队长沟通。',
+    teamsNotFound: '未找到专家团',
     followUpMemberAppend: '让 {member} 追加处理：',
     confirmationStripTitle: '需要你确认（{n}）',
     confirmationSeparator: ' 想执行：',

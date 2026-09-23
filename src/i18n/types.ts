@@ -2075,6 +2075,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
+    teamsNotFound: string;
     /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;

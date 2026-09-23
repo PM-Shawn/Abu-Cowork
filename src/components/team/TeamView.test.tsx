@@ -271,6 +271,23 @@ describe('TeamView', () => {
     expect(tabs).toEqual(['专家', '专家团']);
   });
 
+  it('teams tab: the header search filters the teams and says when nothing matches', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [
+      { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 },
+      { id: 't2', name: '增长小队', description: '拉新和留存', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    render(<TeamView />);
+    const search = screen.getByPlaceholderText('搜索...');
+
+    fireEvent.change(search, { target: { value: '留存' } });
+    expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+    expect(screen.getByTestId('team-row-增长小队')).toBeTruthy();
+
+    fireEvent.change(search, { target: { value: '不存在的团' } });
+    expect(screen.getByText('未找到专家团')).toBeTruthy();
+  });
+
   it('teams tab empty state offers creating a team', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);

@@ -1612,6 +1612,7 @@ const enUS: TranslationDict = {
     editInvalidMembers: 'These members are no longer available. They stay on the team unless you remove them:',
     teamsEmpty: 'No expert teams yet',
     teamsEmptyHint: 'An expert team is a leader plus a few experts. @ the expert team in a conversation; you only talk to the leader.',
+    teamsNotFound: 'No expert teams found',
     followUpMemberAppend: 'Ask {member} to also handle: ',
     confirmationStripTitle: 'Needs your confirmation ({n})',
     confirmationSeparator: ' wants to run: ',

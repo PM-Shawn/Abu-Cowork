@@ -12,7 +12,7 @@ import {
 } from '../../agent/delegateProgressRecorder';
 import { getExecutionPort } from '../../agent/ports/executionPort';
 import { snapshotExecutionSteps } from '../../agent/executionSnapshot';
-import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } from '../../../types';
+import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource, SubagentStopReason } from '../../../types';
 import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { parseAvatarValue } from '@/core/team/avatarPresets';
@@ -238,6 +238,12 @@ export { DELEGATE_DRAIN_POLL_MS, DELEGATE_DRAIN_MAX_ATTEMPTS };
 /** How much of a member's reply is quoted back when its expected files are missing. */
 const MISSING_FILES_REPLY_TAIL = 1500;
 
+/** The reason shown to the user when the team task stops a member after repeated failures. */
+function dispatchFailureReason(stopReason: SubagentStopReason, missingFiles: readonly string[]): string | undefined {
+  if (missingFiles.length > 0) return format(getI18n().team.stoppedMissingFiles, { files: missingFiles.join(', ') });
+  return stopReason === 'completed' ? undefined : getI18n().toolResult.agent.stopReasonLabel[stopReason];
+}
+
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
   description: 'Delegate a task to a single agent (synchronously waits for the result). Can specify agent_name (user-defined agent) or type (built-in role: research/writer/executor). When parallel processing of multiple independent sub-tasks is needed, use run_agent_batch instead (more reliable).',
@@ -450,7 +456,7 @@ export const delegateToAgentTool: ToolDefinition = {
       toolExecContext?.reportMetadata?.({ subagentStopReason: missingFiles.length > 0 ? 'error' : result.stopReason });
       if (boundsKey && agentName) {
         recordDispatchOutcome(boundsKey, agentName, result.stopReason === 'completed' && missingFiles.length === 0,
-          missingFiles.length > 0 ? `missing ${missingFiles.join(', ')}` : result.stopReason);
+          dispatchFailureReason(result.stopReason, missingFiles));
         outcomeRecorded = true;
       }
       if (missingFiles.length > 0) {

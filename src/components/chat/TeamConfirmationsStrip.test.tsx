@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import { admitDispatches, clearRunBounds, getRunBounds, recordDispatchOutcome } from '@/core/team/teamRunBounds';
 import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -45,46 +46,147 @@ describe('TeamConfirmationsStrip', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('approving a command stores a one-shot approval and asks the idle leader to re-run that step', async () => {
-    useTeamConfirmationStore.getState().add({ identity, conversationId: 'c1', kind: 'command', detail: 'npm publish', member: 'zz发布员', reason: '发布' });
+  it('a request that must be asked every time offers only "只允许这一次", and that retries the same step inside the task', () => {
+    useTeamConfirmationStore.getState().add({ identity: { ...identity, scope: 'prefix:rm -rf' }, conversationId: 'c1', kind: 'command', level: 'danger', detail: 'rm -rf ./old', member: 'zz发布员', reason: '清理' });
     render(<TeamConfirmationsStrip conversationId="c1" />);
-    expect(screen.getByTestId('team-confirmations-strip')).toHaveTextContent('zz发布员');
-    expect(screen.getByTestId('team-confirmations-strip')).toHaveTextContent('/project');
-    fireEvent.click(screen.getByRole('button', { name: '仅本次补跑允许: npm publish' }));
+    const row = screen.getByTestId('team-confirmation-item');
+    expect(row).toHaveTextContent('zz发布员');
+    expect(row).toHaveTextContent('工作目录: /project');
+    expect(screen.queryByRole('button', { name: '这个任务里都允许: rm -rf ./old' })).toBeNull();
+    expect(row).not.toHaveTextContent('不再问');
+    const once = screen.getByRole('button', { name: '只允许这一次: rm -rf ./old' });
+    expect(once.className).toContain('bg-[var(--abu-clay)]');
+
+    fireEvent.click(once);
     expect(useTeamConfirmationStore.getState().approvedOnce).toEqual({});
-    expect(Object.keys(useTeamConfirmationStore.getState().retrySelections)).toHaveLength(1);
-    expect(screen.queryByText('工作目录:')).toBeNull();
+    const [selection] = Object.keys(useTeamConfirmationStore.getState().retrySelections);
+    expect(selection).toBeDefined();
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
-    expect(String(runAgentLoopDispatched.mock.calls[0][1])).toContain('zz发布员');
-    expect(String(runAgentLoopDispatched.mock.calls[0][1])).toContain('npm publish');
+    expect(runAgentLoopDispatched.mock.calls[0][1]).toBe('我同意了zz发布员做「rm -rf ./old」这一次。请用原来的专家、任务和上下文把这一步重新派一次，做完后说明结果。');
+    expect(runAgentLoopDispatched.mock.calls[0][2]).toMatchObject({ teamConfirmationRetryId: selection, continuesTeamTask: true });
     expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
   });
 
-  it('approving file access never grants process-wide permission; the selected retry is queued with its identity', () => {
+  it('approving file access never grants process-wide permission; while the leader runs, retry and rejection are queued', () => {
     useChatStore.setState({ conversations: { c1: conversation('running') } });
     useTeamConfirmationStore.getState().add({ identity, conversationId: 'c1', kind: 'file', detail: '/tmp/report', path: '/tmp/report', capability: 'write', member: 'zz撰写员' });
     useTeamConfirmationStore.getState().add({ identity, conversationId: 'c1', kind: 'command', detail: 'rm -rf build', member: 'zz取数员' });
     render(<TeamConfirmationsStrip conversationId="c1" />);
-    fireEvent.click(screen.getByRole('button', { name: '仅本次补跑允许: /tmp/report' }));
+    expect(screen.getAllByTestId('team-confirmation-item')[0]).toHaveTextContent('权限：写入');
+    fireEvent.click(screen.getByRole('button', { name: '只允许这一次: /tmp/report' }));
     expect(usePermissionStore.getState().hasPermission('/tmp/report', 'write')).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: '拒绝: rm -rf build' }));
     expect(enqueueUserInput).toHaveBeenCalledTimes(2);
-    expect(String(enqueueUserInput.mock.calls[1][1])).toContain('拒绝');
+    expect(enqueueUserInput.mock.calls[0].slice(2)).toEqual([false, expect.any(String), true]);
+    expect(String(enqueueUserInput.mock.calls[1][1])).toContain('我没有同意zz取数员');
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
   });
-  it('shows a revocable task rule, and disables legacy approvals', () => {
+
+  it('"这个任务里都允许" names what it covers, lists the allowance, and "收回" withdraws it', () => {
     useTeamConfirmationStore.getState().add({ identity: { ...identity, scope: 'prefix:npm run' }, conversationId: 'c1', kind: 'command', level: 'warn', detail: 'npm run build', member: 'A' });
     render(<TeamConfirmationsStrip conversationId="c1" />);
-    fireEvent.click(screen.getByRole('button', { name: '本次补跑运行内都允许此请求: npm run build' }));
-    expect(Object.keys(useTeamConfirmationStore.getState().taskRules)).toHaveLength(1);
-    expect(runAgentLoopDispatched.mock.calls[0][2]).toMatchObject({ continuesTeamTask: true });
-    fireEvent.click(screen.getByRole('button', { name: '撤销规则' }));
+    expect(screen.getByTestId('team-confirmation-item')).toHaveTextContent('A再执行「npm run」开头的命令时不再问');
+    const task = screen.getByRole('button', { name: '这个任务里都允许: npm run build' });
+    expect(task).toHaveAttribute('data-primary', 'true');
+    expect(screen.getByRole('button', { name: '只允许这一次: npm run build' }).className).not.toContain('bg-[var(--abu-clay)]');
+
+    fireEvent.click(task);
+    expect(Object.values(useTeamConfirmationStore.getState().taskRules)).toMatchObject([{ category: 'command:prefix:npm run' }]);
+    expect(useTeamConfirmationStore.getState().pending).toEqual({});
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(runAgentLoopDispatched.mock.calls[0][1]).toBe('这个任务里，我同意了刚才请求的这些操作。请让相关专家接着做被挡住的步骤，做完后说明结果。');
+    expect(runAgentLoopDispatched.mock.calls[0][2]).toMatchObject({ teamConfirmationRetryId: undefined, continuesTeamTask: true });
+
+    const strip = screen.getByTestId('team-confirmations-strip');
+    expect(strip).toHaveTextContent('这个任务里已允许');
+    expect(strip).not.toHaveTextContent('需要你确认');
+    fireEvent.click(screen.getByRole('button', { name: '收回: A再执行「npm run」开头的命令时不再问' }));
     expect(useTeamConfirmationStore.getState().taskRules).toEqual({});
-    act(() => { useTeamConfirmationStore.getState().add({ conversationId: 'c1', kind: 'command', detail: 'legacy' }); });
-    expect(screen.getByRole('button', { name: '仅本次补跑允许: legacy' })).toBeDisabled();
+    expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
   });
 
+  it('"全部允许" appears for two or more requests and allows every one that has a scope in one follow-up', () => {
+    const store = useTeamConfirmationStore.getState();
+    store.add({ identity: { ...identity, callId: 'a', scope: 'prefix:npm run' }, conversationId: 'c1', kind: 'command', level: 'warn', detail: 'npm run build', member: 'A' });
+    store.add({ identity: { ...identity, callId: 'b', scope: 'write:/project/out' }, conversationId: 'c1', kind: 'file', detail: '/project/out/a.md', path: '/project/out/a.md', capability: 'write', member: 'B' });
+    store.add({ identity: { ...identity, callId: 'c', scope: 'prefix:rm -rf' }, conversationId: 'c1', kind: 'command', level: 'danger', detail: 'rm -rf ./old', member: 'A' });
+    render(<TeamConfirmationsStrip conversationId="c1" />);
+    expect(screen.getByTestId('team-confirmations-strip')).toHaveTextContent('需要你确认（3）');
+
+    fireEvent.click(screen.getByRole('button', { name: '全部允许' }));
+    expect(Object.values(useTeamConfirmationStore.getState().taskRules).map((rule) => rule.category).sort())
+      .toEqual(['command:prefix:npm run', 'file:write:/project/out']);
+    expect(Object.values(useTeamConfirmationStore.getState().pending).map((item) => item.detail)).toEqual(['rm -rf ./old']);
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('team-confirmation-item')).toHaveTextContent('rm -rf ./old');
+    expect(screen.queryByRole('button', { name: '全部允许' })).toBeNull();
+  });
+
+  it('"全部允许" is not offered when no request has a scope', () => {
+    const store = useTeamConfirmationStore.getState();
+    store.add({ identity: { ...identity, callId: 'a' }, conversationId: 'c1', kind: 'command', level: 'danger', detail: 'rm -rf a', member: 'A' });
+    store.add({ identity: { ...identity, callId: 'b' }, conversationId: 'c1', kind: 'command', level: 'danger', detail: 'rm -rf b', member: 'A' });
+    render(<TeamConfirmationsStrip conversationId="c1" />);
+    expect(screen.getAllByTestId('team-confirmation-item')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: '全部允许' })).toBeNull();
+  });
+
+  it('a request saved before this version can no longer be retried, only rejected', () => {
+    useTeamConfirmationStore.getState().add({ conversationId: 'c1', kind: 'command', detail: 'legacy' });
+    render(<TeamConfirmationsStrip conversationId="c1" />);
+    expect(screen.getByTestId('team-confirmation-item')).toHaveTextContent('这条确认已过期');
+    expect(screen.queryByRole('button', { name: '只允许这一次: legacy' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '这个任务里都允许: legacy' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '拒绝: legacy' }));
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('TeamConfirmationsStrip — stopped hand-offs', () => {
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    useTeamConfirmationStore.setState(emptyConfirmations);
+    useChatStore.setState({ activeConversationId: 'c1', conversations: { c1: conversation('idle') }, agentStates: new Map() });
+    vi.clearAllMocks();
+  });
+  afterEach(() => { cleanup(); clearRunBounds('task-stop'); });
+
+  it('a member stopped after repeated failures shows the last failure; "换个做法再试" lets it take work again', () => {
+    for (let i = 0; i < 3; i += 1) recordDispatchOutcome('task-stop', '网页专员', false, '没有交出要求的文件 a.xlsx');
+    useTeamConfirmationStore.getState().addStopped({ conversationId: 'c1', taskId: 'task-stop', reason: 'member_blocked', member: '网页专员', count: 3, lastFailure: '没有交出要求的文件 a.xlsx' });
+    render(<TeamConfirmationsStrip conversationId="c1" />);
+    const row = screen.getByTestId('team-stopped-item');
+    expect(row).toHaveTextContent('网页专员这件事已经连续失败 3 次，停下了');
+    expect(row).toHaveTextContent('最后一次：没有交出要求的文件 a.xlsx');
+    expect(screen.getByTestId('team-confirmations-strip')).toHaveTextContent('需要你确认（1）');
+
+    fireEvent.click(screen.getByRole('button', { name: '换个做法再试' }));
+    expect(getRunBounds('task-stop').consecutiveFailures).toEqual({});
+    expect(useTeamConfirmationStore.getState().stopped).toEqual({});
+    expect(runAgentLoopDispatched.mock.calls[0][1]).toBe('刚才停下的这一步，请换一个做法再试一次，做完后说明结果。');
+    expect(runAgentLoopDispatched.mock.calls[0][2]).toMatchObject({ continuesTeamTask: true });
+    expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
+  });
+
+  it('a task that used its hand-off allowance gets a fresh allowance from "换个做法再试"', () => {
+    admitDispatches('task-stop', ['A', 'B']);
+    useTeamConfirmationStore.getState().addStopped({ conversationId: 'c1', taskId: 'task-stop', reason: 'run_cap', count: 40 });
+    render(<TeamConfirmationsStrip conversationId="c1" />);
+    expect(screen.getByTestId('team-stopped-item')).toHaveTextContent('这个任务已经派了 40 次活，停下了');
+    fireEvent.click(screen.getByRole('button', { name: '换个做法再试' }));
+    expect(getRunBounds('task-stop').dispatches).toBe(0);
+  });
+
+  it('"跳过这一步" leaves the bounds alone and tells the leader to carry on without it', () => {
+    recordDispatchOutcome('task-stop', 'A', false);
+    useTeamConfirmationStore.getState().addStopped({ conversationId: 'c1', taskId: 'task-stop', reason: 'member_blocked', member: 'A', count: 3 });
+    render(<TeamConfirmationsStrip conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: '跳过这一步' }));
+    expect(getRunBounds('task-stop').consecutiveFailures).toEqual({ A: 1 });
+    expect(useTeamConfirmationStore.getState().stopped).toEqual({});
+    expect(runAgentLoopDispatched.mock.calls[0][1]).toBe('刚才停下的这一步跳过，按受阻处理，继续做其余部分，汇报时说明。');
+  });
 });
 
 /**
@@ -143,6 +245,26 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     expect(screen.getByTestId('team-confirmation-item').textContent).toContain(`网站: ${ORIGIN}`);
   });
 
+  it('A2: a script request offers the script grant, says what a script can do, and scopes the task allowance to the site', () => {
+    renderWith(browserRequest({
+      identity: { ...identity, toolName: 'abu-browser__execute_js', scope: ORIGIN },
+      detail: 'execute_js', browserOperationClass: 'scripting', browserPermissionResource: 'script',
+    }));
+    expect(allowSiteButton()).toHaveTextContent('以后在此网站允许执行脚本');
+    const row = screen.getByTestId('team-confirmation-item');
+    expect(row).toHaveTextContent('脚本能读取这个页面，并以你的身份在页面上操作');
+    expect(row).toHaveTextContent(`zz填表员再在 ${ORIGIN} 上执行脚本时不再问`);
+    expect(screen.getByRole('button', { name: '这个任务里都允许: execute_js' })).toHaveAttribute('data-primary', 'true');
+  });
+
+  it('A3: only embedded targets are listed under the site, with the page embedding them', () => {
+    renderWith(browserRequest({ browserPermissionTargets: [{ origin: ORIGIN }, { origin: 'https://frame.example', embeddedIn: ORIGIN }] }));
+    const row = screen.getByTestId('team-confirmation-item');
+    expect(row).toHaveTextContent(`https://frame.example (${ORIGIN})`);
+    expect(row.querySelectorAll('code')).toHaveLength(3);
+    expect(row).not.toHaveTextContent('工作目录');
+  });
+
   it('B: no grant when the requester did not allow persistence', () => {
     renderWith(browserRequest({ allowPersistentGrant: false }));
     expect(allowSiteButton()).toBeNull();
@@ -179,7 +301,7 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     await act(async () => { await useSettingsStore.getState().setBrowserSiteBlocked(ORIGIN, true); });
     expect(allowSiteButton()).toBeNull();
     // The row's other two approvals are untouched: the block is about the SITE.
-    expect(screen.getByRole('button', { name: '仅本次补跑允许: fill #q' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '只允许这一次: fill #q' })).toBeEnabled();
 
     // Lifting the block brings the offer back live, still without a remount.
     await act(async () => { await useSettingsStore.getState().removeBrowserSiteRule(ORIGIN, useSettingsStore.getState().browserPermissionConfigV2.sites[ORIGIN]); });

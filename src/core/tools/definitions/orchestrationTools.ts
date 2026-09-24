@@ -711,7 +711,9 @@ export const runAgentBatchTool: ToolDefinition = {
       if (boundsKey) {
         recordDispatchOutcome(boundsKey, resolvedTasks[i].agent.name,
           result.status === 'fulfilled' && result.value.stopReason === 'completed',
-          result.status === 'rejected' ? String(result.reason) : result.value.stopReason);
+          result.status === 'rejected'
+            ? String(result.reason)
+            : result.value.stopReason === 'completed' ? undefined : getI18n().toolResult.agent.stopReasonLabel[result.value.stopReason]);
       }
     }
 

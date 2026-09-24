@@ -1047,7 +1047,8 @@ describe('delegateToAgentTool', () => {
 
     expect(refused).toContain('researcher');
     expect(Object.values(useTeamConfirmationStore.getState().stopped)).toEqual([expect.objectContaining({
-      conversationId: 'conv-1', taskId: 'task-strip', reason: 'member_blocked', member: 'researcher', count: 3, lastFailure: 'error',
+      conversationId: 'conv-1', taskId: 'task-strip', reason: 'member_blocked', member: 'researcher', count: 3,
+      lastFailure: getI18n().toolResult.agent.stopReasonLabel.error,
     })]);
     clearRunBounds('task-strip');
   });

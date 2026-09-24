@@ -2081,23 +2081,49 @@ export interface TranslationDict {
     confirmationStripTitle: string;
     confirmationSeparator: string;
     confirmationLeader: string;
-    confirmationApproveRun: string;
-    confirmationAllowSite: string;
     confirmationWriteRead: string;
     confirmationWrite: string;
     confirmationRead: string;
     confirmationCwd: string;
     confirmationOrigin: string;
-    confirmationRequestOrdinal: string;
     confirmationDefaultCwd: string;
-    confirmationLegacy: string;
-    confirmationRunRule: string;
-    confirmationRevoke: string;
+    /** Shown instead of any allow button on a record that can no longer be allowed. */
+    confirmationExpired: string;
+    /** Allow this one call. */
     confirmationApprove: string;
+    /** Allow this kind of request for the rest of the team task. */
+    confirmationApproveTask: string;
+    /** Allow every pending request that can be allowed for the task. */
+    confirmationApproveAll: string;
+    /** Heading of the list of "this task" allowances. */
+    confirmationTaskRules: string;
+    confirmationRevoke: string;
     confirmationReject: string;
+    /** What a "this task" allowance covers, one line each. */
+    confirmationScopeCommand: string;
+    confirmationScopeExactCommand: string;
+    confirmationScopeFileRead: string;
+    confirmationScopeFileWrite: string;
+    confirmationScopeBrowse: string;
+    confirmationScopeUpload: string;
+    confirmationScopeScript: string;
+    /** Next to the always-allow-scripts button. */
+    confirmationScriptRisk: string;
     confirmationNotice: string;
     confirmationApprovedFollowUp: string;
+    confirmationApprovedTaskFollowUp: string;
     confirmationRejectedFollowUp: string;
+    /** A member the task stopped after repeated failures. */
+    stoppedMemberBlocked: string;
+    /** The task used its hand-off allowance. */
+    stoppedRunCap: string;
+    stoppedLastFailure: string;
+    /** The last failure was a hand-off that did not produce its required files. */
+    stoppedMissingFiles: string;
+    stoppedTryAnotherWay: string;
+    stoppedSkip: string;
+    stoppedTryAnotherWayFollowUp: string;
+    stoppedSkipFollowUp: string;
     stallStoppedNotice: string;
     resumeAfterRestart: string;
     resumeAfterRestartFailed: string;

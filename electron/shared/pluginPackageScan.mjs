@@ -132,7 +132,9 @@ export function scanSkillNames(packageDir, declaration) {
 /** Agent names under `agents/`, both the folder shape and the single-file shape (see `readPayloadAgents`). */
 export function scanAgentNames(packageDir) {
     const names = new Set();
-    for (const entry of ownedChildren(path.join(packageDir, 'agents'))) {
+    const agentsDir = ownedDir(packageDir, 'agents');
+    if (!agentsDir) return [];
+    for (const entry of ownedChildren(agentsDir)) {
         let file;
         let fallbackName;
         if (entry.isDirectory) {
@@ -150,7 +152,9 @@ export function scanAgentNames(packageDir) {
 
 /** `teams/<id>.json` files as `{ id, raw }`, sorted by id. */
 export function scanTeamFiles(packageDir) {
-    return ownedChildren(path.join(packageDir, 'teams'))
+    const teamsDir = ownedDir(packageDir, 'teams');
+    if (!teamsDir) return [];
+    return ownedChildren(teamsDir)
         .filter(entry => entry.isFile && /\.json$/i.test(entry.name))
         .map(entry => ({ id: entry.name.replace(/\.json$/i, ''), raw: readJson(path.join(packageDir, 'teams', entry.name), `teams/${entry.name}`) }));
 }

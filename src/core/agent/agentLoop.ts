@@ -573,6 +573,10 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 export interface AgentLoopOptions {
   /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
   teamConfirmationRetryId?: string;
+  /** Trusted UI flag: this run continues the conversation's current team task. Never sent to the sidecar. */
+  continuesTeamTask?: boolean;
+  /** Shell-resolved team task, handed to the in-process loop only. Never sent to the sidecar. */
+  teamTaskId?: string;
   /** Override the command confirmation callback (e.g. auto-deny for scheduled tasks) */
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   /** Override the file permission callback (e.g. auto-deny for scheduled tasks) */
@@ -1158,6 +1162,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Team mode: roster the leader may delegate to (enforced in the dispatch tools).
     teamRoster: route.team ? teamRosterNames(route.team) : undefined,
     teamRequirePlanApproval: route.team?.requirePlanApproval === true ? true : undefined,
+    teamTaskId: route.team ? options?.teamTaskId : undefined,
     authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     reportBrowserDenial: (kind) => browserDenials.reportDenial(kind),
@@ -3284,7 +3289,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
-  clearRunBounds(loopId);
+  if (!options?.teamTaskId) clearRunBounds(loopId);
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
   if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {
     abortController.abort(new Error('Scoped agent run finished'));

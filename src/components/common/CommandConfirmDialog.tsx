@@ -186,7 +186,11 @@ export default function CommandConfirmDialog({
     setSaving(false);
     if (saved) confirm(); else setSaveFailed(true);
   }, [current, saving, offerSiteGrant, request, confirm, setSaving, setSaveFailed]);
-  const alwaysAllowSiteLabel = request.browserPermissionResource === 'upload' ? t.settings.browserResourceGrantUpload : t.settings.browserResourceGrantBrowse;
+  const alwaysAllowSiteLabel = request.browserPermissionResource === 'upload'
+    ? t.settings.browserResourceGrantUpload
+    : request.browserPermissionResource === 'script'
+      ? t.settings.browserResourceGrantScript
+      : t.settings.browserResourceGrantBrowse;
 
   // "Block this site" is the mirror of "always allow", and it is offered
   // wherever an origin is known — including the cases that may NOT be granted

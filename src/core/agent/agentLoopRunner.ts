@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { assertPluginEnabled, assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
 import { agentToolPolicyForRoute, checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { clearRunBounds } from '../team/teamRunBounds';
-import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
+import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Shell-side channel handler module for the main agent loop's sidecar run —
  * the main-loop twin of `subagentRunner.ts` (P1-3a). Built up in two
@@ -146,8 +146,10 @@ import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
 import {
   BROWSER_DENIAL_ABORT_CAUSE,
+  createBrowserDenialStreak,
   createBrowserDenialTracker,
   type BrowserDenialAbortCause,
+  type BrowserDenialStreak,
   type BrowserDenialTracker,
 } from './browserDenialTracker';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
@@ -1470,6 +1472,37 @@ function trustedTeamContext(conversationId: string): Pick<ToolExecutionContext, 
  * uses, so every downstream fence (sidecar abort, frame drop, dialog drain,
  * `assertRunNotStopping` on the next tool.invoke) fires exactly as for Stop.
  */
+/**
+ * Refusal streaks of team tasks. Every run the confirmation strip starts
+ * continues its task, so the runs share one streak; a new task retires the
+ * previous one's entry (see where `beginTask` is called).
+ */
+const browserDenialStreaksByTask = new Map<string, BrowserDenialStreak>();
+
+function browserDenialStreakFor(session: RunSession): BrowserDenialStreak | undefined {
+  const taskId = session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined;
+  if (!taskId) return undefined;
+  let streak = browserDenialStreaksByTask.get(taskId);
+  if (!streak) {
+    streak = createBrowserDenialStreak();
+    browserDenialStreaksByTask.set(taskId, streak);
+  }
+  return streak;
+}
+
+/**
+ * The user allowed a request on the confirmation strip. In a team task every
+ * request still waiting there already counted as a refusal, so an allowance
+ * is the same answer a dialog "allow" gives: the streak starts over.
+ */
+export function forgiveTeamBrowserDenials(conversationId: string): void {
+  const taskId = taskIdFor(conversationId);
+  const streak = taskId ? browserDenialStreaksByTask.get(taskId) : undefined;
+  if (!streak) return;
+  streak.consecutiveDenials = 0;
+  streak.streakHasScripting = false;
+}
+
 function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
   session.browserDenials ??= createBrowserDenialTracker(() => {
     session.abortCause = BROWSER_DENIAL_ABORT_CAUSE;
@@ -1487,7 +1520,7 @@ function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
       conversationId: session.conversationId,
     });
     session.shellAbortController.abort(new Error('Run stopped after consecutive browser denials'));
-  });
+  }, undefined, browserDenialStreakFor(session));
   return session.browserDenials;
 }
 
@@ -1519,6 +1552,9 @@ function contextForSession(
     // Security boundary: the shell session owns the ceiling. Never trust a
     // sidecar-provided context to omit or widen it.
     runPermissionCeiling: session.options.runPermissionCeiling,
+    // Security boundary: the team task keys the hand-off bounds and the
+    // refusal streak, so it is shell-owned like the run identity above.
+    teamTaskId: session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined,
     // Security boundary: outbound identity is authority-bearing. A sidecar may
     // describe a tool call, but it may not choose a different IM recipient or
     // manufacture one for a non-IM run.
@@ -3139,8 +3175,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             messageTaken: false,
           };
         }
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -3160,8 +3197,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
         // calls (userInputQueue.ts, unchanged).
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -3187,6 +3225,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       });
     }
   }
+  // A team conversation's task spans every run the confirmation strip starts;
+  // any other run (a request the user typed, a schedule, an IM message)
+  // starts a new task and retires the previous one's rules and bounds.
+  const teamTask = entryConversation?.teamId
+    ? useTeamConfirmationStore.getState().beginTask(conversationId,
+      Boolean(options.teamConfirmationRetryId || options.continuesTeamTask))
+    : undefined;
+  if (teamTask?.retiredTaskId) {
+    clearRunBounds(teamTask.retiredTaskId);
+    browserDenialStreaksByTask.delete(teamTask.retiredTaskId);
+  }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
   if (inProcessEnvironment) {
@@ -3199,7 +3248,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       const result = await runAgentLoop(
         conversationId,
         userMessage,
-        rendererRuntimeOptions(options, (messageId) => {
+        rendererRuntimeOptions({ ...options, ...(teamTask ? { teamTaskId: teamTask.taskId } : {}) }, (messageId) => {
           ownership.messageTaken = true;
           localUserMessageId = messageId;
           if (messageId) {
@@ -3998,7 +4047,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   }
   } finally {
     useTeamConfirmationStore.getState().clearRun(conversationId, ownedLoopId);
-    clearRunBounds(ownedLoopId);
+    // A team task's bounds outlive this run and are retired when the next
+    // task starts; only a run outside a task owns its own entry.
+    if (!teamTask) clearRunBounds(ownedLoopId);
   }
 }
 
@@ -4102,7 +4153,8 @@ async function runDispatchedTurns(
         // or incorrectly retain a lower ceiling. System-authored wake-ups never
         // reach this dequeue path (`dequeueNextUserInput` skips them). What
         // they ARE is human-typed, so the handoff run is user-initiated.
-        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId },
+        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
+          continuesTeamTask: queuedInput.continuesTeamTask },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);

@@ -757,6 +757,12 @@ export interface ToolExecutionContext {
   /** Strict team (先确认分工): report_plan must get the user's approval before anything is dispatched. */
   teamRequirePlanApproval?: boolean;
   /**
+   * Shell-owned team task this call belongs to (teamConfirmationStore's
+   * beginTask). Keys the task's hand-off bounds and refusal streak, so a
+   * sidecar-supplied value is always overwritten.
+   */
+  teamTaskId?: string;
+  /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would
    * lose its live behavior.

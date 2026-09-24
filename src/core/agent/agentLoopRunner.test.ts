@@ -1664,6 +1664,30 @@ describe('agentLoopRunner', () => {
       }));
     });
 
+    it('stamps the shell team task onto a team run tool context, ignoring a forged wire value', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      const { taskId } = useTeamConfirmationStore.getState().beginTask('conv-1', false);
+      registerRunSession('run-1', { ...makeSession(), teamSnapshot: { teamRoster: ['A'] } });
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-1', toolName: 'read_file', input: { path: '/tmp/x' }, context: { teamTaskId: 'forged' } });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({ teamTaskId: taskId }));
+    });
+
+    it('gives a run outside a team no team task, even when the wire names one', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-1', toolName: 'read_file', input: { path: '/tmp/x' }, context: { teamTaskId: 'forged' } });
+
+      expect((executeAnyToolMock.mock.calls.at(-1)?.[4] as { teamTaskId?: string }).teamTaskId).toBeUndefined();
+    });
+
     it('exposes only the two report functions — never the abort controller', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1675,6 +1699,51 @@ describe('agentLoopRunner', () => {
       expect(typeof context.reportBrowserAllow).toBe('function');
       expect(context).not.toHaveProperty('shellAbortController');
       expect(context).not.toHaveProperty('browserDenials');
+    });
+
+    it('the runs of one team task share the refusal streak; a new task starts it over', async () => {
+      const { ensureHandlersRegistered, registerRunSession, unregisterRunSession } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+
+      const first = { ...makeSession({ loopId: 'loop-a' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-a', first);
+      (await invokeOnce('run-a')).reportBrowserDenial!();
+      unregisterRunSession('run-a');
+
+      // The strip's retry continues the task: one more refusal reaches the threshold.
+      const second = { ...makeSession({ loopId: 'loop-b' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-b', second);
+      (await invokeOnce('run-b')).reportBrowserDenial!();
+      expect(second.shellAbortController.signal.aborted).toBe(true);
+      unregisterRunSession('run-b');
+
+      // A request the user types starts a new task, and a fresh streak.
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+      const third = { ...makeSession({ loopId: 'loop-c' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-c', third);
+      (await invokeOnce('run-c')).reportBrowserDenial!();
+      expect(third.shellAbortController.signal.aborted).toBe(false);
+    });
+
+    it('an allowance on the confirmation strip starts the task streak over; the next run is not stopped by its first new request', async () => {
+      const { ensureHandlersRegistered, registerRunSession, unregisterRunSession, forgiveTeamBrowserDenials } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+
+      const first = { ...makeSession({ loopId: 'loop-a' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-a', first);
+      (await invokeOnce('run-a')).reportBrowserDenial!();
+      unregisterRunSession('run-a');
+
+      forgiveTeamBrowserDenials('conv-1');
+
+      const second = { ...makeSession({ loopId: 'loop-b' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-b', second);
+      (await invokeOnce('run-b')).reportBrowserDenial!();
+      expect(second.shellAbortController.signal.aborted).toBe(false);
     });
 
     it('two denials in a row abort the run, append the closing message and record the cause', async () => {

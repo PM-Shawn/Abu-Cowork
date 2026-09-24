@@ -2,6 +2,7 @@ import { exists, readDir, readTextFile, writeTextFile } from '@tauri-apps/plugin
 import { readAgentIdentity, wantedAgentIdentity, withAgentIdentity } from '@/core/agent/agentIdentityCarry';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { surfaceStoppedDispatch } from '../../team/stoppedDispatch';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
 import {
@@ -11,7 +12,7 @@ import {
 } from '../../agent/delegateProgressRecorder';
 import { getExecutionPort } from '../../agent/ports/executionPort';
 import { snapshotExecutionSteps } from '../../agent/executionSnapshot';
-import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } from '../../../types';
+import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource, SubagentStopReason } from '../../../types';
 import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { parseAvatarValue } from '@/core/team/avatarPresets';
@@ -234,6 +235,15 @@ export const DELEGATE_SNAPSHOT_COALESCE_MS = 250;
  *  real drain budget rather than a number that can drift away from it. */
 export { DELEGATE_DRAIN_POLL_MS, DELEGATE_DRAIN_MAX_ATTEMPTS };
 
+/** How much of a member's reply is quoted back when its expected files are missing. */
+const MISSING_FILES_REPLY_TAIL = 1500;
+
+/** The reason shown to the user when the team task stops a member after repeated failures. */
+function dispatchFailureReason(stopReason: SubagentStopReason, missingFiles: readonly string[]): string | undefined {
+  if (missingFiles.length > 0) return format(getI18n().team.stoppedMissingFiles, { files: missingFiles.join(', ') });
+  return stopReason === 'completed' ? undefined : getI18n().toolResult.agent.stopReasonLabel[stopReason];
+}
+
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
   description: 'Delegate a task to a single agent (synchronously waits for the result). Can specify agent_name (user-defined agent) or type (built-in role: research/writer/executor). When parallel processing of multiple independent sub-tasks is needed, use run_agent_batch instead (more reliable).',
@@ -265,10 +275,14 @@ export const delegateToAgentTool: ToolDefinition = {
     }
     // Hard bounds for the run (teamRunBounds.ts): refuse loudly so the leader
     // stops dispatching and reports instead of looping.
-    const boundsLoopId = toolExecContext?.teamRoster && agentName && toolExecContext.loopId ? toolExecContext.loopId : undefined;
-    if (boundsLoopId && agentName) {
-      const admission = admitDispatches(boundsLoopId, [agentName]);
+    // The team task spans the runs the confirmation strip starts, so approving
+    // a retry does not reset these bounds (teamRunBounds.ts).
+    const boundsKey = toolExecContext?.teamRoster && agentName && toolExecContext.loopId
+      ? (toolExecContext.teamTaskId ?? toolExecContext.loopId) : undefined;
+    if (boundsKey && agentName) {
+      const admission = admitDispatches(boundsKey, [agentName]);
       if (!admission.ok) {
+        surfaceStoppedDispatch(toolExecContext, admission);
         const t = getI18n().toolResult.agent;
         return admission.reason === 'run_cap'
           ? format(t.errDispatchCapReached, { max: admission.max })
@@ -440,15 +454,20 @@ export const delegateToAgentTool: ToolDefinition = {
         ? await findMissingExpectedFiles(expectedFiles, toolExecContext?.workspacePath)
         : [];
       toolExecContext?.reportMetadata?.({ subagentStopReason: missingFiles.length > 0 ? 'error' : result.stopReason });
-      if (boundsLoopId && agentName) {
-        recordDispatchOutcome(boundsLoopId, agentName, result.stopReason === 'completed' && missingFiles.length === 0);
+      if (boundsKey && agentName) {
+        recordDispatchOutcome(boundsKey, agentName, result.stopReason === 'completed' && missingFiles.length === 0,
+          dispatchFailureReason(result.stopReason, missingFiles));
         outcomeRecorded = true;
       }
       if (missingFiles.length > 0) {
+        // The member's full reply is already in its own steps; the leader needs
+        // what is missing and how the reply ended, not all of it again.
         throw new Error(format(getI18n().toolResult.agent.errExpectedFilesMissing, {
           agentName: effectiveAgentName,
           files: missingFiles.join(', '),
-          text: result.text,
+          text: result.text.length > MISSING_FILES_REPLY_TAIL
+            ? `…${result.text.slice(-MISSING_FILES_REPLY_TAIL)}`
+            : result.text,
         }));
       }
       let text = result.text;
@@ -474,7 +493,9 @@ export const delegateToAgentTool: ToolDefinition = {
       // The run never reached drainProgress — settle the member's progress
       // here so the coalesced snapshot is written and no timer is left armed.
       finalizeProgress?.();
-      if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);
+      if (boundsKey && agentName && !outcomeRecorded) {
+        recordDispatchOutcome(boundsKey, agentName, false, err instanceof Error ? err.message : String(err));
+      }
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }

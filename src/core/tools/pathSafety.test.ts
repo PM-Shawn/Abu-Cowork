@@ -626,6 +626,38 @@ describe('pathSafety', () => {
 
   // ── Permission-needed paths ──
   describe('permission-needed paths', () => {
+    it('marks a whole top-level home folder as the unit to authorize, for read, write and list', async () => {
+      for (const result of [
+        await checkReadPath('/Users/testuser/Desktop/sub/file.txt'),
+        await checkWritePath('/Users/testuser/Documents/proj/report.md'),
+        await checkListPath('/Users/testuser/Downloads/sub'),
+        await checkWritePath('/Users/testuser/MyStuff/notes.md'),
+      ]) {
+        expect(result).toMatchObject({ allowed: false, needsPermission: true, permissionIsFolder: true });
+        expect(result.permissionPath?.split('/')).toHaveLength(4);
+      }
+    });
+
+    it('marks a listed folder outside home as the unit itself', async () => {
+      const result = await checkListPath('/Volumes/Data/proj');
+      expect(result).toMatchObject({ needsPermission: true, permissionPath: '/Volumes/Data/proj', permissionIsFolder: true });
+    });
+
+    it('does not mark a path that is authorized by itself', async () => {
+      const lexical = '/Users/testuser/Documents/folder-flag-source/link/report.md';
+      const canonical = '/Users/testuser/Desktop/folder-flag-target/report.md';
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) =>
+        (String(candidate) === lexical ? canonical : String(candidate)));
+      authorizeWorkspace('/Users/testuser/Documents/folder-flag-source', ['read', 'write']);
+      try {
+        const result = await checkWritePath(lexical);
+        expect(result).toMatchObject({ needsPermission: true, permissionPath: canonical });
+        expect(result.permissionIsFolder).toBeUndefined();
+      } finally {
+        revokeWorkspace('/Users/testuser/Documents/folder-flag-source');
+      }
+    });
+
     it('needs permission for ~/Desktop', async () => {
       const result = await checkReadPath('/Users/testuser/Desktop/file.txt');
       expect(result.allowed).toBe(false);

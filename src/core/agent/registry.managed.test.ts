@@ -51,6 +51,34 @@ describe('managed Agent registry', () => {
     expect(registry.getAgent('org-reviewer')?.systemPrompt).toBe('Local prompt.')
     expect(registry.getAvailableAgents().filter(item => item.name === 'org-reviewer')).toHaveLength(1)
   })
+
+  // The administrator's catalog is seeded with the experts Abu ships, so the
+  // shipped copy steps aside for the organization's version of that name.
+  it('hands a shipped expert\'s name to the organization copy of it', () => {
+    const registry = new AgentRegistry()
+    registry.registerManagedSource('enterprise', () => true)
+    const internals = registry as unknown as { agents: Map<string, SubagentDefinition> }
+    internals.agents.set('org-reviewer', {
+      ...definition(), managed: undefined, filePath: '__builtin__', systemPrompt: 'Shipped prompt.',
+    })
+    registry.replaceManagedAgents('enterprise', [definition()])
+    expect(registry.getAgent('org-reviewer')?.systemPrompt).toBe('Review the supplied material.')
+    expect(registry.getAvailableAgents().filter(item => item.name === 'org-reviewer')).toHaveLength(1)
+  })
+
+  // `abu` itself is a shipped expert the catalog does not carry, and the app
+  // has no assistant without it.
+  it('keeps a shipped expert the organization catalog does not carry', () => {
+    const registry = new AgentRegistry()
+    registry.registerManagedSource('enterprise', () => true)
+    const internals = registry as unknown as { agents: Map<string, SubagentDefinition> }
+    internals.agents.set('abu', {
+      ...definition(), name: 'abu', managed: undefined, filePath: '__builtin__', systemPrompt: 'Shipped prompt.',
+    })
+    registry.replaceManagedAgents('enterprise', [definition()])
+    expect(registry.getAgent('abu')?.systemPrompt).toBe('Shipped prompt.')
+    expect(registry.getAvailableAgents().map(item => item.name)).toContain('abu')
+  })
 })
 
 describe('builtin Agent tool boundaries', () => {

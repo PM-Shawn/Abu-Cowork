@@ -310,7 +310,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
           userAgents.length === 0 ? (
             mineTotal === 0 ? (
               <div className="py-16 text-center">
-                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.agentsMineEmpty}</p>
+                <p className="text-body font-medium text-[var(--abu-text-secondary)]">{t.toolbox.agentsMineEmpty}</p>
               </div>
             ) : (
               <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>

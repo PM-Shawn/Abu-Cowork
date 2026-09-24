@@ -246,7 +246,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   const handleUndoDelete = () => {
     if (pendingDelete) {
-      importConversation(pendingDelete.data);
+      importConversation(pendingDelete.data, { keepPermissionMode: true });
       clearTimeout(undoTimerRef.current);
       setPendingDelete(null);
     }

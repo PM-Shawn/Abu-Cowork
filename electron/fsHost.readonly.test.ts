@@ -45,7 +45,7 @@ describe('fsHost toFileInfo readonly', () => {
     const file = path.join(dir, `mode-${mode.toString(8)}.txt`);
     fs.writeFileSync(file, 'x');
     fs.chmodSync(file, mode);
-    return toFileInfo(fs.statSync(file)).readonly;
+    return toFileInfo(fs.statSync(file, { bigint: true })).readonly;
   }
 
   it('reports a file nobody can write as readonly', () => {
@@ -74,14 +74,82 @@ describe('file identity survives the Electron wire format on every platform', ()
       const target = path.join(dir, 'approved.txt');
       const replacement = path.join(dir, 'replacement.txt');
       fs.writeFileSync(target, 'approved'); fs.writeFileSync(replacement, 'replaced');
-      const before = fs.statSync(target);
+      const before = fs.statSync(target, { bigint: true });
       const mapped = toFileInfo(before);
-      expect(mapped.dev).toBe(before.dev);
-      expect(mapped.ino).toBe(before.ino);
+      expect(mapped.dev).toBe(String(before.dev));
+      expect(mapped.ino).toBe(String(before.ino));
       fs.renameSync(target, path.join(dir, 'original.txt'));
       fs.renameSync(replacement, target);
-      const after = toFileInfo(fs.statSync(target));
+      const after = toFileInfo(fs.statSync(target, { bigint: true }));
       expect(after.ino).not.toBe(mapped.ino);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('leaves every other field a number, so only identity is text', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-identity-shape-'));
+    try {
+      const target = path.join(dir, 'approved.txt');
+      fs.writeFileSync(target, 'approved');
+      const info = toFileInfo(fs.statSync(target, { bigint: true }));
+      expect(info.size).toBe(8);
+      expect(typeof info.size).toBe('number');
+      // The wire timestamp is an ISO string that plugin-fs turns back into a
+      // Date; the bigint stat's whole milliseconds are what it is built from.
+      expect(new Date(info.mtime as string).getTime())
+        .toBe(Number(fs.statSync(target, { bigint: true }).mtimeMs));
+      if (process.platform !== 'win32') expect(typeof info.mode).toBe('number');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('reports no file id at all where the filesystem numbers nothing', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-identity-none-'));
+    try {
+      const target = path.join(dir, 'approved.txt');
+      fs.writeFileSync(target, 'approved');
+      const none = fs.statSync(target, { bigint: true });
+      none.ino = 0n;
+      // Null rather than "0": upload approval refuses an entry with nothing
+      // identifying in it instead of comparing against a placeholder.
+      expect(toFileInfo(none).ino).toBe(null);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  /**
+   * An NTFS file id packs a record sequence number above the record index, so a
+   * volume that has been in use for a while reports ids past 2^53. The case
+   * above carries whatever id the runner's own volume hands out, which on APFS
+   * or ext4 is a small number; this one states the width the wire has to carry,
+   * because an id the renderer cannot hold exactly leaves upload approval
+   * comparing files only as finely as a rounding step.
+   */
+  it('carries a file id wider than 2^53, which is the width NTFS reports', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-identity-wide-'));
+    try {
+      const target = path.join(dir, 'approved.txt');
+      fs.writeFileSync(target, 'approved');
+      const wide = fs.statSync(target, { bigint: true });
+      // Odd and above 2^53, so the nearest double is a DIFFERENT number — the
+      // case a JSON number cannot carry and a decimal string can.
+      wide.ino = 9288674232255541n;
+      expect(Number.isSafeInteger(Number(wide.ino))).toBe(false);
+      expect(String(Number(wide.ino))).not.toBe('9288674232255541');
+      expect(toFileInfo(wide).ino).toBe('9288674232255541');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  /**
+   * The device id is the other half of one identity — Win32 defines a file by
+   * its id together with the volume serial number, and `fs-extra`'s own
+   * same-file check requires both — so it travels in the same form.
+   */
+  it('carries the device id the same way, since identity is the pair', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-identity-dev-'));
+    try {
+      const target = path.join(dir, 'approved.txt');
+      fs.writeFileSync(target, 'approved');
+      const wide = fs.statSync(target, { bigint: true });
+      wide.dev = 9288674232255541n;
+      expect(toFileInfo(wide).dev).toBe('9288674232255541');
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });

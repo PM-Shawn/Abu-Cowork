@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `46`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `47`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
@@ -17,6 +17,15 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "name": "capability_snapshot",
     "paramNames": [],
     "requiredParams": [],
+  },
+  {
+    "name": "check_open_document",
+    "paramNames": [
+      "path",
+    ],
+    "requiredParams": [
+      "path",
+    ],
   },
   {
     "name": "clipboard_read",
@@ -52,12 +61,17 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "expected_state_id",
       "height",
       "key",
+      "method",
       "modifiers",
+      "path",
+      "screenshot_id",
       "show_user",
       "startX",
       "startY",
+      "target_selector",
       "text",
       "width",
+      "window_ref",
       "x",
       "y",
     ],

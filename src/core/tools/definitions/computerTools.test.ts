@@ -1,18 +1,29 @@
 /**
  * Regression tests for the computer tool's permission-check platform branch.
  *
- * Bug: on Windows, a non-elevated process gets accessibility=false from
- * check_macos_permissions, and the tool fell through to the macOS-only
- * error path — telling the user "已自动打开系统设置，请在「辅助功能」中授权"
- * while `open "x-apple.systempreferences:..."` silently failed. The user
- * waits for a dialog that can never appear.
+ * Windows has no macOS-style Accessibility consent switch. The Electron host
+ * reports normal desktop control as available and concrete higher-integrity
+ * targets are rejected by the native action guard.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { getI18n } from '@/i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { isWindows, isMacOS } from '../../../utils/platform';
-import { closeAxSession, computerTool } from './computerTools';
+import {
+  closeAxSession,
+  computerTool,
+  formatComputerVerification,
+  selectAxElementsForModel,
+  handoffText,
+  parseDragPath,
+} from './computerTools';
+import enUS from '../../../i18n/locales/en-US';
+import zhCN from '../../../i18n/locales/zh-CN';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
+import { computerUseController } from '../../agent/computerUseController';
+import { recoveryBudget, runBudgetKey } from '@/core/computer-use/recoveryBudget';
+import { computerObservationContexts } from '../../computer-use/observationContext';
 import {
   drainCapabilitySetupRequests,
   getPendingCapabilitySetup,
@@ -23,6 +34,68 @@ import {
   getRendererRuntimeTraceSnapshot,
 } from '../../observability/runtimeTrace';
 
+describe('computerTool WindowRef-first contract', () => {
+  it('documents WindowRef-first targeting and explicit whole-screen separation', () => {
+    expect(computerTool.inputSchema.properties).toMatchObject({
+      window_ref: { type: 'string' },
+      target_selector: { enum: ['foreground-at-submit'] },
+      screenshot_id: { type: 'string' },
+    });
+    expect(computerTool.inputSchema.properties.action.description).toContain('list_windows');
+    expect(computerTool.inputSchema.properties.action.description).toContain('get_window_state');
+    expect(computerTool.inputSchema.properties.action.description).toContain('get_screen_state');
+    expect(computerTool.description).toContain('Every write must carry window_ref');
+    expect(computerTool.description).toContain('Never fall back to the whole screen');
+  });
+
+  it('describes AX bounds as screen coordinates and action coordinates as screenshot-relative', () => {
+    expect(computerTool.description).toContain('AX element bounds are screen coordinates');
+    expect(computerTool.description).toContain('x/y action coordinates are relative to the referenced screenshot');
+  });
+
+  // JSON Schema cannot express a discriminated union here, so the fields are
+  // listed flat and the model has to infer which go with which type. Measured
+  // in real runs, it infers wrong — an element-disappears with no element_id,
+  // an element-value carrying attribute instead of equals — so the pairing is
+  // spelled out in the description instead.
+  it('documents which fields each effect type takes', () => {
+    const description = computerTool.inputSchema.properties.expected_effect.description;
+    expect(description).toContain('element-appears needs role or label');
+    expect(description).toContain('element-value needs element_id and equals');
+    expect(description).toContain('element-disappears needs element_id');
+    expect(description).toContain('frontmost-app needs bundle_id');
+  });
+
+  it('renders changed-without-expectation without claiming the target was achieved', () => {
+    const verification = {
+      status: 'verified-change' as const,
+      beforeStateId: 'before',
+      afterStateId: 'after',
+      reason: 'state-changed' as const,
+      observation: 'changed' as const,
+      expectation: 'not-requested' as const,
+    };
+
+    expect(formatComputerVerification(verification, zhCN.toolResult.computer))
+      .toContain('已观察到界面变化，尚未确认目标达成');
+    expect(formatComputerVerification(verification, enUS.toolResult.computer))
+      .toContain('A UI change was observed; target completion is not confirmed');
+  });
+
+  it('renders a legacy verification without separated evidence as weak evidence', () => {
+    const text = formatComputerVerification({
+      status: 'verified-change',
+      beforeStateId: 'before',
+      afterStateId: 'after',
+      reason: 'state-changed',
+    }, enUS.toolResult.computer);
+
+    expect(text).toContain('Legacy verification evidence is incomplete');
+    expect(text).toContain('target completion is not confirmed');
+    expect(text).not.toContain('verified change');
+  });
+});
+
 vi.mock('../../../utils/platform', () => ({
   initPlatform: vi.fn(),
   isWindows: vi.fn(() => false),
@@ -30,6 +103,70 @@ vi.mock('../../../utils/platform', () => ({
   getPlatform: vi.fn(() => 'macos'),
   getShell: vi.fn(() => 'zsh/bash'),
 }));
+
+describe('selectAxElementsForModel', () => {
+  it('keeps focused, editable, and document content visible past ribbon truncation', () => {
+    const ribbon = Array.from({ length: 130 }, (_, id) => ({
+      id,
+      role: 'Button',
+      label: `Ribbon ${id}`,
+      value: null,
+      bounds: [0, 0, 20, 20] as [number, number, number, number],
+      actions: ['Invoke'],
+      depth: 2,
+    }));
+    const document = {
+      id: 130,
+      role: 'Document',
+      label: 'Page 1',
+      value: null,
+      bounds: [100, 200, 900, 700] as [number, number, number, number],
+      actions: [],
+      depth: 3,
+      focused: true,
+    };
+    const editable = {
+      id: 131,
+      role: 'TextField',
+      label: 'Formula bar',
+      value: null,
+      bounds: [100, 100, 500, 30] as [number, number, number, number],
+      actions: ['SetValue'],
+      depth: 3,
+    };
+
+    const selected = selectAxElementsForModel([...ribbon, document, editable], 120);
+
+    expect(selected).toHaveLength(120);
+    expect(selected.slice(0, 2).map((element) => element.id)).toEqual([130, 131]);
+    expect(selected.some((element) => element.id === 129)).toBe(false);
+  });
+
+  it('keeps focus-only custom document surfaces visible past ribbon truncation', () => {
+    const ribbon = Array.from({ length: 130 }, (_, id) => ({
+      id,
+      role: 'Button',
+      label: `Ribbon ${id}`,
+      value: null,
+      bounds: [0, 0, 20, 20] as [number, number, number, number],
+      actions: ['Invoke'],
+      depth: 2,
+    }));
+    const workspace = {
+      id: 130,
+      role: 'Pane',
+      label: 'Workspace',
+      value: null,
+      bounds: [0, 180, 1_200, 700] as [number, number, number, number],
+      actions: ['Focus'],
+      depth: 3,
+    };
+
+    const selected = selectAxElementsForModel([...ribbon, workspace], 120);
+
+    expect(selected[0]).toBe(workspace);
+  });
+});
 
 function mockPermissions(perms: { screen_recording: boolean; accessibility: boolean }) {
   vi.mocked(invoke).mockImplementation((cmd: string) => {
@@ -74,6 +211,162 @@ describe('computerTool — accessibility permission branch', () => {
   afterEach(async () => {
     await closeAxSession();
     setElectronHost(false);
+  });
+
+  it.each(['click', 'move', 'scroll', 'drag'])('rejects Windows %s with missing/stale screenshot ID before Host or state consumption', async (action) => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    const key = { conversationId: 'strict-coordinate', loopId: `strict-${action}` };
+    computerUseController.recordObservation(key, {
+      stateId: 'state-coordinate', target: { windowRef: 'wr-coordinate', appName: 'Editor', bundleId: 'editor.exe', processId: 42 },
+      axSessionId: 'ax-coordinate', elements: [], capabilityTier: 'full',
+    });
+    computerObservationContexts.record(key, { windowRef: 'wr-coordinate', stateId: 'state-coordinate',
+      screenshotId: 'shot-coordinate', scaleFactor: 1, origin: { x: 0, y: 0 } });
+    for (const screenshot_id of [undefined, null, '', 42, 'shot-other']) {
+      const result = await computerTool.execute({ action, x: 10, y: 20, startX: 10, startY: 20, endX: 30, endY: 40,
+        window_ref: 'wr-coordinate', expected_state_id: 'state-coordinate', screenshot_id, consequence: 'none' },
+      { ...key, toolCallId: 'coordinate', interactionMode: 'foreground', supportsVision: true });
+      expect(String(result)).toContain('screenshot_id');
+      expect(invoke).not.toHaveBeenCalled();
+    }
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') return Promise.resolve({ accessibility: true, screen_recording: true });
+      if (cmd === 'computer_use_begin_session') return Promise.resolve({ status: 'authorized', token: 'coordinate-token',
+        target: { window_ref: 'wr-coordinate', app_name: 'Editor', bundle_id: 'editor.exe', process_id: 42, relation: 'root' },
+        classification: 'ordinary', expires_at: 61000 });
+      if (cmd === 'ax_snapshot') return Promise.resolve({ session_id: 'ax-coordinate-next', state_id: 'state-coordinate-next',
+        app: 'Editor', total_visited: 0, truncated: false, elements: [] });
+      if (cmd.startsWith('capture_screen')) return Promise.resolve({ base64: 'iVBORw0KGgo=', width: 100, height: 100,
+        scale_factor: 1, origin_x: 0, origin_y: 0, screenshot_id: 'shot-coordinate-next' });
+      return Promise.resolve('ok');
+    });
+    await computerTool.execute({ action, x: 10, y: 20, startX: 10, startY: 20, endX: 30, endY: 40,
+      direction: 'down', window_ref: 'wr-coordinate', expected_state_id: 'state-coordinate',
+      screenshot_id: 'shot-coordinate', consequence: 'none' },
+    { ...key, toolCallId: 'valid-coordinate', interactionMode: 'foreground', supportsVision: true });
+    // Correcting only the image reference must still execute against the
+    // unconsumed observation, through the same token-bound native boundary.
+    expect(vi.mocked(invoke).mock.calls).toContainEqual([`mouse_${action}`,
+      expect.objectContaining({ screenshotId: 'shot-coordinate', __abuComputerUseToken: 'coordinate-token' })]);
+  });
+
+  it('lists visible windows as opaque candidates without opening an action session', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'computer_use_list_windows') {
+        return Promise.resolve({
+          status: 'candidates',
+          candidates: [
+            { window_ref: 'wr-word-a', app_name: 'Word', title: 'Document A', relation: 'root' },
+            { window_ref: 'wr-word-b', app_name: 'Word', title: 'Document B', relation: 'root' },
+          ],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const result = await computerTool.execute(
+      { action: 'list_windows', app: 'Word', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-list-windows',
+        toolCallId: 'tool-list-windows',
+        interactionMode: 'foreground',
+      },
+    );
+
+    expect(String(result)).toContain('window_ref: wr-word-a');
+    expect(String(result)).toContain('window_ref: wr-word-b');
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'computer_use_list_windows')).toBe(true);
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'computer_use_begin_session')).toBe(false);
+  });
+
+describe('launch_app', () => {
+    const launchContext = {
+      conversationId: 'active-conversation',
+      loopId: 'loop-launch',
+      toolCallId: 'tool-launch',
+      interactionMode: 'foreground' as const,
+    };
+
+    function mockLaunch(response: unknown) {
+      setElectronHost(true);
+      vi.mocked(isWindows).mockReturnValue(true);
+      vi.mocked(isMacOS).mockReturnValue(false);
+      vi.mocked(invoke).mockImplementation((cmd: string) => (
+        cmd === 'computer_use_launch_app'
+          ? Promise.resolve(response)
+          : Promise.resolve(null)
+      ));
+    }
+
+    it('launches by name through the host and hands back the window to observe', async () => {
+      mockLaunch({
+        status: 'launched',
+        launched: true,
+        candidates: [{ window_ref: 'wr-notepad', app_name: 'Notepad', relation: 'root' }],
+      });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: '记事本', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toContain('window_ref: wr-notepad');
+      expect(result).toMatch(/Launched "记事本"/);
+      expect(vi.mocked(invoke).mock.calls).toContainEqual(['computer_use_launch_app',
+        expect.objectContaining({ app: '记事本', toolCallId: 'tool-launch', interactionMode: 'foreground' })]);
+      // Launching is authorized by the host command itself, not by opening an
+      // action session against a window that does not exist yet.
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'computer_use_begin_session')).toBe(false);
+    });
+
+    it('says it brought a running app forward rather than opening a second copy', async () => {
+      mockLaunch({
+        status: 'launched',
+        launched: false,
+        candidates: [{ window_ref: 'wr-qq', app_name: 'QQ', relation: 'root' }],
+      });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: 'QQ', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toMatch(/already running/);
+      expect(result).toContain('window_ref: wr-qq');
+    });
+
+    it('tells the model the app is not installed and not to go around it', async () => {
+      mockLaunch({
+        status: 'target-error',
+        error: { code: 'target-not-found', recoverable: true, next_action: 'select-target' },
+      });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: 'nope', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toMatch(/No installed application named "nope"/);
+      expect(result).toMatch(/do not launch it through run_command/);
+    });
+
+    it('treats a window that has not appeared yet as wait-and-look, not a failure', async () => {
+      mockLaunch({ status: 'launched', launched: true, candidates: [] });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: 'WINWORD', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toMatch(/has not appeared yet/);
+      expect(result).toMatch(/do not launch it again/);
+    });
   });
 
   it('suspends the same tool call until the user explicitly completes setup', async () => {
@@ -128,7 +421,7 @@ describe('computerTool — accessibility permission branch', () => {
       computerUseRequirements: { screenRead: false, uiControl: true },
     });
     resolveCapabilitySetup(request!.id, false);
-    await expect(resultPromise).resolves.toContain('Computer Use');
+    await expect(resultPromise).resolves.toMatch(/Computer Use|电脑操控/);
     expect(invoke).not.toHaveBeenCalled();
   });
 
@@ -159,7 +452,7 @@ describe('computerTool — accessibility permission branch', () => {
       computerUseRequirements: { screenRead: true, uiControl: true },
     });
     resolveCapabilitySetup(request!.id, false);
-    await expect(resultPromise).resolves.toContain('Computer Use');
+    await expect(resultPromise).resolves.toMatch(/Computer Use|电脑操控/);
     expect(invoke).not.toHaveBeenCalled();
   });
 
@@ -180,7 +473,7 @@ describe('computerTool — accessibility permission branch', () => {
       computerUseEnabled: false,
       systemSettingsOpen: false,
     });
-    await expect(resultPromise).resolves.toContain('Computer Use');
+    await expect(resultPromise).resolves.toMatch(/Computer Use|电脑操控/);
     expect(getPendingCapabilitySetup()).toBeNull();
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -265,7 +558,7 @@ describe('computerTool — accessibility permission branch', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it('Windows without elevation: returns a Windows-appropriate error, no macOS Settings call', async () => {
+  it('Windows backend failure never recommends elevation or opens macOS Settings', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);
     mockPermissions({ screen_recording: true, accessibility: false });
@@ -278,7 +571,9 @@ describe('computerTool — accessibility permission branch', () => {
 
     expect(typeof result).toBe('string');
     const text = result as string;
-    expect(text.toLowerCase()).toContain('administrator');
+    expect(text).toContain('Windows Computer Use');
+    expect(text.toLowerCase()).not.toContain('administrator');
+    expect(text.toLowerCase()).not.toContain('elevation');
     // Must NOT claim a macOS Settings panel was opened
     expect(text).not.toContain('Accessibility');
     expect(text).not.toContain('System Settings');
@@ -297,7 +592,7 @@ describe('computerTool — accessibility permission branch', () => {
       consequence: 'none',
     }, undefined);
 
-    expect(result as string).toContain('Accessibility');
+    expect(result as string).toMatch(/Accessibility|辅助功能/);
     expect(shellCommands().some((c) => c.includes('x-apple.systempreferences'))).toBe(true);
   });
 
@@ -309,11 +604,14 @@ describe('computerTool — accessibility permission branch', () => {
       }
       if (cmd === 'computer_use_begin_session') {
         return Promise.resolve({
+          status: 'authorized',
           token: 'task-owned-token',
           target: {
+            window_ref: 'wr-finder-task',
             app_name: 'Finder',
             bundle_id: 'com.apple.finder',
             process_id: 1,
+            relation: 'root',
           },
           classification: 'ordinary',
           expires_at: 1_700_000_060_000, // filler (TESTING.md §3), matches sibling literals below
@@ -359,7 +657,560 @@ describe('computerTool — accessibility permission branch', () => {
     });
   });
 
-  it('uses the native frontmost-app identity probe in Electron without Apple Events', async () => {
+  it.each([
+    { type: 'element-appears' },
+    { type: 'element-appears', role: '' },
+    { type: 'element-appears', label: '   ' },
+    { type: 'element-appears', role: '\t', label: '' },
+  ])('rejects an empty element-appears matcher before native dispatch: %j', async (expected_effect) => {
+    const result = await computerTool.execute({
+      action: 'activate_app',
+      app: 'Notes',
+      consequence: 'none',
+      expected_effect,
+    }, {
+      conversationId: 'invalid-element-appears',
+      loopId: 'invalid-element-appears-loop',
+      toolCallId: 'invalid-element-appears-tool',
+      interactionMode: 'foreground',
+    });
+
+    expect(String(result)).toContain('expected_effect');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('reuses the observed app grant for a later screenshot in the same run', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    const beginRequests: Array<Record<string, unknown>> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'Word', bundle_id: 'winword.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        beginRequests.push(args as Record<string, unknown>);
+        return Promise.resolve({
+          status: 'authorized',
+          token: `token-${beginRequests.length}`,
+          target: { window_ref: 'wr-word-reuse', app_name: 'Word', bundle_id: 'winword.exe', process_id: 42, relation: 'root' },
+          classification: 'approval-required',
+          expires_at: 20_000,
+        });
+      }
+      if (cmd === 'activate_app') return Promise.resolve('Word');
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-word-reuse',
+          state_id: 'state-word-reuse',
+          app: 'Word',
+          total_visited: 1,
+          truncated: false,
+          elements: [],
+          input_epoch: 1,
+          window_id: 'hwnd:0x42',
+          accessibility_revision: 1,
+        });
+      }
+      if (cmd === 'get_abu_window_id') return Promise.resolve(0);
+      if (cmd === 'capture_screen_excluding') {
+        return Promise.resolve({
+          base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+          width: 1,
+          height: 1,
+          scale_factor: 1,
+          origin_x: 0,
+          origin_y: 0,
+          screenshot_id: 'shot-word-reuse',
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const context = {
+      conversationId: 'active-conversation',
+      loopId: 'loop-grant-reuse',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+
+    await computerTool.execute(
+      { action: 'get_app_state', app: 'Word', consequence: 'none' },
+      { ...context, toolCallId: 'tool-observe-word' },
+    );
+    await computerTool.execute(
+      { action: 'screenshot', consequence: 'none', show_user: false },
+      { ...context, toolCallId: 'tool-screenshot-word', supportsVision: true },
+    );
+
+    expect(beginRequests).toHaveLength(2);
+    expect(beginRequests[1]).toMatchObject({
+      scope: 'ui-control',
+      targetApp: 'Word',
+      actionIntent: { action: 'screenshot', category: 'none' },
+    });
+  });
+
+  it('keeps a recovery screenshot target-bound when observation failed after naming an app', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    const beginRequests: Array<Record<string, unknown>> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity') {
+        return Promise.resolve({ app_name: 'Editor', bundle_id: 'editor.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        beginRequests.push(args as Record<string, unknown>);
+        return Promise.resolve({
+          status: 'authorized',
+          token: `token-${beginRequests.length}`,
+          target: { window_ref: 'wr-editor-recovery', app_name: 'Editor', bundle_id: 'editor.exe', process_id: 42, relation: 'root' },
+          classification: 'approval-required',
+          expires_at: 20_000,
+        });
+      }
+      if (cmd === 'activate_app') return Promise.resolve('Editor');
+      if (cmd === 'ax_snapshot') return Promise.reject(new Error('temporary observation failure'));
+      if (cmd === 'get_abu_window_id') return Promise.resolve(0);
+      if (cmd === 'capture_screen_excluding') {
+        return Promise.resolve({
+          base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+          width: 1,
+          height: 1,
+          scale_factor: 1,
+          origin_x: 0,
+          origin_y: 0,
+          screenshot_id: 'shot-editor-recovery',
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const context = {
+      conversationId: 'target-recovery-conversation',
+      loopId: 'target-recovery-loop',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+
+    const observation = await computerTool.execute(
+      { action: 'get_app_state', app: 'Editor', consequence: 'none' },
+      { ...context, toolCallId: 'observe-editor' },
+    );
+    await computerTool.execute(
+      { action: 'screenshot', app: 'Editor', consequence: 'none', show_user: false },
+      { ...context, toolCallId: 'screenshot-editor', supportsVision: true },
+    );
+
+    expect(beginRequests).toHaveLength(2);
+    expect(beginRequests[1]).toMatchObject({
+      scope: 'ui-control',
+      targetApp: 'Editor',
+    });
+    expect(String(observation)).toMatch(/^Error:/);
+  });
+
+  it.each(['named-app', 'window-ref'])('observes after activation and uses guarded Windows text replacement (%s)', async (selection) => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity') {
+        return Promise.resolve({ app_name: 'Editor', bundle_id: 'editor.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: `token-${snapshotCount}`,
+          target: { window_ref: 'wr-editor-visible', app_name: 'Editor', bundle_id: 'editor.exe', process_id: 42, relation: 'root' },
+          classification: 'approval-required',
+          expires_at: 20_000,
+        });
+      }
+      if (cmd === 'activate_app') return Promise.resolve('Editor');
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `ax-editor-${snapshotCount}`,
+          state_id: `state-editor-${snapshotCount}`,
+          app: 'Editor',
+          total_visited: 1,
+          truncated: false,
+          input_epoch: 1,
+          window_id: 'hwnd:0x42',
+          accessibility_revision: snapshotCount,
+          elements: [{
+            id: 7,
+            role: 'Document',
+            label: 'Document',
+            value: snapshotCount === 1 ? 'old' : 'new',
+            bounds: [10, 20, 100, 30],
+            actions: ['SetValue', 'Focus'],
+            depth: 2,
+            focused: true,
+          }],
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const context = {
+      conversationId: 'windows-visible-text-conversation',
+      loopId: 'windows-visible-text-loop',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_window_state', ...(selection === 'named-app' ? { app: 'Editor' } : { window_ref: 'wr-editor-visible' }), consequence: 'none' },
+      { ...context, toolCallId: 'observe-editor' },
+    );
+    const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
+    expect(commands.indexOf('activate_app')).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf('activate_app')).toBeLessThan(commands.indexOf('ax_snapshot'));
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+
+    await computerTool.execute({
+      action: 'type',
+      element_id: 7,
+      text: 'new',
+      window_ref: 'wr-editor-visible',
+      expected_state_id: stateId,
+      expected_effect: { type: 'element-value', element_id: 7, equals: 'new' },
+      consequence: 'none',
+    }, { ...context, toolCallId: 'type-editor' });
+
+    expect(vi.mocked(invoke).mock.calls).toContainEqual([
+      'ax_replace_text',
+      expect.objectContaining({ sessionId: 'ax-editor-1', elementId: 7, text: 'new' }),
+    ]);
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'ax_set_value')).toBe(false);
+  });
+
+  it('carries the helper note about the clipboard into the result', async () => {
+    // Multi-line text goes in through the clipboard, and the helper cannot
+    // always put back what was there. The localized success line is written
+    // for the ordinary case, so without this the only place the user would
+    // be told their clipboard changed is dropped on the floor.
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-clipboard-note' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'clipboard-note-token',
+          target: {
+            window_ref: 'wr-clipboard-note',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-clipboard-note',
+          state_id: 'state-clipboard-note',
+          app: 'notepad',
+          total_visited: 1,
+          truncated: false,
+          elements: [{
+            id: 3,
+            role: 'AXTextArea',
+            label: 'Body',
+            value: '',
+            actions: ['AXSetValue'],
+            bounds: [0, 0, 100, 40],
+            depth: 1,
+          }],
+        });
+      }
+      if (cmd === 'ax_replace_text') {
+        return Promise.resolve(
+          'pasted 7 UTF-16 units via clipboard (the clipboard had held content its source'
+          + ' marked as not to be recorded, such as a password; it was cleared rather than'
+          + ' put back unmarked)',
+        );
+      }
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', app: 'notepad', consequence: 'none' },
+      { ...context, toolCallId: 'observe-clipboard-note' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    const result = await computerTool.execute({
+      action: 'type',
+      element_id: 3,
+      text: 'a\nb',
+      window_ref: 'wr-clipboard-note',
+      expected_state_id: stateId,
+      consequence: 'none',
+    }, { ...context, toolCallId: 'type-clipboard-note' });
+
+    expect(String(result)).toMatch(/not to be recorded/);
+  });
+
+  it('warns instead of inviting retries when Office reports that editing is disabled', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'POWERPNT', bundle_id: 'powerpnt.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'token-unlicensed-office',
+          target: { window_ref: 'wr-powerpoint', app_name: 'POWERPNT', bundle_id: 'powerpnt.exe', process_id: 42, relation: 'root' },
+          classification: 'approval-required',
+          expires_at: 20_000,
+        });
+      }
+      if (cmd === 'activate_app') return Promise.resolve('POWERPNT');
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-unlicensed-office',
+          app: 'POWERPNT',
+          total_visited: 2,
+          truncated: false,
+          elements: [{
+            id: 0,
+            role: 'Window',
+            label: 'Presentation1 - PowerPoint (Unlicensed Product)',
+            value: null,
+            bounds: [0, 0, 1280, 720],
+            actions: ['Focus'],
+            depth: 0,
+          }],
+          input_epoch: 1,
+          window_id: 'hwnd:0x42',
+          accessibility_revision: 1,
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const result = await computerTool.execute(
+      { action: 'get_app_state', app: 'POWERPNT', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-unlicensed-office',
+        toolCallId: 'tool-unlicensed-office',
+        interactionMode: 'foreground',
+        supportsVision: false,
+      },
+    );
+
+    expect(String(result)).toMatch(/Unlicensed Product|未经授权产品/);
+    expect(String(result)).toMatch(/Do not keep clicking|不要继续点击/);
+  });
+
+  it('reports a missing named window as target-unavailable and never falls back to Abu', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    const beginRequests: Array<Record<string, unknown>> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity') {
+        return Promise.resolve({
+          app_name: 'electron',
+          bundle_id: 'F:\\Abu\\Abu-Cowork\\node_modules\\electron\\dist\\electron.exe',
+          process_id: 10224,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        beginRequests.push(args as Record<string, unknown>);
+        return Promise.reject(new Error("app 'Word' has no visible window"));
+      }
+      return Promise.resolve(null);
+    });
+    const context = {
+      conversationId: 'active-conversation',
+      loopId: 'loop-missing-word',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata: vi.fn(),
+    };
+
+    const first = await computerTool.execute(
+      { action: 'get_app_state', app: 'Word', consequence: 'none' },
+      { ...context, toolCallId: 'tool-missing-word-1' },
+    );
+    const second = await computerTool.execute(
+      { action: 'get_app_state', app: 'Word', consequence: 'none' },
+      { ...context, toolCallId: 'tool-missing-word-2' },
+    );
+
+    expect(String(first)).toContain('Word');
+    expect(String(first)).not.toMatch(/授权未通过|authorization was not granted/i);
+    expect(String(second)).toContain('Word');
+    expect(beginRequests).toHaveLength(2);
+    expect(beginRequests[0]).toMatchObject({ targetApp: 'Word' });
+    expect(beginRequests[1]).toMatchObject({ targetApp: 'Word' });
+    // Two recovery reports; the step reports (computerStep) ride the same
+    // channel and are counted separately.
+    expect(vi.mocked(context.reportMetadata).mock.calls.filter(([m]) => m.requiresUserRecovery)).toHaveLength(2);
+    expect(context.reportMetadata).toHaveBeenCalledWith({
+      requiresUserRecovery: 'computer-target-unavailable',
+    });
+  });
+
+  it('sends WindowRef-first selectors and preserves structured target errors for the tool executor', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    let beginRequest: Record<string, unknown> | undefined;
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'Word', bundle_id: 'winword.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        beginRequest = args as Record<string, unknown>;
+        return Promise.resolve({
+          status: 'target-error',
+          error: {
+            code: 'target-ambiguous',
+            recoverable: true,
+            next_action: 'select-target',
+            candidates: [
+              { window_ref: 'wr-document-a', app_name: 'Word', title: 'A', relation: 'root' },
+              { window_ref: 'wr-document-b', app_name: 'Word', title: 'B', relation: 'root' },
+            ],
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const execution = computerTool.execute({
+      action: 'get_app_state',
+      app: 'Word',
+      window_ref: 'wr-model-selected',
+      target_selector: 'foreground-at-submit',
+      consequence: 'none',
+    }, {
+      conversationId: 'active-conversation',
+      loopId: 'loop-window-ref',
+      toolCallId: 'tool-window-ref',
+      interactionMode: 'foreground',
+      supportsVision: false,
+    });
+
+    const result = await execution;
+    expect(result).toEqual(expect.stringContaining('wr-document-a'));
+    expect(result).toEqual(expect.stringContaining('wr-document-b'));
+    expect(beginRequest).toMatchObject({
+      windowRef: 'wr-model-selected',
+      targetApp: 'Word',
+      targetSelector: 'foreground-at-submit',
+    });
+  });
+
+  // Regression: the renderer used to probe the foreground app here and
+  // discard the answer on the Electron path, while a failed probe still
+  // refused the action. On 2026-09-14 a foreground window that was merely
+  // invisible made the probe throw and nine consecutive actions aimed at a
+  // different, live window were refused over 30 seconds. The Host Gate is the
+  // authoritative classifier, so an unusable answer must not fail the call.
+  it('acts on a live target while the foreground window is unavailable', async () => {
+    setElectronHost(true);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: false, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity') {
+        return Promise.reject(new Error('window is not visible'));
+      }
+      if (cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'Finder',
+          bundle_id: 'com.apple.finder',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'task-owned-token',
+          target: {
+            window_ref: 'wr-finder-native',
+            app_name: 'Finder',
+            bundle_id: 'com.apple.finder',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-finder',
+          app: 'Finder',
+          total_visited: 1,
+          truncated: false,
+          elements: [],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const result = await computerTool.execute(
+      { action: 'get_app_state', app: 'Finder', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-dead-foreground',
+        toolCallId: 'tool-dead-foreground',
+        interactionMode: 'foreground',
+        supportsVision: false,
+      },
+    );
+
+    expect(String(result)).not.toContain('window is not visible');
+    expect(String(result)).toContain('window_ref: wr-finder-native');
+  });
+
+  it('classifies the Electron target through the Host Gate, not Apple Events', async () => {
     setElectronHost(true);
     vi.mocked(invoke).mockImplementation((cmd: string) => {
       if (cmd === 'check_macos_permissions') {
@@ -374,11 +1225,14 @@ describe('computerTool — accessibility permission branch', () => {
       }
       if (cmd === 'computer_use_begin_session') {
         return Promise.resolve({
+          status: 'authorized',
           token: 'task-owned-token',
           target: {
+            window_ref: 'wr-finder-native',
             app_name: 'Finder',
             bundle_id: 'com.apple.finder',
             process_id: 42,
+            relation: 'root',
           },
           classification: 'ordinary',
           expires_at: 61_000,
@@ -408,7 +1262,10 @@ describe('computerTool — accessibility permission branch', () => {
     );
 
     const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
-    expect(commands).toContain('frontmost_app_identity');
+    // The Host Gate classifies the target it actually resolves. The renderer
+    // asks for no foreground identity of its own — neither the Electron probe
+    // nor the legacy Tauri one.
+    expect(commands).not.toContain('frontmost_app_identity');
     expect(commands).not.toContain('get_active_window');
   });
 
@@ -433,11 +1290,14 @@ describe('computerTool — accessibility permission branch', () => {
       }
       if (cmd === 'computer_use_begin_session') {
         return Promise.resolve({
+          status: 'authorized',
           token: 'structured-no-app-token',
           target: {
+            window_ref: 'wr-finder-structured',
             app_name: 'Finder',
             bundle_id: 'com.apple.finder',
             process_id: 42,
+            relation: 'root',
           },
           classification: 'ordinary',
           expires_at: 61_000,
@@ -494,11 +1354,14 @@ describe('computerTool — accessibility permission branch', () => {
       }
       if (cmd === 'computer_use_begin_session') {
         return Promise.resolve({
+          status: 'authorized',
           token: 'structured-whitespace-app-token',
           target: {
+            window_ref: 'wr-finder-whitespace',
             app_name: 'Finder',
             bundle_id: 'com.apple.finder',
             process_id: 42,
+            relation: 'root',
           },
           classification: 'ordinary',
           expires_at: 61_000,
@@ -535,7 +1398,1079 @@ describe('computerTool — accessibility permission branch', () => {
     expect(commands).not.toContain('activate_app');
   });
 
-  it('keeps the Windows foreground-process probe instead of calling macOS-only identity APIs', async () => {
+  it('returns a structured manual handoff without recording a writable security state', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'Word', bundle_id: 'word.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'manual-handoff-token',
+          target: {
+            window_ref: 'wr-word-manual',
+            app_name: 'Word',
+            bundle_id: 'word.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          app: 'Word',
+          elements: [],
+          modal: true,
+          related_windows: [],
+          protocol_error: {
+            code: 'manual-handoff-required',
+            recoverable: true,
+            next_action: 'wait-for-user',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const context = {
+      conversationId: 'manual-handoff-conversation',
+      loopId: 'manual-handoff-loop',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+
+    const observed = await computerTool.execute(
+      { action: 'get_window_state', window_ref: 'wr-word-manual', consequence: 'none' },
+      { ...context, toolCallId: 'manual-handoff-observe' },
+    );
+    const write = await computerTool.execute(
+      {
+        action: 'key',
+        key: 'Escape',
+        window_ref: 'wr-word-manual',
+        expected_state_id: 'not-a-state',
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'manual-handoff-write' },
+    );
+
+    expect(String(observed)).toMatch(/manual handoff|人工接管/i);
+    expect(String(write)).toMatch(/state_id/i);
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'keyboard_press')).toBe(false);
+  });
+
+  it('returns manual handoff and no next_state when verification reaches a security surface', async () => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    let snapshotCount = 0;
+    let keyCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'Word', bundle_id: 'word.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized', token: `manual-after-token-${snapshotCount}`,
+          target: { window_ref: 'wr-word-after-manual', app_name: 'Word', bundle_id: 'word.exe', process_id: 42, relation: 'root' },
+          classification: 'ordinary', expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        if (snapshotCount === 1) {
+          return Promise.resolve({
+            session_id: 'ax-before-manual', state_id: 'state-before-manual', app: 'Word',
+            total_visited: 0, truncated: false, elements: [],
+          });
+        }
+        return Promise.resolve({
+          app: 'Word', elements: [], modal: true, related_windows: [],
+          protocol_error: { code: 'manual-handoff-required', recoverable: true, next_action: 'wait-for-user' },
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        keyCount += 1;
+        return Promise.resolve('pressed');
+      }
+      return Promise.resolve(null);
+    });
+    const context = {
+      conversationId: 'manual-after-conversation',
+      loopId: 'manual-after-loop',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_window_state', window_ref: 'wr-word-after-manual', consequence: 'none' },
+      { ...context, toolCallId: 'manual-after-observe' },
+    );
+    const stateId = String(observed).match(/state_id:\s*(\S+)/)?.[1];
+
+    const result = await computerTool.execute(
+      {
+        action: 'key', key: 'ArrowRight', window_ref: 'wr-word-after-manual',
+        expected_state_id: stateId, consequence: 'none',
+      },
+      { ...context, toolCallId: 'manual-after-write' },
+    );
+
+    expect(String(result)).toMatch(/manual handoff|人工接管/i);
+    expect(String(result)).not.toContain('next_state:');
+    expect(keyCount).toBe(1);
+  });
+
+  it('uses native Windows identity, UIA observation, and one-shot state for input', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-task-token',
+          target: {
+            window_ref: 'wr-notepad-task',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-ax-${snapshotCount}`,
+          state_id: `windows-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          related_windows: snapshotCount === 1 ? [{
+            window_ref: 'wr-notepad-dialog',
+            app_name: 'notepad',
+            relation: 'modal',
+          }] : [],
+          elements: snapshotCount === 1 ? [] : [{
+            id: 9,
+            role: 'Document',
+            label: 'Editor',
+            value: 'after key',
+            bounds: [0, 0, 100, 100],
+            actions: ['Focus'],
+            depth: 1,
+          }],
+        });
+      }
+      if (cmd === 'keyboard_press') return Promise.resolve('pressed');
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      conversationId: 'active-conversation',
+      loopId: 'loop-windows-identity',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', target_selector: 'foreground-at-submit', consequence: 'none' },
+      { ...context, toolCallId: 'tool-windows-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    expect(stateId).toBe('windows-state-1');
+    expect(String(observed)).toContain('window_ref=wr-notepad-dialog');
+
+    const missingWindowRef = await computerTool.execute(
+      { action: 'key', key: 'ArrowRight', expected_state_id: stateId, consequence: 'none' },
+      { ...context, toolCallId: 'tool-windows-missing-ref' },
+    );
+    expect(String(missingWindowRef)).toMatch(/window_ref|目标窗口/i);
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'keyboard_press')).toBe(false);
+
+    const actionResult = await computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-task',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-windows-identity' },
+    );
+
+    const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
+    const beginRequests = vi.mocked(invoke).mock.calls
+      .filter(([cmd]) => cmd === 'computer_use_begin_session')
+      .map(([, args]) => args as Record<string, unknown>);
+    expect(beginRequests[0]).toMatchObject({
+      windowRef: null,
+      targetSelector: 'foreground-at-submit',
+    });
+    expect(beginRequests[1]).toMatchObject({
+      windowRef: 'wr-notepad-task',
+      targetApp: 'notepad',
+    });
+    expect(commands).toContain('keyboard_press');
+    expect(commands).not.toContain('frontmost_app_identity');
+    expect(commands).not.toContain('get_active_window');
+    expect(commands).toContain('ax_snapshot');
+    expect(String(actionResult)).toContain('next_state:');
+    expect(String(actionResult)).toContain('window_ref: wr-notepad-task');
+    expect(String(actionResult)).toContain('state_id: windows-state-2');
+    expect(String(actionResult)).toContain('[9] Document');
+  });
+
+  it('does not replay a Windows action whose native outcome is unknown', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    let snapshotCount = 0;
+    let keyCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-unknown-token',
+          target: {
+            window_ref: 'wr-notepad-unknown',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-unknown-ax-${snapshotCount}`,
+          state_id: `windows-unknown-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        keyCount += 1;
+        return Promise.reject(new Error("Computer Use outcome is unknown after 'keyboard_press'"));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: {
+            status: 'outcome-unknown',
+            command: 'keyboard_press',
+            before_state_id: 'windows-unknown-state-1',
+            attempt_count: 1,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      conversationId: 'active-conversation',
+      loopId: 'loop-windows-unknown',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-windows-unknown-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+
+    const result = await computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-unknown',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-windows-unknown-action' },
+    );
+
+    expect(String(result)).toMatch(/outcome is unknown|结果.*不确定/i);
+    expect(keyCount).toBe(1);
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'computer_use_get_task_status')).toBe(true);
+  });
+
+  it('re-observes once after a Windows action the helper refused before dispatch, then hands off', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-refused' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    let keyCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-refused-token',
+          target: {
+            window_ref: 'wr-notepad-refused',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-refused-ax-${snapshotCount}`,
+          state_id: `windows-refused-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        keyCount += 1;
+        return Promise.reject(new Error('frontmost target changed; observe again'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'target-changed',
+            retryable: true,
+            command: 'keyboard_press',
+            before_state_id: `windows-refused-state-${snapshotCount}`,
+            attempt_count: keyCount,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observeStateId = async (toolCallId: string) => {
+      const observed = await computerTool.execute(
+        { action: 'get_app_state', consequence: 'none' },
+        { ...context, toolCallId },
+      );
+      return String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    };
+    const press = (toolCallId: string, stateId: string | undefined) => computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-refused',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId },
+    );
+
+    // First refusal: nothing reached the app, so the model is told to observe
+    // again — not that the outcome is uncertain, and not to hand off.
+    const first = await press('tool-refused-1', await observeStateId('tool-refused-observe-1'));
+    expect(String(first)).toMatch(/not executed|没有执行/i);
+    expect(String(first)).not.toMatch(/outcome is unknown|结果.*不确定/i);
+    expect(reportMetadata).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requiresUserRecovery: expect.anything() }),
+    );
+    expect(keyCount).toBe(1);
+    // The tool re-observed on the model's behalf: the fresh state is part of
+    // the same result, so the model's next call can already be an action.
+    expect(String(first)).toContain('windows-refused-state-2');
+    expect(snapshotCount).toBe(2);
+
+    // Same refusal again with no verified progress in between: the per-event
+    // budget is spent, so the run hands off to the user instead of looping.
+    const second = await press('tool-refused-2', await observeStateId('tool-refused-observe-2'));
+    expect(String(second)).toMatch(/recovery budget|自动恢复次数/i);
+    expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-target-unavailable' });
+    expect(keyCount).toBe(2);
+  });
+
+  it('sends type with method=paste to the Windows helper as a clipboard paste', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-paste' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    const typed: Array<Record<string, unknown>> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-paste-token',
+          target: {
+            window_ref: 'wr-notepad-paste',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-paste-ax-${snapshotCount}`,
+          state_id: `windows-paste-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_type') {
+        typed.push((args ?? {}) as Record<string, unknown>);
+        return Promise.resolve('pasted 5 UTF-16 units via clipboard');
+      }
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata: vi.fn(),
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-paste-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    const result = await computerTool.execute(
+      {
+        action: 'type',
+        text: 'hello',
+        method: 'paste',
+        window_ref: 'wr-notepad-paste',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-paste-type' },
+    );
+    // The helper owns the clipboard round-trip; the renderer only names the
+    // method. Typed text never appears in the tool's own summary.
+    expect(typed).toHaveLength(1);
+    expect(typed[0]).toMatchObject({ text: 'hello', method: 'paste' });
+    expect(String(result)).toMatch(/clipboard paste/);
+    expect(String(result)).not.toMatch(/Error:/);
+  });
+
+  it('hands the turn back as a pause when the user takes over mid-action', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-takeover' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-takeover-token',
+          target: {
+            window_ref: 'wr-notepad-takeover',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-takeover-ax-${snapshotCount}`,
+          state_id: `windows-takeover-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        // The Host revoked the task and stopped the helper mid-dispatch.
+        return Promise.reject(new Error('native helper exited during dispatch'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: false,
+          stopped: true,
+          stopped_reason: 'user-input-detected',
+          outcome_unknown_receipt: null,
+          not_executed_receipt: null,
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-takeover-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    const result = await computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-takeover',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-takeover-press' },
+    );
+    // A pause, not a stop and not an error the model should work around:
+    // resumable copy, the turn handed back, nothing re-observed on its own.
+    expect(String(result)).toMatch(/Paused|已暂停/);
+    expect(String(result)).toMatch(/continue|继续/);
+    expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-user-takeover' });
+    expect(snapshotCount).toBe(1);
+    // The run report card learns how the step ended through the same channel.
+    expect(reportMetadata).toHaveBeenCalledWith(expect.objectContaining({
+      computerStep: expect.objectContaining({ action: 'key', consequence: 'none', outcome: 'paused' }),
+    }));
+    const observeStep = vi.mocked(reportMetadata).mock.calls
+      .map(([m]) => m.computerStep)
+      .find((s) => s?.action === 'get_app_state');
+    expect(observeStep).toMatchObject({ outcome: 'observed' });
+  });
+
+  it('hands the turn back with boundary copy when the helper refuses at a platform boundary', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-boundary' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-boundary-token',
+          target: {
+            window_ref: 'wr-windows-boundary',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-boundary-ax-${snapshotCount}`,
+          state_id: `windows-boundary-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        return Promise.reject(new Error('target has higher Windows integrity; input is blocked by UIPI'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'higher-integrity',
+            retryable: false,
+            command: 'keyboard_press',
+            before_state_id: `windows-boundary-state-${snapshotCount}`,
+            attempt_count: 1,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-windows-boundary-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    expect(stateId).toBe('windows-boundary-state-1');
+    const press = computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-windows-boundary',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-windows-boundary-press' },
+    );
+
+    // Non-retryable and a known boundary: no observation is taken on the
+    // model's behalf, no recovery is spent, and the copy tells the user what
+    // to do about an elevated window.
+    const result = await press;
+    expect(String(result)).toMatch(/administrator|管理员/);
+    expect(String(result)).toContain('blocked by UIPI');
+    expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-platform-boundary' });
+    expect(snapshotCount).toBe(1);
+    expect(reportMetadata).toHaveBeenCalledWith(expect.objectContaining({
+      computerStep: expect.objectContaining({ action: 'key', outcome: 'boundary', detail: 'higher-integrity' }),
+    }));
+  });
+
+  it('returns a non-retryable refusal that is the model\'s to fix without spending recovery', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-model-error' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-model-error-token',
+          target: {
+            window_ref: 'wr-windows-model-error',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-model-error-ax-${snapshotCount}`,
+          state_id: `windows-model-error-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        return Promise.reject(new Error('target keyboard layout cannot resolve requested key'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'key-unavailable',
+            retryable: false,
+            command: 'keyboard_press',
+            before_state_id: `windows-model-error-state-${snapshotCount}`,
+            attempt_count: 1,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-windows-model-error-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    expect(stateId).toBe('windows-model-error-state-1');
+    const press = computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-windows-model-error',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-windows-model-error-press' },
+    );
+
+    // Not a boundary: the error goes back to the model as-is (it should use
+    // `type`), with no re-observation and no hand-off.
+    await expect(press).rejects.toThrow(/cannot resolve requested key/);
+    expect(snapshotCount).toBe(1);
+    expect(reportMetadata).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requiresUserRecovery: expect.anything() }),
+    );
+  });
+
+  it('does not stop the rest of the turn after a refusal that never reached the app', async () => {
+    // A consequential action was refused before anything was dispatched. The
+    // Host receipt says so, so there is no ambiguous side effect to stop over
+    // and the next action must still be allowed to run. Until this was fixed
+    // the refusal fell through to the `finally`, which assessed it as an
+    // ambiguous outcome and stopped the run; every later action in the turn
+    // came back "stopped by the host safety controller", and the model went
+    // around Computer Use entirely to finish the task.
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-refusal-not-terminal' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    let typeAttempts = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'refusal-not-terminal-token',
+          target: {
+            window_ref: 'wr-refusal-not-terminal',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `refusal-not-terminal-ax-${snapshotCount}`,
+          state_id: `refusal-not-terminal-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_type') {
+        typeAttempts += 1;
+        return typeAttempts === 1
+          ? Promise.reject(new Error('the model asked for a key this layout cannot produce'))
+          : Promise.resolve('typed 4 UTF-16 units');
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: typeAttempts === 1
+            ? {
+              status: 'not-executed',
+              execution: 'not-executed',
+              helper_code: 'key-unavailable',
+              retryable: false,
+              command: 'keyboard_type',
+              before_state_id: `refusal-not-terminal-state-${snapshotCount}`,
+              attempt_count: 1,
+              consequential: true,
+              decision: 'observe-required',
+            }
+            : null,
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observe = async (call: string): Promise<string> => {
+      const observed = await computerTool.execute(
+        { action: 'get_app_state', consequence: 'none' },
+        { ...context, toolCallId: call },
+      );
+      const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+      expect(stateId).toBeTruthy();
+      return String(stateId);
+    };
+
+    const refused = computerTool.execute(
+      {
+        action: 'type',
+        text: 'one',
+        window_ref: 'wr-refusal-not-terminal',
+        expected_state_id: await observe('tool-refusal-observe-1'),
+        consequence: 'overwrite',
+        consequence_detail: 'replaces the note body with "one"',
+      },
+      { ...context, toolCallId: 'tool-refusal-type-1' },
+    );
+    await expect(refused).rejects.toThrow(/this layout cannot produce/);
+
+    // The turn is still usable: observe again, act again, and the action runs.
+    const second = await computerTool.execute(
+      {
+        action: 'type',
+        text: 'two',
+        window_ref: 'wr-refusal-not-terminal',
+        expected_state_id: await observe('tool-refusal-observe-2'),
+        consequence: 'overwrite',
+        consequence_detail: 'replaces the note body with "two"',
+      },
+      { ...context, toolCallId: 'tool-refusal-type-2' },
+    );
+    expect(String(second)).not.toMatch(/stopped/i);
+    expect(typeAttempts).toBe(2);
+  });
+
+  it('ignores a not-executed receipt written against a different state_id', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-stale-receipt' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-stale-token',
+          target: {
+            window_ref: 'wr-notepad-stale',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-stale-ax-${snapshotCount}`,
+          state_id: `windows-stale-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        return Promise.reject(new Error('Computer Use run is stopped (stop-no-progress)'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        // A leftover receipt from an earlier action in the same run.
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'target-changed',
+            retryable: true,
+            command: 'keyboard_press',
+            before_state_id: 'windows-stale-state-0',
+            attempt_count: 1,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-stale-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    expect(stateId).toBe('windows-stale-state-1');
+
+    // The receipt is not this action's verdict, so the error stands as-is:
+    // no recovery spent, no observation taken on the model's behalf.
+    await expect(computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-stale',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-stale-press' },
+    )).rejects.toThrow(/run is stopped/);
+    expect(snapshotCount).toBe(1);
+    expect(reportMetadata).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requiresUserRecovery: expect.anything() }),
+    );
+  });
+
+  it('shows the model one line of the driver declaration in every observation', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);
     setElectronHost(true);
@@ -543,45 +2478,70 @@ describe('computerTool — accessibility permission branch', () => {
       if (cmd === 'check_macos_permissions') {
         return Promise.resolve({ screen_recording: true, accessibility: true });
       }
-      if (cmd === 'get_active_window') {
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
         return Promise.resolve({
           app_name: 'notepad',
-          bundle_id: 'notepad.exe',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
           process_id: 42,
         });
       }
       if (cmd === 'computer_use_begin_session') {
         return Promise.resolve({
-          token: 'windows-task-token',
+          status: 'authorized',
+          token: 'windows-driver-token',
           target: {
+            window_ref: 'wr-notepad-driver',
             app_name: 'notepad',
-            bundle_id: 'notepad.exe',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
             process_id: 42,
+            relation: 'root',
           },
           classification: 'ordinary',
           expires_at: 61_000,
+          driver: {
+            id: 'windows-uia',
+            declared: true,
+            input: {
+              foreground_required: true,
+              background_element_actions: false,
+              unicode_text: true,
+              chords: true,
+              ime_aware: false,
+              physical_input_monitoring: true,
+            },
+            capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true },
+            elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke'] },
+            boundaries: ['secure-desktop'],
+            activation: { can_activate_window: true },
+          },
         });
       }
-      if (cmd === 'mouse_move') return Promise.resolve('moved');
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'windows-driver-ax-1',
+          state_id: 'windows-driver-state-1',
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
       return Promise.resolve(null);
     });
 
-    await computerTool.execute(
-      { action: 'move', x: 10, y: 20, consequence: 'none' },
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
       {
         conversationId: 'active-conversation',
-        loopId: 'loop-windows-identity',
-        toolCallId: 'tool-windows-identity',
-        interactionMode: 'foreground',
-        supportsVision: true,
+        loopId: 'loop-windows-driver',
+        interactionMode: 'foreground' as const,
+        supportsVision: false,
+        toolCallId: 'tool-windows-driver',
       },
     );
-
-    const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
-    expect(commands).toContain('get_active_window');
-    expect(commands).toContain('mouse_move');
-    expect(commands).not.toContain('frontmost_app_identity');
-    expect(commands).not.toContain('ax_snapshot');
+    expect(String(observed)).toContain(
+      'driver: windows-uia; input=foreground-only; element-identity=stable; ime=unknown; occluded-capture=no',
+    );
   });
 
   it('stops before native input when the task aborts during UI settling', async () => {
@@ -599,11 +2559,14 @@ describe('computerTool — accessibility permission branch', () => {
       }
       if (cmd === 'computer_use_begin_session') {
         return Promise.resolve({
+          status: 'authorized',
           token: 'task-owned-token',
           target: {
+            window_ref: 'wr-notes-abort',
             app_name: 'Notes',
             bundle_id: 'com.apple.Notes',
             process_id: 1,
+            relation: 'root',
           },
           classification: 'ordinary',
           expires_at: 1_700_000_060_000, // filler (TESTING.md §3), matches sibling literals below
@@ -641,7 +2604,7 @@ describe('computerTool — accessibility permission branch', () => {
         supportsVision: false,
       },
     );
-    const stateId = String(observed).match(/state_id: ([^ ]+)/)?.[1];
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
     expect(stateId).toBeTruthy();
 
     await expect(computerTool.execute(
@@ -649,6 +2612,7 @@ describe('computerTool — accessibility permission branch', () => {
         action: 'click',
         x: 10,
         y: 10,
+        window_ref: 'wr-notes-abort',
         expected_state_id: stateId,
         consequence: 'none',
       },
@@ -682,11 +2646,14 @@ describe('computerTool — accessibility permission branch', () => {
       }
       if (cmd === 'computer_use_begin_session') {
         return Promise.resolve({
+          status: 'authorized',
           token: `token-${snapshotCount}`,
           target: {
+            window_ref: 'wr-notes-state',
             app_name: 'Notes',
             bundle_id: 'com.apple.Notes',
             process_id: 7,
+            relation: 'root',
           },
           classification: 'ordinary',
           expires_at: 61_000,
@@ -696,6 +2663,7 @@ describe('computerTool — accessibility permission branch', () => {
         snapshotCount += 1;
         return Promise.resolve({
           session_id: `ax-${snapshotCount}`,
+          state_id: `state-${snapshotCount}`,
           app: 'Notes',
           total_visited: 1,
           truncated: false,
@@ -723,19 +2691,20 @@ describe('computerTool — accessibility permission branch', () => {
       { action: 'get_app_state', app: 'Notes', consequence: 'none' },
       { ...context, toolCallId: 'observe' },
     );
-    const stateId = String(observed).match(/state_id: ([^ ]+)/)?.[1];
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
     expect(stateId).toBeTruthy();
 
     const action = await computerTool.execute({
       action: 'type',
       element_id: 1,
       text: 'Shawn',
+      window_ref: 'wr-notes-state',
       expected_state_id: stateId,
       expected_effect: { type: 'element-value', element_id: 1, equals: 'Shawn' },
       consequence: 'none',
     }, { ...context, toolCallId: 'type' });
 
-    expect(action).toContain('Automatic verification: verified change');
+    expect(action).toContain('state-2');
     expect(vi.mocked(invoke).mock.calls).toContainEqual([
       'ax_set_value',
       expect.objectContaining({ sessionId: 'ax-1', elementId: 1 }),
@@ -745,12 +2714,88 @@ describe('computerTool — accessibility permission branch', () => {
       action: 'type',
       element_id: 1,
       text: 'Shawn',
+      window_ref: 'wr-notes-state',
       expected_state_id: stateId,
       consequence: 'none',
     }, { ...context, toolCallId: 'type-again' });
 
-    expect(staleRetry).toContain('state_id is stale');
+    expect(staleRetry).toContain('state_id');
     expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'ax_set_value')).toHaveLength(1);
+  });
+
+  it('hands off immediately when an explicit expected effect is not satisfied', async () => {
+    setElectronHost(true);
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'Notes', bundle_id: 'com.apple.Notes', process_id: 7 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: `token-mismatch-${snapshotCount}`,
+          target: {
+            window_ref: 'wr-notes-mismatch',
+            app_name: 'Notes',
+            bundle_id: 'com.apple.Notes',
+            process_id: 7,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `ax-mismatch-${snapshotCount}`,
+          state_id: `state-mismatch-${snapshotCount}`,
+          app: 'Notes',
+          total_visited: 1,
+          truncated: false,
+          elements: [{
+            id: 1,
+            role: 'AXTextField',
+            label: 'Draft',
+            value: '',
+            bounds: [10, 20, 100, 30],
+            actions: ['AXSetValue'],
+            depth: 2,
+          }],
+        });
+      }
+      return Promise.resolve('ok');
+    });
+    const reportMetadata = vi.fn();
+    const context = {
+      conversationId: 'expectation-mismatch-conversation',
+      loopId: 'expectation-mismatch-loop',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+
+    const observed = await computerTool.execute(
+      { action: 'get_window_state', window_ref: 'wr-notes-mismatch', consequence: 'none' },
+      { ...context, toolCallId: 'observe-mismatch' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    const action = await computerTool.execute({
+      action: 'key',
+      key: 'Escape',
+      window_ref: 'wr-notes-mismatch',
+      expected_state_id: stateId,
+      expected_effect: { type: 'element-appears', role: 'AXDialog', label: 'Sent' },
+      consequence: 'none',
+    }, { ...context, toolCallId: 'key-mismatch' });
+
+    expect(String(action)).toMatch(/expected effect was not satisfied|明确预期未满足/i);
+    expect(reportMetadata).toHaveBeenCalledWith({
+      requiresUserRecovery: 'computer-verification-mismatch',
+    });
   });
 
   it('keeps Host Gate tokens isolated across overlapping runs', async () => {
@@ -771,11 +2816,14 @@ describe('computerTool — accessibility permission branch', () => {
         const app = args?.targetApp as string;
         return new Promise((resolve) => {
           beginResolvers.push(() => resolve({
+            status: 'authorized',
             token: `token-${app}`,
             target: {
+              window_ref: `wr-${app.toLowerCase()}`,
               app_name: app,
               bundle_id: `test.${app.toLowerCase()}`,
               process_id: app === 'Notes' ? 11 : 22,
+              relation: 'root',
             },
             classification: 'ordinary',
             expires_at: 61_000,
@@ -841,5 +2889,241 @@ describe('computerTool — accessibility permission branch', () => {
       .map(([, args]) => (args as Record<string, unknown>).__abuComputerUseToken)
       .sort();
     expect(endedTokens).toEqual(['token-Notes', 'token-TextEdit']);
+  });
+
+  it('keeps screenshot transforms and guards isolated across two task contexts', async () => {
+    setElectronHost(false);
+    vi.mocked(isWindows).mockReturnValue(false);
+    vi.mocked(isMacOS).mockReturnValue(true);
+    let captureCount = 0;
+    let moveArgs: Record<string, unknown> | undefined;
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'get_overlay_window_id') return Promise.resolve(1);
+      if (cmd === 'capture_screen_excluding') {
+        captureCount += 1;
+        return Promise.resolve(captureCount === 1
+          ? {
+              base64: 'iVBORw0KGgo=', width: 100, height: 100,
+              scale_factor: 2, origin_x: 100, origin_y: 50, screenshot_id: 'shot-a',
+            }
+          : {
+              base64: 'iVBORw0KGgo=', width: 100, height: 100,
+              scale_factor: 1, origin_x: 0, origin_y: 0, screenshot_id: 'shot-b',
+            });
+      }
+      if (cmd === 'mouse_move') {
+        moveArgs = args as Record<string, unknown>;
+        return Promise.resolve('moved');
+      }
+      return Promise.resolve(null);
+    });
+    const contextA = {
+      conversationId: 'screenshot-conversation-a', loopId: 'screenshot-loop-a',
+      interactionMode: 'foreground' as const, supportsVision: true,
+    };
+    const contextB = {
+      conversationId: 'screenshot-conversation-b', loopId: 'screenshot-loop-b',
+      interactionMode: 'foreground' as const, supportsVision: true,
+    };
+
+    await computerTool.execute(
+      { action: 'screenshot', consequence: 'none', show_user: false },
+      { ...contextA, toolCallId: 'screenshot-a' },
+    );
+    await computerTool.execute(
+      { action: 'screenshot', consequence: 'none', show_user: false },
+      { ...contextB, toolCallId: 'screenshot-b' },
+    );
+    await computerTool.execute(
+      { action: 'move', x: 10, y: 20, consequence: 'none' },
+      { ...contextA, toolCallId: 'move-a' },
+    );
+
+    expect(moveArgs).toMatchObject({ x: 120, y: 90, screenshotId: 'shot-a' });
+  });
+});
+
+/// Both shapes below are verbatim from real runs. "expected_effect has
+/// invalid fields" told the model nothing about what to change, so the action
+/// was refused for good — once while sending a QQ message, once while typing
+/// into Notepad.
+describe('a malformed expected_effect says what the type needs', () => {
+  // Earlier tests in this file leave calls on the shared mock; what matters
+  // here is that a rejected shape dispatches nothing of its own.
+  beforeEach(() => {
+    vi.mocked(invoke).mockClear();
+  });
+
+  const run = (expected_effect: unknown) => computerTool.execute({
+    action: 'activate_app',
+    app: 'Notes',
+    consequence: 'none',
+    expected_effect,
+  }, {
+    conversationId: 'effect-shape',
+    loopId: 'effect-shape-loop',
+    toolCallId: 'effect-shape-tool',
+    interactionMode: 'foreground',
+  });
+
+  it('names the missing field for element-disappears', async () => {
+    const result = String(await run({ type: 'element-disappears' }));
+    expect(result).toContain('element-disappears');
+    expect(result).toContain('element_id');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('names the missing field for element-value', async () => {
+    const result = String(await run({ type: 'element-value', element_id: 2, attribute: 'value' }));
+    expect(result).toContain('element-value');
+    expect(result).toContain('equals');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('lists the types when the type itself is not one of them', async () => {
+    const result = String(await run({ type: 'window-closes', element_id: 2 }));
+    expect(result).toContain('element-value');
+    expect(result).toContain('frontmost-app');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a well-formed effect', async () => {
+    const result = String(await run({ type: 'element-disappears', element_id: 2 }));
+    expect(result).not.toContain('expected_effect');
+  });
+});
+
+/// Measured three times across three conversations, each on a
+/// `get_window_state` whose only problem was a reference from an earlier
+/// observation: the model was handed
+/// `Computer Use protocol failure: {"code":"window-ref-invalid",…}`, which
+/// reads as a broken tool rather than as an answer — while the translated
+/// text has said "call list_windows again and pick from what it returns" all
+/// along. Same shape as the `list_windows` defect fixed on 2026-09-15.
+describe('a stale reference is answered, not thrown', () => {
+  beforeEach(() => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+  });
+
+  const failWith = (code: string) => {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'Notepad', bundle_id: 'notepad.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'target-error',
+          error: { code, recoverable: true, next_action: 'select-target' },
+        });
+      }
+      return Promise.resolve(null);
+    });
+    return computerTool.execute({
+      action: 'get_window_state',
+      window_ref: 'wr-from-an-earlier-observation',
+      consequence: 'none',
+    }, {
+      conversationId: 'stale-ref',
+      loopId: 'stale-ref-loop',
+      toolCallId: 'stale-ref-tool',
+      interactionMode: 'foreground',
+      supportsVision: false,
+    });
+  };
+
+  it.each(['window-ref-invalid', 'window-ref-expired'])('explains %s', async (code) => {
+    const result = String(await failWith(code));
+    expect(result).not.toContain('protocol failure');
+    expect(result).not.toContain('"recoverable"');
+    expect(result).toMatch(/list_windows/);
+  });
+
+  // A missing target is a different thing: it is a user precondition, and
+  // throwing is how the turn stops rather than wandering to another app.
+  it('still throws for a target that is not there', async () => {
+    await expect(failWith('target-not-found')).rejects.toThrow();
+  });
+});
+
+/// Drawing is what needs a path: a curve made of twenty separate drags costs
+/// twenty observations and twenty authorizations for one gesture a person
+/// performs without lifting a finger. Every write consumes the observation it
+/// was authorized against, so the way to do more is a bigger action.
+describe('parseDragPath', () => {
+  it('keeps the points in the order they were given', () => {
+    expect(parseDragPath([[10, 20], [30, 40]])).toEqual([[10, 20], [30, 40]]);
+  });
+
+  it('treats a missing path as a plain single-segment drag', () => {
+    expect(parseDragPath(undefined)).toEqual([]);
+    expect(parseDragPath(null)).toEqual([]);
+    expect(parseDragPath([])).toEqual([]);
+  });
+
+  it('rounds to whole pixels', () => {
+    expect(parseDragPath([[10.4, 20.6]])).toEqual([[10, 21]]);
+  });
+
+  // A drag that quietly loses its middle draws a straight line across
+  // somebody's canvas, so a malformed path is refused rather than dropped.
+  it('refuses a path it cannot read', () => {
+    for (const malformed of [
+      '10,20',
+      [[10]],
+      [[10, 20, 30]],
+      [['10', '20']],
+      [null],
+      [[Number.NaN, 2]],
+      [[1, Number.POSITIVE_INFINITY]],
+    ]) {
+      expect(() => parseDragPath(malformed), JSON.stringify(malformed)).toThrow(/\[x, y\]/);
+    }
+  });
+
+  it('refuses a path longer than the helper will follow', () => {
+    const tooMany = Array.from({ length: 65 }, (_, index) => [index, index]);
+    expect(() => parseDragPath(tooMany)).toThrow(/at most 64/);
+  });
+});
+
+
+/// Measured six times across two conversations in the sweep since
+/// 2026-09-15: the retries were spent because the user had a hand on the
+/// mouse, and the hand-off then told them to bring the target window forward,
+/// close whatever covers it, or unlock the desktop — none of which was the
+/// problem. The helper has always said which cause it was.
+describe('handoffText', () => {
+  const t = getI18n().toolResult.computer;
+
+  it('says you were using the machine when that is why the retries ran out', () => {
+    const text = handoffText('physical-input', 'physical user input occurred', t);
+    expect(text).toMatch(/鼠标|mouse/);
+    expect(text).not.toMatch(/切到前台|bring the target window to the front/);
+  });
+
+  it('keeps the window advice for a reason that really is about the window', () => {
+    const text = handoffText('window-occluded', 'window is covered', t);
+    expect(text).toMatch(/切到前台|bring the target window to the front/);
+    expect(text).toContain('window is covered');
+  });
+
+  it('falls back to the generic advice when the helper named no cause', () => {
+    expect(handoffText(undefined, 'something failed', t)).toContain('something failed');
+  });
+
+  // Both messages have to keep telling the model not to reach for the shell:
+  // a hand-off is exactly the moment it starts looking for another way in.
+  it('refuses the shell in either message', () => {
+    for (const code of ['physical-input', 'window-occluded']) {
+      expect(handoffText(code, 'x', t)).toMatch(/shell/);
+    }
   });
 });

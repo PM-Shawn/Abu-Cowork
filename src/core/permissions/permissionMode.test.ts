@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   decideComputerUseApp,
   getPermissionStrategy,
+  isPermissionMode,
+  PERMISSION_MODES,
   type PermissionMode,
 } from './permissionMode';
 import type { ConfirmationInfo } from '../tools/registry';
@@ -102,6 +104,14 @@ describe('permissionMode', () => {
     it('other tools auto-proceed', () => {
       expect(s.decideOtherTool()).toBe('allow');
     });
+  });
+
+  it('names the closed set and recognises only its members', () => {
+    expect([...PERMISSION_MODES]).toEqual(['standard', 'smart', 'autonomous']);
+    for (const mode of PERMISSION_MODES) expect(isPermissionMode(mode)).toBe(true);
+    for (const value of ['strict', 'default', 'auto', 'AUTONOMOUS', '', null, undefined, 1, {}, ['autonomous']]) {
+      expect(isPermissionMode(value)).toBe(false);
+    }
   });
 
   describe('getPermissionStrategy', () => {

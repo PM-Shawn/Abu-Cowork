@@ -1,25 +1,16 @@
 // src/components/settings/sections/EnterpriseSection.tsx
-import { useState } from 'react'
 import { useI18n } from '@/i18n'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { MountPoint } from '@/core/enterprise/mounts'
-import { getEnterpriseMount } from '@/core/enterprise/mounts-registry'
 import { Button } from '@/components/ui/button'
-import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow'
+import EnterpriseConnectionSlot from '@/components/enterprise/EnterpriseConnectionSlot'
 // Side-effect import: registers BrandSlot in the enterprise mounts registry.
 import '@/components/enterprise/BrandSlot'
-// The /me transparency page and migration wizard are registered by the
-// enterprise-modules entry point (real impls in the enterprise build, no-op in
-// OSS). Read below via getEnterpriseMount() — NullComponent fallback in OSS, so
-// this file never imports enterprise UI directly.
 
 export default function EnterpriseSection() {
   const { t } = useI18n()
   const mode = useEnterpriseStore(s => s.mode)
   const unbind = useEnterpriseStore(s => s.unbind)
-  const [showBind, setShowBind] = useState(false)
-  const [showMe, setShowMe] = useState(false)
-  const [showMigration, setShowMigration] = useState(false)
 
   if (mode.kind === 'personal') {
     return (
@@ -30,28 +21,13 @@ export default function EnterpriseSection() {
             {t.enterprise.description}
           </p>
         </div>
-        <section className="space-y-3 rounded-xl border border-[var(--abu-border)] p-4">
-          <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{t.enterprise.bindSectionTitle}</h3>
-          <p className="text-minor text-[var(--abu-text-tertiary)]">
-            {t.enterprise.bindSectionDesc}
-          </p>
-          <Button size="sm" onClick={() => setShowBind(true)}>{t.enterprise.bindButton}</Button>
-        </section>
-        {showBind && (
-          <BindToEnterpriseFlow
-            onDone={() => setShowBind(false)}
-            onCancel={() => setShowBind(false)}
-          />
-        )}
+        <EnterpriseConnectionSlot />
       </div>
     )
   }
 
   const binding = mode.kind === 'enterprise' || mode.kind === 'offline' ? mode.binding : null
   const config = mode.kind === 'enterprise' ? mode.config : mode.kind === 'offline' ? mode.lastConfig : null
-
-  const MeView = getEnterpriseMount('meTransparencyPage')
-  const MigrationWizard = getEnterpriseMount('migrationWizard')
 
   return (
     <div className="space-y-4">
@@ -91,32 +67,6 @@ export default function EnterpriseSection() {
         </dl>
       </section>
 
-      {/* /me transparency panel */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{t.enterprise.myDataTitle}</h3>
-          <Button variant="ghost" size="sm" onClick={() => setShowMe(v => !v)}>
-            {showMe ? t.enterprise.collapseData : t.enterprise.viewMyData}
-          </Button>
-        </div>
-        {showMe && binding && (
-          <MeView binding={binding} config={config} />
-        )}
-      </section>
-
-      {/* Personal-to-enterprise migration */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{t.enterprise.migrationTitle}</h3>
-          <Button variant="ghost" size="sm" onClick={() => setShowMigration(true)}>
-            {t.enterprise.migrateButton}
-          </Button>
-        </div>
-        <p className="text-minor text-[var(--abu-text-tertiary)]">
-          {t.enterprise.migrateDescription}
-        </p>
-      </section>
-
       <Button
         variant="destructive"
         size="sm"
@@ -128,8 +78,6 @@ export default function EnterpriseSection() {
       >
         {t.enterprise.unbindButton}
       </Button>
-
-      {showMigration && <MigrationWizard onClose={() => setShowMigration(false)} />}
     </div>
   )
 }

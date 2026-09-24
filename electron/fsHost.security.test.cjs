@@ -12,6 +12,23 @@ const { fsWatchDispatch, cleanupFsWatchesForSender } = require('./fsWatchHost.cj
 
 const app = {};
 
+function canCreateSymlinks() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-fs-symlink-probe-'));
+  try {
+    const target = path.join(dir, 'target.txt');
+    fs.writeFileSync(target, 'probe');
+    fs.symlinkSync(target, path.join(dir, 'link.txt'), 'file');
+    return true;
+  } catch (error) {
+    if (error?.code === 'EPERM') return false;
+    throw error;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const SYMLINKS_AVAILABLE = canCreateSymlinks();
+
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-fs-security-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -120,7 +137,9 @@ test(
   }
 );
 
-test('symlinks whose canonical target remains in an allowed root keep working', (t) => {
+test('symlinks whose canonical target remains in an allowed root keep working', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const targetDir = tempDir(t);
   const target = path.join(targetDir, 'allowed.txt');
@@ -196,6 +215,29 @@ test('path-policy canonicalization rejects malformed renderer paths', () => {
   assert.throws(() => canonicalizeForPathPolicy('x'.repeat(33 * 1024)), /too long/);
 });
 
+test('path-policy canonicalization rejects relative paths instead of resolving them against the main-process cwd', { skip: process.platform === 'win32' }, (t) => {
+  const previousCwd = process.cwd();
+  // after hook 按注册顺序执行：先恢复 cwd，再删除临时目录
+  t.after(() => process.chdir(previousCwd));
+  const dir = tempDir(t);
+  process.chdir(dir);
+  fs.writeFileSync(path.join(dir, 'inside.txt'), 'inside');
+
+  for (const relativePath of ['inside.txt', './inside.txt', 'nested/missing.txt', '../escape.txt', '\\inside.txt']) {
+    for (const followFinalSymlink of [true, false]) {
+      assert.throws(
+        () => canonicalizeForPathPolicy(relativePath, followFinalSymlink),
+        (error) => error instanceof Error && error.message === 'fs: path must be an absolute path'
+      );
+    }
+  }
+
+  assert.equal(
+    canonicalizeForPathPolicy(path.join(dir, 'inside.txt')),
+    path.join(fs.realpathSync.native(dir), 'inside.txt')
+  );
+});
+
 test('remove deletes an escaping symlink entry without following its target', { skip: process.platform === 'win32' }, (t) => {
   const dir = tempDir(t);
   const link = path.join(dir, 'outside-link');
@@ -208,7 +250,9 @@ test('remove deletes an escaping symlink entry without following its target', { 
   assert.equal(fs.existsSync('/etc'), true);
 });
 
-test('writes use the canonical operation path through an allowed symlink parent', (t) => {
+test('writes use the canonical operation path through an allowed symlink parent', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const targetDir = tempDir(t);
   const linkDir = path.join(dir, 'linked-parent');
@@ -387,7 +431,9 @@ test(
   }
 );
 
-test('atomic writes retry an exclusive random tempfile collision without following its symlink', (t) => {
+test('atomic writes retry an exclusive random tempfile collision without following its symlink', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const target = path.join(dir, 'settings.json');
   const sentinel = path.join(dir, 'outside-sentinel.txt');
@@ -421,7 +467,9 @@ test('atomic writes retry an exclusive random tempfile collision without followi
   assert.equal(fs.lstatSync(planted).isSymbolicLink(), true);
 });
 
-test('EXDEV restore replaces a target symlink without writing through it', (t) => {
+test('EXDEV restore replaces a target symlink without writing through it', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const backup = path.join(dir, '.settings.json.backup.test');
   const target = path.join(dir, 'settings.json');
@@ -463,7 +511,9 @@ test('EXDEV restore replaces a target symlink without writing through it', (t) =
   assert.equal(fs.existsSync(backup), false);
 });
 
-test('restore rejects a symlink source instead of copying through it', (t) => {
+test('restore rejects a symlink source instead of copying through it', {
+  skip: !SYMLINKS_AVAILABLE,
+}, (t) => {
   const dir = tempDir(t);
   const source = path.join(dir, 'source.txt');
   const backupLink = path.join(dir, '.settings.json.backup.link');

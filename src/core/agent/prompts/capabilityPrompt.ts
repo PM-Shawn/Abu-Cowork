@@ -3,7 +3,7 @@
  * `entryOrchestration.ts` (P1-3B-3A item 1) can import it directly without
  * creating a static agentLoop.ts <-> entryOrchestration.ts cycle (agentLoop.ts
  * only ever reaches entryOrchestration.ts via a DYNAMIC `import()` inside its
- * in-process fallback branch — see entryOrchestration.ts's module doc — but
+ * in-process branch — see entryOrchestration.ts's module doc — but
  * entryOrchestration.ts itself needs this function to derive the same
  * capability-prompt string the loop injects into `buildSystemPromptSections`,
  * and a STATIC import back into agentLoop.ts would reintroduce exactly the

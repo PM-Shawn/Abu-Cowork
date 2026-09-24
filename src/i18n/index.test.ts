@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   detectSystemLocale,
   getResolvedLocale,
@@ -21,6 +21,30 @@ describe('i18n', () => {
     it('returns a supported locale', () => {
       const locale = detectSystemLocale();
       expect(['zh-CN', 'en-US']).toContain(locale);
+    });
+
+    it('resolves to en-US under the test harness, whatever the host OS locale is', () => {
+      // src/test/setup.ts pins navigator.language, so `'system'` means en-US in
+      // every worker — the answer happy-dom and CI's runners give. Without the
+      // pin, every suite asserting English tool-result copy fails on a zh-CN
+      // machine (95 tests across 18 files, measured 2026-09-12). If this test
+      // fails on your machine, the pin was removed or bypassed — do not fix it
+      // by adding `initLanguage('en-US')` to the suites that broke.
+      expect(navigator.language).toBe('en-US');
+      expect(detectSystemLocale()).toBe('en-US');
+      expect(getResolvedLocale('system')).toBe('en-US');
+    });
+
+    it('still detects a Chinese host when a suite overrides the pin', () => {
+      // The pin is `configurable`: a suite that wants the OS-locale code path
+      // stubs navigator itself, and the harness default is back once it unstubs.
+      vi.stubGlobal('navigator', { language: 'zh-TW' });
+      try {
+        expect(detectSystemLocale()).toBe('zh-CN');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(detectSystemLocale()).toBe('en-US');
     });
   });
 
@@ -148,5 +172,31 @@ describe('i18n', () => {
     it('handles numeric values', () => {
       expect(format('Total: {total}', { total: 42 })).toBe('Total: 42');
     });
+  });
+});
+
+// ── #549 run-failure copy (real dict, not a mock) ──
+// The agent-loop suites mock `@/i18n` with their own copy of these strings, so
+// a drift between the mock and the shipped dict would otherwise go unnoticed
+// until a zh-CN E2E run. Assert against the real locale module.
+describe('#549 sidecar failure copy', () => {
+  it('pins the zh-CN strings the failed user row renders', async () => {
+    const { default: zhCN } = await import('./locales/zh-CN');
+
+    expect(zhCN.chat.sidecarInterrupted).toBe('连接中断，可点重试');
+    expect(zhCN.chat.payloadTooLarge).toBe('这段对话太长，无法继续。');
+    expect(zhCN.chat.sidecarNotReady).toBe('后台服务没有启动成功，这条消息还没有发出。可点重试。');
+    expect(zhCN.chat.runFailed).toBe('发送失败');
+    expect(zhCN.chat.runConnectionFailed).toBe('连接恢复失败');
+    expect(zhCN.chat.runRetry).toBe('重试');
+    expect(zhCN.chat.newConversationAction).toBe('新建对话');
+  });
+
+  it('pins the en-US strings that carry the same meaning', async () => {
+    const { default: enUS } = await import('./locales/en-US');
+
+    expect(enUS.chat.payloadTooLarge).toBe('This conversation is too long to continue.');
+    expect(enUS.chat.newConversationAction).toBe('New conversation');
+    expect(enUS.chat.sidecarInterrupted).toBe('Connection interrupted. Click Retry to try again.');
   });
 });

@@ -129,6 +129,8 @@ export interface ElectronRuntimeDiagnostics {
   sidecars: Array<Record<string, unknown>>;
   pendingRendererAcks: Array<Record<string, unknown>>;
   nativeHelpers: Array<Record<string, unknown>>;
+  /** Host's pure, privacy-allowlisted projection; not executable recovery state. */
+  computerUseReplay?: Record<string, unknown>;
 }
 
 function getRuntime() {
@@ -145,6 +147,15 @@ export function hasElectronCommandHost(): boolean {
     runtime.process?.env?.ABU_ELECTRON_COMMAND_HOST === '1' ||
     runtime.process?.env?.ELECTRON_RUN_AS_NODE === '1'
   );
+}
+
+/**
+ * True only in the Electron RENDERER (preload exposes `__ABU_SHELL__`). Unlike
+ * `hasElectronCommandHost`, never true inside the Node sidecar, whose
+ * `invoke` shim forwards JSON and cannot carry a binary body (#549).
+ */
+export function hasElectronRawBodyInvoke(): boolean {
+  return getRuntime().__ABU_SHELL__?.mainSupervisesSidecar === true;
 }
 
 /** Resolve the native path of a user-provided Electron File object. */

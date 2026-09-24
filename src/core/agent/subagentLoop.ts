@@ -6,7 +6,7 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, ToolDefinition, ToolExecutionContext, ToolResultContent, UpstreamErrorDetails } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, TokenUsage, ToolDefinition, ToolExecutionContext, ToolResultContent, UpstreamErrorDetails } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError, normalizeUpstreamErrorDetails } from '../llm/adapter';
@@ -51,6 +51,7 @@ import { format, getI18n } from '../../i18n';
 import { appendInstructionToHistory, drainDispatchInstructionEntries, hasDispatchInput, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
 import { matchesToolName } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
+import { isToolResultError } from './toolResultErrors';
 import { scanMemoryFiles, loadMemoryIndex } from '../memdir/scan';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
@@ -860,6 +861,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       let shouldContinue = false;
       let lastStopReason = '';
       let sawThinking = false;
+      /**
+       * 当前这一次 chat() 调用的用量。provider 的流内用量是累计快照，同一次请求里
+       * 后到的事件是修订，按字段取最新值；加进总计的时机见下面的 chatFn。
+       */
+      const turnUsage: { current: TokenUsage | null } = { current: null };
 
       // Resolve budget + reasoning controls for the subagent's model. Overlay any
       // runtime-discovered limits/reasoning status, then reserve a content floor so
@@ -915,7 +921,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             systemPrompt,
             contextWindowSize,
             maxOutputTokens,
-            { adapter, model: effectiveModelId, apiKey: subCreds.apiKey, baseUrl: subCreds.baseUrl, signal }
+            {
+              adapter,
+              model: effectiveModelId,
+              apiKey: subCreds.apiKey,
+              baseUrl: subCreds.baseUrl,
+              signal,
+              conversationId: options.parentConversationId ?? null,
+              providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
+            }
           );
           if (compressionResult.compressed) {
             messagesForContext = compressionResult.messages;
@@ -974,6 +988,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         // by normalizeMessages, with its standard "no vision" hint appended.
         supportsVision: subagentCaps.vision,
         declaredCapabilities: declared,
+        // 子代理的用量归到派它的那条会话名下，来源是 subagent——页面上这两类
+        // 分开显示，用户才看得出请求数里哪些是自己发的、哪些是队员发的。
+        accounting: {
+          source: 'subagent' as const,
+          conversationId: options.parentConversationId ?? null,
+          skill: null,
+          providerInstanceId: provider?.id ?? 'unknown',
+        },
       };
 
       const eventHandler = (event: StreamEvent) => {
@@ -993,8 +1015,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             onProgress?.({ type: 'tool-start', id: event.id, toolName: event.name, toolInput: event.input });
             break;
           case 'usage':
-            totalInputTokens += event.usage.inputTokens ?? 0;
-            totalOutputTokens += event.usage.outputTokens ?? 0;
+            turnUsage.current = { ...(turnUsage.current ?? {}), ...event.usage };
             break;
           case 'done':
             lastStopReason = event.stopReason ?? '';
@@ -1013,21 +1034,37 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               maxOutputTokensRecoveryCount = 0;
             }
             if (event.usage) {
-              totalOutputTokens += event.usage.outputTokens ?? 0;
+              turnUsage.current = { ...(turnUsage.current ?? {}), ...event.usage };
             }
             break;
         }
       };
 
-      const chatFn = async () => adapter.chat(
-        await prepareDelegatedUserTurnForRequest(
-          preparedMessages,
-          signal,
-          options.delegatedUserTurn?.origin.conversationId ?? options.parentConversationId,
-        ),
-        chatOptions,
-        eventHandler,
-      );
+      // 计量单位是一次 chat() 调用：调用之内，provider 的用量事件是同一次请求的累计
+      // 快照，按字段取最新；调用结束时把这一次的结果加进总计。放在 finally 里，
+      // 请求抛出的那一次和 withRetry 重试的每一次都各自计入——消耗照样发生了。
+      const chatFn = async () => {
+        turnUsage.current = null;
+        try {
+          await adapter.chat(
+            await prepareDelegatedUserTurnForRequest(
+              preparedMessages,
+              signal,
+              options.delegatedUserTurn?.origin.conversationId ?? options.parentConversationId,
+            ),
+            chatOptions,
+            eventHandler,
+          );
+        } finally {
+          // 事件回调里的赋值编译器看不见，这里按声明的类型读回来。
+          const spent = turnUsage.current as TokenUsage | null;
+          if (spent) {
+            totalInputTokens += spent.inputTokens ?? 0;
+            totalOutputTokens += spent.outputTokens ?? 0;
+          }
+          turnUsage.current = null;
+        }
+      };
 
       await withRetry(
         chatFn,
@@ -1299,9 +1336,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const resultContentToken = r.status === 'fulfilled' ? r.value.resultContentToken : undefined;
         const resultContent = activeRichResults.get(resultContentToken);
         // ToolRegistry resolves its established generic failures as `Error:`
-        // strings, so this child-tool channel must keep the legacy prefix
+        // strings (and tool-execution wrapper failures as `Error executing
+        // tool "…":`), so this child-tool channel must keep the legacy prefix
         // contract. B3 only structures the enclosing SubagentResult terminal.
-        const isError = r.status === 'rejected' || result.startsWith('Error:');
+        const isError = r.status === 'rejected' || isToolResultError(result);
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
         return { id: tc.id, name: tc.name, input: tc.input, result, resultContent, resultContentToken };
       });

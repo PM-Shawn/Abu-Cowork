@@ -18,6 +18,9 @@ coverage/
 # Logs
 *.log
 
+# 本地中间结果（门禁日志等）
+.scratch/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -112,6 +115,8 @@ electron/chrome-bridge-runtime/dist/
 # electron-builder packaged output
 release-electron/
 release-electron-e2e/
+release-electron-computer-use-test/
+release-electron-computer-use-test-e2e/
 
 # Internal release-readiness audits — working notes that describe unfixed
 # issues in detail. This is a public repo; keep them out of it.
@@ -119,3 +124,6 @@ release-electron-e2e/
 
 # Build bookkeeping for scripts/check-browser-artifacts.mjs
 .artifact-digests/
+# Local macOS protocol shell (not a distributable).
+.dev-shell/
+.scratch/

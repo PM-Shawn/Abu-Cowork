@@ -6,6 +6,7 @@
  * headless IPC harness. See electron/main.cjs for the full launch story.
  */
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +24,9 @@ const MAIN_PROCESS_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'mainProcessR
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
+const { withoutLiveEvalCredential } = createRequire(import.meta.url)('../../scripts/computer-use-live-eval.cjs') as {
+  withoutLiveEvalCredential: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+};
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
@@ -38,6 +42,12 @@ export interface LaunchedApp extends ElectronDataRoot {
 }
 
 export interface LaunchOptions {
+  /**
+   * Extra main-process env for a single launch. Only for the gated #549 test
+   * hooks (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`),
+   * which electron/e2eTestHooks.cjs reads only in an unpackaged build.
+   */
+  extraEnv?: Record<string, string>;
   /**
    * Inject tests/e2e/mainProcessRecorder.cjs into the main process ahead of
    * electron/main.cjs, so `firstShowRecordFor()` can report where a window was
@@ -91,7 +101,10 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
  * NO_PROXY) also covers HTTP clients that honor `http_proxy` but not
  * `no_proxy`. CI runners set no proxy vars, so this is a no-op there.
  */
-function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
+function buildLaunchEnv(
+  dataRoot: ElectronDataRoot,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     if (/_proxy$/i.test(key)) delete env[key];
@@ -110,7 +123,7 @@ function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
   // machine. Windows are still real and rendered: drag-region and
   // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
   env.ABU_E2E_QUIET_WINDOW = '1';
-  return env;
+  return { ...env, ...extraEnv };
 }
 
 /**
@@ -152,7 +165,9 @@ export async function launchAbuElectron(
       '--lang=zh-CN',
     ],
     cwd: REPO_ROOT,
-    env: buildLaunchEnv(dataRoot),
+    // buildLaunchEnv isolates the profile and strips proxies; the live-eval
+    // credential must never reach a launched shell either.
+    env: withoutLiveEvalCredential(buildLaunchEnv(dataRoot, options.extraEnv)),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
@@ -560,7 +575,7 @@ export async function appRegionAt(page: Page, x: number, y: number): Promise<str
   return page.evaluate(({ px, py }) => {
     let state = 'none';
     for (const element of document.querySelectorAll('*')) {
-      const region = getComputedStyle(element).webkitAppRegion;
+      const region = getComputedStyle(element).getPropertyValue('-webkit-app-region');
       if (region !== 'drag' && region !== 'no-drag') continue;
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;

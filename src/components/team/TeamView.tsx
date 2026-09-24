@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
-import { isReadOnlyTeam, useTeamStore, type Team } from '@/stores/teamStore';
+import { getVisibleTeams, isReadOnlyTeam, selectVisibleTeams, useTeamStore, type Team } from '@/stores/teamStore';
 import { pluginTeamOwner } from '@/core/team/pluginTeams';
 import { useSelectedApp } from '@/stores/appStore';
 import { GENERAL_APP_ID } from '@/types/app';
@@ -13,7 +13,9 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { useChatStore } from '@/stores/chatStore';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { teamIdentity } from '@/core/team/expertContact';
+import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import { useToastStore } from '@/stores/toastStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
@@ -53,6 +55,14 @@ import type { SubagentDefinition } from '@/types';
  * 队员 tab reuses AgentsSection — a 队员 IS a custom agent (single identity
  * source), which also inherits the toolbox's IME-safe editors for free.
  */
+
+/** Matches the header search against a team's name, description and expertise. */
+function matchesTeamSearch(team: Team, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [team.name, team.description, ...(team.expertise ?? [])]
+    .some((text) => text?.toLowerCase().includes(q));
+}
 
 /**
  * Selectable member pool: every agent — user-defined AND marketplace/builtin
@@ -125,7 +135,6 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
-  const allTeams = useTeamStore((s) => s.teams);
   const agents = useMemberPool();
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
 
@@ -192,7 +201,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   // Exact match, not case-insensitive: this mirrors the store's own rule
   // (`createTeam` / `updateTeam`), and a dialog that refused more than the
   // store does would block names the user can save from anywhere else.
-  const nameTaken = allTeams.some((other) => other.id !== team?.id && other.name === name.trim());
+  const nameTaken = getVisibleTeams().some((other) => other.id !== team?.id && other.name === name.trim());
   const handleSave = async () => {
     if (!name.trim() || nameTaken || (!leaderName && !leaderKept) || saving) return;
     setSaving(true);
@@ -383,6 +392,7 @@ export default function TeamView() {
   const sources = useExtensionSourceStore((s) => s.sources);
   const setSource = useExtensionSourceStore((s) => s.setSource);
   const teams = useTeamStore((s) => s.teams);
+  const managedTeamSources = useTeamStore((s) => s.managedTeamSources);
   // Roles resolve through the agent registry, which is not a React-reactive
   // source; subscribe to discovery so the card grid re-renders when the roster
   // changes (same reason useConversationTeam subscribes — useTeamDispatches.ts).
@@ -394,6 +404,16 @@ export default function TeamView() {
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseConfig = enterpriseMode.kind === 'enterprise'
+    ? enterpriseMode.config
+    : enterpriseMode.kind === 'offline'
+      ? enterpriseMode.lastConfig
+      : null;
+  const OrganizationAgents = getEnterpriseMount('agentMarket');
 
   // Prepare a draft; opening an expert never creates an empty history entry.
   const startChatWithTeam = (team: Team, prompt?: string) => {
@@ -433,7 +453,10 @@ export default function TeamView() {
   const inApp = selectedApp.appId !== GENERAL_APP_ID;
   const [appScope, setAppScope] = useState<'app' | 'all'>('app');
   const scopedToApp = inApp && appScope === 'app';
-  const activeTeams = useMemo(() => (scopedToApp ? teams.filter((team) => teamBelongsToApp(selectedApp, team.id)) : teams), [teams, scopedToApp, selectedApp]);
+  const activeTeams = useMemo(() => {
+    const visible = selectVisibleTeams({ teams, managedTeamSources });
+    return scopedToApp ? visible.filter((team) => teamBelongsToApp(selectedApp, team.id)) : visible;
+  }, [teams, managedTeamSources, scopedToApp, selectedApp]);
   const agentFilter = useMemo(() => (scopedToApp ? (agent: SubagentDefinition) => agentBelongsToApp(selectedApp, agent) : undefined), [scopedToApp, selectedApp]);
 
   // `_agents` / `_ready` are unused by value — they exist only to make
@@ -468,8 +491,7 @@ export default function TeamView() {
   };
 
   const renderHeaderRight = () => {
-    const isMembers = activeTeamTab === 'members';
-    const searchBox = isMembers ? (
+    const searchBox = (
       <div className="relative w-52 shrink-0">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
         <Input
@@ -480,10 +502,14 @@ export default function TeamView() {
           className="h-8 pl-8 pr-3 text-body"
         />
       </div>
-    ) : null;
+    );
 
+    // The organization's catalog is the administrator's to edit, so the shelf
+    // showing it carries no create control.
+    const canCreateHere = !(enterpriseBinding && sources[activeTeamTab] === 'market'
+      && (activeTeamTab === 'teams' || OrganizationAgents));
     let createControl: ReactNode = null;
-    if (activeTeamTab === 'members') {
+    if (canCreateHere && activeTeamTab === 'members') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateMember}
@@ -491,7 +517,7 @@ export default function TeamView() {
           triggerTestId="member-create-trigger"
         />
       );
-    } else if (activeTeamTab === 'teams') {
+    } else if (canCreateHere && activeTeamTab === 'teams') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateTeam}
@@ -506,18 +532,37 @@ export default function TeamView() {
 
   const renderContent = () => {
     switch (activeTeamTab) {
-      case 'members':
+      case 'members': {
+        // A bound client's 「市场」 is the organization's expert catalog, the
+        // same way it already is for skills, connectors and plugins. The slot
+        // is optional, so a build without one falls through to Abu's own
+        // shelf.
+        if (sources.members === 'market' && OrganizationAgents && enterpriseBinding) {
+          return (
+            <OrganizationAgents
+              binding={enterpriseBinding}
+              config={enterpriseConfig}
+              searchQuery={search}
+              onClose={closeTeam}
+            />
+          );
+        }
         // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} filter={agentFilter} />;
+      }
       case 'teams': {
         const source = sources.teams;
         // One shelf at a time — which one is the sub-nav's job to say, so the
-        // group heading that used to name it here is gone. 「市场」 is the teams
-        // Abu ships; 「我的」 the ones this user has: assembled themselves, or
-        // brought in by a plugin they installed (badged, read-only).
+        // group heading that used to name it here is gone. 「市场」 names
+        // whoever is offering: the organization's teams in a bound client, the
+        // teams Abu ships otherwise. 「我的」 is the ones this user has:
+        // assembled themselves, or brought in by a plugin they installed
+        // (badged, read-only).
         const list = source === 'mine'
-          ? activeTeams.filter((team) => !isBuiltinTeam(team))
-          : activeTeams.filter(isBuiltinTeam);
+          ? activeTeams.filter((team) => !isBuiltinTeam(team) && !team.managed)
+          : enterpriseBinding
+            ? activeTeams.filter((team) => !!team.managed)
+            : activeTeams.filter(isBuiltinTeam);
         // Same grid + card the 专家 tab uses (ToolGrid/ToolCard), not a
         // hand-rolled row: a team and a member are peers in this surface.
         const card = (team: Team) => {
@@ -551,11 +596,16 @@ export default function TeamView() {
             </div>
           );
         }
+        const shown = list.filter((team) => matchesTeamSearch(team, search));
         return (
           <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6 h-full">
-            <div className="max-w-5xl mx-auto">
-              <ToolGrid>{list.map(card)}</ToolGrid>
-            </div>
+            {shown.length === 0 && search.trim() ? (
+              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.team.teamsNotFound}</div>
+            ) : (
+              <div className="max-w-5xl mx-auto">
+                <ToolGrid>{shown.map(card)}</ToolGrid>
+              </div>
+            )}
           </div>
         );
       }
@@ -620,6 +670,7 @@ export default function TeamView() {
               size="sm"
               className="rounded-xl"
               onClick={() => startChatWithTeam(detailTeam)}
+              disabled={detailTeam.managed?.ready === false}
               data-testid="team-detail-start-chat"
             >
               <MessageCircle className="h-3.5 w-3.5" />
@@ -707,6 +758,15 @@ export default function TeamView() {
                   {format(t.toolbox.itemFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, owner) })}
                 </div>
               )}
+              {detailTeam.managed?.ready === false && (
+                <div
+                  className="rounded-lg border border-[var(--abu-danger)]/30 bg-[var(--abu-danger-bg)] px-3 py-2 text-caption text-[var(--abu-danger)]"
+                  data-testid="team-managed-unavailable"
+                >
+                  <div className="font-medium">{t.team.detailUnavailable}</div>
+                  {detailTeam.managed.unavailableReason && <div className="mt-0.5">{detailTeam.managed.unavailableReason}</div>}
+                </div>
+              )}
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
                 {leader
@@ -733,7 +793,7 @@ export default function TeamView() {
                         <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
                           <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
                           <InvalidMemberText label={m.label} reason={t.team.memberInvalidReason} />
-                          <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>
+                          {!isReadOnlyTeam(detailTeam) && <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>}
                         </div>
                       ))}
                     </div>}

@@ -98,8 +98,53 @@ export type SandboxRecoveryAction =
  * through ToolExecutor/ChatDelta separately from stdout so imported messages
  * and command output cannot manufacture privileged UI.
  */
+/** How one computer tool call ended, as the run report card shows it. */
+export type ComputerStepOutcome =
+  | 'verified-change'   // Host verified the expected UI change
+  | 'no-change'         // dispatched, nothing changed
+  | 'ambiguous'         // dispatched, change could not be attributed
+  | 'done'              // completed without a verification step (activate, wait)
+  | 'observed'          // an observation, not an action
+  | 'not-executed'      // refused before reaching the app; re-observed
+  | 'handoff'           // turn handed back to the user
+  | 'boundary'          // platform boundary (secure desktop, elevated window…)
+  | 'paused'            // the user took over the mouse/keyboard
+  | 'stopped'           // the run was stopped
+  | 'mismatch'          // the expected effect was not what happened
+  | 'outcome-unknown'   // dispatched, result unknown; replay blocked
+  | 'error';
+
+/**
+ * Per-step evidence for the Computer Use run report. Deliberately carries no
+ * typed text, labels or screenshots — ids, counts and outcomes only; the tool
+ * call's own input/resultContent hold the rest.
+ */
+export interface ComputerStepReport {
+  action: string;
+  targetApp: string | null;
+  /** The declared consequence category ('none' when harmless). */
+  consequence: string;
+  /** The model's one-line summary the user saw in the native approval dialog. */
+  consequenceDetail?: string;
+  outcome: ComputerStepOutcome;
+  /** Short machine code (helper/boundary code), never user content. */
+  detail?: string;
+  durationMs?: number;
+}
+
 export interface ToolExecutionMetadata {
   sandboxRecovery?: SandboxRecoveryPayload;
+  /** Trusted computer tool: how this step ended, for the run report card. */
+  computerStep?: ComputerStepReport;
+  /** Trusted tool says the current agent turn must stop until the user fixes
+   * an external precondition (for example, opening an explicitly named app). */
+  requiresUserRecovery?:
+    | 'computer-target-unavailable'
+    | 'computer-manual-handoff'
+    | 'computer-platform-boundary'
+    | 'computer-user-takeover'
+    | 'computer-verification-mismatch'
+    | 'computer-outcome-unknown-new-turn';
   subagentStopReason?: SubagentStopReason;
   batchTerminalSummary?: BatchTerminalSummary;
 }
@@ -257,6 +302,8 @@ export interface ToolCall {
   sandboxRecovery?: SandboxRecoveryPayload;
   /** Persisted user choice for the recovery card. */
   sandboxRecoveryAction?: SandboxRecoveryAction;
+  /** Computer Use step evidence (see ComputerStepReport); drives the run report card. */
+  computerStep?: ComputerStepReport;
   /**
    * User's answers to an ask_user_question tool call. Set once the user
    * submits — drives settled read-only rendering. undefined = still
@@ -395,6 +442,8 @@ export interface Message {
   runError?: string;
   /** Structured provider fields retained for the failed-run error card. */
   runErrorDetails?: UpstreamErrorDetails;
+  /** Why a run failed before the sidecar accepted it (#549); drives the failed-row UI. */
+  runErrorKind?: 'payload_too_large' | 'sidecar_unavailable' | 'dispatch_failed';
   toolCalls?: ToolCall[];
   // Extended thinking content
   thinking?: string;
@@ -717,7 +766,7 @@ export interface ToolExecutionContext {
   /**
    * Local execution-only metadata channel. Functions are deliberately omitted
    * from reverse-RPC serialization; Electron's sidecar-local run_command and
-   * the in-process fallback both report through this callback.
+   * the in-process loop both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
   /**
@@ -754,6 +803,12 @@ export interface ToolDefinition {
     required?: string[];
   };
   execute: (input: Record<string, unknown>, context?: ToolExecutionContext) => Promise<ToolResult>;
+  /** Runtime-only contract, not part of the model-facing input schema.
+   * Computer-use presentation also requires ordered batch/status handling.
+   * Host Gate owns approval-aware time/step limits; the executor adds no timer
+   * and does not retry tools automatically.
+   */
+  execution?: { presentation: 'computer-use' };
   /**
    * Whether this tool can safely execute in parallel with other concurrent-safe tools.
    * - `true` or returns `true`: tool only reads data, no side effects

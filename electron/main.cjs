@@ -41,8 +41,10 @@ const {
   sidecarBundleExists,
   sidecarPathFor,
 } = require('./appEnv.cjs');
-const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
-const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
+const { initDeepLink, handleSecondInstanceArgv, getActiveScheme } = require('./deepLinkHost.cjs');
+const { configureIpcPayloadLimits, registerPrivilegedWindow } = require('./securityBoundary.cjs');
+const { configureMcpBridgeTestHooks } = require('./mcpBridge.cjs');
+const { readE2ETestHooks } = require('./e2eTestHooks.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
 const { configureWindowShowPolicy, revealWindow } = require('./windowShowPolicy.cjs');
@@ -58,6 +60,7 @@ const {
   observeWebContentsCrashes,
 } = require('./runtimeObservability.cjs');
 const { initShellCrashChannel, reportShellCrash } = require('./shellCrashChannel.cjs');
+const { electronProductName } = require('./devShellIdentity.cjs');
 const {
   hasValidSentinel,
   estimateMigrationSpace,
@@ -97,6 +100,14 @@ const windowShowPolicy = configureWindowShowPolicy({
   allowE2E: allowE2EAppDataRedirect,
   platform: process.platform,
 });
+// #549 acceptance knobs (low mcp_write raw limit, slow sidecar spawn). Stricter
+// than the gate above: unpackaged builds only, ABU_PACKAGED_E2E does not apply.
+const e2eTestHooks = readE2ETestHooks({ env: process.env, isPackaged: app.isPackaged });
+configureIpcPayloadLimits({ mcpWriteRawBodyBytes: e2eTestHooks.mcpWriteLimitBytes });
+configureMcpBridgeTestHooks({ sidecarSpawnDelayMs: e2eTestHooks.sidecarSpawnDelayMs });
+if (Object.keys(e2eTestHooks).length > 0) {
+  console.warn('[abu] E2E test hooks active:', JSON.stringify(e2eTestHooks));
+}
 let e2eTauriStorageRoot = null;
 if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)) {
   const appDataRoot = process.env[E2E_APP_DATA_ROOT_ENV];
@@ -133,8 +144,16 @@ if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)
 }
 
 // Keep local Electron development isolated while giving packaged builds the
-// exact product identity used by Safe Storage and the user-data directory.
-app.setName(app.isPackaged ? 'Abu' : 'abu-electron-dev');
+// exact product identity used by Safe Storage. macOS protocol shells use a
+// checkout-scoped identity because each shell has a distinct code signature;
+// sharing one Keychain item across those signatures triggers an ACL prompt on
+// every switch and can leave safeStorage unavailable when the prompt is not
+// foregrounded. Keep Chromium's existing dev profile path so this identity
+// correction does not discard local settings.
+app.setName(electronProductName({ isPackaged: app.isPackaged }));
+if (!app.isPackaged && e2eTauriStorageRoot === null) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'abu-electron-dev'));
+}
 
 function log(level, msg, extra) {
   const line = `[electron:${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`;
@@ -219,8 +238,19 @@ function createWindow(transitionWindow = null) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The renderer must build an OAuth `redirect_uri` the OS will route back
+      // to THIS shell — an unpackaged dev run owns `abu-dev://`, while `abu://`
+      // belongs to whatever production Abu is installed on the machine. Passed
+      // as a launch argument (not IPC) because the renderer needs it
+      // synchronously while assembling the authorization URL.
+      additionalArguments: [`--abu-deep-link-scheme=${getActiveScheme()}`],
     },
   });
+  if (process.platform === 'win32') {
+    // Keep Abu itself out of Windows Graphics Capture frames. This allows the
+    // user-visible app and Stop control to remain present during Computer Use.
+    win.setContentProtection?.(true);
+  }
   attachEditContextMenu(win, Menu, {
     isZh: app.getLocale().toLowerCase().startsWith('zh'),
   });

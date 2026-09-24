@@ -21,11 +21,17 @@ export default defineConfig([
     'dist-electron-spike', // vite build output for the Electron shell (bundled, never hand-edited)
     'release-electron', // electron-builder packaged output
     'release-electron-e2e', // pre-fuse packaged clone used only by local Playwright smoke tests
+    'release-electron-computer-use-test', // isolated Windows Computer Use installer output
+    'release-electron-computer-use-test-e2e', // isolated pre-fuse packaged clone
     'src-tauri',
     'coverage',
     '.wt-*/',
     '.claude/worktrees/',
     'sidecar/index.mjs',
+    // electron/generated/ holds esbuild output too (scripts/gen-ledger-reader.mjs
+    // bundles src/core/session/ledgerReader.ts for the main process). Generated,
+    // tracked, never hand-edited — same treatment as the bundle above.
+    'electron/generated',
     'abu-browser-bridge/dist',
     'electron/browser-runtime/dist',
     'electron/chrome-bridge-runtime/dist',

@@ -734,13 +734,46 @@ ${indexContent.trim()}
     // computer tool is also registered (toolPrefetch.ts), so guidance and
     // tool ship together.
     if (settingsState.computerUseEnabled) {
+    // Which channel, before how to drive one. Only shipped when the GUI
+    // channel exists at all — with computer use off there is nothing to route
+    // away from, and this would be ~300 tokens of dead prompt on every turn.
+    sections.push({ name: 'channel-gate', text: `\n## Channel gate
+Read this before any task that touches a file, a document, or an application.
+Decide from the wording of the request alone. Never open the data to decide how
+to open it.
+
+1. The request names a file, or asks you to produce one, and the work is that
+   file's content → the document skills (.docx/.xlsx/.pptx/.pdf) or the file
+   tools. Not the GUI, even when the application is already open.
+2. The request is about an application's own state — a message to send, a
+   setting to change, a window to arrange, anything only that program can do →
+   the GUI.
+3. The request is about what is on the screen right now ("this window", "what
+   I'm looking at") → the GUI.
+4. The wording settles neither → ask, in one line. Do not open the file to find
+   out.
+
+One case overrides rule 1: the file is open in its application and the user is
+working in it. Writing the file behind the application's back either fails
+outright or discards their unsaved edits. Say so and ask whether to work in the
+open window or have them close it first.${isWindows() ? `
+check_open_document answers that for one path — which application, and whether
+their edits are saved. Ask it before rewriting a document that was already
+there, and whenever a write is refused for permission or sharing reasons. Do
+not open the file to find out, and do not guess from a window title.` : ''}
+
+The GUI is the last resort, never the default. It takes over the user's screen
+and keyboard, it is slower than every other channel, and it fails in ways they
+do not. When it is the answer, say so in one line before you start, so the user
+knows their screen is about to be used. When it is not, just do the work.`, cacheable: true });
+
     sections.push({ name: 'computer-use', text: `\n## Computer Control Capability
 You have the computer tool, which lets you take screenshots and perform mouse and keyboard operations to control any application on the user's screen.
 
 ### Core principle: commands first, GUI as fallback
 If something can be done with run_command or another tool, do not use computer to click the GUI.
-1. **run_command handles it directly** → file operations, system settings, opening apps, etc.
-2. **Command + GUI together** → use a command to open the app, then use computer to interact with the GUI inside it
+1. **run_command handles it directly** → ${isWindows() ? 'file operations, system settings, etc.' : 'file operations, system settings, opening apps, etc.'}
+2. **Open, then GUI** → ${isWindows() ? 'open the app with computer(action="launch_app")' : 'use a command to open the app'}, then use computer to interact with the GUI inside it
 3. **Pure GUI** → only when interactive operation is required and there is no command-line alternative
 
 Do not use computer to re-fetch information you already obtained through other tools.
@@ -754,10 +787,26 @@ Do not use computer to re-fetch information you already obtained through other t
 - Use show_user=true when the user asks to see the screen; omit it for automated execution (not shown to the user by default, but you can still see it)
 - After each action, a screenshot is automatically returned — no need to call screenshot again to confirm
 
+### One action, as much ground as it can cover
+Every write consumes the observation it was authorized against, so the next
+write needs a fresh one — two writes in the same reply cannot both be valid.
+Observing is cheap and does not spend the step budget; what spends it is
+acting. So cover more ground per action rather than per reply: type a whole
+string instead of a key at a time, and give drag a path instead of one
+segment.
+
 ### Opening apps
 ${isWindows()
-  ? `- Use run_command: Start-Process "AppName" or start "" "AppName"
-- If unsure of the program name, use Get-Command or where to look it up`
+  ? `- Use computer(action="launch_app", app="记事本") — by name, never by path. It
+  brings the app forward instead of opening a second copy, returns its window_ref
+  in the same call, and has the app authorized before it starts
+- Do not open apps with run_command, Start-Process, Get-Command or where. Those
+  search PATH, and on a developer's machine PATH often holds a same-named shim
+  from another toolchain: \`notepad\` resolves to a Git-bundled script, not
+  Notepad, and launching it silently does nothing. Measured here, it cost five
+  shell calls and 45 seconds before the model recovered
+- If launch_app reports the app is not installed, ask the user; do not go
+  looking for it yourself`
   : `- Use run_command: open -a "AppName"; if unsure of the English name, first run ls /Applications | grep -i to find it
 - Do not use open URL as a substitute for opening a desktop app`}
 - When you need to interact with the GUI, wait 2 seconds after opening before taking a screenshot

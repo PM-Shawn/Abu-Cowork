@@ -88,6 +88,19 @@ vi.mock('../core/sidecar/sidecarManager', () => ({
   SidecarRequestError: class SidecarRequestError extends Error {},
 }));
 
+// #549: the readiness module reads sidecarManager's status/waiter exports,
+// which the partial mock above does not provide. This suite drives the venue
+// with `state.runtime`, so mirror that instead of importing the real module.
+vi.mock('../core/sidecar/sidecarReadiness', () => ({
+  isInProcessAgentEnvironment: () => state.runtime !== 'sidecar',
+  waitForSidecarVenue: vi.fn().mockResolvedValue(undefined),
+  SidecarUnavailableError: class SidecarUnavailableError extends Error {
+    readonly code = 'sidecar_unavailable';
+    readonly stopReason = 'sidecar_unavailable';
+    readonly reason = 'timeout';
+  },
+}));
+
 vi.mock('../../sidecar/src/rpcClient', () => ({ sendRequest: vi.fn(), sendNotification: vi.fn() }));
 vi.mock('../../sidecar/src/agentLoopHost', () => ({ findActiveRunDeltaForConversation: vi.fn() }));
 
@@ -194,8 +207,15 @@ describe('multimodal delegation route × runtime matrix', () => {
     registerBuiltinTools();
     // The real agentLoop performs its provider-key gate before it reaches the
     // direct @agent branch. Use its built-in local-provider exemption; the
-    // adapter itself remains the deterministic provider double above.
-    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } } as never);
+    // adapter itself remains the deterministic provider double above. The
+    // pinned-model guard also requires ollama to be on and to list the model.
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: useSettingsStore.getState().providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    } as never);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 

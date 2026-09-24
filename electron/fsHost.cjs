@@ -335,6 +335,8 @@ function resolveValidatedPath(rawPath) {
  */
 function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
   const norm = resolveValidatedPath(rawPath);
+  // 相对路径会被接到主进程 cwd 上，与渲染进程的策略判断不一致，直接拒绝
+  if (!path.isAbsolute(rawPath)) throw new Error('fs: path must be an absolute path');
   // Windows capabilities intentionally remain broad, but policy decisions must
   // still see junction/reparse-point targets rather than the lexical spelling.
   if (process.platform === 'win32') return canonicalizeForScope(norm, followFinalSymlink);
@@ -455,8 +457,27 @@ function msecOrNull(ms) {
  * from that same attribute, so ONE expression serves both; this used to
  * hardcode `false` on Windows, i.e. "no file is ever readonly".
  * `electron/fsHost.readonly.test.ts` pins it on both platforms (it runs on the
- * `test-windows` job too). Device/inode identity comes from Node on both
- * platforms; do not discard Windows file identities used by upload approval.
+ * `test-windows` job too).
+ *
+ * ## Identity arrives as a bigint and goes out as a decimal string
+ *
+ * The stat behind this is taken with `{ bigint: true }`, so `dev` and `ino`
+ * hold the whole 64-bit value the OS reported. An NTFS file id packs a record
+ * sequence number above the record index and passes 2^53 once records have
+ * been reused enough — 62 of 7621 files in a Windows install directory on this
+ * machine — and the only number JSON has is the double. So the pair goes on
+ * the wire as exact decimal strings, which is what a 64-bit id crossing JSON
+ * is written as wherever the question is specified: protobuf's JSON mapping,
+ * Google's Discovery type table, Discord snowflakes, every Chrome DevTools
+ * Protocol handle. Upload approval freezes this value and compares it against
+ * an `fstat` of the descriptor it reads from, so two ids one rounding step
+ * apart stay two files. The decimal string also stretches to the 128-bit id
+ * ReFS uses, where Microsoft states the 64-bit identifier is not guaranteed
+ * unique.
+ *
+ * Every other field is a number on the wire and is converted back here. The
+ * bigint `mtimeMs` is already whole truncated milliseconds, which is the value
+ * Rust's `as_millis()` produces — see `msecOrNull`.
  * POSIX ownership/mode fields retain the existing platform behavior.
  */
 function toFileInfo(info) {
@@ -465,22 +486,34 @@ function toFileInfo(info) {
     isFile: info.isFile(),
     isDirectory: info.isDirectory(),
     isSymlink: info.isSymbolicLink(),
-    size: info.size,
-    mtime: msecOrNull(info.mtimeMs),
-    atime: msecOrNull(info.atimeMs),
-    birthtime: msecOrNull(info.birthtimeMs),
-    readonly: (info.mode & 0o222) === 0,
+    size: Number(info.size),
+    mtime: msecOrNull(Number(info.mtimeMs)),
+    atime: msecOrNull(Number(info.atimeMs)),
+    birthtime: msecOrNull(Number(info.birthtimeMs)),
+    readonly: (info.mode & 0o222n) === 0n,
     fileAttributes: null,
-    dev: Number.isSafeInteger(info.dev) && info.dev >= 0 ? info.dev : null,
-    ino: Number.isSafeInteger(info.ino) && info.ino > 0 ? info.ino : null,
-    mode: unix ? info.mode : null,
-    nlink: unix ? info.nlink : null,
-    uid: unix ? info.uid : null,
-    gid: unix ? info.gid : null,
-    rdev: unix ? info.rdev : null,
-    blksize: unix ? info.blksize : null,
-    blocks: unix ? info.blocks : null,
+    dev: fileIdText(info.dev, 0n),
+    ino: fileIdText(info.ino, 1n),
+    mode: unix ? Number(info.mode) : null,
+    nlink: unix ? Number(info.nlink) : null,
+    uid: unix ? Number(info.uid) : null,
+    gid: unix ? Number(info.gid) : null,
+    rdev: unix ? Number(info.rdev) : null,
+    blksize: unix ? Number(info.blksize) : null,
+    blocks: unix ? Number(info.blocks) : null,
   };
+}
+
+/**
+ * One half of a file identity, exactly as the OS reported it.
+ *
+ * `minimum` is what the field means when it is absent: a device id of 0 is a
+ * real device, a file id of 0 is a filesystem that does not number its files,
+ * and the latter reaches the gate as `null` so an upload is refused for having
+ * no identity rather than approved against a placeholder.
+ */
+function fileIdText(value, minimum) {
+  return typeof value === 'bigint' && value >= minimum ? String(value) : null;
 }
 
 /**
@@ -514,13 +547,19 @@ function fsDispatch(app, cmd, payload) {
       // it was missing before (image rehydration / skill unzip / share bundle).
       return fs.readFileSync(resolveScoped(app, a.path, baseOf(a.options)));
 
+    // `{ bigint: true }` for both: ONE stat whose file id is the whole 64-bit
+    // value. Taking a second, plain stat for the other fields would be a
+    // second observation of a path that can change between the two.
     case 'plugin:fs|stat':
-      return toFileInfo(fs.statSync(resolveScoped(app, a.path, baseOf(a.options))));
+      return toFileInfo(
+        fs.statSync(resolveScoped(app, a.path, baseOf(a.options)), { bigint: true })
+      );
 
     case 'plugin:fs|lstat':
       return toFileInfo(
         fs.lstatSync(
-          resolveScoped(app, a.path, baseOf(a.options), { followFinalSymlink: false })
+          resolveScoped(app, a.path, baseOf(a.options), { followFinalSymlink: false }),
+          { bigint: true }
         )
       );
 
@@ -620,14 +659,19 @@ function fsDispatch(app, cmd, payload) {
     case 'append_file_text': {
       // Native O(1) append: mkdir parent + open in append mode + write only
       // `data`. Mirrors append_file.rs::append_sync. The message-JSONL hot path.
+      // Raw form (#549): the validated UTF-8 bytes arrive in `body` — it is a
+      // Buffer only when securityBoundary's validateTextRawBody produced it.
       const resolved = resolveScoped(app, a.path, undefined);
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
-      fs.appendFileSync(resolved, String(a.data));
+      fs.appendFileSync(resolved, Buffer.isBuffer(body) ? body : String(a.data));
       return null;
     }
 
     case 'atomic_write_text': {
-      writeAtomic(resolveScoped(app, a.path, undefined), String(a.content));
+      writeAtomic(
+        resolveScoped(app, a.path, undefined),
+        Buffer.isBuffer(body) ? body : String(a.content),
+      );
       return null;
     }
 

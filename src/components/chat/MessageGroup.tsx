@@ -8,6 +8,7 @@ import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
 import SandboxRecoveryCard from './SandboxRecoveryCard';
+import ComputerUseRunReportCard from './ComputerUseRunReportCard';
 import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
@@ -33,6 +34,7 @@ import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, par
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
@@ -824,6 +826,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // Handle retry
   const handleRetry = async () => {
     if (!userMsg || !activeConv?.id) return;
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const convId = activeConv.id;
     const userContent = getTextContent(userMsg.content);
 
@@ -832,6 +835,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     const firstAssistantInLoop = assistantMsgs[0];
 
     const proceed = async () => {
+      // Re-check: the provider may have been removed while the confirm was open.
+      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
       if (firstAssistantInLoop) {
         useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
       }
@@ -1301,6 +1306,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 />
               );
             })}
+
+            {/* Computer Use run report: one card per message group, fed by the
+                computer tool's per-step metadata (ComputerStepReport). */}
+            {allToolCalls.some((tc) => tc.computerStep) && (
+              <ComputerUseRunReportCard
+                key="cu-run-report"
+                steps={allToolCalls.filter((tc) => tc.computerStep)}
+                conversationId={activeConv?.id}
+              />
+            )}
 
             {activeConv?.id && allToolCalls.filter((tc) => tc.sandboxRecovery).map((tc) => {
               const owningMsg = assistantMsgs.find((m) => m.toolCalls?.some((x) => x.id === tc.id));

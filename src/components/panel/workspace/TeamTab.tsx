@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Check, ChevronRight, Loader2, XCircle, CircleDashed, Square, MessageSquarePlus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
-import { useTeamStore } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -41,7 +41,7 @@ function statusLabel(status: DispatchStatus | 'idle', t: ReturnType<typeof useI1
  */
 export default function TeamTab({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
-  const teams = useTeamStore((s) => s.teams);
+  const teams = useVisibleTeams();
   const leaderRunning = useTaskExecutionStore((s) => {
     for (const exec of Object.values(s.executions)) {
       if (exec.conversationId === conversationId && exec.status === 'running') return true;

@@ -4,6 +4,12 @@ const recordElectronRuntimeEventMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/utils/electronHost', () => ({
   recordElectronRuntimeEvent: (...args: unknown[]) => recordElectronRuntimeEventMock(...args),
+  // #549: conversationStorage's debounced flushIndex reaches rawBodyInvoke,
+  // which probes this — without it the timer rejects after the suite ends.
+  hasElectronRawBodyInvoke: () => false,
+  // #549: the conversation writer resolves the conversations root through this
+  // one; null is what a tier without the Electron bridge answers.
+  canonicalizeElectronPathForPolicy: async () => null,
 }));
 
 import {
@@ -155,6 +161,39 @@ describe('renderer runtime trace', () => {
       computerUseExposed: true,
     });
     expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('toolNames');
+  });
+
+  it('#549 step 0: forwards the payload byte breakdown as numbers only', () => {
+    traceRuntimeEvent('renderer.sidecar_rpc_sent', {
+      method: 'agent.start',
+      payloadBytes: 2_000_000,
+      limitBytes: 134_217_728,
+      fieldMessagesTextBytes: 10.4,
+      fieldUserMessageBytes: 7,
+      fieldRouteBytes: 8,
+      fieldToolResultsBytes: 1,
+      fieldToolContextResultsBytes: 2,
+      fieldMediaBase64Bytes: 3,
+      fieldToolListBytes: 4,
+      fieldSystemPromptBytes: 5,
+      fieldSettingsBytes: 6,
+      ...({ fieldMessagesText: 'private words' } as unknown as Record<string, never>),
+    });
+
+    const event = getRendererRuntimeTraceSnapshot().recentEvents[0];
+    expect(event).toMatchObject({
+      limitBytes: 134_217_728,
+      fieldMessagesTextBytes: 10,
+      fieldUserMessageBytes: 7,
+      fieldRouteBytes: 8,
+      fieldToolResultsBytes: 1,
+      fieldToolContextResultsBytes: 2,
+      fieldMediaBase64Bytes: 3,
+      fieldToolListBytes: 4,
+      fieldSystemPromptBytes: 5,
+      fieldSettingsBytes: 6,
+    });
+    expect(event).not.toHaveProperty('fieldMessagesText');
   });
 
   describe('conversation join', () => {

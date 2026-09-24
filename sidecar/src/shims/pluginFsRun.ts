@@ -111,8 +111,11 @@
  * `create` defaulting to `true` and `truncate = !append`):
  *   - `createNew` → `O_CREAT|O_EXCL`: an existing file fails with `EEXIST`,
  *     atomically — no check-then-write window. Wins over `create`.
- *   - `create: false` → no `O_CREAT`: a missing file fails with `ENOENT`
- *     and is not created.
+ *   - `create: false` → `O_WRONLY` with no `O_CREAT`: a missing file fails
+ *     with `ENOENT` and is not created, and a file whose owner left it
+ *     write-only opens. The truncation of a non-append write happens through
+ *     the handle after the open, because Windows rejects `O_TRUNC` without
+ *     `O_CREAT` with `EINVAL`.
  *   - `append` → `O_APPEND`, never `O_TRUNC`.
  *   - `mode` → the new file's permissions (POSIX only; the plugin ignores it
  *     on Windows, where Node would otherwise turn a mode without the owner
@@ -128,7 +131,8 @@
  * matching plugin-fs's own behavior of rejecting with a real `Error`.
  */
 import * as fs from 'node:fs/promises';
-import type { Dirent, Stats } from 'node:fs';
+import { constants as fsConstants } from 'node:fs';
+import type { BigIntStats, Dirent } from 'node:fs';
 
 /** Mirrors plugin-fs's `WriteFileOptions`; `baseDir` is typed only to be rejected. */
 export interface FsWriteFileOptions {
@@ -163,21 +167,19 @@ function rejectUnsupportedOptions(fn: string, options: object | undefined, suppo
 }
 
 /**
- * `create: false` (the file must already exist) has no Node flag string, and
- * the open(2) flags for it are NOT portable: Windows rejects `O_TRUNC`
- * without `O_CREAT` with `EINVAL` instead of opening the existing file
- * (caught by CI's `test-windows` on the first cut of this shim). `'r+'` opens
- * without ever creating — `ENOENT` when the file is missing, exactly like the
- * plugin — and truncating or seeking to the end reproduces the plugin's
- * `truncate = !append`.
+ * `create: false` (the file must already exist) has no Node flag string, so
+ * the open uses numeric flags: `O_WRONLY`, plus `O_APPEND` for an append, and
+ * never `O_CREAT` — a missing file fails with `ENOENT`, exactly like the
+ * plugin. `O_TRUNC` cannot ride along: Windows rejects it without `O_CREAT`
+ * with `EINVAL`. The plugin's `truncate = !append` therefore happens through
+ * the handle after the open. `electron/fsHost.cjs` opens the same way, and
+ * `pluginFsCreateFalse.contract.test.ts` holds the two together.
  */
 async function writeToExistingFile(path: string | URL, data: string | Uint8Array, append: boolean): Promise<void> {
-  const bytes = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
-  const handle = await fs.open(path, 'r+');
+  const handle = await fs.open(path, fsConstants.O_WRONLY | (append ? fsConstants.O_APPEND : 0));
   try {
-    const position = append ? (await handle.stat()).size : 0;
     if (!append) await handle.truncate(0);
-    await handle.write(bytes, 0, bytes.byteLength, position);
+    await handle.writeFile(data);
   } finally {
     await handle.close();
   }
@@ -248,8 +250,9 @@ export interface FsFileInfo {
   readonly: boolean;
   /** Windows-only in the real plugin; `node:fs` has no equivalent, so always null. */
   fileAttributes: number | null;
-  dev: number | null;
-  ino: number | null;
+  /** Exact decimal strings — see `fileIdText`. */
+  dev: string | null;
+  ino: string | null;
   mode: number | null;
   nlink: number | null;
   uid: number | null;
@@ -265,32 +268,48 @@ export interface FsFileInfo {
  * callers against the real plugin's type, so a field this shim omitted (e.g.
  * `mode`) compiled everywhere and was `undefined` at runtime.
  */
-function toFileInfo(s: Stats, isSymlink: boolean): FsFileInfo {
+function toFileInfo(s: BigIntStats, isSymlink: boolean): FsFileInfo {
   return {
     isFile: s.isFile(),
     isDirectory: s.isDirectory(),
     isSymlink,
-    size: s.size,
-    mtime: msecOrNull(s.mtimeMs),
-    atime: msecOrNull(s.atimeMs),
-    birthtime: msecOrNull(s.birthtimeMs),
-    readonly: (s.mode & 0o222) === 0,
+    size: Number(s.size),
+    mtime: msecOrNull(Number(s.mtimeMs)),
+    atime: msecOrNull(Number(s.atimeMs)),
+    birthtime: msecOrNull(Number(s.birthtimeMs)),
+    readonly: (s.mode & 0o222n) === 0n,
     fileAttributes: null,
-    dev: s.dev,
-    ino: s.ino,
-    mode: s.mode,
-    nlink: s.nlink,
-    uid: s.uid,
-    gid: s.gid,
-    rdev: s.rdev,
-    blksize: s.blksize,
-    blocks: s.blocks,
+    dev: fileIdText(s.dev, 0n),
+    ino: fileIdText(s.ino, 1n),
+    mode: Number(s.mode),
+    nlink: Number(s.nlink),
+    uid: Number(s.uid),
+    gid: Number(s.gid),
+    rdev: Number(s.rdev),
+    blksize: Number(s.blksize),
+    blocks: Number(s.blocks),
   };
+}
+
+/**
+ * One half of a file identity, exactly as the OS reported it — the same
+ * decimal string `electron/fsHost.cjs` `toFileInfo` puts on the wire, for the
+ * same reason: an NTFS file id is 64 bits wide and the only number JSON has is
+ * the double, so upload approval's pin would otherwise be as fine as a
+ * rounding step rather than as fine as a file.
+ *
+ * `minimum` is what the field means when it is absent: a device id of 0 is a
+ * real device, a file id of 0 is a filesystem that does not number its files,
+ * and the latter reaches the gate as `null` so an upload is refused for having
+ * no identity rather than approved against a placeholder.
+ */
+function fileIdText(value: bigint, minimum: bigint): string | null {
+  return value >= minimum ? String(value) : null;
 }
 
 export async function stat(path: string | URL, options?: FsReadOptions): Promise<FsFileInfo> {
   rejectUnsupportedOptions('stat', options, []);
-  return toFileInfo(await fs.stat(path), false);
+  return toFileInfo(await fs.stat(path, { bigint: true }), false);
 }
 
 /**
@@ -302,7 +321,7 @@ export async function stat(path: string | URL, options?: FsReadOptions): Promise
  */
 export async function lstat(path: string | URL, options?: FsReadOptions): Promise<FsFileInfo> {
   rejectUnsupportedOptions('lstat', options, []);
-  const s = await fs.lstat(path);
+  const s = await fs.lstat(path, { bigint: true });
   return toFileInfo(s, s.isSymbolicLink());
 }
 

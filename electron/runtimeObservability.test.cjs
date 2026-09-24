@@ -11,6 +11,7 @@ const path = require('node:path');
 const {
   SIDECAR_TRACE_PREFIX,
   configureRuntimeObservability,
+  getRuntimeDiagnostics,
   createRuntimeState,
   observeMainProcessCrashes,
   observeWebContentsCrashes,
@@ -19,7 +20,7 @@ const {
   sanitizeAttributes,
 } = require('./runtimeObservability.cjs');
 
-function makeHarness() {
+function makeHarness(overrides = {}) {
   let now = 1_000;
   let nextTimerId = 1;
   const timers = new Map();
@@ -34,6 +35,7 @@ function makeHarness() {
     },
     clearTimer: (id) => timers.delete(id),
     bridgeAckTimeoutMs: 3_000,
+    ...overrides,
   });
   return {
     state,
@@ -480,10 +482,14 @@ test('tracks native helper start, readiness, restart, crash, and call timeout wi
   h.state.noteNativeHelperSpawnStarted(1, false);
   h.advance(25);
   h.state.noteNativeHelperReady(1, {
-    protocol_version: 1,
+    protocol_version: 2,
     binary_version: '0.1.0',
     platform: 'macos',
     secret: 'must not escape',
+    base64: 'SCREENSHOT_MUST_NOT_ESCAPE',
+    text: 'TYPED_TEXT_MUST_NOT_ESCAPE',
+    clipboard: 'CLIPBOARD_MUST_NOT_ESCAPE',
+    elements: [{ label: 'UIA_LABEL_MUST_NOT_ESCAPE', value: 'UIA_VALUE_MUST_NOT_ESCAPE' }],
   });
   h.state.noteNativeHelperCallTimeout(1, 'ax_snapshot', 30_000);
   h.state.noteNativeHelperCrashed(1, 'code=1 sig=null');
@@ -495,13 +501,125 @@ test('tracks native helper start, readiness, restart, crash, and call timeout wi
   assert.ok(h.events.some((entry) => entry.event === 'main.native_helper_restarted'));
   const ready = h.events.find((entry) => entry.event === 'main.native_helper_ready');
   assert.equal(ready.attributes.helperGeneration, 1);
-  assert.equal(ready.attributes.helperProtocolVersion, 1);
+  assert.equal(ready.attributes.helperProtocolVersion, 2);
   assert.equal(ready.attributes.helperBinaryVersion, '0.1.0');
   assert.equal('secret' in ready.attributes, false);
+  const serialized = JSON.stringify({ events: h.events, snapshot: h.state.snapshot() });
+  for (const marker of [
+    'SCREENSHOT_MUST_NOT_ESCAPE',
+    'TYPED_TEXT_MUST_NOT_ESCAPE',
+    'CLIPBOARD_MUST_NOT_ESCAPE',
+    'UIA_LABEL_MUST_NOT_ESCAPE',
+    'UIA_VALUE_MUST_NOT_ESCAPE',
+  ]) {
+    assert.equal(serialized.includes(marker), false);
+  }
   assert.deepEqual(h.state.snapshot().nativeHelpers, [
     { helperGeneration: 1, stage: 'crashed', durationMs: 25 },
     { helperGeneration: 2, stage: 'starting', durationMs: 0 },
   ]);
+});
+
+test('Computer Use trajectory is append-safe and excludes prompts, UI text, and secrets', () => {
+  const h = makeHarness();
+  h.state.noteComputerUseTrajectory({
+    trajectoryVersion: 1,
+    trajectoryId: 'b1111111-1111-4111-8111-111111111111',
+    computerRunId: 'cu-0123456789abcdef01234567',
+    trajectorySequence: 3,
+    stage: 'action-outcome',
+    command: 'keyboard_type',
+    attemptCount: 2,
+    outcome: 'outcome-unknown',
+    outcomeUnknown: true,
+    consequential: false,
+    reason: 'observe-required',
+    windowGraphRevision: 'graph-digest',
+    prompt: 'private prompt',
+    text: 'private typed text',
+    apiKey: 'sk-never-log-this-value',
+  });
+
+  assert.deepEqual(h.events.at(-1), {
+    processName: 'main',
+    event: 'main.computer_use_trajectory',
+    attributes: {
+      trajectoryVersion: 1,
+      trajectoryId: 'b1111111-1111-4111-8111-111111111111',
+      computerRunId: 'cu-0123456789abcdef01234567',
+      trajectorySequence: 3,
+      stage: 'action-outcome',
+      command: 'keyboard_type',
+      outcome: 'outcome-unknown',
+      attemptCount: 2,
+      consequential: false,
+      outcomeUnknown: true,
+      reason: 'observe-required',
+    },
+  });
+});
+
+test('rejects malformed or private trajectory attributes instead of logging them', () => {
+  const h = makeHarness();
+  h.state.noteComputerUseTrajectory({ computerRunId: 'private-conversation', stage: 'observation' });
+  assert.equal(h.events.length, 0);
+});
+
+test('native helper supervisor telemetry records state only, never error text', () => {
+  const h = makeHarness();
+  h.state.noteNativeHelperSupervisorTransition({
+    generation: 8,
+    state: 'awaiting-approval',
+    activeMethod: null,
+    pendingCount: 0,
+    approvalPaused: true,
+    lastReason: 'authorization=Bearer abcdefghijklmnop private window title',
+  });
+
+  assert.deepEqual(h.events.at(-1), {
+    processName: 'main',
+    event: 'main.native_helper_supervisor_transition',
+    attributes: {
+      helperGeneration: 8,
+      pendingRpcCount: 0,
+      approvalPaused: true,
+      supervisorState: 'awaiting-approval',
+    },
+  });
+});
+
+test('records Computer Use revisions, cache outcomes, invalidations, and input rejection categories only', () => {
+  const h = makeHarness();
+  h.state.noteComputerUseObservation({
+    snapshotRevision: 42,
+    accessibilityRevision: 7,
+    inputEpoch: 9,
+    zIndex: 3,
+    base64: 'SCREENSHOT_MUST_NOT_ESCAPE',
+    label: 'UIA_LABEL_MUST_NOT_ESCAPE',
+    value: 'UIA_VALUE_MUST_NOT_ESCAPE',
+  });
+  h.state.noteComputerUseCache('uia-element', true, 7);
+  h.state.noteComputerUseInvalidation('physical-input');
+  h.state.noteComputerUseInputRejected('occluded');
+
+  const serialized = JSON.stringify(h.events);
+  assert.equal(serialized.includes('SCREENSHOT_MUST_NOT_ESCAPE'), false);
+  assert.equal(serialized.includes('UIA_LABEL_MUST_NOT_ESCAPE'), false);
+  assert.equal(serialized.includes('UIA_VALUE_MUST_NOT_ESCAPE'), false);
+  assert.deepEqual(h.events.map(({ event }) => event), [
+    'main.computer_use_observation',
+    'main.computer_use_cache',
+    'main.computer_use_invalidated',
+    'main.computer_use_input_rejected',
+  ]);
+  assert.deepEqual(h.events[0].attributes, {
+    snapshotRevision: 42,
+    accessibilityRevision: 7,
+    inputEpoch: 9,
+    zIndex: 3,
+    outcome: 'success',
+  });
 });
 
 // Runs last on purpose: it configures the module-level log file, which is a
@@ -530,4 +648,137 @@ test('events recorded before the log path is known are backfilled to disk', (t) 
   assert.equal(written[0].event, 'main.uncaught_exception');
   assert.equal(written[0].process, 'main');
   assert.ok(written[0].timestamp <= written[1].timestamp);
+  runtimeState.noteComputerUseTrajectory({ trajectoryVersion: 1,
+    trajectoryId: 'b1111111-1111-4111-8111-111111111111', computerRunId: 'cu-0123456789abcdef01234567',
+    trajectorySequence: 1, stage: 'observation' });
+  assert.equal(getRuntimeDiagnostics().recentEventLines.filter((line) => JSON.parse(line).event === 'main.computer_use_trajectory').length, 1);
+  const file = path.join(logDir, 'runtime-observability.jsonl');
+  fs.appendFileSync(file, '\n{"private-partial-record":');
+  const report = getRuntimeDiagnostics().computerUseReplay;
+  const { replayFile } = require('../scripts/replay-computer-use.cjs');
+  assert.deepEqual(report, replayFile(file));
+  assert.equal(report.invalidRecordCount, 1);
+  assert.equal(report.complete, false);
+  assert.equal(JSON.stringify(getRuntimeDiagnostics()).includes('private-partial-record'), false);
+  const envelope = { schemaVersion: 1, event: 'main.computer_use_trajectory', process: 'main',
+    appSessionId: 'a1111111-1111-4111-8111-111111111111', timestamp: 100,
+    trajectoryVersion: 1, trajectorySequence: 1, trajectoryId: 'b1111111-1111-4111-8111-111111111111',
+    computerRunId: 'cu-0123456789abcdef01234567', stage: 'observation' };
+  for (const patch of [{ trajectorySequence: 1.2 }, { trajectoryVersion: 1.2 }, { timestamp: null }]) {
+    fs.appendFileSync(file, `\n${JSON.stringify({ ...envelope, ...patch })}`);
+  }
+  assert.deepEqual(getRuntimeDiagnostics().computerUseReplay, replayFile(file));
+  assert.equal(getRuntimeDiagnostics().computerUseReplay.invalidRecordCount, 4);
+});
+
+test('#549 step 0: payload byte breakdown keys survive sanitization as numbers', () => {
+  const safe = sanitizeAttributes({
+    limitBytes: 134217728,
+    fieldMessagesTextBytes: 10.4,
+    fieldUserMessageBytes: 7,
+    fieldRouteBytes: 8,
+    fieldToolResultsBytes: 1,
+    fieldToolContextResultsBytes: 2,
+    fieldMediaBase64Bytes: 3,
+    fieldToolListBytes: 4,
+    fieldSystemPromptBytes: 5,
+    fieldSettingsBytes: 6,
+  });
+  assert.deepEqual(safe, {
+    limitBytes: 134217728,
+    fieldMessagesTextBytes: 10,
+    fieldUserMessageBytes: 7,
+    fieldRouteBytes: 8,
+    fieldToolResultsBytes: 1,
+    fieldToolContextResultsBytes: 2,
+    fieldMediaBase64Bytes: 3,
+    fieldToolListBytes: 4,
+    fieldSystemPromptBytes: 5,
+    fieldSettingsBytes: 6,
+  });
+});
+
+test('#549 step 0: agent.start, llm.chat and subagent.run writes record payloadBytes', () => {
+  for (const method of ['agent.start', 'llm.chat', 'subagent.run']) {
+    const h = makeHarness();
+    h.state.noteSpawnStarted('abu-sidecar', true);
+    const line = JSON.stringify({ jsonrpc: '2.0', id: 7, method, params: { runId: 'run-9', userMessage: '中文' } });
+    const rpc = h.state.noteRpcWriteStarted('abu-sidecar', line);
+    assert.ok(rpc, `${method} must be tracked`);
+    assert.equal(rpc.payloadBytes, Buffer.byteLength(line));
+    const started = h.events.find((entry) => entry.event === 'main.rpc_write_started');
+    assert.equal(started.attributes.method, method);
+    assert.equal(started.attributes.payloadBytes, Buffer.byteLength(line));
+  }
+});
+
+test('#549: raw-body writes are tracked from header metadata with the byte length', () => {
+  const h = makeHarness();
+  h.state.noteSpawnStarted('abu-sidecar', true);
+  const rpc = h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: 'agent.start', rpcId: '3', runId: 'run-3' }, 123456);
+  assert.equal(rpc.payloadBytes, 123456);
+  assert.equal(rpc.method, 'agent.start');
+  assert.equal(rpc.rpcId, '3');
+  assert.equal(rpc.runId, 'run-3');
+  assert.equal(rpc.stage, 'stdin_write');
+  assert.equal(h.state.snapshot().pendingRpcs.length, 1);
+  const started = h.events.filter((entry) => entry.event === 'main.rpc_write_started');
+  assert.equal(started.length, 1);
+  assert.equal(started[0].attributes.payloadBytes, 123456);
+
+  // The same response path closes it as for a parsed line.
+  h.state.noteRpcWriteFinished(rpc);
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 3, result: {} }));
+  assert.equal(h.state.snapshot().pendingRpcs.length, 0);
+
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: 'echo' }, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('other', { method: 'agent.start' }, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', {}, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', undefined, 1), null);
+});
+
+test('#549: header metadata is clipped like parsed metadata', () => {
+  const h = makeHarness();
+  h.state.noteSpawnStarted('abu-sidecar', true);
+  const rpc = h.state.noteRpcWriteStartedMeta('abu-sidecar', {
+    method: 'agent.run',
+    rpcId: '9'.repeat(200),
+    runId: 'r'.repeat(250),
+  }, 7);
+  assert.equal(rpc.rpcId.length, 80);
+  assert.equal(rpc.runId.length, 160);
+  // A method longer than 80 chars is not a tracked method after clipping.
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: `agent.run${'x'.repeat(100)}` }, 7), null);
+});
+
+test('#549: the pending-RPC map is capped and evicts the oldest entry', () => {
+  const h = makeHarness({ maxPendingRpcs: 3 });
+  h.state.noteSpawnStarted('abu-sidecar', true);
+
+  for (let i = 1; i <= 5; i += 1) {
+    h.state.noteRpcWriteStartedMeta('abu-sidecar', {
+      method: 'agent.run',
+      rpcId: `rpc-${i}`,
+      runId: `run-${i}`,
+    }, 7);
+  }
+
+  const pending = h.state.snapshot().pendingRpcs;
+  assert.equal(pending.length, 3);
+  assert.deepEqual(pending.map((rpc) => rpc.rpcId), ['rpc-3', 'rpc-4', 'rpc-5']);
+
+  // An evicted entry no longer answers its response, but a retained one still
+  // completes normally — the cap drops bookkeeping, never the live RPC.
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 'rpc-1', result: {} }));
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 'rpc-4', result: {} }));
+  const responses = h.events.filter((entry) => entry.event === 'main.rpc_response_received');
+  assert.deepEqual(responses.map((entry) => entry.attributes.rpcId), ['rpc-4']);
+  assert.equal(h.state.snapshot().pendingRpcs.length, 2);
+});
+
+test('#549 P2a: the ledger watermark attributes survive sanitization as non-negative integers', () => {
+  assert.deepEqual(
+    sanitizeAttributes({ reason: 'watermark_beyond_file', ledgerWatermarkBytes: 4096.4, ledgerFileBytes: -3 }),
+    { reason: 'watermark_beyond_file', ledgerWatermarkBytes: 4096, ledgerFileBytes: 0 },
+  );
 });

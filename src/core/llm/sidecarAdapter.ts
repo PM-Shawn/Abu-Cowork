@@ -24,6 +24,7 @@ import {
 } from './adapter';
 import type { Message, StreamEvent, UpstreamErrorDetails } from '../../types';
 import { request, notifySidecar, onSidecarNotification, SidecarRpcError } from '../sidecar/sidecarManager';
+import { parsePayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('sidecarAdapter');
@@ -80,6 +81,7 @@ const WIRE_HTTP_STATUS_BY_CODE: Partial<Record<LLMErrorCode, ReadonlySet<number>
   invalid_request: new Set([400]),
   not_found: new Set([404]),
   overloaded: new Set([503, 529]),
+  quota_exceeded: new Set([429]),
   rate_limit: new Set([429]),
   server_error: new Set([500, 502]),
 };
@@ -168,6 +170,13 @@ function reconstructError(err: unknown): LLMError {
   // Not even a SidecarRpcError — e.g. the manager's request() rejected for a
   // transport reason (see the close-mid-stream case handled in chat() below,
   // and this is the generic fallback for anything else unexpected).
+  // The shell's IPC oversize rejection (#549) only ever arrives on this
+  // path — never as a SidecarRpcError, whose text may echo provider/user
+  // content — so the wire text is trusted here and nowhere above.
+  const tooLarge = parsePayloadTooLargeError(err, 'llm.chat');
+  if (tooLarge) {
+    return new LLMError(tooLarge.message, 'payload_too_large', { retryable: false });
+  }
   const message = sanitizeUntrustedLlmErrorText(
     err instanceof Error ? err.message : String(err),
     'Sidecar transport failed',

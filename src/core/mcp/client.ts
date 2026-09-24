@@ -1309,8 +1309,13 @@ export class MCPClientManager {
         size: number;
         /** Identity pin (review F1) — the runtime refuses an entry without one. */
         mtimeMs: number;
-        ino?: number;
-        dev?: number;
+        /**
+         * A 64-bit file id: an exact decimal string from the Electron and
+         * sidecar hosts, a JSON number from the Tauri shell. See
+         * `ApprovedUploadFile.ino` in `permissions/browserUploadFiles.ts`.
+         */
+        ino?: number | string;
+        dev?: number | string;
       }>;
     }
   ): Promise<ToolResult> {

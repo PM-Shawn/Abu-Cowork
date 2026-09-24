@@ -101,6 +101,8 @@ Set the global default under **Settings → Security → Default Permission Mode
 
 A permission mode is not a global safety off-switch. Sandbox rules, protected paths, dangerous-command checks, content scanning, and operating-system permissions still apply independently.
 
+> **The sandbox is advisory on Windows.** macOS uses Seatbelt, where the system itself confines a shell command's file access; Windows has no equivalent — PowerShell's ConstrainedLanguage restricts in-process language features, not file access. Network isolation works the same way: it is applied through environment variables, so a command that bypasses the proxy still reaches the network, and on Windows the toggle is not exposed in Settings and is off by default. Protected paths, dangerous-command detection, and permission-mode confirmations are unaffected — those still apply.
+
 ### Execution plans
 
 When a plan includes high-risk steps such as deletion, overwrite, sending, publishing, or installation, Abu presents an **Execution Plan** and waits for approval. Approving a plan allows work to continue under that plan; it does not permanently authorize every downstream result. Abu may still ask immediately before a consequential action.

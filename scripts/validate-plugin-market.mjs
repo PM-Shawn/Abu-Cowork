@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Marketplace check — every package a marketplace lists must pass the same
  * `app` / `teams/` / `minAbuVersion` validation the installer applies

@@ -460,6 +460,70 @@ describe('settingsStore partialize', () => {
   });
 });
 
+describe('settingsStore account login dialog', () => {
+  it('opens and closes without changing the current view or settings selection', () => {
+    const previous = useSettingsStore.getState();
+    const surroundingUi = () => {
+      const state = useSettingsStore.getState();
+      return {
+        viewMode: state.viewMode,
+        activeSystemTab: state.activeSystemTab,
+        systemSettingsOpen: state.systemSettingsOpen,
+      };
+    };
+
+    try {
+      useSettingsStore.setState({
+        viewMode: 'automation',
+        activeSystemTab: 'sandbox',
+        systemSettingsOpen: true,
+        accountLoginOpen: false,
+      });
+      const before = surroundingUi();
+
+      useSettingsStore.getState().openAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(surroundingUi()).toEqual(before);
+
+      useSettingsStore.getState().closeAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      expect(surroundingUi()).toEqual(before);
+    } finally {
+      useSettingsStore.setState({
+        viewMode: previous.viewMode,
+        activeSystemTab: previous.activeSystemTab,
+        systemSettingsOpen: previous.systemSettingsOpen,
+        accountLoginOpen: previous.accountLoginOpen,
+      });
+    }
+  });
+
+  it('does not restore an open account dialog from persisted settings', async () => {
+    const previous = useSettingsStore.getState();
+    const previousStoredSettings = localStorage.getItem('abu-settings');
+    __resetBrowserConfigPersistenceForTests();
+
+    try {
+      useSettingsStore.setState({ accountLoginOpen: true });
+      const storedSettings = localStorage.getItem('abu-settings');
+      expect(storedSettings).not.toBeNull();
+      expect(JSON.parse(storedSettings!).state).not.toHaveProperty('accountLoginOpen');
+
+      await useSettingsStore.persist.rehydrate();
+
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+    } finally {
+      useSettingsStore.setState({ accountLoginOpen: previous.accountLoginOpen });
+      if (previousStoredSettings === null) {
+        localStorage.removeItem('abu-settings');
+      } else {
+        localStorage.setItem('abu-settings', previousStoredSettings);
+      }
+      __resetBrowserConfigPersistenceForTests();
+    }
+  });
+});
+
 const OA = 'https://oa.example.com';
 const PORTAL = 'https://portal.example.org';
 
@@ -1518,6 +1582,58 @@ describe('bootstrapSecrets — orphaned imagegen:<id> secret sweep', () => {
 
     await expect(bootstrapSecrets()).resolves.toBeUndefined();
     expect(deleted).toEqual([]);
+  });
+});
+
+describe('clearAllStoredKeys — API key scope', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'p1', apiKey: 'sk-provider' })],
+      auxiliaryServices: {
+        webSearch: { provider: 'tavily', apiKey: 'sk-search', baseUrl: 'https://search.example.com' },
+        imageGen: { apiKey: 'sk-image', baseUrl: '', model: '' },
+      },
+      imageGeneration: {
+        backends: [{
+          id: 'bk1',
+          name: 'Image',
+          vendor: 'custom',
+          baseUrl: 'https://images.example.com',
+          apiKey: 'sk-backend',
+          model: 'image-model',
+        }],
+        defaultId: 'bk1',
+      },
+    });
+  });
+
+  it('deletes only API keys and preserves an existing account credential', async () => {
+    const secrets = new Map([
+      ['provider:p1', 'sk-provider'],
+      ['aux:webSearch', 'sk-search'],
+      ['aux:imageGen', 'sk-image'],
+      ['imagegen:bk1', 'sk-backend'],
+      ['account:credentials:v1', 'account-secret'],
+    ]);
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_delete') {
+        secrets.delete((args as { key: string }).key);
+        return undefined;
+      }
+      if (cmd === 'secret_clear_all') throw new Error('must not clear the account store');
+      return undefined;
+    });
+
+    await useSettingsStore.getState().clearAllStoredKeys();
+
+    expect(secrets).toEqual(new Map([['account:credentials:v1', 'account-secret']]));
+    expect(invokeMock).not.toHaveBeenCalledWith('secret_clear_all', expect.anything());
+    expect(useSettingsStore.getState().providers[0].apiKey).toBe('');
+    expect(useSettingsStore.getState().auxiliaryServices.webSearch?.apiKey).toBe('');
+    expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('');
   });
 });
 

@@ -20,6 +20,8 @@ const disposeAuthorizationScopeMock = vi.hoisted(() => vi.fn());
 // Mock agentLoop to avoid full LLM execution
 vi.mock('../agent/agentLoop', () => ({
   runAgentLoop: runAgentLoopMock,
+  // Trigger runs are background entry points, not interactive desktop turns.
+  isInteractiveDesktop: () => false,
 }));
 
 vi.mock('../agent/agentLoopRunner', () => ({
@@ -900,6 +902,47 @@ describe('TriggerEngine', () => {
       await triggerEngine.handleEvent(trigger.id, { data: { n: 10 } });
 
       expect(outputSender.send).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * #549 — a dispatch that never reached the sidecar carries its own reason.
+   * The trigger's run log is where that failure is read, so the reason has to
+   * survive into it instead of collapsing to "Unknown error".
+   */
+  describe('a dispatch that failed before the sidecar accepted it', () => {
+    it('#549: an oversize dispatch lands in the trigger run log', async () => {
+      const trigger = makeTrigger({ id: 'trigger-payload-too-large' });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockResolvedValue({
+        reason: 'error',
+        error: '这段对话太长，无法继续。',
+        messageTaken: true,
+        stopReason: 'payload_too_large',
+      });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 1 } });
+
+      const runs = useTriggerStore.getState().triggers[trigger.id]?.runs ?? [];
+      expect(runs[runs.length - 1]?.status).toBe('error');
+      expect(runs[runs.length - 1]?.error).toBe('这段对话太长，无法继续。');
+    });
+
+    it('#549: an unavailable sidecar lands in the trigger run log', async () => {
+      const trigger = makeTrigger({ id: 'trigger-sidecar-unavailable' });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockResolvedValue({
+        reason: 'error',
+        error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+        messageTaken: true,
+        stopReason: 'sidecar_unavailable',
+      });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 2 } });
+
+      const runs = useTriggerStore.getState().triggers[trigger.id]?.runs ?? [];
+      expect(runs[runs.length - 1]?.error).toContain('后台服务没有启动成功');
+      expect(runs[runs.length - 1]?.error).not.toContain('Unknown error');
     });
   });
 

@@ -5,6 +5,9 @@ import { Input } from '@/components/ui/input';
 import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
+import { ManagedProviderOfflineBar } from '@/components/chat/ManagedProviderOfflineBar';
+import { useManagedProviderLiveness } from '@/components/chat/useManagedProviderLiveness';
+import { subscribeModelPickerRequest } from '@/components/chat/modelPickerRequest';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -42,7 +45,9 @@ import { mergeFileAttachments } from '@/components/chat/composerFileAttachments'
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
-import { useTeamStore } from '@/stores/teamStore';
+import { getModelUnavailableReason, getModelDisplayLabel } from '@/utils/settingsSelectors';
+import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { fileReferenceForPath, InvalidAttachmentPathError } from '@/utils/fileReference';
@@ -548,8 +553,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
-  const allTeams = useTeamStore((store) => store.teams);
-  const activeTeams = allTeams;
+  const activeTeams = useVisibleTeams().filter(team => !team.managed || team.managed.ready);
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
   const [menuPicker, setMenuPicker] = useState<{ type: 'skill' | 'agent'; query: string } | null>(null);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -636,7 +640,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
   const providers = useSettingsStore((s) => s.providers);
-  const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
   // The model shown/edited here is the active conversation's pinned model when it
   // has one, else the global selection — keeps the picker label in sync with what
   // this specific conversation actually runs on (see per-conversation model pin).
@@ -655,17 +658,26 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const isRunning = activeConv?.status === 'running';
   const isAdmissionPendingForDraft = draftRuntimeState.pendingAdmissions > 0;
   const isStreaming = !isWelcome && isRunning;
-  const isEnterpriseGatewayModel = isEnterprise && effModel.providerId === 'enterprise-gateway' && currentModel.length > 0;
-  const hasActiveProvider = isEnterpriseGatewayModel || (!!effProvider && effProvider.enabled);
+  // A managed provider names its models itself; show the id as given even
+  // before its list has been pulled.
+  const isManagedModel = effProvider?.source === 'managed' && currentModel.length > 0;
+  const modelIssue = getModelUnavailableReason({ providers }, effModel);
+  const hasActiveProvider = !modelIssue;
   const availableModels = effProvider?.models ?? [];
   const activeModelInfo = availableModels.find((m) => m.id === currentModel);
-  const modelDisplay = !hasActiveProvider
-    ? t.chat.noModelConfigured
-    : isEnterpriseGatewayModel
+  const modelDisplay = modelIssue
+    ? (providers.some((p) => p.enabled)
+        ? describeModelUnavailable(t.chat, modelIssue, getModelDisplayLabel({ providers }, effModel)).label
+        : t.chat.noModelConfigured)
+    : isManagedModel && !activeModelInfo
       ? currentModel
       : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  useManagedProviderLiveness(effProvider, isRunning);
+  // A send guard elsewhere may ask for the picker (a model the organization withdrew).
+  useEffect(() => subscribeModelPickerRequest(() => setShowModelPicker(true)), []);
+  const managedProviderOffline = effProvider?.source === 'managed' && effProvider.status === 'failed';
 
   const showAttachmentAdmissionFailed = useCallback((error?: unknown) => {
     useToastStore.getState().addToast({
@@ -830,11 +842,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
   const setPendingTeamId = useChatStore((s) => s.setPendingTeamId);
   const pinnedTeamId = activeConvId ? activeConv?.teamId : pendingTeamId;
-  // Selector rather than `activeTeams.find` on the per-render filtered array:
-  // that form makes the React Compiler drop the component's memoization.
-  const pinnedTeam = useTeamStore((store) => (
-    pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId) ?? null : null
-  ));
+  const pinnedTeam = pinnedTeamId ? activeTeams.find((team) => team.id === pinnedTeamId) ?? null : null;
   const pinTeam = useCallback((teamId: string | undefined) => {
     if (teamId) {
       setSelectedAgent(null);
@@ -1102,7 +1110,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleStop = () => {
     if (activeConv?.id) {
-      cancelStreaming(activeConv.id);
+      cancelStreaming(activeConv.id, { source: 'chat-input-stop-button' });
     }
   };
 
@@ -1333,7 +1341,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setSelection((prev) => (
       prev.start === start && prev.end === end ? prev : { start, end }
     ));
-  }, []);
+  }, [setSelection]);
 
   const resolveDomAgentMentionTarget = useCallback((textarea: InlineSkillInputHandle): AgentMentionTarget | null => {
     if (/^\s*\/\S*/.test(textarea.value)) return null;
@@ -1895,6 +1903,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               },
             } : undefined}
           />
+        )}
+
+        {managedProviderOffline && effProvider && (
+          <ManagedProviderOfflineBar provider={effProvider} conversationId={activeConv?.id ?? null} />
         )}
 
         {/* Input Card */}

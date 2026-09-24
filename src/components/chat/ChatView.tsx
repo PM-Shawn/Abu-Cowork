@@ -7,9 +7,9 @@ import {
   type AgentLoopDispatchResult,
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
-import { shouldRestoreComposerAfterDispatch } from './composerSendResult';
+import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
-import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -31,6 +31,7 @@ import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
@@ -41,7 +42,8 @@ import ScenarioGuide from './ScenarioGuide';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeamById } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
@@ -260,7 +262,8 @@ export default function ChatView({
   // conversation owns it instead, so welcome identity follows the same source.
   const pendingTeamId = useChatStore((s) => s.pendingTeamId);
   const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
-  const welcomeTeam = useTeamStore((s) => s.teams.find((team) => team.id === welcomeTeamId));
+  const visibleTeams = useVisibleTeams();
+  const welcomeTeam = visibleTeams.find((team) => team.id === welcomeTeamId);
   const expertPrompts = pendingAgent
     ? pendingAgent.samplePromptsI18n?.[locale] ?? pendingAgent.samplePrompts
     : welcomeTeam?.samplePrompts;
@@ -836,14 +839,10 @@ export default function ChatView({
     workspacePath?: string | null,
     onAccepted?: () => void,
   ) => {
-    // Block sending if API key is not configured (Ollama doesn't need one).
-    // Returning false hands the text back to the composer — opening settings
-    // used to swallow whatever the user had typed.
-    const currentState = useSettingsStore.getState();
-    if (!isEnterprise && providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
-      currentState.openSystemSettings('ai-services');
-      return false;
-    }
+    // Check the model THIS conversation will run on (its pin, else the global
+    // default). Returning false hands the text back to the composer — opening
+    // settings used to swallow whatever the user had typed.
+    if (!ensureConversationModelUsable(activeConv ?? undefined, t.chat)) return false;
 
     if (text.trim() === '/compact') {
       const convId = activeConv?.id;
@@ -865,7 +864,7 @@ export default function ChatView({
     // A conversation already pinned to another team is not silently re-pinned:
     // say so and send the text as typed (the chip is the way to switch).
     if (teamMention && activeConv?.teamId && activeConv.teamId !== teamMention.teamId) {
-      const current = useTeamStore.getState().teams.find((team) => team.id === activeConv.teamId)?.name ?? '';
+      const current = getVisibleTeamById(activeConv.teamId)?.name ?? '';
       useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current, other: teamMention.teamName }) });
       return false;
     }
@@ -881,7 +880,8 @@ export default function ChatView({
     if (!activeConv?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
       const addressedName = !teamMention ? /^@([^\s]+)/.exec(text)?.[1] : undefined;
       const addressedAgent = addressedName ? agentRegistry.getAgent(addressedName) : undefined;
-      const team = useTeamStore.getState().teams.find((candidate) => candidate.id === (teamMention?.teamId ?? welcomeTeamId));
+      const teamId = teamMention?.teamId ?? welcomeTeamId;
+      const team = teamId ? getVisibleTeamById(teamId) : undefined;
       if (addressedAgent) {
         let identity = expertIdentity(addressedAgent, locale);
         const shown = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : undefined;
@@ -944,10 +944,14 @@ export default function ChatView({
         useChatStore.getState().clearStagedExpertContact(convId);
         throw error;
       }
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: error.message || t.chat.conversationBusy,
-      });
+      // #549: same rule as the returned-result path below — a row that already
+      // states the failure and offers its action needs no toast on top.
+      if (!failureIsOwnedByTranscript(useChatStore.getState().conversations[convId]?.messages ?? [])) {
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: error.message || t.chat.conversationBusy,
+        });
+      }
       return;
     }
     if (!useChatStore.getState().conversations[convId]?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
@@ -959,10 +963,15 @@ export default function ChatView({
     // back instead.
     if (dispatch?.reason === 'error') {
       if (!dispatch.messageTaken) pendingTurnAnchorRef.current = null;
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: dispatch.error || t.chat.conversationBusy,
-      });
+      // #549: a pre-accept failure already states itself in the failed row, with
+      // the action that resolves it (Retry / 新建对话). A toast carrying the same
+      // sentence would say it twice and point nowhere.
+      if (!dispatch.runErrorKind) {
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: dispatch.error || t.chat.conversationBusy,
+        });
+      }
       if (shouldRestoreComposerAfterDispatch(dispatch)) {
         return false;
       }
@@ -1573,7 +1582,10 @@ export default function ChatView({
       {/* The stopped conversation is the one that OWNS the CU session (passed
           up by the bar), NOT `activeConv.id` — a background conversation can be
           driving the screen while an unrelated tab is open. See the component. */}
-      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(conversationId)} />
+      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(
+        conversationId,
+        { source: 'computer-use-status-bar' },
+      )} />
 
       {/* Messages Area — overlay-scroll hides the native scrollbar (thumb shows
           only while scrolling, via the global is-scrolling toggle in main.tsx);

@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { agentRunContext, type AgentRunContext } from '../agentRunContext';
 import * as rpcClient from '../rpcClient';
+import * as runtimeTrace from '../runtimeTrace';
 import { snapshotBeforeAiEdit } from './aiEditSnapshotsRun';
 
 function makeCtx(overrides?: Partial<AgentRunContext>): AgentRunContext {
@@ -88,6 +89,24 @@ describe('aiEditSnapshotsRun shim', () => {
       '/tmp/x.txt',
       expect.any(Error),
     );
+  });
+
+  it('#549: records a runtime event when the request fails, so a fail-open snapshot loss is diagnosable', async () => {
+    const traced = vi.spyOn(runtimeTrace, 'traceSidecarRuntimeEvent').mockImplementation(() => {});
+    vi.spyOn(rpcClient, 'sendRequest').mockRejectedValue(
+      Object.assign(new Error('Shell request "snapshot.beforeAiEdit" timed out after 60000ms'), { code: 'reverse_rpc_timeout' }),
+    );
+
+    await agentRunContext.run(makeCtx({ runId: 'run-1' }), () => snapshotBeforeAiEdit('/tmp/secret-name.txt', {}));
+
+    expect(traced).toHaveBeenCalledWith('sidecar.ai_edit_snapshot_failed', expect.objectContaining({
+      runId: 'run-1',
+      method: 'snapshot.beforeAiEdit',
+      outcome: 'error',
+      errorType: 'error',
+    }));
+    // The path is the user's content — it must not ride along in the event.
+    expect(JSON.stringify(traced.mock.calls)).not.toContain('secret-name');
   });
 
   it('throws a clear wiring-bug error when called outside an active agentRunContext scope', async () => {

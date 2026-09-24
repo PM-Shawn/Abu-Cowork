@@ -194,6 +194,37 @@ export interface TranslationDict {
     searchNoResults: string;
   };
 
+  account: {
+    title: string;
+    description: string;
+    personalLogin: string;
+    enterpriseLogin: string;
+    localWithoutLogin: string;
+    signIn: string;
+    loginRegister: string;
+    accountSettings: string;
+    switchAccount: string;
+    switchToEnterprise: string;
+    waitingBrowser: string;
+    completingLogin: string;
+    cancelled: string;
+    timedOut: string;
+    protocolNotReady: string;
+    protocolStatusUnknown: string;
+    serverUnavailable: string;
+    loginFailed: string;
+    retry: string;
+    sessionExpired: string;
+    profileLoading: string;
+    profileUnavailable: string;
+    reloadProfile: string;
+    name: string;
+    email: string;
+    signOut: string;
+    signOutPersonal: string;
+    signOutEnterprise: string;
+  };
+
   // Todos
   todos: {
     title: string;
@@ -294,6 +325,8 @@ export interface TranslationDict {
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
+    /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
+    newConversationAction: string;
     noModelConfigured: string;
     scrollToBottom: string;
     compressingContext: string;
@@ -373,11 +406,14 @@ export interface TranslationDict {
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;
-    // Enterprise model selector
-    enterpriseModelLoading: string;
-    enterpriseModelNoMatch: string;
-    enterpriseModelEmpty: string;
-    enterpriseGatewayLabel: string;
+    // Model selector — managed provider group
+    /** Header above the user's own providers, shown when a managed provider is listed. */
+    myModels: string;
+    managedModelsSyncing: string;
+    /** `{org}` = the managed provider's name. */
+    managedProviderUnreachable: string;
+    /** Button on the offline notice: switch this conversation to the user's own model. */
+    useMyOwnModel: string;
     // DetailBlockView
     characters: string;
     viewMore: string;
@@ -407,7 +443,6 @@ export interface TranslationDict {
     imageLoading: string;
     imageUnavailable: string;
     imageRetry: string;
-    inputTokens: string;
     outputTokens: string;
     addAttachment: string;
     /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
@@ -484,14 +519,47 @@ export interface TranslationDict {
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
+    modelUnavailableLabel: string;
+    modelUnavailableToast: string;
+    modelUnavailableInTask: string;
+    modelUnavailableReasonProviderRemoved: string;
+    modelUnavailableReasonProviderDisabled: string;
+    modelUnavailableReasonModelRemoved: string;
     /** Skill requires tools that aren't currently available. {missing} */
     skillMissingTools: string;
-    /** Enterprise AI gateway unreachable (shown as an error bubble). */
+    /** Enterprise AI gateway unreachable while resolving a dispatch's credentials. */
     gatewayUnreachable: string;
-    /** Sidecar process exited mid-task and automatic recovery has started. */
+    /** A managed provider's request failed at the network level (error bubble). `{org}` = its name. */
+    managedProviderUnreachableInTask: string;
+    /** The organization withdrew the model a conversation is bound to. `{model}` = its label. */
+    managedModelRevokedToast: string;
+    managedModelRevokedInTask: string;
+    /** Sidecar process exited mid-task, leaving the turn for the user to retry. */
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
     sidecarUnavailable: string;
+    /** The turn was too big for the shell→sidecar channel; the only way forward is a new conversation (#549). */
+    payloadTooLarge: string;
+    /**
+     * This conversation's history could not be read from disk, so the run never
+     * started (#549). One sentence for every surface: the reason line next to
+     * 「发送失败」 and 「重试」 in the chat row, the text an IM reply wraps in
+     * `imChannel.errorReply`, and the text an automation's run log quotes. It
+     * names what happened and carries no instruction.
+     */
+    historyUnavailable: string;
+    /**
+     * The sidecar never reached `running`, so the message was never sent (#549).
+     * The chat row says 「发送失败」 and offers Retry instead of this sentence;
+     * it is the durable `runError` and the text headless dispatchers log.
+     */
+    sidecarNotReady: string;
+    /**
+     * How an unattended run's failure reads where the run itself is the only
+     * record — today the file watcher's hidden conversation (#549). Takes the
+     * run's own reason as `{error}`.
+     */
+    automationRunFailed: string;
     messageSaveFailed: string;
     /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
     browserDeniedAbort: string;
@@ -1629,6 +1697,13 @@ export interface TranslationDict {
     validationSuccess: string;
     validationFailed: string;
     revalidate: string;
+    // Managed provider card. `{org}` = the provider's name, `{count}` = model count.
+    managedProviderBadge: string;
+    managedStatusConnected: string;
+    managedStatusSyncing: string;
+    managedStatusOffline: string;
+    managedStatusEmpty: string;
+    managedResync: string;
     validateConnection: string;
     statusConnected: string;
     statusFailed: string;
@@ -1722,6 +1797,23 @@ export interface TranslationDict {
     appAutomationContinuePrompt: string;
     appAutomationContinueFailed: string;
     appAutomationOutcomeUncertain: string;
+    // Computer Use › remembered per-app grants (Settings › Security)
+    computerUseGrantsTitle: string;
+    computerUseGrantsDescription: string;
+    computerUseGrantsEmpty: string;
+    computerUseGrantsUnavailable: string;
+    computerUseGrantsLoadFailed: string;
+    computerUseGrantsAlwaysTitle: string;
+    computerUseGrantsDeniedTitle: string;
+    computerUseGrantsDeniedEmpty: string;
+    computerUseGrantTierOrdinary: string;
+    computerUseGrantTierApprovalRequired: string;
+    computerUseGrantGrantedAt: string; // {date}
+    computerUseGrantLastUsed: string; // {date}
+    computerUseGrantRevoke: string;
+    computerUseGrantDeny: string;
+    computerUseGrantRestore: string;
+    computerUseGrantsRedLines: string;
   };
 
   // Diagnostic
@@ -1831,6 +1923,7 @@ export interface TranslationDict {
       aiAuth: string;
       aiContentPolicy: string;
       aiRateLimit: string;
+      aiQuotaExceeded: string;
       aiOverloaded: string;
       aiServerError: string;
       aiNetworkError: string;
@@ -1957,6 +2050,7 @@ export interface TranslationDict {
     /** Singular of `teamRowSummary`, for exactly one member. */
     teamRowSummaryOne: string;
     detailStartChat: string;
+    detailUnavailable: string;
     detailLeader: string;
     detailMembers: string;
     detailNoMembers: string;
@@ -1983,6 +2077,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
+    teamsNotFound: string;
     /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;
@@ -2644,8 +2739,6 @@ export interface TranslationDict {
     // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
-    personalSource: string;
-    organizationSource: string;
   };
 
   // Permission Dialog
@@ -3325,6 +3418,16 @@ export interface TranslationDict {
     /** Session rolled over after hitting the per-session round cap. {rounds} */
     sessionRolledOver: string;
     sessionQueueFull: string;
+    /**
+     * What the sender is told when a run ended before the sidecar accepted it
+     * and there is no assistant reply to forward (#549). The oversize one
+     * names the reset keyword sessionMapper already listens for, because a
+     * new session is the only way that conversation continues.
+     */
+    runPayloadTooLarge: string;
+    runServiceUnavailable: string;
+    /** Any other run that ended in error without an answer. {error} */
+    errorReply: string;
     timeoutHint: string;
     groupConnection: string;
     groupBehavior: string;
@@ -3842,6 +3945,12 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     cacheHitRate: string;
+    statsOrigin: string;
+    statsOriginEmpty: string;
+    unrecorded: string;
+    unavailable: string;
+    stale: string;
+    unknownUsage: string;
     bySkill: string;
     byModel: string;
     noData: string;
@@ -3886,6 +3995,8 @@ export interface TranslationDict {
     tabPassword: string;
     tabMagicLink: string;
     tabSso: string;
+    webDesktopLoginButton: string;
+    webDesktopLoginHint: string;
     emailLabel: string;
     emailPlaceholder: string;
     passwordLabel: string;
@@ -3919,14 +4030,12 @@ export interface TranslationDict {
     processing: string;
   };
 
-  // Enterprise runtime UI (gateway badge, policy confirm, status badge)
+  // Enterprise runtime UI (policy confirm, status badge, sign-in notice)
   enterprise: {
-    usingGateway: string;
-    gatewayDesc: string;
     organization: string;
-    gateway: string;
-    status: string;
     offline: string;
+    /** Shown once after sign-in, when the organization's models are ready. `{org}` */
+    modelsReady: string;
     /** Compact offline suffix shown in the status badge, e.g. "· Offline". */
     offlineBadge: string;
     policyConfirmTitle: string;
@@ -3941,14 +4050,50 @@ export interface TranslationDict {
     instanceLabel: string;
     loginIdentityLabel: string;
     boundAtLabel: string;
-    myDataTitle: string;
-    collapseData: string;
-    viewMyData: string;
-    migrationTitle: string;
-    migrateButton: string;
-    migrateDescription: string;
     unbindConfirm: string;
     unbindButton: string;
+    /** Usage lane label — org gateway (shared with model picker). */
+    laneGateway: string;
+    /** Usage lane label — personal API key. */
+    lanePersonal: string;
+    agentCatalog: {
+      unavailableTitle: string;
+      unavailableDescription: string;
+      syncing: string;
+      noMatches: string;
+      empty: string;
+      configured: string;
+      dependenciesPending: string;
+      preparing: string;
+      prepareAndStart: string;
+      /** `{version}` = the published Agent version. */
+      configuredByAdministrator: string;
+    };
+    /** /me transparency panel (Settings → Enterprise → My Data). */
+    meTransparency: {
+      tabProfile: string;
+      tabTokens: string;
+      tabAudit: string;
+      tabUsage: string;
+      fieldName: string;
+      fieldEmail: string;
+      fieldDepartment: string;
+      fieldRole: string;
+      /** Shown when users.email is null (SSO without mailbox). */
+      noEmailBound: string;
+      noClients: string;
+      noAudit: string;
+      rangeDays: string;
+      tokensIn: string;
+      tokensOut: string;
+      cost: string;
+      unpriced: string;
+      byModel: string;
+      noCalls: string;
+      calls: string;
+      errors: string;
+      laneNote: string;
+    };
   };
 
   // Computer-use runtime status bar + screen-border overlay windows
@@ -3966,7 +4111,61 @@ export interface TranslationDict {
     overlayStep: string;
     /** Overlay stop-button label. */
     stopControl: string;
+    /** Overlay watchdog caption when the Host stops sending heartbeats. */
+    unresponsive: string;
+    /** Strip step label, interpolates {step} and {max}, e.g. "Step {step}/{max}". */
+    overlayStepOf: string;
+    /** Strip caption after the user took over the mouse/keyboard. */
+    pausedByTakeover: string;
+    /** Strip 【继续】 button. */
+    resume: string;
+    /** Strip 【结束】 button (replaces Stop while paused). */
+    end: string;
+    /** The user turn sent when 【继续】 is clicked. */
+    resumePrompt: string;
+    /** Run report card (proposal §4.2 "分步汇报 + 截图回看"). */
+    report: {
+      title: string;
+      /** Interpolates {apps}. */
+      titleWithApps: string;
+      /** Interpolates {steps} and {verified}. */
+      summary: string;
+      /** Interpolates {count}. */
+      consequentialCount: string;
+      /** Interpolates {category}. */
+      consequenceApproved: string;
+      consequenceNotApproved: string;
+      screenshotAlt: string;
+      outcomeVerifiedChange: string;
+      outcomeNoChange: string;
+      outcomeAmbiguous: string;
+      outcomeDone: string;
+      outcomeObserved: string;
+      outcomeNotExecuted: string;
+      outcomeHandoff: string;
+      outcomeBoundary: string;
+      outcomePaused: string;
+      outcomeStopped: string;
+      outcomeMismatch: string;
+      outcomeUnknown: string;
+      outcomeError: string;
+      /** Interpolates {id}. */
+      targetElement: string;
+      actionClick: string;
+      actionType: string;
+      actionKey: string;
+      actionScroll: string;
+      actionDrag: string;
+      actionMove: string;
+      actionPerform: string;
+      actionActivate: string;
+      actionObserve: string;
+      actionScreenshot: string;
+      actionListWindows: string;
+      actionWait: string;
+    };
     phaseChecking: string;
+    phaseAwaitingApproval: string;
     phaseObserving: string;
     phaseActing: string;
     phaseVerifying: string;
@@ -4642,6 +4841,17 @@ export interface TranslationDict {
     file: {
       /** Non-vision model image skip note. {path}, {mediaType} */
       imageSkipNoVision: string;
+      /** File held open by another program, so the write could not land. {path} */
+      errFileHeldByAnotherApp: string;
+      errFileHeldCheckHint: string;
+      /** Display names for the application tokens the Host reports. */
+      docCheckApps: Record<string, string>;
+      docCheckUnsupported: string;
+      docCheckUnknown: string;
+      docCheckNotOpen: string;
+      docCheckOpenUnsaved: string;
+      docCheckOpenSaved: string;
+      docCheckSameNameElsewhere: string;
       /** File locked by another agent. {path} */
       errFileLocked: string;
       /** delete_file succeeded — moved to OS Trash. {path} */
@@ -4775,6 +4985,8 @@ export interface TranslationDict {
       dangerXargsRm: string;
       dangerFindDelete: string;
       dangerFindExecRm: string;
+      dangerSynthesizeInput: string;
+      dangerDriveWindow: string;
       // DANGEROUS_PATTERNS — warn tier
       warnSudo: string;
       warnRm: string;
@@ -4864,8 +5076,30 @@ export interface TranslationDict {
       errPermissionRelaunch: string;
       errModelUnsupported: string;
       errModelUnknown: string;
-      /** Foreground target identity probe failed. {msg} */
-      errTargetIdentityFailed: string;
+      /** A specifically requested app has no visible target window. {app} */
+      errTargetUnavailable: string;
+      /** launch_app: no installed application by that name. {app} */
+      launchAppNotInstalled: string;
+      /** launch_app: started, but its window has not appeared yet. {app} */
+      launchAppNoWindowYet: string;
+      /** launch_app: started; window candidates follow. {app} */
+      launchAppLaunched: string;
+      /** launch_app: was already running and brought forward; window candidates follow. {app} */
+      launchAppActivated: string;
+      /** No target selector was supplied for a window operation. */
+      errTargetRequired: string;
+      /** No visible window matched the supplied selector. */
+      errTargetNotFound: string;
+      /** More than one visible window matched; select a returned WindowRef. */
+      errTargetAmbiguous: string;
+      /** The opaque WindowRef is invalid or expired. */
+      errWindowRefStale: string;
+      /** Coordinate input is not bound to the latest screenshot. */
+      errScreenshotStale: string;
+      /** Secure desktop or another protected surface needs the user. */
+      errManualHandoff: string;
+      /** Separately authorized whole-screen read was denied. */
+      errScreenReadDenied: string;
       /** Main-process Computer Use authorization failed. {msg} */
       errAuthorizationFailed: string;
       /** Every computer action must declare whether it has a consequential outcome. */
@@ -4889,15 +5123,42 @@ export interface TranslationDict {
       ambiguousSideEffectStopped: string;
       /** Native input returned an ambiguous failure and must not be retried automatically. {msg} */
       errActionAmbiguous: string;
+      actionNotExecuted: string;
+      actionNotExecutedHandoff: string;
+      actionNotExecutedHandoffPhysicalInput: string;
+      actionNotExecutedStopped: string;
+      actionNotExecutedReobserveFailed: string;
+      /** Platform boundaries the user must clear; the helper marked the refusal non-retryable. {msg} */
+      boundarySecureDesktop: string;
+      boundaryHigherIntegrity: string;
+      boundaryInputLease: string;
+      boundaryDpiUnaware: string;
+      boundaryInputBlocked: string;
+      boundaryRemoteSessionDisconnected: string;
+      boundarySessionZero: string;
+      /** The user took over mouse/keyboard mid-action; the run pauses and can be resumed by replying. */
+      userTakeoverPaused: string;
       /** Invalid state/effect protocol input. {reason} */
       errStateProtocol: string;
       /** Observation state header. {stateId} */
       stateHeader: string;
       /** Automatic post-action verification result. {status}, {stateId} */
       verificationResult: string;
-      verificationChanged: string;
-      verificationNoChange: string;
-      verificationAmbiguous: string;
+      /** A modal appeared during post-action verification. {formatted} */
+      screenshotMaskedWindows: string;
+      verificationModal: string;
+      /** Office reports that desktop editing is unavailable until activation. */
+      officeEditingUnavailable: string;
+      verificationObservationChanged: string;
+      verificationObservationUnchanged: string;
+      verificationObservationUnavailable: string;
+      verificationChangedNoExpectation: string;
+      verificationUnchangedNoExpectation: string;
+      verificationUnavailableNoExpectation: string;
+      verificationExpectationSatisfied: string;
+      verificationExpectationNotSatisfied: string;
+      verificationExpectationUnverifiable: string;
+      verificationLegacyWeak: string;
       /** formatAxElements: no interactive elements found. */
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */
@@ -4910,6 +5171,8 @@ export interface TranslationDict {
       errActivateFailed: string;
       /** get_app_state: AX tree truncated note. */
       axTreeTruncated: string;
+      /** get_app_state: modal boundary note. */
+      axTreeModal: string;
       /** get_app_state: AX tree header. {app}, {count}, {visited}, {note}, {formatted} */
       axTreeHeader: string;
       /** get_app_state: AX tree fetch failed. {msg} */
@@ -4940,6 +5203,8 @@ export interface TranslationDict {
       errScrollNeedsCoords: string;
       /** type: AXSetValue succeeded. {elemId} */
       typeAxSuccess: string;
+    /** Windows replaces the value with guarded keystrokes, so it must not claim otherwise. */
+    typeAxSuccessWindows: string;
       /** type: AXSetValue failed, fallback to keyboard. {msg} */
       typeAxFallback: string;
       /** perform_action: missing action_name. */
@@ -4962,12 +5227,13 @@ export interface TranslationDict {
       errAxTypeNoSession: string;
       /** ax_type: AXSetValue succeeded. {elemId} */
       axTypeSuccess: string;
+      axTypeSuccessWindows: string;
       /** ax_type: AXSetValue failed, fallback to keyboard. {msg} */
       axTypeFallback: string;
       /** Screen recording permission denied (bilingual). zh half. */
       errNoScreenRecording: string;
       /** Windows: accessibility requires elevation (bilingual). zh half. */
-      errWindowsNeedsAdmin: string;
+      errWindowsControlUnavailable: string;
       /** macOS: accessibility permission denied (bilingual). zh half. */
       errMacOSNeedsAccessibility: string;
     };

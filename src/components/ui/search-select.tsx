@@ -136,7 +136,9 @@ const Dropdown = React.forwardRef<HTMLDivElement, {
       o.label.toLowerCase().includes(q) || (o.description ?? '').toLowerCase().includes(q));
   }, [options, query]);
   return (
-    <div ref={ref} style={style} className="z-[10001] flex flex-col rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg p-1.5" role="listbox">
+    // `data-portal-menu`：面板挂在 document.body 上，外层浮层判断「点在外面」
+    // 时要认得它，否则按下选项就先把外层关了。见 portal-menu.ts。
+    <div ref={ref} style={style} data-portal-menu="search-select" className="z-[10001] flex flex-col rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg p-1.5" role="listbox">
       <div className="relative px-1 pb-1.5 shrink-0">
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
         <Input

@@ -47,11 +47,12 @@ class FakeBrowserWindow {
   }
   setAlwaysOnTop() {}
   setVisibleOnAllWorkspaces() {}
-  setIgnoreMouseEvents() {}
+  setIgnoreMouseEvents(ignore) { this.clickThrough = ignore; }
   loadFile() { return Promise.resolve(); }
   hide() {}
   destroy() { this.destroyed = true; }
-  getBounds() { return { x: 0, y: 0, width: 80, height: 80 }; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 80, height: 80 }; }
+  setBounds(bounds) { this.bounds = bounds; }
   getPosition() { return [0, 0]; }
   static getAllWindows() { return created.filter((w) => !w.destroyed); }
   static fromWebContents() { return null; }
@@ -153,13 +154,16 @@ test('pet_show keeps the user-facing show() under the normal policy', () => {
   assert.deepEqual(pet.reveals, ['show', 'show']);
 });
 
-test('show_screen_border reveals the overlay and stop button inactive under the quiet policy, on first show and re-show', () => {
+test('show_screen_border reveals the overlay and control strip inactive under the quiet policy, on first show and re-show', () => {
   configureWindowShowPolicy(QUIET);
   assert.equal(guiDispatch(null, 'show_screen_border', { stopLabel: '停止' }), null);
-  assert.equal(created.length, 2, 'overlay + stop-button windows were created');
-  const [overlay, stopButton] = created;
-  assert.equal(overlay.options.focusable, false, 'first window is the click-through overlay');
-  assert.equal(stopButton.options.focusable, true, 'second window is the clickable stop button');
+  assert.equal(created.length, 2, 'overlay + control-strip windows were created');
+  // Both windows decline focus — a Stop click must not pull the foreground
+  // away from the app Abu is driving — so what tells them apart is the mouse:
+  // the overlay is click-through, the strip is what receives the click.
+  const [overlay, strip] = created;
+  assert.equal(overlay.clickThrough, true, 'first window is the click-through overlay');
+  assert.equal(strip.clickThrough, undefined, 'second window is the clickable control strip');
   for (const win of created) {
     assert.equal(win.options.show, false);
     win.emit('ready-to-show');

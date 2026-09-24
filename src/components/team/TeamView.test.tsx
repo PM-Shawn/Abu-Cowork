@@ -20,9 +20,31 @@ const settingsState = {
   closeTeam: vi.fn(),
 };
 
+const enterpriseState = vi.hoisted(() => ({
+  mode: { kind: 'personal' } as Record<string, unknown>,
+  hasAgentMarket: false,
+}));
+
 vi.mock('@/stores/settingsStore', () => ({
   useSettingsStore: (selector?: (state: Record<string, unknown>) => unknown) =>
     selector ? selector(settingsState) : settingsState,
+}));
+
+vi.mock('@/stores/enterpriseStore', () => ({
+  useEnterpriseStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({ mode: enterpriseState.mode }),
+    { subscribe: () => () => {}, getState: () => ({ mode: enterpriseState.mode }) },
+  ),
+}));
+
+vi.mock('@/core/enterprise/mounts-registry', () => ({
+  getEnterpriseMount: (key: string) => key === 'agentMarket' && enterpriseState.hasAgentMarket
+    ? ({ searchQuery, onClose }: { searchQuery?: string; onClose?: () => void }) => (
+      <div data-testid="organization-agents" data-query={searchQuery}>
+        <button onClick={onClose}>Open organization expert</button>
+      </div>
+    )
+    : undefined,
 }));
 
 const chatState = {
@@ -69,10 +91,11 @@ vi.mock('@/i18n', async () => {
   };
 });
 
-// Reactive stand-in for the plugin store: only `activationReady` matters here.
+// Reactive stand-in for the plugin store: `activationReady`, plus the installed
+// list a plugin team's badge and origin note name the plugin from.
 vi.mock('@/stores/pluginStore', async () => {
   const { create } = await import('zustand');
-  return { usePluginStore: create(() => ({ activationReady: true })) };
+  return { usePluginStore: create(() => ({ activationReady: true, installed: [] })) };
 });
 import { usePluginStore } from '@/stores/pluginStore';
 
@@ -149,7 +172,7 @@ function seedAgent(name: string, extra?: string | SeedExtra) {
 describe('TeamView', () => {
   beforeEach(() => {
     clearAllComposerDrafts();
-    useTeamStore.setState({ teams: []});
+    useTeamStore.setState({ teams: [], managedTeamSources: {} });
     // Every team seeded below is one the user assembled, so these assertions
     // are about the 「我的」 shelf; 市场 (the default) holds the built-in teams.
     useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine', teams: 'mine' } });
@@ -160,6 +183,8 @@ describe('TeamView', () => {
     chatState.conversationIndex = {};
     usePluginStore.setState({ activationReady: true });
     localeRef.current = 'zh-CN';
+    enterpriseState.mode = { kind: 'personal' };
+    enterpriseState.hasAgentMarket = false;
     vi.clearAllMocks();
   });
 
@@ -254,6 +279,23 @@ describe('TeamView', () => {
     expect(tabs).toEqual(['专家', '专家团']);
   });
 
+  it('teams tab: the header search filters the teams and says when nothing matches', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [
+      { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 },
+      { id: 't2', name: '增长小队', description: '拉新和留存', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    render(<TeamView />);
+    const search = screen.getByPlaceholderText('搜索...');
+
+    fireEvent.change(search, { target: { value: '留存' } });
+    expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+    expect(screen.getByTestId('team-row-增长小队')).toBeTruthy();
+
+    fireEvent.change(search, { target: { value: '不存在的团' } });
+    expect(screen.getByText('未找到专家团')).toBeTruthy();
+  });
+
   it('teams tab empty state offers creating a team', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
@@ -319,6 +361,79 @@ describe('TeamView', () => {
     expect(avatar).toBeDefined();
     expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
     expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
+  it('shows why an unavailable organization team cannot start', () => {
+    settingsState.activeTeamTab = 'teams';
+    // A bound client's 「市场」 is the organization's teams — the shelf the
+    // view already opens on.
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+    useTeamStore.getState().replaceManagedTeams('enterprise', [{
+      id: 'org-team',
+      name: '组织数据小队',
+      leaderRoleId: 'r-lead',
+      memberRoleIds: ['r-lead'],
+      createdAt: 1,
+      managed: {
+        source: 'enterprise',
+        id: 'org-team',
+        version: '1',
+        readOnly: true,
+        ready: false,
+        unavailableReason: '成员不可用：分析师',
+      },
+    }]);
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-组织数据小队'));
+
+    expect(screen.getByTestId('team-managed-unavailable')).toHaveTextContent('成员不可用：分析师');
+    expect(screen.getByTestId('team-detail-start-chat')).toBeDisabled();
+    expect(screen.queryByTestId('team-detail-menu')).toBeNull();
+  });
+
+  it('teams tab: a bound client\'s 市场 lists only the organization\'s teams and has nothing to add', () => {
+    settingsState.activeTeamTab = 'teams';
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [
+      ...useTeamStore.getState().teams,
+      { id: 't-mine', name: '我的小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+    useTeamStore.getState().replaceManagedTeams('enterprise', [{
+      id: 'org-team',
+      name: '组织数据小队',
+      leaderRoleId: 'r-lead',
+      memberRoleIds: ['r-lead'],
+      createdAt: 1,
+      managed: { source: 'enterprise', id: 'org-team', version: '1', readOnly: true, ready: true },
+    }]);
+    const { rerender } = render(<TeamView />);
+
+    expect(screen.getByTestId('team-row-组织数据小队')).toBeTruthy();
+    expect(screen.queryByTestId('team-row-我的小队')).toBeNull();
+    expect(screen.queryAllByTestId(/^team-row-/)).toHaveLength(1);
+    expect(screen.queryByTestId('team-create-trigger')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('team-source-mine'));
+    rerender(<TeamView />);
+    expect(screen.getByTestId('team-row-我的小队')).toBeTruthy();
+    expect(screen.queryByTestId('team-row-组织数据小队')).toBeNull();
+    expect(screen.getByTestId('team-create-trigger')).toBeVisible();
   });
 
   it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {
@@ -394,6 +509,19 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByText('移除'));
     expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead', 'r-mem']);
     expect(screen.queryByTestId('team-member-invalid-r-gone')).toBeNull();
+  });
+
+  it('teams tab: a plugin team lists an invalid member without offering to remove it', () => {
+    // The plugin owns its roster, and updateTeam keeps read-only teams as they
+    // are, so a 移除 here would do nothing.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 'plugin-team:shop@market/crew', name: '店铺小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-gone'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-店铺小队'));
+    expect(screen.getByTestId('team-member-invalid-r-gone').textContent).toContain('已失效');
+    expect(screen.queryByText('移除')).toBeNull();
   });
 
   it('team dialog: an invalid member is listed, kept on save unless removed', async () => {
@@ -523,6 +651,40 @@ describe('TeamView', () => {
     settingsState.activeTeamTab = 'members';
     render(<TeamView />);
     expect(screen.getByTestId('agents-section')).toBeTruthy();
+  });
+
+  // A bound client's 「市场」 is the organization's catalog on every surface —
+  // skills, connectors, plugins, and experts alike. 「我的」 stays this user's.
+  it('members tab: a bound enterprise client gets the organization catalog on 市场', () => {
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    enterpriseState.hasAgentMarket = true;
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    render(<TeamView />);
+
+    expect(screen.queryByTestId('team-source-organization')).toBeNull();
+    expect(screen.getByTestId('organization-agents')).toBeVisible();
+    expect(screen.queryByTestId('agents-section')).toBeNull();
+    expect(screen.queryByTestId('member-create-trigger')).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('搜索...'), { target: { value: '审阅' } });
+    expect(screen.getByTestId('organization-agents')).toHaveAttribute('data-query', '审阅');
+    fireEvent.click(screen.getByRole('button', { name: 'Open organization expert' }));
+    expect(settingsState.closeTeam).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('team-source-mine'));
+    expect(screen.getByTestId('agents-section')).toBeVisible();
+    expect(screen.getByTestId('member-create-trigger')).toBeVisible();
+  });
+
+  // An unbound client keeps Abu's own shelf under the same name.
+  it('members tab: an unbound client gets Abu’s own experts on 市场', () => {
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    render(<TeamView />);
+    expect(screen.queryByTestId('organization-agents')).toBeNull();
+    expect(screen.getByTestId('agents-section')).toBeVisible();
   });
 
   it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', () => {

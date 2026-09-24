@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { sanitizeTrajectoryAttributes, normalizeTrajectoryEvent, replayComputerUseTrajectory } = require('./computerUseTrajectory.cjs');
 
 const RUNTIME_EVENT_CHANNEL = 'abu:runtime-event';
 const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
@@ -14,6 +15,12 @@ const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_RECENT_EVENTS = 1_000;
 const MAX_STRING_CHARS = 160;
 const BRIDGE_ACK_TIMEOUT_MS = 3_000;
+// A pending entry is normally removed when its response arrives, its write
+// fails, or the sidecar closes. A response line that never comes back (a lost
+// stdout line, a method the sidecar answers out-of-band) would otherwise keep
+// its entry for the life of the process, so the map is bounded the same way
+// sidecarRunRegistry bounds its own pendingRequests: oldest insertion first.
+const MAX_PENDING_RPCS = 500;
 
 const SAFE_ATTRIBUTE_KEYS = new Set([
   'runId',
@@ -27,6 +34,18 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'sidecarGeneration',
   'durationMs',
   'payloadBytes',
+  'limitBytes',
+  'ledgerWatermarkBytes',
+  'ledgerFileBytes',
+  'fieldMessagesTextBytes',
+  'fieldUserMessageBytes',
+  'fieldRouteBytes',
+  'fieldToolResultsBytes',
+  'fieldToolContextResultsBytes',
+  'fieldMediaBase64Bytes',
+  'fieldToolListBytes',
+  'fieldSystemPromptBytes',
+  'fieldSettingsBytes',
   'frameCount',
   'pendingRpcCount',
   'reason',
@@ -67,6 +86,24 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'subscriptionCount',
   'exitCode',
   'windowLabel',
+  'snapshotRevision',
+  'accessibilityRevision',
+  'inputEpoch',
+  'cacheKind',
+  'cacheHit',
+  'invalidationReason',
+  'inputRejectionReason',
+  'zIndex',
+  'trajectorySequence',
+  'trajectoryVersion',
+  'trajectoryId',
+  'approvalKind',
+  'approvalDecision',
+  'supervisorState',
+  'approvalPaused',
+  'windowGraphRevision',
+  'outcomeUnknown',
+  'consequential',
 ]);
 
 /**
@@ -134,6 +171,10 @@ function sanitizeEventName(value) {
   return value;
 }
 
+// #549 step 0: every shell→sidecar RPC whose payload grows with the
+// conversation is measured, not only agent.run/abort.
+const TRACKED_RPC_METHODS = new Set(['agent.start', 'agent.run', 'agent.abort', 'llm.chat', 'subagent.run']);
+
 function parseJsonRpcMetadata(message) {
   if (typeof message !== 'string') return null;
   let parsed;
@@ -167,6 +208,7 @@ function createRuntimeState({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   bridgeAckTimeoutMs = BRIDGE_ACK_TIMEOUT_MS,
+  maxPendingRpcs = MAX_PENDING_RPCS,
 } = {}) {
   const sidecars = new Map();
   const pendingRpcs = new Map();
@@ -345,24 +387,92 @@ function createRuntimeState({
     });
   }
 
-  function noteRpcWriteStarted(id, message) {
-    if (id !== SIDECAR_ID) return null;
-    const metadata = parseJsonRpcMetadata(message);
-    if (!metadata?.method || !['agent.run', 'agent.abort'].includes(metadata.method)) return null;
+  function noteNativeHelperSupervisorTransition(snapshot = {}) {
+    emitEvent('main', 'main.native_helper_supervisor_transition', {
+      helperGeneration: snapshot.generation,
+      supervisorState: snapshot.state,
+      command: typeof snapshot.activeMethod === 'string' ? snapshot.activeMethod : undefined,
+      pendingRpcCount: snapshot.pendingCount,
+      approvalPaused: snapshot.approvalPaused === true,
+    });
+  }
+
+  function noteComputerUseObservation(attributes = {}) {
+    emitEvent('main', 'main.computer_use_observation', {
+      snapshotRevision: attributes.snapshotRevision,
+      accessibilityRevision: attributes.accessibilityRevision,
+      inputEpoch: attributes.inputEpoch,
+      zIndex: attributes.zIndex,
+      outcome: 'success',
+    });
+  }
+
+  function noteComputerUseCache(cacheKind, cacheHit, accessibilityRevision) {
+    emitEvent('main', 'main.computer_use_cache', {
+      cacheKind,
+      cacheHit: Boolean(cacheHit),
+      accessibilityRevision,
+    });
+  }
+
+  function noteComputerUseInvalidation(invalidationReason) {
+    emitEvent('main', 'main.computer_use_invalidated', { invalidationReason });
+  }
+
+  function noteComputerUseInputRejected(inputRejectionReason) {
+    emitEvent('main', 'main.computer_use_input_rejected', {
+      inputRejectionReason,
+      outcome: 'error',
+    });
+  }
+
+  function noteComputerUseTrajectory(attributes = {}) {
+    const safe = sanitizeTrajectoryAttributes(attributes);
+    if (safe) emitEvent('main', 'main.computer_use_trajectory', safe);
+  }
+
+  function startTrackedRpc(id, { method, rpcId, runId, payloadBytes }) {
     const startedAt = now();
     const rpc = {
       sidecarId: id,
       sidecarGeneration: sidecarGeneration(id),
-      runId: metadata.runId,
-      rpcId: metadata.rpcId,
-      method: metadata.method,
-      payloadBytes: metadata.payloadBytes,
+      runId,
+      rpcId,
+      method,
+      payloadBytes,
       stage: 'stdin_write',
       startedAt,
     };
-    if (metadata.rpcId) pendingRpcs.set(pendingKey(id, metadata.rpcId), rpc);
+    if (rpcId) {
+      pendingRpcs.set(pendingKey(id, rpcId), rpc);
+      while (pendingRpcs.size > maxPendingRpcs) {
+        pendingRpcs.delete(pendingRpcs.keys().next().value);
+      }
+    }
     emitEvent('main', 'main.rpc_write_started', rpc);
     return rpc;
+  }
+
+  function noteRpcWriteStarted(id, message) {
+    if (id !== SIDECAR_ID) return null;
+    const metadata = parseJsonRpcMetadata(message);
+    if (!metadata?.method || !TRACKED_RPC_METHODS.has(metadata.method)) return null;
+    return startTrackedRpc(id, metadata);
+  }
+
+  // #549 raw-body writes: the routing facts come from the validated headers
+  // (clipped exactly like parseJsonRpcMetadata) so main never JSON.parses a
+  // body that can be 100+ MiB. payloadBytes is the body length.
+  function noteRpcWriteStartedMeta(id, meta, payloadBytes) {
+    if (id !== SIDECAR_ID || !meta || typeof meta.method !== 'string') return null;
+    const method = meta.method.slice(0, 80);
+    if (!TRACKED_RPC_METHODS.has(method)) return null;
+    return startTrackedRpc(id, {
+      method,
+      rpcId: typeof meta.rpcId === 'string' ? meta.rpcId.slice(0, 80) : undefined,
+      runId: typeof meta.runId === 'string' ? meta.runId.slice(0, MAX_STRING_CHARS) : undefined,
+      payloadBytes,
+    });
   }
 
   function noteRpcWriteFinished(rpc, errorType) {
@@ -572,8 +682,15 @@ function createRuntimeState({
     noteNativeHelperCrashed,
     noteNativeHelperStopped,
     noteNativeHelperCallTimeout,
+    noteNativeHelperSupervisorTransition,
+    noteComputerUseObservation,
+    noteComputerUseCache,
+    noteComputerUseInvalidation,
+    noteComputerUseInputRejected,
+    noteComputerUseTrajectory,
     noteCommandFinished,
     noteRpcWriteStarted,
+    noteRpcWriteStartedMeta,
     noteRpcWriteFinished,
     noteStdoutLine,
     noteRendererEvent,
@@ -658,9 +775,16 @@ function emitRuntimeEvent(processName, event, attributes) {
 
 const runtimeState = createRuntimeState({ emit: emitRuntimeEvent });
 
+function serializeTrajectoryRecord(raw) {
+  const trajectory = normalizeTrajectoryEvent(raw);
+  return trajectory ? JSON.stringify({ schemaVersion: SCHEMA_VERSION,
+    event: 'main.computer_use_trajectory', process: 'main', ...trajectory }) : null;
+}
+
 function readPersistedEvents() {
   const paths = logFilePath ? [`${logFilePath}.old`, logFilePath] : [];
   const lines = [];
+  let invalidRecordCount = 0;
   for (const filePath of paths) {
     try {
       const content = fs.readFileSync(filePath, 'utf8');
@@ -668,6 +792,14 @@ function readPersistedEvents() {
         if (!line.trim()) continue;
         try {
           const parsed = JSON.parse(line);
+          if (parsed?.event === 'main.computer_use_trajectory') {
+            // Validate raw numeric/version fields before the generic logger's
+            // rounding/clamping can turn damaged records into valid evidence.
+            const trajectory = serializeTrajectoryRecord(parsed);
+            if (trajectory) lines.push(trajectory);
+            else invalidRecordCount++;
+            continue;
+          }
           const event = sanitizeEventName(parsed?.event);
           const processName = ['renderer', 'main', 'sidecar'].includes(parsed?.process) ? parsed.process : null;
           if (parsed?.schemaVersion === SCHEMA_VERSION && event && processName) {
@@ -681,23 +813,34 @@ function readPersistedEvents() {
             }));
           }
         } catch {
-          // Ignore a partial final line after an abrupt process exit.
+          // Retain evidence of damage, never the malformed/private content.
+          invalidRecordCount++;
         }
       }
-    } catch {
+    } catch (error) {
       // Missing/unreadable log files are valid on a fresh install.
+      if (error.code !== 'ENOENT') invalidRecordCount++;
     }
   }
-  return lines.slice(-MAX_RECENT_EVENTS);
+  return { lines: lines.slice(-MAX_RECENT_EVENTS), invalidRecordCount, truncated: lines.length > MAX_RECENT_EVENTS };
 }
 
 function getRuntimeDiagnostics() {
-  const mergedEventLines = new Set(readPersistedEvents());
-  for (const event of recentEvents) mergedEventLines.add(JSON.stringify(event));
+  const persisted = readPersistedEvents();
+  const mergedEventLines = new Set(persisted.lines);
+  for (const event of recentEvents) {
+    const line = event.event === 'main.computer_use_trajectory' ? serializeTrajectoryRecord(event) : JSON.stringify(event);
+    if (line) mergedEventLines.add(line);
+  }
+  const recentEventLines = Array.from(mergedEventLines).slice(-MAX_RECENT_EVENTS);
   return {
     schemaVersion: SCHEMA_VERSION,
     appSessionId,
-    recentEventLines: Array.from(mergedEventLines).slice(-MAX_RECENT_EVENTS),
+    recentEventLines,
+    computerUseReplay: replayComputerUseTrajectory(recentEventLines, {
+      droppedInvalidRecordCount: persisted.invalidRecordCount,
+      inputTruncated: persisted.truncated || mergedEventLines.size > MAX_RECENT_EVENTS,
+    }),
     ...runtimeState.snapshot(),
   };
 }

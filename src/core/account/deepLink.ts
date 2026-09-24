@@ -41,7 +41,7 @@ export function parseAccountAuthCallback(raw: string): AccountAuthCallback | nul
     url.username ||
     url.password ||
     url.port ||
-    url.pathname !== '' ||
+    (url.pathname !== '' && url.pathname !== '/') ||
     url.hash
   ) return null;
   const codes = url.searchParams.getAll('code');

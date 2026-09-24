@@ -1475,6 +1475,7 @@ const zhCN: TranslationDict = {
       aiAuth: 'API Key 无效或已过期',
       aiContentPolicy: '上游内容安全系统拒绝了请求（通常由对话历史触发，可尝试新开会话继续）',
       aiRateLimit: '请求频率超限，稍后再试',
+      aiQuotaExceeded: '本周期的额度已经用完，请联系管理员调整',
       aiOverloaded: 'provider 服务繁忙，稍后再试',
       aiServerError: 'provider 服务异常，稍后再试',
       aiNetworkError: '无法连接到 provider，请检查网络',

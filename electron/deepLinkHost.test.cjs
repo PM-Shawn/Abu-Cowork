@@ -128,6 +128,23 @@ test('rejects OAuth callbacks with path, fragment, or userinfo', () => {
   assert.equal(deepLinkHost.normalizeDeepLinkUrl('abu://user@auth?code=c&state=s'), null);
 });
 
+test('accepts the OAuth callback shape a Windows protocol launch delivers', () => {
+  // ShellExecute normalizes the redirect before handing it to the handler, so
+  // the real argv carries `abu://auth/?…`. The browser login depends on that
+  // form reaching the renderer.
+  assert.equal(
+    deepLinkHost.normalizeDeepLinkUrl('abu://auth/?code=c&state=s'),
+    'abu://auth/?code=c&state=s',
+  );
+  assert.equal(
+    deepLinkHost.extractDeepLinkFromArgv([
+      'C:\\Users\\someone\\AppData\\Local\\Programs\\abu\\Abu.exe',
+      'abu://auth/?code=c&state=s',
+    ]),
+    'abu://auth/?code=c&state=s',
+  );
+});
+
 test('never logs OAuth codes or state while preserving accepted payloads', () => {
   const listeners = new Map();
   const logs = [];

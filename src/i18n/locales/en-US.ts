@@ -3262,7 +3262,6 @@ const enUS: TranslationDict = {
       syncing: 'Syncing organization experts…',
       noMatches: 'No matching organization experts',
       empty: 'No experts have been published or assigned by your administrator',
-      managedGroup: 'Provided by your organization',
       configured: 'Configured by organization',
       dependenciesPending: 'Dependencies not ready',
       preparing: 'Preparing…',

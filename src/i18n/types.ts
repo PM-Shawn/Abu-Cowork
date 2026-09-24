@@ -3999,7 +3999,6 @@ export interface TranslationDict {
       syncing: string;
       noMatches: string;
       empty: string;
-      managedGroup: string;
       configured: string;
       dependenciesPending: string;
       preparing: string;

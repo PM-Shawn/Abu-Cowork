@@ -3264,7 +3264,6 @@ const zhCN: TranslationDict = {
       syncing: '正在同步组织专家…',
       noMatches: '没有匹配的组织专家',
       empty: '管理员还没有发布或分配专家',
-      managedGroup: '组织下发',
       configured: '组织已配置',
       dependenciesPending: '依赖未就绪',
       preparing: '正在准备…',

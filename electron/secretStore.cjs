@@ -28,8 +28,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { safeStorage } = require('electron');
 const { abuAppDataDir } = require('./appEnv.cjs');
-
-const STORE_FILENAME = 'secrets.enc.json';
+const { secretStoreFileName } = require('./devShellIdentity.cjs');
 
 /** @type {string | null} */
 let filePath = null;
@@ -137,7 +136,7 @@ function initSecretStore(app) {
   } catch {
     /* best-effort; write path below will surface a real error if this failed */
   }
-  filePath = path.join(dir, STORE_FILENAME);
+  filePath = path.join(dir, secretStoreFileName({ isPackaged: app.isPackaged }));
 
   try {
     encryptionAvailable = safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== 'basic_text';

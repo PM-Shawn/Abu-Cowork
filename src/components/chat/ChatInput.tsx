@@ -47,7 +47,7 @@ import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { getModelUnavailableReason, getModelDisplayLabel } from '@/utils/settingsSelectors';
 import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
-import { useTeamStore } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { fileReferenceForPath, InvalidAttachmentPathError } from '@/utils/fileReference';
@@ -553,8 +553,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
-  const allTeams = useTeamStore((store) => store.teams);
-  const activeTeams = allTeams;
+  const activeTeams = useVisibleTeams().filter(team => !team.managed || team.managed.ready);
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
   const [menuPicker, setMenuPicker] = useState<{ type: 'skill' | 'agent'; query: string } | null>(null);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -843,11 +842,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
   const setPendingTeamId = useChatStore((s) => s.setPendingTeamId);
   const pinnedTeamId = activeConvId ? activeConv?.teamId : pendingTeamId;
-  // Selector rather than `activeTeams.find` on the per-render filtered array:
-  // that form makes the React Compiler drop the component's memoization.
-  const pinnedTeam = useTeamStore((store) => (
-    pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId) ?? null : null
-  ));
+  const pinnedTeam = pinnedTeamId ? activeTeams.find((team) => team.id === pinnedTeamId) ?? null : null;
   const pinTeam = useCallback((teamId: string | undefined) => {
     if (teamId) {
       setSelectedAgent(null);
@@ -1346,7 +1341,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setSelection((prev) => (
       prev.start === start && prev.end === end ? prev : { start, end }
     ));
-  }, []);
+  }, [setSelection]);
 
   const resolveDomAgentMentionTarget = useCallback((textarea: InlineSkillInputHandle): AgentMentionTarget | null => {
     if (/^\s*\/\S*/.test(textarea.value)) return null;

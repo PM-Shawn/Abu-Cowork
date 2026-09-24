@@ -20,9 +20,31 @@ const settingsState = {
   closeTeam: vi.fn(),
 };
 
+const enterpriseState = vi.hoisted(() => ({
+  mode: { kind: 'personal' } as Record<string, unknown>,
+  hasAgentMarket: false,
+}));
+
 vi.mock('@/stores/settingsStore', () => ({
   useSettingsStore: (selector?: (state: Record<string, unknown>) => unknown) =>
     selector ? selector(settingsState) : settingsState,
+}));
+
+vi.mock('@/stores/enterpriseStore', () => ({
+  useEnterpriseStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({ mode: enterpriseState.mode }),
+    { subscribe: () => () => {}, getState: () => ({ mode: enterpriseState.mode }) },
+  ),
+}));
+
+vi.mock('@/core/enterprise/mounts-registry', () => ({
+  getEnterpriseMount: (key: string) => key === 'agentMarket' && enterpriseState.hasAgentMarket
+    ? ({ searchQuery, onClose }: { searchQuery?: string; onClose?: () => void }) => (
+      <div data-testid="organization-agents" data-query={searchQuery}>
+        <button onClick={onClose}>Open organization expert</button>
+      </div>
+    )
+    : undefined,
 }));
 
 const chatState = {
@@ -120,23 +142,6 @@ vi.mock('@/core/team/roleIdentity', () => ({
 // real component's one contract with TeamView: it opens a blank editor from an
 // effect whenever it sees `manualCreateTrigger > 0` (counted in `editorOpens`),
 // and exposes the value it received as `data-trigger`.
-// Personal by default, so every case below sees Abu's own shelves. The one
-// case that needs a bound client flips this before rendering.
-const enterpriseState: { mode: Record<string, unknown> } = { mode: { kind: 'personal' } };
-vi.mock('@/stores/enterpriseStore', () => ({
-  useEnterpriseStore: Object.assign(
-    (selector: (state: Record<string, unknown>) => unknown) => selector(enterpriseState),
-    { subscribe: () => () => {}, getState: () => enterpriseState },
-  ),
-}));
-vi.mock('@/core/enterprise/mounts-registry', () => ({
-  getEnterpriseMount: (slot: string) => (slot === 'agentMarket'
-    ? ({ searchQuery = '' }: { searchQuery?: string }) => (
-      <div data-testid="organization-experts">Organization experts: {searchQuery}</div>
-    )
-    : undefined),
-}));
-
 const editorOpens = vi.fn();
 vi.mock('@/components/customize/AgentsSection', async () => {
   const { useEffect } = await import('react');
@@ -166,7 +171,7 @@ function seedAgent(name: string, extra?: string | SeedExtra) {
 describe('TeamView', () => {
   beforeEach(() => {
     clearAllComposerDrafts();
-    useTeamStore.setState({ teams: []});
+    useTeamStore.setState({ teams: [], managedTeamSources: {} });
     // Every team seeded below is one the user assembled, so these assertions
     // are about the 「我的」 shelf; 市场 (the default) holds the built-in teams.
     useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine', teams: 'mine' } });
@@ -177,6 +182,8 @@ describe('TeamView', () => {
     chatState.conversationIndex = {};
     usePluginStore.setState({ activationReady: true });
     localeRef.current = 'zh-CN';
+    enterpriseState.mode = { kind: 'personal' };
+    enterpriseState.hasAgentMarket = false;
     vi.clearAllMocks();
   });
 
@@ -353,6 +360,79 @@ describe('TeamView', () => {
     expect(avatar).toBeDefined();
     expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
     expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
+  it('shows why an unavailable organization team cannot start', () => {
+    settingsState.activeTeamTab = 'teams';
+    // A bound client's 「市场」 is the organization's teams — the shelf the
+    // view already opens on.
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+    useTeamStore.getState().replaceManagedTeams('enterprise', [{
+      id: 'org-team',
+      name: '组织数据小队',
+      leaderRoleId: 'r-lead',
+      memberRoleIds: ['r-lead'],
+      createdAt: 1,
+      managed: {
+        source: 'enterprise',
+        id: 'org-team',
+        version: '1',
+        readOnly: true,
+        ready: false,
+        unavailableReason: '成员不可用：分析师',
+      },
+    }]);
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-组织数据小队'));
+
+    expect(screen.getByTestId('team-managed-unavailable')).toHaveTextContent('成员不可用：分析师');
+    expect(screen.getByTestId('team-detail-start-chat')).toBeDisabled();
+    expect(screen.queryByTestId('team-detail-menu')).toBeNull();
+  });
+
+  it('teams tab: a bound client\'s 市场 lists only the organization\'s teams and has nothing to add', () => {
+    settingsState.activeTeamTab = 'teams';
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [
+      ...useTeamStore.getState().teams,
+      { id: 't-mine', name: '我的小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+    useTeamStore.getState().replaceManagedTeams('enterprise', [{
+      id: 'org-team',
+      name: '组织数据小队',
+      leaderRoleId: 'r-lead',
+      memberRoleIds: ['r-lead'],
+      createdAt: 1,
+      managed: { source: 'enterprise', id: 'org-team', version: '1', readOnly: true, ready: true },
+    }]);
+    const { rerender } = render(<TeamView />);
+
+    expect(screen.getByTestId('team-row-组织数据小队')).toBeTruthy();
+    expect(screen.queryByTestId('team-row-我的小队')).toBeNull();
+    expect(screen.queryAllByTestId(/^team-row-/)).toHaveLength(1);
+    expect(screen.queryByTestId('team-create-trigger')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('team-source-mine'));
+    rerender(<TeamView />);
+    expect(screen.getByTestId('team-row-我的小队')).toBeTruthy();
+    expect(screen.queryByTestId('team-row-组织数据小队')).toBeNull();
+    expect(screen.getByTestId('team-create-trigger')).toBeVisible();
   });
 
   it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {
@@ -561,27 +641,36 @@ describe('TeamView', () => {
 
   // A bound client's 「市场」 is the organization's catalog on every surface —
   // skills, connectors, plugins, and experts alike. 「我的」 stays this user's.
-  it('members tab: a bound client gets the organization experts on 市场', () => {
-    settingsState.activeTeamTab = 'members';
+  it('members tab: a bound enterprise client gets the organization catalog on 市场', () => {
     enterpriseState.mode = {
       kind: 'enterprise',
       binding: { serverUrl: 'https://enterprise.example' },
       config: null,
     };
-    try {
-      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'market' } });
-      const { rerender } = render(<TeamView />);
-      expect(screen.getByTestId('organization-experts')).toBeTruthy();
-      expect(screen.queryByTestId('agents-section')).toBeNull();
+    enterpriseState.hasAgentMarket = true;
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    render(<TeamView />);
 
-      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine' } });
-      rerender(<TeamView />);
-      expect(screen.getByTestId('agents-section')).toBeTruthy();
-      expect(screen.queryByTestId('organization-experts')).toBeNull();
-    } finally {
-      enterpriseState.mode = { kind: 'personal' };
-      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
-    }
+    expect(screen.queryByTestId('team-source-organization')).toBeNull();
+    expect(screen.getByTestId('organization-agents')).toBeVisible();
+    expect(screen.queryByTestId('agents-section')).toBeNull();
+    expect(screen.queryByTestId('member-create-trigger')).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('搜索...'), { target: { value: '审阅' } });
+    expect(screen.getByTestId('organization-agents')).toHaveAttribute('data-query', '审阅');
+    fireEvent.click(screen.getByRole('button', { name: 'Open organization expert' }));
+    expect(settingsState.closeTeam).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('team-source-mine'));
+    expect(screen.getByTestId('agents-section')).toBeVisible();
+    expect(screen.getByTestId('member-create-trigger')).toBeVisible();
+  });
+
+  // An unbound client keeps Abu's own shelf under the same name.
+  it('members tab: an unbound client gets Abu’s own experts on 市场', () => {
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    render(<TeamView />);
+    expect(screen.queryByTestId('organization-agents')).toBeNull();
+    expect(screen.getByTestId('agents-section')).toBeVisible();
   });
 
   it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', () => {

@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
-import { useTeamStore, type Team } from '@/stores/teamStore';
+import { getVisibleTeams, selectVisibleTeams, useTeamStore, type Team } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useChatStore } from '@/stores/chatStore';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { teamIdentity } from '@/core/team/expertContact';
-import { useToastStore } from '@/stores/toastStore';
-import { agentRegistry } from '@/core/agent/registry';
-import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
+import { useToastStore } from '@/stores/toastStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
 import { useI18n, format } from '@/i18n';
@@ -141,7 +141,6 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
-  const allTeams = useTeamStore((s) => s.teams);
   const agents = useMemberPool();
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
 
@@ -208,7 +207,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   // Exact match, not case-insensitive: this mirrors the store's own rule
   // (`createTeam` / `updateTeam`), and a dialog that refused more than the
   // store does would block names the user can save from anywhere else.
-  const nameTaken = allTeams.some((other) => other.id !== team?.id && other.name === name.trim());
+  const nameTaken = getVisibleTeams().some((other) => other.id !== team?.id && other.name === name.trim());
   const handleSave = async () => {
     if (!name.trim() || nameTaken || (!leaderName && !leaderKept) || saving) return;
     setSaving(true);
@@ -398,14 +397,8 @@ export default function TeamView() {
   // the two pages show the same pair over different rosters).
   const sources = useExtensionSourceStore((s) => s.sources);
   const setSource = useExtensionSourceStore((s) => s.setSource);
-  const enterpriseMode = useEnterpriseStore((s) => s.mode);
-  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
-    ? enterpriseMode.binding
-    : null;
-  const enterpriseConfig = enterpriseMode.kind === 'enterprise'
-    ? enterpriseMode.config
-    : enterpriseMode.kind === 'offline' ? enterpriseMode.lastConfig : null;
   const teams = useTeamStore((s) => s.teams);
+  const managedTeamSources = useTeamStore((s) => s.managedTeamSources);
   // Roles resolve through the agent registry, which is not a React-reactive
   // source; subscribe to discovery so the card grid re-renders when the roster
   // changes (same reason useConversationTeam subscribes — useTeamDispatches.ts).
@@ -416,6 +409,16 @@ export default function TeamView() {
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseConfig = enterpriseMode.kind === 'enterprise'
+    ? enterpriseMode.config
+    : enterpriseMode.kind === 'offline'
+      ? enterpriseMode.lastConfig
+      : null;
+  const OrganizationAgents = getEnterpriseMount('agentMarket');
 
   // Prepare a draft; opening an expert never creates an empty history entry.
   const startChatWithTeam = (team: Team, prompt?: string) => {
@@ -449,7 +452,10 @@ export default function TeamView() {
     setManualCreateTrigger(0);
   }, [activeTeamTab]);
 
-  const activeTeams = teams;
+  const activeTeams = useMemo(
+    () => selectVisibleTeams({ teams, managedTeamSources }),
+    [teams, managedTeamSources],
+  );
 
   // `_agents` / `_ready` are unused by value — they exist only to make
   // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
@@ -496,8 +502,12 @@ export default function TeamView() {
       </div>
     );
 
+    // The organization's catalog is the administrator's to edit, so the shelf
+    // showing it carries no create control.
+    const canCreateHere = !(enterpriseBinding && sources[activeTeamTab] === 'market'
+      && (activeTeamTab === 'teams' || OrganizationAgents));
     let createControl: ReactNode = null;
-    if (activeTeamTab === 'members') {
+    if (canCreateHere && activeTeamTab === 'members') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateMember}
@@ -505,7 +515,7 @@ export default function TeamView() {
           triggerTestId="member-create-trigger"
         />
       );
-    } else if (activeTeamTab === 'teams') {
+    } else if (canCreateHere && activeTeamTab === 'teams') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateTeam}
@@ -525,9 +535,15 @@ export default function TeamView() {
         // same way it already is for skills, connectors and plugins. The slot
         // is optional, so a build without one falls through to Abu's own
         // shelf.
-        const Market = enterpriseBinding ? getEnterpriseMount('agentMarket') : undefined;
-        if (sources.members === 'market' && Market && enterpriseBinding) {
-          return <Market binding={enterpriseBinding} config={enterpriseConfig} searchQuery={search} />;
+        if (sources.members === 'market' && OrganizationAgents && enterpriseBinding) {
+          return (
+            <OrganizationAgents
+              binding={enterpriseBinding}
+              config={enterpriseConfig}
+              searchQuery={search}
+              onClose={closeTeam}
+            />
+          );
         }
         // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} />;
@@ -535,11 +551,14 @@ export default function TeamView() {
       case 'teams': {
         const source = sources.teams;
         // One shelf at a time — which one is the sub-nav's job to say, so the
-        // group heading that used to name it here is gone. 「市场」 is the teams
-        // Abu ships; 「我的」 the ones this user assembled.
+        // group heading that used to name it here is gone. 「市场」 names
+        // whoever is offering: the organization's teams in a bound client, the
+        // teams Abu ships otherwise. 「我的」 is the ones this user assembled.
         const list = source === 'mine'
-          ? activeTeams.filter((team) => !isBuiltinTeam(team))
-          : activeTeams.filter(isBuiltinTeam);
+          ? activeTeams.filter((team) => !isBuiltinTeam(team) && !team.managed)
+          : enterpriseBinding
+            ? activeTeams.filter((team) => !!team.managed)
+            : activeTeams.filter(isBuiltinTeam);
         // Same grid + card the 专家 tab uses (ToolGrid/ToolCard), not a
         // hand-rolled row: a team and a member are peers in this surface.
         const card = (team: Team) => (
@@ -626,6 +645,7 @@ export default function TeamView() {
               size="sm"
               className="rounded-xl"
               onClick={() => startChatWithTeam(detailTeam)}
+              disabled={detailTeam.managed?.ready === false}
               data-testid="team-detail-start-chat"
             >
               <MessageCircle className="h-3.5 w-3.5" />
@@ -634,7 +654,7 @@ export default function TeamView() {
           </div>
         ) : undefined}
         headerActions={detailTeam ? (() => {
-          const readOnly = isBuiltinTeam(detailTeam);
+          const readOnly = isBuiltinTeam(detailTeam) || !!detailTeam.managed;
           return (
             <>
               {!readOnly && (
@@ -707,6 +727,15 @@ export default function TeamView() {
           };
           return (
             <div className="space-y-5">
+              {detailTeam.managed?.ready === false && (
+                <div
+                  className="rounded-lg border border-[var(--abu-danger)]/30 bg-[var(--abu-danger-bg)] px-3 py-2 text-caption text-[var(--abu-danger)]"
+                  data-testid="team-managed-unavailable"
+                >
+                  <div className="font-medium">{t.team.detailUnavailable}</div>
+                  {detailTeam.managed.unavailableReason && <div className="mt-0.5">{detailTeam.managed.unavailableReason}</div>}
+                </div>
+              )}
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
                 {leader
@@ -733,7 +762,7 @@ export default function TeamView() {
                         <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
                           <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
                           <InvalidMemberText label={m.label} reason={t.team.memberInvalidReason} />
-                          <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>
+                          {!detailTeam.managed && <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>}
                         </div>
                       ))}
                     </div>}

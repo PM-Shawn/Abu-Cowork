@@ -42,7 +42,8 @@ import ScenarioGuide from './ScenarioGuide';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeamById } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
@@ -256,7 +257,8 @@ export default function ChatView({
   // conversation owns it instead, so welcome identity follows the same source.
   const pendingTeamId = useChatStore((s) => s.pendingTeamId);
   const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
-  const welcomeTeam = useTeamStore((s) => s.teams.find((team) => team.id === welcomeTeamId));
+  const visibleTeams = useVisibleTeams();
+  const welcomeTeam = visibleTeams.find((team) => team.id === welcomeTeamId);
   const expertPrompts = pendingAgent
     ? pendingAgent.samplePromptsI18n?.[locale] ?? pendingAgent.samplePrompts
     : welcomeTeam?.samplePrompts;
@@ -857,7 +859,7 @@ export default function ChatView({
     // A conversation already pinned to another team is not silently re-pinned:
     // say so and send the text as typed (the chip is the way to switch).
     if (teamMention && activeConv?.teamId && activeConv.teamId !== teamMention.teamId) {
-      const current = useTeamStore.getState().teams.find((team) => team.id === activeConv.teamId)?.name ?? '';
+      const current = getVisibleTeamById(activeConv.teamId)?.name ?? '';
       useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current, other: teamMention.teamName }) });
       return false;
     }
@@ -873,7 +875,8 @@ export default function ChatView({
     if (!activeConv?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
       const addressedName = !teamMention ? /^@([^\s]+)/.exec(text)?.[1] : undefined;
       const addressedAgent = addressedName ? agentRegistry.getAgent(addressedName) : undefined;
-      const team = useTeamStore.getState().teams.find((candidate) => candidate.id === (teamMention?.teamId ?? welcomeTeamId));
+      const teamId = teamMention?.teamId ?? welcomeTeamId;
+      const team = teamId ? getVisibleTeamById(teamId) : undefined;
       if (addressedAgent) {
         let identity = expertIdentity(addressedAgent, locale);
         const shown = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : undefined;

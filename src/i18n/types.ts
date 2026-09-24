@@ -2050,6 +2050,7 @@ export interface TranslationDict {
     /** Singular of `teamRowSummary`, for exactly one member. */
     teamRowSummaryOne: string;
     detailStartChat: string;
+    detailUnavailable: string;
     detailLeader: string;
     detailMembers: string;
     detailNoMembers: string;
@@ -3987,6 +3988,19 @@ export interface TranslationDict {
     laneGateway: string;
     /** Usage lane label — personal API key. */
     lanePersonal: string;
+    agentCatalog: {
+      unavailableTitle: string;
+      unavailableDescription: string;
+      syncing: string;
+      noMatches: string;
+      empty: string;
+      configured: string;
+      dependenciesPending: string;
+      preparing: string;
+      prepareAndStart: string;
+      /** `{version}` = the published Agent version. */
+      configuredByAdministrator: string;
+    };
     /** /me transparency panel (Settings → Enterprise → My Data). */
     meTransparency: {
       tabProfile: string;

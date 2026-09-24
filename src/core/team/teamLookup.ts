@@ -1,4 +1,4 @@
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeams } from '@/stores/teamStore';
 import { isBuiltinTeam } from './builtinTeams';
 
 /**
@@ -19,7 +19,7 @@ export function saveTeamWouldReplace(rawName: unknown): boolean {
   try {
     // A built-in name is refused by save_team, never replaced — do not warn
     // about a replace that will not happen.
-    return useTeamStore.getState().teams.some((team) => team.name === name && !isBuiltinTeam(team));
+    return getVisibleTeams().some((team) => team.name === name && !isBuiltinTeam(team) && !team.managed);
   } catch {
     return true;
   }

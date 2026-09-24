@@ -1,4 +1,4 @@
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeams } from '@/stores/teamStore';
 
 /**
  * Composer entry for teams (in-conversation team, 2026-09-04).
@@ -37,7 +37,7 @@ export function matchTeamMention(rawText: string): TeamMentionMatch | null {
   if (!line.startsWith('@')) return null;
   const candidate = line.slice(1);
 
-  const teams = useTeamStore.getState().teams;
+  const teams = getVisibleTeams().filter(team => !team.managed || team.managed.ready);
   let best: { id: string; name: string } | null = null;
   for (const team of teams) {
     const after = candidate.slice(team.name.length);

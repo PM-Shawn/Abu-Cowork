@@ -47,7 +47,10 @@ export interface PolicyEnforcerProps extends SlotProps {
   resource: 'tool' | 'skill' | 'mcp'
   action: string
 }
-export type AgentMarketProps = TabSlotProps
+export interface AgentMarketProps extends TabSlotProps {
+  /** Close the host surface after the user starts a conversation. */
+  onClose?: () => void
+}
 export type ImConnectorProps = SlotProps
 export type CrossUserTaskProps = SlotProps
 

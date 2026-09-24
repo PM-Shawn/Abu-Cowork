@@ -4,6 +4,7 @@ import type { SubagentDefinition } from '@/types';
 const teamsRef: { teams: Array<Record<string, unknown>> } = { teams: [] };
 vi.mock('@/stores/teamStore', () => ({
   useTeamStore: { getState: () => ({ teams: teamsRef.teams }) },
+  getVisibleTeamById: (id: string) => teamsRef.teams.find(team => team.id === id),
 }));
 const defs: Record<string, SubagentDefinition> = {};
 vi.mock('./roleIdentity', () => ({

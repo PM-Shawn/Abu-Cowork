@@ -20,10 +20,14 @@ initLanguage('en-US');
 // locale-independent by construction. The `node` default (TESTING.md §6) exposes
 // Node's own navigator instead, which Node ≥ 21 fills from the OS: 'en-US' on
 // CI's runners, 'zh-CN' on a Chinese Windows box — where 95 tests across 18
-// files then read Chinese tool-result copy and fail. So pin what `'system'`
-// resolves to, exactly as happy-dom does. Own properties shadow the prototype
-// getters in both environments; `configurable` so a suite can still override
-// with `vi.stubGlobal('navigator', …)` or `Object.defineProperty`.
+// files then read Chinese tool-result copy and fail. A bare `initLanguage('en-US')`
+// here does not hold: settingsStore's `onRehydrateStorage` re-applies the
+// persisted default `'system'`. So pin what `'system'` resolves to, exactly as
+// happy-dom does. Own properties shadow the prototype getters in both
+// environments; `configurable` so a suite can still override with
+// `vi.stubGlobal('navigator', …)` or `Object.defineProperty`. Suites that need
+// another locale keep calling `initLanguage`/`setLanguage` in their own hooks
+// and restoring afterwards (see `src/i18n/index.test.ts` for the contract).
 if (typeof navigator !== 'undefined') {
   Object.defineProperty(navigator, 'language', { value: 'en-US', configurable: true });
   Object.defineProperty(navigator, 'languages', { value: ['en-US', 'en'], configurable: true });

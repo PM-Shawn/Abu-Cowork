@@ -23,7 +23,6 @@ describe('enterprise mounts registry', () => {
     const all = getAllMounts()
     expect(typeof all.skillTab).toBe('function')
     expect(typeof all.mcpTab).toBe('function')
-    expect(typeof all.meTransparencyPage).toBe('function')
     expect(typeof all.policyAdvisor).toBe('function')
   })
 

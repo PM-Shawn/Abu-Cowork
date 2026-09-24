@@ -3982,12 +3982,6 @@ export interface TranslationDict {
     instanceLabel: string;
     loginIdentityLabel: string;
     boundAtLabel: string;
-    myDataTitle: string;
-    collapseData: string;
-    viewMyData: string;
-    migrationTitle: string;
-    migrateButton: string;
-    migrateDescription: string;
     unbindConfirm: string;
     unbindButton: string;
     /** Usage lane label — org gateway (shared with model picker). */

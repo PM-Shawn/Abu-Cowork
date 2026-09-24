@@ -48,6 +48,7 @@ import {
   browserUploadRefusalText,
 } from '../permissions/browserDenialReasonText';
 import {
+  readFileIdPin,
   resolveUploadFiles,
   summarizeUploadFiles,
   type ApprovedUploadFile,
@@ -1892,8 +1893,14 @@ export async function checkToolApproval(
               isSymlink: info.isSymlink === true,
               size: typeof info.size === 'number' ? info.size : 0,
               mtimeMs: Number.isFinite(mtime) ? Math.floor(mtime) : 0,
-              ino: typeof info.ino === 'number' ? info.ino : null,
-              dev: typeof info.dev === 'number' ? info.dev : null,
+              // plugin-fs declares `ino` as `number | null`, and its
+              // `parseFileInfo` copies across whatever the host actually put
+              // on the field: the Electron and sidecar filesystem hosts write
+              // the exact 64-bit id as a decimal string, the Tauri shell a
+              // JSON number (see `ApprovedUploadFile.ino`). Read it as it
+              // arrives rather than as the type declares it.
+              ino: readFileIdPin((info as { ino?: unknown }).ino) ?? null,
+              dev: readFileIdPin((info as { dev?: unknown }).dev) ?? null,
             };
           },
         });

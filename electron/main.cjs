@@ -246,6 +246,11 @@ function createWindow(transitionWindow = null) {
       additionalArguments: [`--abu-deep-link-scheme=${getActiveScheme()}`],
     },
   });
+  if (process.platform === 'win32') {
+    // Keep Abu itself out of Windows Graphics Capture frames. This allows the
+    // user-visible app and Stop control to remain present during Computer Use.
+    win.setContentProtection?.(true);
+  }
   attachEditContextMenu(win, Menu, {
     isZh: app.getLocale().toLowerCase().startsWith('zh'),
   });

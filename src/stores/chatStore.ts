@@ -752,7 +752,11 @@ interface ChatActions {
    * (P1-3c-1) — never by a direct caller (Stop button et al). See this
    * action's own doc for the full branching rationale.
    */
-  cancelStreaming: (convId: string, opts?: { fromSidecarFrame?: boolean }) => void;
+  cancelStreaming: (convId: string, opts?: {
+    fromSidecarFrame?: boolean;
+    /** Safe, non-user-authored identifier for the surface that stopped the run. */
+    source?: string;
+  }) => void;
   /**
    * Drop the conversation's registered controller. Pass `owned` to make the
    * clear ownership-checked: a run tearing down asynchronously must not
@@ -1121,7 +1125,7 @@ export const useChatStore = create<ChatStore>()(
         // Cancel any ongoing streaming for this conversation
         const controller = abortControllers.get(id);
         if (controller) {
-          controller.abort();
+          controller.abort('conversation-deleted');
           abortControllers.delete(id);
         }
         // Clean up per-conversation state in external modules
@@ -1462,6 +1466,7 @@ export const useChatStore = create<ChatStore>()(
               if (isError) tc.isError = true;
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
+              if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
               if (
                 metadata?.subagentStopReason
                 && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -1526,6 +1531,7 @@ export const useChatStore = create<ChatStore>()(
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
           if (!tc) return;
+          if (metadata.computerStep) tc.computerStep = metadata.computerStep;
           if (
             metadata.subagentStopReason
             && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -2121,7 +2127,7 @@ export const useChatStore = create<ChatStore>()(
         if (!opts?.fromSidecarFrame && isConversationRunningInSidecar(convId)) {
           const controller = abortControllers.get(convId);
           if (controller) {
-            controller.abort();
+            controller.abort(opts?.source ?? 'unspecified');
           }
           // Keep the controller registered until the sidecar ACK (or the
           // shell's force-finalize watchdog) reaches the full path below.
@@ -2146,7 +2152,7 @@ export const useChatStore = create<ChatStore>()(
 
         const controller = abortControllers.get(convId);
         if (controller) {
-          controller.abort();
+          controller.abort(opts?.source ?? (opts?.fromSidecarFrame ? 'sidecar-terminal' : 'unspecified'));
           abortControllers.delete(convId);
         }
         // Clean up Computer Use overlay and status on abort (synchronous
@@ -2160,7 +2166,7 @@ export const useChatStore = create<ChatStore>()(
 
         const agentStateBeforeCancel = getConversationAgentState(get().agentStates, convId);
         const nextAgentStates = removeConversationAgentState(get().agentStates, convId);
-        let cancelledMsgId: string | null = null;
+        const cancelledMsgIds = new Set<string>();
         set((state) => {
           const messages = state.conversations[convId]?.messages;
           if (messages?.length) {
@@ -2201,17 +2207,25 @@ export const useChatStore = create<ChatStore>()(
                 : 1;
               mutated = true;
             }
-            // Mark any executing tool calls as cancelled
-            if (lastMsg.toolCalls) {
-              lastMsg.toolCalls.forEach((tc) => {
+            if (mutated) cancelledMsgIds.add(lastMsg.id);
+
+            // A tool call does not have to live on the last message. After a
+            // completed tool turn, the next model turn can already have added
+            // an empty assistant placeholder when physical-input takeover (or
+            // Stop) aborts the currently executing tool. Limiting cleanup to
+            // lastMsg leaves that earlier call permanently spinning even
+            // though the run has reached its aborted terminal.
+            for (const message of messages) {
+              let toolCallMutated = false;
+              message.toolCalls?.forEach((tc) => {
                 if (tc.isExecuting) {
                   tc.isExecuting = false;
                   tc.result = getI18n().task.cancelled;
-                  mutated = true;
+                  toolCallMutated = true;
                 }
               });
+              if (toolCallMutated) cancelledMsgIds.add(message.id);
             }
-            if (mutated) cancelledMsgId = lastMsg.id;
           }
           state.agentStates = nextAgentStates;
         });
@@ -2232,7 +2246,7 @@ export const useChatStore = create<ChatStore>()(
         // waitForConversationPersistence; chaining onto the tracked queue
         // gives this path the same ordering AND makes the write visible to
         // finalizeAbortedRun's durability barrier.
-        if (cancelledMsgId) {
+        for (const cancelledMsgId of cancelledMsgIds) {
           const finalMsg = useChatStore.getState().conversations[convId]
             ?.messages.find((m) => m.id === cancelledMsgId);
           if (finalMsg) {

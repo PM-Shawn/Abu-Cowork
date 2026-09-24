@@ -278,6 +278,23 @@ describe('TeamView', () => {
     expect(tabs).toEqual(['专家', '专家团']);
   });
 
+  it('teams tab: the header search filters the teams and says when nothing matches', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [
+      { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 },
+      { id: 't2', name: '增长小队', description: '拉新和留存', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    render(<TeamView />);
+    const search = screen.getByPlaceholderText('搜索...');
+
+    fireEvent.change(search, { target: { value: '留存' } });
+    expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+    expect(screen.getByTestId('team-row-增长小队')).toBeTruthy();
+
+    fireEvent.change(search, { target: { value: '不存在的团' } });
+    expect(screen.getByText('未找到专家团')).toBeTruthy();
+  });
+
   it('teams tab empty state offers creating a team', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
@@ -379,6 +396,43 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-managed-unavailable')).toHaveTextContent('成员不可用：分析师');
     expect(screen.getByTestId('team-detail-start-chat')).toBeDisabled();
     expect(screen.queryByTestId('team-detail-menu')).toBeNull();
+  });
+
+  it('teams tab: a bound client\'s 市场 lists only the organization\'s teams and has nothing to add', () => {
+    settingsState.activeTeamTab = 'teams';
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [
+      ...useTeamStore.getState().teams,
+      { id: 't-mine', name: '我的小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+    useTeamStore.getState().replaceManagedTeams('enterprise', [{
+      id: 'org-team',
+      name: '组织数据小队',
+      leaderRoleId: 'r-lead',
+      memberRoleIds: ['r-lead'],
+      createdAt: 1,
+      managed: { source: 'enterprise', id: 'org-team', version: '1', readOnly: true, ready: true },
+    }]);
+    const { rerender } = render(<TeamView />);
+
+    expect(screen.getByTestId('team-row-组织数据小队')).toBeTruthy();
+    expect(screen.queryByTestId('team-row-我的小队')).toBeNull();
+    expect(screen.queryAllByTestId(/^team-row-/)).toHaveLength(1);
+    expect(screen.queryByTestId('team-create-trigger')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('team-source-mine'));
+    rerender(<TeamView />);
+    expect(screen.getByTestId('team-row-我的小队')).toBeTruthy();
+    expect(screen.queryByTestId('team-row-组织数据小队')).toBeNull();
+    expect(screen.getByTestId('team-create-trigger')).toBeVisible();
   });
 
   it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {
@@ -585,8 +639,8 @@ describe('TeamView', () => {
     expect(screen.getByTestId('agents-section')).toBeTruthy();
   });
 
-  // A bound client's 「市场」 IS the organization catalog — there is no third
-  // shelf, and 「我的」 keeps meaning what this user wrote.
+  // A bound client's 「市场」 is the organization's catalog on every surface —
+  // skills, connectors, plugins, and experts alike. 「我的」 stays this user's.
   it('members tab: a bound enterprise client gets the organization catalog on 市场', () => {
     enterpriseState.mode = {
       kind: 'enterprise',

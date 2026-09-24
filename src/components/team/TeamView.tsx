@@ -49,6 +49,14 @@ import type { SubagentDefinition } from '@/types';
  * source), which also inherits the toolbox's IME-safe editors for free.
  */
 
+/** Matches the header search against a team's name, description and expertise. */
+function matchesTeamSearch(team: Team, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [team.name, team.description, ...(team.expertise ?? [])]
+    .some((text) => text?.toLowerCase().includes(q));
+}
+
 function EmptyState({ icon: Icon, title, hint, action }: {
   icon: typeof UsersRound; title: string; hint?: string; action?: ReactNode;
 }) {
@@ -481,8 +489,7 @@ export default function TeamView() {
   };
 
   const renderHeaderRight = () => {
-    const isMembers = activeTeamTab === 'members';
-    const searchBox = isMembers ? (
+    const searchBox = (
       <div className="relative w-52 shrink-0">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
         <Input
@@ -493,12 +500,14 @@ export default function TeamView() {
           className="h-8 pl-8 pr-3 text-body"
         />
       </div>
-    ) : null;
+    );
 
-    // 「市场」 is somebody else's catalog — Abu's own or the organization's —
-    // so creating belongs to 「我的」 and only there.
+    // The organization's catalog is the administrator's to edit, so the shelf
+    // showing it carries no create control.
+    const canCreateHere = !(enterpriseBinding && sources[activeTeamTab] === 'market'
+      && (activeTeamTab === 'teams' || OrganizationAgents));
     let createControl: ReactNode = null;
-    if (activeTeamTab === 'members' && sources.members === 'mine') {
+    if (canCreateHere && activeTeamTab === 'members') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateMember}
@@ -506,7 +515,7 @@ export default function TeamView() {
           triggerTestId="member-create-trigger"
         />
       );
-    } else if (activeTeamTab === 'teams' && sources.teams === 'mine') {
+    } else if (canCreateHere && activeTeamTab === 'teams') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateTeam}
@@ -521,9 +530,11 @@ export default function TeamView() {
 
   const renderContent = () => {
     switch (activeTeamTab) {
-      case 'members':
+      case 'members': {
         // A bound client's 「市场」 is the organization's expert catalog, the
-        // same way it already is for skills, connectors and plugins.
+        // same way it already is for skills, connectors and plugins. The slot
+        // is optional, so a build without one falls through to Abu's own
+        // shelf.
         if (sources.members === 'market' && OrganizationAgents && enterpriseBinding) {
           return (
             <OrganizationAgents
@@ -534,7 +545,9 @@ export default function TeamView() {
             />
           );
         }
+        // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} />;
+      }
       case 'teams': {
         const source = sources.teams;
         // One shelf at a time — which one is the sub-nav's job to say, so the
@@ -575,11 +588,16 @@ export default function TeamView() {
             </div>
           );
         }
+        const shown = list.filter((team) => matchesTeamSearch(team, search));
         return (
           <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6 h-full">
-            <div className="max-w-5xl mx-auto">
-              <ToolGrid>{list.map(card)}</ToolGrid>
-            </div>
+            {shown.length === 0 && search.trim() ? (
+              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.team.teamsNotFound}</div>
+            ) : (
+              <div className="max-w-5xl mx-auto">
+                <ToolGrid>{shown.map(card)}</ToolGrid>
+              </div>
+            )}
           </div>
         );
       }

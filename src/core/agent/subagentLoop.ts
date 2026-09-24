@@ -51,6 +51,7 @@ import { format, getI18n } from '../../i18n';
 import { appendInstructionToHistory, drainDispatchInstructionEntries, hasDispatchInput, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
 import { matchesToolName } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
+import { isToolResultError } from './toolResultErrors';
 import { scanMemoryFiles, loadMemoryIndex } from '../memdir/scan';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
@@ -1335,9 +1336,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const resultContentToken = r.status === 'fulfilled' ? r.value.resultContentToken : undefined;
         const resultContent = activeRichResults.get(resultContentToken);
         // ToolRegistry resolves its established generic failures as `Error:`
-        // strings, so this child-tool channel must keep the legacy prefix
+        // strings (and tool-execution wrapper failures as `Error executing
+        // tool "…":`), so this child-tool channel must keep the legacy prefix
         // contract. B3 only structures the enclosing SubagentResult terminal.
-        const isError = r.status === 'rejected' || result.startsWith('Error:');
+        const isError = r.status === 'rejected' || isToolResultError(result);
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
         return { id: tc.id, name: tc.name, input: tc.input, result, resultContent, resultContentToken };
       });

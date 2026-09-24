@@ -8,6 +8,7 @@ import {
   isVisionUnsupportedError,
   getCapabilityPrompt,
   resolveTools,
+  skillBlockedTools,
   buildVolatileContextTail,
   buildDirectDelegateSubagentOptions,
   buildInterruptedToolCallContext,
@@ -171,6 +172,8 @@ describe('resolveTools · per-run restrictions', () => {
   const prefetch = { userInput: 'hello', computerUseEnabled: false, activeSkills: [], turnCount: 1 };
   const roleTools = ['read_file', 'write_file', 'notes__read', 'notes__write', 'tool_search', 'use_skill', 'report_plan', 'delegate_to_agent', 'run_agent_batch'];
   const roleInvoker: ToolInvoker = { getAllTools: () => roleTools.map(makeTool), executeAnyTool: async () => 'ok', toolResultToString: String };
+  const computerTools = [...roleTools, 'computer', 'update_memory'];
+  const computerInvoker: ToolInvoker = { getAllTools: () => computerTools.map(makeTool), executeAnyTool: async () => 'ok', toolResultToString: String };
   const roleRoute = (extra: Partial<SubagentDefinition> = {}) => applyTeamLeaderRoute(
     { type: 'general', name: 'abu', cleanInput: 'hello' },
     { teamId: 't', teamName: 'team', leader: { name: 'leader', description: '', systemPrompt: '', ...extra } as SubagentDefinition, members: [] },
@@ -192,6 +195,65 @@ describe('resolveTools · per-run restrictions', () => {
     expect(names).not.toContain('write_file');
     expect(names).not.toContain('notes__read');
     expect(names).not.toContain('notes__write');
+  });
+
+  /// Regression: the document skills declare `computer` in blocked-tools so
+  /// that editing a document never becomes driving its application's UI, but
+  /// the filter read the list off `route.skill`, which only the explicit
+  /// `/name` route fills in. On the path the model actually takes — calling
+  /// use_skill, which records the skill in activeSkills and leaves the route
+  /// 'general' — the declaration filtered nothing at all.
+  it('honours an active skill\'s blocked-tools on the route the model actually takes', () => {
+    const generalRoute = { type: 'general', name: 'abu', cleanInput: 'hello' } as const;
+    const withSkill = {
+      ...prefetch,
+      activeSkills: [{ blockedTools: ['computer'] }],
+    } as unknown as typeof prefetch;
+
+    const resolved = resolveTools(computerInvoker, generalRoute, false, undefined, withSkill);
+    const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
+    expect(names).not.toContain('computer');
+    expect(names).toContain('read_file');
+  });
+
+  /// The document skills each block fifteen tools, most of them housekeeping
+  /// for a focused `/docx` run. Carrying all of them onto the path the model
+  /// takes meant "read this .docx and remember the date" lost the ability to
+  /// remember for the rest of the turn, over work the skill has no opinion
+  /// about.
+  it('does not let a skill the model activated strip tools unrelated to the channel', () => {
+    const generalRoute = { type: 'general', name: 'abu', cleanInput: 'hello' } as const;
+    const docSkill = {
+      ...prefetch,
+      activeSkills: [{ blockedTools: ['computer', 'update_memory', 'notes__*'] }],
+    } as unknown as typeof prefetch;
+
+    const resolved = resolveTools(computerInvoker, generalRoute, false, undefined, docSkill);
+    const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
+    expect(names).not.toContain('computer');
+    expect(names).toContain('update_memory');
+    expect(names).toContain('notes__read');
+  });
+
+  /// Typing `/docx` is the user asking for that skill and nothing else, so
+  /// there the whole declaration still holds.
+  it('keeps the full declaration for a skill the user asked for by name', () => {
+    expect(skillBlockedTools({ blockedTools: ['computer', 'update_memory'] }, undefined))
+      .toEqual(['computer', 'update_memory']);
+  });
+
+  /// The upstream lookup filters `s !== undefined` while claiming NonNullable,
+  /// and a missing skill resolves to null, so a null reaches this list. Nothing
+  /// dereferenced it until now, which is exactly why it went unnoticed.
+  it("survives a skill name that resolved to nothing", () => {
+    expect(skillBlockedTools(undefined, [null, undefined, { blockedTools: ["computer"] }]))
+      .toEqual(["computer"]);
+  });
+
+  it('merges the routed skill and the active skills rather than choosing one', () => {
+    expect(skillBlockedTools({ blockedTools: ['a', 'b'] }, [{ blockedTools: ['b', 'computer'] }]))
+      .toEqual(['a', 'b', 'computer']);
+    expect(skillBlockedTools(undefined, undefined)).toEqual([]);
   });
 
   it('applies an exact empty run snapshot even to the team protocols', () => {

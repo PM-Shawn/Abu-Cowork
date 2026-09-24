@@ -1,0 +1,45 @@
+# Local Windows installed-E2E identity. It extends the production package but
+# cannot replace a developer's installed Abu, protocol handler, or shortcuts.
+extends: ./electron-builder.yml
+appId: com.abu.computer-use-test
+productName: AbuComputerUseTest
+# NSIS one-click installers derive their directory from package.json `name`,
+# not productName. Override both the package name and executable identity so
+# the E2E package can never share `%LOCALAPPDATA%\Programs\abu` with production.
+extraMetadata:
+  name: abu-computer-use-test
+# The isolated smoke package consumes node-pty's vendor-provided win32-x64
+# prebuild. The verifier exercises that binary under the packaged Electron;
+# rebuilding it here would make this test depend on optional local Spectre
+# libraries that official CI already supplies for production packages.
+npmRebuild: false
+protocols: []
+directories:
+  output: release-electron-computer-use-test
+  buildResources: build
+win:
+  executableName: AbuComputerUseTest
+  icon: src-tauri/icons/icon.ico
+  # This local-only package is identified by its filename/appId/install path.
+  # Avoid downloading winCodeSign merely to rewrite unsigned EXE resources;
+  # the production builder config keeps its normal sign/edit behavior.
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: "${productName}-${version}-windows-${arch}-setup.${ext}"
+nsis:
+  # Assisted-mode defaults APP_FILENAME to productFilename instead of the root
+  # package name. `/S` remains fully silent for the installed smoke.
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  packElevateHelper: false
+  include: null
+  uninstallDisplayName: AbuComputerUseTest
+  createDesktopShortcut: false
+  createStartMenuShortcut: false
+  runAfterFinish: false
+  allowToChangeInstallationDirectory: false
+  artifactName: "${productName}-${version}-windows-${arch}-setup.${ext}"

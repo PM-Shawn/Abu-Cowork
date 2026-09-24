@@ -100,23 +100,25 @@ export default function ExtensionsView() {
     { id: 'mcp', label: t.toolbox.connectors, icon: Server },
   ];
 
-  const renderContent = (tab: ExtensionsTab = activeTab) => {
-    const binding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
-      ? enterpriseMode.binding
+  const binding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const config = enterpriseMode.kind === 'enterprise'
+    ? enterpriseMode.config
+    : enterpriseMode.kind === 'offline'
+      ? enterpriseMode.lastConfig
       : null;
-    const config = enterpriseMode.kind === 'enterprise'
-      ? enterpriseMode.config
-      : enterpriseMode.kind === 'offline'
-        ? enterpriseMode.lastConfig
-        : null;
 
-    // A bound client's 「市场」 is the organization catalog: what IT offers you
-    // is the offer that matters. `pluginTab` is an optional slot, so an
-    // enterprise build without one falls through to Abu's own market rather
-    // than showing a blank panel.
-    const mount = isEnterprise && binding
-      ? { plugins: getEnterpriseMount('pluginTab'), skills: getEnterpriseMount('skillTab'), mcp: getEnterpriseMount('mcpTab') }[tab]
-      : null;
+  // A bound client's 「市场」 is the organization catalog: what IT offers you
+  // is the offer that matters. `pluginTab` is an optional slot, so an
+  // enterprise build without one falls through to Abu's own market rather
+  // than showing a blank panel.
+  const organizationCatalog = (tab: ExtensionsTab) => isEnterprise && binding
+    ? { plugins: getEnterpriseMount('pluginTab'), skills: getEnterpriseMount('skillTab'), mcp: getEnterpriseMount('mcpTab') }[tab]
+    : null;
+
+  const renderContent = (tab: ExtensionsTab = activeTab) => {
+    const mount = organizationCatalog(tab);
     if (sources[tab] === 'market' && mount && binding) {
       const Market = mount;
       return <Market binding={binding} config={config} searchQuery={extensionsSearchQuery} />;
@@ -157,10 +159,9 @@ export default function ExtensionsView() {
       </div>
     );
 
-    // 「市场」 is somebody else's catalog on every tab — Abu's own, a plugin
-    // marketplace, or the organization's — so creating belongs to 「我的」 and
-    // only there.
-    const canCreateHere = sources[activeTab] === 'mine';
+    // The organization's catalog is the administrator's to edit, so the shelf
+    // showing it carries no create control.
+    const canCreateHere = !(sources[activeTab] === 'market' && organizationCatalog(activeTab));
 
     let createControl: ReactNode = null;
     if (activeTab === 'skills' && canCreateHere) {

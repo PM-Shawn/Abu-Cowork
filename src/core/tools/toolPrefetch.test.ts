@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CORE_TOOL_NAMES, prefetchTools, type PrefetchContext } from './toolPrefetch';
 
 function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
@@ -215,5 +215,48 @@ describe('browser tool prefetch list vs the real tool surface', () => {
     for (const name of registered) {
       expect(offered).toContain(`abu-browser__${name}`);
     }
+  });
+});
+
+/// Measured in a real run: the model had to spend a `tool_search` round-trip
+/// discovering `check_open_document` before it could ask whether the
+/// spreadsheet the user named was open. It is not core — that would cost every
+/// turn of every conversation — so the file name is what promotes it.
+describe('check_open_document prefetch', () => {
+  const ask = (userInput: string) => prefetchTools(makeCtx({ userInput }));
+
+  it('promotes it when the user names a document file', async () => {
+    const { initPlatform } = await import('../../utils/platform');
+    const { platform } = await import('@tauri-apps/plugin-os');
+    vi.mocked(platform).mockResolvedValue('windows');
+    await initPlatform();
+
+    for (const input of [
+      '把桌面上 abu-com-verify.xlsx 的 B 列求和写到 C1',
+      '帮我改一下 report.docx 的标题',
+      '这个 deck.pptx 里第三页写错了',
+      '把 data.csv 里的空行删掉',
+      '用 Excel 打开的那个表算一下总和',
+    ]) {
+      expect(ask(input), input).toContain('check_open_document');
+    }
+  });
+
+  it('stays out of the way when no document is in play', () => {
+    expect(ask('帮我查一下今天的天气')).not.toContain('check_open_document');
+    expect(ask('给 QQ 联系人 Shawn 发条消息')).not.toContain('check_open_document');
+  });
+
+  // Promotion is session-sticky, so prefetching it on a platform with no
+  // attach surface would leave a tool in the roster for the rest of the
+  // conversation whose only answer is "not supported here".
+  it('is not promoted where there is nothing to attach to', async () => {
+    const { initPlatform } = await import('../../utils/platform');
+    const { platform } = await import('@tauri-apps/plugin-os');
+    vi.mocked(platform).mockResolvedValue('macos');
+    await initPlatform();
+
+    expect(ask('把桌面上 abu-com-verify.xlsx 的 B 列求和写到 C1'))
+      .not.toContain('check_open_document');
   });
 });

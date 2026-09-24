@@ -89,7 +89,7 @@ describe('Extensions capability sources (bound enterprise client)', () => {
     settingsState.activeExtensionsTab = 'skills';
     settingsState.extensionsSearchQueries = { plugins: '', skills: '', mcp: '' };
     // The shelf each tab sits on persists, so every case starts from the
-    // default rather than from whichever shelf the previous one left behind.
+    // default shelf.
     useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
     vi.clearAllMocks();
   });
@@ -101,6 +101,7 @@ describe('Extensions capability sources (bound enterprise client)', () => {
     // organization catalog — reached without a scope control of its own.
     expect(screen.getByTestId('organization-catalog')).toHaveAttribute('data-slot', activeTab === 'skills' ? 'skillTab' : 'mcpTab');
     expect(screen.queryByTestId('create-control')).toBeNull();
+    // Both shelves stay reachable while bound.
     expect(screen.getByTestId('extensions-source-market')).toBeVisible();
 
     fireEvent.click(screen.getByTestId('extensions-source-mine'));
@@ -112,6 +113,7 @@ describe('Extensions capability sources (bound enterprise client)', () => {
     settingsState.activeExtensionsTab = 'plugins';
     render(<ExtensionsView />);
     expect(screen.getByTestId('organization-catalog')).toHaveAttribute('data-slot', 'pluginTab');
+    expect(screen.queryByTestId('create-control')).toBeNull();
 
     fireEvent.click(screen.getByTestId('extensions-source-mine'));
     expect(screen.getByText('Personal plugins')).toBeVisible();

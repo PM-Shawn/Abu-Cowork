@@ -16,6 +16,8 @@ import { getDefaultSoul } from './prompts/defaultSoul';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
+import { getConversationReader } from './ports/conversationReader';
+import { buildAppContextSection } from './prompts/appContext';
 import { getSessionOutputDir } from '../session/sessionDir';
 import { prepareSuggestedWorkspace } from './defaultWorkspace';
 import { isWindows } from '../../utils/platform';
@@ -499,6 +501,15 @@ export async function buildSystemPromptSections(
           : '- System settings → run_command (osascript/defaults), not screenshotting system settings',
       );
     sections.push({ name: 'planning', text: planningText, cacheable: true });
+  }
+
+  // A conversation started inside an app carries that app's context in every
+  // mode above, right after the identity block: the app is the workspace the
+  // user chose, and a team-pinned conversation keeps both this and its Role.
+  // Fork contexts stay minimal, as for every other identity addition.
+  const appBinding = getConversationReader().getConversation(conversationId)?.appBinding;
+  if (appBinding && !isForkContext) {
+    sections.push({ name: 'app-context', text: buildAppContextSection(appBinding), cacheable: true });
   }
 
   // Soul bootstrap: one-time personality introduction prompt

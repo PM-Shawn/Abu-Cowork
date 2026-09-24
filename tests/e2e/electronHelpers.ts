@@ -379,6 +379,7 @@ export async function configureLocalMockProvider(
  */
 export async function closeAbuElectron(app: ElectronApplication): Promise<void> {
   const child = app.process();
+  const mainPid = await electronMainPid(app);
 
   // Ask Electron itself to quit so main.cjs's before-quit path tears down
   // browser views, PTYs, helpers, and sidecars. ElectronApplication.close()
@@ -391,14 +392,9 @@ export async function closeAbuElectron(app: ElectronApplication): Promise<void> 
   } catch {
     // The transport commonly closes before evaluate receives its result.
   }
-  if (await waitForChildExit(child, 5_000)) return;
+  if (await waitForChildClose(child, 5_000)) return;
 
-  // Bounded fallback for a broken teardown. Signals target only Playwright's
-  // exact child process, never a name/pattern that could match a user app.
-  child.kill('SIGTERM');
-  if (await waitForChildExit(child, 3_000)) return;
-  child.kill('SIGKILL');
-  await waitForChildExit(child, 2_000);
+  await forceReleaseLaunch(child, mainPid);
 }
 
 /**
@@ -408,10 +404,13 @@ export async function closeAbuElectron(app: ElectronApplication): Promise<void> 
  */
 export async function terminateAbuElectron(app: ElectronApplication): Promise<void> {
   const child = app.process();
-  child.kill('SIGTERM');
-  if (await waitForChildExit(child, 5_000)) return;
-  child.kill('SIGKILL');
-  await waitForChildExit(child, 2_000);
+  const mainPid = await electronMainPid(app);
+  killLaunch(child, mainPid, 'SIGTERM');
+  if (await waitForChildClose(child, 5_000)) return;
+  killLaunch(child, mainPid, 'SIGKILL');
+  if (await waitForChildClose(child, 2_000)) return;
+  detachChildStdio(child);
+  await waitForChildClose(child, 2_000);
 }
 
 /**
@@ -441,24 +440,123 @@ export async function crashAbuSidecarForE2E(page: Page, sidecarCrashToken: strin
   }, { id: SIDECAR_ID, token: sidecarCrashToken });
 }
 
-function waitForChildExit(
-  child: ReturnType<ElectronApplication['process']>,
-  timeoutMs: number,
-): Promise<boolean> {
+type LaunchedProcess = ReturnType<ElectronApplication['process']>;
+
+/**
+ * The pid of the Electron MAIN process — NOT always `app.process().pid`.
+ *
+ * playwright-core's Electron launcher sets `shell: true` on Windows and hands
+ * the whole command line to `cmd.exe`, so there `app.process()` is that shell
+ * wrapper and Electron is its child. Signalling only the wrapper (what this
+ * file used to do) leaves Electron running with no parent: it keeps the
+ * launch's single-instance lock, so the next launch on the same data root
+ * never gets a window, and it holds the inherited write ends of the launch's
+ * stdio pipes, so Playwright never sees the process close. On macOS/Linux
+ * Playwright spawns Electron directly and this is the same pid as
+ * `app.process().pid`, so killing both below is one redundant signal.
+ *
+ * Returns null if the app is already unreachable — the caller then falls back
+ * to signalling the process handle it does have.
+ */
+async function electronMainPid(app: ElectronApplication): Promise<number | null> {
+  try {
+    return await app.evaluate(() => process.pid);
+  } catch {
+    return null;
+  }
+}
+
+/** Signal this launch's Electron main first, then the process handle we hold. */
+function killLaunch(
+  child: LaunchedProcess,
+  mainPid: number | null,
+  signal: 'SIGTERM' | 'SIGKILL',
+): void {
+  // Order matters on Windows: killing the `cmd.exe` wrapper first severs the
+  // parent link and leaves Electron behind as an orphan. Both targets are
+  // exact pids from this launch — never a name/pattern that could match a
+  // user's own app.
+  if (mainPid !== null) {
+    try {
+      process.kill(mainPid, signal);
+    } catch {
+      // Already gone, or never ours to signal.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * Stop waiting on stdio pipes the OS never released.
+ *
+ * Last resort for the Windows shutdown this escalation exists for: the
+ * Electron main process reports as terminated (`Process.HasExited`) yet its
+ * process object lingers with a single thread, so the inherited write ends of
+ * the launch's stdout/stderr pipes are never closed and Node never sees EOF.
+ * Destroying OUR read ends lets Node finish the child's `'close'` bookkeeping
+ * without touching any process.
+ */
+function detachChildStdio(child: LaunchedProcess): void {
+  for (const stream of child.stdio) {
+    try {
+      stream?.destroy();
+    } catch {
+      // Best-effort: a stream that refuses to close is already not blocking us.
+    }
+  }
+}
+
+/** Bounded escalation for a launch that did not close on its own. */
+async function forceReleaseLaunch(child: LaunchedProcess, mainPid: number | null): Promise<void> {
+  // Windows has no signal semantics — both names reach TerminateProcess — so a
+  // SIGTERM grace round would only add dead time to every close.
+  if (process.platform !== 'win32') {
+    killLaunch(child, mainPid, 'SIGTERM');
+    if (await waitForChildClose(child, 3_000)) return;
+  }
+  killLaunch(child, mainPid, 'SIGKILL');
+  if (await waitForChildClose(child, 2_000)) return;
+  detachChildStdio(child);
+  await waitForChildClose(child, 2_000);
+}
+
+/** Whether Node has already emitted `'close'` for this child. */
+function hasChildClosed(child: LaunchedProcess): boolean {
+  const exited = child.exitCode !== null || child.signalCode !== null;
+  return exited && child.stdio.every((stream) => !stream || stream.destroyed);
+}
+
+/**
+ * Wait for the launched process to CLOSE, not merely to exit.
+ *
+ * Playwright's worker teardown waits on this same child's `'close'` event
+ * (playwright-core processLauncher's `waitForCleanup`, which only resolves
+ * inside `spawnedProcess.once('close', ...)`), and Node emits `'close'` only
+ * once the process has exited AND every stdio pipe has reached EOF. Returning
+ * here on `'exit'` alone therefore handed the worker a launch it still
+ * considered live, and the worker then blocked for the full project timeout —
+ * the "Worker teardown timeout of 90000ms exceeded" that failed otherwise
+ * green Windows runs.
+ */
+function waitForChildClose(child: LaunchedProcess, timeoutMs: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
+    if (hasChildClosed(child)) {
       resolve(true);
       return;
     }
     const timer = setTimeout(() => {
-      child.removeListener('exit', onExit);
+      child.removeListener('close', onClose);
       resolve(false);
     }, timeoutMs);
-    const onExit = () => {
+    const onClose = () => {
       clearTimeout(timer);
       resolve(true);
     };
-    child.once('exit', onExit);
+    child.once('close', onClose);
   });
 }
 

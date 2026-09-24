@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createPluginOperationHost } = require('./pluginOperationHost.cjs');
+const { identityOf, sameIdentity } = require('./fileIdentity.cjs');
 
 function memoryFs(alias = null) {
   const entries = new Map();
@@ -92,7 +93,11 @@ function fixture({ installed = true, sameVersion = false } = {}) {
         await disk.api.rename(path.join(parent, input.temp), path.join(parent, input.to));
       } else {
         const info = await disk.api.lstat(path.join(parent, input.from));
-        assert.equal(info.ino, input.source.ino);
+        // The real worker compares identities, not raw `ino` fields: what
+        // crosses this boundary is the decimal-string pair of
+        // `electron/fileIdentity.cjs`, because a Windows file id is wider than
+        // a double. Check it the same way here.
+        assert.ok(sameIdentity(identityOf(info), input.source));
         await disk.api.rename(path.join(parent, input.from), path.join(parent, input.to));
       }
     },

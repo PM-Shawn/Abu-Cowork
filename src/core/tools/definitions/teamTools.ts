@@ -3,6 +3,7 @@ import { agentRegistry } from '@/core/agent/registry';
 import { effectiveRoleId, ensureRoleId } from '@/core/team/roleIdentity';
 import { isValidNewAvatar } from '@/core/tools/definitions/agentTools';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
+import { isPluginTeam } from '@/core/team/pluginTeams';
 import { getVisibleTeams, useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { getI18n, format } from '@/i18n';
@@ -59,6 +60,7 @@ export const saveTeamTool: ToolDefinition = {
     if (targeted && (isBuiltinTeam(targeted) || targeted.managed)) {
       return format(t.builtinTeamReadOnly, { name: targeted.name });
     }
+    if (targeted && isPluginTeam(targeted)) return format(t.pluginTeamReadOnly, { name: targeted.name });
 
     const names = [...new Set([leaderName, ...input.members.map((member) => member.trim())])];
     const available = new Set(agentRegistry.getAvailableAgents().map((agent) => agent.name));

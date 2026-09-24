@@ -34,7 +34,7 @@ function makePlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
     name: 'foo',
     version: '1.0.0',
     installedAt: '2026-08-31T00:00:00.000Z',
-    contributed: { skills: ['skill-a'], mcpServers: ['server-a'], agents: ['agent-a'] },
+    contributed: { skills: ['skill-a'], mcpServers: ['server-a'], agents: ['agent-a'], teams: [] },
     ...overrides,
   };
 }
@@ -127,8 +127,28 @@ describe('readInstalled', () => {
 
     // The record still loads, and every consumer gets a list to iterate.
     expect(read.contributed.agents).toEqual([]);
+    expect(read.contributed.teams).toEqual([]);
     expect(read.contributed.skills).toEqual(['skill-a']);
     expect(read.contributed.mcpServers).toEqual(['server-a']);
+  });
+
+  it('reads a record written before contributed.teams existed as an empty list, keeping its agents', async () => {
+    const legacy = { ...makePlugin(), contributed: { skills: ['skill-a'], mcpServers: ['server-a'], agents: ['agent-a'] } };
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([legacy]));
+    const [read] = await readInstalled(HOME);
+    expect(read.contributed).toEqual({ skills: ['skill-a'], mcpServers: ['server-a'], agents: ['agent-a'], teams: [] });
+  });
+
+  it('drops a recorded team id that is not one a package could have shipped', async () => {
+    // Every read of a plugin's teams turns the id back into `teams/<id>.json`
+    // under the package, so an id a hand-edited record smuggled in never gets
+    // that far.
+    const edited = { ...makePlugin(), contributed: { skills: [], mcpServers: [], agents: [], teams: ['store-ops', '../../../.ssh/id_rsa', 'Store-Ops'] } };
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([edited]));
+    const [read] = await readInstalled(HOME);
+    expect(read.contributed.teams).toEqual(['store-ops']);
   });
 
   it('replaces a contributed.agents value that is not a list of strings', async () => {
@@ -198,15 +218,15 @@ describe('upsertInstalled', () => {
     expect(written[0].version).toBe('2.0.0');
   });
 
-  it('round-trips the contributed skills/mcpServers/agents lists', async () => {
+  it('round-trips the contributed skills/mcpServers/agents/teams lists', async () => {
     mockExists.mockResolvedValue(false);
     const plugin = makePlugin({
-      contributed: { skills: ['s1', 's2'], mcpServers: ['m1'], agents: ['a1'] },
+      contributed: { skills: ['s1', 's2'], mcpServers: ['m1'], agents: ['a1'], teams: ['t1'] },
     });
     await upsertInstalled(HOME, plugin);
     const [, contentArg] = mockWriteTextFile.mock.calls[0];
     const written = JSON.parse(contentArg as string);
-    expect(written[0].contributed).toEqual({ skills: ['s1', 's2'], mcpServers: ['m1'], agents: ['a1'] });
+    expect(written[0].contributed).toEqual({ skills: ['s1', 's2'], mcpServers: ['m1'], agents: ['a1'], teams: ['t1'] });
   });
 
   it('writes formatted (pretty-printed, multi-line) json', async () => {
@@ -335,7 +355,7 @@ describe('Electron registry coordinator', () => {
     const bridge = vi.fn().mockResolvedValue(JSON.stringify([{ ...makePlugin(), contributed: { skills: [], mcpServers: [] } }]));
     shell(bridge);
     try {
-      expect(await readInstalled(HOME)).toEqual([{ ...makePlugin(), contributed: { skills: [], mcpServers: [], agents: [] } }]);
+      expect(await readInstalled(HOME)).toEqual([{ ...makePlugin(), contributed: { skills: [], mcpServers: [], agents: [], teams: [] } }]);
       expect(bridge).toHaveBeenCalledWith('read', { home: HOME });
       expect(mockReadTextFile).not.toHaveBeenCalled();
       bridge.mockResolvedValue(null);

@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { archivePluginOperation } from '@/core/plugin/operationBridge';
 import AuthoredPluginList from './AuthoredPluginList';
+import InstalledPluginList from './InstalledPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
 import type { ExtensionSource } from '../extensionSource';
@@ -32,6 +33,9 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
   const [archiveOpen, setArchiveOpen] = useState(false);
   const archiving = useRef(false);
   const [archiveResult, setArchiveResult] = useState<{ archivedPath: string; backupPaths: string[] } | null>(null);
+  // How many cards the authored list is contributing to the shelf's one grid,
+  // so an empty install list with a draft in it is not called empty.
+  const [authoredCount, setAuthoredCount] = useState(0);
   const unreadable = usePluginStore(s => s.unreadableOperation);
   const recoveryError = usePluginStore(s => s.recoveryError);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
@@ -89,11 +93,13 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
         <p>{t.toolbox.pluginsArchivedNotice}</p><p>{archiveResult.archivedPath}</p>
         <ul className="max-h-40 overflow-y-auto">{archiveResult.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>
       </div>}
-      {/* One shelf at a time: 「我的」 is what this user authored, 「市场」 the
-          marketplaces they browse. The sub-nav above names which — the heading
-          that used to do it here is gone. */}
+      {/* One shelf at a time: 「我的」 is what this user has — the plugins they
+          installed and the ones they created here, in one list — 「市场」 the
+          marketplaces they browse. The sub-nav above names which. */}
       {home !== null && (source === 'mine'
-        ? <AuthoredPluginList home={home} searchQuery={searchQuery} />
+        ? <InstalledPluginList home={home} searchQuery={searchQuery} childCount={authoredCount} onBrowseMarketplace={() => setSource('plugins', 'market')}>
+            <AuthoredPluginList home={home} searchQuery={searchQuery} onVisibleCount={setAuthoredCount} />
+          </InstalledPluginList>
         : <section>
             <MarketplaceBrowser
               home={home}

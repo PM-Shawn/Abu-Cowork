@@ -8,7 +8,13 @@ import { useI18n } from '@/i18n';
 import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, UsersRound, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
+import { Plus, Workflow, UsersRound, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle, Globe } from 'lucide-react';
+import AppSwitcher from '@/components/sidebar/AppSwitcher';
+import AppLogo from '@/components/app/AppLogo';
+import { useAppStore, useSelectedApp } from '@/stores/appStore';
+import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
+import { resolveText } from '@/core/app/appBinding';
+import type { AppNavItem } from '@/types/app';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -25,7 +31,11 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { isMacOS, isWindows } from '@/utils/platform';
-import { APP_VERSION } from '@/utils/version';
+
+/** A nav item's label: the package's own title when it gives one, else Abu's name for that entry. */
+function navTitle(item: AppNavItem, fallback: string): string {
+  return item.title === undefined ? fallback : resolveText(item.title);
+}
 
 interface StatusIndicatorProps {
   status: ConversationStatus;
@@ -89,6 +99,10 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
+  const selectedApp = useSelectedApp();
+  const activeAppPage = useAppStore((s) => s.activeAppPage);
+  const openAppPage = useAppStore((s) => s.openAppPage);
+  const navItems = [...(selectedApp.config.nav?.items ?? DEFAULT_APP_CONFIG.nav!.items)].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const clearBadge = useNoticeBadgeStore((s) => s.clear);
   // Badge shows items still requiring user decision (pending), not just unread.
   // Once a user accepts/ignores an item, the count drops even if other items
@@ -294,116 +308,156 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           unchanged, without a card edge or divider. Other hosts retain their
           existing platform-specific clearance. */}
       {windowsWorkspaceHeader ? (
+        // Abu's own name keeps the brand row; the switcher sits beside it and
+        // reads 发现应用 until the user is inside an app.
         <div
           data-abu-windows-sidebar-header
-          className="flex h-[52px] shrink-0 items-center px-6 pt-2 pr-[76px]"
+          className="flex h-[52px] shrink-0 items-center gap-2 px-4 pt-2 pr-[76px]"
         >
-          <div className="flex min-w-0 items-baseline gap-2 whitespace-nowrap">
-            <span className="truncate text-h-xs font-semibold text-[var(--abu-text-primary)]">
-              {t.common.appName}
-            </span>
-            <span className="text-caption text-[var(--abu-text-tertiary)]">
-              v{APP_VERSION}
-            </span>
-          </div>
+          {/* Abu's name only: the version lives in the account menu, and the
+              row's width belongs to the switcher beside it. */}
+          <span className="shrink-0 whitespace-nowrap text-h-xs font-semibold text-[var(--abu-text-primary)]">
+            {t.common.appName}
+          </span>
+          <AppSwitcher className="min-w-0 flex-1" />
         </div>
       ) : (
-        <div
-          className={
-            isMacOS()
-              ? 'h-14 shrink-0'
-              : isWindows()
-                ? 'h-0 shrink-0'
-                : 'h-8 shrink-0'
-          }
-        />
+        <>
+          <div
+            className={
+              isMacOS()
+                ? 'h-14 shrink-0'
+                : isWindows()
+                  ? 'h-2 shrink-0'
+                  : 'h-8 shrink-0'
+            }
+          />
+          <div className="px-4 pb-1">
+            <AppSwitcher />
+          </div>
+        </>
       )}
-      {/* Top Navigation */}
+      {/* Top Navigation — the current app's entries (the general shell lists
+          Abu's six), rendered from one table of targets. */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
-        <button
-          data-sidebar-action="new-task"
-          onClick={() => { startNewConversation(); setViewMode('chat'); setShowFileTree(false); }}
-          className={cn(
-            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body font-medium rounded-lg',
-            activeConversationId === null && viewMode === 'chat'
-              ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-              : 'text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-          )}
-        >
-          <Plus className={cn('h-[18px] w-[18px]', activeConversationId === null && viewMode === 'chat' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
-          <span>{t.sidebar.newTask}</span>
-        </button>
-        {showTodosInbox && (
-          <>
+        {navItems.map((item) => {
+          const target = item.target;
+          if (target === 'builtin:chat') {
+            const active = activeConversationId === null && viewMode === 'chat';
+            return (
+              <button
+                key={item.id}
+                data-sidebar-action="new-task"
+                onClick={() => { startNewConversation(); setViewMode('chat'); setShowFileTree(false); }}
+                className={cn(
+                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body font-medium rounded-lg',
+                  active
+                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
+                )}
+              >
+                <Plus className={cn('h-[18px] w-[18px]', active ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
+                <span>{navTitle(item, t.sidebar.newTask)}</span>
+              </button>
+            );
+          }
+          if (target === 'builtin:todos' || target === 'builtin:inbox') {
+            if (!showTodosInbox) return null;
+            const mode = target === 'builtin:todos' ? 'todos' : 'inbox';
+            const Icon = mode === 'todos' ? CheckSquare : Inbox;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setViewMode(mode)}
+                className={cn(
+                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
+                  viewMode === mode
+                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                )}
+              >
+                <Icon className={cn('h-[18px] w-[18px]', viewMode === mode ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+                <span className="flex-1 text-left">{navTitle(item, mode === 'todos' ? t.sidebar.todos : t.sidebar.inbox)}</span>
+                {mode === 'inbox' && pendingInboxCount > 0 && (
+                  <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-[var(--abu-danger-solid)] text-white text-caption font-medium leading-[18px] text-center">
+                    {pendingInboxCount > 99 ? '99+' : pendingInboxCount}
+                  </span>
+                )}
+              </button>
+            );
+          }
+          if (target === 'builtin:team') {
+            return (
+              <button
+                key={item.id}
+                onClick={() => { openTeam(); setShowFileTree(false); }}
+                className={cn(
+                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
+                  viewMode === 'team'
+                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                )}
+                data-testid="sidebar-team"
+              >
+                <UsersRound className={cn('h-[18px] w-[18px]', viewMode === 'team' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+                <span>{navTitle(item, t.sidebar.team)}</span>
+              </button>
+            );
+          }
+          if (target === 'builtin:extensions') {
+            return (
+              <button
+                key={item.id}
+                onClick={() => { openExtensions(); setShowFileTree(false); }}
+                className={cn(
+                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
+                  viewMode === 'extensions'
+                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                )}
+              >
+                <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'extensions' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+                <span className="flex-1 text-left">{navTitle(item, t.sidebar.extensions)}</span>
+                <PluginUpdateBadge testId="extensions-update-badge" />
+              </button>
+            );
+          }
+          if (target === 'builtin:automation') {
+            return (
+              <button
+                key={item.id}
+                onClick={() => { openAutomation(); setShowFileTree(false); }}
+                className={cn(
+                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
+                  viewMode === 'automation'
+                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                )}
+              >
+                <Workflow className={cn('h-[18px] w-[18px]', viewMode === 'automation' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+                <span>{navTitle(item, t.sidebar.automation)}</span>
+              </button>
+            );
+          }
+          // `url:` — the app's own page, shown in the main area.
+          const active = viewMode === 'app-page' && activeAppPage?.navItemId === item.id;
+          return (
             <button
-              onClick={() => setViewMode('todos')}
+              key={item.id}
+              data-testid={`sidebar-app-page-${item.id}`}
+              onClick={() => { openAppPage(item.id); setShowFileTree(false); }}
               className={cn(
                 'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-                viewMode === 'todos'
+                active
                   ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
                   : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
               )}
             >
-              <CheckSquare className={cn('h-[18px] w-[18px]', viewMode === 'todos' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-              <span>{t.sidebar.todos}</span>
+              <Globe className={cn('h-[18px] w-[18px]', active ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+              <span className="flex-1 truncate text-left">{navTitle(item, item.id)}</span>
             </button>
-            <button
-              onClick={() => setViewMode('inbox')}
-              className={cn(
-                'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-                viewMode === 'inbox'
-                  ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                  : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-              )}
-            >
-              <Inbox className={cn('h-[18px] w-[18px]', viewMode === 'inbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-              <span className="flex-1 text-left">{t.sidebar.inbox}</span>
-              {pendingInboxCount > 0 && (
-                <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-[var(--abu-danger-solid)] text-white text-caption font-medium leading-[18px] text-center">
-                  {pendingInboxCount > 99 ? '99+' : pendingInboxCount}
-                </span>
-              )}
-            </button>
-          </>
-        )}
-        <button
-          onClick={() => { openTeam(); setShowFileTree(false); }}
-          className={cn(
-            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-            viewMode === 'team'
-              ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-          )}
-          data-testid="sidebar-team"
-        >
-          <UsersRound className={cn('h-[18px] w-[18px]', viewMode === 'team' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.team}</span>
-        </button>
-        <button
-          onClick={() => { openExtensions(); setShowFileTree(false); }}
-          className={cn(
-            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-            viewMode === 'extensions'
-              ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-          )}
-        >
-          <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'extensions' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span className="flex-1 text-left">{t.sidebar.extensions}</span>
-          <PluginUpdateBadge testId="extensions-update-badge" />
-        </button>
-        <button
-          onClick={() => { openAutomation(); setShowFileTree(false); }}
-          className={cn(
-            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-            viewMode === 'automation'
-              ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-          )}
-        >
-          <Workflow className={cn('h-[18px] w-[18px]', viewMode === 'automation' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.automation}</span>
-        </button>
+          );
+        })}
       </nav>
 
       {/* File-tree mode swaps the whole conversation list for the active
@@ -488,6 +542,11 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 )}
                 {conv.importedFrom && (
                   <ImportedBadge importedAt={conv.importedFrom.importedAt} />
+                )}
+                {conv.appBinding && (
+                  <span title={conv.appBinding.appName} data-testid="conversation-app-icon">
+                    <AppLogo name={conv.appBinding.appName} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} size="sm" className="rounded" />
+                  </span>
                 )}
                 {editingId === conv.id ? (
                   <input

@@ -18,6 +18,8 @@ export type PluginSource =
 
 export interface MarketplaceEntry {
   name: string;
+  /** What the listing calls this package, mirroring the manifest's `interface.displayName`. */
+  displayName?: string;
   description?: string;
   version?: string;
   author?: string | { name: string; email?: string };
@@ -25,6 +27,10 @@ export interface MarketplaceEntry {
   homepage?: string;
   keywords?: string[];
   tags?: string[];
+  /** Listed under "apps" in discovery; the manifest must then carry `app`. */
+  providesApp?: boolean;
+  /** Mirror of the manifest's `minAbuVersion`, so a listing can hide packages this Abu cannot use. */
+  minAbuVersion?: string;
   source: PluginSource;
 }
 
@@ -156,6 +162,7 @@ function parseEntry(raw: unknown, label: string): MarketplaceEntry {
   return {
     ...(raw as unknown as MarketplaceEntry),
     name: raw.name,
+    displayName: typeof raw.displayName === 'string' && raw.displayName.length > 0 ? raw.displayName : undefined,
     description: typeof raw.description === 'string' ? raw.description : undefined,
     version: typeof raw.version === 'string' ? raw.version : undefined,
     author: parseAuthor(raw.author),
@@ -163,6 +170,8 @@ function parseEntry(raw: unknown, label: string): MarketplaceEntry {
     homepage: typeof raw.homepage === 'string' ? raw.homepage : undefined,
     keywords: Array.isArray(raw.keywords) ? (raw.keywords as string[]) : undefined,
     tags: Array.isArray(raw.tags) ? (raw.tags as string[]) : undefined,
+    providesApp: raw.providesApp === true ? true : undefined,
+    minAbuVersion: typeof raw.minAbuVersion === 'string' ? raw.minAbuVersion : undefined,
     source,
   };
 }

@@ -1,0 +1,82 @@
+{
+  "name": "abu-app-content-creation",
+  "version": "1.0.0",
+  "description": "内容创作：选题、成稿、配图、发布物料，由内容创作专家团负责",
+  "author": { "name": "Abu" },
+  "license": "Apache-2.0",
+  "keywords": ["content", "writing", "wechat", "marketing"],
+  "minAbuVersion": "0.51.0",
+  "interface": {
+    "displayName": "内容创作",
+    "shortDescription": "从选题到成稿、配图和发布物料",
+    "longDescription": "给内容运营准备的应用：选题与成稿、配图、发布物料三组场景，由随阿布附带的内容创作专家团负责——公众号编辑带队，行业调研专家找素材，网页设计师出图。",
+    "developerName": "Abu",
+    "category": "content",
+    "capabilities": ["读取你上传的素材、报告和历史文章", "生成文章、标题、封面图方案和宣传文案"],
+    "brandColor": "#3C3489",
+    "logo": "assets/logo.png",
+    "logoDark": "assets/logo-dark.png"
+  },
+  "app": {
+    "version": 1,
+    "defaultRun": { "team": "builtin-team:content-creation" },
+    "promptAppend": "The user creates content for an audience. Match the channel they name (WeChat article, short post, poster copy), keep the voice consistent across pieces, and hand back finished text rather than outlines unless asked.",
+    "home": {
+      "header": {
+        "title": { "zh-CN": "内容创作", "en-US": "Content creation" },
+        "slogan": { "zh-CN": "从一个选题到一组能发的内容", "en-US": "From one topic to a set of pieces ready to publish" }
+      },
+      "modes": {
+        "defaultSelected": "write",
+        "items": [
+          {
+            "modeId": "write",
+            "title": { "zh-CN": "选题与成稿", "en-US": "Topics and drafts" },
+            "scenes": [
+              {
+                "id": "article",
+                "title": { "zh-CN": "写一篇推文", "en-US": "Write an article" },
+                "placeholder": { "zh-CN": "说说主题、读者和篇幅", "en-US": "Topic, audience and length" },
+                "templates": [
+                  { "id": "wechat", "title": { "zh-CN": "公众号推文", "en-US": "WeChat article" }, "prompt": { "zh-CN": "围绕这个主题写一篇公众号推文，给三个备选标题", "en-US": "Write a WeChat article on this topic with three title options" } },
+                  { "id": "from-report", "title": { "zh-CN": "报告改短文", "en-US": "Report to short posts" }, "prompt": { "zh-CN": "把这份报告改写成三篇可以分开发的短文", "en-US": "Rewrite this report into three short posts that can go out separately" } },
+                  { "id": "topics", "title": { "zh-CN": "出一周选题", "en-US": "A week of topics" }, "prompt": { "zh-CN": "根据我们的账号定位出下周的五个选题", "en-US": "Propose five topics for next week based on our account's positioning" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "visual",
+            "title": { "zh-CN": "配图", "en-US": "Visuals" },
+            "scenes": [
+              {
+                "id": "cover",
+                "title": { "zh-CN": "封面与信息图", "en-US": "Cover and infographic" },
+                "templates": [
+                  { "id": "cover", "title": { "zh-CN": "封面图方案", "en-US": "Cover concept" }, "prompt": { "zh-CN": "给这篇文章出三个封面图方案，写清画面和文字", "en-US": "Propose three cover concepts for this article, with visual and text" } },
+                  { "id": "infographic", "title": { "zh-CN": "做信息图", "en-US": "Infographic" }, "prompt": { "zh-CN": "把文中的数据做成一张信息图", "en-US": "Turn the data in the article into an infographic" } },
+                  { "id": "carousel", "title": { "zh-CN": "拆成图文卡片", "en-US": "Card carousel" }, "prompt": { "zh-CN": "把这篇文章整理成六张图文卡片的文案", "en-US": "Turn this article into copy for six image cards" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "publish",
+            "title": { "zh-CN": "发布物料", "en-US": "Publishing kit" },
+            "scenes": [
+              {
+                "id": "kit",
+                "title": { "zh-CN": "一组宣传文案", "en-US": "A set of promo copy" },
+                "templates": [
+                  { "id": "promo", "title": { "zh-CN": "多渠道文案", "en-US": "Multi-channel copy" }, "prompt": { "zh-CN": "为这篇内容写一组不同渠道的宣传文案和配图建议", "en-US": "Write promo copy for several channels for this piece, with image suggestions" } },
+                  { "id": "summary", "title": { "zh-CN": "摘要与话题", "en-US": "Summary and tags" }, "prompt": { "zh-CN": "给这篇文章写摘要、引导语和五个话题标签", "en-US": "Write the summary, the lead-in and five hashtags for this article" } },
+                  { "id": "schedule", "title": { "zh-CN": "发布排期", "en-US": "Publishing schedule" }, "prompt": { "zh-CN": "给这组内容排一个一周的发布计划", "en-US": "Schedule this set of pieces across one week" } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

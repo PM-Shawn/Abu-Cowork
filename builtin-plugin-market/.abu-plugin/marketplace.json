@@ -5,11 +5,45 @@
   "plugins": [
     {
       "name": "abu-prd-doctor",
+      "displayName": "PRD 体检",
       "description": "PRD 体检：按流程完整性 / 异常路径 / 文案一致性三条线快速过一遍产品需求文档",
       "version": "1.0.0",
       "author": { "name": "Abu" },
       "category": "productivity",
       "source": "./plugins/abu-prd-doctor"
+    },
+    {
+      "name": "abu-app-recruiting",
+      "displayName": "招聘",
+      "description": "招聘应用：写 JD、筛简历、备面试、查行情，由招聘专家团负责",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "hr",
+      "providesApp": true,
+      "minAbuVersion": "0.51.0",
+      "source": "./plugins/abu-app-recruiting"
+    },
+    {
+      "name": "abu-app-finance-reconciliation",
+      "displayName": "财务对账",
+      "description": "财务对账应用：对流水、查差异、出报表，由财务对账专家团负责",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "finance",
+      "providesApp": true,
+      "minAbuVersion": "0.51.0",
+      "source": "./plugins/abu-app-finance-reconciliation"
+    },
+    {
+      "name": "abu-app-content-creation",
+      "displayName": "内容创作",
+      "description": "内容创作应用：选题、成稿、配图、发布物料，由内容创作专家团负责",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "content",
+      "providesApp": true,
+      "minAbuVersion": "0.51.0",
+      "source": "./plugins/abu-app-content-creation"
     }
   ]
 }

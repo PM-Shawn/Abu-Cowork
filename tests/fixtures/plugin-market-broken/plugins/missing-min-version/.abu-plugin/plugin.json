@@ -1,0 +1,5 @@
+{
+  "name": "missing-min-version",
+  "version": "1.0.0",
+  "description": "ships a team but declares no minAbuVersion"
+}

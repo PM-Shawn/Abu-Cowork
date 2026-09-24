@@ -1,5 +1,6 @@
 import { defineConfig, configDefaults } from 'vitest/config';
 import path from 'path';
+import { version as packageVersion } from './package.json';
 
 export default defineConfig({
   resolve: {
@@ -37,8 +38,10 @@ export default defineConfig({
   },
   define: {
     // Mirror vite.config.ts so modules that consume APP_VERSION via
-    // `__APP_VERSION__` (see src/utils/version.ts) don't blow up under vitest.
-    __APP_VERSION__: JSON.stringify('test'),
+    // `__APP_VERSION__` (see src/utils/version.ts) see the same semantic
+    // version the app ships with — the plugin installer compares it against a
+    // package's `minAbuVersion`.
+    __APP_VERSION__: JSON.stringify(packageVersion),
     // Tests run as the OSS build target (enterprise UI hidden).
     __ENTERPRISE_BUILD__: JSON.stringify(false),
     // Provide a stub URL so modules guarded by `if (!CONSOLE_URL) return`

@@ -700,6 +700,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
 
   const shellBridge = exposed.get('__ABU_SHELL__');
   assert.deepEqual(Object.keys(shellBridge).sort(), [
+    'appPage',
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
     'deepLinkScheme',

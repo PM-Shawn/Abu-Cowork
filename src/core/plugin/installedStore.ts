@@ -1,5 +1,6 @@
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs';
 import { installedManifestPath , pluginInstallDir, normalizePluginComponentPath } from './paths';
+import { isPluginTeamFileId } from '../../../electron/shared/pluginAppSpec.mjs';
 
 type RegistryAction = 'read' | 'validate' | 'upsert' | 'remove';
 type RegistryBridge = (action: RegistryAction, request: object) => Promise<unknown>;
@@ -44,12 +45,13 @@ export interface InstalledPlugin {
    * agent directory names). Uninstall correctness is derived from this record
    * — never by rescanning directories and guessing what belonged to the plugin.
    *
-   * `agents` arrived after the first records were written, so it is required
-   * here but normalised on read (see {@link withContributedAgents}): every
-   * consumer sees a list, and a record written before the field existed reads
-   * back as `[]` rather than as `undefined` for each of them to guard.
+   * `agents` and `teams` arrived after the first records were written, so they
+   * are required here but normalised on read (see {@link withContributedAgents}):
+   * every consumer sees a list, and a record written before a field existed
+   * reads back as `[]` rather than as `undefined` for each of them to guard.
+   * `teams` holds the ids of the package's `teams/<id>.json` files.
    */
-  contributed: { skills: string[]; mcpServers: string[]; agents: string[] };
+  contributed: { skills: string[]; mcpServers: string[]; agents: string[]; teams: string[] };
 }
 
 /**
@@ -220,9 +222,21 @@ function withValidSourceKind(p: InstalledPlugin): InstalledPlugin {
  */
 function withContributedAgents(p: InstalledPlugin): InstalledPlugin {
   // Typed as `string[]` by the interface, but it came straight out of JSON.
-  const raw = (p.contributed as { agents?: unknown }).agents;
-  if (isStringArray(raw)) return p;
-  return { ...p, contributed: { ...p.contributed, agents: [] } };
+  const raw = p.contributed as { agents?: unknown; teams?: unknown };
+  // A team id becomes a file name under the package's `teams/` every time the
+  // teams are read, so it is held to the same rule the installer validated it
+  // by here, where the record enters — `../../x` is not a team this plugin
+  // contributed, whoever wrote it into the file.
+  const teams = isStringArray(raw.teams) ? raw.teams.filter(isPluginTeamFileId) : [];
+  if (isStringArray(raw.agents) && isStringArray(raw.teams) && teams.length === raw.teams.length) return p;
+  return {
+    ...p,
+    contributed: {
+      ...p.contributed,
+      agents: isStringArray(raw.agents) ? raw.agents : [],
+      teams,
+    },
+  };
 }
 
 /** Malformed new layouts grant no skills; never fall back to a broader legacy scan. */

@@ -91,10 +91,11 @@ vi.mock('@/i18n', async () => {
   };
 });
 
-// Reactive stand-in for the plugin store: only `activationReady` matters here.
+// Reactive stand-in for the plugin store: `activationReady`, plus the installed
+// list a plugin team's badge and origin note name the plugin from.
 vi.mock('@/stores/pluginStore', async () => {
   const { create } = await import('zustand');
-  return { usePluginStore: create(() => ({ activationReady: true })) };
+  return { usePluginStore: create(() => ({ activationReady: true, installed: [] })) };
 });
 import { usePluginStore } from '@/stores/pluginStore';
 
@@ -508,6 +509,19 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByText('移除'));
     expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead', 'r-mem']);
     expect(screen.queryByTestId('team-member-invalid-r-gone')).toBeNull();
+  });
+
+  it('teams tab: a plugin team lists an invalid member without offering to remove it', () => {
+    // The plugin owns its roster, and updateTeam keeps read-only teams as they
+    // are, so a 移除 here would do nothing.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 'plugin-team:shop@market/crew', name: '店铺小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-gone'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-店铺小队'));
+    expect(screen.getByTestId('team-member-invalid-r-gone').textContent).toContain('已失效');
+    expect(screen.queryByText('移除')).toBeNull();
   });
 
   it('team dialog: an invalid member is listed, kept on save unless removed', async () => {

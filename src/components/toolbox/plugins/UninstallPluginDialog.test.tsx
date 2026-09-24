@@ -19,6 +19,8 @@ import { getI18n, format } from '@/i18n';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useToastStore } from '@/stores/toastStore';
+import { useAppStore } from '@/stores/appStore';
+import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
 const tb = () => getI18n().toolbox;
@@ -29,7 +31,7 @@ const plugin = (key: string, name: string): InstalledPlugin => ({
   name,
   version: '1.2.0',
   installedAt: '2026-08-31T00:00:00.000Z',
-  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: [] },
+  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: [], teams: [] },
 });
 
 const weather = plugin('weather@official', 'weather');
@@ -126,7 +128,7 @@ describe('UninstallPluginDialog', () => {
     // package directory; the confirmation names every kind of collateral.
     const withAgents: InstalledPlugin = {
       ...weather,
-      contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: ['reviewer', 'planner'] },
+      contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: ['reviewer', 'planner'], teams: [] },
     };
     render(
       <UninstallPluginDialog home="/Users/tester" target={withAgents} onClose={() => {}} />,
@@ -137,6 +139,32 @@ describe('UninstallPluginDialog', () => {
         format(tb().pluginsUninstallMessage, { name: 'weather', skills: 1, servers: 1, agents: 2 }),
       ),
     ).toBeInTheDocument();
+  });
+
+  it('says an app leaves the switcher and its conversations stay, and names the teams going with it', () => {
+    // Removing an app is a bigger step than removing a plugin: the switcher
+    // loses an entry and a package team disappears from 专家. The user sees
+    // both, plus the reassurance that the conversations survive.
+    const shopApp: InstalledPlugin = {
+      ...weather,
+      key: 'shop@official',
+      name: 'shop',
+      contributed: { skills: ['product-listing'], mcpServers: ['shop-api'], agents: ['advisor'], teams: ['store-ops'] },
+    };
+    useAppStore.setState({
+      installedApps: [{ appId: shopApp.key, name: '店铺运营', config: DEFAULT_APP_CONFIG, pluginKey: shopApp.key, pluginVersion: '1.0.0' }],
+    });
+    render(<UninstallPluginDialog home="/Users/tester" target={shopApp} onClose={() => {}} />);
+
+    const dialog = screen.getByText(new RegExp(format(tb().pluginsUninstallTeamsNote, { teams: 1 }).trim()));
+    expect(dialog).toHaveTextContent(tb().pluginsUninstallAppNote.trim());
+    useAppStore.setState({ installedApps: [] });
+  });
+
+  it('keeps the app sentence out of a plain plugin uninstall', () => {
+    render(<UninstallPluginDialog home="/Users/tester" target={weather} onClose={() => {}} />);
+    expect(screen.queryByText(new RegExp(tb().pluginsUninstallAppNote.trim()))).toBeNull();
+    expect(screen.queryByText(new RegExp(format(tb().pluginsUninstallTeamsNote, { teams: 0 }).trim()))).toBeNull();
   });
 
   it('releases the key on failure too, and reports the failure once', async () => {

@@ -14,6 +14,7 @@ import { parseArgs } from '@/utils/argsParser';
 import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import type { MCPTemplate } from '@/types/marketplace';
 import { Plus, Loader2, Check, X, ChevronDown, ChevronRight, Wrench, AlertCircle, Server, ArrowLeft } from 'lucide-react';
+import EmptyState from '@/components/common/EmptyState';
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
 import { Button } from '@/components/ui/button';
@@ -744,8 +745,13 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         {source === 'mine' ? (
           mineServers.length === 0 ? (
             scopedServers.length === 0 ? (
-              <div className="py-16 text-center">
-                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.connectorsMineEmptyTitle}</p>
+              <div className="py-16">
+                <EmptyState
+                  icon={Server}
+                  title={t.toolbox.connectorsMineEmptyTitle}
+                  hint={t.toolbox.connectorsMineEmptyHint}
+                  action={<Button size="sm" data-testid="connectors-mine-add" onClick={() => setShowAddForm(true)}>{t.toolbox.addServer}</Button>}
+                />
               </div>
             ) : (
               <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>

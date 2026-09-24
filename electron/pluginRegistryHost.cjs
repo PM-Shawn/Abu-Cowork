@@ -4,6 +4,7 @@ const nodeFs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { identityOf, sameIdentity } = require('./fileIdentity.cjs');
 
 const PLUGIN_REGISTRY_CHANNEL = 'abu:plugin-registry';
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -18,7 +19,8 @@ function validRecord(record) {
   return plain(record) && safeSegment(record.name) && safeSegment(record.marketplace) && safeSegment(record.version)
     && record.key === `${record.name}@${record.marketplace}`
     && plain(record.contributed) && strings(record.contributed.skills) && strings(record.contributed.mcpServers)
-    && (record.contributed.agents === undefined || strings(record.contributed.agents));
+    && (record.contributed.agents === undefined || strings(record.contributed.agents))
+    && (record.contributed.teams === undefined || strings(record.contributed.teams));
 }
 function validateRecords(records) {
   if (!Array.isArray(records) || records.length > 10000 || records.some(record => !validRecord(record))
@@ -130,7 +132,10 @@ function runMutationWorker({ action, request, home, identity }) {
 function createPluginRegistryHost({ home, fs = nodeFs, mutate = runMutationWorker } = {}) {
   const lexicalHome = path.resolve(home);
   const canonicalHome = fs.realpathSync(lexicalHome);
-  const homeIdentity = fs.statSync(canonicalHome);
+  // Read as bigint because this identity is sent to the mutation worker over
+  // JSON, where a Windows file id only survives as the decimal string
+  // `electron/fileIdentity.cjs` produces.
+  const homeIdentity = identityOf(fs.statSync(canonicalHome, { bigint: true }));
   const { read } = registryIO(fs);
   let queue = Promise.resolve();
   let closing = false;
@@ -144,8 +149,8 @@ function createPluginRegistryHost({ home, fs = nodeFs, mutate = runMutationWorke
   function profile(requestHome) {
     if (typeof requestHome !== 'string' || !path.isAbsolute(requestHome) || requestHome.includes('\0')) throw new Error('Plugin registry: invalid profile');
     const currentHome = fs.realpathSync(lexicalHome);
-    const currentIdentity = fs.statSync(currentHome);
-    if (currentHome !== canonicalHome || currentIdentity.ino !== homeIdentity.ino || currentIdentity.dev !== homeIdentity.dev) throw new Error('Plugin registry: profile changed');
+    const currentIdentity = identityOf(fs.statSync(currentHome, { bigint: true }));
+    if (currentHome !== canonicalHome || !sameIdentity(currentIdentity, homeIdentity)) throw new Error('Plugin registry: profile changed');
     // Accept only the configured profile's lexical or canonical spelling.
     if (![lexicalHome, canonicalHome].includes(path.resolve(requestHome))) throw new Error('Plugin registry: profile mismatch');
     return canonicalHome;
@@ -165,7 +170,7 @@ function createPluginRegistryHost({ home, fs = nodeFs, mutate = runMutationWorke
     if (action === 'remove' && (typeof request.key !== 'string' || request.key.length > 481 || !request.key.includes('@'))) throw new Error('Plugin registry: invalid key');
     const canonicalHome = profile(request.home);
     if (action !== 'read') {
-      return mutate({ action, request, home: canonicalHome, identity: { dev: homeIdentity.dev, ino: homeIdentity.ino } });
+      return mutate({ action, request, home: canonicalHome, identity: homeIdentity });
     }
     let file;
     try { file = location(canonicalHome); } catch (e) {

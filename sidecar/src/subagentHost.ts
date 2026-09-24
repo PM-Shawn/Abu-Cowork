@@ -45,6 +45,7 @@ import {
 } from '@/core/subagent/delegatedUserTurnMaterializer';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
+import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from './runtimeTrace';
 import { sendRequest, sendNotification } from './rpcClient';
 import { findActiveRunDeltaForConversation } from './agentLoopHost';
 import { getSettingsMirrorReader, seedSettingsMirrorIfEmpty } from './settingsMirror';
@@ -469,6 +470,16 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
 
   const controller = new AbortController();
   activeRuns.set(runId, { controller, dispatchKey: params.dispatchKey });
+  // A delegated run used to leave no trace in this process at all, so a run
+  // that stopped making progress looked the same in the logs as one that was
+  // never dispatched. These three events are the counterpart of
+  // agentLoopHost's agent_loop_started / agent_run_completed / agent_run_failed.
+  const startedAt = Date.now();
+  traceSidecarRuntimeEvent('sidecar.subagent_run_started', {
+    runId,
+    conversationId: params.parentConversationId,
+    stage: 'subagent_loop_running',
+  });
 
   /**
    * Read settings through the sidecar's SHARED mirror, not through this run's
@@ -678,6 +689,13 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   try {
     const result = await subagentRunContext.run(runCtx, () => runSubagentLoop(options));
     await drainProgress();
+    traceSidecarRuntimeEvent('sidecar.subagent_run_completed', {
+      runId,
+      conversationId: params.parentConversationId,
+      stage: 'completed',
+      outcome: result.stopReason,
+      durationMs: Date.now() - startedAt,
+    });
     const upstream = normalizeUpstreamErrorDetails(result.upstream);
     return {
       text: result.text,
@@ -688,6 +706,16 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
       stopReason: result.stopReason,
       ...(upstream ? { upstream } : {}),
     } satisfies SerializableSubagentResult;
+  } catch (error) {
+    traceSidecarRuntimeEvent('sidecar.subagent_run_failed', {
+      runId,
+      conversationId: params.parentConversationId,
+      stage: 'failed',
+      outcome: 'error',
+      errorType: sidecarRuntimeErrorType(error),
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
   } finally {
     await drainProgress();
     activeRuns.delete(runId);
@@ -700,6 +728,11 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
 export function handleSubagentAbort(rawParams: unknown): void {
   const { runId } = parseAbortParams(rawParams);
   const run = activeRuns.get(runId);
+  traceSidecarRuntimeEvent('sidecar.subagent_abort_received', {
+    runId,
+    stage: 'abort_received',
+    outcome: run ? 'accepted' : 'unknown_run',
+  });
   if (!run) return; // unknown/already-finished runId — silent no-op, matches llm.abort's discipline
   run.controller.abort();
 }

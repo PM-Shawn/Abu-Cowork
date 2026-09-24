@@ -644,6 +644,21 @@ test('command host leaves SIGINT and SIGTERM exit ownership to the main process'
   assert.match(source, /app\?\.once\?\.\(['"]before-quit['"], cleanup\)/);
 });
 
+test('run_shell_command with a missing working directory names the directory, not the launcher', async () => {
+  const absentCwd = path.join(tmpDir(), 'no-such-directory');
+
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: 'echo hello',
+    cwd: absentCwd,
+    sandboxEnabled: false,
+  });
+
+  assert.equal(result.code, -1);
+  assert.equal(result.stdout, '');
+  assert.ok(result.stderr.includes(absentCwd), '错误文本要指名工作目录');
+  assert.doesNotMatch(result.stderr, /sandbox-launcher/, '错误文本不能再指向启动器');
+});
+
 test('macOS Seatbelt profile still denies sensitive home paths', () => {
   const profile = generateSeatbeltProfile('/tmp/work', [], '/Users/tester', undefined);
   assert.match(profile, /\(deny default\)/);

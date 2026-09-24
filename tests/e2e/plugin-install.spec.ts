@@ -490,6 +490,9 @@ test('recovers an interrupted same-version replacement before plugin activation 
     await expect.poll(() => fs.existsSync(installedSkill) ? fs.readFileSync(installedSkill, 'utf8') : null, { timeout: READY_TIMEOUT }).toBe(originalBody);
     expect(JSON.parse(fs.readFileSync(registry, 'utf8'))).toEqual([previous]);
     expect(fs.readFileSync(installedAgent, 'utf8')).toBe(originalAgent);
+    // The shelf is a persisted choice, and the kill may have dropped the last
+    // switch back to 市场 before it reached disk — pick it explicitly.
+    await page.getByTestId('extensions-source-market').click();
     const recovered = page.getByTestId('plugin-marketplace-entry').filter({ hasText: 'e2e-weather' }).first();
     await expect(recovered.getByTestId('plugin-installed-badge')).toBeVisible({ timeout: READY_TIMEOUT });
     const journal = path.join(launched.appDataDir, 'Home/.abu/plugin-operations/active.enc');

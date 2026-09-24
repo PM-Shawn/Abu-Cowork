@@ -19,7 +19,7 @@
  * `msg.truncate` cut, the run states of finished turns, and every key of a
  * media block the fold does not name — is compared field by field.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, mkdir, readDir, readTextFile, remove, stat, writeTextFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import type { Conversation, Message } from '@/types';
@@ -358,6 +358,15 @@ async function expectEquivalent(
 }
 
 describe('agent.start history: the wire snapshot and the ledger view agree (#549 P2a)', () => {
+  // Every case imports chatStore afresh after `vi.resetModules()`. That resets
+  // evaluated modules but not the transform cache, so the first import in a
+  // worker also compiles the whole chatStore graph. Paying that once here puts
+  // it under the hook budget; left to the first case, it lands inside a 5 s
+  // test body whenever this file runs without a warm neighbour in its worker.
+  beforeAll(async () => {
+    await freshHarness();
+  });
+
   beforeEach(() => {
     mediaCounter = 0;
     seen = noAllowances();

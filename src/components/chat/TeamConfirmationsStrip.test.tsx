@@ -14,7 +14,11 @@ import type { Conversation } from '@/types';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
 
 const runAgentLoopDispatched = vi.fn((..._args: unknown[]) => Promise.resolve({ reason: 'completed' }));
-vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: (...args: unknown[]) => runAgentLoopDispatched(...args) }));
+const forgiveTeamBrowserDenials = vi.fn((..._args: unknown[]) => undefined);
+vi.mock('@/core/agent/agentLoopRunner', () => ({
+  runAgentLoopDispatched: (...args: unknown[]) => runAgentLoopDispatched(...args),
+  forgiveTeamBrowserDenials: (...args: unknown[]) => forgiveTeamBrowserDenials(...args),
+}));
 const enqueueUserInput = vi.fn((..._args: unknown[]) => undefined);
 vi.mock('@/core/agent/userInputQueue', () => ({ enqueueUserInput: (...args: unknown[]) => enqueueUserInput(...args) }));
 
@@ -64,6 +68,7 @@ describe('TeamConfirmationsStrip', () => {
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
     expect(runAgentLoopDispatched.mock.calls[0][1]).toBe('我同意了zz发布员做「rm -rf ./old」这一次。请用原来的专家、任务和上下文把这一步重新派一次，做完后说明结果。');
     expect(runAgentLoopDispatched.mock.calls[0][2]).toMatchObject({ teamConfirmationRetryId: selection, continuesTeamTask: true });
+    expect(forgiveTeamBrowserDenials).toHaveBeenCalledWith('c1');
     expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
   });
 
@@ -79,6 +84,8 @@ describe('TeamConfirmationsStrip', () => {
     expect(enqueueUserInput).toHaveBeenCalledTimes(2);
     expect(enqueueUserInput.mock.calls[0].slice(2)).toEqual([false, expect.any(String), true]);
     expect(String(enqueueUserInput.mock.calls[1][1])).toContain('我没有同意zz取数员');
+    // 拒绝仍然算拒绝，只有允许会让连续拒绝重新计数
+    expect(forgiveTeamBrowserDenials).toHaveBeenCalledTimes(1);
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
   });
@@ -86,14 +93,15 @@ describe('TeamConfirmationsStrip', () => {
   it('"这个任务里都允许" names what it covers, lists the allowance, and "收回" withdraws it', () => {
     useTeamConfirmationStore.getState().add({ identity: { ...identity, scope: 'prefix:npm run' }, conversationId: 'c1', kind: 'command', level: 'warn', detail: 'npm run build', member: 'A' });
     render(<TeamConfirmationsStrip conversationId="c1" />);
-    expect(screen.getByTestId('team-confirmation-item')).toHaveTextContent('A再执行「npm run」开头的命令时不再问');
+    expect(screen.getByTestId('team-confirmation-item')).toHaveTextContent('A在 /project 里再执行「npm run」开头的命令时不再问');
     const task = screen.getByRole('button', { name: '这个任务里都允许: npm run build' });
     expect(task).toHaveAttribute('data-primary', 'true');
     expect(screen.getByRole('button', { name: '只允许这一次: npm run build' }).className).not.toContain('bg-[var(--abu-clay)]');
 
     fireEvent.click(task);
-    expect(Object.values(useTeamConfirmationStore.getState().taskRules)).toMatchObject([{ category: 'command:prefix:npm run' }]);
+    expect(Object.values(useTeamConfirmationStore.getState().taskRules)).toMatchObject([{ category: 'command:["/project","prefix:npm run"]' }]);
     expect(useTeamConfirmationStore.getState().pending).toEqual({});
+    expect(forgiveTeamBrowserDenials).toHaveBeenCalledWith('c1');
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
     expect(runAgentLoopDispatched.mock.calls[0][1]).toBe('这个任务里，我同意了刚才请求的这些操作。请让相关专家接着做被挡住的步骤，做完后说明结果。');
     expect(runAgentLoopDispatched.mock.calls[0][2]).toMatchObject({ teamConfirmationRetryId: undefined, continuesTeamTask: true });
@@ -101,7 +109,9 @@ describe('TeamConfirmationsStrip', () => {
     const strip = screen.getByTestId('team-confirmations-strip');
     expect(strip).toHaveTextContent('这个任务里已允许');
     expect(strip).not.toHaveTextContent('需要你确认');
-    fireEvent.click(screen.getByRole('button', { name: '收回: A再执行「npm run」开头的命令时不再问' }));
+    // 上面没有条目时不画分隔线
+    expect(strip.querySelector('.border-t')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '收回: A在 /project 里再执行「npm run」开头的命令时不再问' }));
     expect(useTeamConfirmationStore.getState().taskRules).toEqual({});
     expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
   });
@@ -116,7 +126,7 @@ describe('TeamConfirmationsStrip', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '全部允许' }));
     expect(Object.values(useTeamConfirmationStore.getState().taskRules).map((rule) => rule.category).sort())
-      .toEqual(['command:prefix:npm run', 'file:write:/project/out']);
+      .toEqual(['command:["/project","prefix:npm run"]', 'file:write:/project/out']);
     expect(Object.values(useTeamConfirmationStore.getState().pending).map((item) => item.detail)).toEqual(['rm -rf ./old']);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('team-confirmation-item')).toHaveTextContent('rm -rf ./old');
@@ -245,24 +255,41 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     expect(screen.getByTestId('team-confirmation-item').textContent).toContain(`网站: ${ORIGIN}`);
   });
 
-  it('A2: a script request offers the script grant, says what a script can do, and scopes the task allowance to the site', () => {
+  it('A2: a script request says what it does in words, offers the script grant, and scopes the task allowance to the site', () => {
     renderWith(browserRequest({
       identity: { ...identity, toolName: 'abu-browser__execute_js', scope: ORIGIN },
-      detail: 'execute_js', browserOperationClass: 'scripting', browserPermissionResource: 'script',
+      detail: `浏览器操作: abu-browser__execute_js (${ORIGIN})`, browserOperationClass: 'scripting', browserPermissionResource: 'script',
+      reason: '将在页面里运行一段脚本。脚本能读取这个页面的内容，并以你的身份在页面上操作。',
     }));
     expect(allowSiteButton()).toHaveTextContent('以后在此网站允许执行脚本');
     const row = screen.getByTestId('team-confirmation-item');
-    expect(row).toHaveTextContent('脚本能读取这个页面，并以你的身份在页面上操作');
+    expect(row).toHaveTextContent('zz填表员 想执行：在页面里运行一段脚本');
+    expect(row).not.toHaveTextContent('abu-browser__');
+    // 风险只在请求原因里说一次
+    expect(row.textContent?.match(/以你的身份在页面上操作/g)).toHaveLength(1);
     expect(row).toHaveTextContent(`zz填表员再在 ${ORIGIN} 上执行脚本时不再问`);
-    expect(screen.getByRole('button', { name: '这个任务里都允许: execute_js' })).toHaveAttribute('data-primary', 'true');
+    expect(screen.getByRole('button', { name: '这个任务里都允许: 在页面里运行一段脚本' })).toHaveAttribute('data-primary', 'true');
   });
 
-  it('A3: only embedded targets are listed under the site, with the page embedding them', () => {
-    renderWith(browserRequest({ browserPermissionTargets: [{ origin: ORIGIN }, { origin: 'https://frame.example', embeddedIn: ORIGIN }] }));
+  it('A3: only embedded targets are listed under the site, and a region scope names the page it is embedded in', () => {
+    renderWith(browserRequest({
+      identity: { ...identity, toolName: 'fill', scope: `https://frame.example in ${ORIGIN}` },
+      browserPermissionTargets: [{ origin: ORIGIN }, { origin: 'https://frame.example', embeddedIn: ORIGIN }],
+    }));
     const row = screen.getByTestId('team-confirmation-item');
     expect(row).toHaveTextContent(`https://frame.example (${ORIGIN})`);
-    expect(row.querySelectorAll('code')).toHaveLength(3);
+    expect(row.querySelectorAll('code')).toHaveLength(2);
     expect(row).not.toHaveTextContent('工作目录');
+    expect(row).toHaveTextContent(`zz填表员再在 ${ORIGIN} 页面里嵌入的 https://frame.example 上操作时不再问`);
+  });
+
+  it('A4: a script inside an embedded region is never offered the site grant — it would open scripts on the whole host site', () => {
+    renderWith(browserRequest({
+      identity: { ...identity, toolName: 'abu-browser__execute_js' },
+      browserOperationClass: 'scripting', browserPermissionResource: 'script',
+      browserPermissionTargets: [{ origin: 'https://frame.example', embeddedIn: ORIGIN }, { origin: ORIGIN }],
+    }));
+    expect(allowSiteButton()).toBeNull();
   });
 
   it('B: no grant when the requester did not allow persistence', () => {
@@ -301,7 +328,7 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     await act(async () => { await useSettingsStore.getState().setBrowserSiteBlocked(ORIGIN, true); });
     expect(allowSiteButton()).toBeNull();
     // The row's other two approvals are untouched: the block is about the SITE.
-    expect(screen.getByRole('button', { name: '只允许这一次: fill #q' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '只允许这一次: 操作网页' })).toBeEnabled();
 
     // Lifting the block brings the offer back live, still without a remount.
     await act(async () => { await useSettingsStore.getState().removeBrowserSiteRule(ORIGIN, useSettingsStore.getState().browserPermissionConfigV2.sites[ORIGIN]); });
@@ -352,7 +379,7 @@ describe('audit-review team save cancellation',()=>{
   render(<TeamConfirmationsStrip conversationId='c1'/>);
   fireEvent.click(screen.getByTestId('team-confirmation-allow-site'));
   expect(save.mock.calls[0].slice(0,2)).toEqual(['upload',[target]]);
-  if(condition==='removed')fireEvent.click(screen.getByRole('button',{name:'拒绝: upload file'}));
+  if(condition==='removed')fireEvent.click(screen.getByRole('button',{name:'拒绝: 上传文件'}));
   else act(()=>useTeamConfirmationStore.setState({pending:{[entry.id]:{...entry,browserPermissionResource:'browse',browserPermissionTargets:[{origin:'https://different.example'}]}}}));
   expect(guard()).toBe(false);
   await act(async()=>release(false));

@@ -1,26 +1,29 @@
 import { format } from '@/i18n';
 import type { TranslationDict } from '@/i18n/types';
+import type { TeamConfirmation } from '@/stores/teamConfirmationStore';
 
 /**
  * One line saying what a "this task" allowance covers, in the user's words.
- * `category` is teamApprovalScope.ts's `teamTaskRuleCategory` output.
+ * Read from the request itself: `identity.scope` is teamApprovalScope.ts's
+ * command / file / site scope, and a command rule also needs the same folder.
  */
-export function describeTaskRuleScope(category: string, member: string, t: TranslationDict['team']): string {
-  const [kind, ...rest] = category.split(':');
-  const value = rest.join(':');
-  if (kind === 'command') {
-    return value.startsWith('prefix:')
-      ? format(t.confirmationScopeCommand, { member, prefix: value.slice('prefix:'.length) })
-      : format(t.confirmationScopeExactCommand, { member });
+export function describeTaskRuleScope(item: TeamConfirmation, member: string, t: TranslationDict['team']): string {
+  const scope = item.identity?.scope ?? '';
+  if (item.kind === 'command') {
+    const cwd = item.identity?.cwd ?? t.confirmationDefaultCwd;
+    return scope.startsWith('prefix:')
+      ? format(t.confirmationScopeCommand, { member, cwd, prefix: scope.slice('prefix:'.length) })
+      : format(t.confirmationScopeExactCommand, { member, cwd });
   }
-  if (kind === 'file') {
-    const [caps, ...folder] = value.split(':');
+  if (item.kind === 'file') {
+    const [caps, ...folder] = scope.split(':');
     return format(caps.includes('write') ? t.confirmationScopeFileWrite : t.confirmationScopeFileRead,
       { member, folder: folder.join(':') });
   }
-  const [resource, ...site] = value.split(':');
-  const siteText = site.join(':');
-  if (resource === 'script') return format(t.confirmationScopeScript, { member, site: siteText });
-  if (resource === 'upload') return format(t.confirmationScopeUpload, { member, site: siteText });
-  return format(t.confirmationScopeBrowse, { member, site: siteText });
+  // 嵌入区域的范围写作「区域 in 页面」（teamConfirmationIdentity.ts 的 scopeFor）
+  const [region, page] = scope.split(' in ');
+  const site = page ? format(t.confirmationScopeEmbeddedSite, { region, page }) : scope;
+  if (item.browserPermissionResource === 'script') return format(t.confirmationScopeScript, { member, site });
+  if (item.browserPermissionResource === 'upload') return format(t.confirmationScopeUpload, { member, site });
+  return format(t.confirmationScopeBrowse, { member, site });
 }

@@ -195,6 +195,13 @@ describe('persistent confirmation scope', () => {
     expect(resolveBrowserPermissionConfig(next, 'script', [{ origin: top }]).decision).toBe('allow');
   });
 
+  it('refuses a script grant for an embedded region, which would open scripts on the whole host site', () => {
+    const config = createBrowserPermissionConfig();
+    const before = JSON.stringify(config);
+    expect(grantBrowserPermissionTargets(config, 'script', [{ origin: frame, embeddedIn: top }, { origin: top }])).toBeNull();
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
   it('refuses a script grant on a site whose scripts are blocked', () => {
     const config = createBrowserPermissionConfig();
     config.sites[top] = { ...emptyBrowserSiteRule(), script: 'deny' };

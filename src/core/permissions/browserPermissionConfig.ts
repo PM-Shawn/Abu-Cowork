@@ -88,13 +88,16 @@ export function resolveBrowserPermissionConfig(value: unknown, resource: Browser
 /** A confirmation may grant only its named resource and verified scopes.
  * Call this under the persistence lock; a newer denial cancels the whole grant.
  * This does not decide whether a request may offer persistence (risk/run checks
- * remain with the requester), and scripts never receive persistent approval here.
+ * remain with the requester). A script inside an embedded region is never granted
+ * here: the resolver also requires the host page's own script row, so the grant
+ * would open scripts on the whole host site.
  */
 export function grantBrowserPermissionTargets(
   value: unknown, resource: BrowserPermissionResource, targets: readonly BrowserPermissionTarget[],
 ): BrowserPermissionConfig | null {
   const config = parseBrowserPermissionConfig(value);
   if (!config || resolveBrowserPermissionConfig(config, resource, targets).decision === 'deny') return null;
+  if (resource === 'script' && targets.some((target) => target.embeddedIn)) return null;
   const next = { ...config, sites: { ...config.sites }, embeddedSites: { ...config.embeddedSites } };
   for (const { origin, embeddedIn } of targets) {
     // The resolver has validated both origins and the necessary host page.

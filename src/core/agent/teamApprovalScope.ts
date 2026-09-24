@@ -20,16 +20,22 @@ export function commandScope(command: string): string {
   return `prefix:${words.slice(0, 2).join(' ')}`;
 }
 
-/** A file request is the same kind as another in the same folder with the same capabilities. */
-export function fileScope(path: string, capabilities: readonly ('read' | 'write')[]): string {
+/**
+ * A file request is the same kind as another in the same folder with the same
+ * capabilities. When the path check asked for a whole top-level folder
+ * (`isFolder`, e.g. ~/Documents), that folder is the scope; its parent would
+ * be the home directory.
+ */
+export function fileScope(path: string, capabilities: readonly ('read' | 'write')[], isFolder: boolean): string {
   const caps = [...new Set(capabilities)].sort().join('+');
-  return `${caps}:${getParentDir(normalizeSeparators(path))}`;
+  const normalized = normalizeSeparators(path);
+  return `${caps}:${isFolder ? normalized : getParentDir(normalized)}`;
 }
 
 export interface TeamTaskRuleSubject {
   kind: 'command' | 'browser' | 'browser-upload' | 'self-extension' | 'file';
   level?: DangerLevel;
-  identity?: { scope?: string | null };
+  identity?: { scope?: string | null; cwd?: string | null };
   browserPermissionResource?: BrowserPermissionResource;
   allowPersistentGrant?: boolean;
 }
@@ -55,6 +61,7 @@ export function teamTaskRuleCategory(item: TeamTaskRuleSubject): string | null {
       return `file:${scope}`;
     case 'command':
       if (item.level === undefined || isAlwaysAskAction({ level: item.level, kind: 'command' })) return null;
-      return `command:${scope}`;
+      // 同样开头的命令在另一个目录里做的是另一件事（./deploy.sh、npm run build），目录也要相同
+      return `command:${JSON.stringify([item.identity?.cwd ?? null, scope])}`;
   }
 }

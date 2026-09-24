@@ -1727,6 +1727,25 @@ describe('agentLoopRunner', () => {
       expect(third.shellAbortController.signal.aborted).toBe(false);
     });
 
+    it('an allowance on the confirmation strip starts the task streak over; the next run is not stopped by its first new request', async () => {
+      const { ensureHandlersRegistered, registerRunSession, unregisterRunSession, forgiveTeamBrowserDenials } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+
+      const first = { ...makeSession({ loopId: 'loop-a' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-a', first);
+      (await invokeOnce('run-a')).reportBrowserDenial!();
+      unregisterRunSession('run-a');
+
+      forgiveTeamBrowserDenials('conv-1');
+
+      const second = { ...makeSession({ loopId: 'loop-b' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-b', second);
+      (await invokeOnce('run-b')).reportBrowserDenial!();
+      expect(second.shellAbortController.signal.aborted).toBe(false);
+    });
+
     it('two denials in a row abort the run, append the closing message and record the cause', async () => {
       const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
       ensureHandlersRegistered();

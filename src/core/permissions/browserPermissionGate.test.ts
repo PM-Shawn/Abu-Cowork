@@ -5,7 +5,7 @@ const base: BrowserPermissionGateFacts = {
   opClass: 'interactive', runMode: 'attended', configured: { decision: 'allow', source: 'default' },
   permissionMode: 'standard', runPermissionCeiling: null, toolTargetsPage: true,
   originResolved: true, answersPageDialog: false, loginRequired: false,
-  confirmationChannelAvailable: true, originKnown: true, highRisk: false,
+  confirmationChannelAvailable: true, originKnown: true, highRisk: false, scriptInEmbeddedRegion: false,
 };
 describe('new permission execution gate', () => {
   it.each(['attended', 'unattended'] as const)('applies allow without a site grant in %s', (runMode) => {
@@ -14,6 +14,11 @@ describe('new permission execution gate', () => {
   });
   it.each(['interactive', 'read-only', 'upload', 'scripting'] as const)('offers an exact-resource persistent grant for ordinary %s ask', (opClass) => {
     expect(evaluateBrowserPermissionGate({ ...base, opClass, configured: { decision: 'ask', source: 'default' } }).ask?.offersPersistentGrant).toBe(true);
+  });
+  it('offers no persistent grant for a script inside an embedded region, still asking for it', () => {
+    const result = evaluateBrowserPermissionGate({ ...base, opClass: 'scripting', scriptInEmbeddedRegion: true, configured: { decision: 'ask', source: 'default' } });
+    expect(result.ask?.channel).toBe('dialog');
+    expect(result.ask?.offersPersistentGrant).toBe(false);
   });
   it('offers no persistent grant for scripts on a high-risk site', () => {
     expect(evaluateBrowserPermissionGate({ ...base, opClass: 'scripting', highRisk: true, configured: { decision: 'ask', source: 'default' } })

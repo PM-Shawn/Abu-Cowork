@@ -5,6 +5,7 @@ import { forgiveMember, resetDispatchCount } from '@/core/team/teamRunBounds';
 import { useMemo, useState } from 'react';
 import { ShieldAlert, Check, X } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
+import { cn } from '@/lib/utils';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
@@ -15,7 +16,7 @@ import {
   type TeamConfirmation,
 } from '@/stores/teamConfirmationStore';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
-import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { forgiveTeamBrowserDenials, runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { describeTaskRuleScope } from './teamTaskRuleScope';
 
 const PRIMARY_BUTTON = 'inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--abu-clay)] px-2 py-0.5 text-caption text-white hover:opacity-90';
@@ -63,6 +64,13 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
     });
   };
   const memberLabel = (item: TeamConfirmation) => item.member ?? t.team.confirmationLeader;
+  /** What the user reads on the row. A browser request's detail is a tool name, kept for the leader's follow-up only. */
+  const actionText = (item: TeamConfirmation) => {
+    if (item.kind !== 'browser' && item.kind !== 'browser-upload') return item.detail;
+    if (item.browserPermissionResource === 'script') return t.team.confirmationBrowserScript;
+    if (item.browserPermissionResource === 'upload') return t.team.confirmationBrowserUpload;
+    return t.team.confirmationBrowserBrowse;
+  };
   const categoryOf = (item: TeamConfirmation) =>
     isRetryableTeamIdentity(item.identity) ? teamTaskRuleCategory(item) : null;
   const approvableForTask = items.filter((item) => categoryOf(item) !== null);
@@ -70,14 +78,17 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
   const approveOnce = (item: TeamConfirmation) => {
     const selection = useTeamConfirmationStore.getState().selectRetry(item.id);
     if (!selection) return;
+    forgiveTeamBrowserDenials(conversationId);
     followUp(format(t.team.confirmationApprovedFollowUp, { member: memberLabel(item), detail: item.detail }), selection);
   };
   const approveTask = (item: TeamConfirmation) => {
     if (!useTeamConfirmationStore.getState().approveForTask(item.id)) return;
+    forgiveTeamBrowserDenials(conversationId);
     followUp(t.team.confirmationApprovedTaskFollowUp);
   };
   const approveAll = () => {
     if (useTeamConfirmationStore.getState().approveAllForTask(conversationId) > 0) {
+      forgiveTeamBrowserDenials(conversationId);
       followUp(t.team.confirmationApprovedTaskFollowUp);
     }
   };
@@ -151,7 +162,9 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
               <div className="min-w-0 w-full text-caption text-[var(--abu-text-secondary)]">
                 <span className="text-[var(--abu-text-primary)]">{memberLabel(item)}</span>
                 <span>{t.team.confirmationSeparator}</span>
-                <code className="line-clamp-2 break-all align-top" title={item.detail}>{item.detail}</code>
+                {actionText(item) === item.detail
+                  ? <code className="line-clamp-2 break-all align-top" title={item.detail}>{item.detail}</code>
+                  : <span className="text-[var(--abu-text-primary)]">{actionText(item)}</span>}
                 {item.kind === 'file' && <div>{item.capability === 'write'
                   ? (item.additionalCapabilities?.includes('read') ? t.team.confirmationWriteRead : t.team.confirmationWrite)
                   : t.team.confirmationRead}</div>}
@@ -168,7 +181,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
                   onClick={() => approveOnce(item)}
                   disabled={saving !== null}
                   className={category ? SECONDARY_BUTTON : PRIMARY_BUTTON}
-                  aria-label={`${t.team.confirmationApprove}: ${item.detail}`}
+                  aria-label={`${t.team.confirmationApprove}: ${actionText(item)}`}
                 >
                   {!category && <Check aria-hidden="true" className="h-3 w-3" />}
                   {t.team.confirmationApprove}
@@ -181,7 +194,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
                   disabled={saving !== null}
                   data-primary="true"
                   className={PRIMARY_BUTTON}
-                  aria-label={`${t.team.confirmationApproveTask}: ${item.detail}`}
+                  aria-label={`${t.team.confirmationApproveTask}: ${actionText(item)}`}
                 >
                   <Check aria-hidden="true" className="h-3 w-3" />
                   {t.team.confirmationApproveTask}
@@ -200,15 +213,14 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
                 type="button"
                 onClick={() => reject(item)}
                 className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
-                aria-label={`${t.team.confirmationReject}: ${item.detail}`}
+                aria-label={`${t.team.confirmationReject}: ${actionText(item)}`}
               >
                 <X aria-hidden="true" className="h-3 w-3" />
                 {t.team.confirmationReject}
               </button>
-              {(category || (offerSite && item.browserPermissionResource === 'script')) && (
+              {category && (
                 <div className="w-full text-caption text-[var(--abu-text-muted)]">
-                  {category && <div>{describeTaskRuleScope(category, memberLabel(item), t.team)}</div>}
-                  {offerSite && item.browserPermissionResource === 'script' && <div>{t.team.confirmationScriptRisk}</div>}
+                  {describeTaskRuleScope(item, memberLabel(item), t.team)}
                 </div>
               )}
             </li>
@@ -232,10 +244,11 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
         ))}
       </ul>
       {rules.length > 0 && (
-        <div className="mt-2 border-t border-[var(--abu-border)] pt-1.5 text-caption text-[var(--abu-text-secondary)]">
+        <div className={cn('text-caption text-[var(--abu-text-secondary)]',
+          items.length + stoppedItems.length > 0 && 'mt-2 border-t border-[var(--abu-border)] pt-1.5')}>
           <div className="mb-0.5 text-[var(--abu-text-primary)]">{t.team.confirmationTaskRules}</div>
           {rules.map(([id, rule]) => {
-            const scope = describeTaskRuleScope(rule.category, memberLabel(rule.item), t.team);
+            const scope = describeTaskRuleScope(rule.item, memberLabel(rule.item), t.team);
             return (
               <div key={id} className="flex items-center gap-2">
                 <span className="min-w-0 flex-1">{scope}</span>

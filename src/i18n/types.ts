@@ -2107,8 +2107,12 @@ export interface TranslationDict {
     confirmationScopeBrowse: string;
     confirmationScopeUpload: string;
     confirmationScopeScript: string;
-    /** Next to the always-allow-scripts button. */
-    confirmationScriptRisk: string;
+    /** The {site} of a region embedded in a page. */
+    confirmationScopeEmbeddedSite: string;
+    /** What a browser request does, shown in place of the tool name. */
+    confirmationBrowserScript: string;
+    confirmationBrowserUpload: string;
+    confirmationBrowserBrowse: string;
     confirmationNotice: string;
     confirmationApprovedFollowUp: string;
     confirmationApprovedTaskFollowUp: string;

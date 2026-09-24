@@ -1490,6 +1490,19 @@ function browserDenialStreakFor(session: RunSession): BrowserDenialStreak | unde
   return streak;
 }
 
+/**
+ * The user allowed a request on the confirmation strip. In a team task every
+ * request still waiting there already counted as a refusal, so an allowance
+ * is the same answer a dialog "allow" gives: the streak starts over.
+ */
+export function forgiveTeamBrowserDenials(conversationId: string): void {
+  const taskId = taskIdFor(conversationId);
+  const streak = taskId ? browserDenialStreaksByTask.get(taskId) : undefined;
+  if (!streak) return;
+  streak.consecutiveDenials = 0;
+  streak.streakHasScripting = false;
+}
+
 function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
   session.browserDenials ??= createBrowserDenialTracker(() => {
     session.abortCause = BROWSER_DENIAL_ABORT_CAUSE;

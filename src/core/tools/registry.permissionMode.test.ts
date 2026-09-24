@@ -920,4 +920,29 @@ describe('team file retry boundary (F1/F2)', () => {
       expect((await checkToolApproval('write_file', input, retryContext, undefined, callback)).decision).toBe('deny');
     } finally { clearLoopContext('original-file'); clearLoopContext('retry-file'); useTeamConfirmationStore.getState().clearConversation('file-team'); }
   });
+
+  it('a member is told the step waits on the task, and a home folder request is scoped to that folder only', async () => {
+    const { requestFilePermission, setLoopContext, clearLoopContext } = await import('../agent/permissionBridge');
+    const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+    useChatStore.setState({ conversations: { 'file-team': { id: 'file-team', teamId: 't', title: 't', createdAt: 1, updatedAt: 1, status: 'running', messages: [] } } });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
+    useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, taskRules: {}, retrySelections: {}, currentTaskByConversation: {}, stopped: {} });
+    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (path) => String(path));
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+    // 成员的工具上下文没有 teamRoster（subagentRunner 的 buildTrustedSubagentToolContext）
+    const context = { conversationId: 'file-team', loopId: 'member-loop', toolCallId: 'call-1', agentName: 'A',
+      teamApprovalDispatch: { id: 'dispatch-1', fingerprint: 'task' } };
+    setLoopContext('member-loop', { loopId: 'member-loop', conversationId: 'file-team', signal: new AbortController().signal,
+      commandConfirmCallback: async () => false, filePermissionCallback: requestFilePermission, eventRouter: {} as never, toolCallToStepId: new Map() });
+    try {
+      const decision = await checkToolApproval('write_file', { path: '/Users/testuser/Documents/proj/report.md', content: 'x' },
+        context, undefined, requestFilePermission);
+      expect(decision).toMatchObject({ decision: 'deny' });
+      expect(decision.decision === 'deny' && decision.reason).toContain(getI18n().commandConfirm.teamPendingConfirmation);
+      const pending = Object.values(useTeamConfirmationStore.getState().pending)[0];
+      expect(pending).toMatchObject({ detail: '/Users/testuser/Documents', member: 'A' });
+      expect(pending.identity?.scope).toBe('read+write:/Users/testuser/Documents');
+    } finally { clearLoopContext('member-loop'); useTeamConfirmationStore.getState().clearConversation('file-team'); }
+  });
 });

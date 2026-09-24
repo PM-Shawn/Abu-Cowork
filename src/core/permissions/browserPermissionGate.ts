@@ -6,6 +6,8 @@ import { decideStateChangingToolUnderRunPermissionCeiling } from './runPermissio
 export type BrowserPermissionGateFacts = Omit<BrowserGateFacts, 'policy' | 'siteVerdict' | 'masterSwitchUnattended' | 'conversationGrant'> & {
   configured: ReturnType<typeof resolveBrowserPermissionConfig>;
   highRisk: boolean;
+  /** 脚本要在嵌入的第三方区域里执行：站点长期许可会连带宿主页面整站放开脚本，所以不提供 */
+  scriptInEmbeddedRegion: boolean;
 };
 
 /** Shared configuration; context chooses the confirmation channel only. */
@@ -37,7 +39,8 @@ export function evaluateBrowserPermissionGate(facts: BrowserPermissionGateFacts)
   if (runMode === 'attended' && !facts.confirmationChannelAvailable) return deny('approval-refused');
   return { ...result, ask: {
     channel: runMode === 'attended' ? 'dialog' : 'im',
-    offersPersistentGrant: runMode === 'attended' && !highRisk && !facts.answersPageDialog && facts.originKnown,
+    offersPersistentGrant: runMode === 'attended' && !highRisk && !facts.answersPageDialog && facts.originKnown
+      && !facts.scriptInEmbeddedRegion,
     refusedReason: runMode === 'attended' ? 'user-cancelled' : 'approval-refused',
   } };
 }

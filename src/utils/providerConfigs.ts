@@ -281,6 +281,14 @@ export const PROVIDER_CONFIGS = {
     // the user fetches/adds their own (like a custom endpoint).
     models: [],
   },
+  requesty: {
+    name: 'Requesty',
+    baseUrl: 'https://router.requesty.ai/v1',
+    format: 'openai-compatible',
+    // Same as OpenRouter: an aggregator, so no curated list; the user
+    // fetches/adds their own models (ids like `openai/gpt-4o-mini`).
+    models: [],
+  },
   ollama: { name: 'Ollama', baseUrl: 'http://127.0.0.1:11434', format: 'openai-compatible', models: [] },
   lmstudio: { name: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1', format: 'openai-compatible', models: [] },
   local: { name: '本地模型', baseUrl: '', format: 'openai-compatible', models: [] },

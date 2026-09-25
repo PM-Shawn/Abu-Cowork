@@ -5,7 +5,7 @@ import { deriveDeclaredDefaults } from '@/core/llm/modelCapabilities';
 /** Whether the "advanced config" (declared capabilities) section should show.
  *  Shown wherever the models are user-supplied rather than curated: any custom
  *  provider (openai-compatible OR anthropic format), local Ollama / LM Studio,
- *  and the aggregator built-ins (OpenRouter / SiliconFlow) which ship no curated
+ *  and the aggregator built-ins (OpenRouter / Requesty / SiliconFlow) which ship no curated
  *  list and let the user fetch/add their own models. Curated builtin cloud
  *  providers → false.
  *  Anthropic-format custom endpoints are often proxies fronting non-Claude
@@ -19,7 +19,7 @@ export function computeShowAdvanced(
 ): boolean {
   return (isCustom && (apiFormat === 'openai-compatible' || apiFormat === 'anthropic'))
     || provider === 'ollama' || provider === 'lmstudio'
-    || provider === 'openrouter' || provider === 'siliconflow';
+    || provider === 'openrouter' || provider === 'requesty' || provider === 'siliconflow';
 }
 
 /** Toggle one effort level in the supportedEfforts array (order-preserving add/remove). */

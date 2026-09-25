@@ -1949,6 +1949,7 @@ const enUS: TranslationDict = {
     openaiCompatible: 'OpenAI / Compatible',
     qiniuCloud: 'Qiniu Cloud',
     openrouter: 'OpenRouter',
+    requesty: 'Requesty',
     deepseek: 'DeepSeek',
     anthropic: 'Anthropic',
     volcengine: 'Volcengine',

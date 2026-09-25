@@ -95,6 +95,7 @@ const CLOUD_PROVIDERS: { id: LLMProvider; label: string }[] = [
   { id: 'bailian', label: 'Bailian' },
   { id: 'siliconflow', label: 'SiliconFlow' },
   { id: 'openrouter', label: 'OpenRouter' },
+  { id: 'requesty', label: 'Requesty' },
   { id: 'anthropic', label: 'Anthropic' },
   { id: 'openai', label: 'OpenAI' },
   { id: 'qiniu', label: 'Qiniu' },
@@ -346,11 +347,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // fetch/add-model affordances (those are only for custom endpoints and local
   // providers that must discover models).
   const isBuiltinCloud = !!selectedOption && !isCustom && !isOllama && !isLMStudio;
-  // OpenRouter / SiliconFlow are built-in providers (fixed endpoint, hidden URL)
+  // OpenRouter / Requesty / SiliconFlow are built-in providers (fixed endpoint, hidden URL)
   // but aggregate too many models to curate — the user supplies models like a
   // custom endpoint (fetch from /models + manual add), so they use the checklist
   // flow, not the curated multi-select dropdown.
-  const usesFetchedModels = selectedOption?.provider === 'openrouter' || selectedOption?.provider === 'siliconflow';
+  const usesFetchedModels = selectedOption?.provider === 'openrouter' || selectedOption?.provider === 'requesty' || selectedOption?.provider === 'siliconflow';
   // Some endpoints simply have no /models route (Volcengine Ark's subscription
   // hosts answer 404 — its model listing lives on a separate AK/SK-signed
   // control-plane API). Offering a fetch button there is a guaranteed dead end,

@@ -50,6 +50,11 @@ describe('AddProviderModal — showAdvanced predicate', () => {
     expect(computeShowAdvanced(false, 'lmstudio', undefined)).toBe(true);
   });
 
+  it('shows advanced section for aggregator builtins (openrouter, requesty)', () => {
+    expect(computeShowAdvanced(false, 'openrouter', 'openai-compatible')).toBe(true);
+    expect(computeShowAdvanced(false, 'requesty', 'openai-compatible')).toBe(true);
+  });
+
   it('hides advanced section for builtin cloud provider (anthropic)', () => {
     expect(computeShowAdvanced(false, 'anthropic', 'anthropic')).toBe(false);
   });

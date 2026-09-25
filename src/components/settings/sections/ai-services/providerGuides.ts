@@ -88,6 +88,12 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuideInfo> = {
     url: 'https://openrouter.ai/keys',
     urlLabel: 'OpenRouter',
   },
+  requesty: {
+    hint: '在 Requesty 创建 API Key',
+    hintEn: 'Create an API key on Requesty',
+    url: 'https://app.requesty.ai/api-keys',
+    urlLabel: 'Requesty',
+  },
   ollama: {
     hint: '安装 Ollama 后，运行 ollama pull <模型名> 下载模型',
     hintEn: 'After installing Ollama, run `ollama pull <model>` to download a model',

@@ -13,8 +13,12 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 16 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(16);
+    it('should contain 17 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(17);
+    });
+
+    it('offers report_plan on every turn, so a plan can still be moved on late in a long task', () => {
+      expect(CORE_TOOL_NAMES.has('report_plan')).toBe(true);
     });
 
     it('should include essential tools', () => {
@@ -41,19 +45,18 @@ describe('toolPrefetch', () => {
   describe('prefetchTools', () => {
     it('should return first-turn tools for generic input on turn 0', () => {
       const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 0 }));
-      expect(result).toContain('report_plan');
       expect(result).toContain('get_system_info');
     });
 
-    it('should return report_plan on turn 1-3', () => {
+    it('should not return get_system_info after the first turn', () => {
       const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 1 }));
-      expect(result).toContain('report_plan');
       expect(result).not.toContain('get_system_info');
     });
 
-    it('should not return report_plan after turn 3', () => {
-      const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 4 }));
-      expect(result).not.toContain('report_plan');
+    it('never lists report_plan as an extra, since it is always loaded', () => {
+      for (const turnCount of [0, 1, 3, 4, 20]) {
+        expect(prefetchTools(makeCtx({ userInput: '你好', turnCount }))).not.toContain('report_plan');
+      }
     });
 
     it('should match schedule keywords', () => {

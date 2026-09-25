@@ -87,6 +87,24 @@ describe('formatPlannedStepsForPrompt', () => {
     expect(out).toContain('🔄');
   });
 
+  it('labels a snapshot from an earlier request as such, not as the current plan', () => {
+    useChatStore.setState({
+      conversations: {
+        'conv-1': makeConversation('conv-1', [
+          makeMessage({
+            id: 'm1',
+            plannedSteps: [{ index: 1, description: 'Build', status: 'in_progress' }],
+          }),
+        ]),
+      },
+    });
+
+    const out = formatPlannedStepsForPrompt('conv-1');
+    expect(out).toContain('Plan from an earlier request');
+    expect(out).not.toContain('Current task plan');
+    expect(out).toContain('report_plan');
+  });
+
   it('prefers the live execution plannedSteps over an older message snapshot', () => {
     const store = useTaskExecutionStore.getState();
     const exec = store.createExecution('conv-1', 'loop-1');

@@ -27,12 +27,21 @@ function latestSnapshotPlannedSteps(conversationId: string): PlannedStep[] {
  */
 export function formatPlannedStepsForPrompt(conversationId: string): string {
   const exec = getExecutionPort().getExecutionByConversationId(conversationId);
-  const steps = exec?.plannedSteps?.length
-    ? exec.plannedSteps
-    : latestSnapshotPlannedSteps(conversationId);
+  const live = exec?.plannedSteps?.length ? exec.plannedSteps : null;
+  const steps = live ?? latestSnapshotPlannedSteps(conversationId);
   if (steps.length === 0) return '';
 
   const lines = steps.map((s) => `${s.index}. ${STATUS_EMOJI[s.status as PlannedStep['status']] ?? '⬜'} [${s.status}] ${s.description}`);
   const completed = steps.filter((s) => s.status === 'completed').length;
-  return `## Current task plan (${completed}/${steps.length} completed)\n${lines.join('\n')}`;
+  if (live) {
+    return `## Current task plan (${completed}/${steps.length} completed)\n${lines.join('\n')}`;
+  }
+  // A plan snapshotted by an earlier request. Presenting it as the current
+  // plan made a model resume "the in-progress step" of a task the user had
+  // already moved on from.
+  return `## Plan from an earlier request (${completed}/${steps.length} completed)\n`
+    + 'This plan was made while handling an earlier message in this conversation. '
+    + 'Continue it only if the latest user message asks for that; otherwise leave it, '
+    + 'or call report_plan with a new plan.\n'
+    + lines.join('\n');
 }

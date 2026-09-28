@@ -117,6 +117,7 @@ import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
+import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
 import { prefetchTools } from '../tools/toolPrefetch';
 import {
   classifyTools,
@@ -1894,11 +1895,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
       // turns searching capabilities that are already loaded or policy-blocked.
-      const tools = noTools
+      const tools = (noTools
         ? []
         : deferredTools.length === 0
           ? rawTools.filter(tool => tool.name !== TOOL_NAMES.TOOL_SEARCH)
-          : rawTools;
+          : rawTools
+      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier));
       options?.runtimeEvent?.('agent_tool_exposure', {
         conversationId,
         loopId,

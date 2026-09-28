@@ -17,6 +17,12 @@ import {
   handoffText,
   parseDragPath,
 } from './computerTools';
+import {
+  adaptComputerToolForTier,
+  COMPUTER_EVIDENCE_RULE,
+  COMPUTER_SAFETY_RULES,
+  COMPUTER_TARGETING_RULES,
+} from './computerToolText';
 import enUS from '../../../i18n/locales/en-US';
 import zhCN from '../../../i18n/locales/zh-CN';
 import { useChatStore } from '../../../stores/chatStore';
@@ -51,6 +57,23 @@ describe('computerTool WindowRef-first contract', () => {
   it('describes AX bounds as screen coordinates and action coordinates as screenshot-relative', () => {
     expect(computerTool.description).toContain('AX element bounds are screen coordinates');
     expect(computerTool.description).toContain('x/y action coordinates are relative to the referenced screenshot');
+  });
+
+  it('keeps the shared rules and the screenshot fallback in the full description', () => {
+    expect(computerTool.description).toContain(COMPUTER_EVIDENCE_RULE);
+    expect(computerTool.description).toContain(COMPUTER_TARGETING_RULES);
+    expect(computerTool.description).toContain(COMPUTER_SAFETY_RULES);
+    expect(computerTool.description).toContain('Only fall back to screenshot + click(x,y)');
+  });
+
+  it('offers a model that cannot see images no screenshot or coordinate entry in the real tool', () => {
+    const adapted = adaptComputerToolForTier(computerTool, 'structured');
+    expect(JSON.stringify(adapted).toLowerCase()).not.toContain('screenshot');
+    for (const key of ['x', 'y', 'startX', 'startY', 'endX', 'endY', 'path', 'width', 'height', 'screenshot_id', 'show_user']) {
+      expect(adapted.inputSchema.properties).not.toHaveProperty(key);
+    }
+    expect(adapted.inputSchema.required).toEqual(computerTool.inputSchema.required);
+    expect(adapted.execute).toBe(computerTool.execute);
   });
 
   // JSON Schema cannot express a discriminated union here, so the fields are

@@ -1140,7 +1140,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         terminalStopReason = 'error';
         break;
       }
-      if (collectedToolCalls.length > 0) malformedToolCallGuard.reset();
+      // 参数全部无法解析的原生调用不算做成了操作，不补回重写机会
+      if (collectedToolCalls.length > 0 && !allToolsUnparseable(collectedToolCalls)) malformedToolCallGuard.reset();
 
       // Max-output-tokens recovery: output truncated mid-thought with no tool call →
       // preserve the partial output in local history, re-prompt to resume, and let the

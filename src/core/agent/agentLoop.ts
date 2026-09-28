@@ -2922,7 +2922,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           malformedToolCallGaveUp = true;
           chatDelta.appendText(conversationId, `\n\n${getI18n().chat.malformedToolCall}`, assistantMsgId);
         }
-      } else if (collectedToolCalls.length > 0) {
+      } else if (collectedToolCalls.length > 0 && !allToolsUnparseable(collectedToolCalls)) {
+        // 参数全部无法解析的原生调用不算做成了操作，不补回重写机会
         malformedToolCallGuard.reset();
       }
 
@@ -2993,9 +2994,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Internal wake-ups (for example background-agent results) still belong
       // to this task and need another model turn when the current turn ended in
       // plain text. User-authored follow-ups are deliberately excluded here.
+      // 写坏重写已经放弃时本次运行照样结束，排队的系统输入留给下一次运行开始时取走
       if (
         !continueLoop
         && !awaitingUserRecovery
+        && !malformedToolCallGaveUp
         && hasSystemQueuedInputs(conversationId)
         && !abortController.signal.aborted
       ) {

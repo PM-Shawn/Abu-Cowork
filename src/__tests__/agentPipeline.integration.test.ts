@@ -909,6 +909,100 @@ describe('Agent Pipeline Integration', () => {
       expect(visible).not.toContain('<invoke');
     });
 
+    it('ends as no_progress after giving up even when a system wake-up is waiting', async () => {
+      const { hasSystemQueuedInputs } = await import('../core/agent/userInputQueue');
+      // 等待中的系统唤醒只有一条：取走之后就没有了
+      let pendingWakeUps = 1;
+      vi.mocked(hasSystemQueuedInputs).mockImplementation(() => pendingWakeUps-- > 0);
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      try {
+        const convId = useChatStore.getState().createConversation();
+        const result = await runAgentLoop(convId, 'do the thing');
+
+        // 放弃之后本次运行结束，系统唤醒留给下一次运行开始时取走
+        expect(result.reason).toBe('no_progress');
+        expect(calls).toBe(2);
+        const visible = useChatStore.getState().conversations[convId].messages
+          .filter((m) => m.role === 'assistant')
+          .map((m) => String(m.content))
+          .join('');
+        expect(visible.split(getI18n().chat.malformedToolCall).length - 1).toBe(1);
+      } finally {
+        vi.mocked(hasSystemQueuedInputs).mockImplementation(() => false);
+      }
+    });
+
+    it('does not let an unparseable native call restore the rewrite chance', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          if (calls === 2) {
+            onEvent({ type: 'tool_use', id: 'bad-native', name: 'read_file', input: { _parse_error: 'bad json' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+            return;
+          }
+          onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      // 写坏 → 无法解析的原生调用 → 再写坏：第二次写坏直接放弃
+      expect(calls).toBe(3);
+      expect(result.reason).toBe('no_progress');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain(getI18n().chat.malformedToolCall);
+    });
+
+    it('rewrites quietly again after a proper operation came in between', async () => {
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls === 2) {
+            onEvent({ type: 'tool_use', id: 'good-native', name: 'read_file', input: { path: '/x' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+          } else if (calls === 4) {
+            onEvent({ type: 'text', text: 'all done' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          } else {
+            onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          }
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      // 写坏 → 正常操作 → 再写坏：第二次写坏仍然悄悄重写一次
+      expect(calls).toBe(4);
+      expect(result.reason).toBe('completed');
+      expect(JSON.stringify(sent[3]).split('could not be parsed').length - 1).toBe(2);
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      expect(visible).toContain('all done');
+    });
+
     it('treats an operation cut off by the output limit as a truncation and keeps the rewrite for later', async () => {
       let calls = 0;
       const sent: unknown[] = [];

@@ -137,6 +137,7 @@
     "aes-js": "^3.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "diff": "^9.0.0",
     "docx-preview": "^0.3.7",
     "electron-updater": "^6.8.9",

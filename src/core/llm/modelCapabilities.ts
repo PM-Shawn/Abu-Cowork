@@ -259,7 +259,9 @@ export function computeReasoningParams(
   const maxTokens = contextWindow === undefined ? uncapped : reserveOutputTokens(uncapped, contextWindow);
 
   // Reasoning cap that still leaves CONTENT_FLOOR_TOKENS for the answer.
-  const reasoningCap = Math.max(1024, maxTokens - CONTENT_FLOOR_TOKENS);
+  // 回答预算很小、原式算出的思考预算不小于回答预算时，改用回答预算的一半
+  const floorCap = Math.max(1024, maxTokens - CONTENT_FLOOR_TOKENS);
+  const reasoningCap = floorCap < maxTokens ? floorCap : Math.floor(maxTokens / 2);
 
   switch (caps.thinking) {
     case 'qwen':

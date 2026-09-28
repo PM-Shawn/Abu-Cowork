@@ -1,3 +1,5 @@
+import { reserveOutputTokens } from '../llm/modelCapabilities';
+
 /**
  * Shared no-progress predicate for the agent loops.
  *
@@ -167,7 +169,8 @@ export function resolveMaxTurns(params: {
  * Calculate the escalated maxOutputTokens for a max_tokens recovery turn.
  *
  * A fixed 2× that PERSISTS for every recovery (recoveryCount >= 1), so the budget
- * sequence is base → 2× → 2× → 2×, clamped to contextWindowSize - 1000. Callers
+ * sequence is base → 2× → 2× → 2×, clamped to contextWindowSize - 1000 and to
+ * OUTPUT_RESERVE_RATIO of the window (see reserveOutputTokens). Callers
  * recompute `currentMax` from base each turn, so the escalation must be a pure
  * function of `recoveryCount`. The old one-shot `alreadyEscalated` latch made the
  * budget fall back to base on later recoveries (base → 2× → base → base) — bug #5.
@@ -193,7 +196,8 @@ export function escalateMaxOutputTokens(
   if (recoveryCount <= 0) {
     return { maxOutputTokens: currentMax, changed: false };
   }
-  const escalated = Math.min(currentMax * 2, contextWindowSize - 1000);
+  // 加大后的回答预留同样不超过窗口的四分之一，小窗口也留得出输入空间
+  const escalated = reserveOutputTokens(Math.min(currentMax * 2, contextWindowSize - 1000), contextWindowSize);
   if (escalated > currentMax) {
     return { maxOutputTokens: escalated, changed: true };
   }

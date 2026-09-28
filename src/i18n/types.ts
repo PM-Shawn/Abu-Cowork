@@ -575,7 +575,7 @@ export interface TranslationDict {
     compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;
-    /** System prompt and tool definitions leave no safe room for user input. */
+    /** System prompt and tool definitions leave no safe room for user input; also used when the request is still too long after the conversation was condensed. */
     contextFixedTooLarge: string;
     /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
     contextFixedTooLargeLocal: string;

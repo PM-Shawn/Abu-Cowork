@@ -778,7 +778,7 @@ describe('Agent Pipeline Integration', () => {
 
   it('explains a model whose window cannot hold the instructions in plain words', async () => {
     vi.mocked(contextManagerModule.enforceContextBudget).mockImplementationOnce(() => {
-      throw new contextManagerModule.ContextBudgetError('FIXED_TOO_LARGE', 20_000, 10_000);
+      throw new contextManagerModule.ContextBudgetError('FIXED_CONTEXT_TOO_LARGE', 20_000, 10_000);
     });
 
     const convId = useChatStore.getState().createConversation();

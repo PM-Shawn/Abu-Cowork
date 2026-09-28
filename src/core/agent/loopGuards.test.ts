@@ -193,14 +193,24 @@ describe('escalateMaxOutputTokens', () => {
     expect(escalateMaxOutputTokens(8192, 200000, 3)).toEqual({ maxOutputTokens: 16384, changed: true });
   });
 
-  it('caps at contextWindowSize - 1000', () => {
-    // contextWindow is 10000, so cap = 9000, doubling 8192 would be 16384 > 9000
-    const result = escalateMaxOutputTokens(8192, 10000, 1);
-    expect(result).toEqual({ maxOutputTokens: 9000, changed: true });
+  it('caps at a quarter of the window', () => {
+    // contextWindow 10000 → 上限 2500；2000 翻倍是 4000，封顶到 2500
+    const result = escalateMaxOutputTokens(2000, 10000, 1);
+    expect(result).toEqual({ maxOutputTokens: 2500, changed: true });
+  });
+
+  it('keeps an 8K window at 2048 after a cut-off answer, leaving room for input', () => {
+    expect(escalateMaxOutputTokens(2048, 8192, 1)).toEqual({ maxOutputTokens: 2048, changed: false });
+    expect(escalateMaxOutputTokens(1024, 8192, 1)).toEqual({ maxOutputTokens: 2048, changed: true });
+  });
+
+  it('still keeps 1000 tokens of input on a tiny window', () => {
+    // contextWindow 1200：四分之一是 300，窗口减 1000 是 200，取更小的 200
+    expect(escalateMaxOutputTokens(150, 1200, 1)).toEqual({ maxOutputTokens: 200, changed: true });
   });
 
   it('does not escalate when already at context limit', () => {
-    // currentMax=9000, contextWindow=10000, cap=9000 — doubling gives 9000, not > 9000
+    // currentMax=9000 已超过 contextWindow=10000 的四分之一，保持原值
     const result = escalateMaxOutputTokens(9000, 10000, 1);
     expect(result).toEqual({ maxOutputTokens: 9000, changed: false });
   });

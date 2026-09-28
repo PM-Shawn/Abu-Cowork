@@ -192,6 +192,11 @@ describe('modelCapabilities', () => {
       const params = computeReasoningParams({ ...plain, thinking: 'qwen', maxOutputTokens: 65536 }, 32768, 16384);
       expect(params.maxTokens).toBe(4096);
       expect(params.thinkingBudget).toBe(1024);
+
+      const small = computeReasoningParams({ ...plain, thinking: 'qwen', maxOutputTokens: 65536 }, 32768, 4096);
+      expect(small.maxTokens).toBe(1024);
+      expect(small.thinkingBudget).toBe(512);
+      expect(small.thinkingBudget).toBeLessThan(small.maxTokens);
     });
 
     it('is unchanged when no window is given', () => {

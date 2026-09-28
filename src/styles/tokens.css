@@ -1,0 +1,242 @@
+/* Design-system tokens — single source of truth.
+   Spec: docs/2026-09-28-design-system-brief.md §6.1 (workspace docs repo).
+   Coexists with the legacy --abu-* and shadcn variables until the cleanup batch;
+   no name here collides with them. Components use the Tailwind classes mapped
+   in @theme inline below, never the --ds-palette-* primitives. */
+
+:root {
+  /* Layer 1 — primitives (never referenced by components) */
+  --ds-palette-gray-50: #f5f5f7;
+  --ds-palette-gray-100: #ececf0;
+  --ds-palette-gray-150: #e3e3e8;
+  --ds-palette-gray-200: #d1d1d6;
+  --ds-palette-gray-300: #aeaeb2;
+  --ds-palette-gray-400: #8e8e93;
+  --ds-palette-gray-500: #7c7c81;
+  --ds-palette-gray-600: #66666b;
+  --ds-palette-gray-700: #5c5c61;
+  --ds-palette-gray-800: #3a3a3c;
+  --ds-palette-gray-900: #2c2c2e;
+  --ds-palette-gray-950: #1c1c1e;
+  --ds-palette-red: #ff3b30;
+  --ds-palette-orange: #ff9500;
+  --ds-palette-green: #34c759;
+  --ds-palette-blue: #0088ff;
+  --ds-palette-brand-green: #78c98b;
+
+  /* Layer 2 — semantic, light */
+  --ds-desk: rgba(236, 236, 240, 0.62);
+  --ds-desk-solid: #ececf0;
+  --ds-surface: #ffffff;
+  --ds-raised: #ffffff;
+  --ds-material: rgba(252, 252, 254, 0.74);
+  --ds-code: #f5f5f7;
+  --ds-field: #ffffff;
+  --ds-fill: rgba(120, 120, 128, 0.12);
+  --ds-fill-hover: rgba(0, 0, 0, 0.05);
+  --ds-fill-selected: rgba(0, 0, 0, 0.07);
+  --ds-fill-pressed: rgba(0, 0, 0, 0.10);
+  --ds-label: #1d1d1f;
+  --ds-label-secondary: #5c5c61;
+  --ds-label-tertiary: #66666b;
+  --ds-label-placeholder: #7c7c81;
+  --ds-emphasis: #1d1d1f;
+  --ds-on-emphasis: #ffffff;
+  --ds-link: #0a64d0;
+  --ds-separator: rgba(0, 0, 0, 0.09);
+  --ds-control-border: rgba(0, 0, 0, 0.14);
+  --ds-focus: #0a84ff;
+  --ds-success: #16733a;
+  --ds-success-soft: rgba(52, 199, 89, 0.14);
+  --ds-warning: #935200;
+  --ds-warning-soft: rgba(255, 149, 0, 0.16);
+  --ds-danger: #c4281c;
+  --ds-danger-soft: rgba(255, 59, 48, 0.12);
+  --ds-info: #0a64d0;
+  --ds-info-soft: rgba(0, 136, 255, 0.12);
+  --ds-scrim: rgba(0, 0, 0, 0.28);
+  --ds-brand: #78c98b;
+  --ds-brand-ink: #0f3d1e;
+
+  --ds-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.09), 0 2px 8px rgba(0, 0, 0, 0.05);
+  --ds-shadow-float: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 18px 40px rgba(0, 0, 0, 0.22);
+  --ds-shadow-dialog: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 30px 80px rgba(0, 0, 0, 0.30);
+
+  --ds-font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --ds-font-mono: "SF Mono", ui-monospace, "Cascadia Mono", Consolas, Menlo, "PingFang SC", "Microsoft YaHei UI", monospace;
+}
+
+.dark {
+  --ds-desk: rgba(28, 28, 31, 0.62);
+  --ds-desk-solid: #141416;
+  --ds-surface: #1c1c1e;
+  --ds-raised: #2c2c2e;
+  --ds-material: rgba(44, 44, 48, 0.74);
+  --ds-code: #2a2a2d;
+  --ds-field: #232326;
+  --ds-fill: rgba(120, 120, 128, 0.24);
+  --ds-fill-hover: rgba(255, 255, 255, 0.06);
+  --ds-fill-selected: rgba(255, 255, 255, 0.09);
+  --ds-fill-pressed: rgba(255, 255, 255, 0.13);
+  --ds-label: #f5f5f7;
+  --ds-label-secondary: #a1a1a6;
+  --ds-label-tertiary: #98989d;
+  --ds-label-placeholder: #7c7c81;
+  --ds-emphasis: #f5f5f7;
+  --ds-on-emphasis: #1c1c1e;
+  --ds-link: #4da3ff;
+  --ds-separator: rgba(255, 255, 255, 0.09);
+  --ds-control-border: rgba(255, 255, 255, 0.16);
+  --ds-focus: #409cff;
+  --ds-success: #32d74b;
+  --ds-success-soft: rgba(48, 209, 88, 0.18);
+  --ds-warning: #ffb340;
+  --ds-warning-soft: rgba(255, 159, 10, 0.18);
+  --ds-danger: #ff6961;
+  --ds-danger-soft: rgba(255, 69, 58, 0.18);
+  --ds-info: #4da3ff;
+  --ds-info-soft: rgba(10, 132, 255, 0.18);
+  --ds-scrim: rgba(0, 0, 0, 0.48);
+  --ds-brand: #78c98b;
+  --ds-brand-ink: #0f3d1e;
+
+  --ds-shadow-panel: 0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --ds-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 18px 40px rgba(0, 0, 0, 0.45);
+  --ds-shadow-dialog: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 30px 80px rgba(0, 0, 0, 0.55);
+}
+
+/* Increased contrast. Both blocks list the same properties so dark never
+   inherits a light increased-contrast value. */
+@media (prefers-contrast: more) {
+  :root:not(.dark) {
+    --ds-desk: #e3e3e8;
+    --ds-desk-solid: #e3e3e8;
+    --ds-code: #ededf0;
+    --ds-fill-selected: rgba(0, 0, 0, 0.12);
+    --ds-label: #000000;
+    --ds-label-secondary: #3a3a3c;
+    --ds-label-tertiary: #515154;
+    --ds-label-placeholder: #636366;
+    --ds-emphasis: #000000;
+    --ds-link: #0040a8;
+    --ds-separator: rgba(0, 0, 0, 0.20);
+    --ds-control-border: rgba(0, 0, 0, 0.35);
+    --ds-focus: #0040a8;
+    --ds-success: #0b5c24;
+    --ds-warning: #6b3b00;
+    --ds-danger: #9e1a10;
+    --ds-info: #0040a8;
+  }
+  .dark {
+    --ds-desk: #000000;
+    --ds-desk-solid: #000000;
+    --ds-code: #2a2a2d;
+    --ds-fill-selected: rgba(255, 255, 255, 0.16);
+    --ds-label: #ffffff;
+    --ds-label-secondary: #d1d1d6;
+    --ds-label-tertiary: #aeaeb2;
+    --ds-label-placeholder: #8e8e93;
+    --ds-emphasis: #ffffff;
+    --ds-link: #7cc0ff;
+    --ds-separator: rgba(255, 255, 255, 0.22);
+    --ds-control-border: rgba(255, 255, 255, 0.40);
+    --ds-focus: #7cc0ff;
+    --ds-success: #5ce37a;
+    --ds-warning: #ffc56b;
+    --ds-danger: #ff8f88;
+    --ds-info: #7cc0ff;
+  }
+}
+
+/* Reduce transparency: every translucent surface becomes opaque. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --ds-desk: var(--ds-desk-solid);
+    --ds-material: var(--ds-raised);
+  }
+}
+
+@theme inline {
+  --color-desk: var(--ds-desk);
+  --color-desk-solid: var(--ds-desk-solid);
+  --color-surface: var(--ds-surface);
+  --color-raised: var(--ds-raised);
+  --color-material: var(--ds-material);
+  --color-code: var(--ds-code);
+  --color-field: var(--ds-field);
+  --color-fill: var(--ds-fill);
+  --color-fill-hover: var(--ds-fill-hover);
+  --color-fill-selected: var(--ds-fill-selected);
+  --color-fill-pressed: var(--ds-fill-pressed);
+  --color-label: var(--ds-label);
+  --color-label-secondary: var(--ds-label-secondary);
+  --color-label-tertiary: var(--ds-label-tertiary);
+  --color-label-placeholder: var(--ds-label-placeholder);
+  --color-emphasis: var(--ds-emphasis);
+  --color-on-emphasis: var(--ds-on-emphasis);
+  --color-link: var(--ds-link);
+  --color-separator: var(--ds-separator);
+  --color-control-border: var(--ds-control-border);
+  --color-focus: var(--ds-focus);
+  --color-success: var(--ds-success);
+  --color-success-soft: var(--ds-success-soft);
+  --color-warning: var(--ds-warning);
+  --color-warning-soft: var(--ds-warning-soft);
+  --color-danger: var(--ds-danger);
+  --color-danger-soft: var(--ds-danger-soft);
+  --color-info: var(--ds-info);
+  --color-info-soft: var(--ds-info-soft);
+  --color-scrim: var(--ds-scrim);
+  --color-brand: var(--ds-brand);
+  --color-brand-ink: var(--ds-brand-ink);
+
+  --radius-window: 18px;
+  --radius-panel: 10px;
+  --radius-control: 7px;
+
+  --shadow-panel: var(--ds-shadow-panel);
+  --shadow-float: var(--ds-shadow-float);
+  --shadow-dialog: var(--ds-shadow-dialog);
+
+  --ease-enter: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+}
+
+/* Font-size tokens. `caption` and `body` already exist in index.css with the
+   same values; the rest are new names that do not collide with legacy ones. */
+@theme {
+  --text-title-lg: 22px;
+  --text-title-lg--line-height: 28px;
+  --text-title-lg--font-weight: 600;
+  --text-title: 15px;
+  --text-title--line-height: 20px;
+  --text-title--font-weight: 600;
+  --text-ui: 13px;
+  --text-ui--line-height: 18px;
+  --text-ui--font-weight: 400;
+  --text-ui-sm: 12px;
+  --text-ui-sm--line-height: 16px;
+  --text-ui-sm--font-weight: 400;
+  --text-h1: 20px;
+  --text-h1--line-height: 28px;
+  --text-h1--font-weight: 600;
+  --text-h2: 16px;
+  --text-h2--line-height: 24px;
+  --text-h2--font-weight: 600;
+  --text-h3: 14px;
+  --text-h3--line-height: 22px;
+  --text-h3--font-weight: 600;
+  --text-mono: 13px;
+  --text-mono--line-height: 20px;
+  --text-mono--font-weight: 400;
+}
+
+/* Tailwind v4 has no theme namespace for z-index or transition duration. */
+@utility z-sticky { z-index: 10; }
+@utility z-popover { z-index: 100; }
+@utility z-dialog { z-index: 200; }
+@utility z-toast { z-index: 300; }
+@utility z-tooltip { z-index: 400; }
+@utility duration-fast { --tw-duration: 120ms; transition-duration: 120ms; }
+@utility duration-base { --tw-duration: 200ms; transition-duration: 200ms; }
+@utility duration-slow { --tw-duration: 300ms; transition-duration: 300ms; }

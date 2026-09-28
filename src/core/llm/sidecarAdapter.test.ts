@@ -289,6 +289,24 @@ describe('SidecarLLMAdapter', () => {
       expect(formatLlmTerminalError(caught)).toBe('Sidecar transport failed');
       expect(JSON.stringify(caught)).not.toContain('plain transport body');
     });
+
+    it('carries the learned context limit across the wire', async () => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'too long', {
+        name: 'LLMError', code: 'context_too_long', retryable: false, statusCode: 400, contextLimit: 8192, message: 'too long',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'context_too_long', contextLimit: 8192 });
+    });
+
+    it('treats a context limit on any other error as a corrupt response', async () => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'x', {
+        name: 'LLMError', code: 'rate_limit', retryable: true, contextLimit: 8192, message: 'x',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'unknown', message: 'Invalid sidecar LLM error response' });
+    });
   });
 
   describe('abort', () => {

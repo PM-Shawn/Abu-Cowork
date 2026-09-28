@@ -104,11 +104,12 @@ import { startConversationTrace, endConversationTrace, startGeneration } from '.
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, reserveOutputTokens, type ModelCapabilities } from '../llm/modelCapabilities';
 import { resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { contextTooSmallMessage } from './contextWindowMessages';
+import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
@@ -2273,6 +2274,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const buildProviderAttemptMessages = async (
         baseMessages: Message[],
         budgetWindowSize: number,
+        reserveForOutput: number,
       ) => {
         // Step 4: Rehydrate provider-bound media for this attempt.
         // Delegated media refs are intentionally expanded inside the retry
@@ -2300,7 +2302,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           outboundMessages,
           effectiveSystemPrompt,
           budgetWindowSize,
-          maxOutputTokens,
+          reserveForOutput,
           toolTokens,
         );
         lastProviderMessages = budgetResult.messages;
@@ -2358,7 +2360,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       };
 
       const chatFn = async () => {
-        const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize);
+        const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize, maxOutputTokens);
         if (!primaryBudgetGateLogged && (
           initialBudgetResult.strategy !== 'unchanged'
           || providerBudgetResult.strategy !== 'unchanged'
@@ -2582,30 +2584,36 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           }
         );
       } catch (retryErr) {
-        // Handle context_too_long with two-stage recovery:
-        // Stage 1: Semantic compression → retry
-        // Stage 2: Hard truncation → retry
-        // Stage 3: Surface error to user
+        // 服务说内容太长：读出真实上限并记住，按新上限整理后重试一次；仍失败就把错误交给外层显示
         if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
-          // Reverse-engineer the real context window from the error message
-          // and persist it. Pattern: "maximum context length is N tokens"
-          // (OpenAI-compatible style). Next request will use this as a cap.
-          const ctxMatch = /maximum context length is (\d+) tokens/i.exec(retryErr.message);
+          const learnedWindow = await learnContextWindowAfterOverflow({
+            error: retryErr,
+            provider: activeProvider,
+            modelId: effectiveModelId,
+            probe: probeContextWindow,
+          });
           let recoveryContextWindowSize = contextWindowSize;
-          if (ctxMatch) {
-            const discoveredWindow = parseInt(ctxMatch[1], 10);
-            if (Number.isFinite(discoveredWindow) && discoveredWindow > 0) {
-              recoveryContextWindowSize = Math.min(contextWindowSize, discoveredWindow);
-              if (activeProvider) {
-                getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
-                logger.info('Persisted discovered context window', {
-                  providerId: activeProvider.id,
-                  modelId: effectiveModelId,
-                  contextWindow: discoveredWindow,
-                });
-              }
+          if (learnedWindow !== undefined) {
+            recoveryContextWindowSize = Math.min(contextWindowSize, learnedWindow);
+            if (activeProvider) {
+              // 带上运行开始时服务报告的值，用户之后在服务里调大长度时，读取端能认出这条记录已经过时
+              getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, learnedWindow, runProbedContextWindow);
+              logger.info('Persisted discovered context window', {
+                providerId: activeProvider.id,
+                modelId: effectiveModelId,
+                contextWindow: learnedWindow,
+              });
             }
           }
+          const recoveryMaxOutputTokens = reserveOutputTokens(maxOutputTokens, recoveryContextWindowSize);
+          // 水位环的分母换成刚学到的真实值
+          chatDelta.setContextUsage(conversationId, {
+            percent: getDisplayPercent(postCompressionTokens, recoveryContextWindowSize),
+            tokensUsed: postCompressionTokens,
+            tokensMax: recoveryContextWindowSize,
+            messageCountAtPublish: historyMessages.length,
+            breakdown: { version: 1, ...breakdown },
+          });
 
           chatDelta.appendText(
             conversationId,
@@ -2615,7 +2623,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
           let recovered = false;
 
-          // Stage 1: Try semantic compression (if not already attempted this turn)
+          // Stage 1: 按新上限做语义压缩
           if (!autoCompactTracker.isDisabled()) {
             try {
               const recoveryCreds = resolveEffectiveLlmCreds(
@@ -2629,8 +2637,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               const compressionResult = await compressContextIfNeeded(
                 boundaryView,
                 effectiveSystemPrompt,
-                contextWindowSize,
-                maxOutputTokens,
+                recoveryContextWindowSize,
+                recoveryMaxOutputTokens,
                 {
                   adapter,
                   model: effectiveModelId,
@@ -2647,7 +2655,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   compressionResult.messages,
                   effectiveSystemPrompt,
                   recoveryContextWindowSize,
-                  maxOutputTokens,
+                  recoveryMaxOutputTokens,
                   toolTokens
                 ).messages;
                 autoCompactTracker.recordSuccess();
@@ -2659,11 +2667,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
           }
 
-          // Stage 2: Hard truncation as fallback
+          // Stage 2: 截断，保留第一轮加最后两轮
           if (!recovered) {
             logger.info('Attempting hard truncation recovery');
-            // boundaryView is marker-free (compact view if a marker exists) so
-            // the truncated emergency payload never contains a boundary marker.
             const emergencyRounds = identifyRounds(boundaryView);
             if (emergencyRounds.length > 3) {
               const firstRound = emergencyRounds[0];
@@ -2676,13 +2682,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             recovered = true;
           }
 
-          // Retry with recovered messages through the same provider-attempt seam
-          // as the primary path. These messages were rebuilt from stripped store
-          // copies (compression / round-slicing above), so media expansion and
-          // the final budget gate must happen in the outbound shape.
           const recoveryBudgetResult = await buildProviderAttemptMessages(
             preparedMessages,
             recoveryContextWindowSize,
+            recoveryMaxOutputTokens,
           );
           preparedMessages = recoveryBudgetResult.messages;
           logger.info('Context recovery budget gate applied', {
@@ -2692,13 +2695,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             safetyMarginTokens: recoveryBudgetResult.safetyMarginTokens,
             strategy: recoveryBudgetResult.strategy,
           });
+          const recoveryChatOptions = { ...chatOptions, maxTokens: recoveryMaxOutputTokens };
           try {
-            await adapter.chat(preparedMessages, chatOptions, eventHandler);
+            await adapter.chat(preparedMessages, recoveryChatOptions, eventHandler);
           } catch (retryErr2) {
-            // Stage 3: Even after truncation, still too long — surface error
             if (retryErr2 instanceof LLMError && retryErr2.code === 'context_too_long') {
               logger.error('Context recovery failed after both compression and truncation');
-              throw retryErr2;
             }
             throw retryErr2;
           }

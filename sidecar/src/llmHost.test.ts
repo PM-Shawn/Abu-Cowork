@@ -167,6 +167,17 @@ describe('llmHost', () => {
       });
     });
 
+    it('puts LLMError.contextLimit into the RPC error data', async () => {
+      openaiChat.mockRejectedValue(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 8192 }));
+      const { sender } = makeSender();
+      const host = createLlmHost(sender);
+
+      await expect(host.handleChat(chatParams({ adapterKind: 'openai-compatible' }))).rejects.toMatchObject({
+        code: -32000,
+        data: { name: 'LLMError', code: 'context_too_long', contextLimit: 8192 },
+      });
+    });
+
     it('preserves bounded upstream error details in the legacy llm.chat RPC error', async () => {
       const upstream = {
         status: 403,

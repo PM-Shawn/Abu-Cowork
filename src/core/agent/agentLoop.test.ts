@@ -1234,6 +1234,89 @@ describe('运行开始询问本地服务的窗口', () => {
   );
 });
 
+describe('服务说内容太长后按真实上限恢复', () => {
+  async function setup() {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { LLMError } = await import('../llm/adapter');
+    const { getCapsPort, setCapsPort } = await import('./ports/capsPort');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const defaultCapsPort = getCapsPort();
+    const recordContextWindow = vi.fn();
+    setCapsPort({ ...defaultCapsPort, get: () => undefined, recordContextWindow });
+    const restore = () => {
+      selectAdapter.mockRestore();
+      setCapsPort(defaultCapsPort);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, LLMError, chat, recordContextWindow, restore };
+  }
+
+  it('记住报错里的上限并带上运行开始时服务报告的值，按新上限重试', async () => {
+    const { useChatStore, LLMError, chat, recordContextWindow, restore } = await setup();
+    mockProbeContextWindow.mockResolvedValue(32768);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 8192 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      // 报错已经说了上限，不再询问服务
+      expect(mockProbeContextWindow).toHaveBeenCalledOnce();
+      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 8192, 32768);
+      const retryOptions = chat.mock.calls[1][1] as { maxTokens: number };
+      expect(retryOptions.maxTokens).toBeLessThanOrEqual(8192 / 4);
+      const conversation = useChatStore.getState().conversations[conversationId];
+      expect(conversation.contextUsage?.tokensMax).toBe(8192);
+      const assistantText = conversation.messages
+        .filter((message) => message.role === 'assistant')
+        .map((message) => typeof message.content === 'string' ? message.content : '')
+        .join('\n');
+      expect(assistantText).toContain('The conversation is long, tidying up the earlier part…');
+    } finally {
+      restore();
+    }
+  });
+
+  it('报错没说上限时再问一次本地服务', async () => {
+    const { useChatStore, LLMError, chat, recordContextWindow, restore } = await setup();
+    mockProbeContextWindow.mockResolvedValueOnce(undefined).mockResolvedValueOnce(12288);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(mockProbeContextWindow).toHaveBeenCalledTimes(2);
+      expect(mockProbeContextWindow).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'ollama' }), 'llama3.2');
+      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 12288, undefined);
+      const retryOptions = chat.mock.calls[1][1] as { maxTokens: number };
+      expect(retryOptions.maxTokens).toBeLessThanOrEqual(12288 / 4);
+      expect(useChatStore.getState().conversations[conversationId].contextUsage?.tokensMax).toBe(12288);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe('runAgentLoop pinned-model availability guard', () => {
   async function setup(mutate: (p: import('../../types/provider').ProviderInstance) => import('../../types/provider').ProviderInstance | null) {
     const { useChatStore } = await import('../../stores/chatStore');

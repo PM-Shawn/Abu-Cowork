@@ -493,7 +493,7 @@ const enUS: TranslationDict = {
     visionUnsupported: 'The current model may not support image/vision input. Try removing the image or switching to a vision-capable model (e.g. Claude, GPT-4o).',
     ollamaForbidden: 'Ollama returned 403 Forbidden (CORS origin restriction). Set the environment variable `OLLAMA_ORIGINS=*` and restart Ollama, e.g. `OLLAMA_ORIGINS=* ollama serve`',
     insufficientBalance: "Insufficient balance or no available resource package. Please recharge on the corresponding model provider's platform.",
-    compactingInlineNotice: '\n*Context is getting long, optimizing context...*',
+    compactingInlineNotice: '\n*The conversation is long, tidying up the earlier part…*',
     contextInputTooLarge: 'This message is too large for the current model context. Shorten the message or attachments, or switch to a model with a larger context window.',
     contextFixedTooLarge: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.',
     contextFixedTooLargeLocal: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more, or raise the context length in {service}.',

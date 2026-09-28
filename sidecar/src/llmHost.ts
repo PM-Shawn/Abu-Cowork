@@ -106,6 +106,7 @@ function errorDataFor(err: unknown): {
   retryAfterMs?: number;
   statusCode?: number;
   upstream?: UpstreamErrorDetails;
+  contextLimit?: number;
   message: string;
 } {
   if (err instanceof LLMError) {
@@ -117,6 +118,7 @@ function errorDataFor(err: unknown): {
       retryAfterMs: err.retryAfterMs,
       statusCode: err.statusCode,
       upstream,
+      contextLimit: err.contextLimit,
       message: formatLlmTerminalError(err),
     };
   }

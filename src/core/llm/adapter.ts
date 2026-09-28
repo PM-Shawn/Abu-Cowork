@@ -175,6 +175,8 @@ export class LLMError extends Error {
   statusCode?: number;
   rawBody?: string;
   upstream?: UpstreamErrorDetails;
+  /** 服务在超长报错里说出的真实上限，只在 context_too_long 时出现 */
+  contextLimit?: number;
 
   constructor(
     message: string,
@@ -185,6 +187,7 @@ export class LLMError extends Error {
       statusCode?: number;
       rawBody?: string;
       upstream?: UpstreamErrorDetails;
+      contextLimit?: number;
     }
   ) {
     super(message);
@@ -195,6 +198,7 @@ export class LLMError extends Error {
     this.statusCode = options?.statusCode;
     this.rawBody = options?.rawBody;
     this.upstream = normalizeUpstreamErrorDetails(options?.upstream);
+    this.contextLimit = options?.contextLimit;
   }
 }
 
@@ -466,6 +470,35 @@ function isHtmlBody(body: string): boolean {
   return /^(?:<!doctype\b|<html\b|<head\b|<body\b)/i.test(candidate);
 }
 
+const CONTEXT_OVERFLOW_PATTERN =
+  /prompt.is.too.long|token.*exceed|too.many.tokens|max.tokens.exceeded|context.window|context.length|larger than the max context size/i;
+
+/** 这段错误文字是否表示「内容超过上限」。流式中途的错误没有状态码，也用它判断。 */
+export function isContextOverflowMessage(message: string): boolean {
+  return CONTEXT_OVERFLOW_PATTERN.test(message);
+}
+
+const CONTEXT_LIMIT_TEXT_PATTERNS: readonly RegExp[] = [
+  /maximum context length is (\d+) tokens/i, // OpenAI
+  /context size \((\d+) tokens\)/i, // llama.cpp 两种句式
+  /context length(?: is|:)?\s*(\d+)/i, // Ollama
+];
+
+/** 从超长报错里读出服务真实的上限：先读结构化字段 n_ctx，再读文字。 */
+export function extractContextLimit(rawBody: string, message: string): number | undefined {
+  for (const record of providerErrorRecords(rawBody)) {
+    const structured = record.n_ctx;
+    if (typeof structured === 'number' && Number.isSafeInteger(structured) && structured > 0) return structured;
+  }
+  for (const pattern of CONTEXT_LIMIT_TEXT_PATTERNS) {
+    const match = pattern.exec(message);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  }
+  return undefined;
+}
+
 /**
  * Classify an HTTP status code and error message into an LLMError.
  * Accepts raw response body — will extract a clean message from JSON if possible.
@@ -547,10 +580,10 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
 
   // Bad request — check for context length
   if (statusCode === 400) {
-    const isContextTooLong = /prompt.is.too.long|token.*exceed|too.many.tokens|max.tokens.exceeded|context.window|context.length/i.test(message);
-    if (isContextTooLong) {
+    if (isContextOverflowMessage(message)) {
       return new LLMError(message, 'context_too_long', {
         retryable: false, statusCode, rawBody: stored, upstream,
+        contextLimit: extractContextLimit(rawBody, message),
       });
     }
     return new LLMError(message, 'invalid_request', {

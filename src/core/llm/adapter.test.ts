@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyError,
+  extractContextLimit,
+  isContextOverflowMessage,
   LLMError,
   formatLlmDisplayError,
   formatLlmTerminalError,
@@ -469,5 +471,53 @@ describe('adapter', () => {
       const err = classifyError(429, 'Rate limit exceeded');
       expect(err.retryAfterMs).toBeUndefined();
     });
+  });
+});
+
+describe('context overflow', () => {
+  it('classifies llama.cpp "larger than the max context size" as context_too_long', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: { code: 400, message: 'input (9000 tokens) is larger than the max context size (8192 tokens). skipping', type: 'exceed_context_size_error' },
+    }));
+    expect(err.code).toBe('context_too_long');
+    expect(err.contextLimit).toBe(8192);
+  });
+
+  it('prefers the structured n_ctx field over the sentence', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: {
+        code: 400,
+        message: 'request (9000 tokens) exceeds the available context size (9999 tokens), try increasing it',
+        type: 'exceed_context_size_error',
+        n_prompt_tokens: 9000,
+        n_ctx: 8192,
+      },
+    }));
+    expect(err.contextLimit).toBe(8192);
+  });
+
+  it.each([
+    ['OpenAI', "This model's maximum context length is 16385 tokens. However, your messages resulted in 20000 tokens.", 16385],
+    ['llama.cpp', 'request (9000 tokens) exceeds the available context size (8192 tokens), try increasing it', 8192],
+    ['Ollama', 'The prompt is too long: 9000, model maximum context length: 4096', 4096],
+  ])('reads the limit from the %s sentence', (_label, message, limit) => {
+    expect(extractContextLimit('', message)).toBe(limit);
+  });
+
+  it('leaves the limit empty when nothing names it', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: { message: 'the prompt is longer than the context length currently available to the model' },
+    }));
+    expect(err.code).toBe('context_too_long');
+    expect(err.contextLimit).toBeUndefined();
+  });
+
+  it('never attaches a limit to other errors', () => {
+    expect(classifyError(429, JSON.stringify({ error: { message: 'maximum context length is 8192 tokens' } })).contextLimit).toBeUndefined();
+  });
+
+  it('exposes the overflow wording test for stream errors', () => {
+    expect(isContextOverflowMessage('the prompt is longer than the context length currently available')).toBe(true);
+    expect(isContextOverflowMessage('model runner crashed')).toBe(false);
   });
 });

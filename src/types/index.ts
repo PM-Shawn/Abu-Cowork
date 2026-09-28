@@ -883,6 +883,8 @@ export type StreamEvent =
   | { type: 'tool_result'; toolUseId: string; result: string }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; stopReason: string; usage?: TokenUsage }
+  /** 正文里出现了操作的开头却识别不出（没闭合、JSON 写坏）。原文不显示给用户。 */
+  | { type: 'malformed_tool_call'; raw: string }
   | { type: 'error'; error: string };
 
 // --- Skill ---

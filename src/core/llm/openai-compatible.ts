@@ -10,6 +10,7 @@ import { resolveOpenAIBaseUrl, buildFullChatUrl } from './urlUtils';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
 import { observeCompatEvent } from '../observability/compatEvents';
 import { createDefaultUsageRecorder, type UsageAttemptRecorder } from './usageRecorder';
+import { createTextToolCallParser, type TextSegment, type TextToolCall } from './textToolCalls';
 
 const logger = createLogger('openai-compatible');
 
@@ -664,162 +665,37 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // After done is emitted, keep looping only to capture the trailing usage chunk
     let doneEmitted = false;
 
-    // Tag parser state — handles <think>, <tool_call>, and <|FunctionCallBegin|> (Doubao) in content
-    let inThinkTag = false;
-    let inToolCallTag = false;
-    let inDoubaoTag = false;   // <|FunctionCallBegin|>...<|FunctionCallEnd|>
-    let pendingContent = '';
-    /** Collected text-based tool calls (from <tool_call> / Doubao tags) */
-    const textToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+    // 正文里的 <think> 与写成文字的操作交给共用解析器（textToolCalls.ts），Ollama 适配器也用它
+    const textParser = createTextToolCallParser(options.tools ?? []);
+    /** Collected text-based tool calls */
+    const textToolCalls: TextToolCall[] = [];
 
-    /** Returns length of longest suffix of `str` that matches a prefix of `tag` */
-    function partialTagMatch(str: string, tag: string): number {
-      const maxCheck = Math.min(str.length, tag.length - 1);
-      for (let len = maxCheck; len > 0; len--) {
-        if (str.endsWith(tag.slice(0, len))) return len;
-      }
-      return 0;
-    }
-
-    /**
-     * Process content chunk, splitting special tags:
-     * - <think>...</think>                          → thinking events
-     * - <tool_call>...</tool_call>                  → buffered, parsed as tool_use on close
-     * - <|FunctionCallBegin|>...<|FunctionCallEnd|> → Doubao/豆包 format, parsed as tool_use
-     * - Everything else                             → text events
-     */
-    function emitContent(chunk: string) {
-      pendingContent += chunk;
-      while (pendingContent) {
-        if (inThinkTag) {
-          const closeIdx = pendingContent.indexOf('</think>');
-          if (closeIdx >= 0) {
-            const thinking = pendingContent.slice(0, closeIdx);
-            if (thinking) onEvent({ type: 'thinking', thinking });
-            pendingContent = pendingContent.slice(closeIdx + 8);
-            inThinkTag = false;
-            continue;
-          }
-          const partialLen = partialTagMatch(pendingContent, '</think>');
-          const safeLen = pendingContent.length - partialLen;
-          if (safeLen > 0) {
-            onEvent({ type: 'thinking', thinking: pendingContent.slice(0, safeLen) });
-            pendingContent = pendingContent.slice(safeLen);
-          }
-          break;
-        } else if (inToolCallTag) {
-          const closeIdx = pendingContent.indexOf('</tool_call>');
-          if (closeIdx >= 0) {
-            const jsonStr = pendingContent.slice(0, closeIdx).trim();
-            pendingContent = pendingContent.slice(closeIdx + 12);
-            inToolCallTag = false;
-            try {
-              const parsed = JSON.parse(jsonStr);
-              const name = parsed.name as string;
-              const args = parsed.arguments ?? parsed.parameters ?? {};
-              const input = typeof args === 'string' ? JSON.parse(args) : args;
-              textToolCalls.push({ id: generateToolCallId('text-tc'), name, input });
-            } catch {
-              // Fallback: some models emit XML attribute format: <tool_name attr1="val">
-              const xmlMatch = /^\s*<([a-zA-Z_][a-zA-Z0-9_-]*)(\s[^>]*)?\s*\/?>\s*$/.exec(jsonStr);
-              if (xmlMatch) {
-                const name = xmlMatch[1];
-                const attrsStr = xmlMatch[2] ?? '';
-                const input: Record<string, unknown> = {};
-                const attrRe = /([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"/g;
-                let m: RegExpExecArray | null;
-                while ((m = attrRe.exec(attrsStr)) !== null) {
-                  input[m[1]] = m[2];
-                }
-                textToolCalls.push({ id: generateToolCallId('text-tc'), name, input });
-              } else {
-                onEvent({ type: 'text', text: `<tool_call>${jsonStr}</tool_call>` });
-              }
-            }
-            continue;
-          }
-          const partialLen = partialTagMatch(pendingContent, '</tool_call>');
-          if (partialLen > 0) break;
-          break;
-        } else if (inDoubaoTag) {
-          // Doubao/豆包 format: JSON array of tool calls between <|FunctionCallBegin|> tags
-          const closeIdx = pendingContent.indexOf('<|FunctionCallEnd|>');
-          if (closeIdx >= 0) {
-            const jsonStr = pendingContent.slice(0, closeIdx).trim();
-            pendingContent = pendingContent.slice(closeIdx + 19); // '<|FunctionCallEnd|>'.length
-            inDoubaoTag = false;
-            try {
-              const raw = JSON.parse(jsonStr);
-              const calls = Array.isArray(raw) ? raw : [raw];
-              for (const call of calls as Array<Record<string, unknown>>) {
-                const name = call.name as string;
-                const args = call.parameters ?? call.arguments ?? {};
-                const input = typeof args === 'string' ? (JSON.parse(args) as Record<string, unknown>) : (args as Record<string, unknown>);
-                textToolCalls.push({ id: generateToolCallId('doubao-tc'), name, input });
-              }
-            } catch {
-              onEvent({ type: 'text', text: `<|FunctionCallBegin|>${jsonStr}<|FunctionCallEnd|>` });
-            }
-            continue;
-          }
-          const partialLen = partialTagMatch(pendingContent, '<|FunctionCallEnd|>');
-          if (partialLen > 0) break;
-          break;
-        } else {
-          const thinkIdx = pendingContent.indexOf('<think>');
-          const toolCallIdx = pendingContent.indexOf('<tool_call>');
-          const doubaoIdx = pendingContent.indexOf('<|FunctionCallBegin|>');
-
-          const earliest = [
-            thinkIdx >= 0 ? { idx: thinkIdx, tag: 'think' as const } : null,
-            toolCallIdx >= 0 ? { idx: toolCallIdx, tag: 'tool_call' as const } : null,
-            doubaoIdx >= 0 ? { idx: doubaoIdx, tag: 'doubao' as const } : null,
-          ].filter(Boolean).sort((a, b) => a!.idx - b!.idx)[0];
-
-          if (earliest) {
-            const text = pendingContent.slice(0, earliest.idx);
-            if (text) onEvent({ type: 'text', text });
-            if (earliest.tag === 'think') {
-              pendingContent = pendingContent.slice(earliest.idx + 7);
-              inThinkTag = true;
-            } else if (earliest.tag === 'tool_call') {
-              pendingContent = pendingContent.slice(earliest.idx + 11);
-              inToolCallTag = true;
-            } else {
-              pendingContent = pendingContent.slice(earliest.idx + 21); // '<|FunctionCallBegin|>'.length
-              inDoubaoTag = true;
-            }
-            continue;
-          }
-
-          const partialThink = partialTagMatch(pendingContent, '<think>');
-          const partialToolCall = partialTagMatch(pendingContent, '<tool_call>');
-          const partialDoubao = partialTagMatch(pendingContent, '<|FunctionCallBegin|>');
-          const maxPartial = Math.max(partialThink, partialToolCall, partialDoubao);
-          const safeLen = pendingContent.length - maxPartial;
-          if (safeLen > 0) {
-            onEvent({ type: 'text', text: pendingContent.slice(0, safeLen) });
-            pendingContent = pendingContent.slice(safeLen);
-          }
-          break;
+    function handleTextSegments(segments: TextSegment[]) {
+      for (const segment of segments) {
+        switch (segment.type) {
+          case 'text':
+            onEvent({ type: 'text', text: segment.text });
+            break;
+          case 'thinking':
+            onEvent({ type: 'thinking', thinking: segment.thinking });
+            break;
+          case 'tool_call':
+            textToolCalls.push(segment.call);
+            break;
+          case 'malformed':
+            onEvent({ type: 'malformed_tool_call', raw: segment.raw });
+            break;
         }
       }
+    }
+
+    function emitContent(chunk: string) {
+      handleTextSegments(textParser.push(chunk));
     }
 
     /** Flush any remaining buffered content */
     function flushPendingContent() {
-      if (pendingContent) {
-        if (inThinkTag) {
-          onEvent({ type: 'thinking', thinking: pendingContent });
-        } else if (inToolCallTag) {
-          onEvent({ type: 'text', text: `<tool_call>${pendingContent}` });
-        } else if (inDoubaoTag) {
-          onEvent({ type: 'text', text: `<|FunctionCallBegin|>${pendingContent}` });
-        } else {
-          onEvent({ type: 'text', text: pendingContent });
-        }
-        pendingContent = '';
-      }
+      handleTextSegments(textParser.flush());
     }
 
     /** Emit all buffered text-based tool calls as tool_use events */
@@ -1070,13 +946,15 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         }
       }
 
-      // Fallback: stream ended without [DONE] or finish_reason — emit pending tool calls and done
+      // Fallback: stream ended without [DONE] or finish_reason — emit pending text, tool calls and done
       if (!doneEmitted) {
+        flushPendingContent();
         for (const [, tc] of toolCallBuffers) {
           const input = buildToolInput(tc, 'stream-end-fallback');
           onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
         }
-        onEvent({ type: 'done', stopReason: toolCallBuffers.size > 0 ? 'tool_use' : 'end_turn' });
+        const hasTextTC = emitTextToolCalls();
+        onEvent({ type: 'done', stopReason: toolCallBuffers.size > 0 || hasTextTC ? 'tool_use' : 'end_turn' });
       }
     } catch (streamErr) {
       // Idle-heartbeat abort: surface a clear retryable error (the underlying

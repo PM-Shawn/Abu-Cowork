@@ -930,3 +930,43 @@ describe('OpenAICompatibleAdapter body wiring: tool_choice', () => {
     expect(body.tool_choice).toBeUndefined();
   });
 });
+
+describe('OpenAICompatibleAdapter — operations written into the reply text', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('runs an <invoke> split across chunks and never shows its text', async () => {
+    const events = await runChat([
+      { choices: [{ delta: { content: '我先读文件。<function_calls><inv' } }] },
+      { choices: [{ delta: { content: 'oke name="read_file"><parameter name="path">a.txt</parameter></invoke></function_calls>' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]);
+    const text = events.map((e) => (e.type === 'text' ? e.text : '')).join('');
+    expect(text).toBe('我先读文件。');
+    expect(events.find((e) => e.type === 'tool_use')).toMatchObject({ name: 'read_file', input: { path: 'a.txt' } });
+    expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'tool_use' });
+  });
+
+  it('reports a cut-off operation as malformed instead of printing it', async () => {
+    const events = await runChat([
+      { choices: [{ delta: { content: '<tool_call>{"name":"read_file","arguments":{"path"' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]);
+    expect(events.some((e) => e.type === 'text')).toBe(false);
+    expect(events.find((e) => e.type === 'malformed_tool_call'))
+      .toEqual({ type: 'malformed_tool_call', raw: '<tool_call>{"name":"read_file","arguments":{"path"' });
+    expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'end_turn' });
+  });
+
+  it('flushes held text when the stream ends without a finish reason or [DONE]', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial <thi' } }] })}\n\n`,
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    ));
+    const events: StreamEvent[] = [];
+    await new OpenAICompatibleAdapter().chat([userMessage], makeOptions(), (e) => events.push(e));
+    expect(events.map((e) => (e.type === 'text' ? e.text : '')).join('')).toBe('partial <thi');
+    expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'end_turn' });
+  });
+});

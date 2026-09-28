@@ -41,7 +41,10 @@ export function BasicsSection() {
         </div>
         <Separator decorative={false} />
         <div className="flex h-6 items-center gap-4">
+          <Spinner label="Saving" size="sm" />
           <Spinner label="Reading 9 files" />
+          <Spinner label="Loading the task" size="lg" />
+          <Spinner label="Syncing" labelHidden />
           <Separator orientation="vertical" decorative={false} />
           {TONES.map((tone) => <StatusIcon key={tone} tone={tone} label={tone} />)}
         </div>

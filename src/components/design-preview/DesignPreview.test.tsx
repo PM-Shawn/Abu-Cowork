@@ -85,6 +85,12 @@ describe('DesignPreview', () => {
     expect(screen.getByRole('slider', { name: 'Disabled volume' })).toHaveAttribute('data-disabled');
     expect(screen.getByRole('combobox', { name: 'Disabled model' })).toBeDisabled();
     expect(screen.getByRole('combobox', { name: 'Disabled model search' })).toBeDisabled();
+    expect(within(screen.getByRole('radiogroup', { name: 'Density' })).getByRole('radio', { name: 'Spacious (not available)' })).toBeDisabled();
+    expect(screen.getByRole('radiogroup', { name: 'Sort order' })).toHaveAttribute('aria-orientation', 'horizontal');
+    const view = within(screen.getByRole('group', { name: 'View' }));
+    expect(view.getByRole('radio', { name: 'Files' }).querySelector('svg')).not.toBeNull();
+    expect(view.getByRole('radio', { name: 'Tasks' }).querySelector('svg')).not.toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Model (not chosen)' })).toHaveTextContent('Choose a model');
     expect(screen.getByRole('tab', { name: 'History' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Small dialog' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Large dialog' })).toBeInTheDocument();
@@ -93,6 +99,10 @@ describe('DesignPreview', () => {
     const basics = within(document.querySelector('[data-preview-section="basics"]') as HTMLElement);
     expect(basics.getAllByRole('separator').map((node) => node.getAttribute('aria-orientation') ?? 'horizontal').sort()).toEqual(['horizontal', 'vertical']);
     expect(basics.getByRole('img', { name: 'Sam' })).toBeInTheDocument();
+    const statusWith = (text: string) => screen.getAllByRole('status').find((node) => node.textContent === text) as HTMLElement;
+    expect(statusWith('Saving').querySelector('svg')).toHaveAttribute('width', '14');
+    expect(statusWith('Loading the task').querySelector('svg')).toHaveAttribute('width', '20');
+    expect(within(statusWith('Syncing')).getByText('Syncing')).toHaveClass('sr-only');
     const icons = document.querySelector('[data-preview-icons]') as HTMLElement;
     expect(icons.querySelectorAll('svg[width="14"]').length).toBeGreaterThan(0);
     expect(icons.querySelectorAll('svg[width="20"]').length).toBeGreaterThan(0);

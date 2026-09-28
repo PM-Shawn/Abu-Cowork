@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Checkbox } from '@/components/ds/checkbox';
 import { Combobox } from '@/components/ds/combobox';
+import { AppIcons } from '@/components/ds/icons';
 import { RadioGroup } from '@/components/ds/radio-group';
 import { SegmentedControl } from '@/components/ds/segmented-control';
 import { Select } from '@/components/ds/select';
@@ -23,6 +24,9 @@ export function FormSection() {
   const [theme, setTheme] = useState('system');
   const [model, setModel] = useState('sonnet');
   const [searchedModel, setSearchedModel] = useState('');
+  const [sortOrder, setSortOrder] = useState('newest');
+  const [view, setView] = useState('tasks');
+  const [unchosenModel, setUnchosenModel] = useState('');
   return (
     <Section id="forms" title="Form controls">
       <div className="grid max-w-3xl grid-cols-2 gap-4">
@@ -34,10 +38,29 @@ export function FormSection() {
           <Switch label="Notify when done" checked={notify} onCheckedChange={setNotify} />
           <Switch label="Disabled switch" checked={false} disabled onCheckedChange={() => undefined} />
         </div>
-        <RadioGroup label="Density" value={density} onValueChange={setDensity} options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} />
+        <RadioGroup
+          label="Density"
+          value={density}
+          onValueChange={setDensity}
+          options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }, { value: 'spacious', label: 'Spacious (not available)', disabled: true }]}
+        />
         <Slider label="Volume" value={volume} onValueChange={setVolume} />
+        <RadioGroup
+          label="Sort order"
+          orientation="horizontal"
+          value={sortOrder}
+          onValueChange={setSortOrder}
+          options={[{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }]}
+        />
+        <SegmentedControl
+          label="View"
+          value={view}
+          onValueChange={setView}
+          options={[{ value: 'tasks', label: 'Tasks', icon: AppIcons.compose }, { value: 'files', label: 'Files', icon: AppIcons.folder }]}
+        />
         <SegmentedControl label="Theme" value={theme} onValueChange={setTheme} options={[{ value: 'system', label: 'System' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} />
         <Select label="Model" value={model} onValueChange={setModel} options={PREVIEW_MODELS} />
+        <Select label="Model (not chosen)" value={unchosenModel} onValueChange={setUnchosenModel} placeholder="Choose a model" options={PREVIEW_MODELS} />
         <Combobox
           label="Search models"
           value={searchedModel}

@@ -111,16 +111,31 @@ describe('appStore', () => {
   });
 
   it('enters an app on the refresh that first lists it (add-and-enter)', () => {
-    useAppStore.getState().enterAppWhenAvailable('a');
+    useAppStore.getState().enterAppWhenAvailable('b');
     expect(useAppStore.getState().selectedAppId).toBe(GENERAL_APP_ID);
     useAppStore.getState().setAddedApps([make('b')]);
-    expect(useAppStore.getState().selectedAppId).toBe(GENERAL_APP_ID);
-    expect(useAppStore.getState().pendingEnterAppId).toBeNull();
-    useAppStore.getState().enterAppWhenAvailable('b');
     expect(useAppStore.getState().selectedAppId).toBe('b');
+    expect(useAppStore.getState().pendingEnterAppId).toBeNull();
     useAppStore.getState().enterAppWhenAvailable('c');
     useAppStore.getState().setAddedApps([make('b'), make('c')]);
     expect(useAppStore.getState().selectedAppId).toBe('c');
+  });
+
+  it('keeps waiting for an organization app while the other list changes first', () => {
+    // The session names the default app before the catalog sync brings it.
+    useAppStore.getState().enterAppWhenAvailable('enterprise-app:1');
+    useAppStore.getState().setAddedApps([make('a')]);
+    expect(useAppStore.getState().pendingEnterAppId).toBe('enterprise-app:1');
+    useAppStore.getState().replaceManagedApps('enterprise', [org('enterprise-app:1')]);
+    expect(useAppStore.getState().selectedAppId).toBe('enterprise-app:1');
+  });
+
+  it('stops waiting once the employee chooses where to be', () => {
+    useAppStore.getState().setAddedApps([make('a')]);
+    useAppStore.getState().enterAppWhenAvailable('enterprise-app:1');
+    useAppStore.getState().enterApp('a');
+    useAppStore.getState().replaceManagedApps('enterprise', [org('enterprise-app:1')]);
+    expect(useAppStore.getState().selectedAppId).toBe('a');
   });
 
   it('opens only the current app\'s url: pages, and closes them on exit', () => {

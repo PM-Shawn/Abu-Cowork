@@ -46,9 +46,9 @@ describe('enterprise app policy', () => {
 
   it('reads both fields from the session snapshot', () => {
     const mode = { kind: 'enterprise' as const, binding, config: config({
-      defaultAppId: 'acme-contract-review@enterprise', allowExitDefaultApp: false,
+      defaultAppId: 'enterprise-app:contract-review', allowExitDefaultApp: false,
     }) };
-    expect(appPolicyOf(mode)).toEqual({ defaultAppId: 'acme-contract-review@enterprise', allowExit: false });
+    expect(appPolicyOf(mode)).toEqual({ defaultAppId: 'enterprise-app:contract-review', allowExit: false });
   });
 
   it('keeps the switcher free when the organization names no app', () => {
@@ -63,9 +63,9 @@ describe('enterprise app policy', () => {
   it('keeps answering from the last snapshot while offline', () => {
     const mode = {
       kind: 'offline' as const, binding, reason: 'token rejected',
-      lastConfig: config({ defaultAppId: 'acme@enterprise', allowExitDefaultApp: false }),
+      lastConfig: config({ defaultAppId: 'enterprise-app:acme', allowExitDefaultApp: false }),
     };
-    expect(appPolicyOf(mode)).toEqual({ defaultAppId: 'acme@enterprise', allowExit: false });
+    expect(appPolicyOf(mode)).toEqual({ defaultAppId: 'enterprise-app:acme', allowExit: false });
   });
 
   it('falls back to a free switcher before the first snapshot arrives', () => {
@@ -79,16 +79,16 @@ describe('landing in the organization app', () => {
     const enter = vi.spyOn(useAppStore.getState(), 'enterAppWhenAvailable').mockImplementation(() => {});
     startDefaultAppLanding();
 
-    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'acme@enterprise' }) } });
-    expect(enter).toHaveBeenCalledWith('acme@enterprise');
+    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'enterprise-app:acme' }) } });
+    expect(enter).toHaveBeenCalledWith('enterprise-app:acme');
 
     // A later heartbeat naming the same app must not drag an employee who
     // switched away back into it five minutes on.
-    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'acme@enterprise' }) } });
+    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'enterprise-app:acme' }) } });
     expect(enter).toHaveBeenCalledTimes(1);
 
-    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'other@enterprise' }) } });
-    expect(enter).toHaveBeenLastCalledWith('other@enterprise');
+    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'enterprise-app:other' }) } });
+    expect(enter).toHaveBeenLastCalledWith('enterprise-app:other');
     enter.mockRestore();
   });
 
@@ -96,9 +96,9 @@ describe('landing in the organization app', () => {
     const enter = vi.spyOn(useAppStore.getState(), 'enterAppWhenAvailable').mockImplementation(() => {});
     startDefaultAppLanding();
 
-    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'acme@enterprise' }) } });
+    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'enterprise-app:acme' }) } });
     useEnterpriseStore.setState({ mode: { kind: 'personal' } });
-    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'acme@enterprise' }) } });
+    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'enterprise-app:acme' }) } });
 
     expect(enter).toHaveBeenCalledTimes(2);
     enter.mockRestore();

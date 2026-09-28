@@ -119,7 +119,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
       onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); enter(app.appId); } }}
       className={cn('group flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left', current ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-hover)]')}
     >
-      <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} general={app.appId === GENERAL_APP_ID} size="md" />
+      <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="md" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-body text-[var(--abu-text-primary)]">{app.name}</span>
         {app.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{app.description}</span>}
@@ -198,7 +198,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
       >
         {isGeneral
           ? <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)]" />
-          : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} size="sm" />}
+          : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" />}
         <span
           className={cn('min-w-0 flex-1 text-caption font-medium text-[var(--abu-text-primary)]', isGeneral ? 'whitespace-nowrap' : 'truncate')}
           data-testid="app-switcher-current"

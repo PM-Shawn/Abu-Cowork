@@ -7,6 +7,7 @@ import {
   isAppName,
   parseAppConfig,
   parseAppFile,
+  parseManagedAppConfig,
   resolveAppPageUrl,
   splitRunTarget,
 } from '../../../electron/shared/appSpec.mjs';
@@ -110,6 +111,13 @@ describe('run references', () => {
     const orgConfig = parseAppConfig({ home: home([scene({ run: { team: 'enterprise-team:abc', skill: 'enterprise:clause-check' } })]) }, { source: 'enterprise' });
     expect(orgConfig.home.modes.items[0].scenes[0].run).toEqual({ team: 'enterprise-team:abc', skill: 'enterprise:clause-check' });
     expect(failingField(() => parseAppConfig({ home: home([scene({ run: { team: 'builtin-team:recruiting' } })]) }, { source: 'enterprise', field: 'manifest' }))).toBe(`manifest.${runField}.team`);
+  });
+
+  it('reads an organization app configuration and refuses what an app file alone carries', () => {
+    const config = parseManagedAppConfig({ home: home([scene({ run: { expert: 'enterprise-agent:abc' } })]) }, 'apps[0].manifest');
+    expect(config.home.modes.items[0].scenes[0].run).toEqual({ expert: 'enterprise-agent:abc' });
+    expect(failingField(() => parseManagedAppConfig({ home: home([scene()]), plugins: [] }, 'apps[0].manifest'))).toBe('apps[0].manifest.plugins');
+    expect(failingField(() => parseManagedAppConfig('home', 'apps[0].manifest'))).toBe('apps[0].manifest');
   });
 
   it('reports the exact field for every broken reference', () => {

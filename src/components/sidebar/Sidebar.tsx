@@ -545,7 +545,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 )}
                 {conv.appBinding && (
                   <span title={conv.appBinding.appName} data-testid="conversation-app-icon">
-                    <AppLogo name={conv.appBinding.appName} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} size="sm" className="rounded" />
+                    <AppLogo name={conv.appBinding.appName} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} icon={conv.appBinding.appIcon} size="sm" className="rounded" />
                   </span>
                 )}
                 {editingId === conv.id ? (

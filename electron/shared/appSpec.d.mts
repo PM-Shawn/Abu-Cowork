@@ -33,6 +33,7 @@ export function isAllowedAppPageOrigin(value: unknown): boolean;
 export function appPageUrl(target: unknown): string | undefined;
 export function isAppName(value: unknown): value is string;
 export function parseAppConfig(raw: Record<string, unknown>, ctx: { source: AppSource; plugins?: Iterable<string>; field?: string }): AppConfig;
+export function parseManagedAppConfig(raw: unknown, field: string): AppConfig;
 export function parseAppFile(raw: unknown, options?: { source?: 'package' | 'created' }): ParsedAppFile;
 export function resolveAppPageUrl(config: AppConfig, navItemId: string): string;
 export function appRuns(config: AppConfig): Array<{ field: string; run: AppRunRef; modeId?: string; sceneId?: string }>;

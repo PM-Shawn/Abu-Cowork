@@ -159,6 +159,8 @@ export interface AppDefinition {
   /** Absolute paths to the app's own images, or undefined. */
   logo?: string;
   logoDark?: string;
+  /** An emoji or an `icon:<icon>/<tint>` preset, as an organization sets it for its app. */
+  icon?: string;
   config: AppConfig;
   /** The app's version; null for the general shell. */
   version: string | null;
@@ -183,6 +185,7 @@ export interface ConversationAppBinding {
   appName: string;
   appLogo?: string;
   appLogoDark?: string;
+  appIcon?: string;
   modeId: string;
   sceneId?: string;
   run?: AppRunRef;

@@ -1,6 +1,9 @@
 import type { AppDefinition, AppLocale } from '@/types/app';
 import { GENERAL_APP_ID } from '@/types/app';
 import { resolveLocalizedText } from '../../../electron/shared/specFields.mjs';
+// Organization apps are validated by the same rules as every other app before
+// they reach `replaceManagedApps`.
+export { parseManagedAppConfig } from '../../../electron/shared/appSpec.mjs';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';

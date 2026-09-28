@@ -46,6 +46,7 @@ export function buildAppBinding(app: AppDefinition, mode: AppMode, scene: AppSce
     appName: app.name,
     appLogo: app.logo,
     appLogoDark: app.logoDark,
+    appIcon: app.icon,
     modeId: mode.modeId,
     sceneId: scene?.id,
     run: effectiveRun(app, scene),

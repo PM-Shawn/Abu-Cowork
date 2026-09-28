@@ -109,7 +109,7 @@ export default function AppHome({ app, onPlaceholderChange }: {
   return (
     <div data-testid="app-home" data-app-id={app.appId} className="w-full">
       <div className="text-center mb-6">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} size="xl" className="mx-auto mb-4 rounded-2xl" />
+        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="xl" className="mx-auto mb-4 rounded-2xl" />
         <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
         {app.config.home.header?.slogan && <p className="text-body text-[var(--abu-text-tertiary)]">{resolveText(app.config.home.header.slogan)}</p>}
       </div>
@@ -143,7 +143,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     const { label, unavailable } = describeSceneRun(app, scene, resolved, t, format, locale);
     const owner = resolved?.owner;
     const avatar = !resolved
-      ? <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} size="sm" />
+      ? <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} size="sm" />
       : owner?.status === 'ok' && owner.kind === 'team' ? <TeamAvatar avatar={owner.team.avatar} size="xs" round />
         : owner?.status === 'ok' && owner.kind === 'expert' ? <AgentAvatar agent={owner.agent} size="sm" />
           : owner ? <TeamAvatar size="xs" round />

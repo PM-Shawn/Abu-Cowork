@@ -50,7 +50,7 @@ describe('buildAppBinding', () => {
   it('captures the app, its version and origin, the mode, the scene and the effective run', () => {
     expect(buildAppBinding(app, sourcing, sourcing.scenes[2])).toEqual({
       version: 2, appId: 'shop-ops@market', appVersion: '1.0.0', origin: 'market', appName: '店铺运营',
-      appLogo: '/apps/shop-ops@market/assets/logo.png', appLogoDark: undefined,
+      appLogo: '/apps/shop-ops@market/assets/logo.png', appLogoDark: undefined, appIcon: undefined,
       modeId: 'sourcing', sceneId: 'write', run: { skill: 'plugin:shop-assistant/product-listing' }, promptAppend: 'app text\n\nmode text',
     });
     expect(buildAppBinding(app, sourcing, undefined)?.run).toEqual({ team: 'plugin:shop-assistant/store-ops' });

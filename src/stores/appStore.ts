@@ -132,12 +132,15 @@ export const useAppStore = create<AppStore>()(
         const ids = new Set(availableApps(get()).map((app) => app.appId));
         const { pendingEnterAppId, suspendedManagedAppId, selectedAppId, seenAppIds } = get();
         const gone = (id: string) => seenAppIds[id] === true && !ids.has(id);
+        // A pending app waits for whichever list brings it; another list
+        // changing first does not drop it.
+        const arrived = pendingEnterAppId !== null && ids.has(pendingEnterAppId);
         set((state) => ({
           recentAppIds: state.recentAppIds.filter((id) => !gone(id)),
-          pendingEnterAppId: null,
+          pendingEnterAppId: arrived ? null : state.pendingEnterAppId,
           seenAppIds: { ...state.seenAppIds, ...Object.fromEntries([...ids].map((id) => [id, true as const])) },
         }));
-        if (pendingEnterAppId && ids.has(pendingEnterAppId)) {
+        if (arrived && pendingEnterAppId) {
           set({ suspendedManagedAppId: null });
           show(pendingEnterAppId);
           return;
@@ -178,13 +181,13 @@ export const useAppStore = create<AppStore>()(
           if (appId === GENERAL_APP_ID) { get().exitApp(); return; }
           if (!getApp(availableApps(get()), appId)) throw new Error(`app "${appId}" is not available`);
           // The user chose where to be; an organization app waiting for the
-          // connection to come back no longer decides that.
-          set({ suspendedManagedAppId: null });
+          // connection to come back, or for its first sync, no longer decides that.
+          set({ suspendedManagedAppId: null, pendingEnterAppId: null });
           show(appId);
         },
 
         exitApp: () => {
-          set({ suspendedManagedAppId: null });
+          set({ suspendedManagedAppId: null, pendingEnterAppId: null });
           show(GENERAL_APP_ID);
         },
 

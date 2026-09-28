@@ -319,6 +319,19 @@ export function parseAppConfig(raw, ctx) {
     return config;
 }
 
+/**
+ * An organization app's configuration as its console sends it: the same
+ * fields as an app file's home, runs, navigation and pages, with references
+ * only to what the organization published.
+ */
+export function parseManagedAppConfig(raw, field) {
+    const config = requireObject(raw, field);
+    for (const key of Object.keys(config)) {
+        if (!CONFIG_KEYS.includes(key)) fail(`unknown field "${key}"`, `${field}.${key}`, 'unknown-field');
+    }
+    return parseAppConfig(config, { source: 'enterprise', field });
+}
+
 function parseInterface(value, field) {
     const iface = requireObject(value, field);
     rejectUnknownKeys(iface, field, ['displayName', 'shortDescription', 'longDescription', 'developerName', 'category', 'brandColor', 'logo', 'logoDark']);

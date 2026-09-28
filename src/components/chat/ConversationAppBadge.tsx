@@ -9,7 +9,7 @@ export default function ConversationAppBadge({ binding }: { binding: Conversatio
       className="ml-2 inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
       title={binding.appName}
     >
-      <AppLogo name={binding.appName} logo={binding.appLogo} logoDark={binding.appLogoDark} size="sm" className="h-4 w-4 rounded" />
+      <AppLogo name={binding.appName} logo={binding.appLogo} logoDark={binding.appLogoDark} icon={binding.appIcon} size="sm" className="h-4 w-4 rounded" />
       <span className="truncate max-w-[160px]">{binding.appName}</span>
     </span>
   );

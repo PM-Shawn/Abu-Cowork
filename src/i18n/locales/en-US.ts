@@ -1853,8 +1853,6 @@ const enUS: TranslationDict = {
     pluginsFromMarketplace: 'From {name}',
     pluginsGoToMarketplace: 'Browse the marketplace',
     pluginsMineEmptyHint: 'Use Add → Create plugin in the top right and let Abu build one in a conversation',
-    pluginsUse: 'Use',
-    pluginsEnter: 'Enter',
     pluginsAppEntered: 'Entered app "{name}"',
     pluginsDisclosureTeams: 'Expert teams',
     pluginsOrphanGroup: 'Marketplace removed',

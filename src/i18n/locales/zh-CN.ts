@@ -1855,8 +1855,6 @@ const zhCN: TranslationDict = {
     pluginsFromMarketplace: '来自 {name}',
     pluginsGoToMarketplace: '去插件市场看看',
     pluginsMineEmptyHint: '点右上角「添加 → 创建插件」，在对话里让阿布做一个',
-    pluginsUse: '使用',
-    pluginsEnter: '进入',
     pluginsAppEntered: '已进入应用「{name}」',
     pluginsDisclosureTeams: '专家团',
     pluginsOrphanGroup: '所在市场已移除',

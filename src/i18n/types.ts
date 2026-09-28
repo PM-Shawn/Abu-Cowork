@@ -2326,8 +2326,6 @@ export interface TranslationDict {
     pluginsGoToMarketplace: string;
     /** 「我的」 empty state — the user has authored no plugins yet. */
     pluginsMineEmptyHint: string;
-    pluginsUse: string;
-    pluginsEnter: string;
     pluginsAppEntered: string;
     pluginsDisclosureTeams: string;
     /** Heading of the group for installs whose marketplace is gone. */

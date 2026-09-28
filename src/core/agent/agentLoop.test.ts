@@ -1,4 +1,4 @@
-import { beforeAll, afterEach, describe, it, expect, vi } from 'vitest';
+import { beforeAll, beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import {
   buildUserMessageContent,
   isInteractiveDesktop,
@@ -34,6 +34,15 @@ import {
   getQueuedInputs,
   subscribeToInputQueue,
 } from './userInputQueue';
+
+// 本地服务商运行开始会询问窗口；测试里不发真实请求
+const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
+vi.mock('../llm/contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
+
+beforeEach(() => {
+  mockProbeContextWindow.mockReset();
+  mockProbeContextWindow.mockResolvedValue(undefined);
+});
 
 describe('runAgentLoop live-run queue ownership', () => {
   const conversationId = 'conv-live-observer-failure';
@@ -1121,6 +1130,108 @@ describe('runAgentLoop 用量合并', () => {
       vi.unstubAllGlobals();
     }
   });
+});
+
+describe('运行开始询问本地服务的窗口', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  async function setup(maxInputTokens?: number) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const contextWindow = await import('../llm/contextWindow');
+    const settings = useSettingsStore.getState();
+    const savedModel = {
+      id: 'llama3.2', label: 'llama3.2', contextWindow: 65536,
+      ...(maxInputTokens !== undefined ? { declaredCapabilities: { maxInputTokens } } : {}),
+    };
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), savedModel] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const resolveWindow = vi.spyOn(contextWindow, 'resolveContextWindow');
+    const restore = () => {
+      selectAdapter.mockRestore();
+      resolveWindow.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, resolveWindow, restore };
+  }
+
+  async function runMain(useChatStore: Awaited<ReturnType<typeof setup>>['useChatStore']) {
+    const conversationId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(conversationId, 'hello');
+    expect(result.reason).toBe('completed');
+  }
+
+  async function runSub() {
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const agent = { name: 'helper', description: 'helps', systemPrompt: 'help', tools: [], filePath: '__preset__' };
+    const result = await runSubagentLoop({
+      agent, task: 'hello',
+      toolInvoker: { getAllTools: () => [], toolResultToString: String, executeAnyTool: vi.fn() },
+    });
+    expect(result.stopReason).toBe('completed');
+  }
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：服务报告的窗口优先于获取模型时保存的值',
+    async (_name, run) => {
+      const { useChatStore, resolveWindow, restore } = await setup();
+      mockProbeContextWindow.mockResolvedValue(98304);
+      try {
+        await run(useChatStore);
+        expect(mockProbeContextWindow).toHaveBeenCalledWith(expect.objectContaining({ id: 'ollama' }), 'llama3.2');
+        expect(resolveWindow).toHaveBeenCalledWith(expect.objectContaining({ probed: 98304 }));
+        expect(resolveWindow).not.toHaveBeenCalledWith(expect.objectContaining({ probed: 65536 }));
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：服务没有回答时用获取模型时保存的值',
+    async (_name, run) => {
+      const { useChatStore, resolveWindow, restore } = await setup();
+      try {
+        await run(useChatStore);
+        expect(mockProbeContextWindow).toHaveBeenCalledOnce();
+        expect(resolveWindow).toHaveBeenCalledWith(expect.objectContaining({ probed: 65536 }));
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：用户填了上下文长度就不询问',
+    async (_name, run) => {
+      const { useChatStore, resolveWindow, restore } = await setup(81920);
+      mockProbeContextWindow.mockResolvedValue(98304);
+      try {
+        await run(useChatStore);
+        expect(mockProbeContextWindow).not.toHaveBeenCalled();
+        expect(resolveWindow).toHaveBeenCalledWith(expect.objectContaining({ userSetting: 81920, probed: 65536 }));
+      } finally {
+        restore();
+      }
+    },
+  );
 });
 
 describe('runAgentLoop pinned-model availability guard', () => {

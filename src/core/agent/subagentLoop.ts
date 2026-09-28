@@ -626,9 +626,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     ? 'openai-compatible'
     : 'claude';
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
-  const probedContextWindow = startupProvider && startupDeclared?.maxInputTokens === undefined
-    ? await probeContextWindow(startupProvider, effectiveModelId)
-    : undefined;
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
   const delegatedPreflight = preflightDelegatedMedia(
     options.delegatedUserTurn,
@@ -653,6 +650,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     };
     return new SubagentResult({ text: failureText[delegatedPreflight.diagnostic.reason], toolCallCount: 0, turnCount: 0, tokenUsage: { input: 0, output: 0 }, duration: 0, stopReason: 'error' });
   }
+
+  const probedContextWindow = startupProvider && startupDeclared?.maxInputTokens === undefined
+    ? await probeContextWindow(startupProvider, effectiveModelId)
+    : undefined;
 
   // Lifecycle: subagentStart
   await emitHook({ type: 'subagentStart', timestamp: Date.now(), agentName: agent.name, task });

@@ -27,6 +27,11 @@ import type { ProviderInstance } from '@/types/provider';
 // GET /models — no other test in this file clicks Fetch, so a file-wide mock is safe.
 vi.mock('@/core/llm/modelFetcher', () => ({ fetchProviderModels: vi.fn() }));
 import { fetchProviderModels } from '@/core/llm/modelFetcher';
+// LM Studio / Ollama 获取模型后会询问窗口；测试里不发真实请求
+vi.mock('@/core/llm/contextWindowProbe', () => ({
+  fetchLmStudioContextWindows: vi.fn(async () => new Map<string, number>()),
+  fetchOllamaContextWindows: vi.fn(async () => new Map<string, number>()),
+}));
 
 // ── Tests ──────────────────────────────────────────────────────────
 

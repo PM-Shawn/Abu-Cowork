@@ -284,7 +284,7 @@ Abu 是 Electron 桌面端，每轮“改 → 重启 dev → 验证”的成本�
   export default function MyComponent({ title, onClose }: { title: string; onClose: () => void }) { ... }
   ```
 - **i18n**: Always use `const { t } = useI18n()` — never hardcode Chinese strings in JSX.
-- **Icons**: in design-system migrated files, render icons only through `Icon` + `AppIcons` from `@/components/ui` (`size` = `sm` 14 / `md` 16 / `lg` 20, stroke fixed at 1.5). Legacy files keep Lucide with explicit size classes until they migrate.
+- **Icons**: in design-system migrated files, render icons only through `Icon` + `AppIcons` from `@/components/ui/icon` and `@/components/ui/icons` (`size` = `sm` 14 / `md` 16 / `lg` 20, stroke fixed at 1.5). Legacy files keep Lucide with explicit size classes until they migrate.
 - **Class merging**: Use `cn()` from `@/lib/utils` for conditional className composition.
 - **Pure helper functions** for data transformation should be defined outside the component.
 
@@ -390,8 +390,9 @@ are a different concern from semantic status — keep those raw with a scoped
 Files matched by `DESIGN_SYSTEM_MIGRATED_FILES` / `DESIGN_SYSTEM_UI_FILES` in `eslint.config.js`
 must use only design-system token classes. ESLint bans arbitrary values
 (`bg-[…]`, `text-[…]`, `z-[…]`, `rounded-[…]`, `shadow-[…]`, `duration-[…]`), Tailwind palette
-colors (`gray-*`, `white`, …), hand-written scrims (`fixed inset-0`), raw form controls, and direct
-`lucide-react` / `radix-ui` imports outside `src/components/ui/`.
+colors (`gray-*`, `white`, …), and hand-written scrims (`fixed inset-0`) in both lists. Raw form
+controls and direct `lucide-react` / `radix-ui` imports are banned only in
+`DESIGN_SYSTEM_MIGRATED_FILES`, because `src/components/ui/` is where those wrappers live.
 
 | Category | Classes |
 |---|---|
@@ -404,6 +405,7 @@ colors (`gray-*`, `white`, …), hand-written scrims (`fixed inset-0`), raw form
 | Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono` |
 | Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` |
 | Layers / motion | `z-sticky` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
+| Identity (avatar, app icon only) | `bg-brand` `text-brand-ink` |
 
 When a directory finishes migrating, append its glob to the list in the same PR. Never remove an
 entry. `scripts/designTokens.test.ts` fails if a token change breaks WCAG contrast in any of the

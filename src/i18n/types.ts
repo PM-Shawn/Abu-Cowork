@@ -33,6 +33,12 @@ export interface TranslationDict {
     retry: string;
   };
 
+  designSystem: {
+    discardTitle: string;
+    discard: string;
+    keepEditing: string;
+  };
+
   // Error Boundary
   errorBoundary: {
     renderError: string;

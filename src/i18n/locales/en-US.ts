@@ -17,6 +17,12 @@ const enUS: TranslationDict = {
     retry: 'Retry',
   },
 
+  designSystem: {
+    discardTitle: 'Discard these changes?',
+    discard: 'Discard',
+    keepEditing: 'Keep editing',
+  },
+
   errorBoundary: {
     renderError: 'Render Error',
     unknownError: 'Unknown error',

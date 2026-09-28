@@ -633,7 +633,11 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await page.getByRole('button', { name: /^(校验并预览|Validate and preview)$/ }).click();
     await page.getByTestId('plugin-install-confirm').click();
     await expect(page.getByTestId('plugin-install-disclosure')).toBeHidden({ timeout: READY_TIMEOUT });
+    // Installation replaces the disclosure with the installed detail. Wait for
+    // that transition before sending Escape to the new modal.
+    await expect(page.getByTestId('plugin-manage-dialog')).toBeVisible();
     await page.keyboard.press('Escape');
+    await expect(page.getByTestId('plugin-manage-dialog')).toBeHidden();
     const row = page.getByTestId('plugin-mine-row');
     await expect(row.getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
     const registryPath = path.join(installRoot(launched), 'installed.json');

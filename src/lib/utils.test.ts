@@ -55,3 +55,27 @@ describe('cn (tailwind-merge token config)', () => {
     );
   });
 });
+
+describe('cn() — design-system tokens', () => {
+  it('keeps a new font-size token alongside a new text color token', () => {
+    expect(cn('text-ui', 'text-label-secondary')).toBe('text-ui text-label-secondary');
+  });
+
+  it('lets a later font-size token win over an earlier one', () => {
+    expect(cn('text-ui', 'text-body')).toBe('text-body');
+    expect(cn('text-h1', 'text-mono')).toBe('text-mono');
+  });
+
+  it('lets a later text color token win over an earlier one', () => {
+    expect(cn('text-label', 'text-danger')).toBe('text-danger');
+  });
+
+  it('merges background, radius, shadow, z-index, duration and easing tokens', () => {
+    expect(cn('bg-surface', 'bg-raised')).toBe('bg-raised');
+    expect(cn('rounded-panel', 'rounded-control')).toBe('rounded-control');
+    expect(cn('shadow-panel', 'shadow-float')).toBe('shadow-float');
+    expect(cn('z-popover', 'z-dialog')).toBe('z-dialog');
+    expect(cn('duration-fast', 'duration-slow')).toBe('duration-slow');
+    expect(cn('ease-enter', 'ease-exit')).toBe('ease-exit');
+  });
+});

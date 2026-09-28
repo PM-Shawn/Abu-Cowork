@@ -518,10 +518,11 @@ test('recovers an interrupted same-version replacement before plugin activation 
 });
 
 // Chromium commits localStorage seconds after a write, and SIGTERM ends the
-// main process without that commit. The connector is edited in storage the
-// moment before the update begins, so the edit, the marker and everything after
-// them are still waiting for their commit when the process dies. The begin
-// request is built the way the renderer builds it, marker included.
+// main process without that commit. The install's writes are flushed first, so
+// no commit is already scheduled; the connector is then edited in storage the
+// moment before the update begins, and the edit, the marker and everything
+// after them are still waiting for their commit when the process dies. The
+// begin request is built the way the renderer builds it, marker included.
 test('recovers an interrupted update whose connector configuration had not reached disk', async () => {
   const marketDir = seedMarketplace();
   let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
@@ -543,6 +544,9 @@ test('recovers an interrupted update whose connector configuration had not reach
     const installedSkill = path.join(installRoot(launched), 'e2e-market/e2e-weather/1.0.0/skills/today/SKILL.md');
     const originalBody = fs.readFileSync(installedSkill, 'utf8');
     fs.writeFileSync(path.join(marketDir, 'plugins/e2e-weather/skills/today/SKILL.md'), originalBody + '\nNew revision.\n');
+    // A commit the install already scheduled could otherwise fire after the
+    // edit below and take it to disk before the kill.
+    await launched.app.evaluate(({ session }) => { session.defaultSession.flushStorageData(); });
     const forecast = await page.evaluate(async ({ marketDir, previous }) => {
       const shell = (window as unknown as { __ABU_SHELL__: {
         pluginSnapshot: (action: string, request: object) => Promise<{ token: string; checksum: string }>;

@@ -969,4 +969,18 @@ describe('OpenAICompatibleAdapter — operations written into the reply text', (
     expect(events.map((e) => (e.type === 'text' ? e.text : '')).join('')).toBe('partial <thi');
     expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'end_turn' });
   });
+
+  it('shows written operations as text when the request carries no tools', async () => {
+    const written = 'Like <invoke name="read_file"><parameter name="path">a.txt</parameter></invoke> or <tool_call>{"name":"read_file"';
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([
+      { choices: [{ delta: { content: `<think>plan</think>${written}` } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]));
+    const events: StreamEvent[] = [];
+    await new OpenAICompatibleAdapter().chat([userMessage], makeOptions({ tools: undefined }), (e) => events.push(e));
+    expect(events.map((e) => (e.type === 'thinking' ? e.thinking : '')).join('')).toBe('plan');
+    expect(events.map((e) => (e.type === 'text' ? e.text : '')).join('')).toBe(written);
+    expect(events.some((e) => e.type === 'tool_use' || e.type === 'malformed_tool_call')).toBe(false);
+    expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'end_turn' });
+  });
 });

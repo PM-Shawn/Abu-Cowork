@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { ToolDefinition } from '../../types';
 import { createTextToolCallParser, type TextSegment } from './textToolCalls';
 
@@ -14,14 +14,15 @@ const TOOLS: ToolDefinition[] = [{
       recursive: { type: 'boolean' },
       options: { type: 'object' },
       lines: { type: 'array' },
+      timeout: { type: ['number', 'null'] },
     },
     required: ['path'],
   },
   execute: async () => 'ok',
 }];
 
-function run(chunks: readonly string[]): TextSegment[] {
-  const parser = createTextToolCallParser(TOOLS);
+function run(chunks: readonly string[], tools: readonly ToolDefinition[] = TOOLS): TextSegment[] {
+  const parser = createTextToolCallParser(tools);
   return [...chunks.flatMap((chunk) => parser.push(chunk)), ...parser.flush()];
 }
 
@@ -40,9 +41,9 @@ function shape(segments: TextSegment[]): unknown[] {
 }
 
 /** 整段一次输入与逐字输入必须得到同样的结果（流式与非流式一致）。 */
-function parse(text: string): unknown[] {
-  const whole = shape(run([text]));
-  expect(shape(run([...text]))).toEqual(whole);
+function parse(text: string, tools: readonly ToolDefinition[] = TOOLS): unknown[] {
+  const whole = shape(run([text], tools));
+  expect(shape(run([...text], tools))).toEqual(whole);
   return whole;
 }
 
@@ -138,5 +139,116 @@ describe('createTextToolCallParser', () => {
     const ids = segments.flatMap((s) => (s.type === 'tool_call' ? [s.call.id] : []));
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
+  });
+
+  describe('inline code between single backticks', () => {
+    it('shows a marker inside inline code as text', () => {
+      const text = '用 `<invoke name="read_file">` 这种写法。';
+      expect(parse(text)).toEqual([{ type: 'text', text }]);
+    });
+
+    it('still runs a real operation after the inline code closes on the same line', () => {
+      const text = '写法是 `<invoke name="x">`，现在执行：<invoke name="read_file"><parameter name="path">a.txt</parameter></invoke>';
+      expect(parse(text)).toEqual([
+        { type: 'text', text: '写法是 `<invoke name="x">`，现在执行：' },
+        { type: 'tool_call', name: 'read_file', input: { path: 'a.txt' } },
+      ]);
+    });
+
+    it('forgets an unclosed backtick at the end of the line', () => {
+      expect(parse('a ` b\n<invoke name="read_file"><parameter name="path">a</parameter></invoke>')).toEqual([
+        { type: 'text', text: 'a ` b\n' },
+        { type: 'tool_call', name: 'read_file', input: { path: 'a' } },
+      ]);
+    });
+
+    it('treats everything after a lone triple backtick in prose as code block text', () => {
+      const text = 'Use ``` like this <invoke name="read_file"><parameter name="path">a</parameter></invoke>';
+      expect(parse(text)).toEqual([{ type: 'text', text }]);
+    });
+  });
+
+  describe('MiniMax-M2 <minimax:tool_call>', () => {
+    it('hides the wrapper and runs every <invoke> inside it', () => {
+      const text = 'ok <minimax:tool_call><invoke name="read_file">\n<parameter name="path">a.txt</parameter>\n</invoke><invoke name="read_file">\n<parameter name="path">b.txt</parameter>\n</invoke></minimax:tool_call> done';
+      expect(parse(text)).toEqual([
+        { type: 'text', text: 'ok ' },
+        { type: 'tool_call', name: 'read_file', input: { path: 'a.txt' } },
+        { type: 'tool_call', name: 'read_file', input: { path: 'b.txt' } },
+        { type: 'text', text: ' done' },
+      ]);
+    });
+  });
+
+  describe('a request without tools', () => {
+    it('only splits <think> and shows every other form as text', () => {
+      const text = 'see <tool_call>{"name":"read_file","arguments":{"path":"a"}}</tool_call> and <invoke name="read_file"><parameter name="path">a</parameter></invoke> and <function_calls>x';
+      expect(parse(`<think>plan</think>${text}`, [])).toEqual([
+        { type: 'thinking', thinking: 'plan' },
+        { type: 'text', text },
+      ]);
+    });
+  });
+
+  it('scans an open block in linear time when fed one character at a time', () => {
+    const text = `<invoke name="read_file"><parameter name="path">${'x'.repeat(4000)}</parameter></invoke>`;
+    const originalIndexOf = String.prototype.indexOf;
+    let scanned = 0;
+    const spy = vi.spyOn(String.prototype, 'indexOf').mockImplementation(function (this: string, search: string, position?: number) {
+      if (search === '</invoke>') scanned += this.length - (position ?? 0);
+      return originalIndexOf.call(this, search, position);
+    });
+    let segments: TextSegment[];
+    try {
+      segments = run([...text]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(segments.filter((s) => s.type === 'tool_call')).toHaveLength(1);
+    expect(scanned).toBeLessThan(text.length * 20);
+  });
+
+  describe('smaller gaps in the recognised forms', () => {
+    it('accepts single-quoted names', () => {
+      expect(parse("<invoke name='read_file'><parameter name='path'>a.txt</parameter></invoke>")).toEqual([
+        { type: 'tool_call', name: 'read_file', input: { path: 'a.txt' } },
+      ]);
+    });
+
+    it('accepts a line break or several spaces between <invoke and name=', () => {
+      expect(parse('<invoke\n  name="read_file"><parameter name="path">a.txt</parameter></invoke>')).toEqual([
+        { type: 'tool_call', name: 'read_file', input: { path: 'a.txt' } },
+      ]);
+      expect(parse('<invoke    name="read_file"><parameter name="path">a.txt</parameter></invoke>')).toEqual([
+        { type: 'tool_call', name: 'read_file', input: { path: 'a.txt' } },
+      ]);
+    });
+
+    it('leaves a word that only starts with <invoke as text', () => {
+      const text = 'I <invoked> it';
+      expect(parse(text)).toEqual([{ type: 'text', text }]);
+    });
+
+    it('reports <function_calls> as malformed when one of its <invoke> cannot be read', () => {
+      const raw = '<function_calls><invoke name="read_file"><parameter name="path">a</parameter></invoke><invoke read_file></invoke></function_calls>';
+      expect(parse(raw)).toEqual([{ type: 'malformed', raw }]);
+    });
+
+    it('converts by the non-null type when the schema type is a list', () => {
+      const text = '<invoke name="read_file"><parameter name="path">a</parameter><parameter name="timeout">30</parameter></invoke><invoke name="read_file"><parameter name="path">b</parameter><parameter name="timeout">none</parameter></invoke>';
+      expect(parse(text)).toEqual([
+        { type: 'tool_call', name: 'read_file', input: { path: 'a', timeout: 30 } },
+        { type: 'tool_call', name: 'read_file', input: { path: 'b', timeout: 'none' } },
+      ]);
+    });
+
+    it('accepts only decimal whole numbers for an integer', () => {
+      const call = (limit: string) => `<invoke name="read_file"><parameter name="path">a</parameter><parameter name="limit">${limit}</parameter></invoke>`;
+      expect(parse(call('1.5') + call('0x10') + call('-3'))).toEqual([
+        { type: 'tool_call', name: 'read_file', input: { path: 'a', limit: '1.5' } },
+        { type: 'tool_call', name: 'read_file', input: { path: 'a', limit: '0x10' } },
+        { type: 'tool_call', name: 'read_file', input: { path: 'a', limit: -3 } },
+      ]);
+    });
   });
 });

@@ -22,6 +22,7 @@ const enUS: TranslationDict = {
     discardMessage: 'What you typed will not be kept.',
     discard: 'Discard',
     keepEditing: 'Keep editing',
+    notifications: 'Notifications',
   },
 
   errorBoundary: {

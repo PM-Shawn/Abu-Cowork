@@ -38,6 +38,7 @@ export interface TranslationDict {
     discardMessage: string;
     discard: string;
     keepEditing: string;
+    notifications: string;
   };
 
   // Error Boundary

@@ -575,7 +575,7 @@ export interface TranslationDict {
     ollamaForbidden: string;
     /** Provider account balance/resource-package exhausted. */
     insufficientBalance: string;
-    /** Streamed-inline notice while compacting an oversized context (includes markdown). */
+    /** Streamed-inline notice while compacting an oversized context (includes markdown; ends with a paragraph break so the retried reply starts its own paragraph). */
     compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;

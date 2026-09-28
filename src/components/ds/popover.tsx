@@ -28,7 +28,7 @@ export function Popover({ trigger, children, open, defaultOpen = false, onOpenCh
           sideOffset={6}
           data-ds-layer
           data-ds-motion
-          className={cn('z-popover w-72 p-3 text-ui', FLOAT_SURFACE, FOCUS_RING, FLOAT_MOTION, className)}
+          className={cn('z-popover w-72 origin-(--radix-popover-content-transform-origin) p-3 text-ui', FLOAT_SURFACE, FOCUS_RING, FLOAT_MOTION, className)}
         >
           <LayerScope id={id}>{children}</LayerScope>
         </PopoverPrimitive.Content>

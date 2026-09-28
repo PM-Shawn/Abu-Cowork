@@ -8,7 +8,7 @@ import { useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
 import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM } from './styles';
 
-const MENU_PANEL = 'z-popover min-w-40 p-1';
+const MENU_PANEL = 'z-popover min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) p-1';
 
 export function Menu({ trigger, children, align = 'start', side = 'bottom', open, defaultOpen = false, onOpenChange }: {
   trigger: ReactNode;

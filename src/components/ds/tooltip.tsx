@@ -20,7 +20,7 @@ export function Tooltip({ content, children, side = 'top' }: {
           side={side}
           sideOffset={6}
           data-ds-motion
-          className={cn('z-tooltip max-w-64 rounded-control bg-material px-2 py-1 text-ui-sm text-label shadow-float backdrop-blur-xl', TOOLTIP_MOTION)}
+          className={cn('z-tooltip max-w-64 origin-(--radix-tooltip-content-transform-origin) rounded-control bg-material px-2 py-1 text-ui-sm text-label shadow-float backdrop-blur-xl', TOOLTIP_MOTION)}
         >
           {content}
         </TooltipPrimitive.Content>

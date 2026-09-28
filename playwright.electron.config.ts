@@ -27,4 +27,10 @@ export default defineConfig({
   use: {
     trace: 'retain-on-failure',
   },
+  // Visual baselines live next to the specs and are produced on the CI macOS runner
+  // (the only place they are compared; local font rendering differs).
+  snapshotPathTemplate: '{testDir}/__screenshots__/{testFilePath}/{arg}{ext}',
+  expect: {
+    toHaveScreenshot: { animations: 'disabled', caret: 'hide', maxDiffPixelRatio: 0.01 },
+  },
 });

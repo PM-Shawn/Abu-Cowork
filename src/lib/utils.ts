@@ -40,6 +40,7 @@ const twMerge = extendTailwindMerge({
       z: [{ z: ["sticky", "popover", "dialog", "toast", "tooltip"] }],
       duration: [{ duration: ["fast", "base", "slow"] }],
       ease: [{ ease: ["enter", "exit"] }],
+      "font-family": [{ font: ["code"] }],
     },
   },
 })

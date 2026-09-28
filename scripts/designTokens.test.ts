@@ -1,38 +1,44 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import postcss, { type AtRule } from 'postcss';
+import postcss from 'postcss';
 import { blend, parse, wcagContrast, type Color } from 'culori';
 import { describe, it, expect } from 'vitest';
+import { APPEARANCE_ATTRIBUTES } from '../src/styles/appearance';
 
 const TOKENS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/styles/tokens.css');
 
-type Block = 'root' | 'dark' | 'rootContrast' | 'darkContrast';
+type Block = 'root' | 'dark' | 'rootContrast' | 'darkContrast' | 'reducedTransparency';
 type Appearance = 'light' | 'dark' | 'light-contrast' | 'dark-contrast';
 
-function collectBlocks(css: string): Record<Block, Map<string, string>> {
-  const blocks: Record<Block, Map<string, string>> = {
-    root: new Map(), dark: new Map(), rootContrast: new Map(), darkContrast: new Map(),
-  };
-  postcss.parse(css).walkRules((rule) => {
-    const parent = rule.parent;
-    const media = parent && parent.type === 'atrule' ? (parent as AtRule).params : '';
-    let block: Block | null = null;
-    if (media === '') {
-      if (rule.selector === ':root') block = 'root';
-      if (rule.selector === '.dark') block = 'dark';
-    } else if (media.includes('prefers-contrast: more')) {
-      if (rule.selector === ':root:not(.dark)') block = 'rootContrast';
-      if (rule.selector === '.dark') block = 'darkContrast';
-    }
+const [CONTRAST_ATTR, CONTRAST_ON] = APPEARANCE_ATTRIBUTES.contrast;
+const [TRANSPARENCY_ATTR, TRANSPARENCY_ON] = APPEARANCE_ATTRIBUTES.transparency;
+const [MOTION_ATTR, MOTION_ON] = APPEARANCE_ATTRIBUTES.motion;
+const CONTRAST = `:root[${CONTRAST_ATTR}="${CONTRAST_ON}"]`;
+const SELECTORS: Record<Block, string> = {
+  root: ':root',
+  dark: '.dark',
+  rootContrast: `${CONTRAST}:not(.dark)`,
+  darkContrast: `${CONTRAST}.dark`,
+  reducedTransparency: `:root[${TRANSPARENCY_ATTR}="${TRANSPARENCY_ON}"]`,
+};
+
+const css = readFileSync(TOKENS_PATH, 'utf8');
+
+function collectBlocks(source: string): Record<Block, Map<string, string>> {
+  const blocks = Object.fromEntries(
+    (Object.keys(SELECTORS) as Block[]).map((block) => [block, new Map<string, string>()]),
+  ) as Record<Block, Map<string, string>>;
+  postcss.parse(source).walkRules((rule) => {
+    if (rule.parent?.type !== 'root') return;
+    const block = (Object.keys(SELECTORS) as Block[]).find((name) => SELECTORS[name] === rule.selector);
     if (!block) return;
-    const target = blocks[block];
-    rule.walkDecls(/^--ds-/, (decl) => { target.set(decl.prop, decl.value); });
+    rule.walkDecls(/^--ds-/, (decl) => { blocks[block].set(decl.prop, decl.value); });
   });
   return blocks;
 }
 
-const blocks = collectBlocks(readFileSync(TOKENS_PATH, 'utf8'));
+const blocks = collectBlocks(css);
 
 function appearance(name: Appearance): Map<string, string> {
   const light = new Map(blocks.root);
@@ -71,6 +77,32 @@ describe('design tokens — completeness', () => {
 
   it('lists the same properties in both increased-contrast blocks', () => {
     expect([...blocks.darkContrast.keys()].sort()).toEqual([...blocks.rootContrast.keys()].sort());
+  });
+
+  it('finds both increased-contrast blocks', () => {
+    expect(blocks.rootContrast.size).toBeGreaterThan(0);
+    expect(blocks.darkContrast.size).toBeGreaterThan(0);
+  });
+
+  it('makes desk and material opaque when transparency is reduced', () => {
+    expect(blocks.reducedTransparency.get('--ds-desk')).toBe('var(--ds-desk-solid)');
+    expect(blocks.reducedTransparency.get('--ds-material')).toBe('var(--ds-raised)');
+  });
+
+  it('keys accessibility appearances off <html> attributes, never media queries', () => {
+    const queries: string[] = [];
+    postcss.parse(css).walkAtRules('media', (rule) => { queries.push(rule.params); });
+    expect(queries).toEqual([]);
+  });
+
+  it('stops scaling and sliding floating layers when motion is reduced', () => {
+    const declarations = new Map<string, string>();
+    postcss.parse(css).walkRules(`[${MOTION_ATTR}="${MOTION_ON}"] [data-ds-motion]`, (rule) => {
+      rule.walkDecls((decl) => { declarations.set(decl.prop, `${decl.value}${decl.important ? ' !important' : ''}`); });
+    });
+    expect(declarations.get('--tw-enter-scale')).toBe('1 !important');
+    expect(declarations.get('--tw-exit-scale')).toBe('1 !important');
+    expect(declarations.get('animation-duration')).toBe('120ms !important');
   });
 });
 

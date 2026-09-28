@@ -79,3 +79,10 @@ describe('cn() — design-system tokens', () => {
     expect(cn('ease-enter', 'ease-exit')).toBe('ease-exit');
   });
 });
+
+describe('cn() — design-system font family', () => {
+  it('treats font-code as a font family, not a weight', () => {
+    expect(cn('font-code', 'font-medium')).toBe('font-code font-medium');
+    expect(cn('font-mono', 'font-code')).toBe('font-code');
+  });
+});

@@ -105,55 +105,51 @@
   --ds-shadow-dialog: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 30px 80px rgba(0, 0, 0, 0.55);
 }
 
-/* Increased contrast. Both blocks list the same properties so dark never
-   inherits a light increased-contrast value. */
-@media (prefers-contrast: more) {
-  :root:not(.dark) {
-    --ds-desk: #e3e3e8;
-    --ds-desk-solid: #e3e3e8;
-    --ds-code: #ededf0;
-    --ds-fill-selected: rgba(0, 0, 0, 0.12);
-    --ds-label: #000000;
-    --ds-label-secondary: #3a3a3c;
-    --ds-label-tertiary: #515154;
-    --ds-label-placeholder: #636366;
-    --ds-emphasis: #000000;
-    --ds-link: #0040a8;
-    --ds-separator: rgba(0, 0, 0, 0.20);
-    --ds-control-border: rgba(0, 0, 0, 0.35);
-    --ds-focus: #0040a8;
-    --ds-success: #0b5c24;
-    --ds-warning: #6b3b00;
-    --ds-danger: #9e1a10;
-    --ds-info: #0040a8;
-  }
-  .dark {
-    --ds-desk: #000000;
-    --ds-desk-solid: #000000;
-    --ds-code: #2a2a2d;
-    --ds-fill-selected: rgba(255, 255, 255, 0.16);
-    --ds-label: #ffffff;
-    --ds-label-secondary: #d1d1d6;
-    --ds-label-tertiary: #aeaeb2;
-    --ds-label-placeholder: #8e8e93;
-    --ds-emphasis: #ffffff;
-    --ds-link: #7cc0ff;
-    --ds-separator: rgba(255, 255, 255, 0.22);
-    --ds-control-border: rgba(255, 255, 255, 0.40);
-    --ds-focus: #7cc0ff;
-    --ds-success: #5ce37a;
-    --ds-warning: #ffc56b;
-    --ds-danger: #ff8f88;
-    --ds-info: #7cc0ff;
-  }
+/* Increased contrast (data-contrast="more", set by src/styles/appearance.ts).
+   Both blocks list the same properties so dark never inherits a light value. */
+:root[data-contrast="more"]:not(.dark) {
+  --ds-desk: #e3e3e8;
+  --ds-desk-solid: #e3e3e8;
+  --ds-code: #ededf0;
+  --ds-fill-selected: rgba(0, 0, 0, 0.12);
+  --ds-label: #000000;
+  --ds-label-secondary: #3a3a3c;
+  --ds-label-tertiary: #515154;
+  --ds-label-placeholder: #636366;
+  --ds-emphasis: #000000;
+  --ds-link: #0040a8;
+  --ds-separator: rgba(0, 0, 0, 0.20);
+  --ds-control-border: rgba(0, 0, 0, 0.35);
+  --ds-focus: #0040a8;
+  --ds-success: #0b5c24;
+  --ds-warning: #6b3b00;
+  --ds-danger: #9e1a10;
+  --ds-info: #0040a8;
+}
+:root[data-contrast="more"].dark {
+  --ds-desk: #000000;
+  --ds-desk-solid: #000000;
+  --ds-code: #2a2a2d;
+  --ds-fill-selected: rgba(255, 255, 255, 0.16);
+  --ds-label: #ffffff;
+  --ds-label-secondary: #d1d1d6;
+  --ds-label-tertiary: #aeaeb2;
+  --ds-label-placeholder: #8e8e93;
+  --ds-emphasis: #ffffff;
+  --ds-link: #7cc0ff;
+  --ds-separator: rgba(255, 255, 255, 0.22);
+  --ds-control-border: rgba(255, 255, 255, 0.40);
+  --ds-focus: #7cc0ff;
+  --ds-success: #5ce37a;
+  --ds-warning: #ffc56b;
+  --ds-danger: #ff8f88;
+  --ds-info: #7cc0ff;
 }
 
-/* Reduce transparency: every translucent surface becomes opaque. */
-@media (prefers-reduced-transparency: reduce) {
-  :root {
-    --ds-desk: var(--ds-desk-solid);
-    --ds-material: var(--ds-raised);
-  }
+/* Reduced transparency (data-transparency="reduced"): every translucent surface is opaque. */
+:root[data-transparency="reduced"] {
+  --ds-desk: var(--ds-desk-solid);
+  --ds-material: var(--ds-raised);
 }
 
 @theme inline {
@@ -200,6 +196,7 @@
 
   --ease-enter: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --font-code: var(--ds-font-mono);
 }
 
 /* Font-size tokens. `caption` and `body` already exist in index.css with the
@@ -240,3 +237,19 @@
 @utility duration-fast { --tw-duration: 120ms; transition-duration: 120ms; }
 @utility duration-base { --tw-duration: 200ms; transition-duration: 200ms; }
 @utility duration-slow { --tw-duration: 300ms; transition-duration: 300ms; }
+
+/* Reduced motion (data-motion="reduced"): floating layers only fade, never scale or
+   slide, and never run longer than 120ms; spinners stop and their text stays. */
+[data-motion="reduced"] [data-ds-motion] {
+  --tw-enter-scale: 1 !important;
+  --tw-exit-scale: 1 !important;
+  --tw-enter-translate-x: 0 !important;
+  --tw-enter-translate-y: 0 !important;
+  --tw-exit-translate-x: 0 !important;
+  --tw-exit-translate-y: 0 !important;
+  animation-duration: 120ms !important;
+  transition-duration: 120ms !important;
+}
+[data-motion="reduced"] [data-ds-spinner] {
+  animation: none !important;
+}

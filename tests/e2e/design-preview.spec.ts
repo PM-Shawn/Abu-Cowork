@@ -12,6 +12,20 @@ const APPEARANCES = [
   { name: 'dark-contrast', dark: true, contrast: true },
 ] as const;
 
+// The preview is a window-high scroll container, which cuts off any section taller than the
+// window. For capture, let it flow at full height so each section screenshot holds all of it.
+async function unrollPreview(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const host = document.querySelector<HTMLElement>('[data-design-preview-host]');
+    const root = document.querySelector<HTMLElement>('[data-design-preview-root]');
+    if (!host || !root) throw new Error('design preview is not open');
+    host.style.setProperty('position', 'absolute', 'important');
+    host.style.setProperty('bottom', 'auto', 'important');
+    root.style.setProperty('height', 'auto', 'important');
+    root.style.setProperty('overflow', 'visible', 'important');
+  });
+}
+
 async function setSwitch(page: Page, name: string, on: boolean): Promise<void> {
   const control = page.getByRole('switch', { name, exact: true });
   if ((await control.getAttribute('aria-checked')) !== String(on)) await control.click();
@@ -22,6 +36,8 @@ test.describe('design preview — visual regression', () => {
   test.skip(!process.env.CI, 'Baselines come from the CI macOS runner; local font rendering differs.');
 
   test('every section matches its baseline in four appearances', async () => {
+    // One launch plus 28 captures does not fit in the 90 s default.
+    test.setTimeout(240_000);
     const launched = await launchAbuElectron();
     try {
       const page = await launched.app.firstWindow({ timeout: READY_TIMEOUT });
@@ -30,7 +46,10 @@ test.describe('design preview — visual regression', () => {
       await dismissFirstRunOverlays(page);
       await page.keyboard.press('Meta+Alt+Shift+KeyD');
       await expect(page.locator('[data-design-preview-root]')).toBeVisible();
+      await unrollPreview(page);
       await setSwitch(page, 'Reduce motion', true);
+      // The runner's own OS setting must not leak into the baselines.
+      await setSwitch(page, 'Reduce transparency', false);
       for (const appearance of APPEARANCES) {
         await page.getByRole('group', { name: 'Appearance' }).getByRole('radio', { name: appearance.dark ? 'Dark' : 'Light', exact: true }).click();
         await setSwitch(page, 'Increase contrast', appearance.contrast);

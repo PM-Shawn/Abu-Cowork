@@ -1500,10 +1500,23 @@ function abortedResultForSession(session: RunSession): AgentLoopDispatchResult {
   };
 }
 
+/**
+ * 本轮给模型的工具名只由 sidecar 里的运行时写入，线路上是字符串数组。
+ * 类型不对说明两端不一致，就地报错。
+ */
+function assertWireOfferedToolNames(incoming: ToolExecutionContext | undefined): void {
+  const names: unknown = incoming?.offeredToolNames;
+  if (names === undefined) return;
+  if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: offeredToolNames must be an array of strings');
+  }
+}
+
 function contextForSession(
   session: RunSession,
   incoming: ToolExecutionContext | undefined,
 ): ToolExecutionContext {
+  assertWireOfferedToolNames(incoming);
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,

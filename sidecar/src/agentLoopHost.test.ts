@@ -1193,6 +1193,35 @@ describe('agentLoopHost', () => {
       );
     });
 
+    it('sends the offered tool names over the wire as a plain string array', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'reed_file',
+          { path: '/tmp/x' },
+          undefined,
+          undefined,
+          {
+            conversationId: 'conv-wire',
+            offeredToolNames: ['read_file', 'rare_clipboard'],
+            abortSignal: new AbortController().signal,
+          },
+        ),
+      );
+
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({
+          toolName: 'reed_file',
+          context: {
+            conversationId: 'conv-wire',
+            offeredToolNames: ['read_file', 'rare_clipboard'],
+          },
+        }),
+      );
+    });
+
     it('materializes shell-returned opaque image refs before a sidecar main-loop direct nested subagent sees tool results', async () => {
       hasLocalToolMock.mockReturnValue(false);
       const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);

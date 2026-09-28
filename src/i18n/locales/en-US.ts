@@ -3693,6 +3693,7 @@ const enUS: TranslationDict = {
       errSkillExists: 'Error: skill "{name}" was not created and no file was written: a skill with this name already exists. To make a new skill, choose a different name. To change that existing skill, use patch or edit on it — only when the user asked to change it.',
     },
     system: {
+      unknownToolAvailable: 'Available tools: {names}. Call one of them again with its exact name.',
       errSearchNeedsQuery: 'Error: action=search requires a query parameter',
       searchNoResults: 'No MCP server matching "{query}" was found. You can use web_search to search for "{query} MCP server" to find community solutions.',
       searchEnvNote: ' (requires: {envList})',

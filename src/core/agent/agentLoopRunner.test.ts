@@ -1953,6 +1953,43 @@ describe('agentLoopRunner', () => {
       }));
     });
 
+    // 本轮给模型的工具名由 sidecar 里的运行时写入，以字符串数组跨过线路
+    it('tool.invoke carries the offered tool names from the sidecar run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'reed_file',
+        input: {},
+        context: { offeredToolNames: ['read_file', 'write_file'] },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        offeredToolNames: ['read_file', 'write_file'],
+      }));
+    });
+
+    it.each([
+      ['a string', 'read_file'],
+      ['a non-string entry', ['read_file', 7]],
+      ['an object', { read_file: true }],
+    ])('tool.invoke and approval.check refuse offered tool names given as %s', async (_label, offeredToolNames) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const params = { runId: 'run-1', toolName: 'read_file', input: {}, context: { offeredToolNames } };
+
+      await expect(handlerFor(onSidecarRequest, 'tool.invoke')(params))
+        .rejects.toThrow(/offeredToolNames must be an array of strings/);
+      await expect(handlerFor(onSidecarRequest, 'approval.check')(params))
+        .rejects.toThrow(/offeredToolNames must be an array of strings/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
     it('tool.invoke overwrites a forged IM reply target with the shell session target', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

@@ -53,6 +53,7 @@ import { startSubagentSpan } from '../observability/langfuse';
 import { format, getI18n } from '../../i18n';
 import { appendInstructionToHistory, drainDispatchInstructionEntries, hasDispatchInput, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
 import { matchesToolName } from '../skill/toolFilter';
+import { withOfferedToolsHint } from '../tools/offeredToolsHint';
 import { createLogger } from '../logging/logger';
 import { isToolResultError } from './toolResultErrors';
 import { scanMemoryFiles, loadMemoryIndex } from '../memdir/scan';
@@ -1253,7 +1254,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // A model may emit a tool_use it was never offered. The advertised
           // schema is not an execution boundary, so recheck the frozen roster.
           if (!offeredToolNames.has(tc.name)) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" is outside this agent's fixed tool boundary` };
+            return {
+              id: tc.id,
+              result: withOfferedToolsHint(
+                `Error: tool "${tc.name}" is outside this agent's fixed tool boundary`,
+                tc.name,
+                [...offeredToolNames],
+              ),
+            };
           }
           // Name-level roster filtering cannot express input constraints such
           // as run_command(npm run *); enforce those at dispatch time. Shared
@@ -1285,6 +1293,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             reportBrowserDenial: options.reportBrowserDenial,
             reportBrowserAllow: options.reportBrowserAllow,
             abortSignal: signal,
+            offeredToolNames: [...offeredToolNames],
             // Forward the IM reply target so send_file works from a subagent
             // delegated inside an IM run (without it the tool would falsely
             // report "not in an IM channel").

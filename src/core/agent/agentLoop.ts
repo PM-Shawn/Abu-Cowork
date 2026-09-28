@@ -1916,6 +1916,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // real tool registry executes in the renderer; this name-only snapshot
       // safely crosses that boundary and is re-filtered by the shell registry.
       toolContext.deferredToolNames = deferredTools.map(tool => tool.name);
+      // 本轮给模型的全部工具名（含延后加载的），模型点了不存在的名字时用来回答
+      toolContext.offeredToolNames = [...tools, ...deferredTools].map(tool => tool.name);
       const toolBreakdownWeights = computeToolBreakdownWeights(tools);
       const toolTokens = toolBreakdownWeights.tools + toolBreakdownWeights.mcp;
       const dynamicCapabilities = buildDynamicCapabilities(tools);

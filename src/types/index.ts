@@ -749,6 +749,12 @@ export interface ToolExecutionContext {
    */
   deferredToolNames?: string[];
   /**
+   * Names of every tool this turn offered the model (active + deferred). Set by
+   * the trusted agent runtime only; wire-safe. Used to answer a hallucinated
+   * tool name with the real choices.
+   */
+  offeredToolNames?: string[];
+  /**
    * In-conversation team mode: exact agent names the leader may delegate to.
    * Set by the trusted runtime from the pinned team's roster (never from model
    * input); delegate_to_agent / run_agent_batch refuse any other agent or

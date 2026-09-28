@@ -4608,6 +4608,8 @@ export interface TranslationDict {
     };
     // manage_mcp_server
     system: {
+      /** Appended to an unknown-tool error. {names} */
+      unknownToolAvailable: string;
       /** Error: action=search requires query. */
       errSearchNeedsQuery: string;
       /** No MCP server matched the query. {query} */

@@ -1234,6 +1234,30 @@ describe('subagentRunner', () => {
       await runPromise;
     });
 
+    it('answers with the session\'s own offered tool names, whatever the sidecar sent', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'read' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'read_file',
+        input: { path: 'x.txt' },
+        context: { offeredToolNames: ['forged_tool'] },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
+        expect.objectContaining({ offeredToolNames: ['read_file'] }),
+      );
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
     // The parent run's consecutive-browser-denial guard has to survive the
     // delegation boundary: the reporters are functions, so the sidecar's
     // context cannot carry them and the shell must re-stamp them from the

@@ -3695,6 +3695,7 @@ const zhCN: TranslationDict = {
       errSkillExists: 'Error: 技能「{name}」未创建，没有写入任何文件：同名技能已经存在。要新建技能，请换一个名字；要修改这个已有技能，请对它用 patch 或 edit——仅当用户要求修改它时。',
     },
     system: {
+      unknownToolAvailable: '可用的工具：{names}。请用其中一个的准确名字重新调用。',
       errSearchNeedsQuery: 'Error: action=search 时必须提供 query 参数',
       searchNoResults: '未找到匹配 "{query}" 的 MCP Server。你可以用 web_search 搜索 "{query} MCP server" 寻找社区方案。',
       searchEnvNote: ' (需要: {envList})',

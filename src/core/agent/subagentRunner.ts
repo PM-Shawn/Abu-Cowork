@@ -419,6 +419,8 @@ function buildTrustedSubagentToolContext(
     reportBrowserDenial: session.options.reportBrowserDenial,
     reportBrowserAllow: session.options.reportBrowserAllow,
     abortSignal: session.options.signal,
+    // 本次运行给子代理的工具名单由 shell 自己保存，不用 sidecar 发来的副本
+    offeredToolNames: [...session.offeredToolNames],
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
     commandConfirmCallback: session.options.commandConfirmCallback,

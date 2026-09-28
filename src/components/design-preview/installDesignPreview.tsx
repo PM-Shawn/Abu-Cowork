@@ -39,12 +39,18 @@ export function installDesignPreview(): () => void {
       if (host) close(); else open();
       return;
     }
-    if (event.key === 'Escape' && host) close();
+    if (event.key === 'Escape' && host) {
+      // Keep Escape from reaching the app's own handlers behind the preview.
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    }
   };
 
-  window.addEventListener('keydown', onKeyDown);
+  // Capture phase on window runs before any app handler, so stopPropagation takes effect.
+  window.addEventListener('keydown', onKeyDown, { capture: true });
   return () => {
-    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keydown', onKeyDown, { capture: true });
     close();
   };
 }

@@ -5,6 +5,7 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useI18n } from '@/i18n';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
+import { useAppStore } from '@/stores/appStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { PluginAuthor } from '@/core/plugin/authorBridge';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -13,7 +14,6 @@ import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/in
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { Button } from '@/components/ui/button';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
-import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledItemMenu, { type InstalledItemMenuAction } from '@/components/toolbox/InstalledItemMenu';
 import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
@@ -21,7 +21,15 @@ import InstalledPluginDetail from './InstalledPluginDetail';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
-export default function AuthoredPluginList({ home, searchQuery }: { home: string; searchQuery: string }) {
+/**
+ * What the user created here — drafts and the installs they produced — as
+ * cards for the 「我的」 shelf's own grid: one list, whether a plugin arrived
+ * from a market or was written here. The dialogs all portal to the body, so
+ * they sit alongside the cards without becoming grid items.
+ * `onVisibleCount` reports how many cards this render contributes, which is
+ * what the shelf's empty state counts.
+ */
+export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }: { home: string; searchQuery: string; onVisibleCount?: (count: number) => void }) {
   const { t } = useI18n();
   const tb = t.toolbox;
   const authors = usePluginAuthorStore(s => s.authors);
@@ -87,6 +95,9 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
       if (installed) await usePluginStore.getState().update({ ...request, key: installed.key });
       else await usePluginStore.getState().install(request);
       setPlan(null); setSelected(author);
+      // A draft with `app` installs as 「安装并进入」: land on its home once the
+      // app list has picked the new record up.
+      if (disclosure.app && !installed) useAppStore.getState().enterAppWhenAvailable(disclosure.key);
     } catch (error) { setPlan({ author, state: { kind: 'error', message: String(error) } }); report(error); }
     finally {
       if (installingToken) await releasePreparedInstall(installingToken).catch(() => {});
@@ -101,17 +112,15 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
   ];
   const hasUpdate = (author: PluginAuthor) => Boolean(author.prepared && recordFor(author) && author.prepared.checksum !== recordFor(author)?.checksum);
   const selectedRecord = selected ? recordFor(selected) : undefined;
-  return <section className="px-8 pt-3 pb-6" data-testid="plugin-mine-group"><div className="mx-auto max-w-5xl">
-    {error && <p role="alert" className="mb-3 text-minor text-[var(--abu-danger)]">{error}</p>}
-    {visible.length === 0 ? <div className="rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]">{authors.length ? tb.pluginsNoMatches : tb.pluginsMineEmptyTitle}</div> : <ToolGrid>
-      {visible.map(author => {
-        const record = recordFor(author);
-        return record ? <InstalledPluginCard key={author.id} plugin={record} home={home} description={author.prepared?.description} testId="plugin-mine-row" actions={hasUpdate(author) ? <span className="text-minor text-[var(--abu-clay)]">{tb.pluginsAuthorUpdateAvailable}</span> : undefined} onClick={() => setSelected(author)} />
-          : <MarketplaceEntryRow key={author.id} testId="plugin-mine-draft" name={author.name ?? tb.pluginsDraft}
-            description={author.prepared?.description || tb.pluginsDraftHint} onClick={() => setSelected(author)}
-            actions={<span className="text-minor text-[var(--abu-text-muted)]">{author.prepared ? tb.pluginsReadyToInstall : tb.pluginsDraft}</span>} />;
-      })}
-    </ToolGrid>}
+  useEffect(() => { onVisibleCount?.(visible.length); }, [onVisibleCount, visible.length]);
+  const cards = visible.map(author => {
+    const record = recordFor(author);
+    return record ? <InstalledPluginCard key={author.id} plugin={record} home={home} description={author.prepared?.description} testId="plugin-mine-row" actions={hasUpdate(author) ? <span className="text-minor text-[var(--abu-clay)]">{tb.pluginsAuthorUpdateAvailable}</span> : undefined} onClick={() => setSelected(author)} />
+      : <MarketplaceEntryRow key={author.id} testId="plugin-mine-draft" name={author.name ?? tb.pluginsDraft}
+        description={author.prepared?.description || tb.pluginsDraftHint} onClick={() => setSelected(author)}
+        actions={<span className="text-minor text-[var(--abu-text-muted)]">{author.prepared ? tb.pluginsReadyToInstall : tb.pluginsDraft}</span>} />;
+  });
+  const dialogs = <>
     {selected && !selectedRecord && createPortal(<ToolDetailModal open testId="plugin-author-detail" ariaLabel={selected.name ?? tb.pluginsDraft} onClose={() => setSelected(null)} stackedHeader maxWidth="max-w-2xl" panelClassName="h-[min(640px,85vh)]" avatar={<Package className="h-6 w-6" />}
       headerActions={<InstalledItemMenu ariaLabel={tb.plugins} testId="plugin-author-menu" actions={sourceActions(selected)} />}
       footer={<div className="flex justify-between gap-3"><Button variant="ghost" onClick={() => edit(selected)}>{tb.pluginsContinueEditing}</Button><Button onClick={() => void prepare(selected)}>{tb.pluginsReviewChanges}</Button></div>}>
@@ -132,5 +141,9 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
           .finally(() => { deletingRef.current = false; setDeleteBusy(false); });
       }} />
     <UninstallPluginDialog home={home} target={removing} onClose={() => setRemoving(null)} />
-  </div></section>;
+  </>;
+  return <>
+    {error && <p role="alert" className="col-span-full text-minor text-[var(--abu-danger)]">{error}</p>}
+    {cards}{dialogs}
+  </>;
 }

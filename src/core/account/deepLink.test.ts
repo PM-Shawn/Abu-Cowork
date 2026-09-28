@@ -12,6 +12,15 @@ describe('parseAccountAuthCallback', () => {
     });
   });
 
+  // A Windows protocol launch reaches the app as `abu://auth/?…`: ShellExecute
+  // adds the slash before argv is handed over, so the same callback arrives in
+  // both shapes and both must parse.
+  it('accepts the callback shape a Windows protocol launch delivers', () => {
+    expect(parseAccountAuthCallback('abu://auth/?code=code-1&state=state-1')).toEqual({
+      code: 'code-1', state: 'state-1',
+    });
+  });
+
   it.each([
     'abu://auth?code=code-1',
     'abu://auth?state=state-1',

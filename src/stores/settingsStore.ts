@@ -179,7 +179,8 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
+export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team' | 'app-page';
+
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'account' | 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */

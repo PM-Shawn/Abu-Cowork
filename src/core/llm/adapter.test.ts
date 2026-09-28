@@ -102,6 +102,38 @@ describe('adapter', () => {
       expect(err.retryAfterMs).toBe(30000);
     });
 
+    // The gateway answers 429 for a spent budget too, and that one does not
+    // clear by waiting: retrying it costs a minute of backoff and reports the
+    // same answer the first response already carried.
+    it('429 naming a spent budget → quota_exceeded (not retryable)', () => {
+      const err = classifyError(429, JSON.stringify({
+        error: {
+          message: '本组织本周期预算已用完（1.0160 / 1.00 美元），请联系管理员调整',
+          type: 'invalid_request_error',
+          code: 'quota_exceeded',
+          level: 'org',
+          limit: 1,
+          spent: 1.016,
+          reset_at: '2026-10-01T00:00:00.000Z',
+        },
+      }));
+      expect(err.code).toBe('quota_exceeded');
+      expect(err.retryable).toBe(false);
+      expect(err.statusCode).toBe(429);
+    });
+
+    it('429 naming per-minute throttling stays retryable', () => {
+      const err = classifyError(429, JSON.stringify({
+        error: {
+          message: '本部门每分钟请求数已达上限，请稍后再试',
+          type: 'invalid_request_error',
+          code: 'rate_limit_exceeded',
+        },
+      }));
+      expect(err.code).toBe('rate_limit');
+      expect(err.retryable).toBe(true);
+    });
+
     it('529 → overloaded (retryable)', () => {
       const err = classifyError(529, 'Service overloaded');
       expect(err.code).toBe('overloaded');

@@ -566,6 +566,7 @@ export interface Conversation {
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
   teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
+  appBinding?: import('./app').ConversationAppBinding;  // The app (and mode / scene) this conversation was started in; absent = general shell
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
   projectId?: string;  // If set, this conversation belongs to a project

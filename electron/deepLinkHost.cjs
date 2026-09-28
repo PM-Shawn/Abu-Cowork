@@ -113,8 +113,12 @@ function normalizeDeepLinkUrl(raw, allowDevScheme = activeScheme === DEV_SCHEME)
     const u = new URL(s);
     if (u.protocol !== 'abu:') return null;
     if (!KNOWN_HOSTS.has(u.hostname)) return null; // reject unknown actions
+    // ShellExecute normalizes the URL before handing it to a Windows protocol
+    // handler, so a browser callback arrives as `abu://auth/?code=…`. An empty
+    // path and the root path both mean "no path"; only a real path is rejected.
     if (u.hostname === 'auth'
-      && (u.username || u.password || u.port || u.pathname || u.hash)) {
+      && (u.username || u.password || u.port || u.hash
+        || (u.pathname !== '' && u.pathname !== '/'))) {
       return null;
     }
     return s;

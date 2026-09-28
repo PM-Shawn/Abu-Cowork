@@ -81,6 +81,7 @@ const WIRE_HTTP_STATUS_BY_CODE: Partial<Record<LLMErrorCode, ReadonlySet<number>
   invalid_request: new Set([400]),
   not_found: new Set([404]),
   overloaded: new Set([503, 529]),
+  quota_exceeded: new Set([429]),
   rate_limit: new Set([429]),
   server_error: new Set([500, 502]),
 };

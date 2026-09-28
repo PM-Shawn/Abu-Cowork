@@ -33,6 +33,15 @@ it('persists the draft before starting its creation conversation', async () => {
   expect(prompt).not.toContain('plugin_prepare');
 });
 
+it('opens an app creation conversation with the app opening line', async () => {
+  vi.mocked(createPluginAuthor).mockResolvedValue({ ...author, conversationId: null, name: null, key: null });
+  await usePluginAuthorStore.getState().create('app');
+  const prompt = chat.setPendingInput.mock.calls[0][0];
+  expect(prompt).toMatch(/^\/abu-plugin-builder /);
+  expect(prompt).toMatch(/应用|app/);
+  expect(prompt).not.toMatch(/插件|plugin that/);
+});
+
 it('does not mark a draft validated when component parsing fails', async () => {
   vi.mocked(preparePluginAuthor).mockResolvedValue({ author, snapshot: { token: 'invalid' } } as never);
   vi.mocked(planPreparedInstall).mockRejectedValue(new Error('Invalid connector'));

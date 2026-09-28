@@ -15,7 +15,10 @@ import { checkToolApproval } from './registry';
 import { createBrowserDenialTracker } from '../agent/browserDenialTracker';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
+import {
+  __resetBrowserConfigPersistenceForTests,
+  useSettingsStore,
+} from '../../stores/settingsStore';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   __resetBrowserGrantsForTests,
@@ -113,6 +116,12 @@ function currentPermissions(browse: 'allow' | 'ask' | 'deny' = 'allow', script: 
 
 describe('browser gate — operation-class policy', () => {
   beforeEach(() => {
+    __resetBrowserConfigPersistenceForTests();
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: (_name: string, callback: () => unknown) => Promise.resolve(callback()),
+      },
+    });
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
     }));
@@ -142,6 +151,7 @@ describe('browser gate — operation-class policy', () => {
     (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
     __resetUnattendedConfirmationForTests();
     __resetBrowserGrantsForTests();
+    vi.unstubAllGlobals();
   });
 
   describe('master switch (default: off)', () => {

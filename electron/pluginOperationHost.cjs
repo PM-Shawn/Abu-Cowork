@@ -7,6 +7,7 @@ const { createOperationSession } = require('./pluginOperationSession.cjs');
 const { parse: parseYaml } = require('yaml');
 const { BUILTIN_AGENT_NAMES } = require('./shared/pluginAgentFormat.mjs');
 const { validRecord, safeSegment } = require('./pluginRegistryHost.cjs');
+const { identityOf, sameIdentity: sameFileIdentity } = require('./fileIdentity.cjs');
 
 const PLUGIN_OPERATION_CHANNEL = 'abu:plugin-operation';
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -32,14 +33,22 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
   const session = providedSession ?? (mutate ? null : createOperationSession(root));
   mutate ??= input => session.mutate(input);
 
+  /**
+   * Every stat in this file is taken with `bigint: true`, so a directory or
+   * file id is exact at 64 bits. Windows ids are that wide, and the identities
+   * below are frozen into an encrypted journal and sent to a worker over JSON,
+   * where only `electron/fileIdentity.cjs`'s decimal strings survive the trip.
+   * Whole numbers that are still wanted as numbers (`size`) are converted where
+   * they are used.
+   */
   async function stat(file) {
-    try { return await fs.lstat(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    try { return await fs.lstat(file, { bigint: true }); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   }
   async function directory(dir, create = false) {
     const canonical = await fs.realpath(root);
-    const identity = await fs.stat(canonical);
-    if (!rootIdentity) rootIdentity = { canonical, ino: identity.ino, dev: identity.dev };
-    if (canonical !== rootIdentity.canonical || identity.ino !== rootIdentity.ino || identity.dev !== rootIdentity.dev) fail('profile changed');
+    const identity = identityOf(await fs.stat(canonical, { bigint: true }));
+    if (!rootIdentity) rootIdentity = { canonical, ...identity };
+    if (canonical !== rootIdentity.canonical || !sameFileIdentity(identity, rootIdentity)) fail('profile changed');
     const rel = path.relative(root, dir);
     if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) fail('path outside profile');
     let current = canonical;
@@ -49,7 +58,7 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
         : current === path.join(canonical, '.abu', 'plugin-operations') ? session?.anchors?.operations : undefined;
       if (create && !anchor) { try { await fs.mkdir(current); } catch (error) { if (error.code !== 'EEXIST') throw error; } }
       const before = await stat(current);
-      if (anchor && (!before || before.ino !== anchor.ino || before.dev !== anchor.dev)) fail('lease directory changed');
+      if (anchor && !sameFileIdentity(identityOf(before), anchor)) fail('lease directory changed');
       if (!before) throw Object.assign(new Error('directory missing'), { code: 'ENOENT' });
       if (before.isSymbolicLink() || !before.isDirectory() || await fs.realpath(current) !== current) fail('linked directory refused');
     }
@@ -59,22 +68,23 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     await directory(path.dirname(file));
     const before = await stat(file);
     if (!before) return null;
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1 || before.size > MAX_BYTES) fail('invalid journal/file');
+    const size = Number(before.size);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1 || size > MAX_BYTES) fail('invalid journal/file');
     const fd = await fs.open(file, nodeFs.constants.O_RDONLY | (nodeFs.constants.O_NOFOLLOW || 0) | (nodeFs.constants.O_NONBLOCK || 0));
     try {
-      const opened = await fd.stat();
-      if (opened.ino !== before.ino || opened.dev !== before.dev || opened.size !== before.size) fail('file changed');
-      const bytes = Buffer.alloc(before.size);
+      const opened = await fd.stat({ bigint: true });
+      if (!sameFileIdentity(identityOf(opened), identityOf(before)) || opened.size !== before.size) fail('file changed');
+      const bytes = Buffer.alloc(size);
       let offset = 0;
       while (offset < bytes.length) {
         const result = await fd.read(bytes, offset, bytes.length - offset, offset);
         if (!result.bytesRead) break;
         offset += result.bytesRead;
       }
-      const after = await fd.stat();
-      const current = await fs.lstat(file);
-      if (offset !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
-        || current.isSymbolicLink() || current.ino !== before.ino || current.dev !== before.dev) fail('file changed');
+      const after = await fd.stat({ bigint: true });
+      const current = await fs.lstat(file, { bigint: true });
+      if (offset !== size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
+        || current.isSymbolicLink() || !sameFileIdentity(identityOf(current), identityOf(before))) fail('file changed');
       await directory(path.dirname(file));
       return bytes;
     } finally { await fd.close(); }
@@ -92,6 +102,19 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     if (!/^[a-f0-9]{32}$/.test(value)) fail('invalid operation identity');
     return value;
   }
+  /**
+   * A journal entry's frozen `(dev, ino)` pair.
+   *
+   * `identityText` also reads back the plain numbers a journal written by an
+   * older build carries. Those journals only ever exist with ids that fitted in
+   * a double, so the decimal string it produces is the same one a `bigint` read
+   * of the unchanged file produces now, and an interrupted install stays
+   * recoverable across the upgrade.
+   */
+  function validIdentity(value) {
+    const identity = plain(value) ? identityOf(value) : null;
+    return identity !== null && identity.ino !== null && identity.dev !== null;
+  }
   function validate(value) {
     if (!plain(value) || value.schema !== 1 || !/^[a-f0-9]{32}$/.test(value.id)
       || !['install', 'update', 'uninstall'].includes(value.kind)
@@ -103,7 +126,7 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     if (!record || (value.previous ?? record).key !== value.key || (value.previous && record.marketplace !== value.previous.marketplace)) fail('operation identity mismatch');
     for (const move of value.moves) {
       if (!plain(move) || !['package', 'agent'].includes(move.kind) || !safeSegment(move.name)
-        || !safeSegment(move.backup) || typeof move.existed !== 'boolean' || (move.existed && (!plain(move.identity) || !Number.isSafeInteger(move.identity.ino) || !Number.isSafeInteger(move.identity.dev)))) fail('invalid backup entry');
+        || !safeSegment(move.backup) || typeof move.existed !== 'boolean' || (move.existed && !validIdentity(move.identity))) fail('invalid backup entry');
       if (move.kind === 'package' && (![value.previous?.version, value.next?.version].includes(move.name) || (move.packageName !== undefined && ![value.previous?.name, value.next?.name].includes(move.packageName)))) fail('invalid package backup');
       if (move.kind === 'agent' && ![...(value.previous?.contributed.agents ?? []), ...(value.next?.contributed.agents ?? [])].includes(move.name)) fail('invalid agent backup');
     }
@@ -148,8 +171,7 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     ? packageDir({ ...(op.next ?? op.previous), name: move.packageName ?? (op.next ?? op.previous).name, version: move.name })
     : path.join(root, '.abu', 'agents', move.name);
   const backup = (op, move) => path.join(path.dirname(target(op, move)), `.abu-plugin-backup-${op.id}-${move.backup}`);
-  const identityOf = info => info ? { ino: info.ino, dev: info.dev } : null;
-  const sameIdentity = (info, identity) => info && identity && info.ino === identity.ino && info.dev === identity.dev && !info.isSymbolicLink();
+  const sameIdentity = (info, identity) => !!info && !info.isSymbolicLink() && sameFileIdentity(identityOf(info), identity);
 
   async function ownedAgent(dir, key) {
     const info = await stat(dir);
@@ -239,7 +261,7 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     const installed = await records();
     const previous = installed.find(record => record.key === request.key) ?? null;
     const canonical = value => JSON.stringify(value, (_key, item) => plain(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
-    const normalized = record => record ? { ...record, contributed: { ...record.contributed, agents: record.contributed.agents ?? [] } } : null;
+    const normalized = record => record ? { ...record, contributed: { ...record.contributed, agents: record.contributed.agents ?? [], teams: record.contributed.teams ?? [] } } : null;
     if (!Object.hasOwn(request, 'expected') || canonical(normalized(request.expected)) !== canonical(normalized(previous))) fail('installation changed; refresh before retrying');
     if (request.kind === 'install' && previous) fail('already installed');
     if (request.kind !== 'install' && !previous) fail('plugin not installed');
@@ -358,7 +380,7 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
       validateRuntime(request.runtime, { ...op, next: record }, true);
       if (op.next) {
         if (!validRecord(record) || ['key', 'name', 'marketplace', 'version', 'checksum'].some(field => record[field] !== op.next[field])) fail('commit identity mismatch');
-        for (const type of ['skills', 'agents', 'mcpServers']) {
+        for (const type of ['skills', 'agents', 'mcpServers', 'teams']) {
           if ((record.contributed[type] ?? []).some(name => !op.next.contributed[type]?.includes(name))) fail('unapproved contribution');
         }
         await directory(packageDir(record));

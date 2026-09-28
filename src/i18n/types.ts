@@ -1924,6 +1924,7 @@ export interface TranslationDict {
       aiAuth: string;
       aiContentPolicy: string;
       aiRateLimit: string;
+      aiQuotaExceeded: string;
       aiOverloaded: string;
       aiServerError: string;
       aiNetworkError: string;
@@ -2050,6 +2051,7 @@ export interface TranslationDict {
     /** Singular of `teamRowSummary`, for exactly one member. */
     teamRowSummaryOne: string;
     detailStartChat: string;
+    detailUnavailable: string;
     detailLeader: string;
     detailMembers: string;
     detailNoMembers: string;
@@ -2076,6 +2078,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
+    teamsNotFound: string;
     /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;
@@ -2145,6 +2148,46 @@ export interface TranslationDict {
     deleteTeamTitle: string;
     deleteTeamMessage: string;
     teamArchived: string;
+    appScopeThis: string;
+    appScopeAll: string;
+  };
+
+  /** Sidebar app switcher (product spec §5.1). */
+  appSwitcher: {
+    general: string;
+    generalDescription: string;
+    recent: string;
+    mine: string;
+    discover: string;
+    viewMore: string;
+    create: string;
+    enter: string;
+    current: string;
+    openLabel: string;
+  };
+  appMarket: {
+    title: string;
+    subtitle: string;
+    searchPlaceholder: string;
+    entryCount: string;
+    emptyTitle: string;
+    emptyHint: string;
+  };
+
+  /** App home page (product spec §5.4) and app-bound conversations. */
+  appHome: {
+    modes: string;
+    sceneRunTeam: string;
+    sceneRunExpert: string;
+    sceneRunSkill: string;
+    sceneRunDefault: string;
+    templates: string;
+    connectorHintTitle: string;
+    connectorHintBody: string;
+    connectorHintConnect: string;
+    connectorHintLater: string;
+    removedNotice: string;
+    removedAction: string;
   };
 
   toolbox: {
@@ -2224,6 +2267,8 @@ export interface TranslationDict {
     pluginsRetryRecovery: string;
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;
+    pluginsRequiresNewerAbu: string;
+    pluginsProvidesAppWithoutApp: string;
     pluginsComponentConflict: string;
     pluginsMarketplaceDirLabel: string;
     pluginsMarketplaceDirPlaceholder: string;
@@ -2248,14 +2293,31 @@ export interface TranslationDict {
     pluginsUninstall: string;
     pluginsUninstallTitle: string;
     pluginsUninstallMessage: string;
+    pluginsUninstallTeamsNote: string;
+    pluginsUninstallAppNote: string;
     pluginsUninstallFailed: string;
     pluginsSkillCount: string;
     pluginsServerCount: string;
     pluginsFromMarketplace: string;
     pluginsGoToMarketplace: string;
     /** 「我的」 empty state — the user has authored no plugins yet. */
-    pluginsMineEmptyTitle: string;
     pluginsMineEmptyHint: string;
+    pluginsUse: string;
+    pluginsEnter: string;
+    pluginsInstallAndEnter: string;
+    pluginsAgreeAndUse: string;
+    pluginsAppEntered: string;
+    pluginsDisclosureTeams: string;
+    pluginsDisclosureApp: string;
+    pluginsAppContents: string;
+    pluginsDisclosureAppNav: string;
+    pluginsDisclosureAppPages: string;
+    pluginsDisclosureAppScenes: string;
+    pluginsDisclosureRunTeam: string;
+    pluginsDisclosureRunExpert: string;
+    pluginsDisclosureRunSkill: string;
+    pluginsDisclosureRunDefault: string;
+    pluginsAuthorAppPrompt: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
     /** One line under it: they still work, and the detail dialog uninstalls. */
@@ -2383,6 +2445,9 @@ export interface TranslationDict {
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;
+    sourceFromPlugin: string;
+    sourcePlugin: string;
+    sourceEnterprise: string;
     sourceUnknown: string;
     // Generic "Description" label used in the agent/skill/MCP detail views
     detailDescription: string;
@@ -2512,7 +2577,10 @@ export interface TranslationDict {
     skillsMarketHintBody: string;
     skillsMarketGoPlugins: string;
     /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
+    /** 市场 card state — bundled items ship installed; the switch is on 我的. */
+    installedMark: string;
     skillsMineEmptyTitle: string;
+    skillsMineEmptyHint: string;
     /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
     connectorsMarketTitle: string;
     connectorsFromPlugins: string;
@@ -2521,8 +2589,10 @@ export interface TranslationDict {
     connectorAddLabel: string;
     /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
     connectorsMineEmptyTitle: string;
+    connectorsMineEmptyHint: string;
     /** Experts 「我的」 empty state — nothing the user created themselves yet. */
     agentsMineEmpty: string;
+    agentsMineEmptyHint: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;
@@ -2556,6 +2626,7 @@ export interface TranslationDict {
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
     agentFromPluginRemoveHint: string;
+    itemFromPluginRemoveHint: string;
     /** Deleting an agent that one or more teams reference. */
     agentDeleteInTeamsTitle: string;
     agentDeleteInTeamsMessage: string;
@@ -2699,8 +2770,6 @@ export interface TranslationDict {
     // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
-    personalSource: string;
-    organizationSource: string;
   };
 
   // Permission Dialog
@@ -4012,18 +4081,25 @@ export interface TranslationDict {
     instanceLabel: string;
     loginIdentityLabel: string;
     boundAtLabel: string;
-    myDataTitle: string;
-    collapseData: string;
-    viewMyData: string;
-    migrationTitle: string;
-    migrateButton: string;
-    migrateDescription: string;
     unbindConfirm: string;
     unbindButton: string;
     /** Usage lane label — org gateway (shared with model picker). */
     laneGateway: string;
     /** Usage lane label — personal API key. */
     lanePersonal: string;
+    agentCatalog: {
+      unavailableTitle: string;
+      unavailableDescription: string;
+      syncing: string;
+      noMatches: string;
+      empty: string;
+      configured: string;
+      dependenciesPending: string;
+      preparing: string;
+      prepareAndStart: string;
+      /** `{version}` = the published Agent version. */
+      configuredByAdministrator: string;
+    };
     /** /me transparency panel (Settings → Enterprise → My Data). */
     meTransparency: {
       tabProfile: string;
@@ -4140,6 +4216,7 @@ export interface TranslationDict {
       invalidInput: string;
       unavailableAgents: string;
       builtinTeamReadOnly: string;
+      pluginTeamReadOnly: string;
       saved: string;
       approvalOn: string;
       approvalOff: string;

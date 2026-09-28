@@ -5,7 +5,7 @@
  * only `entryOrchestration.ts` (shimmed out of the sidecar bundle) imports it.
  */
 import type { SubagentDefinition } from '@/types';
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeamById } from '@/stores/teamStore';
 import { resolveRoleId } from './roleIdentity';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { agentRegistry } from '@/core/agent/registry';
@@ -14,8 +14,9 @@ import type { TeamRouteContext } from './leaderRoute';
 /** Resolve the pinned team into plain route context; null = run as ordinary Abu. */
 export function resolveTeamRouteContext(teamId: string | undefined): TeamRouteContext | null {
   if (!teamId) return null;
-  const team = useTeamStore.getState().teams.find((t) => t.id === teamId);
+  const team = getVisibleTeamById(teamId);
   if (!team) return null;
+  if (team.managed && !team.managed.ready) return null;
   const leader = resolveRoleId(team.leaderRoleId);
   if (!leader) return null;
   const members: SubagentDefinition[] = [];
@@ -48,7 +49,7 @@ export async function resolveTeamRouteContextAsync(teamId: string | undefined): 
   if (!teamId) return null;
   const first = resolveTeamRouteContext(teamId);
   if (first) return first;
-  const team = useTeamStore.getState().teams.find((t) => t.id === teamId);
+  const team = getVisibleTeamById(teamId);
   if (!team) throw new Error(`Team "${teamId}" is unavailable; cannot start this team run`);
   const discovery = useDiscoveryStore.getState();
   if (discovery.isLoading) {

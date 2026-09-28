@@ -132,7 +132,8 @@ export type AdapterKind = 'claude' | 'openai-compatible';
 // --- Error Classification ---
 
 export type LLMErrorCode =
-  | 'rate_limit'           // 429
+  | 'rate_limit'           // 429 the caller may retry (per-minute throttling)
+  | 'quota_exceeded'       // 429 the spending limit for this period is gone
   | 'overloaded'           // 529 / 503
   | 'context_too_long'     // 400 with context length error
   | 'invalid_request'      // 400 other
@@ -148,6 +149,7 @@ export type LLMErrorCode =
 
 const LLM_ERROR_CODES: ReadonlySet<string> = new Set<LLMErrorCode>([
   'rate_limit',
+  'quota_exceeded',
   'overloaded',
   'context_too_long',
   'invalid_request',
@@ -375,6 +377,18 @@ export function formatLlmTerminalError(err: LLMError): string {
   return err.rawBody ? err.code : message ? message.slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS) : err.code;
 }
 
+/**
+ * A 429 whose body names the organization's spent budget. The gateway states
+ * which situation it is in `error.code` (`quota_exceeded` vs
+ * `rate_limit_exceeded`), so the decision reads that field; the prose is
+ * localized and rewritten freely.
+ */
+function isSpendingLimitReached(rawBody: string): boolean {
+  const records = providerErrorRecords(rawBody);
+  const code = firstBoundedString(records, ['code'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
+  return code === 'quota_exceeded';
+}
+
 function isContentPolicyRejection(rawBody: string): boolean {
   const records = providerErrorRecords(rawBody);
   const errorType = firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
@@ -477,8 +491,17 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
   const stored = rawBody.slice(0, 1000);
   const upstream = extractUpstreamErrorDetails(statusCode, rawBody, message);
 
-  // Rate limiting
+  // Rate limiting. A gateway answers 429 for two different situations, and
+  // only one of them clears on its own: per-minute throttling is worth waiting
+  // out, while a spent budget stays spent until an administrator raises it.
+  // Retrying the latter costs the user a minute of backoff and then reports
+  // the same answer the first response already carried.
   if (statusCode === 429) {
+    if (isSpendingLimitReached(rawBody)) {
+      return new LLMError(message, 'quota_exceeded', {
+        retryable: false, statusCode, rawBody: stored, upstream,
+      });
+    }
     const retryAfter = extractRetryAfter(message);
     return new LLMError(message, 'rate_limit', {
       retryable: true, retryAfterMs: retryAfter, statusCode, rawBody: stored, upstream,

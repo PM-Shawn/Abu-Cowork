@@ -58,6 +58,14 @@ export interface EnterpriseConfigSnapshot {
    * `null` = the deployment has no signing provider. Consumed by private installers only.
    */
   signing?: { skillPublicKey: string | null }
+  /**
+   * The app (`appId`) employees start in, and whether they may leave it for
+   * another app or the general shell. Read through `useEnterpriseAppPolicy`
+   * (src/core/enterprise/appPolicy.ts); absent or `null` means the employee
+   * chooses, exactly like a personal install.
+   */
+  defaultAppId?: string | null
+  allowExitDefaultApp?: boolean
 }
 
 export type EnterpriseMode =

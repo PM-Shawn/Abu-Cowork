@@ -162,6 +162,101 @@ test('committed recovery retains the new record and supplies the new runtime sta
   await restarted.dispatch(f.sender, 'ack', op);
 });
 
+test('the storage marker travels with the journal to prepared and committed recovery', async () => {
+  const marker = 'b'.repeat(32);
+  const f = fixture();
+  await f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker });
+  await f.materialize();
+  const restarted = createPluginOperationHost(f.options);
+  const restored = await restarted.dispatch(f.sender, 'recover');
+  assert.equal(restored.phase, 'restored');
+  assert.equal(restored.marker, marker);
+  assert.deepEqual(await restarted.dispatch(f.sender, 'recover'), restored);
+  await restarted.dispatch(f.sender, 'ack', restored);
+
+  const g = fixture();
+  const op = await g.host.dispatch(g.sender, 'begin', { kind: 'update', key: g.record.key, record: g.record, token: 'token', expected: previous, runtime: g.runtime, marker });
+  await g.materialize();
+  await g.host.dispatch(g.sender, 'commit', { id: op.id, record: next, runtime: { enabled: false, servers: {}, disabledSkills: {}, disabledAgents: {} } });
+  const recovered = await createPluginOperationHost(g.options).dispatch(g.sender, 'recover');
+  assert.equal(recovered.phase, 'committed');
+  assert.equal(recovered.marker, marker);
+});
+
+test('a journal written without a marker recovers without one', async () => {
+  const f = fixture();
+  await f.begin(); await f.materialize();
+  const restored = await createPluginOperationHost(f.options).dispatch(f.sender, 'recover');
+  assert.equal(Object.hasOwn(restored, 'marker'), false);
+});
+
+test('a malformed storage marker is refused before a journal is written', async () => {
+  const f = fixture();
+  for (const marker of ['', 'B'.repeat(32), 'a'.repeat(31), 42, null]) {
+    await assert.rejects(f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker }), /invalid begin request/);
+  }
+  assert.equal(f.disk.entries.has('/profile/.abu/plugin-operations/active.enc'), false);
+  assert.equal(await f.host.dispatch(f.sender, 'status'), null);
+});
+
+test('a journal whose marker was altered is reported unreadable', async () => {
+  const f = fixture();
+  await f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker: 'c'.repeat(32) });
+  const entry = f.disk.entries.get('/profile/.abu/plugin-operations/active.enc');
+  const journal = JSON.parse(f.options.decrypt(entry.bytes));
+  journal.marker = 'not-a-marker';
+  entry.bytes = Buffer.from(f.options.encrypt(JSON.stringify(journal)));
+  const status = await createPluginOperationHost(f.options).dispatch(f.sender, 'status');
+  assert.equal(status.unreadable, true);
+});
+
+test('recovery records its baseline and progress key once and keeps them across restarts', async () => {
+  const f = fixture();
+  await f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker: 'b'.repeat(32) });
+  await f.materialize();
+  const restarted = createPluginOperationHost(f.options);
+  const restored = await restarted.dispatch(f.sender, 'recover');
+  const baseline = { ...f.runtime, servers: { server: null } };
+  const first = await restarted.dispatch(f.sender, 'checkpoint', { id: restored.id, baseline });
+  assert.deepEqual(first.baseline, baseline);
+  assert.match(first.progress, /^[a-f0-9]{32}$/);
+  const second = await restarted.dispatch(f.sender, 'checkpoint', { id: restored.id, baseline: f.runtime });
+  assert.deepEqual(second.baseline, baseline);
+  assert.equal(second.progress, first.progress);
+  const again = await createPluginOperationHost(f.options).dispatch(f.sender, 'recover');
+  assert.deepEqual(again.baseline, baseline);
+  assert.equal(again.progress, first.progress);
+});
+
+test('a checkpoint is refused before resolution, without a marker, for other names or from another window', async () => {
+  const marked = { kind: 'update', key: next.key, record: next, token: 'token', expected: previous, marker: 'b'.repeat(32) };
+  const f = fixture();
+  const op = await f.host.dispatch(f.sender, 'begin', { ...marked, runtime: f.runtime });
+  await assert.rejects(f.host.dispatch(f.sender, 'checkpoint', { id: op.id }), /has not resolved/);
+  await f.host.dispatch(f.sender, 'rollback', op);
+  await assert.rejects(f.host.dispatch(f.sender, 'checkpoint', { id: op.id, baseline: { ...f.runtime, servers: {} } }), /does not match/);
+  await assert.rejects(f.host.dispatch(f.sender, 'checkpoint', { id: op.id, extra: true }), /invalid checkpoint request/);
+  await assert.rejects(f.host.dispatch({}, 'checkpoint', { id: op.id }), /another window/);
+
+  const g = fixture();
+  const legacy = await g.begin();
+  await g.host.dispatch(g.sender, 'rollback', legacy);
+  await assert.rejects(g.host.dispatch(g.sender, 'checkpoint', { id: legacy.id }), /no storage marker/);
+});
+
+test('a journal whose progress key was altered is reported unreadable', async () => {
+  const f = fixture();
+  const op = await f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker: 'c'.repeat(32) });
+  await f.host.dispatch(f.sender, 'rollback', op);
+  await f.host.dispatch(f.sender, 'checkpoint', { id: op.id });
+  const entry = f.disk.entries.get('/profile/.abu/plugin-operations/active.enc');
+  const journal = JSON.parse(f.options.decrypt(entry.bytes));
+  journal.progress = '../escape';
+  entry.bytes = Buffer.from(f.options.encrypt(JSON.stringify(journal)));
+  const status = await createPluginOperationHost(f.options).dispatch(f.sender, 'status');
+  assert.equal(status.unreadable, true);
+});
+
 test('uninstall moves only the owned version and agent; its interrupted operation restores both', async () => {
   const f = fixture();
   f.disk.add('/profile/.abu/plugin-packages/market/demo/data/keep.txt', 'file', 'user data');

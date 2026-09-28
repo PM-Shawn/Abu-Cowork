@@ -72,8 +72,21 @@ function resetStore() {
   });
 }
 
+/** Web Locks grant one name's requests in order; happy-dom has no `request`. */
+function fifoLocks() {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    request: (_name: string, callback: () => unknown) => {
+      const granted = tail.then(() => callback());
+      tail = granted.catch(() => undefined);
+      return granted;
+    },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  Object.defineProperty(navigator, 'locks', { value: fifoLocks(), configurable: true });
   resetStore();
   usePluginStore.setState({ knownMcpServerNames: [] });
   vi.mocked(readInstalled).mockResolvedValue([]);
@@ -1120,6 +1133,258 @@ describe('boot with an unreadable journal', () => {
       expect(usePluginStore.getState().recoveryError).toMatch(/session closed/);
       expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
     } finally { shell().__ABU_SHELL__ = original; }
+  });
+});
+
+/**
+ * Chromium commits localStorage seconds after a write. A process that dies in
+ * that window restarts with the connector configuration from before the write,
+ * while the journal holds the configuration the renderer had in memory at
+ * `begin`. The journal's marker tells the two situations apart: it is written
+ * after the snapshot, so committed storage without it predates the operation.
+ */
+describe('recovery after the connector configuration missed the disk', () => {
+  const plugin: InstalledPlugin = { ...weather, contributed: { skills: ['today'], mcpServers: ['forecast'], agents: [] } };
+  const forecast = { name: 'forecast', command: 'forecast-server', enabled: true };
+  const journal = { enabled: true, servers: { forecast }, disabledSkills: { today: false }, disabledAgents: {} };
+  const marker = 'a'.repeat(32);
+  const markerKey = `abu-plugin-operation:${marker}`;
+  const restored = { id: 'operation', key: plugin.key, phase: 'restored', installed: true, expectedRuntime: journal, runtime: journal, marker };
+
+  const progressKey = `abu-plugin-operation:${'d'.repeat(32)}`;
+
+  /** The host's side of a journal: `checkpoint` records once, `recover` reads it back. */
+  function journalHost(resolution: object) {
+    const journal: Record<string, unknown> = { ...resolution };
+    return vi.fn(async (action: string, request?: { baseline?: unknown }) => {
+      if (action === 'recover') return { ...journal };
+      if (action === 'checkpoint') {
+        if (request?.baseline !== undefined && journal.baseline === undefined) journal.baseline = request.baseline;
+        journal.progress ??= 'd'.repeat(32);
+        return { ...journal };
+      }
+      return null;
+    });
+  }
+
+  async function withHost(resolution: object, run: (host: ReturnType<typeof journalHost>) => Promise<void>) {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const original = shell().__ABU_SHELL__;
+    const host = journalHost(resolution);
+    shell().__ABU_SHELL__ = { pluginOperation: host };
+    const connect = vi.spyOn(mcpManager, 'connectServer').mockResolvedValue(undefined);
+    try { await run(host); } finally { connect.mockRestore(); shell().__ABU_SHELL__ = original; }
+  }
+
+  beforeEach(async () => {
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ disabledSkills: [], disabledAgents: [] });
+    // The settings storage refuses to write after its stored blob disappears,
+    // which is what the per-test localStorage reset looks like to it.
+    const options = useSettingsStore.persist.getOptions();
+    localStorage.setItem('abu-settings', JSON.stringify({ state: options.partialize!(useSettingsStore.getState()), version: options.version }));
+    vi.mocked(readInstalled).mockResolvedValue([plugin]);
+  });
+
+  it('restores the journal state when committed storage predates the operation', async () => {
+    useMCPStore.setState({ servers: {} });
+    await withHost(restored, async host => {
+      await bootstrapPluginUpdates();
+      expect(useMCPStore.getState().servers.forecast.config).toEqual(forecast);
+      expect(host).toHaveBeenCalledWith('checkpoint', { id: 'operation', baseline: { ...journal, servers: { forecast: null } } });
+      expect(host).toHaveBeenCalledWith('ack', { id: 'operation' });
+      expect(localStorage.getItem(progressKey)).toBeNull();
+      expect(usePluginStore.getState().recoveryError).toBeNull();
+      expect(usePluginStore.getState().activationReady).toBe(true);
+    });
+  });
+
+  it('compares a retry with the first recorded baseline, not with an edit made since', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const older = { name: 'forecast', command: 'older-forecast-server', enabled: false };
+    useMCPStore.setState({ servers: { forecast: { config: older, status: 'connected', tools: [] } } });
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer').mockRejectedValueOnce(new Error('disconnect failed'));
+    try {
+      await withHost(restored, async host => {
+        await expect(bootstrapPluginUpdates()).rejects.toThrow('disconnect failed');
+        // The user removes the connector before retrying.
+        useMCPStore.getState().removeServer('forecast');
+        await expect(bootstrapPluginUpdates()).rejects.toThrow(/configuration changed/);
+        expect(useMCPStore.getState().servers.forecast).toBeUndefined();
+        expect(host.mock.calls.filter(([action]) => action === 'checkpoint')).toHaveLength(1);
+        expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+      });
+    } finally { disconnect.mockRestore(); }
+  });
+
+  it('does not re-add a connector the user removed after an earlier attempt applied it', async () => {
+    useMCPStore.setState({ servers: {} });
+    await withHost(restored, async host => {
+      mockDiscoveryRefresh.mockRejectedValueOnce(new Error('discovery failed'));
+      await expect(bootstrapPluginUpdates()).rejects.toThrow('discovery failed');
+      expect(useMCPStore.getState().servers.forecast.config).toEqual(forecast);
+      expect(JSON.parse(localStorage.getItem(progressKey) ?? '[]')).toEqual(['servers:forecast', 'disabledSkills:today']);
+      useMCPStore.getState().removeServer('forecast');
+      await expect(bootstrapPluginUpdates()).rejects.toThrow(/configuration changed/);
+      expect(useMCPStore.getState().servers.forecast).toBeUndefined();
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+    });
+  });
+
+  it('does not count a preference as applied when its settings write was refused', async () => {
+    useMCPStore.setState({ servers: {} });
+    // A stored blob that vanished makes the settings storage refuse writes.
+    localStorage.removeItem('abu-settings');
+    await withHost(restored, async () => {
+      mockDiscoveryRefresh.mockRejectedValueOnce(new Error('discovery failed'));
+      await expect(bootstrapPluginUpdates()).rejects.toThrow('discovery failed');
+      expect(localStorage.getItem('abu-settings')).toBeNull();
+      expect(JSON.parse(localStorage.getItem(progressKey) ?? '[]')).toEqual(['servers:forecast']);
+    });
+  });
+
+  it('keeps a connector deleted during the operation once committed storage holds the marker', async () => {
+    localStorage.setItem(markerKey, '1');
+    useMCPStore.setState({ servers: {} });
+    await withHost(restored, async host => {
+      await expect(bootstrapPluginUpdates()).rejects.toThrow(/configuration changed/);
+      expect(useMCPStore.getState().servers.forecast).toBeUndefined();
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+      expect(usePluginStore.getState().activationReady).toBe(false);
+      // The evidence outlives a failed attempt, so a retry decides the same way.
+      expect(localStorage.getItem(markerKey)).toBe('1');
+    });
+  });
+
+  it('keeps the strict comparison for a journal written without a marker', async () => {
+    useMCPStore.setState({ servers: {} });
+    const { marker: _omitted, ...legacy } = restored;
+    await withHost(legacy, async host => {
+      await expect(bootstrapPluginUpdates()).rejects.toThrow(/configuration changed/);
+      expect(useMCPStore.getState().servers.forecast).toBeUndefined();
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+    });
+  });
+
+  it('forgets the marker only after the journal is acknowledged', async () => {
+    localStorage.setItem(markerKey, '1');
+    useMCPStore.setState({ servers: { forecast: { config: forecast, status: 'disconnected', tools: [] } } });
+    await withHost(restored, async host => {
+      const journalSide = journalHost(restored);
+      host.mockImplementation(async (action: string, request?: { baseline?: unknown }) => {
+        if (action === 'ack') {
+          expect(localStorage.getItem(markerKey)).toBe('1');
+          expect(localStorage.getItem(progressKey)).not.toBeNull();
+        }
+        return journalSide(action, request);
+      });
+      await bootstrapPluginUpdates();
+      expect(host).toHaveBeenCalledWith('ack', { id: 'operation' });
+      expect(localStorage.getItem(markerKey)).toBeNull();
+      expect(localStorage.getItem(progressKey)).toBeNull();
+    });
+  });
+
+  it('still protects an edit the user makes while the stale recovery disconnects', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const older = { name: 'forecast', command: 'older-forecast-server', enabled: false };
+    useMCPStore.setState({ servers: { forecast: { config: older, status: 'connected', tools: [] } } });
+    let finish!: () => void;
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer').mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    try {
+      await withHost(restored, async host => {
+        const recovering = bootstrapPluginUpdates();
+        await vi.waitFor(() => expect(disconnect).toHaveBeenCalled());
+        useMCPStore.getState().updateServer('forecast', { command: 'user-edit' });
+        finish();
+        await expect(recovering).rejects.toThrow(/configuration changed/);
+        expect(useMCPStore.getState().servers.forecast.config.command).toBe('user-edit');
+        expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+      });
+    } finally { disconnect.mockRestore(); }
+  });
+
+  it.each([
+    ['restores', false, undefined],
+    ['refuses to override', true, /preference changed/],
+  ] as const)('%s a child preference whose older value was loaded, by whether the marker was committed', async (_label, committed, failure) => {
+    const { useSettingsStore } = await import('./settingsStore');
+    if (committed) localStorage.setItem(markerKey, '1');
+    useMCPStore.setState({ servers: { forecast: { config: forecast, status: 'disconnected', tools: [] } } });
+    useSettingsStore.setState({ disabledSkills: ['today'] });
+    await withHost(restored, async host => {
+      if (failure) {
+        await expect(bootstrapPluginUpdates()).rejects.toThrow(failure);
+        expect(useSettingsStore.getState().disabledSkills).toContain('today');
+        expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+      } else {
+        await bootstrapPluginUpdates();
+        expect(useSettingsStore.getState().disabledSkills).not.toContain('today');
+        expect(host).toHaveBeenCalledWith('ack', { id: 'operation' });
+      }
+    });
+  });
+
+  it('withdraws the connector of a committed uninstall whose latest edit missed the disk', async () => {
+    const older = { name: 'forecast', command: 'older-forecast-server', enabled: true };
+    useMCPStore.setState({ servers: { forecast: { config: older, status: 'disconnected', tools: [] } } });
+    vi.mocked(readInstalled).mockResolvedValue([]);
+    const uninstalled = { ...restored, phase: 'committed', installed: false,
+      runtime: { enabled: false, servers: { forecast: null }, disabledSkills: { today: false }, disabledAgents: {} } };
+    await withHost(uninstalled, async host => {
+      await bootstrapPluginUpdates();
+      expect(useMCPStore.getState().servers.forecast).toBeUndefined();
+      expect(host).toHaveBeenCalledWith('ack', { id: 'operation' });
+    });
+  });
+});
+
+describe('the marker written before a managed operation', () => {
+  const plugin: InstalledPlugin = { ...weather, contributed: { skills: ['today'], mcpServers: ['forecast'], agents: [] } };
+  const forecast = { name: 'forecast', command: 'forecast-server', enabled: true };
+
+  it('follows every write the snapshot reflects, and goes once no journal was written', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ disabledSkills: [], disabledAgents: [] });
+    // The settings storage refuses to write after its stored blob disappears,
+    // which is what the per-test localStorage reset looks like to it.
+    const options = useSettingsStore.persist.getOptions();
+    localStorage.setItem('abu-settings', JSON.stringify({ state: options.partialize!(useSettingsStore.getState()), version: options.version }));
+    useMCPStore.setState({ servers: { forecast: { config: forecast, status: 'connected', tools: [] } } });
+    vi.mocked(readInstalled).mockResolvedValue([plugin]);
+    vi.mocked(prepareInstallRecord).mockResolvedValue(plugin);
+    await usePluginStore.getState().refreshInstalled(HOME);
+    let seen: { request: Record<string, unknown>; marker: string | null; disabledSkills: string[]; forecast: unknown } | undefined;
+    const original = shell().__ABU_SHELL__;
+    shell().__ABU_SHELL__ = { pluginOperation: vi.fn(async (action: string, request: Record<string, unknown>) => {
+      if (action === 'begin') {
+        seen = { request, marker: localStorage.getItem(`abu-plugin-operation:${request.marker as string}`),
+          disabledSkills: JSON.parse(localStorage.getItem('abu-settings') ?? '{}').state?.disabledSkills,
+          forecast: JSON.parse(localStorage.getItem('abu-mcp-store') ?? '{}').state?.servers?.forecast?.config };
+        throw new Error('stop before journal');
+      }
+      return null;
+    }) };
+    // Hold the settings lock so the preference below is still waiting to be
+    // written when the update starts.
+    let releaseLock!: () => void;
+    void navigator.locks.request('abu-browser-permission-config-v2', () => new Promise<void>(resolve => { releaseLock = resolve; }));
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer').mockResolvedValue(undefined);
+    const connect = vi.spyOn(mcpManager, 'connectServer').mockResolvedValue(undefined);
+    try {
+      useSettingsStore.setState({ disabledSkills: ['today'] });
+      const changing = usePluginStore.getState().update({ home: HOME, key: plugin.key, preparedToken: 'approved', marketplaceName: 'official', marketplaceDir: '/m', entry: { name: 'weather', source: { kind: 'relative', path: './weather' } } });
+      await vi.waitFor(() => expect(disconnect).toHaveBeenCalled());
+      releaseLock();
+      await expect(changing).rejects.toThrow('stop before journal');
+      expect(seen?.request.marker).toMatch(/^[a-f0-9]{32}$/);
+      expect(seen?.marker).toBe('1');
+      expect((seen?.request.runtime as { disabledSkills: Record<string, boolean> }).disabledSkills).toEqual({ today: true });
+      expect(seen?.disabledSkills).toEqual(['today']);
+      expect(seen?.forecast).toEqual(forecast);
+      expect(localStorage.getItem(`abu-plugin-operation:${seen?.request.marker as string}`)).toBeNull();
+    } finally { disconnect.mockRestore(); connect.mockRestore(); shell().__ABU_SHELL__ = original; }
   });
 });
 

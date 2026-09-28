@@ -17,7 +17,7 @@ export function Popover({ trigger, children, open, defaultOpen = false, onOpenCh
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const id = useLayer('popover', isOpen, setOpen);
+  const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
   return (
     <PopoverPrimitive.Root open={isOpen} onOpenChange={setOpen}>
       <PopoverPrimitive.Trigger asChild>{trigger}</PopoverPrimitive.Trigger>
@@ -26,6 +26,7 @@ export function Popover({ trigger, children, open, defaultOpen = false, onOpenCh
           align={align}
           side={side}
           sideOffset={6}
+          onCloseAutoFocus={onCloseAutoFocus}
           data-ds-layer
           data-ds-motion
           className={cn('z-popover w-72 origin-(--radix-popover-content-transform-origin) p-3 text-ui', FLOAT_SURFACE, FOCUS_RING, FLOAT_MOTION, className)}

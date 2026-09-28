@@ -21,7 +21,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const id = useLayer('popover', isOpen, setOpen);
+  const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
       <DropdownMenuPrimitive.Trigger asChild>{trigger}</DropdownMenuPrimitive.Trigger>
@@ -30,6 +30,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
           align={align}
           side={side}
           sideOffset={4}
+          onCloseAutoFocus={onCloseAutoFocus}
           data-ds-layer
           data-ds-motion
           className={cn(MENU_PANEL, FLOAT_SURFACE, FLOAT_MOTION)}

@@ -16,7 +16,7 @@ function FakeLayer({ name, kind, dirty = false, defaultOpen = false, children }:
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
-  const id = useLayer(kind, open, setOpen, kind === 'dialog'
+  const { id } = useLayer(kind, open, setOpen, kind === 'dialog'
     ? { isDirty: () => dirty, confirmDiscard: (onDiscard) => setPendingDiscard(() => onDiscard) }
     : undefined);
   return (

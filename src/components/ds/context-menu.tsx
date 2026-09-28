@@ -14,9 +14,14 @@ export function ContextMenu({ children, content, onOpenChange }: {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(undefined, false, onOpenChange);
   // Radix has no controlled open state here, so the registry closes the menu by
-  // dropping its content until the next right-click opens it again.
+  // dropping its content until the next right-click opens it again, and reports the
+  // close through onOpenChange. The trigger's Radix data-state may stay "open" until
+  // that next right-click, so callers style an open menu from onOpenChange.
   const [dismissed, setDismissed] = useState(false);
-  const id = useLayer('popover', isOpen && !dismissed, () => setDismissed(true));
+  const { id, onCloseAutoFocus } = useLayer('popover', isOpen && !dismissed, () => {
+    setDismissed(true);
+    setOpen(false);
+  });
   const handleOpenChange = (next: boolean) => {
     if (next) setDismissed(false);
     setOpen(next);
@@ -29,6 +34,7 @@ export function ContextMenu({ children, content, onOpenChange }: {
           <ContextMenuPrimitive.Content
             data-ds-layer
             data-ds-motion
+            onCloseAutoFocus={onCloseAutoFocus}
             className={cn('z-popover min-w-40 origin-(--radix-context-menu-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
           >
             <LayerScope id={id}>

@@ -50,7 +50,7 @@ export function Dialog({
     onDiscard();
   };
 
-  const id = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  const { id, onCloseAutoFocus } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
 
   return (
     <>
@@ -63,6 +63,7 @@ export function Dialog({
             data-ds-layer
             data-ds-motion
             role={role}
+            onCloseAutoFocus={onCloseAutoFocus}
             {...(description ? {} : { 'aria-describedby': undefined })}
             className={cn(DIALOG_BOX, WIDTH[size], DIALOG_MOTION)}
           >

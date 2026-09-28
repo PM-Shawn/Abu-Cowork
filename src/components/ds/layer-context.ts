@@ -54,21 +54,33 @@ export function useOpenState(
   return [controlled ? open : uncontrolled, setOpen];
 }
 
-// Registers an open layer with the nearest LayerProvider. Returns the layer id, which
-// the caller passes to <LayerScope> around its content.
-export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean) => void, guard?: DialogGuard): string {
+export interface LayerHandle {
+  // Passed to <LayerScope> around the layer's content.
+  id: string;
+  // Passed to the Radix Content: when the registry closes this layer to make room for
+  // another, focus stays where the new layer put it.
+  onCloseAutoFocus: (event: Event) => void;
+}
+
+// Registers an open layer with the nearest LayerProvider.
+export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean) => void, guard?: DialogGuard): LayerHandle {
   const registry = useLayerRegistry();
   const ancestors = useContext(LayerScopeContext);
   const id = useId();
   const latest = useRef({ setOpen, guard });
+  const closedByRegistry = useRef(false);
   useLayoutEffect(() => { latest.current = { setOpen, guard }; });
   useLayoutEffect(() => {
     if (!open) return undefined;
+    closedByRegistry.current = false;
     registry.register({
       id,
       kind,
       ancestors,
-      close: () => latest.current.setOpen(false),
+      close: () => {
+        closedByRegistry.current = true;
+        latest.current.setOpen(false);
+      },
       reopen: () => latest.current.setOpen(true),
       isDirty: () => latest.current.guard?.isDirty() ?? false,
       confirmDiscard: (onDiscard) => {
@@ -79,5 +91,9 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
     });
     return () => registry.unregister(id);
   }, [open, kind, id, ancestors, registry]);
-  return id;
+  const onCloseAutoFocus = useCallback((event: Event) => {
+    if (closedByRegistry.current) event.preventDefault();
+    closedByRegistry.current = false;
+  }, []);
+  return { id, onCloseAutoFocus };
 }

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent, { PointerEventsCheckLevel } from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
@@ -49,6 +50,45 @@ function ContextMenuAndPopover({ popoverOpen }: { popoverOpen: boolean }) {
   );
 }
 
+// Code opens the popover (open=true); the popover reports its own closes through onOpenChange.
+function TrackedPopover({ requested }: { requested: boolean }) {
+  const [open, setOpen] = useState(requested);
+  const [lastRequested, setLastRequested] = useState(requested);
+  if (requested !== lastRequested) {
+    setLastRequested(requested);
+    setOpen(requested);
+  }
+  return <Popover open={open} onOpenChange={setOpen} trigger={<Button>Details</Button>}>Popover body</Popover>;
+}
+
+function MenuThenTrackedPopover({ popoverRequested }: { popoverRequested: boolean }) {
+  return (
+    <>
+      <TaskMenu onRename={() => undefined} />
+      <TrackedPopover requested={popoverRequested} />
+    </>
+  );
+}
+
+function ContextMenuThenTrackedPopover({ popoverRequested, onOpenChange }: {
+  popoverRequested: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  return (
+    <>
+      <ContextMenu content={<MenuItem icon={AppIcons.copy}>Copy</MenuItem>} onOpenChange={onOpenChange}>
+        <div>Message body</div>
+      </ContextMenu>
+      <TrackedPopover requested={popoverRequested} />
+    </>
+  );
+}
+
+// Lets Radix run the focus restore it schedules on a timer when a layer unmounts.
+async function flushTimers() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+}
+
 function MenuAndContextMenu() {
   return (
     <>
@@ -89,6 +129,17 @@ describe('Menu', () => {
     await user.click(screen.getByRole('button', { name: 'Actions' }));
     expect(screen.getByRole('menu')).toBeInTheDocument();
     rerender(<MenuAndPopover popoverOpen />);
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByText('Popover body')).toBeInTheDocument();
+  });
+
+  it('leaves a popover opened by code open after it closes to make room', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<MenuThenTrackedPopover popoverRequested={false} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    rerender(<MenuThenTrackedPopover popoverRequested />);
+    await flushTimers();
     expect(screen.queryByRole('menu')).toBeNull();
     expect(screen.getByText('Popover body')).toBeInTheDocument();
   });
@@ -149,6 +200,28 @@ describe('ContextMenu', () => {
     expect(screen.getByText('Popover body')).toBeInTheDocument();
     fireEvent.contextMenu(screen.getByText('Message body'));
     expect(screen.getByRole('menuitem', { name: /Copy/ })).toBeInTheDocument();
+  });
+
+  it('leaves a popover opened by code open after it closes to make room', async () => {
+    // Earlier tests unmount open context menus; their focus restores must not land in this test.
+    await flushTimers();
+    const { rerender } = render(<ContextMenuThenTrackedPopover popoverRequested={false} />, { wrapper: DesignSystemProvider });
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(screen.getByRole('menuitem', { name: /Copy/ })).toBeInTheDocument();
+    rerender(<ContextMenuThenTrackedPopover popoverRequested />);
+    await flushTimers();
+    expect(screen.queryByRole('menuitem', { name: /Copy/ })).toBeNull();
+    expect(screen.getByText('Popover body')).toBeInTheDocument();
+  });
+
+  it('tells the caller it closed when another popover replaces it', () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = render(<ContextMenuThenTrackedPopover popoverRequested={false} onOpenChange={onOpenChange} />, { wrapper: DesignSystemProvider });
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    rerender(<ContextMenuThenTrackedPopover popoverRequested onOpenChange={onOpenChange} />);
+    expect(screen.queryByRole('menuitem', { name: /Copy/ })).toBeNull();
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
   });
 
   it('closes an open dropdown menu when it opens', async () => {

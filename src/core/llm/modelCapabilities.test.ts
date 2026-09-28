@@ -6,6 +6,7 @@ import {
   deriveDeclaredDefaults,
   isKnownModel,
   resolveAgentModelCapabilities,
+  hasVisionName,
   CONTENT_FLOOR_TOKENS,
   reserveOutputTokens,
   type ModelCapabilities,
@@ -126,6 +127,42 @@ describe('modelCapabilities', () => {
       // DeepSeek tool messages carry string content only, so tool-result images ride
       // a following user message (openai-compatible.ts) rather than the tool role.
       expect(vision.toolResultImages).toBe('workaround');
+    });
+  });
+
+  describe('vision from the model name', () => {
+    it.each([
+      'qwen3-vl-8b',
+      'qwen/qwen3-vl-8b',
+      'Qwen2.5-VL-7B-Instruct',
+      'qwen2.5vl:7b',
+      'deepseek-vl2',
+      'llama-3.2-11b-vision-instruct',
+      'minicpm-v',
+      'qwen2.5-omni-7b',
+    ])('treats %s as able to see images', (id) => {
+      expect(hasVisionName(id)).toBe(true);
+      expect(resolveCapabilities(id).vision).toBe(true);
+    });
+
+    it.each(['qwen3-8b', 'deepseek-v4-flash', 'mimo-v2.5-pro', 'glm-5', 'devlin-7b'])('does not read %s as a vision model', (id) => {
+      expect(hasVisionName(id)).toBe(false);
+    });
+
+    it('keeps the family limits when only the vision flag changes', () => {
+      const vl = resolveCapabilities('qwen3-vl-8b');
+      expect(vl.contextWindow).toBe(131072);
+      expect(vl.maxOutputTokens).toBe(8192);
+    });
+
+    it('checks a new local vision model by default', () => {
+      expect(deriveDeclaredDefaults('qwen3-vl-8b').supportsImages).toBe(true);
+      expect(deriveDeclaredDefaults('my-private-vl-model').supportsImages).toBe(true);
+      expect(deriveDeclaredDefaults('totally-unknown-proxy-model-xyz').supportsImages).toBe(false);
+    });
+
+    it('does not make an unknown vision-named model count as a known model', () => {
+      expect(isKnownModel('my-private-vl-model')).toBe(false);
     });
   });
 

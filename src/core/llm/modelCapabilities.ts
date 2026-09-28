@@ -133,13 +133,21 @@ const DEEPSEEK_DEFAULT: ModelCapabilities =     { vision: false, thinking: false
 const QWEN_DEFAULT: ModelCapabilities =         { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 131072 };
 const FALLBACK_DEFAULT: ModelCapabilities =     { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 };
 
+/** 名字里带 vl、vision、omni 或以 -v 结尾的模型能看图，先于家族规则判断。 */
+const VISION_NAME_PATTERN = /(?:^|[-_.:/\d])vl(?:[-_.:/\d]|$)|vision|omni|-v$/i;
+
+export function hasVisionName(modelId: string): boolean {
+  const bare = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
+  return VISION_NAME_PATTERN.test(bare);
+}
+
 /**
  * Resolve model capabilities from a model ID.
  *
  * Resolution order:
  *  1. Exact match in KNOWN_MODELS
  *  2. Strip provider prefix (e.g. "anthropic/claude-opus-4-6" → "claude-opus-4-6")
- *  3. Pattern match (claude-*, gpt-*, deepseek-*, etc.)
+ *  3. 名字先认视觉，再按家族规则匹配（claude-*, gpt-*, deepseek-* 等）
  *  4. Fallback default (assumes vision + workaround images)
  */
 export function resolveCapabilities(modelId: string): ModelCapabilities {
@@ -150,9 +158,12 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
   const bare = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
   if (bare !== modelId && KNOWN_MODELS[bare]) return KNOWN_MODELS[bare];
 
-  // 3. Pattern match
-  const id = bare.toLowerCase();
+  // 3. 名字先认视觉，再按家族规则；只改视觉一项，其余上限沿用家族值
+  const family = resolveFamilyCapabilities(bare.toLowerCase());
+  return !family.vision && hasVisionName(bare) ? { ...family, vision: true } : family;
+}
 
+function resolveFamilyCapabilities(id: string): ModelCapabilities {
   // Reasoning-protocol labels below come from classifyThinkingProtocol (shared with
   // the build-time classifier in model-data/classify.ts) so the protocol labels can't
   // drift. The family branches themselves (which ids reason) are still maintained here.
@@ -321,18 +332,20 @@ export function deriveUiCaps(modelId: string): import('@/types/provider').ModelC
  * override) even though the model is known to support it.
  *
  * Unrecognized ids (`resolveCapabilities` falls through to `FALLBACK_DEFAULT`,
- * identity-checked below) stay conservative and declare `supportsImages: false`
- * — `FALLBACK_DEFAULT.vision` is `true`, but declaring vision for an unknown
- * proxy model is unsafe: it would forward images to a model that may reject
- * them (400). Every recognized family/KNOWN_MODELS branch returns a fresh
- * object, so `=== FALLBACK_DEFAULT` only matches the pure-fallback path.
+ * identity-checked below) stay conservative by default — `FALLBACK_DEFAULT.vision`
+ * is `true`, but declaring vision for an unknown proxy model is unsafe: it would
+ * forward images to a model that may reject them (400). 唯一例外是名字本身能看出是
+ * 视觉模型的（`hasVisionName`，带 vl / vision / omni 的本地或私有模型），这类直接
+ * 声明 `supportsImages: true`，新添加的本地视觉模型不用用户再手动打开开关。Every
+ * recognized family/KNOWN_MODELS branch returns a fresh object, so
+ * `=== FALLBACK_DEFAULT` only matches the pure-fallback path.
  */
 export function deriveDeclaredDefaults(modelId: string): import('@/types/provider').ModelDeclaredCapabilities {
   const caps = resolveCapabilities(modelId);
   const isUnknown = caps === FALLBACK_DEFAULT;
   return {
     supportsTools: true, // no tools axis in ModelCapabilities; matches prior default
-    supportsImages: isUnknown ? false : caps.vision,
+    supportsImages: isUnknown ? hasVisionName(modelId) : caps.vision,
     supportsReasoning: caps.thinking !== false,
   };
 }

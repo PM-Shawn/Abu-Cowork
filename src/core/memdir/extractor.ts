@@ -23,6 +23,8 @@ import { settingsForConversation } from '../agent/conversationSettings';
 // constructing `ClaudeAdapter`/`OpenAICompatibleAdapter` directly. Matches the
 // call convention `agentLoop.ts`/`subagentLoop.ts` already use.
 import { selectChatAdapter } from '../llm/selectChatAdapter';
+import { adapterKindFor } from '../llm/adapterKind';
+import { contextWindowForModel } from '../agent/modelContextWindow';
 import type { LLMAdapter } from '../llm/adapter';
 import type { StreamEvent } from '../../types';
 import type { Message } from '../../types';
@@ -198,9 +200,7 @@ export async function extractMemoriesFromConversation(
       return;
     }
 
-    const adapter: LLMAdapter = selectChatAdapter(
-      getActiveProvider(settings)?.apiFormat === 'openai-compatible' ? 'openai-compatible' : 'claude',
-    );
+    const adapter: LLMAdapter = selectChatAdapter(adapterKindFor(getActiveProvider(settings), false));
 
     // Inject existing memory manifest so the extractor can deduplicate against
     // what's already stored. Best-effort: failures fall through to extraction
@@ -244,6 +244,7 @@ export async function extractMemoriesFromConversation(
         baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         maxTokens: 1024,
+        contextWindow: contextWindowForModel(settings, getEffectiveModel(settings)),
         accounting: {
           source: 'memory' as const,
           conversationId,

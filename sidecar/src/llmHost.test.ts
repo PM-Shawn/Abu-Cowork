@@ -18,6 +18,10 @@ vi.mock('@/core/llm/claude', () => ({
 vi.mock('@/core/llm/openai-compatible', () => ({
   OpenAICompatibleAdapter: vi.fn().mockImplementation(function OpenAICompatibleAdapter() { return { chat: openaiChat }; }),
 }));
+const ollamaChat = vi.fn();
+vi.mock('@/core/llm/ollama-native', () => ({
+  OllamaNativeAdapter: vi.fn().mockImplementation(function OllamaNativeAdapter() { return { chat: ollamaChat }; }),
+}));
 
 import { createLlmHost, type SidecarRpcSender } from './llmHost';
 
@@ -44,6 +48,7 @@ describe('llmHost', () => {
     vi.useFakeTimers();
     claudeChat.mockReset();
     openaiChat.mockReset();
+    ollamaChat.mockReset();
   });
 
   afterEach(() => {
@@ -103,6 +108,10 @@ describe('llmHost', () => {
 
       await host.handleChat(chatParams({ callId: 'c2', adapterKind: 'openai-compatible' }));
       expect(openaiChat).toHaveBeenCalledTimes(1);
+
+      ollamaChat.mockResolvedValue(undefined);
+      await host.handleChat(chatParams({ callId: 'c3', adapterKind: 'ollama' }));
+      expect(ollamaChat).toHaveBeenCalledTimes(1);
     });
 
     it('coalesces rapid text deltas within the ~16ms window before emitting', async () => {

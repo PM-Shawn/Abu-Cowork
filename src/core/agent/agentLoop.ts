@@ -109,6 +109,7 @@ import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningPar
 import { resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
+import { adapterKindFor } from '../llm/adapterKind';
 import { contextTooSmallMessage } from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
@@ -1284,10 +1285,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // selectChatAdapter routes through the sidecar transport when it's healthy
   // ('running'), else falls back to the local in-process adapter — the
   // kind-choosing condition itself is unchanged (P1-1).
-  const adapterKind: AdapterKind =
-    isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible'
-      ? 'openai-compatible'
-      : 'claude';
+  const adapterKind: AdapterKind = adapterKindFor(getActiveProvider(settingsForModel), isEnterpriseGatewayMode);
   const adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
   // Validate required tools are available (blocking check — one-time at start)
@@ -2092,6 +2090,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 signal: abortController.signal,
                 conversationId,
                 providerInstanceId: activeProvider?.id ?? 'unknown',
+                contextWindow: contextWindowSize,
               },
               toolTokens
             );
@@ -2216,6 +2215,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               signal: abortController.signal,
               conversationId,
               providerInstanceId: activeProvider?.id ?? 'unknown',
+              contextWindow: contextWindowSize,
             });
           } catch (err) {
             // Defensive: summarizeConversation is contractually no-throw (it
@@ -2342,6 +2342,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         },
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
+        contextWindow: contextWindowSize,
         signal: abortController.signal,
         enableThinking: reasoningParams.enableThinking,
         thinkingBudget: reasoningParams.thinkingBudget,
@@ -2666,6 +2667,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   signal: abortController.signal,
                   conversationId,
                   providerInstanceId: activeProvider?.id ?? 'unknown',
+                  contextWindow: recoveryContextWindowSize,
                 },
                 toolTokens
               );
@@ -2717,6 +2719,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const recoveryChatOptions = {
             ...chatOptions,
             maxTokens: recoveryMaxOutputTokens,
+            contextWindow: recoveryContextWindowSize,
             enableThinking: recoveryReasoningParams.enableThinking,
             thinkingBudget: recoveryReasoningParams.thinkingBudget,
             reasoningEffort: recoveryReasoningParams.reasoningEffort,

@@ -29,6 +29,7 @@ import {
 import { resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
+import { adapterKindFor } from '../llm/adapterKind';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
@@ -623,9 +624,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined); } catch { return null; }
   })();
   const startupProvider = getActiveProvider(settings);
-  const adapterKind = startupCreds?.forceOpenAiCompatible || startupProvider?.apiFormat === 'openai-compatible'
-    ? 'openai-compatible'
-    : 'claude';
+  const adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
   const delegatedPreflight = preflightDelegatedMedia(
@@ -943,6 +942,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               signal,
               conversationId: options.parentConversationId ?? null,
               providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
+              contextWindow: contextWindowSize,
             }
           );
           if (compressionResult.compressed) {
@@ -992,6 +992,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
+        contextWindow: contextWindowSize,
         enableThinking: reasoningParams.enableThinking,
         thinkingBudget: reasoningParams.thinkingBudget,
         reasoningEffort: reasoningParams.reasoningEffort,

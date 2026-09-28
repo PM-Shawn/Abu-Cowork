@@ -10,8 +10,9 @@ import {
 } from '@/stores/settingsStore';
 import { getSettingsReader } from '@/core/agent/ports/settingsReader';
 import { resolveEffectiveLlmCreds } from '@/core/enterprise/llm-resolver';
-import { ClaudeAdapter } from '@/core/llm/claude';
-import { OpenAICompatibleAdapter } from '@/core/llm/openai-compatible';
+import { adapterKindFor } from '@/core/llm/adapterKind';
+import { createAdapterForKind } from '@/core/llm/createAdapter';
+import { contextWindowForModel } from '@/core/agent/modelContextWindow';
 import type { LLMAdapter } from '@/core/llm/adapter';
 
 export type CompactionReason = 'ok' | 'too-few' | 'summarize-failed' | 'no-conversation';
@@ -87,17 +88,16 @@ function resolveSummarizeConfig(convId: string): CompressionConfig {
   const scoped = baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
   const provider = getActiveProvider(scoped);
   const creds = resolveEffectiveLlmCreds(getActiveApiKey(scoped), provider?.baseUrl || undefined);
-  const adapter: LLMAdapter =
-    creds.forceOpenAiCompatible || provider?.apiFormat === 'openai-compatible'
-      ? new OpenAICompatibleAdapter()
-      : new ClaudeAdapter();
+  const adapter: LLMAdapter = createAdapterForKind(adapterKindFor(provider, creds.forceOpenAiCompatible));
+  const model = getEffectiveModel(scoped);
   return {
     adapter,
-    model: getEffectiveModel(scoped),
+    model,
     apiKey: creds.apiKey,
     baseUrl: creds.baseUrl,
     conversationId: convId,
     providerInstanceId: provider?.id ?? 'unknown',
+    contextWindow: contextWindowForModel(scoped, model),
   };
 }
 

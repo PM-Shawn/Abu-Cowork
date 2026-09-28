@@ -521,3 +521,12 @@ describe('context overflow', () => {
     expect(isContextOverflowMessage('model runner crashed')).toBe(false);
   });
 });
+
+describe('Ollama-shaped error bodies', () => {
+  it('reads a plain string error as the message and the summary', () => {
+    const err = classifyError(404, JSON.stringify({ error: "model 'x' not found" }));
+    expect(err.code).toBe('not_found');
+    expect(err.message).toBe("model 'x' not found");
+    expect(err.upstream?.summary).toBe("model 'x' not found");
+  });
+});

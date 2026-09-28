@@ -16,12 +16,9 @@ const logger = createLogger('openai-compatible');
 
 // ── Hang-ceiling timeout helper (code-review fix #10) ──
 //
-// chat() arms this same pattern at three phases of a request that can each
+// chat() arms this same pattern at two phases of a request that can each
 // hang unbounded if the server accepts the connection but never responds:
-// the initial connect/header wait, the max_tokens-retry connect/header wait,
-// and (non-streaming path) the body-download wait. All three previously
-// duplicated an identical `setTimeout(() => { <flag>=true; streamAbort.abort() },
-// STREAM_HANG_TIMEOUT_MS)` plus a catch that throws the same-shaped LLMError.
+// the initial connect/header wait and the max_tokens-retry connect/header wait.
 // Consolidated here so the timeout semantics (retryable, retryAfterMs) live
 // in one place; only the per-phase message wording still varies by call site.
 
@@ -50,7 +47,7 @@ function armHangTimer(streamAbort: AbortController): { timedOut: () => boolean; 
  * fired before the awaited operation settled. `prefix`/`suffix` carry the
  * per-site phase wording — e.g. `hangTimeoutError('连接超时', '未收到服务器响应头')`
  * reproduces the connect-phase message exactly; `retryable`/`retryAfterMs`
- * are identical across all three call sites.
+ * are identical across both call sites.
  */
 function hangTimeoutError(prefix: string, suffix: string): LLMError {
   return new LLMError(`${prefix}：${STREAM_HANG_TIMEOUT_MS / 1000} 秒${suffix}`, 'network_error', {
@@ -168,12 +165,6 @@ function emitParseableToolCalls(
   return emitted;
 }
 
-// Counter-based tool call ID generator — prevents collisions on rapid parallel calls
-let toolCallCounter = 0;
-function generateToolCallId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${(++toolCallCounter).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-}
-
 // OpenAI multimodal content part
 type OpenAIContentPart =
   | { type: 'text'; text: string }
@@ -203,9 +194,13 @@ function convertTools(tools: ToolDefinition[]) {
 // can't be sent. Leave a text breadcrumb instead of dropping them silently —
 // otherwise the model sees nothing and may claim no file was provided.
 // LLM-facing → English.
-const DOCUMENT_UNSUPPORTED_NOTE =
+export const DOCUMENT_UNSUPPORTED_NOTE =
   '[A document was attached but the current model cannot receive file attachments. ' +
   'Tell the user their model does not support documents, or ask them to paste the relevant text.]';
+
+/** 工具结果里的截图随后作为一条用户消息补发时附带的说明（给模型看，英文）。 */
+export const TOOL_RESULT_IMAGES_NOTE =
+  '[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say "I cannot see the screenshot" — do NOT guess or fabricate what is on screen.';
 
 /** Convert PreparedContentBlock[] to OpenAI content parts */
 function toOpenAIContentParts(blocks: PreparedContentBlock[]): OpenAIContentPart[] {
@@ -304,7 +299,7 @@ function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenA
           result.push({
             role: 'user',
             content: [
-              { type: 'text' as const, text: '[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say "I cannot see the screenshot" — do NOT guess or fabricate what is on screen.' },
+              { type: 'text' as const, text: TOOL_RESULT_IMAGES_NOTE },
               ...pendingImages,
             ],
           });
@@ -399,11 +394,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // invariant for the whole request, so derive it once here.
     const requestHost = (() => { try { return new URL(fullUrl).host; } catch { return ''; } })();
 
-    // Ollama: streaming + tool calling is broken in /v1/chat/completions.
-    // When tools are present and endpoint looks like Ollama, use non-streaming.
-    const isOllamaEndpoint = /localhost:\d{4,5}|127\.0\.0\.1:\d{4,5}|ollama/i.test(baseUrl);
     const hasTools = !!(options.tools && options.tools.length > 0);
-    const useStreaming = !(isOllamaEndpoint && hasTools);
 
     const convertedMessages = convertMessages(messages, options.systemPrompt, options.supportsVision);
     // Volatile context tail rides as the LAST message, after the whole stored
@@ -427,9 +418,9 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       model: options.model,
       messages: convertedMessages,
       max_tokens: options.maxTokens ?? 4096,
-      stream: useStreaming,
+      stream: true,
       // Request token usage in streaming responses (OpenAI-compatible providers, e.g. GLM)
-      ...(useStreaming ? { stream_options: { include_usage: true } } : {}),
+      stream_options: { include_usage: true },
       ...(isOfficialOpenAI && promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
     };
 
@@ -556,93 +547,6 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       } else {
         throw classifyError(response.status, errorText);
       }
-    }
-
-    // ── Non-streaming path (Ollama + tools) ──
-    if (!useStreaming) {
-      // Body-download timeout: the connect timer was cleared once headers arrived,
-      // and the streaming idle-heartbeat only arms for the reader path below — so a
-      // server that returns headers then stalls mid-body would hang response.json()
-      // unbounded. Arm a ceiling that aborts the request so response.json() rejects.
-      const bodyHangTimer = armHangTimer(streamAbort);
-      let data: Record<string, unknown>;
-      try {
-        data = await response.json() as Record<string, unknown>;
-      } catch (jsonErr) {
-        if (bodyHangTimer.timedOut()) {
-          throw hangTimeoutError('响应体读取超时', '未完成');
-        }
-        throw jsonErr;
-      } finally {
-        bodyHangTimer.clear();
-      }
-      const choices = data.choices as Array<Record<string, unknown>> | undefined;
-      const choice = choices?.[0];
-      const msg = choice?.message as Record<string, unknown> | undefined;
-
-      if (msg?.content && typeof msg.content === 'string') {
-        onEvent({ type: 'text', text: msg.content });
-      }
-
-      if (typeof data.model === 'string') recorder.noteServedModel(data.model);
-      // Emit usage before done so agentLoop can capture it in finalUsage
-      const usage = data.usage as Record<string, unknown> | undefined;
-      if (usage) {
-        // 非流式响应里的 usage 就是最终结算。
-        recorder.observeUsage(usage, 'final');
-        onEvent({ type: 'usage', usage: extractUsage(usage) });
-      }
-
-      const toolCalls = msg?.tool_calls as Array<Record<string, unknown>> | undefined;
-      if (toolCalls && toolCalls.length > 0) {
-        for (const tc of toolCalls) {
-          const fn = tc.function as Record<string, unknown>;
-          let input: Record<string, unknown> = {};
-          try { input = JSON.parse(fn.arguments as string); } catch { /* empty */ }
-          onEvent({ type: 'tool_use', id: (tc.id as string) || generateToolCallId('ollama'), name: fn.name as string, input });
-        }
-        onEvent({ type: 'done', stopReason: 'tool_use' });
-      } else {
-        const textContent = typeof msg?.content === 'string' ? msg.content : '';
-        const emittedToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
-
-        // Fallback 1: <tool_call>{json}</tool_call>
-        const textToolCallRegex = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
-        for (const match of textContent.matchAll(textToolCallRegex)) {
-          try {
-            const parsed = JSON.parse(match[1]);
-            const name = parsed.name as string;
-            const args = parsed.arguments ?? parsed.parameters ?? {};
-            const input = typeof args === 'string' ? JSON.parse(args) : args;
-            emittedToolCalls.push({ id: generateToolCallId('text-tc'), name, input });
-          } catch { /* skip */ }
-        }
-
-        // Fallback 2: <|FunctionCallBegin|>[{json array}]<|FunctionCallEnd|> (Doubao/豆包)
-        const doubaoRegex = /<\|FunctionCallBegin\|>([\s\S]*?)<\|FunctionCallEnd\|>/g;
-        for (const match of textContent.matchAll(doubaoRegex)) {
-          try {
-            const raw = JSON.parse(match[1].trim());
-            const calls = Array.isArray(raw) ? raw : [raw];
-            for (const call of calls as Array<Record<string, unknown>>) {
-              const name = call.name as string;
-              const args = call.parameters ?? call.arguments ?? {};
-              const input = typeof args === 'string' ? (JSON.parse(args) as Record<string, unknown>) : (args as Record<string, unknown>);
-              emittedToolCalls.push({ id: generateToolCallId('doubao-tc'), name, input });
-            }
-          } catch { /* skip */ }
-        }
-
-        if (emittedToolCalls.length > 0) {
-          for (const tc of emittedToolCalls) {
-            onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
-          }
-          onEvent({ type: 'done', stopReason: 'tool_use' });
-        } else {
-          onEvent({ type: 'done', stopReason: 'end_turn' });
-        }
-      }
-      return;
     }
 
     const reader = response.body?.getReader();

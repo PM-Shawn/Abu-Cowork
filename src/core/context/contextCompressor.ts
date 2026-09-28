@@ -44,6 +44,8 @@ export interface CompressionConfig {
   conversationId?: string | null;
   /** 记账归属：Abu 自己的服务商配置 id。 */
   providerInstanceId?: string;
+  /** 与主请求相同的上下文窗口，Ollama 原生适配器用它作为 num_ctx。 */
+  contextWindow?: number;
 }
 
 /**
@@ -136,6 +138,7 @@ ${middleText}
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     maxTokens: SUMMARY_MAX_TOKENS,
+    contextWindow: config.contextWindow,
     signal: combinedSignal,
     accounting: compactionAccounting(config),
   };
@@ -270,6 +273,7 @@ ${middleText}
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
       maxTokens: SUMMARY_MAX_TOKENS,
+      contextWindow: config.contextWindow,
       signal: combinedSignal,
       accounting: compactionAccounting(config),
     };

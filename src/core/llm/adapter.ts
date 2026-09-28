@@ -72,6 +72,11 @@ export interface ChatOptions {
   volatileContextTail?: string;
   tools?: ToolDefinition[];
   maxTokens?: number;
+  /**
+   * 本次请求使用的上下文窗口（resolveContextWindow 的结果）。Ollama 原生适配器
+   * 把它作为 options.num_ctx 发送；其余适配器不读。随 llm.chat 序列化进 sidecar。
+   */
+  contextWindow?: number;
   // New parameters for enhanced control
   toolChoice?: ToolChoice;
   temperature?: number;        // 0-1, controls randomness
@@ -127,7 +132,7 @@ export interface LLMAdapter {
  * agree on the JSON-RPC `llm.chat` params' `adapterKind` field without
  * duplicating the union.
  */
-export type AdapterKind = 'claude' | 'openai-compatible';
+export type AdapterKind = 'claude' | 'openai-compatible' | 'ollama';
 
 // --- Error Classification ---
 
@@ -344,7 +349,7 @@ export function extractUpstreamErrorDetails(
   const records = providerErrorRecords(rawBody);
   const errorType = firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
   const traceId = firstBoundedString(records, ['traceId', 'trace_id'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
-  const structuredSummary = firstBoundedString(records, ['message', 'detail'], UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+  const structuredSummary = firstBoundedString(records, ['message', 'detail', 'error'], UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
   // For a parsed JSON body with no human-readable message/detail, omit the
   // summary instead of copying the whole JSON object into the UI card. Plain
   // text provider bodies still use the bounded fallback.
@@ -425,10 +430,14 @@ export function extractApiErrorMessage(rawBody: string): string {
   const stripped = stripProviderStatusPrefix(rawBody);
   try {
     const parsed = JSON.parse(stripped) as {
-      error?: { message?: string };
+      error?: { message?: string } | string;
       message?: string;
     };
-    if (typeof parsed.error?.message === 'string' && parsed.error.message) {
+    // Ollama 原生接口的错误体是 {"error": "..."}
+    if (typeof parsed.error === 'string' && parsed.error) {
+      return parsed.error;
+    }
+    if (typeof parsed.error === 'object' && typeof parsed.error?.message === 'string' && parsed.error.message) {
       return parsed.error.message;
     }
     if (typeof parsed.message === 'string' && parsed.message) {

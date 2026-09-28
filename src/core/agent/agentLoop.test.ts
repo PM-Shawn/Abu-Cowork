@@ -1269,8 +1269,26 @@ describe('服务说内容太长后按真实上限恢复', () => {
       useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
       vi.unstubAllGlobals();
     };
-    return { useChatStore, LLMError, chat, recordContextWindow, restore };
+    return { useChatStore, LLMError, chat, selectAdapter, recordContextWindow, restore };
   }
+
+  it('Ollama 走自己的适配器，首次请求与重试都带窗口，重试用学到的值', async () => {
+    const { useChatStore, LLMError, chat, selectAdapter, restore } = await setup();
+    mockProbeContextWindow.mockResolvedValue(32768);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 16384 }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(selectAdapter).toHaveBeenCalledWith('ollama');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect((chat.mock.calls[0][1] as { contextWindow?: number }).contextWindow).toBe(32768);
+      expect((chat.mock.calls[1][1] as { contextWindow?: number }).contextWindow).toBe(16384);
+    } finally {
+      restore();
+    }
+  });
 
   it('记住报错里的上限并带上运行开始时服务报告的值，按新上限重试', async () => {
     const { useChatStore, LLMError, chat, recordContextWindow, restore } = await setup();

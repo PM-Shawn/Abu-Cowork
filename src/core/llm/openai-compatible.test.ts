@@ -796,44 +796,12 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
   });
 
-  it('non-streaming (Ollama+tools) body read aborts on the hang ceiling (B3)', async () => {
-    // Ollama endpoint + tools forces the NON-streaming path (response.json()).
-    // Headers arrive, but the body never completes and only errors on abort. The
-    // body-download timeout must abort so response.json() rejects and chat()
-    // unwinds — previously response.json() had no timeout and hung forever.
-    mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
-      const signal = init?.signal;
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          if (signal?.aborted) return controller.error(abortError());
-          signal?.addEventListener('abort', () => controller.error(abortError()), { once: true });
-        },
-      });
-      return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    });
-
-    const adapter = new OpenAICompatibleAdapter();
-    const events: StreamEvent[] = [];
-    const chatPromise = adapter.chat(
-      [userMessage],
-      makeOptions({ baseUrl: 'http://localhost:11434/v1' }),
-      (e) => events.push(e),
-    );
-    let settled = false;
-    chatPromise.then(() => { settled = true; }, () => { settled = true; });
-
-    await vi.advanceTimersByTimeAsync(179_000);
-    expect(settled).toBe(false);
-
-    await vi.advanceTimersByTimeAsync(2_000);
-    // code-review fix #10 regression: body-download hang timer now shares the
-    // same helper as the connect-phase timers but must keep its own message.
-    await expect(chatPromise).rejects.toMatchObject({
-      code: 'network_error',
-      retryable: true,
-      retryAfterMs: 2000,
-      message: '响应体读取超时：180 秒未完成',
-    });
+  it('streams with tools on a local address', async () => {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([{ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]));
+    await new OpenAICompatibleAdapter().chat([userMessage], makeOptions({ baseUrl: 'http://localhost:11434/v1' }), () => {});
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
   });
 
   it('max_tokens retry re-arms the connect timeout instead of hanging (B4)', async () => {

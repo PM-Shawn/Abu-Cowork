@@ -20,9 +20,10 @@
  * between) tokens, and the old 90s ceiling falsely killed those requests and
  * triggered wasteful retries. Deliberately kept as ONE value shared by both the
  * connect/header phase and the inter-chunk idle phase — a shorter connect
- * ceiling would falsely kill non-streaming (Ollama+tools) generations and
- * header-buffering proxies, which are exactly the slow cases we want to keep
- * alive. Codex allows 300s here; 3min is enough for the office use case.
+ * ceiling would falsely kill local servers that load a model before sending
+ * headers and header-buffering proxies, which are exactly the slow cases we
+ * want to keep alive. Codex allows 300s here; 3min is enough for the office
+ * use case.
  */
 export const DEFAULT_STREAM_HANG_TIMEOUT_MS = 180_000;
 

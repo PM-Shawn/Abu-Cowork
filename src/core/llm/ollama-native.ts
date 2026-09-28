@@ -42,9 +42,10 @@ function nextOllamaToolCallId(): string {
 }
 
 function userMessage(blocks: PreparedContentBlock[]): OllamaMessage {
+  // 同一轮里的文本块（用户原文、归一化器追加的提示）各占一行
   const content = blocks
-    .map((block) => (block.type === 'text' ? block.text : block.type === 'document' ? DOCUMENT_UNSUPPORTED_NOTE : ''))
-    .join('');
+    .flatMap((block) => (block.type === 'text' ? [block.text] : block.type === 'document' ? [DOCUMENT_UNSUPPORTED_NOTE] : []))
+    .join('\n');
   const images = blocks.flatMap((block) => (block.type === 'image' ? [block.data] : []));
   return images.length > 0 ? { role: 'user', content, images } : { role: 'user', content };
 }
@@ -136,6 +137,12 @@ export class OllamaNativeAdapter implements LLMAdapter {
       model: options.model,
       messages: toOllamaMessages(turns, options.systemPrompt, options.volatileContextTail),
       stream: true,
+      // 关掉 Ollama 自己的截断与上下文平移：超过 num_ctx 时它才会报「the prompt is longer
+      // than the context length…」，阿布据此按真实上限整理后重试，而这两项默认都是开着的
+      truncate: false,
+      shift: false,
+      // 不支持思考的模型收到 think: true 会被拒绝，所以只在关闭时发送
+      ...(options.enableThinking === false ? { think: false } : {}),
       options: {
         num_ctx: options.contextWindow,
         num_predict: options.maxTokens ?? 4096,

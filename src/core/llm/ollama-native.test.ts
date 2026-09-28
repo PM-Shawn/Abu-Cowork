@@ -80,6 +80,27 @@ describe('OllamaNativeAdapter request', () => {
     expect((body.messages as Array<{ role: string }>)[0]).toEqual({ role: 'system', content: 'sys' });
   });
 
+  it('turns off Ollama\'s own truncation and context shift so an overflow is reported', async () => {
+    await run([DONE]);
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect(body.truncate).toBe(false);
+    expect(body.shift).toBe(false);
+  });
+
+  it('sends think: false when thinking is turned off and nothing otherwise', async () => {
+    await run([DONE], { enableThinking: false });
+    const off = JSON.parse((mockFetch.mock.calls[0] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect(off.think).toBe(false);
+
+    await run([DONE], { enableThinking: true });
+    const on = JSON.parse((mockFetch.mock.calls[1] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect('think' in on).toBe(false);
+
+    await run([DONE]);
+    const unset = JSON.parse((mockFetch.mock.calls[2] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect('think' in unset).toBe(false);
+  });
+
   it('leaves tools out when the user said the model cannot call tools', async () => {
     await run([DONE], { declaredCapabilities: { supportsTools: false } });
     const body = JSON.parse((mockFetch.mock.calls[0] as [string, { body: string }])[1].body) as Record<string, unknown>;
@@ -131,6 +152,37 @@ describe('OllamaNativeAdapter streaming', () => {
     expect(events.at(-1)).toEqual({ type: 'done', stopReason: 'max_tokens' });
   });
 
+  it('generates an id for a native tool call that arrives without one', async () => {
+    const events = await run([
+      { message: { role: 'assistant', content: '', tool_calls: [{ function: { name: 'read_file', arguments: { path: 'a.txt' } } }] } },
+      DONE,
+    ]);
+    const call = events.find((e) => e.type === 'tool_use');
+    expect(call?.type === 'tool_use' && call.id).toMatch(/^ollama-tc-/);
+  });
+
+  it('reassembles a JSON line that arrives split across two chunks', async () => {
+    const line = JSON.stringify({ message: { role: 'assistant', content: 'Hello' } });
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(line.slice(0, 12)));
+        controller.enqueue(encoder.encode(`${line.slice(12)}\n${JSON.stringify(DONE)}\n`));
+        controller.close();
+      },
+    });
+    mockFetch.mockResolvedValueOnce(new Response(body, { status: 200 }));
+    const events: StreamEvent[] = [];
+    await new OllamaNativeAdapter().chat([userMessage], options(), (e) => events.push(e));
+    expect(events.map((e) => (e.type === 'text' ? e.text : '')).join('')).toBe('Hello');
+    expect(events.at(-1)).toEqual({ type: 'done', stopReason: 'end_turn' });
+  });
+
+  it('fails as a retryable network error when the stream ends without a final frame', async () => {
+    await expect(run([{ message: { role: 'assistant', content: 'half' } }]))
+      .rejects.toMatchObject({ code: 'network_error', retryable: true, message: 'Ollama stream ended before it finished' });
+  });
+
   it('records the final usage in the ledger', async () => {
     await run([{ message: { role: 'assistant', content: 'hi' } }, { ...DONE, prompt_eval_cached_count: 100 }]);
     const last = emitted.at(-1);
@@ -150,6 +202,44 @@ describe('OllamaNativeAdapter errors', () => {
       .rejects.toMatchObject({ code: 'context_too_long' });
   });
 
+  it('turns an HTTP 400 overflow into context_too_long', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: 'the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length' }),
+      { status: 400 },
+    ));
+    await expect(new OllamaNativeAdapter().chat([userMessage], options(), () => {}))
+      .rejects.toMatchObject({ code: 'context_too_long', statusCode: 400 });
+  });
+
+  it('turns any other in-stream error into a retryable server error', async () => {
+    mockFetch.mockResolvedValueOnce(ndjson([{ message: { role: 'assistant', content: 'a' } }, { error: 'model runner has unexpectedly stopped' }]));
+    await expect(new OllamaNativeAdapter().chat([userMessage], options(), () => {}))
+      .rejects.toMatchObject({ code: 'server_error', retryable: true, message: 'model runner has unexpectedly stopped' });
+  });
+
+  it('settles the ledger as cancelled when the user stops mid-stream', async () => {
+    const controller = new AbortController();
+    const encoder = new TextEncoder();
+    mockFetch.mockImplementationOnce((_url: string, init: { signal: AbortSignal }) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          streamController.enqueue(encoder.encode(`${JSON.stringify({ message: { role: 'assistant', content: 'a' } })}\n`));
+          init.signal.addEventListener('abort', () => {
+            const abortError = new Error('Request cancelled');
+            abortError.name = 'AbortError';
+            streamController.error(abortError);
+          }, { once: true });
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    });
+    const chatPromise = new OllamaNativeAdapter().chat([userMessage], options({ signal: controller.signal }), (event) => {
+      if (event.type === 'text') controller.abort();
+    });
+    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error' });
+    expect(emitted.at(-1)).toMatchObject({ outcome: 'cancelled' });
+  });
+
   it('keeps Ollama\'s own wording for an HTTP error', async () => {
     mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: "model 'x' not found" }), { status: 404 }));
     await expect(new OllamaNativeAdapter().chat([userMessage], options(), () => {}))
@@ -158,6 +248,15 @@ describe('OllamaNativeAdapter errors', () => {
 });
 
 describe('toOllamaMessages', () => {
+  it('separates the text blocks of one user turn with a line break', () => {
+    const turns: PreparedTurn[] = [
+      { kind: 'user', content: [{ type: 'text', text: '看图' }, { type: 'text', text: '<image_resize_notice>resized</image_resize_notice>' }] },
+    ];
+    expect(toOllamaMessages(turns)).toEqual([
+      { role: 'user', content: '看图\n<image_resize_notice>resized</image_resize_notice>' },
+    ]);
+  });
+
   it('sends images as base64, tool results with the tool name, and the volatile tail last', () => {
     const turns: PreparedTurn[] = [
       { kind: 'user', content: [{ type: 'text', text: '看图' }, { type: 'image', mediaType: 'image/png', data: 'AAAA' }] },

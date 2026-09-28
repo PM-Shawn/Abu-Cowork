@@ -195,14 +195,14 @@ test('a malformed storage marker is refused before a journal is written', async 
   for (const marker of ['', 'B'.repeat(32), 'a'.repeat(31), 42, null]) {
     await assert.rejects(f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker }), /invalid begin request/);
   }
-  assert.equal(f.disk.entries.has('/profile/.abu/plugin-operations/active.enc'), false);
+  assert.equal(f.disk.entries.has(path.resolve('/profile/.abu/plugin-operations/active.enc')), false);
   assert.equal(await f.host.dispatch(f.sender, 'status'), null);
 });
 
 test('a journal whose marker was altered is reported unreadable', async () => {
   const f = fixture();
   await f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker: 'c'.repeat(32) });
-  const entry = f.disk.entries.get('/profile/.abu/plugin-operations/active.enc');
+  const entry = f.disk.entries.get(path.resolve('/profile/.abu/plugin-operations/active.enc'));
   const journal = JSON.parse(f.options.decrypt(entry.bytes));
   journal.marker = 'not-a-marker';
   entry.bytes = Buffer.from(f.options.encrypt(JSON.stringify(journal)));
@@ -249,7 +249,7 @@ test('a journal whose progress key was altered is reported unreadable', async ()
   const op = await f.host.dispatch(f.sender, 'begin', { kind: 'update', key: f.record.key, record: f.record, token: 'token', expected: previous, runtime: f.runtime, marker: 'c'.repeat(32) });
   await f.host.dispatch(f.sender, 'rollback', op);
   await f.host.dispatch(f.sender, 'checkpoint', { id: op.id });
-  const entry = f.disk.entries.get('/profile/.abu/plugin-operations/active.enc');
+  const entry = f.disk.entries.get(path.resolve('/profile/.abu/plugin-operations/active.enc'));
   const journal = JSON.parse(f.options.decrypt(entry.bytes));
   journal.progress = '../escape';
   entry.bytes = Buffer.from(f.options.encrypt(JSON.stringify(journal)));

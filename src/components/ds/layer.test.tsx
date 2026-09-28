@@ -150,6 +150,15 @@ describe('LayerProvider', () => {
     expect(screen.queryByText('discard dialog')).toBeNull();
   });
 
+  it('closes an open alert when a dialog opens', async () => {
+    const user = userEvent.setup();
+    render(<LayerProvider><FakeLayer name="alert" kind="alert" /><FakeLayer name="dialog" kind="dialog" /></LayerProvider>);
+    await user.click(screen.getByText('open alert'));
+    await user.click(screen.getByText('open dialog'));
+    expect(screen.queryByTestId('alert')).toBeNull();
+    expect(screen.getByTestId('dialog')).toBeInTheDocument();
+  });
+
   it('replaces an older alert with a new one', async () => {
     const user = userEvent.setup();
     render(<LayerProvider><FakeLayer name="older" kind="alert" /><FakeLayer name="newer" kind="alert" /></LayerProvider>);

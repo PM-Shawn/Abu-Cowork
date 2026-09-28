@@ -106,6 +106,27 @@ describe('useConfirm', () => {
     expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('draft');
   });
 
+  it('answers a pending request with false when a dialog opens without a click', async () => {
+    captured = null;
+    const tree = (open: boolean) => (
+      <>
+        <Capture onReady={keep} />
+        <Dialog open={open} onOpenChange={() => undefined} title="Shortcut dialog" />
+      </>
+    );
+    const { rerender } = renderTree(tree(false), { wrapper: DesignSystemProvider });
+    const answer = ask();
+    let settled: boolean | 'pending' = 'pending';
+    void answer.then((confirmed) => { settled = confirmed; });
+    expect(screen.getByRole('alertdialog', { name: 'Delete this channel?' })).toBeInTheDocument();
+    rerender(tree(true));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Shortcut dialog' })).toBeInTheDocument();
+  });
+
   it('answers a pending request with false when the provider goes away', async () => {
     const { unmount } = render('provider');
     const answer = ask();

@@ -2,7 +2,7 @@ import { useContext, useMemo, useRef, type ReactNode } from 'react';
 import { LayerContext, LayerScopeContext, type LayerEntry, type LayerRegistry } from './layer-context';
 
 // Keeps at most one dialog and one menu or popover open at a time (spec §6.4, flow 2).
-// An alert stacks over an open dialog; a newer alert replaces an older one.
+// An alert stacks over an open dialog; a newer alert or a new dialog closes it.
 // A layer opened inside another layer is its child and leaves that parent open.
 // Also decides which DOM node floating layers portal into.
 export function LayerProvider({ children, container }: { children: ReactNode; container?: HTMLElement | null }) {
@@ -26,7 +26,8 @@ export function LayerProvider({ children, container }: { children: ReactNode; co
         ));
         for (const layer of others) {
           if (layer.kind === 'popover') dismiss(layer);
-          else if (layer.kind === 'alert' && entry.kind === 'alert') dismiss(layer);
+          // A new alert replaces an older one; a new dialog answers an open alert with cancel.
+          else if (layer.kind === 'alert' && entry.kind !== 'popover') dismiss(layer);
         }
         if (entry.kind === 'dialog') {
           const current = others.find((layer) => layer.kind === 'dialog');

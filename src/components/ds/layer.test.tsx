@@ -7,8 +7,14 @@ import { describe, expect, it } from 'vitest';
 import { LayerProvider, LayerScope } from './layer';
 import { useLayer, useLayerContainer, useOpenState, type LayerKind } from './layer-context';
 
-function FakeLayer({ name, kind, dirty = false, children }: { name: string; kind: LayerKind; dirty?: boolean; children?: ReactNode }) {
-  const [open, setOpen] = useState(false);
+function FakeLayer({ name, kind, dirty = false, defaultOpen = false, children }: {
+  name: string;
+  kind: LayerKind;
+  dirty?: boolean;
+  defaultOpen?: boolean;
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
   const id = useLayer(kind, open, setOpen, kind === 'dialog'
     ? { isDirty: () => dirty, confirmDiscard: (onDiscard) => setPendingDiscard(() => onDiscard) }
@@ -27,6 +33,16 @@ function FakeLayer({ name, kind, dirty = false, children }: { name: string; kind
 function ContainerProbe() {
   const container = useLayerContainer();
   return <span>{container ? container.id : 'body'}</span>;
+}
+
+function ContainerSwitch({ children }: { children: ReactNode }) {
+  const [container, setContainer] = useState<HTMLElement | undefined>(undefined);
+  return (
+    <LayerProvider container={container}>
+      <button type="button" onClick={() => setContainer(document.createElement('div'))}>switch container</button>
+      {children}
+    </LayerProvider>
+  );
 }
 
 function OpenStateProbe({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
@@ -49,6 +65,44 @@ describe('LayerProvider', () => {
     render(<LayerProvider><FakeLayer name="parent" kind="popover"><FakeLayer name="child" kind="popover" /></FakeLayer></LayerProvider>);
     await user.click(screen.getByText('open parent'));
     await user.click(screen.getByText('open child'));
+    expect(screen.getByTestId('parent')).toBeInTheDocument();
+    expect(screen.getByTestId('child')).toBeInTheDocument();
+  });
+
+  it('leaves a child open when parent and child open in the same render', () => {
+    render(
+      <LayerProvider>
+        <FakeLayer name="parent" kind="popover" defaultOpen>
+          <FakeLayer name="child" kind="popover" defaultOpen />
+        </FakeLayer>
+      </LayerProvider>,
+    );
+    expect(screen.getByTestId('parent')).toBeInTheDocument();
+    expect(screen.getByTestId('child')).toBeInTheDocument();
+  });
+
+  it('leaves a popover inside a dialog open when both open in the same render', () => {
+    render(
+      <LayerProvider>
+        <FakeLayer name="dialog" kind="dialog" defaultOpen>
+          <FakeLayer name="select" kind="popover" defaultOpen />
+        </FakeLayer>
+      </LayerProvider>,
+    );
+    expect(screen.getByTestId('dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('select')).toBeInTheDocument();
+  });
+
+  it('keeps open parent and child layers open when the container changes', async () => {
+    const user = userEvent.setup();
+    render(
+      <ContainerSwitch>
+        <FakeLayer name="parent" kind="popover"><FakeLayer name="child" kind="popover" /></FakeLayer>
+      </ContainerSwitch>,
+    );
+    await user.click(screen.getByText('open parent'));
+    await user.click(screen.getByText('open child'));
+    await user.click(screen.getByText('switch container'));
     expect(screen.getByTestId('parent')).toBeInTheDocument();
     expect(screen.getByTestId('child')).toBeInTheDocument();
   });

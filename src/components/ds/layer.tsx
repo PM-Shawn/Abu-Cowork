@@ -18,12 +18,16 @@ export function LayerProvider({ children, container }: { children: ReactNode; co
       container: container ?? undefined,
       unregister: remove,
       register(entry) {
-        const others = layers.current.filter((layer) => layer.id !== entry.id);
+        // Layout effects run child-first, so a layer's own descendants may already be
+        // registered when it registers; they stay open like its ancestors do.
+        const others = layers.current.filter((layer) => (
+          layer.id !== entry.id && !entry.ancestors.includes(layer.id) && !layer.ancestors.includes(entry.id)
+        ));
         for (const layer of others) {
-          if (layer.kind === 'popover' && !entry.ancestors.includes(layer.id)) dismiss(layer);
+          if (layer.kind === 'popover') dismiss(layer);
         }
         if (entry.kind === 'dialog') {
-          const current = others.find((layer) => layer.kind === 'dialog' && !entry.ancestors.includes(layer.id));
+          const current = others.find((layer) => layer.kind === 'dialog');
           if (current?.isDirty()) {
             entry.close();
             current.confirmDiscard(() => {

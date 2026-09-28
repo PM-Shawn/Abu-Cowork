@@ -1075,6 +1075,25 @@ const settingsStateStorage: StateStorage = {
 };
 
 /**
+ * Run `task` after every settings blob write already requested in this origin
+ * and before any requested later. Those writes wait for the lock above, so they
+ * reach localStorage after the state change that caused them; a caller whose own
+ * localStorage write must come after them runs that write here.
+ */
+export function afterQueuedSettingsWrites<T>(task: () => T): Promise<T> {
+  return navigator.locks.request(BROWSER_PERMISSION_LOCK, () => {
+    browserPermissionLockHeld = true;
+    try { return task(); } finally { browserPermissionLockHeld = false; }
+  });
+}
+
+/** A list field as the stored settings blob holds it; null without a readable blob. */
+export function storedSettingsList(field: 'disabledSkills' | 'disabledAgents'): string[] | null {
+  const value = parsePersistedSettings(safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null)?.state[field];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : null;
+}
+
+/**
  * Bring memory back in line with what is actually stored, for named fields
  * only.
  *

@@ -1315,6 +1315,51 @@ describe('服务说内容太长后按真实上限恢复', () => {
       restore();
     }
   });
+
+  // 思考预算要跟着新窗口重新计算，否则重试时思考预算会超过回答预算
+  it.each([
+    {
+      label: 'qwen 类',
+      caps: { thinking: 'qwen' as const, maxOutputTokens: 8192, contextWindow: 32768 },
+      probed: 32768,
+      learned: 8192,
+      // 回答预算不超过学到窗口的四分之一
+      expectedMaxTokens: 8192 / 4,
+      expectedEnableThinking: undefined,
+    },
+    {
+      label: 'Claude 类',
+      caps: { thinking: 'anthropic' as const, maxOutputTokens: 64000, contextWindow: 200000 },
+      probed: 200000,
+      learned: 32768,
+      // Claude 的回答预算最少 16384（思考预算 10000 计入其中）
+      expectedMaxTokens: Math.max(32768 / 4, 16384),
+      expectedEnableThinking: true,
+    },
+  ])('$label：重试请求的思考预算按学到的窗口重新计算', async ({ caps, probed, learned, expectedMaxTokens, expectedEnableThinking }) => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const modelCapabilities = await import('../llm/modelCapabilities');
+    const resolveCaps = vi.spyOn(modelCapabilities, 'resolveCapabilities').mockReturnValue({
+      vision: false, toolResultImages: 'none', documentBlock: false, ...caps,
+    });
+    mockProbeContextWindow.mockResolvedValue(probed);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: learned }));
+    try {
+      const conversationId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(conversationId, 'hello');
+
+      expect(result.reason).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      const retryOptions = chat.mock.calls[1][1] as { maxTokens: number; thinkingBudget?: number; enableThinking?: boolean };
+      expect(retryOptions.maxTokens).toBe(expectedMaxTokens);
+      expect(retryOptions.thinkingBudget).toBeDefined();
+      expect(retryOptions.thinkingBudget!).toBeLessThan(retryOptions.maxTokens);
+      expect(retryOptions.enableThinking).toBe(expectedEnableThinking);
+    } finally {
+      resolveCaps.mockRestore();
+      restore();
+    }
+  });
 });
 
 describe('runAgentLoop pinned-model availability guard', () => {

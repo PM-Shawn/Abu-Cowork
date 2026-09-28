@@ -104,7 +104,7 @@ import { startConversationTrace, endConversationTrace, startGeneration } from '.
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, reserveOutputTokens, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
@@ -1982,9 +1982,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         isLocal: localServerKind(activeProvider) !== null,
         ceiling: freshSettings.contextWindowSize,
       }).size;
+      const requestedMaxOutputTokens = modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput;
       const reasoningParams = computeReasoningParams(
         effectiveCaps,
-        modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
+        requestedMaxOutputTokens,
         contextWindowSize,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
@@ -2605,7 +2606,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               });
             }
           }
-          const recoveryMaxOutputTokens = reserveOutputTokens(maxOutputTokens, recoveryContextWindowSize);
+          // 回答预算与思考预算都按新上限重新计算，思考预算才不会超过回答预算
+          const recoveryReasoningParams = computeReasoningParams(
+            effectiveCaps,
+            requestedMaxOutputTokens,
+            recoveryContextWindowSize,
+          );
+          const recoveryMaxOutputTokens = recoveryReasoningParams.maxTokens;
           // 水位环的分母换成刚学到的真实值
           chatDelta.setContextUsage(conversationId, {
             percent: getDisplayPercent(postCompressionTokens, recoveryContextWindowSize),
@@ -2695,7 +2702,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             safetyMarginTokens: recoveryBudgetResult.safetyMarginTokens,
             strategy: recoveryBudgetResult.strategy,
           });
-          const recoveryChatOptions = { ...chatOptions, maxTokens: recoveryMaxOutputTokens };
+          const recoveryChatOptions = {
+            ...chatOptions,
+            maxTokens: recoveryMaxOutputTokens,
+            enableThinking: recoveryReasoningParams.enableThinking,
+            thinkingBudget: recoveryReasoningParams.thinkingBudget,
+            reasoningEffort: recoveryReasoningParams.reasoningEffort,
+          };
           try {
             await adapter.chat(preparedMessages, recoveryChatOptions, eventHandler);
           } catch (retryErr2) {

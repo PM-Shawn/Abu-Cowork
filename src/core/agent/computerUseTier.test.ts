@@ -182,4 +182,34 @@ describe('computer tool and guidance follow whether the model can see images', (
     expect(context.computerUseTier).toBe('structured');
     expect(context.supportsVision).toBe(false);
   });
+
+  // 子代理用自己的模型（不同于会话的全局模型）时，拦截提示写出子代理实际使用的模型名
+  it('a delegated agent on an unverified model is refused with its own model name', async () => {
+    useOllamaModel('llama3.2');
+    useSettingsStore.setState({
+      providers: useSettingsStore.getState().providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, models: [...p.models, { id: 'mystery-model:7b', label: 'mystery-model:7b', contextWindow: 65536 }] }
+          : p),
+    });
+    answerWith('<tool_call>{"name": "computer", "arguments": {"action": "wait", "duration": 100, "consequence": "none"}}</tool_call>');
+    executeAnyTool.mockImplementation(
+      (_name: string, input: Record<string, unknown>, _confirm: unknown, _permission: unknown, context: ToolExecutionContext) =>
+        computerTool.execute(input, context),
+    );
+    const agent = {
+      name: 'operator', description: 'operates apps', systemPrompt: 'operate', tools: ['computer'],
+      model: 'mystery-model:7b', filePath: '__preset__',
+    };
+
+    const result = await runSubagentLoop({ agent, task: 'wait a moment' });
+
+    expect(result.stopReason).toBe('completed');
+    const context = executeAnyTool.mock.calls[0][4] as ToolExecutionContext;
+    expect(context.computerUseTier).toBe('unknown');
+    expect(context.modelId).toBe('mystery-model:7b');
+    const toolMessage = requests.flatMap((body) => body.messages).find((message) => message.role === 'tool');
+    expect(toolMessage?.content).toContain('mystery-model:7b');
+    expect(toolMessage?.content).not.toContain('current model');
+  });
 });

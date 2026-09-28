@@ -1262,7 +1262,7 @@ describe('subagentRunner', () => {
     });
 
     // 子代理模型能不能看图由外壳按同一份设置快照自己算，不用 sidecar 发来的副本
-    it('answers with the session\'s own computer-use tier and vision, whatever the sidecar sent', async () => {
+    it('answers with the session\'s own model, computer-use tier and vision, whatever the sidecar sent', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
@@ -1278,11 +1278,16 @@ describe('subagentRunner', () => {
         runId,
         toolName: 'read_file',
         input: { path: 'x.txt' },
-        context: { computerUseTier: 'full', supportsVision: true },
+        context: { computerUseTier: 'full', supportsVision: true, modelId: 'forged-model', modelCapabilitySource: 'user-declared' },
       });
 
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
-        expect.objectContaining({ computerUseTier: 'structured', supportsVision: false }),
+        expect.objectContaining({
+          computerUseTier: 'structured',
+          supportsVision: false,
+          modelId: 'deepseek-chat',
+          modelCapabilitySource: 'builtin',
+        }),
       );
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;

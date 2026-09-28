@@ -3972,6 +3972,7 @@ const zhCN: TranslationDict = {
       verificationLegacyWeak: '历史验证记录缺少分层证据，尚未确认目标达成',
       noInteractiveElements: '（没有找到可交互元素）',
       errNoVision: '当前模型不支持图片识别，截图对它没有意义。请改用 get_app_state（可加 app 参数指定应用）读取 AX 元素，再用 click(element_id) / type(element_id, text) 操作。',
+      errNoVisionScrollWindows: '当前模型不支持图片识别，而 Windows 上的滚动需要截图。请先用 click(element_id) 点击目标元素取得焦点，再用 key 发送 PageDown 或 ArrowDown。',
       errActivateNeedsApp: 'Error: activate_app 需要 app 参数（应用名，如 "D-Chat"、"Notes"）。',
       activateSuccess: '已将「{name}」切到前台。可继续 get_app_state 读取界面或操作。',
       errActivateFailed: 'Error: 激活应用失败：{msg}',

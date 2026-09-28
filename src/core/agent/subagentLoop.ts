@@ -1284,6 +1284,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             abortSignal: signal,
             offeredToolNames: [...offeredToolNames],
             // 电脑操控按子代理自己的模型取舍，不沿用会话的全局模型
+            modelId: agentCapabilities.modelId,
+            modelCapabilitySource: agentCapabilities.capabilitySource,
             computerUseTier: agentCapabilities.computerUseTier,
             supportsVision: agentCapabilities.vision,
             // Forward the IM reply target so send_file works from a subagent

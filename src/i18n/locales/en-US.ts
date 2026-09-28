@@ -3970,6 +3970,7 @@ const enUS: TranslationDict = {
       verificationLegacyWeak: 'Legacy verification evidence is incomplete; target completion is not confirmed',
       noInteractiveElements: '(No interactive elements found)',
       errNoVision: 'The current model has no vision capability. Use get_app_state to read AX elements, then click(element_id) / type(element_id, text) to operate.',
+      errNoVisionScrollWindows: 'The current model has no vision capability, and scrolling on Windows needs a screenshot. Click the target element with click(element_id) so it has focus, then use key to send PageDown or ArrowDown.',
       errActivateNeedsApp: 'Error: activate_app requires the app parameter (app name, e.g. "D-Chat", "Notes").',
       activateSuccess: 'Brought "{name}" to the foreground. You can continue with get_app_state to read the UI or interact.',
       errActivateFailed: 'Error: failed to activate app: {msg}',

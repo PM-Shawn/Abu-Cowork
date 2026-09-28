@@ -1418,7 +1418,11 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     const modelSupportsVision = context?.supportsVision ?? resolveCapabilities(
       getSettingsReader().getSnapshot().activeModel.modelId,
     ).vision;
-    // 只能靠截图或截图坐标完成的动作：看不了图时在开设置、开会话、弹确认之前就拒绝
+    // 只能靠截图或截图坐标完成的动作：看不了图时在开设置、开会话、弹确认之前就拒绝。
+    // Windows 宿主上的 scroll 不论有没有 element_id 都要截图编号，改为引导「点击取得焦点 + key 翻页」
+    if (!modelSupportsVision && action === 'scroll' && isWindows() && hasElectronCommandHost()) {
+      return t.errNoVisionScrollWindows;
+    }
     if (!modelSupportsVision && (
       action === 'screenshot'
       || action === 'get_screen_state'

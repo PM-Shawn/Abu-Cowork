@@ -307,21 +307,53 @@ describe('computerTool — accessibility permission branch', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it.each(noVisionOnlyActions)('refuses %s from a model that cannot see images before any session or prompt (Windows host)', async (_label, input) => {
+  async function executeOnWindowsHost(input: Record<string, unknown>) {
     setElectronHost(true);
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);
-    const key = { conversationId: 'no-vision-windows', loopId: `no-vision-${String(input.action)}` };
+    const key = { conversationId: 'no-vision-windows', loopId: `no-vision-${String(input.action)}-${String(input.element_id)}` };
     computerUseController.recordObservation(key, {
       stateId: 'state-1', target: { windowRef: 'wr-1', appName: 'Editor', bundleId: 'editor.exe', processId: 42 },
       axSessionId: 'ax-1', elements: [], capabilityTier: 'structured',
     });
-    const result = await computerTool.execute(
+    return computerTool.execute(
       { ...input, window_ref: 'wr-1', expected_state_id: 'state-1', consequence: 'none' },
       { ...key, toolCallId: 'tool-no-vision', interactionMode: 'foreground', computerUseTier: 'structured', supportsVision: false },
     );
-    expect(result).toBe(getI18n().toolResult.computer.errNoVision);
+  }
+
+  it.each(noVisionOnlyActions.filter(([, input]) => input.action !== 'scroll'))(
+    'refuses %s from a model that cannot see images before any session or prompt (Windows host)',
+    async (_label, input) => {
+      const result = await executeOnWindowsHost(input);
+      expect(result).toBe(getI18n().toolResult.computer.errNoVision);
+      expect(invoke).not.toHaveBeenCalled();
+    },
+  );
+
+  // Windows 上滚动一律要截图编号，看不了图时改用「点击取得焦点 + key 翻页」
+  it.each([
+    ['with element_id', { action: 'scroll', element_id: 3, direction: 'down' }],
+    ['without element_id', { action: 'scroll', x: 10, y: 20, direction: 'down' }],
+  ])('refuses scroll %s on the Windows host and points to focus + PageDown', async (_label, input) => {
+    const result = await executeOnWindowsHost(input);
+    expect(result).toBe(getI18n().toolResult.computer.errNoVisionScrollWindows);
+    expect(String(result)).toContain('PageDown');
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps element scroll going on macOS for a model that cannot see images', async () => {
+    const result = await computerTool.execute(
+      { action: 'scroll', element_id: 3, direction: 'down', window_ref: 'wr-1', expected_state_id: 'state-1', consequence: 'none' },
+      {
+        conversationId: 'active-conversation', loopId: 'loop-mac-scroll', toolCallId: 'tool-mac-scroll',
+        interactionMode: 'foreground', computerUseTier: 'structured', supportsVision: false,
+      },
+    );
+    expect(result).not.toBe(getI18n().toolResult.computer.errNoVision);
+    expect(result).not.toBe(getI18n().toolResult.computer.errNoVisionScrollWindows);
+    // 没有被提前拒绝：继续走到了宿主（权限检查与会话建立）
+    expect(invoke).toHaveBeenCalled();
   });
 
   it('does not open the computer-use setup for a screenshot a model cannot see', async () => {

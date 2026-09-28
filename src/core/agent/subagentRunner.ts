@@ -164,7 +164,7 @@ import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
-import type { ComputerUseModelTier } from '../llm/modelCapabilities';
+import type { ComputerUseModelTier, ModelCapabilitySource } from '../llm/modelCapabilities';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
@@ -382,7 +382,12 @@ interface RunSession {
   imReplyTarget?: { platform: string; chatId: string };
   /** Frozen shell-side mirror of the roster sent to the sidecar loop. */
   offeredToolNames: ReadonlySet<string>;
-  /** 子代理模型的电脑操控档位与能否看图，按发给 sidecar 的同一份设置快照由外壳自己算出 */
+  /**
+   * 子代理实际使用的模型、能力来源、电脑操控档位与能否看图。外壳用派发时的设置快照
+   * 算出，工具执行时以这份为准，不用 sidecar 发来的副本。
+   */
+  modelId: string;
+  modelCapabilitySource: ModelCapabilitySource;
   computerUseTier: ComputerUseModelTier;
   supportsVision: boolean;
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
@@ -426,7 +431,9 @@ function buildTrustedSubagentToolContext(
     abortSignal: session.options.signal,
     // 本次运行给子代理的工具名单由 shell 自己保存，不用 sidecar 发来的副本
     offeredToolNames: [...session.offeredToolNames],
-    // 电脑操控档位与能否看图决定截图、坐标动作放不放行，同样用 shell 自己算的值
+    // 模型、档位与能否看图决定电脑操控放不放行、提示里写哪个模型，同样用 shell 自己算的值
+    modelId: session.modelId,
+    modelCapabilitySource: session.modelCapabilitySource,
     computerUseTier: session.computerUseTier,
     supportsVision: session.supportsVision,
   };
@@ -997,7 +1004,9 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     ...withPreloadedSkills,
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
-  // 与 sidecar 里的子代理循环用同一份设置快照、同一算法
+  // 算法与子代理循环相同，输入是派发给 sidecar 的完整设置快照；sidecar 里的循环读取共享
+  // 设置镜像、只把 activeModel 固定为这份快照里的值（sidecar/src/subagentHost.ts）。
+  // 工具执行时以这里的结果为准。
   const delegatedCapabilities = resolveDelegatedModelCapabilities(options.agent.model, params.settingsSnapshot);
   const session: RunSession = {
     runId,
@@ -1013,6 +1022,8 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         options.blockedTools,
       ).map((tool) => tool.name),
     ),
+    modelId: delegatedCapabilities.modelId,
+    modelCapabilitySource: delegatedCapabilities.capabilitySource,
     computerUseTier: delegatedCapabilities.computerUseTier,
     supportsVision: delegatedCapabilities.vision,
     firstToolInvokeArrived: false,

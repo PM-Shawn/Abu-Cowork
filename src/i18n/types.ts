@@ -5169,6 +5169,8 @@ export interface TranslationDict {
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */
       errNoVision: string;
+      /** scroll on Windows: needs a screenshot the model cannot use; scroll through focus + PageDown instead. */
+      errNoVisionScrollWindows: string;
       /** activate_app: missing app parameter. */
       errActivateNeedsApp: string;
       /** activate_app success. {name} */

@@ -23,19 +23,26 @@ export function resolveDelegatedDeclaredCapabilities(
 }
 
 /**
- * 子代理自己的模型能力：与主循环（agentLoop.ts 给工具上下文的档位）同一算法，
- * 声明能力按子代理的规则补全。sidecar 里的子代理循环与外壳的子代理会话各算一次，
- * 结果相同；外壳用自己算的值覆盖 sidecar 发来的副本。
+ * 子代理自己的模型及其能力：与主循环（agentLoop.ts 给工具上下文的档位）同一算法，
+ * 声明能力按子代理的规则补全。
+ *
+ * 两处调用：子代理循环用它选择发给模型的电脑操控说明；在 sidecar 里运行时，循环读取
+ * 共享的设置镜像，只把 activeModel 固定为派发时快照里的值（sidecar/src/subagentHost.ts
+ * 的 createRunScopedSettingsReader）。外壳的子代理会话用派发时的完整设置快照计算一次，
+ * 工具执行时以外壳这份结果为准，覆盖 sidecar 发来的副本。
  */
 export function resolveDelegatedModelCapabilities(
   agentModel: string | undefined,
   settings: Readonly<SettingsState>,
-): AgentModelCapabilities {
+): AgentModelCapabilities & { modelId: string } {
   const modelId = resolveAgentModel(agentModel, settings);
   const provider = getActiveProvider(settings);
-  return resolveAgentModelCapabilities({
+  return {
     modelId,
-    providerSource: provider?.source,
-    declared: resolveDelegatedDeclaredCapabilities(provider, modelId),
-  });
+    ...resolveAgentModelCapabilities({
+      modelId,
+      providerSource: provider?.source,
+      declared: resolveDelegatedDeclaredCapabilities(provider, modelId),
+    }),
+  };
 }

@@ -588,6 +588,9 @@ interface ChatState {
   // ChatInput. Used only by the inline-widget `window.sendPrompt` bridge —
   // kept separate from command-aware prefills so widget text stays literal.
   pendingInputAppend: string | null;
+  // Bumped to move the caret into the composer without touching its draft
+  // (a card asking the user to say what to change). Ephemeral.
+  composerFocusRequest: number;
   // Pending agent name — set when starting a chat from an agent surface (toolbox
   // detail panel, agent selector, etc.) so the welcome screen can render an
   // agent-themed intro. Cleared on next startNewConversation or when a real
@@ -785,6 +788,7 @@ interface ChatActions {
   setPendingInput: (text: string | null, options?: { startsTask?: boolean }) => void;
   setPendingSearchJump: (v: { convId: string; query: string } | null) => void;
   appendPendingInput: (text: string | null) => void;
+  requestComposerFocus: () => void;
   addPendingReference: (ref: ChatReference) => void;
   clearPendingReferences: () => void;
   addPendingAttachment: (request: PendingAttachmentRequest) => void;
@@ -852,6 +856,7 @@ export const useChatStore = create<ChatStore>()(
       pendingInput: null,
       pendingInputStartsTask: false,
       pendingInputAppend: null,
+      composerFocusRequest: 0,
       pendingAgentName: null,
       pendingExpertContact: null,
       stagedExpertContacts: {},
@@ -2376,6 +2381,12 @@ export const useChatStore = create<ChatStore>()(
           const previous = state.pendingInputAppend;
           const merged = previous ? `${previous}\n${text}` : text;
           state.pendingInputAppend = truncateUtf8(merged, MAX_PENDING_INPUT_APPEND_BYTES);
+        });
+      },
+
+      requestComposerFocus: () => {
+        set((state) => {
+          state.composerFocusRequest += 1;
         });
       },
 

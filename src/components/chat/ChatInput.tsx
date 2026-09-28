@@ -630,6 +630,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const pendingInputAppend = useChatStore((s) => s.pendingInputAppend);
   const appendPendingInput = useChatStore((s) => s.appendPendingInput);
+  const composerFocusRequest = useChatStore((s) => s.composerFocusRequest);
   const pendingReferences = useChatStore((s) => s.pendingReferences);
   const clearPendingReferences = useChatStore((s) => s.clearPendingReferences);
   const pendingAttachmentRequests = useChatStore((s) => s.pendingAttachmentRequests);
@@ -1039,6 +1040,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       textareaRef.current?.focus();
     }
   }, [pendingInputAppend, appendPendingInput, text]);
+
+  useEffect(() => {
+    if (composerFocusRequest > 0) textareaRef.current?.focus();
+  }, [composerFocusRequest]);
 
   // Drain references injected by the doc preview selection toolbar into local
   // state, then clear the store buffer (mirrors pendingInput consumption).

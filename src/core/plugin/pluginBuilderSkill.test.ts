@@ -33,27 +33,24 @@ describe('abu-plugin-builder SKILL.md', () => {
     expect(PROSE).toMatch(/on later edits never propose a rename/i);
   });
 
-  it('routes app requests through the four questions and the reference files', () => {
-    expect(PROSE).toMatch(/## Apps/);
-    expect(PROSE).toMatch(/who the app is for/i);
-    expect(PROSE).toMatch(/which groups of scenes/i);
-    expect(PROSE).toMatch(/a team, one expert or one skill/i);
-    expect(PROSE).toMatch(/which connectors and web pages/i);
-    for (const reference of ['references/app-config.md', 'references/teams.md', 'references/builtin-catalog.md']) {
+  it('points team writing at the team and catalog references', () => {
+    for (const reference of ['references/teams.md', 'references/builtin-catalog.md']) {
       expect(PROSE).toContain(reference);
       expect(() => skillFile(reference)).not.toThrow();
     }
     expect(PROSE).toMatch(/read_skill_file/);
-    expect(PROSE).toMatch(/3–6 templates/);
-    expect(PROSE).toMatch(/allowedOrigins/);
     expect(PROSE).toMatch(/minAbuVersion/);
   });
 });
 
 // The catalog is what the model copies names from; a stale line there becomes
-// a `builtin:` reference the installer refuses. Pin it to the runtime lists.
-describe('abu-plugin-builder references/builtin-catalog.md', () => {
-  const CATALOG = skillFile('references/builtin-catalog.md');
+// a `builtin:` reference the installer refuses. Pin both builders' copies to
+// the runtime lists.
+describe.each(['abu-plugin-builder', 'abu-app-builder'])('%s references/builtin-catalog.md', (skill) => {
+  const CATALOG = readFileSync(
+    fileURLToPath(new URL(`../../../builtin-skills/${skill}/references/builtin-catalog.md`, import.meta.url)),
+    'utf8',
+  );
 
   it('lists exactly the built-in experts a package may reference', () => {
     const section = CATALOG.split('## Built-in experts')[1]!.split('## Built-in teams')[0]!;

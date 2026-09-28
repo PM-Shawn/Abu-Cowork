@@ -39,11 +39,10 @@ it('hands the failing field back to the model when validation refuses the packag
   await expect(preparePluginTool.execute({}, { conversationId: 'creator' })).rejects.toThrow(field);
 });
 
-it('reports an empty team list for a plain plugin', async () => {
+it('reports an empty team list for a plugin without teams', async () => {
   prepareMock.mockResolvedValue({ author: { name: 'demo' }, disclosure: { preparedToken: 'token', version: '1', skills: ['hello'], agents: [], mcpServers: [], teams: [], ignoredPayloads: [] } });
   const result = JSON.parse(String(await preparePluginTool.execute({}, { conversationId: 'creator' })));
   expect(result.teams).toEqual([]);
-  expect(result).not.toHaveProperty('app');
 });
 
 it('distinguishes validated source updates from content already installed', async () => {

@@ -26,6 +26,7 @@ import {
   type PluginSource,
 } from '@/core/plugin/marketplace';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
+import { refreshFetchedMarkets, removeMarket } from '@/core/plugin/marketSource';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
@@ -100,7 +101,6 @@ export default function MarketplaceBrowser({
   const { t } = useI18n();
   const tb = t.toolbox;
   const marketplaces = usePluginStore((s) => s.marketplaces);
-  const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
   const update = usePluginStore((s) => s.update);
@@ -220,6 +220,14 @@ export default function MarketplaceBrowser({
   useEffect(() => {
     void recomputeUpdates(home);
   }, [recomputeUpdates, home, marketplaces, installed, reload]);
+
+  // Markets added by address are fetched again when this panel opens (at most
+  // hourly, decided by the main process); the listing is then read anew.
+  useEffect(() => {
+    let cancelled = false;
+    void refreshFetchedMarkets(home).then(() => { if (!cancelled) setReload((value) => value + 1); });
+    return () => { cancelled = true; };
+  }, [home]);
 
   /** Store keys are `pluginKey(entryName, marketName)` — see `updateCheck`. */
   const updateKeySet = useMemo(() => new Set(updateAvailableKeys), [updateAvailableKeys]);
@@ -578,7 +586,7 @@ export default function MarketplaceBrowser({
         cancelText={t.common.cancel}
         variant="danger"
         onConfirm={() => {
-          if (removeTarget) removeMarketplace(removeTarget);
+          if (removeTarget) void removeMarket(removeTarget, home);
           setRemoveTarget(null);
         }}
         onCancel={() => setRemoveTarget(null)}

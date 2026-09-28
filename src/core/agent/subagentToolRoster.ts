@@ -33,6 +33,7 @@ const ALWAYS_BLOCKED_SUBAGENT_TOOLS = new Set<string>([
   TOOL_NAMES.SAVE_TEAM,
   TOOL_NAMES.SKILL_MANAGE,
   TOOL_NAMES.PLUGIN_PREPARE,
+  TOOL_NAMES.APP_PREPARE,
 ]);
 
 /** Members have no harness-granted protocol tools. */

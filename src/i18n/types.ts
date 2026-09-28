@@ -2137,6 +2137,21 @@ export interface TranslationDict {
     removeCreatedTitle: string;
     removeCreatedMessage: string;
     removeFailed: string;
+    createConversation: string;
+    createPrompt: string;
+  };
+  /** The preview of an app made in 「创建应用」. */
+  appDraft: {
+    title: string;
+    home: string;
+    newExperts: string;
+    newTeams: string;
+    confirm: string;
+    modify: string;
+    adding: string;
+    added: string;
+    failed: string;
+    previewFailed: string;
   };
   appMarket: {
     title: string;
@@ -2263,6 +2278,8 @@ export interface TranslationDict {
     pluginsConfigurationHint: string;
     pluginsMarketplaceNameConflict: string;
     pluginsMarketplaceIdentityChanged: string;
+    pluginsMarketplaceAuthRequired: string;
+    pluginsMarketplaceNotFound: string;
     pluginsRefreshMarketplace: string;
     pluginsCachedMarketplace: string;
     pluginsRecoveryNeeded: string;
@@ -2313,7 +2330,6 @@ export interface TranslationDict {
     pluginsEnter: string;
     pluginsAppEntered: string;
     pluginsDisclosureTeams: string;
-    pluginsAuthorAppPrompt: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
     /** One line under it: they still work, and the detail dialog uninstalls. */

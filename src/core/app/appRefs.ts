@@ -110,11 +110,13 @@ function findPlugin(catalog: RefCatalog, app: AppDefinition, name: string): Cata
   return matches.find((plugin) => plugin.marketplace === market) ?? matches[0];
 }
 
-function isUsersOwnAgent(agent: SubagentDefinition): boolean {
+/** An expert the user made (what a `mine:` expert reference may name). */
+export function isUsersOwnAgent(agent: SubagentDefinition): boolean {
   return !agent.managed && !isBuiltinAgent(agent) && !isPluginOwnedAgent(agent);
 }
 
-function isUsersOwnTeam(team: Team): boolean {
+/** A team the user made (what a `mine:` team reference may name). */
+export function isUsersOwnTeam(team: Team): boolean {
   return !team.managed && !team.id.startsWith('builtin-team:') && !team.id.startsWith('plugin-team:');
 }
 

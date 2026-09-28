@@ -5,7 +5,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
-import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
+import { createAppDraft } from '@/core/app/appDraft';
 import { useToastStore } from '@/stores/toastStore';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { removeApp } from '@/core/app/appSync';
@@ -96,7 +96,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
   };
   const createApp = () => {
     setOpen(false);
-    void usePluginAuthorStore.getState().create('app').catch((error) => addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) }));
+    void createAppDraft().catch((error) => addToast({ type: 'error', title: t.appSwitcher.create, message: String(error) }));
   };
   const remove = (app: AppDefinition) => {
     void removeApp(app.appId).catch((error) => addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) }));

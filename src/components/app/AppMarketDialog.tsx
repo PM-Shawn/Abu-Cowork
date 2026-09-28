@@ -20,6 +20,7 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
+import { refreshFetchedMarkets, removeMarket } from '@/core/plugin/marketSource';
 import { loadAppListings, type AppListing, type AppMarketListing } from '@/core/app/appMarket';
 import { liveRefCatalog } from '@/core/app/appRefs';
 import { getBaseName } from '@/utils/pathUtils';
@@ -46,7 +47,6 @@ export default function AppMarketDialog() {
   const marketplaces = usePluginStore((s) => s.marketplaces);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const ensureBuiltinMarketplace = usePluginStore((s) => s.ensureBuiltinMarketplace);
-  const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
   const installed = usePluginStore((s) => s.installed);
   const teams = useTeamStore((s) => s.teams);
   const agents = useDiscoveryStore((s) => s.agents);
@@ -55,6 +55,8 @@ export default function AppMarketDialog() {
   const [listing, setListing] = useState<AppMarketListing | null>(null);
   const [addingMarket, setAddingMarket] = useState(false);
   const [removingMarket, setRemovingMarket] = useState<string | null>(null);
+  // Bumped once markets added by address have been fetched again, so the list is read anew.
+  const [fetchedAt, setFetchedAt] = useState(0);
   const onClose = () => setOpen(false);
 
   // The same bootstrap 扩展 → 插件 does on mount: the app market is often the
@@ -68,6 +70,8 @@ export default function AppMarketDialog() {
       if (cancelled) return;
       setHome(dir);
       await refreshInstalled(dir);
+      await refreshFetchedMarkets(dir);
+      if (!cancelled) setFetchedAt((value) => value + 1);
     });
     void resolveBuiltinMarketDir().then((marketDir) => {
       if (!cancelled && marketDir) ensureBuiltinMarketplace(marketDir);
@@ -84,7 +88,7 @@ export default function AppMarketDialog() {
     const markets = [...marketplaces].sort((a, b) => Number(Boolean(b.builtin)) - Number(Boolean(a.builtin)));
     void loadAppListings(markets, liveRefCatalog()).then((result) => { if (!cancelled) setListing(result); });
     return () => { cancelled = true; };
-  }, [open, marketplaces, installed, teams, agents, flowClosed]);
+  }, [open, marketplaces, installed, teams, agents, flowClosed, fetchedAt]);
 
   const visible = useMemo(() => (listing?.listings ?? []).filter((item) => matches(item, query.trim().toLowerCase())), [listing, query]);
   const addedById = useMemo(() => new Map(addedApps.map((app) => [app.appId, app])), [addedApps]);
@@ -226,7 +230,7 @@ export default function AppMarketDialog() {
         cancelText={t.common.cancel}
         variant="danger"
         onConfirm={() => {
-          if (removingMarket) removeMarketplace(removingMarket);
+          if (removingMarket && home !== null) void removeMarket(removingMarket, home);
           setRemovingMarket(null);
         }}
         onCancel={() => setRemovingMarket(null)}

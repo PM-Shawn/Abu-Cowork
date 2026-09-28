@@ -35,6 +35,21 @@ describe('installDesignPreview', () => {
     expect(document.querySelector('[data-design-preview-root]')).toBeNull();
   });
 
+  it('leaves Escape to an open design-system layer inside the preview', () => {
+    uninstall = installDesignPreview();
+    press(OPEN);
+    const host = document.querySelector('[data-design-preview-host]');
+    if (!host) throw new Error('preview host missing');
+    const layer = document.createElement('div');
+    layer.setAttribute('data-ds-layer', '');
+    host.appendChild(layer);
+    press({ key: 'Escape', code: 'Escape' });
+    expect(document.querySelector('[data-design-preview-root]')).not.toBeNull();
+    layer.remove();
+    press({ key: 'Escape', code: 'Escape' });
+    expect(document.querySelector('[data-design-preview-root]')).toBeNull();
+  });
+
   it('ignores the letter without every modifier', () => {
     uninstall = installDesignPreview();
     press({ key: 'D', code: 'KeyD', shiftKey: true });

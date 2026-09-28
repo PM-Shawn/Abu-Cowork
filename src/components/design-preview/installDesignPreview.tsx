@@ -30,7 +30,7 @@ export function installDesignPreview(): () => void {
     host.className = 'fixed inset-0 z-tooltip';
     document.body.appendChild(host);
     root = createRoot(host);
-    root.render(<DesignPreview />);
+    root.render(<DesignPreview portalContainer={host} />);
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -40,6 +40,8 @@ export function installDesignPreview(): () => void {
       return;
     }
     if (event.key === 'Escape' && host) {
+      // An open menu, popover or dialog inside the preview handles its own Escape.
+      if (host.querySelector('[data-ds-layer]')) return;
       // Keep Escape from reaching the app's own handlers behind the preview.
       event.preventDefault();
       // Immediate: other window capture listeners (e.g. dialogs) must not see it either.

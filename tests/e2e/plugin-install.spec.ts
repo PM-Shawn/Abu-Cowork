@@ -510,6 +510,80 @@ test('recovers an interrupted same-version replacement before plugin activation 
   }
 });
 
+// Chromium commits localStorage seconds after a write, and SIGTERM ends the
+// main process without that commit. The connector is edited in storage the
+// moment before the update begins, so the edit, the marker and everything after
+// them are still waiting for their commit when the process dies. The begin
+// request is built the way the renderer builds it, marker included.
+test('recovers an interrupted update whose connector configuration had not reached disk', async () => {
+  const marketDir = seedMarketplace();
+  let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
+  try {
+    launched = await launchAbuElectron();
+    let page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await dismissFirstRunOverlays(page);
+    await openPluginsTab(page);
+    await openAddMarketplace(page);
+    await page.getByTestId('plugin-marketplace-dir-input').fill(marketDir);
+    await page.getByTestId('plugin-marketplace-submit').click();
+    const entry = page.getByTestId('plugin-marketplace-entry').filter({ hasText: 'e2e-weather' }).first();
+    await entry.getByRole('button', { name: /^(安装|Install): e2e-weather$/ }).click();
+    await page.getByTestId('plugin-install-confirm').click();
+    await expect(entry.getByTestId('plugin-installed-badge')).toBeVisible({ timeout: READY_TIMEOUT });
+    const registry = path.join(installRoot(launched), 'installed.json');
+    const previous = JSON.parse(fs.readFileSync(registry, 'utf8'))[0];
+    const installedSkill = path.join(installRoot(launched), 'e2e-market/e2e-weather/1.0.0/skills/today/SKILL.md');
+    const originalBody = fs.readFileSync(installedSkill, 'utf8');
+    fs.writeFileSync(path.join(marketDir, 'plugins/e2e-weather/skills/today/SKILL.md'), originalBody + '\nNew revision.\n');
+    const forecast = await page.evaluate(async ({ marketDir, previous }) => {
+      const shell = (window as unknown as { __ABU_SHELL__: {
+        pluginSnapshot: (action: string, request: object) => Promise<{ token: string; checksum: string }>;
+        pluginOperation: (action: string, request: object) => Promise<unknown>;
+      } }).__ABU_SHELL__;
+      const snapshot = await shell.pluginSnapshot('prepare', { marketplaceDir: marketDir, marketplaceName: 'e2e-market', entryName: 'e2e-weather' });
+      // Written first: if it survives the kill, so may everything after it,
+      // and the run would not show what it is named for.
+      localStorage.setItem('e2e-uncommitted', '1');
+      const persisted = JSON.parse(localStorage.getItem('abu-mcp-store') ?? '{}');
+      const config = { ...persisted.state.servers.forecast.config, args: [...(persisted.state.servers.forecast.config.args ?? []), '--e2e-edited'] };
+      persisted.state.servers.forecast.config = config;
+      localStorage.setItem('abu-mcp-store', JSON.stringify(persisted));
+      const runtime = { enabled: true, servers: { forecast: config }, disabledSkills: { today: false }, disabledAgents: {} };
+      const marker = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem(`abu-plugin-operation:${marker}`, '1');
+      await shell.pluginOperation('begin', { kind: 'update', key: previous.key, expected: previous,
+        record: { ...previous, checksum: snapshot.checksum }, token: snapshot.token, runtime, marker });
+      await shell.pluginSnapshot('materialize', { token: snapshot.token });
+      return config;
+    }, { marketDir, previous });
+    expect(fs.readFileSync(installedSkill, 'utf8')).toContain('New revision.');
+    await terminateAbuElectron(launched.app);
+    launched = await launchAbuElectron(launched);
+    page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    expect(await page.evaluate(() => localStorage.getItem('e2e-uncommitted'))).toBeNull();
+    await dismissFirstRunOverlays(page);
+    await openPluginsTab(page);
+    const journal = path.join(launched.appDataDir, 'Home/.abu/plugin-operations/active.enc');
+    await expect.poll(() => fs.existsSync(journal), { timeout: READY_TIMEOUT }).toBe(false);
+    await expect(page.getByText(/插件恢复尚未完成|Plugin recovery/)).toHaveCount(0);
+    expect(fs.readFileSync(installedSkill, 'utf8')).toBe(originalBody);
+    expect(JSON.parse(fs.readFileSync(registry, 'utf8'))).toEqual([previous]);
+    // 「我的」 reads the installed list from disk; the marketplace pointer is a
+    // localStorage write the kill may also have dropped.
+    await page.getByTestId('extensions-source-mine').click();
+    const row = page.getByTestId('plugin-mine-row').filter({ hasText: 'e2e-weather' }).first();
+    await expect(row.getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
+    await expect(row.getByRole('switch')).toBeEnabled();
+    const mcp = await page.evaluate(() => JSON.parse(localStorage.getItem('abu-mcp-store') ?? '{}'));
+    expect(mcp.state.servers.forecast.config).toEqual(forecast);
+  } finally {
+    if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
+    fs.rmSync(marketDir, { recursive: true, force: true });
+  }
+});
+
 // Files written here stand in for the author conversation's generated output;
 // all preparation, installation, updates and removal use the real UI and IPC.
 test('creates a plugin without a marketplace, updates the same version, and preserves its editable source', async () => {

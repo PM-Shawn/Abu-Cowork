@@ -42,4 +42,8 @@ describe('AppIcons', () => {
       unmount();
     }
   });
+
+  it('includes the glyphs the component library needs', () => {
+    expect(Object.keys(AppIcons)).toEqual(expect.arrayContaining(['loading', 'mixed', 'selectorChevrons']));
+  });
 });

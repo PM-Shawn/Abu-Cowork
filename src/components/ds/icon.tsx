@@ -5,7 +5,7 @@ export type IconSize = 'sm' | 'md' | 'lg';
 
 const SIZE_PX: Record<IconSize, number> = { sm: 14, md: 16, lg: 20 };
 
-// The only way to render an icon outside src/components/ui/. Size is limited to
+// The only way to render an icon outside src/components/ds/. Size is limited to
 // three steps and the stroke is fixed at 1.5 so icons match 13px UI text weight.
 export function Icon({
   icon: Glyph,

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
-import { Icon } from '@/components/ui/icon';
-import { AppIcons } from '@/components/ui/icons';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 
 // Typographic specimen for the dev-only preview (verifies the CJK font stack); not UI copy.
 const CJK_SPECIMEN = '设计系统：阿布正在读取 9 个文件';
@@ -49,7 +49,7 @@ export function DesignPreview() {
           {SURFACE_TOKENS.map((name) => (
             <div key={name} className="rounded-panel shadow-panel overflow-hidden">
               <div className={`h-12 ${SURFACE_CLASS[name]}`} />
-              <div className="text-ui-sm text-label-secondary px-2 py-1 font-mono">{name}</div>
+              <div className="text-ui-sm text-label-secondary px-2 py-1 font-code">{name}</div>
             </div>
           ))}
         </div>
@@ -72,7 +72,7 @@ export function DesignPreview() {
         ))}
       </Section>
 
-      <Section title="Radius and shadow">
+      <Section title="Radius and shadows">
         <div className="flex gap-4">
           {RADIUS_TOKENS.map((name) => (
             <div key={name} className={`${name} bg-fill w-24 h-16 flex items-end p-2 text-ui-sm text-label-secondary`}>{name}</div>
@@ -88,7 +88,7 @@ export function DesignPreview() {
           {Object.entries(AppIcons).map(([name, glyph]) => (
             <div key={name} className="flex items-center gap-2 text-ui text-label-secondary">
               <Icon icon={glyph} />
-              <span className="font-mono text-ui-sm">{name}</span>
+              <span className="font-code text-ui-sm">{name}</span>
             </div>
           ))}
         </div>

@@ -127,7 +127,7 @@ const installedWeather: InstalledPlugin = {
   name: 'weather',
   version: '1.0.0',
   installedAt: '2026-08-31T00:00:00.000Z',
-  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: [] },
+  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: [], teams: [] },
 };
 
 /** Locale-resolved toolbox strings — these tests run under either locale. */
@@ -163,7 +163,7 @@ beforeEach(() => {
       name: disclosure.name,
       version: disclosure.version ?? '0.0.0',
       installedAt: '2026-09-01T00:00:00.000Z',
-      contributed: { skills: disclosure.skills, mcpServers: disclosure.mcpServers.map((s) => s.name), agents: [] },
+      contributed: { skills: disclosure.skills, mcpServers: disclosure.mcpServers.map((s) => s.name), agents: [], teams: [] },
     },
     mcpServers: disclosure.mcpServers,
   });
@@ -384,16 +384,18 @@ describe('MarketplaceBrowser', () => {
     expect(installPlugin).not.toHaveBeenCalled();
   });
 
-  it('replaces the install button with an inline switch on an installed entry', async () => {
-    // Installed cards open details; their inline control is the master switch.
+  it('marks an installed entry 已安装, leaving the switch to 我的', async () => {
+    // A market says whether the user has this one; turning it on and off is
+    // looked after where the user keeps what they have.
     usePluginStore.setState({ installed: [installedWeather] });
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
     const rows = screen.getAllByTestId('plugin-marketplace-entry');
-    expect(within(rows[0]).getByRole('switch')).toBeInTheDocument();
+    expect(within(rows[0]).queryByRole('switch')).toBeNull();
+    expect(within(rows[0]).getByTestId('plugin-installed-badge').textContent).toBe(tb().installedMark);
     expect(rows[0].querySelector('[data-testid="plugin-item-menu"]')).toBeNull();
-    expect(rows[0].textContent).not.toContain(tb().pluginsInstall);
+    expect(within(rows[0]).queryByRole('button', { name: `${tb().pluginsInstall}: weather` })).toBeNull();
     // The not-installed row still gets the plain install button.
     expect(rows[1].querySelector('[data-testid="plugin-item-menu"]')).toBeNull();
     expect(rows[1].textContent).toContain(tb().pluginsInstall);
@@ -556,7 +558,7 @@ describe('MarketplaceBrowser', () => {
     usePluginStore.setState({
       installed: [{
         key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
-        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
       }],
     });
     renderBrowser();
@@ -580,7 +582,7 @@ describe('MarketplaceBrowser', () => {
       usePluginStore.setState({
         installed: [{
           key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
-          installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+          installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
         }],
       });
     });
@@ -592,7 +594,7 @@ describe('MarketplaceBrowser', () => {
     // REPLACE the personal-scope keys, so opening a market with nothing to
     // update silently cleared an update that was still true in the first one.
     const installedAt = '2026-09-01T00:00:00.000Z';
-    const contributed = { skills: [], mcpServers: [], agents: [] };
+    const contributed = { skills: [], mcpServers: [], agents: [], teams: [] };
     usePluginStore.setState({
       installed: [
         { key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0', installedAt, contributed },
@@ -633,7 +635,7 @@ describe('MarketplaceBrowser', () => {
     usePluginStore.setState({
       installed: [{
         key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
-        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
       }],
     });
     renderBrowser();
@@ -649,7 +651,7 @@ describe('MarketplaceBrowser', () => {
     usePluginStore.setState({
       installed: [{
         key: 'weather@official', marketplace: 'official', name: 'weather', version: '1.0.0',
-        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
       }],
     });
     renderBrowser();

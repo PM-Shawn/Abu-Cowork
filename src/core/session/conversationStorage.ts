@@ -465,6 +465,7 @@ export function buildMeta(conv: {
   scheduledTaskId?: string;
   triggerId?: string;
   teamId?: string;
+  appBinding?: import('@/types/app').ConversationAppBinding;
   projectId?: string;
   readOnly?: boolean;
   importedFrom?: { schemaVersion: number; importedAt: number };
@@ -483,6 +484,7 @@ export function buildMeta(conv: {
     scheduledTaskId: conv.scheduledTaskId,
     triggerId: conv.triggerId,
     teamId: conv.teamId,
+    appBinding: conv.appBinding,
     projectId: conv.projectId,
     readOnly: conv.readOnly,
     importedFrom: conv.importedFrom,

@@ -29,6 +29,13 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 - [ ] Write this version's entry in **both** changelogs (same version + structure, one language each — never mixed):
   - `CHANGELOG.md` — **English only**
   - `CHANGELOG.zh-CN.md` — **Chinese only**
+- [ ] If this release adds a plugin/app manifest field, give it `X.Y.Z` in the
+      "最低 Abu 版本" columns of [`docs/plugin-spec.md`](./docs/plugin-spec.md), and
+      have every package that uses the new field declare `minAbuVersion: X.Y.Z`
+      (the packages in `builtin-plugin-market/`, `examples/plugin-market/` and
+      `tests/fixtures/plugin-market-broken/`). A package keeps the version it was
+      written for; `npm run market:check` refuses one that asks for an Abu newer
+      than this checkout.
 - [ ] Commit to `dev`.
 
 ## 2. Verify — fail here, not after tagging

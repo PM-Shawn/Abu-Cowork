@@ -64,6 +64,24 @@ test('applyBlock replaces an existing block and leaves the rest untouched', () =
   assert.equal(out, `# T\n\nintro\n\n${START}\nnew\n${END}\n\nafter\n`);
 });
 
+test('applyBlock splices a CRLF document with CRLF line endings', () => {
+  const md = `# T\r\n\r\n${START}\r\nold\r\n${END}\r\n\r\nafter\r\n`;
+  const out = applyBlock(md, `${START}\nnew\n${END}`);
+  assert.equal(out, `# T\r\n\r\n${START}\r\nnew\r\n${END}\r\n\r\nafter\r\n`);
+});
+
+test('--check passes on a CRLF checkout whose counts are current', () => {
+  const root = fixtureRepo();
+  const doc = path.join(root, 'TESTING.md');
+  writeFileSync(doc, `# T\n${START}\nstale\n${END}\n`);
+  const script = path.resolve('scripts/test-inventory.mjs');
+  assert.equal(spawnSync(process.execPath, [script, '--write', '--root', root]).status, 0);
+  writeFileSync(doc, readFileSync(doc, 'utf8').replace(/\n/g, '\r\n'));
+  const c = spawnSync(process.execPath, [script, '--check', '--root', root], { encoding: 'utf8' });
+  assert.equal(c.status, 0, c.stdout + c.stderr);
+  assert.doesNotMatch(readFileSync(doc, 'utf8'), /[^\r]\n/);
+});
+
 test('applyBlock throws when markers are missing', () => {
   assert.throws(() => applyBlock('no markers here', `${START}\nx\n${END}`), /markers not found/);
 });

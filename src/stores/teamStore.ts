@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
+import { isPluginTeam } from '@/core/team/pluginTeams';
 
 /**
  * Team domain store (R1: management surface only — PRD docs/abu-team-prd-v2.md).
@@ -23,6 +24,17 @@ export interface TeamLastPlan {
   /** Step text, "@owner" appended when the step had one. */
   steps: string[];
   savedAt: number;
+}
+
+/** Runtime-extension metadata. The host owns only the read-only in-memory
+ * contract; transport, authentication and policy stay in the extension. */
+export interface ManagedTeamMetadata {
+  source: string;
+  id: string;
+  version: string;
+  readOnly: true;
+  ready: boolean;
+  unavailableReason?: string;
 }
 
 export interface Team {
@@ -52,20 +64,65 @@ export interface Team {
   /** The split the leader used last time (reference input for the next run, never a skip). */
   lastPlan?: TeamLastPlan;
   createdAt: number;
+  managed?: ManagedTeamMetadata;
 }
 
 interface TeamState {
   teams: Team[];
+  managedTeamSources: Record<string, { isActive: () => boolean; teams: Team[] }>;
 }
 
 interface TeamActions {
   createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean; avatar?: string; description?: string; intro?: string; expertise?: string[]; samplePrompts?: string[] }) => Team;
   updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar' | 'lastPlan' | 'description' | 'intro' | 'expertise' | 'samplePrompts'>>) => void;
   deleteTeam: (id: string) => void;
-
+  /**
+   * Replace the plugin-contributed teams (`plugin-team:` ids) with the list
+   * read from the enabled plugins' packages. Everything else in the store is
+   * left alone; a plugin team's `lastPlan` survives when the same id is
+   * loaded again.
+   */
+  setPluginTeams: (teams: Team[]) => void;
+  registerManagedTeamSource: (source: string, isActive: () => boolean) => void;
+  replaceManagedTeams: (source: string, teams: Team[]) => void;
+  clearManagedTeams: (source: string) => void;
 }
 
-type TeamStore = TeamState & TeamActions;
+/** Read-only in the UI: shipped with the app, owned by an installed plugin, or managed by the organization. */
+export function isReadOnlyTeam(team: Pick<Team, 'id' | 'managed'>): boolean {
+  return isBuiltinTeam(team) || isPluginTeam(team) || Boolean(team.managed);
+}
+
+export type TeamStore = TeamState & TeamActions;
+
+export function selectVisibleTeams(state: Pick<TeamStore, 'teams' | 'managedTeamSources'>): Team[] {
+  const visible = state.teams.filter(team => !isBuiltinTeam(team));
+  const ids = new Set(visible.map(team => team.id));
+  for (const managedSource of Object.values(state.managedTeamSources)) {
+    if (!managedSource.isActive()) continue;
+    for (const team of managedSource.teams) {
+      if (ids.has(team.id)) continue;
+      visible.push(team);
+      ids.add(team.id);
+    }
+  }
+  // Managed versions of the shipped teams share their display names. Keep
+  // both source shelves visible, and prefer the managed version for name lookup.
+  for (const team of state.teams) {
+    if (!isBuiltinTeam(team) || ids.has(team.id)) continue;
+    visible.push(team);
+    ids.add(team.id);
+  }
+  return visible;
+}
+
+export function getVisibleTeams(): Team[] {
+  return selectVisibleTeams(useTeamStore.getState());
+}
+
+export function getVisibleTeamById(id: string): Team | undefined {
+  return getVisibleTeams().find(team => team.id === id);
+}
 
 function genId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -106,17 +163,21 @@ export function migrateTeamState(persisted: unknown): { teams: Team[] } {
  * options from a test couples the test to zustand's internals.
  */
 export function partializeTeamState(state: { teams: Team[] }): { teams: Team[] } {
-  return { teams: state.teams.filter((t) => !isBuiltinTeam(t)) };
+  return { teams: state.teams.filter((t) => !isReadOnlyTeam(t)) };
 }
 
 /**
  * What persist hands back on hydration: the user's own teams from disk, plus
- * TODAY's shipped roster — never a built-in copy an older version wrote.
+ * TODAY's shipped roster — never a built-in copy an older version wrote — and
+ * whatever plugin teams are already loaded (they arrive asynchronously and
+ * may have landed before hydration finished).
  */
 export function mergeTeamState(persisted: unknown, current: TeamStore): TeamStore {
   const stored = (persisted ?? {}) as Partial<{ teams: Team[] }>;
-  const userTeams = (stored.teams ?? []).filter((t) => !isBuiltinTeam(t));
-  return { ...current, teams: [...dedupeNames(userTeams), ...BUILTIN_TEAMS] };
+  const userTeams = (stored.teams ?? []).filter((t) => !isReadOnlyTeam(t));
+  const pluginTeams = current.teams.filter(isPluginTeam);
+  const own = [...dedupeNames(userTeams), ...BUILTIN_TEAMS];
+  return { ...current, teams: [...own, ...dedupeAgainst(own.map((t) => t.name), pluginTeams)] };
 }
 
 /**
@@ -142,9 +203,18 @@ export function mergeTeamState(persisted: unknown, current: TeamStore): TeamStor
  * would silently start addressing a different team.
  */
 function dedupeNames(teams: Team[]): Team[] {
-  const builtinNames = BUILTIN_TEAMS.map((team) => team.name);
-  const taken = new Set([...builtinNames, ...teams.map((team) => team.name)]);
-  const claimed = new Set(builtinNames);
+  return dedupeAgainst(BUILTIN_TEAMS.map((team) => team.name), teams);
+}
+
+/**
+ * Give every team in `teams` a name no team in `reserved` holds, and no two of
+ * them share, by numbering the later claimant. Plugin teams go through the
+ * same rule against the user's and the shipped names: a package may ship a
+ * team called 「招聘专家团」, and both must stay addressable.
+ */
+function dedupeAgainst(reserved: string[], teams: Team[]): Team[] {
+  const taken = new Set([...reserved, ...teams.map((team) => team.name)]);
+  const claimed = new Set(reserved);
   return teams.map((team) => {
     if (!claimed.has(team.name)) { claimed.add(team.name); return team; }
     let suffix = 2;
@@ -160,11 +230,12 @@ export const useTeamStore = create<TeamStore>()(
   persist(
     (set, get) => ({
       teams: [...BUILTIN_TEAMS],
+      managedTeamSources: {},
 
       createTeam: (input) => {
         const name = input.name.trim();
         if (!name) throw new Error('team name required');
-        if (get().teams.some((t) => t.name === name)) {
+        if (selectVisibleTeams(get()).some((t) => t.name === name)) {
           throw new Error('duplicate team name');
         }
         if (!input.leaderRoleId) throw new Error('leader required');
@@ -198,13 +269,13 @@ export const useTeamStore = create<TeamStore>()(
         // dialog without touching the name stays a no-op.
         const wanted = patch.name?.trim();
         if (patch.name !== undefined && !wanted) throw new Error('team name required');
-        if (wanted && get().teams.some((t) => t.id !== id && t.name === wanted)) {
+        if (wanted && selectVisibleTeams(get()).some((t) => t.id !== id && t.name === wanted)) {
           throw new Error('duplicate team name');
         }
         set((s) => ({
           teams: s.teams.map((t) => {
             if (t.id !== id) return t;
-            if (isBuiltinTeam(t)) {
+            if (isReadOnlyTeam(t)) {
               // Read-only in the UI; the run may still record its last split.
               return patch.lastPlan ? { ...t, lastPlan: patch.lastPlan } : t;
             }
@@ -218,7 +289,48 @@ export const useTeamStore = create<TeamStore>()(
         }));
       },
 
-      deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id || isBuiltinTeam(t)) })),
+      deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id || isReadOnlyTeam(t)) })),
+
+      setPluginTeams: (loaded) => set((s) => {
+        const previous = new Map(s.teams.filter(isPluginTeam).map((t) => [t.id, t]));
+        const own = s.teams.filter((t) => !isPluginTeam(t));
+        const next = dedupeAgainst(own.map((t) => t.name), loaded.map((t) => {
+          const lastPlan = previous.get(t.id)?.lastPlan;
+          return lastPlan ? { ...t, lastPlan } : t;
+        }));
+        return { teams: [...own, ...next] };
+      }),
+      registerManagedTeamSource: (source, isActive) => set((state) => ({
+        managedTeamSources: {
+          ...state.managedTeamSources,
+          [source]: { isActive, teams: state.managedTeamSources[source]?.teams ?? [] },
+        },
+      })),
+      replaceManagedTeams: (source, teams) => set((state) => {
+        const registered = state.managedTeamSources[source];
+        if (!registered) throw new Error(`managed team source not registered: ${source}`);
+        const accepted = teams.filter(team => (
+          team.managed?.source === source
+          && team.managed.readOnly === true
+          && team.id === team.managed.id
+        ));
+        return {
+          managedTeamSources: {
+            ...state.managedTeamSources,
+            [source]: { ...registered, teams: accepted },
+          },
+        };
+      }),
+      clearManagedTeams: (source) => set((state) => {
+        const registered = state.managedTeamSources[source];
+        if (!registered) return state;
+        return {
+          managedTeamSources: {
+            ...state.managedTeamSources,
+            [source]: { ...registered, teams: [] },
+          },
+        };
+      }),
     }),
     {
       name: 'abu-team',

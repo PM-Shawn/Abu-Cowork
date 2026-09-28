@@ -5,7 +5,7 @@ import type { InstalledPlugin } from '@/core/plugin/installedStore';
 const mock = vi.hoisted(() => ({ activationByKey: {} as Record<string, { enabled: boolean }>, setPluginEnabled: vi.fn() }));
 vi.mock('@/stores/pluginStore', () => ({ usePluginStore: (select: (s: typeof mock) => unknown) => select(mock) }));
 import { usePluginActivation } from './usePluginActivation';
-const plugin: InstalledPlugin = { key: 'foo@market', name: 'foo', marketplace: 'market', version: '1', installedAt: '2026-09-08T00:00:00Z', contributed: { skills: ['skill'], agents: ['agent'], mcpServers: ['server'] } };
+const plugin: InstalledPlugin = { key: 'foo@market', name: 'foo', marketplace: 'market', version: '1', installedAt: '2026-09-08T00:00:00Z', contributed: { skills: ['skill'], agents: ['agent'], mcpServers: ['server'], teams: [] } };
 beforeEach(() => {
   vi.resetAllMocks();
   mock.activationByKey = { [plugin.key]: { enabled: true } };

@@ -3916,6 +3916,26 @@ describe('pending team pin (welcome-page chip)', () => {
   });
 });
 
+describe('pending app binding (app home)', () => {
+  const binding = { version: 1 as const, appId: 'shop@market', pluginKey: 'shop@market', pluginVersion: '1.0.0', appName: '店铺运营', modeId: 'sourcing' };
+
+  it('travels with the team pin onto the foreground conversation only, and is cleared with it', () => {
+    useChatStore.getState().setPendingAppBinding(binding);
+    const background = useChatStore.getState().createConversation(null, { scheduledTaskId: 's1', skipActivate: true });
+    expect(useChatStore.getState().conversations[background].appBinding).toBeUndefined();
+    expect(useChatStore.getState().pendingAppBinding).toEqual(binding);
+
+    const foreground = useChatStore.getState().createConversation(null);
+    expect(useChatStore.getState().conversations[foreground].appBinding).toEqual(binding);
+    expect(useChatStore.getState().conversationIndex[foreground].appBinding).toEqual(binding);
+    expect(useChatStore.getState().pendingAppBinding).toBeUndefined();
+
+    useChatStore.getState().setPendingAppBinding(binding);
+    useChatStore.getState().startNewConversation();
+    expect(useChatStore.getState().pendingAppBinding).toBeUndefined();
+  });
+});
+
 
 describe('prefill intent', () => {
   it('resets new-task intent when the buffer is consumed or reused for an ordinary prompt', () => {

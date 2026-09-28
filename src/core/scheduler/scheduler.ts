@@ -9,7 +9,7 @@ import {
   notifyScheduledTaskError,
   notifyScheduledTeamRunUnconfirmed,
 } from '../../utils/notifications';
-import { useTeamStore } from '../../stores/teamStore';
+import { getVisibleTeamById } from '../../stores/teamStore';
 import { getI18n, format } from '../../i18n';
 import type { ScheduledTask } from '../../types/schedule';
 import type { PermissionMode } from '../permissions/permissionMode';
@@ -289,7 +289,7 @@ class SchedulerEngine {
    *  the run delivers, instead of letting the skipped confirmation pass silently. */
   private notifyStrictTeamSkippedConfirmation(task: ScheduledTask): void {
     if (!task.teamId) return;
-    const team = useTeamStore.getState().teams.find((entry) => entry.id === task.teamId);
+    const team = getVisibleTeamById(task.teamId);
     if (!team || team.requirePlanApproval !== true) return;
     const message = format(getI18n().schedule.teamPlanUnconfirmed, { name: task.name, team: team.name });
     notifyScheduledTeamRunUnconfirmed(message);

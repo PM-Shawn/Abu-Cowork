@@ -13,7 +13,12 @@ import { Toggle } from '@/components/ui/toggle';
 import { usePluginActivation } from './usePluginActivation';
 import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
 import { useToastStore } from '@/stores/toastStore';
+import { useAppStore } from '@/stores/appStore';
+import { useTeamStore } from '@/stores/teamStore';
+import { agentRegistry } from '@/core/agent/registry';
+import { effectiveRun, resolveText, runExpertName, runTeamId } from '@/core/app/appBinding';
 import { Button } from '@/components/ui/button';
+import type { AppScene } from '@/types/app';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 
 /** "来自 X · N 个技能 · M 个连接器" — the row subtitle in the 「我的」 list. */
@@ -28,6 +33,53 @@ export function InstalledPluginSummary({ plugin }: { plugin: InstalledPlugin }) 
       {' · '}
       {format(tb.pluginsServerCount, { count: plugin.contributed.mcpServers.length })}
     </span>
+  );
+}
+
+/**
+ * "这个应用里有什么" (product spec §5.2): the app's modes and scenes with
+ * whoever runs each one, read from the installed app the plugin provides. The
+ * skills and connectors above already name the rest of the package.
+ */
+function AppContents({ pluginKey }: { pluginKey: string }) {
+  const { t, format, locale } = useI18n();
+  const app = useAppStore((s) => s.installedApps.find((item) => item.pluginKey === pluginKey));
+  const teams = useTeamStore((s) => s.teams);
+  if (!app) return null;
+
+  const owner = (scene: AppScene): string => {
+    const run = effectiveRun(app, scene);
+    if (!run) return t.appHome.sceneRunDefault;
+    if ('team' in run) {
+      const team = teams.find((item) => item.id === runTeamId(app, run));
+      return format(t.appHome.sceneRunTeam, { name: team?.name ?? run.team });
+    }
+    if ('expert' in run) {
+      const name = runExpertName(run)!;
+      return format(t.appHome.sceneRunExpert, { name: agentRegistry.getAgent(name)?.displayNames?.[locale] ?? name });
+    }
+    return format(t.appHome.sceneRunSkill, { name: run.skill });
+  };
+
+  return (
+    <section className="space-y-2" data-testid="plugin-detail-app">
+      <h4 className="text-minor font-medium text-[var(--abu-text-muted)]">{t.toolbox.pluginsAppContents}</h4>
+      <div className="space-y-2">
+        {app.config.home.modes.items.map((mode) => (
+          <div key={mode.modeId} className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-3 py-2.5">
+            <p className="text-body font-medium text-[var(--abu-text-primary)]">{resolveText(mode.title)}</p>
+            <ul className="mt-1 space-y-0.5">
+              {mode.scenes.map((scene) => (
+                <li key={scene.id} className="flex items-baseline justify-between gap-3 text-minor">
+                  <span className="truncate text-[var(--abu-text-secondary)]">{resolveText(scene.title)}</span>
+                  <span className="shrink-0 text-[var(--abu-text-muted)]">{owner(scene)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -142,6 +194,7 @@ export default function InstalledPluginDetail({
             title={tb.pluginsDisclosureAgents}
             items={plugin.contributed.agents}
           />
+          <AppContents pluginKey={plugin.key} />
 
           </div>
 

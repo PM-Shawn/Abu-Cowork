@@ -79,7 +79,10 @@ export function applyBlock(markdown, block) {
   const s = markdown.indexOf(START);
   const e = markdown.indexOf(END);
   if (s === -1 || e === -1 || e < s) throw new Error(`test-inventory markers not found (${START} … ${END})`);
-  return markdown.slice(0, s) + block + markdown.slice(e + END.length);
+  // Splice with the document's own line ending: a `core.autocrlf=true`
+  // checkout (Windows) holds TESTING.md as CRLF while the blob and CI see LF.
+  const eol = markdown.includes('\r\n') ? '\r\n' : '\n';
+  return markdown.slice(0, s) + block.replace(/\r?\n/g, eol) + markdown.slice(e + END.length);
 }
 
 function main(argv) {

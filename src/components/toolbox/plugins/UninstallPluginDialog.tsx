@@ -19,6 +19,7 @@ import { useI18n, format } from '@/i18n';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
+import { useAppStore } from '@/stores/appStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 
 interface UninstallPluginDialogProps {
@@ -37,6 +38,21 @@ export default function UninstallPluginDialog({
   const tb = t.toolbox;
   const uninstall = usePluginStore((s) => s.uninstall);
   const addToast = useToastStore((s) => s.addToast);
+  // A package that brought an app or expert teams takes them away too, and the
+  // conversations started inside the app stay readable — the user decides with
+  // all three in front of them, not just the skill and connector counts.
+  const isApp = useAppStore((s) => target !== null && s.installedApps.some((app) => app.pluginKey === target.key));
+  const teamCount = target?.contributed.teams?.length ?? 0;
+  const message = [
+    format(tb.pluginsUninstallMessage, {
+      name: target?.name ?? '',
+      skills: target?.contributed.skills.length ?? 0,
+      servers: target?.contributed.mcpServers.length ?? 0,
+      agents: target?.contributed.agents.length ?? 0,
+    }),
+    teamCount > 0 ? format(tb.pluginsUninstallTeamsNote, { teams: teamCount }) : '',
+    isApp ? tb.pluginsUninstallAppNote : '',
+  ].filter((part) => part !== '').join('');
 
   // Uninstall is not idempotent — the second call for a key finds the package
   // directory already deleted and rejects, so a succeeded uninstall would end
@@ -79,12 +95,7 @@ export default function UninstallPluginDialog({
     <ConfirmDialog
       open={target !== null}
       title={tb.pluginsUninstallTitle}
-      message={format(tb.pluginsUninstallMessage, {
-        name: target?.name ?? '',
-        skills: target?.contributed.skills.length ?? 0,
-        servers: target?.contributed.mcpServers.length ?? 0,
-        agents: target?.contributed.agents.length ?? 0,
-      })}
+      message={message}
       confirmText={tb.pluginsUninstall}
       cancelText={t.common.cancel}
       variant="danger"

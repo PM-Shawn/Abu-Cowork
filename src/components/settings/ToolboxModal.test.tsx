@@ -2,9 +2,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
-// A bound client retains the released personal/organization capability selector.
-// The new plugin page keeps its own market/mine navigation.
+// Every tab is split by SOURCE: 「市场」 is what is on offer, 「我的」 what this
+// user has. A bound client's 「市场」 is its organization catalog, so the same
+// two shelves serve OSS and enterprise alike.
 
 type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
 
@@ -51,7 +53,7 @@ vi.mock('@/i18n', () => ({
     t: {
       toolbox: {
         plugins: 'Plugins', skills: 'Skills', connectors: 'Connectors',
-        sourceMarket: 'Market', sourceMine: 'Mine', categoryMine: 'Mine', personalSource: 'Personal', organizationSource: 'Organization',
+        sourceMarket: 'Market', sourceMine: 'Mine', categoryMine: 'Mine',
         searchPlaceholder: 'Search', importEntry: 'Import', aiCreateSkillPrompt: '',
       },
     },
@@ -86,38 +88,40 @@ describe('Extensions capability sources (bound enterprise client)', () => {
   beforeEach(() => {
     settingsState.activeExtensionsTab = 'skills';
     settingsState.extensionsSearchQueries = { plugins: '', skills: '', mcp: '' };
+    // The shelf each tab sits on persists, so every case starts from the
+    // default shelf.
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
     vi.clearAllMocks();
   });
 
-  it.each(['skills', 'mcp'] as const)('keeps %s personal by default and switches to its organization slot explicitly', (activeTab) => {
+  it.each(['skills', 'mcp'] as const)('opens %s on the organization catalog and keeps 我的 for this user', (activeTab) => {
     settingsState.activeExtensionsTab = activeTab;
     render(<ExtensionsView />);
-    expect(screen.getByText(activeTab === 'skills' ? 'Personal skills' : 'Personal MCP')).toBeVisible();
-    expect(screen.getByTestId('create-control')).toBeVisible();
-    expect(screen.getByTestId('extensions-source-market')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
+    // 「市场」 is what is on offer, and for a bound client that IS the
+    // organization catalog — reached without a scope control of its own.
     expect(screen.getByTestId('organization-catalog')).toHaveAttribute('data-slot', activeTab === 'skills' ? 'skillTab' : 'mcpTab');
     expect(screen.queryByTestId('create-control')).toBeNull();
-    // The organization catalog IS the enterprise market — no shelf of its own.
-    expect(screen.queryByTestId('extensions-source-market')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Personal' }));
+    // Both shelves stay reachable while bound.
+    expect(screen.getByTestId('extensions-source-market')).toBeVisible();
+
+    fireEvent.click(screen.getByTestId('extensions-source-mine'));
+    expect(screen.getByText(activeTab === 'skills' ? 'Personal skills' : 'Personal MCP')).toBeVisible();
     expect(screen.getByTestId('create-control')).toBeVisible();
   });
 
-  it('keeps the organization plugin market and personal authored plugins', () => {
+  it('opens plugins on the organization catalog and keeps authored plugins under 我的', () => {
     settingsState.activeExtensionsTab = 'plugins';
     render(<ExtensionsView />);
-    expect(screen.getByText('Personal plugins')).toBeVisible();
-    expect(screen.getByTestId('extensions-source-mine')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
     expect(screen.getByTestId('organization-catalog')).toHaveAttribute('data-slot', 'pluginTab');
-    fireEvent.click(screen.getByRole('button', { name: 'Personal' }));
+    expect(screen.queryByTestId('create-control')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('extensions-source-mine'));
     expect(screen.getByText('Personal plugins')).toBeVisible();
+    expect(screen.getByTestId('create-control')).toBeVisible();
   });
 
   it('passes the current search to the organization capability slot', async () => {
     const { rerender } = render(<ExtensionsView />);
-    fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
     fireEvent.change(screen.getByPlaceholderText('Search'), { target: { value: 'finance' } });
     rerender(<ExtensionsView />);
     await waitFor(() => expect(screen.getByTestId('organization-catalog')).toHaveTextContent('finance'));
@@ -125,6 +129,9 @@ describe('Extensions capability sources (bound enterprise client)', () => {
 });
 
 it('retains visited personal panels and hides inactive content across tab switches', () => {
+  useExtensionSourceStore.setState({
+    sources: { plugins: 'mine', skills: 'mine', mcp: 'mine', members: 'mine', teams: 'mine' },
+  });
   settingsState.activeExtensionsTab = 'skills';
   const { rerender } = render(<ExtensionsView />);
   const skills = screen.getByText('Personal skills');

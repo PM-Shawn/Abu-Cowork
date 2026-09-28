@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 interface ToggleProps {
   checked: boolean;
   onChange: () => void;
+  ariaLabel?: string;
   size?: 'sm' | 'md' | 'lg';
   /** On-state color. 'clay' (brand accent) for preference switches; 'green'
    *  for enable/disable (active-status) switches like the toolbox cards. */
@@ -17,7 +18,7 @@ const sizeConfig = {
   lg:  { track: 'h-6 w-10', thumb: 'h-5 w-5',     on: 'translate-x-4',   off: 'translate-x-0.5' },
 };
 
-export function Toggle({ checked, onChange, size = 'sm', tone = 'clay', disabled, className }: ToggleProps) {
+export function Toggle({ checked, onChange, ariaLabel, size = 'sm', tone = 'clay', disabled, className }: ToggleProps) {
   const s = sizeConfig[size];
   const onColor = tone === 'green' ? 'bg-[var(--abu-success-solid)]' : 'bg-[var(--abu-clay)]';
 
@@ -26,6 +27,7 @@ export function Toggle({ checked, onChange, size = 'sm', tone = 'clay', disabled
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={(e) => { e.stopPropagation(); onChange(); }}
       className={cn(

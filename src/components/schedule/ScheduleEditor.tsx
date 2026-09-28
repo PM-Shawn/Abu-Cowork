@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useTeamStore } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import { SearchSelect } from '@/components/ui/search-select';
 import { useScheduleStore } from '@/stores/scheduleStore';
@@ -54,7 +54,7 @@ export default function ScheduleEditor() {
   // Team executor (labs-gated): when set, the prompt is handed to this team
   // as a task goal instead of running a plain conversation.
   const [teamId, setTeamId] = useState('');
-  const teams = useTeamStore((store) => store.teams);
+  const teams = useVisibleTeams().filter(team => !team.managed || team.managed.ready);
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectId, setProjectId] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');

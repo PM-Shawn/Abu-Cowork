@@ -1,0 +1,6 @@
+{
+  "name": "Duo",
+  "description": "two built-in experts",
+  "leader": "builtin:数据分析师",
+  "members": ["builtin:数据分析师", "builtin:办公文档专家"]
+}

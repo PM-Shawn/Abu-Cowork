@@ -138,10 +138,9 @@ describe('InstallDisclosureDialog', () => {
     expect(rows[3]).toHaveTextContent(tb.pluginsDisclosureAgentEmptyPrompt);
   });
 
-  it('names the team and the expert behind each scene the way the user sees them', () => {
-    // Who does the work is the reason to add an app, and the user reads this
-    // before anything is installed — so the screen shows the team's name and
-    // the expert's name, never `builtin-team:recruiting` or `builtin:HR 招聘官`.
+  it('names a team and its members the way the user sees them', () => {
+    // The screen shows the team's name and its members' names, never
+    // `plugin:advisor` or `builtin:HR 招聘官`.
     renderDialog({
       state: {
         kind: 'ready',
@@ -151,39 +150,21 @@ describe('InstallDisclosureDialog', () => {
             id: 'ops',
             name: { 'zh-CN': '店铺运营小组' },
             leaderRoleId: 'plugin:advisor',
-            memberRoleIds: ['plugin:advisor'],
+            memberRoleIds: ['plugin:advisor', 'builtin:HR 招聘官'],
             requirePlanApproval: false,
             description: { 'zh-CN': '看店的人' },
             expertise: [],
             samplePrompts: [],
           }],
-          app: {
-            version: 1,
-            defaultRun: { team: 'builtin-team:recruiting' },
-            home: {
-              modes: {
-                items: [{
-                  modeId: 'prepare',
-                  title: { 'zh-CN': '岗位准备' },
-                  scenes: [
-                    { id: 'jd', title: { 'zh-CN': '写 JD' }, templates: [] },
-                    { id: 'shop', title: { 'zh-CN': '看店' }, run: { team: 'ops' }, templates: [] },
-                    { id: 'ask', title: { 'zh-CN': '问专家' }, run: { expert: 'builtin:HR 招聘官' }, templates: [] },
-                  ],
-                }],
-              },
-            },
-          },
         },
       } as const,
     });
 
-    const section = screen.getByTestId('plugin-disclosure-app');
-    expect(section).toHaveTextContent('招聘专家团');
-    expect(section).toHaveTextContent('店铺运营小组');
-    expect(section).toHaveTextContent('HR 招聘官');
-    expect(section.textContent).not.toContain('builtin-team:');
-    expect(section.textContent).not.toContain('builtin:');
+    const [row] = screen.getAllByTestId('plugin-disclosure-team');
+    expect(row).toHaveTextContent('店铺运营小组');
+    expect(row).toHaveTextContent('advisor、HR 招聘官');
+    expect(row.textContent).not.toContain('plugin:');
+    expect(row.textContent).not.toContain('builtin:');
   });
 
   it('still offers the install when every agent is skipped', () => {

@@ -29,6 +29,8 @@ import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useTeamStore } from '@/stores/teamStore';
+import { useAppStore } from '@/stores/appStore';
+import { appsUsing } from '@/core/app/appScope';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
@@ -99,9 +101,11 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
   const [menuAgent, setMenuAgent] = useState<string | null>(null);
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
   const teams = useTeamStore((s) => s.teams);
+  const addedApps = useAppStore((s) => s.addedApps);
   // Deleting an agent that a team lists leaves that team with a roleId no
-  // agent answers to. Ask first and say which teams — the user decides.
-  const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<{ agent: SubagentDefinition; teams: string[]; leads: string[] } | null>(null);
+  // agent answers to, and an app scene that names it with nobody to hand the
+  // work to. Ask first and say which teams and apps — the user decides.
+  const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<{ agent: SubagentDefinition; teams: string[]; leads: string[]; apps: string[] } | null>(null);
   // `leads` is the subset it captains. Losing a member leaves a team one short;
   // losing the leader stops the team altogether, so the two say different things.
   const teamsReferencing = (agent: SubagentDefinition): { teams: string[]; leads: string[] } => {
@@ -402,7 +406,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
                       className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                       onClick={() => {
                         const using = teamsReferencing(selected);
-                        if (using.teams.length > 0) setConfirmDeleteAgent({ agent: selected, ...using });
+                        const apps = appsUsing(addedApps, { kind: 'expert', name: selected.name }).map((app) => app.name);
+                        if (using.teams.length > 0 || apps.length > 0) setConfirmDeleteAgent({ agent: selected, ...using, apps });
                         else handleDelete(selected);
                         setMenuAgent(null);
                       }}
@@ -563,15 +568,20 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
       <ConfirmDialog
         open={!!confirmDeleteAgent}
         title={format(t.toolbox.agentDeleteInTeamsTitle, { name: confirmDeleteAgent?.agent.name ?? '' })}
-        message={confirmDeleteAgent?.leads.length
-          ? format(t.toolbox.agentDeleteLeaderInTeamsMessage, {
-              count: String(confirmDeleteAgent.leads.length),
-              teams: confirmDeleteAgent.leads.join('、'),
-            })
-          : format(t.toolbox.agentDeleteInTeamsMessage, {
-              count: String(confirmDeleteAgent?.teams.length ?? 0),
-              teams: (confirmDeleteAgent?.teams ?? []).join('、'),
-            })}
+        message={[
+          confirmDeleteAgent?.leads.length
+            ? format(t.toolbox.agentDeleteLeaderInTeamsMessage, {
+                count: String(confirmDeleteAgent.leads.length),
+                teams: confirmDeleteAgent.leads.join('、'),
+              })
+            : confirmDeleteAgent?.teams.length
+              ? format(t.toolbox.agentDeleteInTeamsMessage, {
+                  count: String(confirmDeleteAgent.teams.length),
+                  teams: confirmDeleteAgent.teams.join('、'),
+                })
+              : '',
+          confirmDeleteAgent?.apps.length ? format(t.toolbox.usedByApps, { names: confirmDeleteAgent.apps.join('、') }) : '',
+        ].filter((part) => part !== '').join('')}
         confirmText={t.toolbox.agentDeleteAnyway}
         cancelText={t.common.cancel}
         variant="danger"

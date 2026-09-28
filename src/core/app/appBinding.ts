@@ -1,6 +1,6 @@
 import type { AppDefinition, AppMode, AppRunRef, AppScene, ConversationAppBinding, LocalizedText } from '@/types/app';
 import { GENERAL_APP_ID } from '@/types/app';
-import { resolveLocalizedText } from '../../../electron/shared/pluginAppSpec.mjs';
+import { resolveLocalizedText } from '../../../electron/shared/specFields.mjs';
 import { getLocale } from '@/i18n';
 
 /** `LocalizedText` for the current UI language (zh-CN, then en-US, as fallbacks). */
@@ -33,16 +33,16 @@ export function joinPromptAppend(app: AppDefinition, mode: AppMode, scene: AppSc
 }
 
 /**
- * The record a new conversation carries. Only installed apps bind: the
- * general shell has no plugin behind it and no prompt to append.
+ * The record a new conversation carries. Only real apps bind: the general
+ * shell has no app behind it and no prompt to append.
  */
 export function buildAppBinding(app: AppDefinition, mode: AppMode, scene: AppScene | undefined): ConversationAppBinding | undefined {
-  if (app.appId === GENERAL_APP_ID || app.pluginKey === null || app.pluginVersion === null) return undefined;
+  if (app.appId === GENERAL_APP_ID || app.origin === null || app.version === null) return undefined;
   return {
-    version: 1,
+    version: 2,
     appId: app.appId,
-    pluginKey: app.pluginKey,
-    pluginVersion: app.pluginVersion,
+    appVersion: app.version,
+    origin: app.origin.kind,
     appName: app.name,
     appLogo: app.logo,
     appLogoDark: app.logoDark,
@@ -51,17 +51,4 @@ export function buildAppBinding(app: AppDefinition, mode: AppMode, scene: AppSce
     run: effectiveRun(app, scene),
     promptAppend: joinPromptAppend(app, mode, scene),
   };
-}
-
-/** The team a `run` points at, as a team-store id; undefined for expert and skill runs. */
-export function runTeamId(app: AppDefinition, run: AppRunRef | undefined): string | undefined {
-  if (!run || !('team' in run)) return undefined;
-  if (run.team.startsWith('builtin-team:')) return run.team;
-  return app.pluginKey === null ? undefined : `plugin-team:${app.pluginKey}/${run.team}`;
-}
-
-/** The registry name of the expert a `run` points at; undefined for team and skill runs. */
-export function runExpertName(run: AppRunRef | undefined): string | undefined {
-  if (!run || !('expert' in run)) return undefined;
-  return run.expert.startsWith('builtin:') ? run.expert.slice('builtin:'.length) : run.expert;
 }

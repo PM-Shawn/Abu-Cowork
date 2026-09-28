@@ -1,0 +1,28 @@
+{
+  "name": "version-drift",
+  "version": "1.0.0",
+  "minAbuVersion": "0.51.0",
+  "interface": { "displayName": "Version drift", "shortDescription": "its market entry names another version" },
+  "home": {
+    "modes": {
+      "items": [
+        {
+          "modeId": "only",
+          "title": "Only mode",
+          "scenes": [
+            {
+              "id": "scene",
+              "title": "Scene",
+              "run": { "team": "builtin-team:reporting" },
+              "templates": [
+                { "id": "a", "title": "A", "prompt": "A" },
+                { "id": "b", "title": "B", "prompt": "B" },
+                { "id": "c", "title": "C", "prompt": "C" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

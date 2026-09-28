@@ -7,37 +7,40 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createAppPageHost, partitionFor, resolvePage, toRect } = require('./appPageHost.cjs');
 
-const PLUGIN_KEY = 'shop@market';
+const APP_ID = 'shop-ops@market';
+const ORG_APP_ID = 'enterprise-app:7f2c';
 
-function manifestFile(home) {
-  return path.join(home, '.abu', 'plugin-packages', 'market', 'shop', '1.0.0', '.abu-plugin', 'plugin.json');
+function appFile(home) {
+  return path.join(home, '.abu', 'apps', APP_ID, '.abu-app', 'app.json');
 }
 
 function seedHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-app-page-'));
-  const packages = path.join(home, '.abu', 'plugin-packages');
-  const packageDir = path.join(packages, 'market', 'shop', '1.0.0');
-  fs.mkdirSync(path.join(packageDir, '.abu-plugin'), { recursive: true });
-  fs.writeFileSync(path.join(packages, 'installed.json'), JSON.stringify([{
-    key: PLUGIN_KEY, marketplace: 'market', name: 'shop', version: '1.0.0', installedAt: '2026-09-18T00:00:00.000Z',
-    contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
+  const apps = path.join(home, '.abu', 'apps');
+  fs.mkdirSync(path.dirname(appFile(home)), { recursive: true });
+  fs.writeFileSync(path.join(apps, 'added.json'), JSON.stringify([{
+    appId: APP_ID, name: 'shop-ops', version: '1.0.0', origin: { kind: 'market', market: 'market' }, addedAt: '2026-09-28T00:00:00.000Z',
   }]));
-  fs.writeFileSync(manifestFile(home), JSON.stringify({
-    name: 'shop', version: '1.0.0', minAbuVersion: '0.50.0',
-    app: {
-      version: 1,
-      allowedOrigins: ['https://shop.example.com'],
-      home: { modes: { items: [{ modeId: 'm', title: 'M', scenes: [{ id: 's', title: 'S', run: { team: 'builtin-team:recruiting' }, templates: [
-        { id: 'a', title: 'A', prompt: 'A' }, { id: 'b', title: 'B', prompt: 'B' }, { id: 'c', title: 'C', prompt: 'C' },
-      ] }] }] } },
-      nav: { items: [
-        { id: 'chat', target: 'builtin:chat' },
-        { id: 'portal', title: 'Portal', target: 'url:https://shop.example.com/portal?tab=orders' },
-      ] },
-    },
+  fs.writeFileSync(appFile(home), JSON.stringify({
+    name: 'shop-ops', version: '1.0.0', minAbuVersion: '0.51.0',
+    interface: { displayName: '店铺运营', shortDescription: '看店' },
+    allowedOrigins: ['https://shop.example.com'],
+    home: { modes: { items: [{ modeId: 'm', title: 'M', scenes: [{ id: 's', title: 'S', run: { team: 'builtin-team:recruiting' }, templates: [
+      { id: 'a', title: 'A', prompt: 'A' }, { id: 'b', title: 'B', prompt: 'B' }, { id: 'c', title: 'C', prompt: 'C' },
+    ] }] }] } },
+    nav: { items: [
+      { id: 'chat', target: 'builtin:chat' },
+      { id: 'portal', title: 'Portal', target: 'url:https://shop.example.com/portal?tab=orders' },
+    ] },
   }));
   return home;
 }
+
+const orgApp = {
+  appId: ORG_APP_ID,
+  allowedOrigins: ['https://contracts.example.com', 'https://sso.example.com'],
+  nav: { items: [{ id: 'chat', target: 'builtin:chat' }, { id: 'system', title: '合同系统', target: 'url:https://contracts.example.com/home' }] },
+};
 
 /** A WebContentsView stand-in: records bounds/visibility and lets a test fire navigation events. */
 function fakeView() {
@@ -79,16 +82,17 @@ function harness(home) {
 
 const bounds = { x: 0, y: 0, width: 10, height: 10 };
 
-test('resolves a page from the install record and the package manifest, never from the renderer', () => {
+test('resolves a page from the added app\'s own copied file, never from the renderer', () => {
   const home = seedHome();
   try {
-    const page = resolvePage({ home, fs, pluginKey: PLUGIN_KEY, navItemId: 'portal' });
+    const page = resolvePage({ home, fs, appId: APP_ID, navItemId: 'portal', managed: new Map() });
     assert.equal(page.url, 'https://shop.example.com/portal?tab=orders');
     assert.deepEqual(page.allowedOrigins, ['https://shop.example.com']);
-    assert.throws(() => resolvePage({ home, fs, pluginKey: PLUGIN_KEY, navItemId: 'chat' }), /not a url: target/);
-    assert.throws(() => resolvePage({ home, fs, pluginKey: 'ghost@market', navItemId: 'portal' }), /not installed/);
+    assert.throws(() => resolvePage({ home, fs, appId: APP_ID, navItemId: 'chat', managed: new Map() }), /not a url: target/);
+    assert.throws(() => resolvePage({ home, fs, appId: 'ghost@market', navItemId: 'portal', managed: new Map() }), /is not added/);
+    assert.throws(() => resolvePage({ home, fs, appId: '../escape', navItemId: 'portal', managed: new Map() }), /cannot name a directory/);
     const { host } = harness(home);
-    assert.throws(() => host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds, url: 'https://evil.example.com' }), /unexpected field url/);
+    assert.throws(() => host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds, url: 'https://evil.example.com' }), /unexpected field url/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -96,15 +100,15 @@ test('shows a sandboxed view in the app\'s own partition, sized to the given bou
   const home = seedHome();
   try {
     const { host, views, sessions, children } = harness(home);
-    host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds: { x: 1.4, y: 2.6, width: 300.2, height: 0 } });
+    host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds: { x: 1.4, y: 2.6, width: 300.2, height: 0 } });
     assert.equal(views.length, 1);
     const [view] = views;
-    assert.deepEqual(view.prefs, { sandbox: true, contextIsolation: true, nodeIntegration: false, session: sessions.get(partitionFor(PLUGIN_KEY)) });
+    assert.deepEqual(view.prefs, { sandbox: true, contextIsolation: true, nodeIntegration: false, session: sessions.get(partitionFor(APP_ID)) });
     // All four permission channels are closed, the way the agent browser's
     // partition closes them: `getDisplayMedia` and device access do not pass
     // through the first two handlers.
     assert.deepEqual([view.prefs.session.checks, view.prefs.session.requests, view.prefs.session.devices, view.prefs.session.display], [1, 1, 1, 1]);
-    assert.match(partitionFor(PLUGIN_KEY), /^persist:abu-app-[0-9a-f]{16}$/);
+    assert.match(partitionFor(APP_ID), /^persist:abu-app-[0-9a-f]{16}$/);
     assert.deepEqual(view.bounds, { x: 1, y: 3, width: 300, height: 1 });
     assert.ok(children.has(view));
     assert.deepEqual(view.webContents.loaded, ['https://shop.example.com/portal?tab=orders']);
@@ -112,11 +116,11 @@ test('shows a sandboxed view in the app\'s own partition, sized to the given bou
 
     host.dispatch('hide');
     assert.equal(view.visible, false);
-    host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds: { x: 0, y: 0, width: 50, height: 50 } });
+    host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds: { x: 0, y: 0, width: 50, height: 50 } });
     assert.equal(views.length, 1, 'the same page is reused, not reloaded');
     assert.deepEqual(view.webContents.loaded.length, 1);
     assert.equal(view.visible, true);
-    host.dispatch('setBounds', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds: { x: 5, y: 5, width: 20, height: 20 } });
+    host.dispatch('setBounds', { appId: APP_ID, navItemId: 'portal', bounds: { x: 5, y: 5, width: 20, height: 20 } });
     assert.deepEqual(view.bounds, { x: 5, y: 5, width: 20, height: 20 });
     assert.throws(() => toRect({ x: 'a', y: 0, width: 1, height: 1 }), /finite numbers/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
@@ -126,7 +130,7 @@ test('keeps the page inside allowedOrigins: outside navigations and pop-ups go t
   const home = seedHome();
   try {
     const { host, views, opened, events } = harness(home);
-    host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds });
+    host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds });
     const { webContents } = views[0];
     const navigate = (url, isMainFrame = true) => {
       const details = { url, isMainFrame, prevented: false, preventDefault() { this.prevented = true; } };
@@ -154,24 +158,25 @@ test('keeps the page inside allowedOrigins: outside navigations and pop-ups go t
     webContents.emit('did-finish-load');
     assert.deepEqual(events.map(entry => entry.payload.state), ['loading', 'failed', 'ready']);
     assert.equal(events[1].payload.errorDescription, 'ERR_NAME_NOT_RESOLVED (-105)');
+    assert.equal(events[0].payload.appId, APP_ID);
     assert.equal(events[0].event, 'app-page://state');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('an update installed in place replaces the open page instead of keeping the old address and origins', () => {
+test('an app added again replaces the open page instead of keeping the old address and origins', () => {
   const home = seedHome();
   try {
     const { host, views, opened } = harness(home);
-    host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds });
+    host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds });
     const first = views[0];
 
-    const manifest = JSON.parse(fs.readFileSync(manifestFile(home), 'utf8'));
-    manifest.app.allowedOrigins = ['https://portal.example.com'];
-    manifest.app.nav.items[1].target = 'url:https://portal.example.com/portal';
-    fs.writeFileSync(manifestFile(home), JSON.stringify(manifest));
+    const raw = JSON.parse(fs.readFileSync(appFile(home), 'utf8'));
+    raw.allowedOrigins = ['https://portal.example.com'];
+    raw.nav.items[1].target = 'url:https://portal.example.com/portal';
+    fs.writeFileSync(appFile(home), JSON.stringify(raw));
 
-    host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds });
-    assert.equal(views.length, 2, 'the view created against the replaced version is dropped');
+    host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds });
+    assert.equal(views.length, 2, 'the view created against the replaced app is dropped');
     assert.equal(first.webContents.destroyed, true);
     assert.deepEqual(views[1].webContents.loaded, ['https://portal.example.com/portal']);
 
@@ -182,19 +187,41 @@ test('an update installed in place replaces the open page instead of keeping the
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('shows an organization app\'s page from the configuration registered for it, login page included', () => {
+  const home = seedHome();
+  try {
+    const { host, views } = harness(home);
+    assert.throws(() => host.dispatch('show', { appId: ORG_APP_ID, navItemId: 'system', bounds }), /not an organization app of this session/);
+    host.dispatch('setManagedApps', { apps: [orgApp] });
+    host.dispatch('show', { appId: ORG_APP_ID, navItemId: 'system', bounds });
+    assert.deepEqual(views[0].webContents.loaded, ['https://contracts.example.com/home']);
+    // The company login page it is redirected to stays inside the view.
+    const details = { url: 'https://sso.example.com/login', isMainFrame: true, prevented: false, preventDefault() { this.prevented = true; } };
+    views[0].webContents.emit('will-frame-navigate', details);
+    assert.equal(details.prevented, false);
+
+    assert.throws(() => host.dispatch('setManagedApps', { apps: [{ ...orgApp, allowedOrigins: ['https://*.example.com'] }] }), /invalid allowed origin/);
+    assert.throws(() => host.dispatch('setManagedApps', { apps: [{ ...orgApp, appId: 'shop@market' }] }), /organization app id required/);
+    // An organization app that is no longer registered closes.
+    host.dispatch('setManagedApps', { apps: [] });
+    assert.equal(views[0].webContents.destroyed, true);
+    assert.equal(host.pages.size, 0);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('destroys an app\'s pages, clears its storage on request, and drops everything when the window closes', async () => {
   const home = seedHome();
   try {
     const { host, views, sessions, children, win } = harness(home);
-    host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds });
-    await host.dispatch('destroyForPlugin', { pluginKey: PLUGIN_KEY, clearStorage: true });
+    host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds });
+    await host.dispatch('destroyForApp', { appId: APP_ID, clearStorage: true });
     assert.equal(host.pages.size, 0);
     assert.equal(children.size, 0);
     assert.equal(views[0].webContents.destroyed, true);
-    assert.equal(sessions.get(partitionFor(PLUGIN_KEY)).cleared, 1);
-    assert.throws(() => host.dispatch('reload', { pluginKey: PLUGIN_KEY, navItemId: 'portal' }), /page not shown/);
+    assert.equal(sessions.get(partitionFor(APP_ID)).cleared, 1);
+    assert.throws(() => host.dispatch('reload', { appId: APP_ID, navItemId: 'portal' }), /page not shown/);
 
-    host.dispatch('show', { pluginKey: PLUGIN_KEY, navItemId: 'portal', bounds });
+    host.dispatch('show', { appId: APP_ID, navItemId: 'portal', bounds });
     assert.equal(host.pages.size, 1);
     win.emit('closed');
     assert.equal(host.pages.size, 0);

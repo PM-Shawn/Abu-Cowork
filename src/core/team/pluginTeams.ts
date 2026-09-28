@@ -2,7 +2,7 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import type { Team } from '@/stores/teamStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import type { PluginActivations } from '@/core/plugin/activationPolicy';
-import { parseTeamFile, resolveLocalizedText } from '../../../electron/shared/pluginAppSpec.mjs';
+import { parseTeamFile, resolveLocalizedText } from '../../../electron/shared/pluginSpec.mjs';
 import type { AppLocale, ParsedPluginTeam } from '@/types/app';
 import { joinPath } from '@/utils/pathUtils';
 

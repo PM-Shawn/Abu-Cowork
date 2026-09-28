@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_TEAMS, BUILTIN_TEAM_ID_PREFIX, isBuiltinTeam } from './builtinTeams';
 import { BUILTIN_AGENT_NAMES } from '../../../electron/shared/pluginAgentFormat.mjs';
-import { BUILTIN_TEAM_IDS } from '../../../electron/shared/pluginAppSpec.mjs';
+import { BUILTIN_TEAM_IDS } from '../../../electron/shared/pluginSpec.mjs';
 
 /**
  * The shipped 专家团 shelf. Ids and member names are release-frozen

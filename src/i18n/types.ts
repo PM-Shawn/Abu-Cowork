@@ -2133,6 +2133,10 @@ export interface TranslationDict {
     enter: string;
     current: string;
     openLabel: string;
+    remove: string;
+    removeCreatedTitle: string;
+    removeCreatedMessage: string;
+    removeFailed: string;
   };
   appMarket: {
     title: string;
@@ -2141,6 +2145,35 @@ export interface TranslationDict {
     entryCount: string;
     emptyTitle: string;
     emptyHint: string;
+    use: string;
+    enter: string;
+    update: string;
+    needsUpgrade: string;
+    uses: string;
+    addMarket: string;
+    fromFolder: string;
+    marketsTitle: string;
+    removeMarket: string;
+    removeMarketTitle: string;
+    removeMarketMessage: string;
+    confirmAddTitle: string;
+    confirmUpdateTitle: string;
+    previewTitle: string;
+    needInstall: string;
+    needUpdate: string;
+    sitesTitle: string;
+    scenesTitle: string;
+    confirm: string;
+    adding: string;
+    addFailed: string;
+    remoteNeedsSha: string;
+    nameMismatch: string;
+    entryMismatch: string;
+    needsNewerAbu: string;
+    pluginNotFound: string;
+    pluginTooOld: string;
+    pluginLacksReference: string;
+    invalidApp: string;
   };
 
   /** App home page (product spec §5.4) and app-bound conversations. */
@@ -2155,8 +2188,14 @@ export interface TranslationDict {
     connectorHintBody: string;
     connectorHintConnect: string;
     connectorHintLater: string;
+    sceneRunUnavailable: string;
+    scenePreparing: string;
+    scenePrepareFailed: string;
     removedNotice: string;
+    removedCreatedNotice: string;
     removedAction: string;
+    disabledNotice: string;
+    offlineNotice: string;
   };
 
   toolbox: {
@@ -2237,7 +2276,6 @@ export interface TranslationDict {
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;
     pluginsRequiresNewerAbu: string;
-    pluginsProvidesAppWithoutApp: string;
     pluginsComponentConflict: string;
     pluginsMarketplaceDirLabel: string;
     pluginsMarketplaceDirPlaceholder: string;
@@ -2263,7 +2301,7 @@ export interface TranslationDict {
     pluginsUninstallTitle: string;
     pluginsUninstallMessage: string;
     pluginsUninstallTeamsNote: string;
-    pluginsUninstallAppNote: string;
+    usedByApps: string;
     pluginsUninstallFailed: string;
     pluginsSkillCount: string;
     pluginsServerCount: string;
@@ -2273,19 +2311,8 @@ export interface TranslationDict {
     pluginsMineEmptyHint: string;
     pluginsUse: string;
     pluginsEnter: string;
-    pluginsInstallAndEnter: string;
-    pluginsAgreeAndUse: string;
     pluginsAppEntered: string;
     pluginsDisclosureTeams: string;
-    pluginsDisclosureApp: string;
-    pluginsAppContents: string;
-    pluginsDisclosureAppNav: string;
-    pluginsDisclosureAppPages: string;
-    pluginsDisclosureAppScenes: string;
-    pluginsDisclosureRunTeam: string;
-    pluginsDisclosureRunExpert: string;
-    pluginsDisclosureRunSkill: string;
-    pluginsDisclosureRunDefault: string;
     pluginsAuthorAppPrompt: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;

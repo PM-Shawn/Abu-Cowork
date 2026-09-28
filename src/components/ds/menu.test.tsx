@@ -155,6 +155,22 @@ describe('Menu', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('dims a disabled item', async () => {
+    const user = userEvent.setup();
+    render(
+      <Menu trigger={<Button>Actions</Button>}>
+        <MenuItem>Rename</MenuItem>
+        <MenuItem disabled>Archive</MenuItem>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const disabled = screen.getByRole('menuitem', { name: 'Archive' });
+    expect(disabled).toHaveAttribute('data-disabled');
+    expect(disabled).toHaveClass('data-[disabled]:opacity-40');
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).not.toHaveAttribute('data-disabled');
+  });
+
   it('scales from its trigger', async () => {
     const user = userEvent.setup();
     render(<TaskMenu onRename={() => undefined} />, { wrapper: DesignSystemProvider });

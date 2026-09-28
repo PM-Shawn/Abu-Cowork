@@ -63,7 +63,7 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
                   className="h-7 w-full bg-transparent text-ui text-label outline-none placeholder:text-label-placeholder"
                 />
               </div>
-              <Command.List className="max-h-64 overflow-y-auto pt-1">
+              <Command.List label={label} className="max-h-64 overflow-y-auto pt-1">
                 <Command.Empty className="px-2 py-3 text-ui text-label-secondary">{emptyText}</Command.Empty>
                 {options.map((option) => (
                   <Command.Item
@@ -74,7 +74,7 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
                       onValueChange(option.value);
                       setOpen(false);
                     }}
-                    className={cn(MENU_ITEM, 'data-[selected=true]:bg-fill-selected')}
+                    className={cn(MENU_ITEM, 'data-[disabled=true]:opacity-40 data-[selected=true]:bg-fill-selected')}
                   >
                     <span className="min-w-0 flex-1 truncate">{option.label}</span>
                     {option.value === value && <Icon icon={AppIcons.done} size="sm" />}

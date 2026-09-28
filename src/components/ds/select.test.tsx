@@ -84,6 +84,18 @@ describe('Combobox', () => {
     expect(trigger).toHaveTextContent('Claude Opus 5');
   });
 
+  it('dims only disabled options and names its list with the label', async () => {
+    const user = userEvent.setup();
+    render(<ComboboxHarness />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
+    expect(screen.getByRole('listbox', { name: 'Model' })).toBeInTheDocument();
+    // cmdk writes data-disabled="false" on enabled items, so only the =true form may dim.
+    const option = screen.getByRole('option', { name: 'Claude Opus 5' });
+    expect(option).toHaveAttribute('data-disabled', 'false');
+    expect(option).not.toHaveClass('data-[disabled]:opacity-40');
+    expect(option).toHaveClass('data-[disabled=true]:opacity-40');
+  });
+
   it('matches keywords and says when nothing matches', async () => {
     const user = userEvent.setup();
     render(<ComboboxHarness />, { wrapper: DesignSystemProvider });

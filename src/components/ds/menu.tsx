@@ -6,7 +6,7 @@ import { Icon } from './icon';
 import { LayerScope } from './layer';
 import { useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
-import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM } from './styles';
+import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
 
 const MENU_PANEL = 'z-popover min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) p-1';
 
@@ -53,7 +53,7 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
   onSelect?: () => void;
 }) {
   const kind = useMenuKind();
-  const className = cn(MENU_ITEM, tone === 'danger' && 'text-danger');
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger');
   const body = (
     <>
       {icon && <Icon icon={icon} size="sm" className={tone === 'danger' ? 'text-danger' : 'text-label-secondary'} />}

@@ -4,7 +4,7 @@ import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
 import { useLayer, useLayerContainer, useOpenState } from './layer-context';
-import { DISABLED, FLOAT_MOTION, FLOAT_SURFACE, FOCUS_RING, MENU_ITEM } from './styles';
+import { DISABLED, FLOAT_MOTION, FLOAT_SURFACE, FOCUS_RING, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
 
 export interface SelectOption {
   value: string;
@@ -49,7 +49,7 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
           <SelectPrimitive.Viewport>
             <LayerScope id={id}>
               {options.map((option) => (
-                <SelectPrimitive.Item key={option.value} value={option.value} disabled={option.disabled} className={cn(MENU_ITEM, 'relative pr-6')}>
+                <SelectPrimitive.Item key={option.value} value={option.value} disabled={option.disabled} className={cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6')}>
                   <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
                   <SelectPrimitive.ItemIndicator className="absolute right-2 inline-flex">
                     <Icon icon={AppIcons.done} size="sm" />

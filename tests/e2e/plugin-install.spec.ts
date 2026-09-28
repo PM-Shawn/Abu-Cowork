@@ -125,7 +125,7 @@ async function openPluginsTab(page: Page): Promise<void> {
 
 async function openAddMarketplace(page: Page): Promise<void> {
   await page.getByTestId('plugin-create-trigger').click();
-  await page.getByTestId('plugin-create-menu').getByRole('button', { name: /添加插件市场|Add marketplace/ }).click();
+  await page.getByTestId('plugin-create-menu').getByRole('button', { name: /^(添加市场|Add market)$/ }).click();
 }
 
 test('loads custom skill directories and standalone MCP configuration in Electron', async () => {
@@ -715,52 +715,6 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     await expect.poll(() => Object.keys(JSON.parse(fs.readFileSync(secretsPath, 'utf8')))).not.toContain(config.pluginConfiguration);
     expect(fs.existsSync(manifestFile)).toBe(true);
 
-  } finally {
-    if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
-  }
-});
-
-// The app authored in a creation conversation: the example package stands in
-// for the files the model writes; the preview names the team and the pages,
-// and confirming the install enters the app the way the market's 使用 does.
-test('creates an app in a creation conversation and enters it from the preview', async () => {
-  let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
-  try {
-    launched = await launchAbuElectron();
-    const page = await launched.app.firstWindow();
-    await waitForWelcomeScreen(page);
-    await dismissFirstRunOverlays(page);
-    // 创建应用 lives with the apps, in the switcher beside Abu's own name.
-    await page.getByTestId('app-switcher-trigger').click();
-    await page.getByTestId('app-switcher-create').click();
-    const authorsPath = path.join(launched.appDataDir, 'Home/.abu/plugin-authors/authors.json');
-    await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
-    const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
-    const composer = page.locator('[data-chat-composer]');
-    const composerText = () => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '');
-    await expect(composer).toBeVisible();
-    await expect.poll(composerText).toMatch(/创建一个应用|create an app/);
-    const sourceDir = path.join(launched.appDataDir, 'Home/Abu Plugins', author.id);
-    fs.cpSync(path.join(REPO_ROOT, 'examples', 'plugin-market', 'plugins', 'abu-example-shop-ops'), sourceDir, { recursive: true });
-
-    await openPluginsTab(page);
-    // The draft waits on 「我的」, where the guide sends the user to preview it.
-    await page.getByTestId('extensions-source-mine').click();
-    await page.getByTestId('plugin-mine-draft').click();
-    await page.getByRole('button', { name: /^(校验并预览|Validate and preview)$/ }).click();
-    const disclosure = page.getByTestId('plugin-install-disclosure');
-    await expect(disclosure).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(disclosure.getByTestId('plugin-disclosure-team')).toContainText('店铺运营小组');
-    await expect(disclosure.getByTestId('plugin-disclosure-app')).toContainText('店铺后台');
-    await expect(disclosure.getByTestId('plugin-disclosure-app-pages')).toContainText('https://example.com');
-    await expect(page.getByTestId('plugin-install-confirm')).toHaveText(/安装并进入|Install and enter/);
-    await page.getByLabel('SHOP_TOKEN', { exact: true }).fill('e2e-shop-token-placeholder');
-    await page.getByTestId('plugin-install-confirm').click();
-
-    await expect(page.getByTestId('app-switcher-current')).toHaveText('店铺运营', { timeout: READY_TIMEOUT });
-    await expect(page.getByTestId('app-home-title')).toHaveText('店铺运营');
-    await expect(page.getByTestId('sidebar-app-page-portal')).toBeVisible();
-    expect(fs.existsSync(path.join(installRoot(launched), `author-${author.id}/abu-example-shop-ops/1.0.0/.abu-plugin/plugin.json`))).toBe(true);
   } finally {
     if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
   }

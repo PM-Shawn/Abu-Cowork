@@ -43,9 +43,10 @@ export interface LaunchedApp extends ElectronDataRoot {
 
 export interface LaunchOptions {
   /**
-   * Extra main-process env for a single launch. Only for the gated #549 test
-   * hooks (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`),
-   * which electron/e2eTestHooks.cjs reads only in an unpackaged build.
+   * Extra main-process env for a single launch: the gated #549 test hooks
+   * (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`), which
+   * electron/e2eTestHooks.cjs reads only in an unpackaged build, and
+   * `NODE_EXTRA_CA_CERTS` for a spec that serves a loopback HTTPS address.
    */
   extraEnv?: Record<string, string>;
   /**

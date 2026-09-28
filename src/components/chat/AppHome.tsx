@@ -19,7 +19,7 @@ import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity, teamIdentity } from '@/core/team/expertContact';
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { buildAppBinding, effectiveRun, pickMode, resolveText } from '@/core/app/appBinding';
-import { refCatalogFrom, resolveRun, runTargets, type ResolvedRun } from '@/core/app/appRefs';
+import { liveRefCatalog, refCatalogFrom, resolveRun, runTargets, type ResolvedRun } from '@/core/app/appRefs';
 import { describeSceneRun } from '@/components/app/runLabel';
 import AppLogo from '@/components/app/AppLogo';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -151,9 +151,15 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     return { label, avatar, unavailable };
   };
 
-  /** Hand the prompt to whoever the scene's run resolves to, once everything it needs is there. */
+  /**
+   * Hand the prompt to whoever the scene's run resolves to, once everything it
+   * needs is there. Resolved against the live catalog: after a repair this
+   * runs again from the repair's callback, and the plugin it installed has to
+   * count.
+   */
   const startFromTemplate = async (scene: AppScene, prompt: string): Promise<void> => {
-    const resolved = resolvedRun(scene);
+    const run = effectiveRun(app, scene);
+    const resolved = run ? resolveRun(app, run, liveRefCatalog()) : undefined;
     const chat = useChatStore.getState();
     const targets = resolved ? runTargets(resolved) : [];
     if (targets.some((target) => target.status === 'needs-plugin')) {

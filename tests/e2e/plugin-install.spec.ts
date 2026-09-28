@@ -453,9 +453,20 @@ test('recovers an interrupted same-version replacement before plugin activation 
     // The interruption below has to land on a settled install, and the switch
     // on 「我的」 is what says the plugin is live.
     await page.getByTestId('extensions-source-mine').click();
-    const liveRow = page.getByTestId('plugin-mine-row').filter({ hasText: 'e2e-weather' }).first();
-    await expect(liveRow.getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
-    await page.getByTestId('extensions-source-market').click();
+    const liveRow = () => page.getByTestId('plugin-mine-row').filter({ hasText: 'e2e-weather' }).first();
+    await expect(liveRow().getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
+    // Settled also means on disk. Chromium commits localStorage on a delay and
+    // the kill below skips that commit, so an install made seconds earlier can
+    // come back without its connector, which recovery then rightly refuses to
+    // overwrite. Quit normally and reopen, so the interruption lands on an
+    // install from an earlier session.
+    await closeAbuElectron(launched.app);
+    launched = await launchAbuElectron(launched);
+    page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await openPluginsTab(page);
+    await page.getByTestId('extensions-source-mine').click();
+    await expect(liveRow().getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
     const registry = path.join(installRoot(launched), 'installed.json');
     const previous = JSON.parse(fs.readFileSync(registry, 'utf8'))[0];
     const installedSkill = path.join(installRoot(launched), 'e2e-market/e2e-weather/1.0.0/skills/today/SKILL.md');
@@ -483,15 +494,11 @@ test('recovers an interrupted same-version replacement before plugin activation 
     launched = await launchAbuElectron(launched);
     page = await launched.app.firstWindow();
     await waitForWelcomeScreen(page);
-    // The kill took the window down before it could persist the dismissal, so
-    // this launch opens on the guide again.
-    await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await expect.poll(() => fs.existsSync(installedSkill) ? fs.readFileSync(installedSkill, 'utf8') : null, { timeout: READY_TIMEOUT }).toBe(originalBody);
     expect(JSON.parse(fs.readFileSync(registry, 'utf8'))).toEqual([previous]);
     expect(fs.readFileSync(installedAgent, 'utf8')).toBe(originalAgent);
-    // The shelf is a persisted choice, and the kill may have dropped the last
-    // switch back to 市场 before it reached disk — pick it explicitly.
+    // The first session quit on 「我的」, so the plugins tab reopens there.
     await page.getByTestId('extensions-source-market').click();
     const recovered = page.getByTestId('plugin-marketplace-entry').filter({ hasText: 'e2e-weather' }).first();
     await expect(recovered.getByTestId('plugin-installed-badge')).toBeVisible({ timeout: READY_TIMEOUT });

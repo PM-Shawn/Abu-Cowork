@@ -284,11 +284,12 @@ Abu 是 Electron 桌面端，每轮“改 → 重启 dev → 验证”的成本�
   export default function MyComponent({ title, onClose }: { title: string; onClose: () => void }) { ... }
   ```
 - **i18n**: Always use `const { t } = useI18n()` — never hardcode Chinese strings in JSX.
-- **Icons**: in design-system migrated files, render icons only through `Icon` + `AppIcons` from `@/components/ui/icon` and `@/components/ui/icons` (`size` = `sm` 14 / `md` 16 / `lg` 20, stroke fixed at 1.5). Legacy files keep Lucide with explicit size classes until they migrate.
+- **Icons**: in design-system migrated files, render icons only through `Icon` + `AppIcons` from `@/components/ds/icon` and `@/components/ds/icons` (`size` = `sm` 14 / `md` 16 / `lg` 20, stroke fixed at 1.5). Legacy files keep Lucide with explicit size classes until they migrate.
 - **Class merging**: Use `cn()` from `@/lib/utils` for conditional className composition.
 - **Pure helper functions** for data transformation should be defined outside the component.
 
 ### 4.1 UI Component Library (MANDATORY)
+This section covers legacy files. Files on the design-system migration list use `src/components/ds/` instead (§6.3).
 All form controls **MUST** use components from `src/components/ui/`. **Do NOT** hand-roll `<input>`, `<textarea>`, `<select>`, or toggle switches with inline styling.
 
 - **Select** (`@/components/ui/select`): Use `variant="default"` for form fields (full-width), `variant="inline"` for compact settings rows.
@@ -393,8 +394,12 @@ Files matched by `DESIGN_SYSTEM_MIGRATED_FILES` / `DESIGN_SYSTEM_UI_FILES` in `e
 must use only design-system token classes. ESLint bans arbitrary values
 (`bg-[…]`, `text-[…]`, `z-[…]`, `rounded-[…]`, `shadow-[…]`, `duration-[…]`), Tailwind palette
 colors (`gray-*`, `white`, …), and hand-written scrims (`fixed inset-0`) in both lists. Raw form
-controls and direct `lucide-react` / `radix-ui` imports are banned only in
-`DESIGN_SYSTEM_MIGRATED_FILES`, because `src/components/ui/` is where those wrappers live.
+controls and direct `lucide-react` / `radix-ui` / `cmdk` imports are banned only in
+`DESIGN_SYSTEM_MIGRATED_FILES`, because `src/components/ds/` is where those wrappers live.
+Both lists also ban legacy class names: shadcn color names (`bg-background`,
+`text-muted-foreground`…), legacy font sizes (`text-minor`, `text-h-*`), and Tailwind's own
+radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `duration-150`,
+`shadow-md`, `ease-out`).
 
 | Category | Classes |
 |---|---|
@@ -404,10 +409,31 @@ controls and direct `lucide-react` / `radix-ui` imports are banned only in
 | Primary action | `bg-emphasis` + `text-on-emphasis` |
 | Status | `text-{success,warning,danger,info}` on `bg-{role}-soft` |
 | Lines / focus | `border-separator` `border-control-border` `ring-focus` |
-| Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono` |
+| Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono`; code font: `font-code` |
 | Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` |
 | Layers / motion | `z-sticky` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
 | Identity (avatar, app icon only) | `bg-brand` `text-brand-ink` |
+
+**Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
+`DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one
+menu/popover open at a time, and `useConfirm()`); use `useConfirm()` instead of
+`window.confirm()`, `Dialog` for every modal (it owns the only scrim and asks before
+discarding `dirty` input), and `InlineMessage` / `Toaster` / `EmptyState` / `LoadError`
+for feedback. Icon-only buttons are `IconButton` with a `label`. A confirmation from
+`useConfirm()` is a question about the current dialog: it stacks over an open dialog, and
+it answers `false` when another dialog opens and replaces it. `Toaster` renders its own
+notification list (a labelled region whose `aria-live="polite"` area holds the list, newest
+last) and
+does not use Radix Toast, so a toast never takes Escape from an open dialog. Every floating
+root — portaled overlay content, scrims, and the toast list — carries
+`data-electron-no-drag`; `src/__tests__/overlayDragRegions.test.ts` guards this. ds code
+never uses a bare `animate-in` class, because the legacy global `.animate-in` rule in
+`src/styles/index.css` overrides it; use the `data-[state=…]:animate-in` forms instead.
+
+**Accessibility appearances**: `src/styles/appearance.ts` sets `data-contrast="more"`,
+`data-transparency="reduced"` and `data-motion="reduced"` on `<html>`; `tokens.css` keys
+off those attributes only — never add `prefers-*` media queries to it. Animated floating
+layers carry `data-ds-motion` and spinners `data-ds-spinner` so reduced motion can stop them.
 
 When a directory finishes migrating, append its glob to the list in the same PR. Never remove an
 entry. `scripts/designTokens.test.ts` fails if a token change breaks WCAG contrast in any of the
@@ -481,7 +507,7 @@ four appearances (light, dark, and each with increased contrast).
 - Do not add default exports to hook files.
 - Do not create new Zustand stores without `persist` middleware (unless the store is purely ephemeral by design).
 - Do not use `jest` syntax (`jest.fn()`, `jest.mock()`) — use Vitest (`vi.fn()`, `vi.mock()`).
-- Do not hand-roll form controls (select, toggle, input, textarea) — always use `src/components/ui/` components. If a variant is missing, extend the UI component.
+- Do not hand-roll form controls (select, toggle, input, textarea) — legacy files use `src/components/ui/`, migrated files use `src/components/ds/`. If a variant is missing, extend the component.
 
 ### 15. Reviewing review output (sanity-check-first)
 

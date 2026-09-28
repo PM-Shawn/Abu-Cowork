@@ -35,10 +35,13 @@ function ModelRow({
   dim?: boolean;
 }) {
   const { t } = useI18n();
+  const name = model.label || model.id;
   return (
     <div
       role="button"
       tabIndex={0}
+      // 带「能看图」标记时，读屏按「模型名，能看图」读出，避免两段文字连成一个词
+      aria-label={canSeeImages ? format(t.chat.modelRowCanSeeImages, { model: name }) : undefined}
       className={cn(
         'flex items-center w-full px-3 py-1.5 text-left text-body rounded-md transition-colors cursor-pointer',
         'hover:bg-[var(--abu-bg-hover)]',
@@ -51,7 +54,7 @@ function ModelRow({
         'flex-1 truncate',
         dim ? 'text-[var(--abu-text-muted)]' : 'text-[var(--abu-text-secondary)]'
       )}>
-        {model.label || model.id}
+        {name}
       </span>
 
       {canSeeImages && (

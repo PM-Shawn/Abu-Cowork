@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { createRef } from 'react';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getLanguageSetting, initLanguage, type LanguageSetting } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -66,5 +66,13 @@ describe('ModelSelector 能看图 tag', () => {
 
   it('leaves the tag off models that cannot', () => {
     expect(rowOf('deepseek-chat')).not.toHaveTextContent('能看图');
+  });
+
+  it('reads the model name and the tag as separate words', () => {
+    expect(rowOf('qwen3-vl-8b')).toHaveAccessibleName('qwen3-vl-8b，能看图');
+    expect(rowOf('deepseek-chat')).toHaveAccessibleName('deepseek-chat');
+    act(() => initLanguage('en-US'));
+    expect(rowOf('qwen3-vl-8b')).toHaveAccessibleName('qwen3-vl-8b, can see images');
+    expect(rowOf('deepseek-chat')).toHaveAccessibleName('deepseek-chat');
   });
 });

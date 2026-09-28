@@ -336,6 +336,7 @@ const zhCN: TranslationDict = {
     widgetCardCancelled: '组件渲染已取消',
     myModels: '我的模型',
     modelCanSeeImages: '能看图',
+    modelRowCanSeeImages: '{model}，能看图',
     managedModelsSyncing: '正在同步可用模型…',
     managedProviderUnreachable: '暂时连不上 {org} 的模型服务',
     useMyOwnModel: '用我自己的模型',

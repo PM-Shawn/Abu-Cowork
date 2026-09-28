@@ -411,6 +411,8 @@ export interface TranslationDict {
     myModels: string;
     /** Tag next to a model that can see images. */
     modelCanSeeImages: string;
+    /** Accessible name of a picker row that carries the tag. {model} */
+    modelRowCanSeeImages: string;
     managedModelsSyncing: string;
     /** `{org}` = the managed provider's name. */
     managedProviderUnreachable: string;

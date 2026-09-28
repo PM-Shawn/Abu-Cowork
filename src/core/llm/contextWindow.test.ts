@@ -79,4 +79,16 @@ describe('formatContextLength', () => {
     expect(formatContextLength(131072)).toBe('128K');
     expect(formatContextLength(128000)).toBe('128K');
   });
+
+  it('keeps K below a million in both notations', () => {
+    expect(formatContextLength(200000)).toBe('200K');
+    expect(formatContextLength(204800)).toBe('200K');
+    expect(formatContextLength(262144)).toBe('256K');
+  });
+
+  it('switches to M for whole millions in either notation', () => {
+    expect(formatContextLength(1000000)).toBe('1M');
+    expect(formatContextLength(1048576)).toBe('1M');
+    expect(formatContextLength(2097152)).toBe('2M');
+  });
 });

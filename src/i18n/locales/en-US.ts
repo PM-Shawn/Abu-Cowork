@@ -336,6 +336,7 @@ const enUS: TranslationDict = {
     widgetCardCancelled: 'Widget rendering cancelled',
     myModels: 'My models',
     modelCanSeeImages: 'Can see images',
+    modelRowCanSeeImages: '{model}, can see images',
     managedModelsSyncing: 'Syncing available models…',
     managedProviderUnreachable: 'Can\'t reach {org}\'s model service right now',
     useMyOwnModel: 'Use my own model',

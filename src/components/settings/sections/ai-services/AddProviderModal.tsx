@@ -16,7 +16,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { isKnownModel } from '@/core/llm/modelCapabilities';
-import { estimateContextWindow } from '@/core/llm/contextWindow';
+import { resolveContextWindow } from '@/core/llm/contextWindow';
 import { localServerKind } from '@/core/llm/localProvider';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
@@ -179,6 +179,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   const updateProvider = useSettingsStore((s) => s.updateProvider);
   const removeProvider = useSettingsStore((s) => s.removeProvider);
   const selectModel = useSettingsStore((s) => s.selectModel);
+  const contextWindowCeiling = useSettingsStore((s) => s.contextWindowSize);
   // True when bootstrapSecrets detected a prior ciphertext for the provider
   // being edited but couldn't decrypt it (typical cause: hardware/UUID
   // change). Mirrors the same check ProviderCard's retired inline edit form
@@ -708,10 +709,12 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           // it — only `effectiveFormat` (which follows `activePlan`) does.
           apiFormat={effectiveFormat}
           detectedContextWindow={detectedContextWindowFor(modelId)}
-          estimatedContextWindow={estimateContextWindow(
+          // 与运行时同一算法：只有名字估计这一级，再按全局上限封顶
+          estimatedContextWindow={resolveContextWindow({
             modelId,
-            localServerKind({ id: selectedOption?.provider ?? '', source: isCustom ? 'custom' : 'builtin', baseUrl }) !== null,
-          )}
+            isLocal: localServerKind({ id: selectedOption?.provider ?? '', source: isCustom ? 'custom' : 'builtin', baseUrl }) !== null,
+            ceiling: contextWindowCeiling,
+          }).size}
         />
       </div>
     );

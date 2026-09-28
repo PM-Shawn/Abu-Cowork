@@ -10,6 +10,7 @@ import { Select } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import ComputerUseGrantsCard from './ComputerUseGrantsCard';
 import { isOsSandboxCapable, syncNetworkWhitelist } from '@/core/sandbox/config';
 
 const PERMISSION_MODES: PermissionMode[] = ['standard', 'smart', 'autonomous'];
@@ -296,6 +297,13 @@ export default function SandboxSection() {
           <AuthorizedPathsList />
         </div>
       )}
+
+      {/* Computer Use: remembered per-app grants and the denied list (L2 §2.4).
+          Independent of the shell sandbox — it governs which desktop apps
+          Abu may control, not file paths. */}
+      <div className="mt-6 pt-6 border-t border-[var(--abu-border)]">
+        <ComputerUseGrantsCard />
+      </div>
     </div>
   );
 }

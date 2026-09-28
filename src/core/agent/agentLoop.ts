@@ -315,6 +315,40 @@ function generateId(): string {
  * Supports advanced allowed-tools patterns (wildcards, constraints).
  * Returns { tools, inputValidators } where inputValidators are used at execution time.
  */
+/**
+ * Blocking `computer` is what makes "documents do not go through the GUI"
+ * true rather than merely stated: it is a decision about which channel the
+ * work belongs in, not housekeeping for one skill's own run.
+ */
+const CHANNEL_GOVERNED_TOOLS: readonly string[] = [TOOL_NAMES.COMPUTER];
+
+/**
+ * Every tool pattern the skills in play have declared off-limits. Exported so
+ * the execution boundary can apply the same list the tool roster was filtered
+ * by — a visibility filter alone only hides a tool, and a model that
+ * remembers the name can still call it.
+ *
+ * How the skill was reached decides how much of its list applies. `/docx` is
+ * the user asking for that skill and nothing else, so the whole declaration
+ * holds. A skill the model activated mid-turn is a channel choice, not a mode
+ * the user asked for, and the document skills each block fifteen tools —
+ * `update_memory`, `todo_write`, `delegate_to_agent` among them. Enforcing all
+ * of those meant "read this .docx and remember the date" lost the ability to
+ * remember, for the rest of the turn, over work the skill has no opinion
+ * about. Only the channel-governed ones carry over.
+ */
+export function skillBlockedTools(
+  routedSkill: { blockedTools?: string[] } | undefined,
+  activeSkills: readonly ({ blockedTools?: string[] } | null | undefined)[] | undefined,
+): string[] {
+  const patterns = [
+    ...(routedSkill?.blockedTools ?? []),
+    ...(activeSkills ?? []).flatMap((skill) => (skill?.blockedTools ?? [])
+      .filter((pattern) => CHANNEL_GOVERNED_TOOLS.includes(pattern))),
+  ];
+  return [...new Set(patterns)];
+}
+
 export function resolveTools(
   toolInvoker: ToolInvoker,
   route: RouteResult,
@@ -365,9 +399,19 @@ export function resolveTools(
     // Skills with explicit allowedTools don't use deferred tools
     deferredTools = [];
   }
-  // Skill blocked-tools: blacklist mode (softer than allowedTools whitelist)
-  if (route.type === 'skill' && route.skill?.blockedTools) {
-    const blockedPatterns = route.skill.blockedTools;
+  // Skill blocked-tools: blacklist mode (softer than allowedTools whitelist).
+  // A skill's blocked-tools has to hold however the skill was reached. `/name`
+  // fills route.skill, but the ordinary path — the model calling use_skill —
+  // records the skill in activeSkills instead, and that case filtered nothing:
+  // the list was read off route.skill, which is empty on a 'general' route.
+  // The document skills declare `computer` in blocked-tools precisely so that
+  // editing a document never turns into driving its application's UI, and on
+  // the path the model actually takes, that declaration did nothing.
+  const blockedPatterns = skillBlockedTools(
+    route.type === 'skill' ? route.skill : undefined,
+    prefetchContext?.activeSkills,
+  );
+  if (blockedPatterns.length > 0) {
     tools = tools.filter(t =>
       !blockedPatterns.some(pattern => matchesToolName(t.name, pattern)),
     );
@@ -1136,6 +1180,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     ? options?.blockedTools
     : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE];
   let computerUseTaskEndPromise: Promise<void> | null = null;
+  let computerUseTurnStopPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {
     if (!computerUseTaskEndPromise) {
       computerUseTaskEndPromise = import('../tools/definitions/computerTools')
@@ -1145,7 +1190,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     return computerUseTaskEndPromise;
   };
   const endComputerUseTaskOnAbort = () => {
-    void endComputerUseTaskLease();
+    if (!computerUseTurnStopPromise) {
+      computerUseTurnStopPromise = import('../tools/definitions/computerTools')
+        .then(({ stopComputerUseTurn }) => stopComputerUseTurn(
+          conversationId,
+          loopId,
+          typeof abortController.signal.reason === 'string'
+            ? abortController.signal.reason
+            : 'user-stop',
+        ))
+        .catch(() => {});
+    }
+    void computerUseTurnStopPromise;
   };
   abortController.signal.addEventListener('abort', endComputerUseTaskOnAbort, { once: true });
 
@@ -1795,13 +1851,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const conv = getConversationReader().getConversation(conversationId);
       const activeSkillObjects = (conv?.activeSkills ?? [])
         .map(name => skillLoader.getSkill(name))
-        .filter((s): s is NonNullable<typeof s> => s !== undefined);
+        .filter((s): s is NonNullable<typeof s> => s != null);
       const prefetchCtx = {
         userInput: userMessage,
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
         activeSkills: activeSkillObjects,
         turnCount,
       };
+
+      // What the roster was filtered by, carried to the execution boundary so
+      // the restriction is authoritative and not merely out of sight. Rebuilt
+      // each iteration because a skill activated mid-run changes it.
+      const iterationBlockedTools = [
+        ...(effectiveBlockedTools ?? []),
+        ...skillBlockedTools(
+          route.type === "skill" ? route.skill : undefined,
+          activeSkillObjects,
+        ),
+      ];
       const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(
         toolInvoker,
         route,
@@ -2693,7 +2760,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           executionId: execution.id,
           inputValidators,
           agentToolPolicy: agentToolPolicyForRoute(route),
-          blockedTools: effectiveBlockedTools,
+          blockedTools: iterationBlockedTools,
           allowedTools: options?.allowedTools,
           imContext: options?.imContext,
           unattendedApproval: options?.unattendedApproval,

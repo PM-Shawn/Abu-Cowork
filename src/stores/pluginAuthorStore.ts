@@ -6,17 +6,20 @@ import { useChatStore } from './chatStore';
 import { useSettingsStore } from './settingsStore';
 import { getI18n, format } from '@/i18n';
 
+/** What the creation conversation opens with: a plain plugin, or an app (a plugin with `app` and teams). */
+export type PluginAuthorKind = 'plugin' | 'app';
+
 interface PluginAuthorState {
   authors: PluginAuthor[];
   creating: boolean;
   remove: (id: string) => Promise<void>;
   error: string | null;
   refresh: () => Promise<void>;
-  create: () => Promise<void>;
+  create: (kind?: PluginAuthorKind) => Promise<void>;
   edit: (author: PluginAuthor) => Promise<void>;
   prepare: (identity: { id: string } | { conversationId: string }) => Promise<{ author: PluginAuthor; disclosure: InstallDisclosure }>;
 }
-async function openAuthor(author: PluginAuthor) {
+async function openAuthor(author: PluginAuthor, kind: PluginAuthorKind = 'plugin') {
   const chat = useChatStore.getState();
   if (author.conversationId && (chat.conversations[author.conversationId] || chat.conversationIndex[author.conversationId])) {
     await chat.switchConversation(author.conversationId);
@@ -24,7 +27,9 @@ async function openAuthor(author: PluginAuthor) {
     const conversationId = chat.createConversation(author.sourceDir);
     await bindPluginAuthor(author.id, conversationId, author.conversationId);
     chat.renameConversation(conversationId, format(getI18n().toolbox.pluginsAuthorConversation, { name: author.name ?? getI18n().toolbox.pluginsDraft }));
-    chat.setPendingInput(getI18n().toolbox.pluginsAuthorPrompt);
+    // The same skill and the same package rules either way; the opening line
+    // tells the model which shape the user is after.
+    chat.setPendingInput(kind === 'app' ? getI18n().toolbox.pluginsAuthorAppPrompt : getI18n().toolbox.pluginsAuthorPrompt);
   }
   useSettingsStore.getState().closeExtensions();
 }
@@ -35,13 +40,13 @@ export const usePluginAuthorStore = create<PluginAuthorState>((set, get) => ({
     try { set({ authors: await listPluginAuthors(), error: null }); }
     catch (error) { set({ error: String(error) }); throw error; }
   },
-  create: async () => {
+  create: async (kind = 'plugin') => {
     if (get().creating) return;
     set({ creating: true });
     try {
     const author = await createPluginAuthor();
     await get().refresh();
-    await openAuthor(author);
+    await openAuthor(author, kind);
     await get().refresh();
     } finally { set({ creating: false }); }
   },

@@ -42,7 +42,8 @@ import ScenarioGuide from './ScenarioGuide';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeamById } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
@@ -65,6 +66,11 @@ import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
+import AppHome, { AppHomeScenes } from './AppHome';
+import ConversationAppBadge from './ConversationAppBadge';
+import ConversationAppNotice from './ConversationAppNotice';
+import { useSelectedApp } from '@/stores/appStore';
+import { GENERAL_APP_ID } from '@/types/app';
 import {
   VIRTUOSO_ITEM_TRAILING_PAD,
   TYPING_FOOTER_GAP_COMPENSATION,
@@ -256,7 +262,8 @@ export default function ChatView({
   // conversation owns it instead, so welcome identity follows the same source.
   const pendingTeamId = useChatStore((s) => s.pendingTeamId);
   const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
-  const welcomeTeam = useTeamStore((s) => s.teams.find((team) => team.id === welcomeTeamId));
+  const visibleTeams = useVisibleTeams();
+  const welcomeTeam = visibleTeams.find((team) => team.id === welcomeTeamId);
   const expertPrompts = pendingAgent
     ? pendingAgent.samplePromptsI18n?.[locale] ?? pendingAgent.samplePrompts
     : welcomeTeam?.samplePrompts;
@@ -857,7 +864,7 @@ export default function ChatView({
     // A conversation already pinned to another team is not silently re-pinned:
     // say so and send the text as typed (the chip is the way to switch).
     if (teamMention && activeConv?.teamId && activeConv.teamId !== teamMention.teamId) {
-      const current = useTeamStore.getState().teams.find((team) => team.id === activeConv.teamId)?.name ?? '';
+      const current = getVisibleTeamById(activeConv.teamId)?.name ?? '';
       useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current, other: teamMention.teamName }) });
       return false;
     }
@@ -873,7 +880,8 @@ export default function ChatView({
     if (!activeConv?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
       const addressedName = !teamMention ? /^@([^\s]+)/.exec(text)?.[1] : undefined;
       const addressedAgent = addressedName ? agentRegistry.getAgent(addressedName) : undefined;
-      const team = useTeamStore.getState().teams.find((candidate) => candidate.id === (teamMention?.teamId ?? welcomeTeamId));
+      const teamId = teamMention?.teamId ?? welcomeTeamId;
+      const team = teamId ? getVisibleTeamById(teamId) : undefined;
       if (addressedAgent) {
         let identity = expertIdentity(addressedAgent, locale);
         const shown = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : undefined;
@@ -997,6 +1005,12 @@ export default function ChatView({
   const handleScenarioChange = useCallback((placeholder: string | null) => {
     setScenarioPlaceholder(placeholder);
   }, []);
+
+  // Inside an app the welcome page is the app's home (product spec §5.4); the
+  // team or expert the app pins shows in the composer chip, the header stays
+  // the app's.
+  const selectedApp = useSelectedApp();
+  const appHome = selectedApp.appId === GENERAL_APP_ID ? null : selectedApp;
 
   // Hide guide when user starts typing (called from ChatInput)
   const handleWelcomeInputChange = useCallback((hasText: boolean) => {
@@ -1355,6 +1369,9 @@ export default function ChatView({
         <div className="flex-1 flex flex-col items-center justify-start overflow-y-auto px-8 pt-[12vh] pb-12">
           <div className="w-full max-w-2xl">
             {/* Title */}
+            {appHome ? (
+              <AppHome app={appHome} onPlaceholderChange={handleScenarioChange} />
+            ) : (
             <div className="text-center mb-8">
               {pendingAgentDisplay ? (
                 <>
@@ -1410,6 +1427,7 @@ export default function ChatView({
                 </>
               )}
             </div>
+            )}
 
             {/* First-run setup prompt */}
             {needsSetup && (
@@ -1442,8 +1460,10 @@ export default function ChatView({
               />
             </div>
 
-            {/* Scenario Guide */}
-            {pendingAgent || welcomeTeam ? (
+            {/* Scenario Guide — the app's scenes inside an app, Abu's own otherwise */}
+            {appHome ? (
+              <AppHomeScenes app={appHome} visible={guideVisible} />
+            ) : pendingAgent || welcomeTeam ? (
               !!expertPrompts?.length && guideVisible && <div className={cn(PROMPT_GRID_CLASS, 'mt-4')} data-testid="expert-prompts">
                 {expertPrompts.map((prompt, index) => <button key={index} type="button" className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</button>)}
               </div>
@@ -1497,6 +1517,7 @@ export default function ChatView({
             {activeConv.title}
           </span>
         )}
+        {activeConv.appBinding && !isRenamingTitle && <ConversationAppBadge binding={activeConv.appBinding} />}
         {titleTeamLeader && !isRenamingTitle && (
           <span
             data-testid="chat-title-team-badge"
@@ -1561,7 +1582,10 @@ export default function ChatView({
       {/* The stopped conversation is the one that OWNS the CU session (passed
           up by the bar), NOT `activeConv.id` — a background conversation can be
           driving the screen while an unrelated tab is open. See the component. */}
-      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(conversationId)} />
+      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(
+        conversationId,
+        { source: 'computer-use-status-bar' },
+      )} />
 
       {/* Messages Area — overlay-scroll hides the native scrollbar (thumb shows
           only while scrolling, via the global is-scrolling toggle in main.tsx);
@@ -1726,6 +1750,7 @@ export default function ChatView({
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}
           <QueuedMessagesStrip conversationId={activeConv.id} />
+          {activeConv.appBinding && <ConversationAppNotice binding={activeConv.appBinding} />}
           <ChatInput variant="chat" onSend={handleSend} />
           <div className="flex items-center justify-center gap-3 mt-1.5 whitespace-nowrap overflow-hidden">
             <UsageChip conversationId={activeConv.id} />

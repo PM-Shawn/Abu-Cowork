@@ -145,6 +145,41 @@ describe('buildSystemPrompt - security features', () => {
     }
   });
 
+  /// The gate says which channel a task belongs to; the computer-use section
+  /// says how to drive one. They ship together because with computer use off
+  /// there is no GUI to route away from, and the gate would be dead prompt on
+  /// every turn.
+  it('ships the channel gate exactly when the GUI channel exists', async () => {
+    const base = vi.mocked(useSettingsStore.getState).getMockImplementation();
+    const settings = {
+      computerUseEnabled: false,
+      disabledSkills: [],
+      disabledAgents: [],
+      contextWindowSize: 200000,
+      allowSkillCommands: false,
+    };
+
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, computerUseEnabled: false } as never);
+    const off = await buildSystemPromptSections(generalRoute, basePrompt, 'test-conv');
+    expect(off.map((s) => s.name)).not.toContain('channel-gate');
+    expect(off.map((s) => s.name)).not.toContain('computer-use');
+
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, computerUseEnabled: true } as never);
+    const on = await buildSystemPromptSections(generalRoute, basePrompt, 'test-conv');
+    const names = on.map((s) => s.name);
+    expect(names).toContain('channel-gate');
+    expect(names).toContain('computer-use');
+    // Which channel, before how to drive one.
+    expect(names.indexOf('channel-gate')).toBeLessThan(names.indexOf('computer-use'));
+
+    const gate = on.find((s) => s.name === 'channel-gate');
+    // The rule that stops the model reading a file to decide how to read it.
+    expect(gate?.text).toMatch(/wording of the request alone/i);
+    expect(gate?.cacheable).toBe(true);
+
+    if (base) vi.mocked(useSettingsStore.getState).mockImplementation(base);
+  });
+
   it('wraps project rules in <user-rules> tags', async () => {
     mockLoadAllRules.mockResolvedValue('# 编码规范\n使用 TypeScript');
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
@@ -346,6 +381,28 @@ describe('buildSystemPrompt - structure', () => {
     // Note: safety anchor may reference tag names, but no actual tagged content blocks
     expect(prompt).not.toContain('## Project Rules');
     expect(prompt).not.toContain('## Your Long-term Memory');
+  });
+});
+
+describe('buildSystemPromptSections - app context', () => {
+  const basePrompt = 'base prompt';
+  const binding = { version: 1 as const, appId: 'shop@market', pluginKey: 'shop@market', pluginVersion: '1.0.0', appName: '店铺运营', modeId: 'sourcing', promptAppend: 'Focus on margins.' };
+
+  it('adds the app section, cacheable, after the identity block and before the date, only for app-bound conversations', async () => {
+    const { useChatStore } = await import('@/stores/chatStore');
+    const conversation = (id: string, appBinding?: typeof binding) => ({ id, title: id, messages: [], createdAt: 0, updatedAt: 0, status: 'idle' as const, ...(appBinding ? { appBinding } : {}) });
+    useChatStore.setState((state) => ({ conversations: { ...state.conversations, plain: conversation('plain'), bound: conversation('bound', binding) } }));
+    const plainNames = (await buildSystemPromptSections(routeInput('hello'), basePrompt, 'plain')).map((section) => section.name);
+    expect(plainNames).not.toContain('app-context');
+
+    const sections = await buildSystemPromptSections(routeInput('hello'), basePrompt, 'bound');
+    const names = sections.map((section) => section.name);
+    expect(names.indexOf('app-context')).toBeGreaterThan(names.indexOf('planning'));
+    expect(names.indexOf('app-context')).toBeLessThan(names.indexOf('current-time'));
+    const section = sections.find((entry) => entry.name === 'app-context')!;
+    expect(section.cacheable).toBe(true);
+    expect(section.text).toContain('inside the app "店铺运营"');
+    expect(section.text).toContain('<app-instructions>\nFocus on margins.\n</app-instructions>');
   });
 });
 

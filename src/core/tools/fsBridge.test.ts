@@ -166,6 +166,28 @@ describe('fsBridge', () => {
     });
   });
 
+  describe('real fs errors carry their errno forward', () => {
+    // Callers tell a locked file apart from a missing one by reading `code`.
+    // Rethrowing with only the message dropped it, which silently disabled
+    // every such caller while their own tests — mocking below this layer and
+    // attaching `code` by hand — stayed green.
+    it('keeps the errno on the rethrown error', async () => {
+      getSidecarStatusMock.mockReturnValue('running');
+      requestMock.mockRejectedValue(new SidecarRpcError(-32001, "EBUSY: resource busy or locked, open '/t.csv'", {
+        code: 'EBUSY',
+        message: "EBUSY: resource busy or locked, open '/t.csv'",
+        path: '/t.csv',
+      }));
+
+      await expect(writeTextFile('/t.csv', 'x')).rejects.toMatchObject({
+        code: 'EBUSY',
+        message: expect.stringContaining('resource busy or locked'),
+      });
+      // A real fs error is final — it must not be retried against the disk.
+      expect(tauriMocks.writeTextFile).not.toHaveBeenCalled();
+    });
+  });
+
   describe('transport-failure -> local-retry-once policy', () => {
     it('retries locally once on a request timeout (plain Error, not SidecarRpcError)', async () => {
       getSidecarStatusMock.mockReturnValue('running');

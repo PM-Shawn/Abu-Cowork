@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
+const { identityOf, sameIdentity } = require('./fileIdentity.cjs');
 
 // Model the filesystem, including exclusive creation, links and stable inodes.
 // All I/O and time in these tests are deterministic.
@@ -77,7 +78,9 @@ function fixture(options = {}) {
       await disk.api.mkdir(parent, { recursive: true }); return;
     }
     const actual = await disk.api.lstat(parent);
-    assert.equal(actual.ino, input.parentIdentity.ino);
+    // As the real worker does: identities, not raw `ino` fields — the pair that
+    // crosses this boundary is decimal strings (`electron/fileIdentity.cjs`).
+    assert.ok(sameIdentity(identityOf(actual), input.parentIdentity));
     if (disk.entries.has(path.join(parent, input.to))) throw new Error('destination exists');
     const temp = path.join(parent, input.temp);
     await disk.api.mkdir(temp);

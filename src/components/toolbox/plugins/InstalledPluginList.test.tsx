@@ -4,9 +4,9 @@
  * servers — it must never be one click away. These tests pin the second
  * confirmation and the fact that the confirmation names what disappears.
  *
- * They also pin the 「我的」 contract: `mode="authored"` lists only plugins the
- * user wrote themselves, so someone else's install can never be presented as
- * the user's own work.
+ * They also pin the 「已安装」 contract: every personal marketplace install is
+ * listed, whatever market it came from, while authored installs and
+ * organization installs belong to other surfaces.
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -34,18 +34,17 @@ const weather: InstalledPlugin = {
   name: 'weather',
   version: '1.2.0',
   installedAt: '2026-08-31T00:00:00.000Z',
-  contributed: { skills: ['forecast', 'radar'], mcpServers: ['weather-mcp'], agents: [] },
+  contributed: { skills: ['forecast', 'radar'], mcpServers: ['weather-mcp'], agents: [], teams: [] },
 };
 
 /** Locale-resolved toolbox strings — these tests run under either locale. */
 const tb = () => getI18n().toolbox;
 
-function renderList(searchQuery = '', mode?: 'authored' | 'all') {
+function renderList(searchQuery = '') {
   render(
     <InstalledPluginList
       home="/Users/tester"
       searchQuery={searchQuery}
-      mode={mode}
       onBrowseMarketplace={vi.fn()}
     />,
   );
@@ -120,7 +119,7 @@ describe('InstalledPluginList', () => {
       name: 'compliance-bot',
       version: '3.0.0',
       installedAt: '2026-09-01T00:00:00.000Z',
-      contributed: { skills: ['audit'], mcpServers: [], agents: [] },
+      contributed: { skills: ['audit'], mcpServers: [], agents: [], teams: [] },
     };
     usePluginStore.setState({ installed: [weather, orgPlugin] });
     renderList();
@@ -142,7 +141,7 @@ describe('InstalledPluginList', () => {
           name: 'compliance-bot',
           version: '3.0.0',
           installedAt: '2026-09-01T00:00:00.000Z',
-          contributed: { skills: ['audit'], mcpServers: [], agents: [] },
+          contributed: { skills: ['audit'], mcpServers: [], agents: [], teams: [] },
         },
       ],
     });
@@ -156,8 +155,8 @@ describe('InstalledPluginList', () => {
     expect(screen.queryByText(/No plugins match|没有匹配的插件/)).toBeNull();
   });
 
-  describe('mode="authored" (「我的」)', () => {
-    /** Fetched from someone else's repo — installed, but not the user's work. */
+  describe('what counts as installed', () => {
+    /** Fetched from someone else's repo — installed, so the user has it. */
     const remoteInstall: InstalledPlugin = {
       key: 'cloud-thing@official',
       marketplace: 'official',
@@ -166,38 +165,55 @@ describe('InstalledPluginList', () => {
       sha: 'abc123',
       sourceKind: 'git-subdir',
       installedAt: '2026-09-01T00:00:00.000Z',
-      contributed: { skills: [], mcpServers: [], agents: [] },
+      contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
     };
-    /** Local marketplace package: location does not establish authorship. */
+    /** Created here: shown by AuthoredPluginList with its draft, never twice. */
     const authored: InstalledPlugin = {
-      key: 'my-plugin@my-market',
-      marketplace: 'my-market',
+      key: 'my-plugin@author-1',
+      marketplace: 'author-1',
       name: 'my-plugin',
       version: '0.1.0',
+      authoringId: '1',
       sourceKind: 'relative',
       installedAt: '2026-09-02T00:00:00.000Z',
-      contributed: { skills: ['draft'], mcpServers: [], agents: [] },
+      contributed: { skills: ['draft'], mcpServers: [], agents: [], teams: [] },
     };
 
-    it('does not classify local market packages as authored plugins', () => {
-      usePluginStore.setState({ installed: [remoteInstall, authored] });
-      renderList('', 'authored');
-      expect(screen.queryByTestId('plugin-mine-row')).toBeNull();
+    it('lists marketplace installs wherever they came from, and leaves authored installs to the authored list', () => {
+      usePluginStore.setState({ installed: [remoteInstall, authored, weather] });
+      renderList();
+      const rows = screen.getAllByTestId('plugin-mine-row');
+      expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining('cloud-thing'), expect.stringContaining('weather')]);
       expect(screen.queryByText('my-plugin')).toBeNull();
-      expect(screen.queryByText('cloud-thing')).toBeNull();
     });
 
-    it('explains how to get here instead of offering the marketplace', () => {
-      // Installs exist, just none of them the user's own — so this is the
-      // 「我的」 empty state, not "no matches" and not a marketplace pitch.
-      usePluginStore.setState({ installed: [remoteInstall] });
-      renderList('', 'authored');
-
+    it('shows the installed empty state, with the marketplace offered, when only authored installs exist', () => {
+      usePluginStore.setState({ installed: [authored] });
+      renderList();
       expect(screen.queryByTestId('plugin-mine-row')).toBeNull();
-      expect(screen.getByText(tb().pluginsMineEmptyTitle)).toBeInTheDocument();
-      expect(screen.getByText(tb().pluginsMineEmptyHint)).toBeInTheDocument();
-      expect(screen.queryByText(tb().pluginsGoToMarketplace)).toBeNull();
-      expect(screen.queryByText(tb().pluginsNoMatches)).toBeNull();
+      expect(screen.getByText(tb().pluginsEmptyState)).toBeInTheDocument();
+      expect(screen.getByText(tb().pluginsGoToMarketplace)).toBeInTheDocument();
+    });
+
+    it('puts what the user created here in the same list, under no heading of its own', () => {
+      render(
+        <InstalledPluginList home="/Users/tester" searchQuery="" childCount={1} onBrowseMarketplace={vi.fn()}>
+          <div data-testid="plugin-mine-row">my-plugin</div>
+        </InstalledPluginList>,
+      );
+      const rows = screen.getAllByTestId('plugin-mine-row');
+      expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining('weather'), 'my-plugin']);
+    });
+
+    it('is not called empty while what the user created here fills it', () => {
+      usePluginStore.setState({ installed: [] });
+      render(
+        <InstalledPluginList home="/Users/tester" searchQuery="" childCount={1} onBrowseMarketplace={vi.fn()}>
+          <div data-testid="plugin-mine-row">my-plugin</div>
+        </InstalledPluginList>,
+      );
+      expect(screen.queryByText(tb().pluginsEmptyState)).toBeNull();
+      expect(screen.getByTestId('plugin-mine-row')).toBeInTheDocument();
     });
   });
 });

@@ -311,7 +311,27 @@ export type TauriCoreInvokeRunParams = NoDrift<ParamDrift<typeof realTauriCoreIn
 export type TauriCoreInvokeRunReturns = NoDrift<ReturnDrift<typeof realTauriCoreInvokeRun, typeof shimTauriCoreInvokeRun>>;
 
 export type PluginFsRunParams = NoDrift<ParamDrift<typeof realPluginFsRun, typeof shimPluginFsRun>>;
-export type PluginFsRunReturns = NoDrift<ReturnDrift<typeof realPluginFsRun, typeof shimPluginFsRun>>;
+/**
+ * `stat` / `lstat` are allowed to differ on ONE field, and they differ from
+ * the real plugin at runtime rather than only in the type.
+ *
+ * plugin-fs declares `FileInfo.ino` and `FileInfo.dev` as `number | null`, and
+ * a file id is 64 bits wide — an NTFS id packs a record sequence number above
+ * the record index and passes 2^53 once records have been reused enough. The
+ * only number JSON has is the double, so this shim and `electron/fsHost.cjs`
+ * both put the exact id on that field as a decimal string, which is what every
+ * specified JSON protocol does with a 64-bit integer. Upload approval freezes
+ * the value and compares it against an `fstat` of the descriptor it reads
+ * from, so the difference is the whole point: two ids one rounding step apart
+ * have to stay two files.
+ *
+ * The one reader of the field, `src/core/tools/registry.ts`, takes it as it
+ * arrives (`readFileIdPin`) and accepts both forms, because the Tauri shell
+ * still serializes a Rust u64 into a JSON number there.
+ */
+export type PluginFsRunReturns = NoDrift<
+  ReturnDrift<typeof realPluginFsRun, typeof shimPluginFsRun, 'stat' | 'lstat'>
+>;
 
 export type TauriPathRunParams = NoDrift<ParamDrift<typeof realTauriPathRun, typeof shimTauriPathRun>>;
 export type TauriPathRunReturns = NoDrift<ReturnDrift<typeof realTauriPathRun, typeof shimTauriPathRun>>;

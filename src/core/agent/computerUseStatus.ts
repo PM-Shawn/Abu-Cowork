@@ -42,13 +42,46 @@
  */
 
 import { getI18n, format } from '@/i18n';
+// Static on purpose: a dynamic import() of this module from here is not
+// interceptable by the test-time mock, and every other core module that
+// talks to the event bridge imports it statically as well.
+import { emit, listen } from '@tauri-apps/api/event';
 
 export type CUSessionStatus = 'idle' | 'active' | 'paused';
-export type CUPhase = 'checking' | 'observing' | 'acting' | 'verifying' | 'blocked';
+export type CUPhase = 'checking' | 'awaiting-approval' | 'observing' | 'acting' | 'verifying' | 'blocked';
 export type CUCapabilityMode = 'full' | 'structured' | 'unsupported' | 'unknown';
 
 /** Max steps per CU session before auto-stop */
 const MAX_CU_STEPS = 30;
+
+/**
+ * Actions that only look. They change nothing on the user's machine, so they
+ * do not spend the step budget.
+ *
+ * Measured on a real run (drawing in Paint): of 32 `computer` calls, close to
+ * half were `get_window_state`, and the budget ran out with the drawing never
+ * started — the check-in fired as though thirty things had happened to the
+ * user's desktop when barely any had. The budget is there to bound how much
+ * Abu *does* before reporting back; a model stuck in an observe loop is
+ * already bounded by MAX_CU_DURATION_MS.
+ *
+ * `activate_app` and `activate` are absent on purpose: raising a window
+ * rearranges the user's screen.
+ */
+const OBSERVATION_ACTIONS: ReadonlySet<string> = new Set([
+  'list_windows',
+  'get_window_state',
+  'get_app_state',
+  'get_ui',
+  'screenshot',
+  'wait',
+]);
+
+/** Whether this action spends the step budget. Exported for the tests that
+ *  pin which actions are free. */
+export function computerActionSpendsStep(action?: string): boolean {
+  return !action || !OBSERVATION_ACTIONS.has(action);
+}
 /** Max duration per CU session (ms) */
 const MAX_CU_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -86,6 +119,7 @@ const IDLE_STATE: CUState = {
 
 /** Per-conversation session table — see module doc for why this exists. */
 const sessions = new Map<string, CUState>();
+const consentPauses = new Map<string, { depth: number; startedAt: number }>();
 /**
  * Whether the Abu window is currently hidden (and the screen border / Stop
  * overlay shown) for a Computer Use session.
@@ -132,8 +166,21 @@ function updateActive(partial: Partial<CUState>) {
   if (!activeConversationId) return;
   const current = sessions.get(activeConversationId);
   if (!current) return;
-  sessions.set(activeConversationId, { ...current, ...partial });
+  const next = { ...current, ...partial };
+  sessions.set(activeConversationId, next);
   notify();
+  // The on-screen strip mirrors the same state the chat banner shows; push
+  // it whenever something it displays changed (never for a screenshot-only
+  // update — the payload carries no pixels, but there is nothing to say).
+  if (next.status === 'active' && statusKey(next) !== lastEmittedStatusKey) {
+    lastEmittedStatusKey = statusKey(next);
+    emitStatusToOverlay(next);
+  }
+}
+
+let lastEmittedStatusKey: string | null = null;
+function statusKey(state: CUState): string {
+  return [state.stepCount, state.currentAction ?? '', state.phase, state.targetApp ?? '', state.sessionStartTime ?? ''].join('\u0000');
 }
 
 // ─── Actions (called by toolExecutor) ───
@@ -161,6 +208,9 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
     // cannot reach around. Keeping this side honest matters for what the
     // user is shown, and so the two never disagree.
     const previous = id === activeConversationId ? sessions.get(id) : undefined;
+    if (activeConversationId && activeConversationId !== id) {
+      consentPauses.delete(activeConversationId);
+    }
     activeConversationId = id;
     sessions.set(id, {
       status: 'active',
@@ -200,6 +250,7 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
     const wasHidden = windowHiddenForCU;
     windowHiddenForCU = false;
     if (owner) sessions.delete(owner);
+    if (owner) consentPauses.delete(owner);
     activeConversationId = null;
     notify();
     cleanupAbortListener();
@@ -224,25 +275,114 @@ export function pauseComputerUseStatus() {
   }
 }
 
-/** Increment step count and optionally set current action description. */
+/**
+ * Advance the session for one `computer` call.
+ *
+ * The current action is always updated — the status strip should say
+ * "observing" while it observes — but only an action that changes something
+ * spends a step. See OBSERVATION_ACTIONS.
+ */
 export function incrementComputerUseStep(action?: string) {
   const current = getActive();
   if (current?.status === 'active') {
-    const newStep = current.stepCount + 1;
-    updateActive({ stepCount: newStep, currentAction: action ?? null });
-    // Push status to overlay window for display
-    emitStatusToOverlay(newStep, action ?? null);
+    updateActive({
+      stepCount: current.stepCount + (computerActionSpendsStep(action) ? 1 : 0),
+      currentAction: action ?? null,
+    });
   }
 }
 
-/** Emit current step/action to the overlay window for display. */
-function emitStatusToOverlay(step: number, action: string | null) {
-  // Resolve the localized step label here (frontend has the UI locale) and push
-  // it to the overlay HTML, which is a dumb view outside the React i18n tree.
-  const stepLabel = format(getI18n().computerUse.overlayStep, { step });
-  import('@tauri-apps/api/event').then(({ emit }) => {
-    emit('computer-use-status', { step, action, stepLabel }).catch(() => {});
+/**
+ * Push the display-only state to the on-screen chrome (overlay border pill
+ * and the status strip), both dumb views outside the React i18n tree: labels
+ * are resolved here with the UI locale. Carries no prompt, AX label, typed
+ * text or screenshot.
+ */
+function emitStatusToOverlay(state: CUState) {
+  const t = getI18n().computerUse;
+  const phaseLabel = {
+    checking: t.phaseChecking,
+    'awaiting-approval': t.phaseAwaitingApproval,
+    observing: t.phaseObserving,
+    acting: t.phaseActing,
+    verifying: t.phaseVerifying,
+    blocked: t.phaseBlocked,
+  }[state.phase];
+  const stepLabel = state.stepCount > 0
+    ? format(t.overlayStepOf, { step: state.stepCount, max: MAX_CU_STEPS })
+    : '';
+  const payload = {
+    step: state.stepCount,
+    maxSteps: MAX_CU_STEPS,
+    action: state.currentAction,
+    stepLabel,
+    targetApp: state.targetApp,
+    phase: state.phase,
+    phaseLabel,
+    sessionStartTime: state.sessionStartTime,
+    mode: state.phase === 'awaiting-approval' ? 'approval' : 'running',
+  };
+  void Promise.resolve()
+    .then(() => emit('computer-use-status', payload))
+    .catch(() => {});
+}
+
+// ─── Takeover pause: 【继续】 / 【结束】 on the strip (L5 W3) ───
+// The run that was paused has ended by the time the user clicks, so these
+// listeners live outside the session's abort listener and clean themselves up.
+
+let takeoverPausedConversationId: string | null = null;
+let resumeUnlisten: (() => void) | null = null;
+let dismissUnlisten: (() => void) | null = null;
+let takeoverTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cleanupTakeoverListeners() {
+  resumeUnlisten?.();
+  dismissUnlisten?.();
+  resumeUnlisten = null;
+  dismissUnlisten = null;
+  if (takeoverTimer) {
+    clearTimeout(takeoverTimer);
+    takeoverTimer = null;
+  }
+  takeoverPausedConversationId = null;
+}
+
+function dismissTakeoverChrome() {
+  import('@tauri-apps/api/core').then(({ invoke }) => {
+    invoke('computer_use_chrome_dismiss').catch(() => {});
   }).catch(() => {});
+}
+
+/**
+ * Called by the computer tool when the Host reported a user takeover
+ * (`stopped_reason: user-input-detected`). Remembers which conversation to
+ * resume and arms the strip's 【继续】/【结束】 for one minute.
+ */
+export function notePausedByTakeover(conversationId: string) {
+  cleanupTakeoverListeners();
+  takeoverPausedConversationId = conversationId;
+  takeoverTimer = setTimeout(cleanupTakeoverListeners, 60_000);
+  void (async () => {
+    resumeUnlisten = await listen('computer-use-resume', () => {
+      const convId = takeoverPausedConversationId;
+      cleanupTakeoverListeners();
+      dismissTakeoverChrome();
+      if (!convId) return;
+      import('./agentLoopRunner').then(({ runAgentLoopDispatched }) => {
+        void runAgentLoopDispatched(convId, getI18n().computerUse.resumePrompt, { requireNewRun: true });
+      }).catch(() => {});
+    });
+    dismissUnlisten = await listen('computer-use-dismiss', () => {
+      cleanupTakeoverListeners();
+      dismissTakeoverChrome();
+    });
+  })().catch(() => {});
+}
+
+/** Test-only: which conversation a strip 【继续】 would resume. */
+export function getTakeoverPausedConversationId(): string | null {
+  return takeoverPausedConversationId;
 }
 
 /** Update the latest screenshot for live preview. */
@@ -279,7 +419,16 @@ export function checkCUSessionLimits(): string | null {
     return `Computer Use 操作已达上限（${MAX_CU_STEPS} 步）。请向用户汇报当前进度和结果，询问是否继续。`;
   }
 
-  if (current.sessionStartTime && Date.now() - current.sessionStartTime > MAX_CU_DURATION_MS) {
+  const activePause = activeConversationId
+    ? consentPauses.get(activeConversationId)
+    : undefined;
+  const pendingExcludedMs = activePause
+    ? Math.max(0, Date.now() - activePause.startedAt)
+    : 0;
+  if (
+    current.sessionStartTime
+    && Date.now() - current.sessionStartTime - pendingExcludedMs > MAX_CU_DURATION_MS
+  ) {
     return `Computer Use 操作已超时（${MAX_CU_DURATION_MS / 60000} 分钟）。请向用户汇报当前进度和结果。`;
   }
 
@@ -295,6 +444,69 @@ export function setCurrentAction(action: string | null) {
 export function setComputerUsePhase(phase: CUPhase) {
   const current = getActive();
   if (current?.status === 'active') updateActive({ phase });
+}
+
+/** Keep the renderer's display-only timer aligned with the Host's active-time budget. */
+export function excludeComputerUseDuration(durationMs: number) {
+  const current = getActive();
+  if (
+    !current
+    || current.status !== 'active'
+    || current.sessionStartTime === null
+    || !Number.isFinite(durationMs)
+    || durationMs <= 0
+  ) return;
+  updateActive({ sessionStartTime: current.sessionStartTime + durationMs });
+}
+
+export interface ComputerUseConsentPauseToken {
+  resume(): void;
+}
+
+/**
+ * Pause the renderer's display-only active-time budget while a human-owned
+ * consent surface is open. Tokens are nested and idempotent so task, app,
+ * site, and consequential approvals can share one clock safely.
+ */
+export function beginComputerUseConsentPause(
+  conversationId: string | null = activeConversationId,
+): ComputerUseConsentPauseToken {
+  if (!conversationId || conversationId !== activeConversationId) {
+    return Object.freeze({ resume() {} });
+  }
+  const current = sessions.get(conversationId);
+  if (!current || current.status !== 'active') {
+    return Object.freeze({ resume() {} });
+  }
+  const pause = consentPauses.get(conversationId) ?? { depth: 0, startedAt: Date.now() };
+  if (pause.depth === 0) pause.startedAt = Date.now();
+  pause.depth += 1;
+  consentPauses.set(conversationId, pause);
+  let resumed = false;
+  return Object.freeze({
+    resume() {
+      if (resumed) return;
+      resumed = true;
+      const activePause = consentPauses.get(conversationId);
+      if (!activePause) return;
+      activePause.depth = Math.max(0, activePause.depth - 1);
+      if (activePause.depth > 0) return;
+      consentPauses.delete(conversationId);
+      const state = sessions.get(conversationId);
+      if (
+        conversationId === activeConversationId
+        && state
+        && state.sessionStartTime !== null
+      ) {
+        const excludedMs = Math.max(0, Date.now() - activePause.startedAt);
+        sessions.set(conversationId, {
+          ...state,
+          sessionStartTime: state.sessionStartTime + excludedMs,
+        });
+        notify();
+      }
+    },
+  });
 }
 
 /** Set safe structural context shown in the status bar. */
@@ -315,11 +527,11 @@ export function setComputerUseContext(input: {
 let abortUnlisten: (() => void) | null = null;
 let shortcutRegistered = false;
 
-function triggerAbort() {
+function triggerAbort(source: string) {
   const convId = activeConversationId;
   if (convId) {
     import('../../stores/chatStore').then(({ useChatStore }) => {
-      useChatStore.getState().cancelStreaming(convId);
+      useChatStore.getState().cancelStreaming(convId, { source });
     }).catch(() => {});
   }
 }
@@ -329,8 +541,14 @@ async function setupAbortListener() {
 
   // 1. Listen for stop button click event from overlay window
   try {
-    const { listen } = await import('@tauri-apps/api/event');
-    const unlisten = await listen('computer-use-abort', triggerAbort);
+    const unlisten = await listen<{ source?: string; type?: string }>(
+      'computer-use-abort',
+      (event) => {
+        const source = event.payload?.source
+          ?? (event.payload?.type ? `native-helper-${event.payload.type}` : 'computer-use-overlay-stop-button');
+        triggerAbort(source);
+      },
+    );
     abortUnlisten = unlisten;
   } catch { /* ignore — event API unavailable */ }
 
@@ -338,7 +556,7 @@ async function setupAbortListener() {
   if (!shortcutRegistered) {
     try {
       const { register } = await import('@tauri-apps/plugin-global-shortcut');
-      await register('CommandOrControl+.', triggerAbort);
+      await register('CommandOrControl+.', () => triggerAbort('computer-use-global-shortcut'));
       shortcutRegistered = true;
     } catch { /* ignore — plugin unavailable or shortcut conflict */ }
   }

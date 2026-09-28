@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_TEAMS, BUILTIN_TEAM_ID_PREFIX, isBuiltinTeam } from './builtinTeams';
 import { BUILTIN_AGENT_NAMES } from '../../../electron/shared/pluginAgentFormat.mjs';
+import { BUILTIN_TEAM_IDS } from '../../../electron/shared/pluginAppSpec.mjs';
 
 /**
  * The shipped 专家团 shelf. Ids and member names are release-frozen
@@ -26,6 +27,10 @@ describe('builtinTeams', () => {
         expect(shipped.has(roleId.slice('builtin:'.length))).toBe(true);
       }
     }
+  });
+
+  it('matches the id list the package validator resolves `builtin-team:` references against', () => {
+    expect(BUILTIN_TEAMS.map((t) => t.id)).toEqual([...BUILTIN_TEAM_IDS]);
   });
 
   it('names are unique, so a user team can never collide with two of them', () => {

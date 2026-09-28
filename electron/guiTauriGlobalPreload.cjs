@@ -79,7 +79,7 @@ contextBridge.exposeInMainWorld('__TAURI__', {
 // text the Rust side builds fresh per show_screen_border call) has no way to
 // receive per-invocation dynamic data directly — so the caption instead
 // travels in via the loaded URL's query string (see guiHost.cjs's
-// `showStopButton`, which calls `loadFile(..., {query: {stopLabel}})`).
+// `showStrip`, which calls `loadFile(..., {query: {stopLabel, ...}})`).
 // `location` is a real DOM/platform object, readable from a preload even
 // under contextIsolation (isolation walls off JS globals/functions, not the
 // document/location the page and preload share) — only `window` is split,
@@ -89,8 +89,14 @@ contextBridge.exposeInMainWorld('__TAURI__', {
 // `__CU_I18N__`.
 try {
   const params = new URLSearchParams(location.search);
-  if (params.has('stopLabel')) {
-    contextBridge.exposeInMainWorld('__CU_I18N__', { stopControl: params.get('stopLabel') });
+  if (params.has('stopLabel') || params.has('unresponsiveLabel')) {
+    contextBridge.exposeInMainWorld('__CU_I18N__', {
+      stopControl: params.get('stopLabel') ?? '',
+      unresponsive: params.get('unresponsiveLabel') ?? '',
+      paused: params.get('pausedLabel') ?? '',
+      resume: params.get('resumeLabel') ?? '',
+      end: params.get('endLabel') ?? '',
+    });
   }
 } catch {
   /* URL parsing failure — harmless no-op */

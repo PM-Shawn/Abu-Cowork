@@ -620,6 +620,8 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   mainSupervisesSidecar: true,
   deepLinkScheme: readDeepLinkScheme(),
   pluginAuthor: (action, request) => ipcRenderer.invoke('abu:plugin-author', { action, request }),
+  // App pages: the renderer names a plugin and a nav item, never a URL (appPageHost.cjs).
+  appPage: (action, request) => ipcRenderer.invoke('abu:app-page', { action, request }),
   pluginSnapshot: (action, request) => ipcRenderer.invoke('abu:plugin-snapshot', { action, request }),
   pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
   pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),

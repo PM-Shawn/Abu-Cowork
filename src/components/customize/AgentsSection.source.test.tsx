@@ -39,7 +39,7 @@ const weather: InstalledPlugin = {
   name: 'Weather Pack',
   version: '1.2.0',
   installedAt: '2026-01-01T00:00:00.000Z',
-  contributed: { skills: [], mcpServers: [], agents: ['reviewer'] },
+  contributed: { skills: [], mcpServers: [], agents: ['reviewer'], teams: [] },
 };
 
 const definitions: Record<string, SubagentDefinition> = {
@@ -83,24 +83,26 @@ afterEach(() => {
 });
 
 describe('AgentsSection — which shelf an expert lands on', () => {
-  it('puts a plugin-owned expert on 市场 together with the shipped ones', () => {
+  it('keeps 市场 for the shipped experts only', () => {
     renderShelf('market', [pluginMeta, builtinMeta, userMeta]);
-    expect(screen.getByText('reviewer')).toBeInTheDocument();
     expect(screen.getByText('产品经理')).toBeInTheDocument();
+    expect(screen.queryByText('reviewer')).toBeNull();
     expect(screen.queryByText('我的助手')).toBeNull();
   });
 
-  it('keeps a plugin-owned expert off 我的 — it is not the user’s to remove', () => {
+  it('puts a plugin-owned expert on 我的 — the user installed it — badged with its plugin', () => {
     renderShelf('mine', [pluginMeta, builtinMeta, userMeta]);
     expect(screen.getByText('我的助手')).toBeInTheDocument();
-    expect(screen.queryByText('reviewer')).toBeNull();
     expect(screen.queryByText('产品经理')).toBeNull();
+    const card = screen.getByText('reviewer').closest('[role="button"]') as HTMLElement;
+    expect(within(card).getByTestId('source-badge')).toHaveTextContent('来自插件 Weather Pack');
+    expect(within(screen.getByText('我的助手').closest('[role="button"]') as HTMLElement).queryByTestId('source-badge')).toBeNull();
   });
 });
 
 describe('AgentsSection — what the detail says about provenance', () => {
   it('names the plugin, and offers no 「…」 menu, for a plugin-owned expert', () => {
-    renderShelf('market', [pluginMeta]);
+    renderShelf('mine', [pluginMeta]);
     fireEvent.click(screen.getByText('reviewer'));
     expect(screen.getByTestId('agent-added-by')).toHaveTextContent('来自插件 Weather Pack · 卸载插件即可移除');
     expect(menuButton()).toBeUndefined();
@@ -136,8 +138,8 @@ describe('AgentsSection — the 我的 empty state tells the truth', () => {
     expect(screen.queryByText('还没有你创建的专家')).toBeNull();
   });
 
-  it('says 还没有你创建的专家 when the user has none and is not searching', () => {
-    renderShelf('mine', [builtinMeta, pluginMeta]);
+  it('says 还没有你创建的专家 when the user has none at all and is not searching', () => {
+    renderShelf('mine', [builtinMeta]);
     expect(screen.getByText('还没有你创建的专家')).toBeInTheDocument();
     expect(screen.queryByText('未找到专家')).toBeNull();
   });
@@ -201,7 +203,7 @@ describe('AgentsSection — what the card row carries', () => {
 describe('AgentsSection — the switch is an auto-dispatch setting, not an on/off', () => {
   it('renders no toggle on expert cards; shows a 不自动派单 tag only when the expert is off the pool', () => {
     useSettingsStore.setState({ disabledAgents: ['reviewer'] });
-    renderShelf('market', [pluginMeta, builtinMeta]);
+    renderShelf('mine', [pluginMeta, userMeta]);
     expect(screen.queryAllByRole('switch')).toHaveLength(0);
     expect(screen.getAllByTestId('agent-auto-dispatch-off')).toHaveLength(1);
     expect(screen.getByTestId('agent-auto-dispatch-off')).toHaveTextContent('不自动派单');
@@ -222,7 +224,7 @@ describe('AgentsSection — the switch is an auto-dispatch setting, not an on/of
 
   it('detail offers 开始对话 and the auto-dispatch setting even when the expert is off the pool', () => {
     useSettingsStore.setState({ disabledAgents: ['reviewer'] });
-    renderShelf('market', [pluginMeta]);
+    renderShelf('mine', [pluginMeta]);
     fireEvent.click(screen.getByText('reviewer'));
     // 开始对话 is the detail's footer button; being off the pool is not being
     // off, so it is neither hidden nor disabled.

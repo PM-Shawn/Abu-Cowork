@@ -13,6 +13,8 @@ const CONSEQUENCE_CATEGORIES = new Set([
 ]);
 
 const COMPUTER_ACTIONS = new Set([
+  'list_windows',
+  'get_window_state',
   'get_app_state',
   'get_ui',
   'activate_app',
@@ -37,6 +39,7 @@ const CONSEQUENCE_TRIGGER_COMMANDS = new Set([
   'keyboard_press',
   'ax_press',
   'ax_set_value',
+  'ax_replace_text',
   'ax_perform_action',
 ]);
 
@@ -187,8 +190,12 @@ function inferKeyboardConsequence(session, cmd, args) {
   const key = typeof args?.key === 'string' ? args.key.toLowerCase() : '';
   const modifiers = normalizedModifiers(args);
   const targetId = session.target.bundle_id.toLowerCase();
+  const targetFileName = targetId.split(/[\\/]/).at(-1) || targetId;
+  const targetStem = targetFileName.endsWith('.exe')
+    ? targetFileName.slice(0, -4)
+    : targetFileName;
   const finderLike = targetId === 'com.apple.finder';
-  const windowsExplorer = targetId === 'explorer' || targetId === 'explorer.exe';
+  const windowsExplorer = targetStem === 'explorer';
   if (
     windowsExplorer
     && (key === 'delete' || key === 'backspace')
@@ -226,11 +233,25 @@ function inferKeyboardConsequence(session, cmd, args) {
  */
 function inferAmbiguousConsequence(session, cmd, args, axSession) {
   if (cmd === 'keyboard_press') {
-    const key = typeof args?.key === 'string' ? args.key.trim().toLowerCase() : '';
-    if (key === 'enter' || key === 'return') {
+    const rawKey = typeof args?.key === 'string' ? args.key : '';
+    const key = rawKey.trim().toLowerCase();
+    // A raw CR/LF is injected as text and lands as a Return in every Win32
+    // edit and Chromium app; it gets Return's semantics.
+    const lineBreak = rawKey === '\r' || rawKey === '\n' || rawKey === '\r\n';
+    if (key === 'enter' || key === 'return' || lineBreak) {
       return {
         category: 'ambiguous',
-        summary: `Press ${args.key} in ${session.target.app_name}; this may submit or send content`,
+        summary: `Press ${lineBreak ? 'Return' : args.key} in ${session.target.app_name}; this may submit or send content`,
+        source: 'host-ambiguous-input',
+      };
+    }
+  }
+  if (cmd === 'keyboard_type') {
+    const text = typeof args?.text === 'string' ? args.text : '';
+    if (/[\r\n]/.test(text)) {
+      return {
+        category: 'ambiguous',
+        summary: `Type text containing a line break in ${session.target.app_name}; this may submit or send content`,
         source: 'host-ambiguous-input',
       };
     }
@@ -274,6 +295,10 @@ function resolveConsequence(session, cmd, args, axSession) {
   return inferAmbiguousConsequence(session, cmd, args, axSession);
 }
 
+// Opaque element identity minted by the helper (uia/snapshot.rs element_ref).
+// Only its shape is checked; nothing here or above ever interprets it.
+const ELEMENT_REF = /^e:[0-9a-f]{16}$/;
+
 function sanitizeAxElements(result) {
   const elements = new Map();
   if (!Array.isArray(result?.elements)) return elements;
@@ -281,6 +306,7 @@ function sanitizeAxElements(result) {
     if (!Number.isInteger(raw?.id)) continue;
     elements.set(raw.id, {
       id: raw.id,
+      ref: typeof raw.ref === 'string' && ELEMENT_REF.test(raw.ref) ? raw.ref : null,
       role: typeof raw.role === 'string' ? raw.role.slice(0, 80) : '',
       label: typeof raw.label === 'string' ? raw.label.slice(0, 240) : '',
     });

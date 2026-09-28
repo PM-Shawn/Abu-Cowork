@@ -1,0 +1,32 @@
+{
+  "name": "bad-mcp-shape",
+  "version": "1.0.0",
+  "minAbuVersion": "0.51.0",
+  "mcpServers": ["not-an-object"],
+  "interface": { "displayName": "Bad connectors", "shortDescription": "mcpServers is an array, which no installer reads", "logo": "assets/logo.png", "logoDark": "assets/logo-dark.png" },
+  "app": {
+    "version": 1,
+    "requiredConnectors": ["0"],
+    "home": {
+      "modes": {
+        "items": [
+          {
+            "modeId": "only",
+            "title": "Only mode",
+            "scenes": [
+              {
+                "id": "scene",
+                "title": "Scene",
+                "templates": [
+                  { "id": "a", "title": "A", "prompt": "A" },
+                  { "id": "b", "title": "B", "prompt": "B" },
+                  { "id": "c", "title": "C", "prompt": "C" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

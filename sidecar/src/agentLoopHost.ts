@@ -101,6 +101,7 @@ interface SerializableToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
+  execution?: ToolDefinition['execution'];
 }
 
 interface CapsSnapshotEntry {
@@ -518,6 +519,7 @@ function createReverseToolInvoker(
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
+      ...(t.execution ? { execution: t.execution } : {}),
       execute: async () => {
         throw new Error(
           `[sidecar] ToolDefinition.execute() called directly for "${t.name}" — this should never happen; agentLoop.ts/toolExecutor.ts only call invoker.executeAnyTool(), which reverses to the shell via tool.invoke.`,

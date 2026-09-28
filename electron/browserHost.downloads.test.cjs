@@ -300,14 +300,16 @@ function loadHost() {
  * rely on.
  */
 function approvedEntry(file, name, sizeOverride) {
-  const stat = fs.lstatSync(file);
+  const stat = fs.lstatSync(file, { bigint: true });
   return {
     path: file,
     name: name || path.basename(file),
-    size: sizeOverride === undefined ? stat.size : sizeOverride,
-    mtimeMs: Math.floor(stat.mtimeMs),
-    ino: stat.ino,
-    dev: stat.dev,
+    size: sizeOverride === undefined ? Number(stat.size) : sizeOverride,
+    mtimeMs: Number(stat.mtimeMs),
+    // Exact decimal strings, which is the form the gate freezes — see
+    // `toFileInfo` in `electron/fsHost.cjs`.
+    ino: String(stat.ino),
+    dev: String(stat.dev),
   };
 }
 
@@ -327,7 +329,7 @@ function approvedEntry(file, name, sizeOverride) {
  * of an UNCHANGED file with 「changed on disk」 (acceptance F1).
  */
 function gateApprovedEntry(file, name) {
-  const wire = toFileInfo(fs.lstatSync(file));
+  const wire = toFileInfo(fs.lstatSync(file, { bigint: true }));
   const asPluginFsParsesIt = wire.mtime === null ? null : new Date(wire.mtime);
   return {
     path: file,
@@ -1015,7 +1017,7 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
     fs.utimesSync(approvedPath, frozen, frozen);
     assert.equal(Math.floor(fs.lstatSync(approvedPath).mtimeMs), approved.mtimeMs);
     assert.equal(fs.lstatSync(approvedPath).size, approved.size);
-    assert.notEqual(fs.lstatSync(approvedPath).ino, approved.ino);
+    assert.notEqual(String(fs.lstatSync(approvedPath, { bigint: true }).ino), approved.ino);
 
     await assert.rejects(
       host.performBrowserAutomation('upload_file', {
@@ -1060,6 +1062,60 @@ test('checks an approved file id too large to be exactly representable', async (
       /changed on disk/,
     );
     assert.equal(contents.domCalls.filter((c) => c.action === 'upload_file').length, 0);
+  } finally { restore(); }
+});
+
+/**
+ * The case the exact encoding exists for.
+ *
+ * Two NTFS ids that share a record sequence number and sit at adjacent record
+ * indexes differ by 1, and above 2^53 the doubles are 2 apart — so a pin
+ * carried as a JSON number reads them as one file. No filesystem will hand a
+ * test two such ids: the volumes that report wide ids give out no two of them
+ * close enough to collide (measured: 62 wide ids among 7621 files, every one
+ * at a different sequence number). So the comparison is stated directly.
+ */
+test('tells apart two file ids one double-rounding step apart', () => {
+  const { host, restore } = loadHost();
+  try {
+    const { approvedFileId, sameFileId } = host.__testing;
+    const actual = 9288674232255541n;
+    const neighbour = 9288674232255540n;
+    assert.notEqual(String(actual), String(neighbour));
+    assert.equal(Number(actual), Number(neighbour));
+
+    assert.equal(sameFileId(approvedFileId(String(actual), 1), actual), true);
+    assert.equal(sameFileId(approvedFileId(String(neighbour), 1), actual), false);
+    // The same neighbour as a JSON number cannot separate them — which is what
+    // the exact form is for, and why the gate writes one.
+    assert.equal(sameFileId(approvedFileId(Number(neighbour), 1), actual), true);
+  } finally { restore(); }
+});
+
+/**
+ * A pin whose file id is a JSON number is the shape the frozen Tauri shell
+ * produces — its Rust `plugin:fs` serializes a u64 — and an approval frozen by
+ * an older build carries the same shape. Both sides of such a pin round the
+ * same value the same way, so it still names the file it named, and an
+ * unchanged file goes through rather than refusing itself.
+ */
+test('accepts a pin whose file id arrived as a JSON number', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const file = path.join(root, 'report.txt');
+    fs.writeFileSync(file, 'PUBLIC!!');
+    const exact = approvedEntry(file, 'report.txt');
+    const approved = { ...exact, ino: Number(exact.ino), dev: Number(exact.dev) };
+    assert.equal(typeof approved.ino, 'number');
+
+    await host.performBrowserAutomation('upload_file', {
+      ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+    });
+
+    const call = contents.domCalls.find((c) => c.action === 'upload_file');
+    assert.ok(call, 'a numeric pin for an unchanged file was refused');
+    assert.equal(call.payload.files[0].name, 'report.txt');
   } finally { restore(); }
 });
 
@@ -1158,7 +1214,7 @@ test('an epoch mtime is compared rather than treated as a missing upload pin', a
     assert.equal(approved.mtimeMs, 0);
     fs.writeFileSync(file, 'SECRET!!');
     fs.utimesSync(file, new Date(5000), new Date(5000));
-    assert.equal(fs.statSync(file).ino, approved.ino);
+    assert.equal(String(fs.statSync(file, { bigint: true }).ino), approved.ino);
     await assert.rejects(host.performBrowserAutomation('upload_file', {
       ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
     }), /changed on disk/);

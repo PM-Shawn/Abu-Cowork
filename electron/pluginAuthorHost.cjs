@@ -1,14 +1,17 @@
 'use strict';
 const fs = require('node:fs/promises');
 const crypto = require('node:crypto');
+const { identityOf } = require('./fileIdentity.cjs');
 const PLUGIN_AUTHOR_CHANNEL = 'abu:plugin-author';
 
 function createPluginAuthorHost({ home, session, snapshots, now = () => new Date().toISOString(), randomId = () => crypto.randomBytes(16).toString('hex') }) {
   let queue = Promise.resolve();
   async function call(action, request = {}) {
     await session.ready();
-    const identity = await fs.stat(home);
-    return session.author({ home, identity: { ino: identity.ino, dev: identity.dev }, action, nonce: randomId(), ...request });
+    // Bigint, because this identity reaches the worker as JSON — see
+    // `electron/fileIdentity.cjs`.
+    const identity = identityOf(await fs.stat(home, { bigint: true }));
+    return session.author({ home, identity, action, nonce: randomId(), ...request });
   }
   async function dispatch(sender, action, request) {
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Plugin author: invalid request');

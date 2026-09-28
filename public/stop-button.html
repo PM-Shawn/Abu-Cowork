@@ -53,7 +53,7 @@
   <button class="stop-btn" id="stopBtn">
     <span class="stop-icon"></span>
     <span id="stopLabel">Stop control</span>
-    <span class="shortcut">⌘.</span>
+    <span class="shortcut" id="stopShortcut">Esc</span>
   </button>
   <script>
     // Caption is pre-localized by the native side (window.__CU_I18N__, injected
@@ -61,12 +61,33 @@
     if (window.__CU_I18N__ && window.__CU_I18N__.stopControl) {
       document.getElementById('stopLabel').textContent = window.__CU_I18N__.stopControl;
     }
+    document.getElementById('stopShortcut').textContent =
+      /Mac/i.test(navigator.platform) ? 'Esc / ⌘.' : 'Esc';
+
+    // Heartbeat watchdog (L5 W4): the Host beats once a second; if it goes
+    // silent this page dims and then closes itself, so a hung main process
+    // never leaves a Stop button that cannot stop anything.
+    let lastBeat = Date.now();
+    let closed = false;
+    if (window.__TAURI__) {
+      window.__TAURI__.event.listen('computer-use-heartbeat', () => { lastBeat = Date.now(); });
+    }
+    setInterval(() => {
+      const silence = Date.now() - lastBeat;
+      if (silence > 3000) document.body.style.opacity = '0.35';
+      if (silence > 8000 && !closed) {
+        closed = true;
+        try { window.close(); } catch (e) { /* main may close us instead */ }
+      }
+    }, 500);
 
     // Use Tauri global API (withGlobalTauri: true) to emit abort event
     document.getElementById('stopBtn').addEventListener('click', async () => {
       try {
         if (window.__TAURI__) {
-          await window.__TAURI__.event.emit('computer-use-abort');
+          await window.__TAURI__.event.emit('computer-use-abort', {
+            source: 'computer-use-overlay-stop-button'
+          });
         }
       } catch (e) {
         console.error('Failed to emit abort:', e);

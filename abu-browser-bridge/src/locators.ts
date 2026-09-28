@@ -145,13 +145,36 @@ export interface ApprovedUploadFile {
    * compared by length — a length is not an identity.
    */
   mtimeMs: number;
-  ino?: number;
-  dev?: number;
+  /**
+   * A 64-bit file id: an exact decimal string from the Electron and sidecar
+   * filesystem hosts, a JSON number from the Tauri shell, whose Rust
+   * `plugin:fs` serializes a u64 onto the same field. An NTFS id passes 2^53
+   * once its record sequence number grows, and the only number JSON has is the
+   * double, so the exact value travels as text — the encoding protobuf's JSON
+   * mapping and every comparable protocol specify for a 64-bit integer.
+   */
+  ino?: number | string;
+  dev?: number | string;
 }
 
 /** True iff this entry carries something a sender can actually re-check. */
 export function hasUploadIdentityPin(file: ApprovedUploadFile): boolean {
-  return file.mtimeMs > 0 || (typeof file.ino === 'number' && Number.isFinite(file.ino));
+  return file.mtimeMs > 0 || approvedFileId(file.ino) !== undefined;
+}
+
+/**
+ * A file id in the form it was pinned in, or `undefined` when there is none.
+ *
+ * Canonical decimal only: a string with a leading zero or a sign is a value no
+ * producer writes. Mirrored by `approvedFileId` in `electron/browserHost.cjs`
+ * and `readFileIdPin` in `src/core/permissions/browserUploadFiles.ts` — one
+ * pin, read the same way wherever it lands.
+ */
+export function approvedFileId(value: unknown): number | string | undefined {
+  if (typeof value === 'string') {
+    return /^(?:0|[1-9][0-9]*)$/.test(value) ? value : undefined;
+  }
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 /**
@@ -178,8 +201,10 @@ export function parseApprovedUploadFiles(raw: unknown): ApprovedUploadFile[] | n
     // re-checked here, and refusing is the fail-closed half of F1.
     if (typeof mtimeMs !== 'number' || !Number.isFinite(mtimeMs) || mtimeMs < 0) return null;
     const entryOut: ApprovedUploadFile = { path, name, size, mtimeMs: Math.floor(mtimeMs) };
-    if (typeof ino === 'number' && Number.isFinite(ino)) entryOut.ino = ino;
-    if (typeof dev === 'number' && Number.isFinite(dev)) entryOut.dev = dev;
+    const inoPin = approvedFileId(ino);
+    const devPin = approvedFileId(dev);
+    if (inoPin !== undefined) entryOut.ino = inoPin;
+    if (devPin !== undefined) entryOut.dev = devPin;
     if (!hasUploadIdentityPin(entryOut)) return null;
     out.push(entryOut);
   }

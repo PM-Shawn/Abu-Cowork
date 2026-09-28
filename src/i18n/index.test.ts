@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   detectSystemLocale,
   getResolvedLocale,
@@ -21,6 +21,30 @@ describe('i18n', () => {
     it('returns a supported locale', () => {
       const locale = detectSystemLocale();
       expect(['zh-CN', 'en-US']).toContain(locale);
+    });
+
+    it('resolves to en-US under the test harness, whatever the host OS locale is', () => {
+      // src/test/setup.ts pins navigator.language, so `'system'` means en-US in
+      // every worker — the answer happy-dom and CI's runners give. Without the
+      // pin, every suite asserting English tool-result copy fails on a zh-CN
+      // machine (95 tests across 18 files, measured 2026-09-12). If this test
+      // fails on your machine, the pin was removed or bypassed — do not fix it
+      // by adding `initLanguage('en-US')` to the suites that broke.
+      expect(navigator.language).toBe('en-US');
+      expect(detectSystemLocale()).toBe('en-US');
+      expect(getResolvedLocale('system')).toBe('en-US');
+    });
+
+    it('still detects a Chinese host when a suite overrides the pin', () => {
+      // The pin is `configurable`: a suite that wants the OS-locale code path
+      // stubs navigator itself, and the harness default is back once it unstubs.
+      vi.stubGlobal('navigator', { language: 'zh-TW' });
+      try {
+        expect(detectSystemLocale()).toBe('zh-CN');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(detectSystemLocale()).toBe('en-US');
     });
   });
 

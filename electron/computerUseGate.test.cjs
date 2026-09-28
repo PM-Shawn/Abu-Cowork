@@ -4,30 +4,74 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const {
   createComputerUseGate,
+  classifyHelperFailure,
+  hostRefusal,
+  HOST_REFUSAL_CODES,
+  classifyInputRejection,
   COMPUTER_USE_GATE_MISS,
   TASK_GRANT_TTL_MS,
   MAX_TASK_CU_STEPS,
   MAX_TASK_CU_DURATION_MS,
+  resolveBrowserOriginFromSnapshot,
 } = require('./computerUseGate.cjs');
-const { COMPUTER_USE_TOKEN_ARG } = require('./computerUseCommands.cjs');
+const policy = require('../src/core/tools/computerUsePolicy.json');
+const {
+  COMPUTER_USE_TOKEN_ARG,
+  COMPUTER_USE_REQUEST_CONTEXT_ARG,
+} = require('./computerUseCommands.cjs');
+const { createComputerUseTurnStopStore } = require('./computerUseTurnStopStore.cjs');
+const { replayComputerUseTrajectory } = require('./computerUseTrajectory.cjs');
+
+test('Host produces replayable versioned observations and an end event without task text', async () => {
+  const events = [];
+  const h = harness({ observability: { noteComputerUseTrajectory: (attributes) => events.push({
+    ...attributes, timestamp: events.length * 100, appSessionId: 'a1111111-1111-4111-8111-111111111111',
+    event: 'main.computer_use_trajectory', process: 'main', schemaVersion: 1,
+  }) } });
+  await observeState(h);
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', { conversationId: 'conversation-1', loopId: 'loop-1' });
+  const report = replayComputerUseTrajectory(events);
+  assert.equal(report.invalidRecordCount, 0);
+  assert.equal(report.runs.length, 1);
+  assert.equal(report.runs[0].phase, 'ended');
+  assert.equal(report.runs[0].historyComplete, true);
+  assert.equal(JSON.stringify(events).includes('conversation-1'), false);
+  h.gate.teardown();
+});
+
+const { createComputerUseGrantStore } = require('./computerUseGrantStore.cjs');
 
 function harness(overrides = {}) {
+  const {
+    nativeDispatch: customNativeDispatch,
+    ...gateOverrides
+  } = overrides;
+  const harnessPlatform = gateOverrides.platform ?? 'darwin';
   let currentIdentity = {
     app_name: 'Notes',
     bundle_id: 'com.apple.Notes',
     process_id: 100,
+    ...(harnessPlatform === 'win32'
+      ? { app_id: 'com.apple.Notes', window_id: 'hwnd:0x100' }
+      : {}),
   };
   const nativeCalls = [];
   const approvalRequests = [];
   const taskApprovalRequests = [];
   const actionApprovalRequests = [];
+  const browserSiteApprovalRequests = [];
   let axElements = [];
+  let modalWindowId = null;
   let helperKillCount = 0;
   let now = 10_000;
   let stateSequence = 0;
   let axSessionSequence = 0;
   let failingNativeCommand = null;
+  let failingNativeError = null;
   let helperGeneration = 1;
+  let listedWindows = null;
+  let lastResolvedIdentity = null;
+  let axSnapshotExtra = {};
   const gate = createComputerUseGate({
     platform: 'darwin',
     now: () => now,
@@ -36,6 +80,20 @@ function harness(overrides = {}) {
     getNativeHelperGeneration: () => helperGeneration,
     getActiveWindow: async () => currentIdentity,
     nativeDispatch: async (cmd, args) => {
+      if (customNativeDispatch) {
+        const result = await customNativeDispatch(cmd, args);
+        if (cmd === 'resolve_app_identity' && result && typeof result === 'object') {
+          lastResolvedIdentity = { ...currentIdentity, ...result };
+        }
+        if (cmd === 'list_windows' && !Array.isArray(result)) {
+          const candidate = lastResolvedIdentity ?? currentIdentity;
+          return typeof candidate?.window_id === 'string' ? [candidate] : [];
+        }
+        if (cmd === 'activate_window' && typeof result?.app_name !== 'string') {
+          return lastResolvedIdentity ?? currentIdentity;
+        }
+        return result;
+      }
       nativeCalls.push({ cmd, args });
       if (cmd === 'check_macos_permissions') {
         return { screen_recording: true, accessibility: true };
@@ -57,14 +115,26 @@ function harness(overrides = {}) {
         }
         return currentIdentity;
       }
+      if (cmd === 'list_windows') {
+        if (Array.isArray(listedWindows)) return listedWindows;
+        return typeof currentIdentity.window_id === 'string' ? [currentIdentity] : [];
+      }
+      if (cmd === 'activate_window') return currentIdentity;
       if (cmd === 'ax_snapshot') {
         return {
           session_id: `ax-session-${++axSessionSequence}`,
           app: currentIdentity.app_name,
           elements: axElements,
+          input_epoch: 1,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: axSessionSequence,
+          modal: modalWindowId !== null,
+          modal_window_id: modalWindowId,
+          ...axSnapshotExtra,
         };
       }
       if (cmd === failingNativeCommand) {
+        if (failingNativeError) throw failingNativeError;
         throw new Error(`simulated ${cmd} uncertainty`);
       }
       return { ok: true };
@@ -81,10 +151,14 @@ function harness(overrides = {}) {
       actionApprovalRequests.push(request);
       return true;
     },
+    requestBrowserSiteApproval: async (request) => {
+      browserSiteApprovalRequests.push(request);
+      return true;
+    },
     killNativeHelper: () => {
       helperKillCount += 1;
     },
-    ...overrides,
+    ...gateOverrides,
   });
   return {
     gate,
@@ -94,17 +168,34 @@ function harness(overrides = {}) {
     approvalRequests,
     taskApprovalRequests,
     actionApprovalRequests,
+    browserSiteApprovalRequests,
     get helperKillCount() {
       return helperKillCount;
     },
     setIdentity(value) {
-      currentIdentity = value;
+      currentIdentity = harnessPlatform === 'win32'
+        ? {
+            app_id: value.app_id ?? value.bundle_id,
+            window_id: value.window_id ?? 'hwnd:0x100',
+            ...value,
+          }
+        : value;
+    },
+    setListedWindows(value) {
+      listedWindows = value;
     },
     setAxElements(value) {
       axElements = value;
     },
-    failNativeCommand(cmd) {
+    setModalWindowId(value) {
+      modalWindowId = value;
+    },
+    setAxSnapshotExtra(value) {
+      axSnapshotExtra = value && typeof value === 'object' ? value : {};
+    },
+    failNativeCommand(cmd, error = null) {
       failingNativeCommand = cmd;
+      failingNativeError = error;
     },
     restartHelper() {
       helperGeneration += 1;
@@ -203,6 +294,15 @@ test('privileged commands require a live sender-bound session token', async () =
     args: {
       x: 1,
       y: 1,
+      [COMPUTER_USE_REQUEST_CONTEXT_ARG]: {
+        conversationId: 'conversation-1',
+        loopId: 'loop-1',
+        target: {
+          appId: 'com.apple.Notes',
+          processId: 100,
+          windowId: null,
+        },
+      },
       expectedBundleId: 'com.apple.Notes',
       expectedProcessId: 100,
     },
@@ -246,7 +346,9 @@ test('a read-intent session cannot bypass state_id by dispatching native input',
       y: 1,
       [COMPUTER_USE_TOKEN_ARG]: session.token,
     }),
-    /fresh state_id/,
+    // The intent binding now refuses first; the state assertion behind it
+    // is the second line of defence.
+    /does not authorize|fresh state_id/,
   );
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
 });
@@ -273,20 +375,52 @@ test('Host Gate issues state_id and requires the latest observation for writes',
 test('Host Gate consumes state_id before an uncertain native failure', async () => {
   const h = harness();
   const snapshot = await observeState(h);
-  const session = await begin(h, { expectedStateId: snapshot.state_id });
-  h.failNativeCommand('mouse_click');
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  h.failNativeCommand('mouse_move');
 
   await assert.rejects(
-    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
       x: 1,
       y: 1,
       [COMPUTER_USE_TOKEN_ARG]: session.token,
     }),
-    /simulated mouse_click uncertainty/,
+    /simulated mouse_move uncertainty/,
   );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.deepEqual(status.outcome_unknown_receipt, {
+    status: 'outcome-unknown',
+    execution: 'outcome-unknown',
+    helper_code: 'legacy',
+    command: 'mouse_move',
+    before_state_id: snapshot.state_id,
+    attempt_count: 1,
+    consequential: false,
+    decision: 'observe-required',
+  });
   await assert.rejects(
     begin(h, { toolCallId: 'tool-after-error', expectedStateId: snapshot.state_id }),
     /state_id was already consumed|verification of the previous action|stop-ambiguous-side-effect/,
+  );
+
+  h.failNativeCommand(null);
+  const recovered = await observeState(h, { toolCallId: 'tool-reobserve-unknown' });
+  assert.equal(recovered.verification_receipt.recovered_from_outcome_unknown, true);
+  assert.equal(
+    (await h.gate.dispatch(
+      h.record,
+      h.sender,
+      'computer_use_get_task_status',
+      { conversationId: 'conversation-1', loopId: 'loop-1' },
+    )).outcome_unknown_receipt,
+    null,
   );
 });
 
@@ -329,7 +463,10 @@ test('Host Gate requires a verification snapshot before the next write and retur
     command: 'mouse_click',
     before_state_id: before.state_id,
     after_state_id: after.state_id,
+    execution: 'dispatched',
     status: 'verified-change',
+    observation: 'changed',
+    expectation: 'not-requested',
     decision: 'continue',
     consecutive_no_change: 0,
     recovery_used: false,
@@ -396,6 +533,15 @@ test('Host Gate stops a consequential run after an ambiguous native failure', as
     }),
     /simulated mouse_click uncertainty/,
   );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.stopped, true);
+  assert.equal(status.stopped_reason, 'stop-ambiguous-side-effect');
+  assert.equal(status.outcome_unknown_receipt.decision, 'stop-ambiguous-side-effect');
   await assert.rejects(
     begin(h, { toolCallId: 'tool-after-ambiguous', expectedStateId: state.state_id }),
     /run is stopped|already consumed/,
@@ -632,13 +778,12 @@ test('declared consequences retain their exact category and detail before ambigu
   });
 });
 
-test('Windows preserves legacy visual input without requiring a macOS AX state_id', async () => {
+test('Windows obtains a UIA state_id before visual input and consumes it once', async () => {
   const h = harness({ platform: 'win32' });
   h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
   const session = await begin(h, {
     targetApp: 'notepad',
     permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
     actionIntent: { action: 'move', category: 'none', summary: '' },
   });
   await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
@@ -646,8 +791,52 @@ test('Windows preserves legacy visual input without requiring a macOS AX state_i
     y: 30,
     [COMPUTER_USE_TOKEN_ARG]: session.token,
   });
-  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move').length, 1);
-  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'ax_snapshot'), false);
+  const moves = h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move');
+  assert.equal(moves.length, 1);
+  assert.equal(moves[0].args.expectedInputEpoch, 1);
+  assert.equal(moves[0].args.expectedWindowId, 'hwnd:0x100');
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'ax_snapshot'), true);
+});
+
+test('Host Gate treats a replacement modal HWND as progress when its controls are identical', async () => {
+  const h = harness();
+  h.setAxElements([{
+    id: 1,
+    role: 'Button',
+    label: 'Close',
+    value: null,
+    actions: ['Invoke'],
+    bounds: [10, 10, 20, 20],
+    depth: 2,
+  }]);
+  h.setModalWindowId('hwnd:0x200');
+  const before = await observeState(h);
+  const session = await begin(h, {
+    toolCallId: 'dismiss-first-modal',
+    expectedStateId: before.state_id,
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_press', {
+    sessionId: before.session_id,
+    elementId: 1,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  h.setModalWindowId('hwnd:0x201');
+  const after = await observeState(h, { toolCallId: 'observe-second-modal' });
+
+  assert.equal(after.verification_receipt.status, 'verified-change');
+  assert.equal(after.verification_receipt.decision, 'continue');
+});
+
+test('renderer calls cannot directly control the Host-owned input lease', async () => {
+  const h = harness({ platform: 'win32' });
+  assert.equal(
+    await h.gate.dispatch(h.record, h.sender, 'input_lease_pause', {
+      leaseId: 'attacker-selected',
+      consentOwnerProcessId: process.pid,
+    }),
+    COMPUTER_USE_GATE_MISS,
+  );
+  assert.equal(h.nativeCalls.length, 0);
 });
 
 test('Windows locks the whole task after an ambiguous consequential native failure', async () => {
@@ -656,7 +845,6 @@ test('Windows locks the whole task after an ambiguous consequential native failu
   const first = await begin(h, {
     targetApp: 'explorer',
     permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
     actionIntent: {
       action: 'click',
       category: 'delete',
@@ -674,24 +862,18 @@ test('Windows locks the whole task after an ambiguous consequential native failu
   );
 
   const nativeAttempts = h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length;
-  const second = await begin(h, {
-    targetApp: 'explorer',
-    toolCallId: 'tool-windows-retry',
-    permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
-    actionIntent: {
-      action: 'click',
-      category: 'delete',
-      summary: 'Retry deleting the selected disposable test file',
-    },
-  });
   await assert.rejects(
-    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
-      x: 20,
-      y: 30,
-      [COMPUTER_USE_TOKEN_ARG]: second.token,
+    begin(h, {
+      targetApp: 'explorer',
+      toolCallId: 'tool-windows-retry',
+      permissionMode: 'autonomous',
+      actionIntent: {
+        action: 'click',
+        category: 'delete',
+        summary: 'Retry deleting the selected disposable test file',
+      },
     }),
-    /stop-ambiguous-side-effect/,
+    /stop-ambiguous-side-effect|run is stopped/,
   );
   assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length, nativeAttempts);
 });
@@ -708,7 +890,6 @@ test('Windows blocks same-task UI changes while consequential approval is pendin
   const click = await begin(h, {
     targetApp: 'notepad',
     permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
     actionIntent: {
       action: 'click',
       category: 'send',
@@ -722,21 +903,14 @@ test('Windows blocks same-task UI changes while consequential approval is pendin
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  const scroll = await begin(h, {
-    targetApp: 'notepad',
-    toolCallId: 'tool-scroll-during-approval',
-    permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
-    actionIntent: { action: 'scroll', category: 'none', summary: '' },
-  });
   await assert.rejects(
-    h.gate.dispatch(h.record, h.sender, 'mouse_scroll', {
-      x: 20,
-      y: 30,
-      direction: 'down',
-      [COMPUTER_USE_TOKEN_ARG]: scroll.token,
+    begin(h, {
+      targetApp: 'notepad',
+      toolCallId: 'tool-scroll-during-approval',
+      permissionMode: 'autonomous',
+      actionIntent: { action: 'scroll', category: 'none', summary: '' },
     }),
-    /verification of the previous action/,
+    /approval is still in progress|verification of the previous action/,
   );
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_scroll'), false);
 
@@ -759,6 +933,19 @@ test('Windows blocks consequential approval while another control command is in 
           resolveScroll = resolve;
         });
       }
+      if (cmd === 'resolve_app_identity' || cmd === 'frontmost_app_identity') {
+        return { app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 };
+      }
+      if (cmd === 'ax_snapshot') {
+        return {
+          session_id: 'windows-ax-session',
+          app: 'notepad',
+          elements: [],
+          input_epoch: 1,
+          window_id: 'hwnd:0x500',
+          accessibility_revision: 1,
+        };
+      }
       return { ok: true };
     },
     requestActionApproval: async (request) => {
@@ -770,7 +957,6 @@ test('Windows blocks consequential approval while another control command is in 
   const scroll = await begin(h, {
     targetApp: 'notepad',
     permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
     actionIntent: { action: 'scroll', category: 'none', summary: '' },
   });
   const pendingScroll = h.gate.dispatch(h.record, h.sender, 'mouse_scroll', {
@@ -781,24 +967,18 @@ test('Windows blocks consequential approval while another control command is in 
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  const click = await begin(h, {
-    targetApp: 'notepad',
-    toolCallId: 'tool-click-during-scroll',
-    permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
-    actionIntent: {
-      action: 'click',
-      category: 'send',
-      summary: 'Submit the prepared test content',
-    },
-  });
   await assert.rejects(
-    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
-      x: 20,
-      y: 30,
-      [COMPUTER_USE_TOKEN_ARG]: click.token,
+    begin(h, {
+      targetApp: 'notepad',
+      toolCallId: 'tool-click-during-scroll',
+      permissionMode: 'autonomous',
+      actionIntent: {
+        action: 'click',
+        category: 'send',
+        summary: 'Submit the prepared test content',
+      },
     }),
-    /verification of the previous action/,
+    /native action is still in flight|verification of the previous action/,
   );
   assert.equal(approvalRequests.length, 0);
 
@@ -812,7 +992,6 @@ test('Windows releases the pre-approval task reservation when the user rejects',
   const click = await begin(h, {
     targetApp: 'notepad',
     permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
     actionIntent: {
       action: 'click',
       category: 'send',
@@ -832,7 +1011,6 @@ test('Windows releases the pre-approval task reservation when the user rejects',
     targetApp: 'notepad',
     toolCallId: 'tool-move-after-reject',
     permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
     actionIntent: { action: 'move', category: 'none', summary: '' },
   });
   await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
@@ -843,20 +1021,27 @@ test('Windows releases the pre-approval task reservation when the user rejects',
   assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move').length, 1);
 });
 
-test('Windows Explorer Delete cannot bypass action approval by declaring none', async () => {
+test('Windows Explorer takes no keyboard input at all, approval or not', async () => {
+  // Explorer is grantable and clickable, but every path that puts characters
+  // into it reaches a command line: the address bar, the Search box and the
+  // Run dialog all hand typed text to ShellExecute. The ceiling therefore
+  // refuses before the consequence machinery is even consulted — an approval
+  // dialog for "permanently delete" would be a worse outcome than not being
+  // able to press the key. The Shift+Delete inference itself still has its
+  // own coverage in computerUseActionPolicy.test.cjs and still applies to
+  // Finder on macOS.
   const requests = [];
   const h = harness({
     platform: 'win32',
     requestActionApproval: async (request) => {
       requests.push(request);
-      return false;
+      return true;
     },
   });
   h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
   const session = await begin(h, {
     targetApp: 'explorer',
     permissionMode: 'autonomous',
-    expectedStateId: 'unused-on-windows',
     actionIntent: { action: 'key', category: 'none', summary: '' },
   });
   await assert.rejects(
@@ -865,11 +1050,82 @@ test('Windows Explorer Delete cannot bypass action approval by declaring none', 
       modifiers: ['Shift'],
       [COMPUTER_USE_TOKEN_ARG]: session.token,
     }),
-    /was not approved/,
+    /cannot type into it/,
   );
-  assert.equal(requests[0].consequence.category, 'delete');
-  assert.match(requests[0].consequence.summary, /Permanently delete/);
+  assert.equal(requests.length, 0);
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
+});
+
+test('an unclassified pre-dispatch refusal still leaves a receipt', async () => {
+  // Not every refusal in the Gate labels itself. The catch it lands in runs
+  // before anything is dispatched, so the refusal is receipted anyway — the
+  // renderer's only other reading is "an action whose outcome I lost", and
+  // that stops the whole turn over something that never ran.
+  const h = harness();
+  const session = await begin(h, {
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'hello',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /does not authorize/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.not_executed_receipt.helper_code, 'host-refused');
+  assert.equal(status.not_executed_receipt.execution, 'not-executed');
+  assert.equal(status.not_executed_receipt.retryable, false);
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_type'), false);
+});
+
+test('Windows Explorer stays clickable and readable under the input ceiling', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'explorer',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 20,
+    y: 30,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), true);
+});
+
+test('the input ceiling refuses as not-executed so the turn survives it', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'explorer',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'powershell',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /cannot type into it/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.not_executed_receipt.helper_code, 'app-input-restricted');
+  assert.equal(status.not_executed_receipt.retryable, false);
+  assert.equal(status.stopped, false);
 });
 
 test('a risky native accessibility label cannot bypass approval by declaring none', async () => {
@@ -936,6 +1192,79 @@ test('Stop invalidates an action approval that returns late', async () => {
   });
   resolveApproval(true);
   await assert.rejects(staleAction, /authorization is no longer active/);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('Host keeps the same window state valid across a long action approval', async () => {
+  let releaseApproval;
+  let noteRequested;
+  const approvalRequested = new Promise((resolve) => { noteRequested = resolve; });
+  const h = harness({
+    platform: 'win32',
+    requestActionApproval: async () => {
+      noteRequested();
+      return new Promise((resolve) => { releaseApproval = resolve; });
+    },
+  });
+  h.setIdentity({
+    app_name: 'Notes', bundle_id: 'notes.exe', process_id: 100, window_id: 'hwnd:0x100',
+  });
+  const observed = await observeState(h, { targetApp: 'Notes' });
+  const session = await begin(h, {
+    windowRef: observed.target.window_ref,
+    expectedStateId: observed.state_id,
+    actionIntent: { action: 'click', category: 'send', summary: 'send fixture marker' },
+  });
+  const pending = h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 20,
+    y: 30,
+    expectedStateId: observed.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  await approvalRequested;
+
+  h.advance(10 * 60 * 1000);
+  releaseApproval(true);
+
+  await assert.doesNotReject(pending);
+  assert.equal(session.target.window_ref, observed.target.window_ref);
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length, 1);
+});
+
+test('Host stop aborts while approval is paused and no input follows', async () => {
+  let releaseApproval;
+  let noteRequested;
+  const approvalRequested = new Promise((resolve) => { noteRequested = resolve; });
+  const h = harness({
+    platform: 'win32',
+    requestActionApproval: async () => {
+      noteRequested();
+      return new Promise((resolve) => { releaseApproval = resolve; });
+    },
+  });
+  h.setIdentity({
+    app_name: 'Notes', bundle_id: 'notes.exe', process_id: 100, window_id: 'hwnd:0x100',
+  });
+  const observed = await observeState(h, { targetApp: 'Notes' });
+  const session = await begin(h, {
+    windowRef: observed.target.window_ref,
+    expectedStateId: observed.state_id,
+    actionIntent: { action: 'click', category: 'send', summary: 'send fixture marker' },
+  });
+  const pending = h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 20,
+    y: 30,
+    expectedStateId: observed.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  await approvalRequested;
+
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_stop_turn', {
+    conversationId: 'conversation-1', loopId: 'loop-1', reason: 'user-stop',
+  });
+  releaseApproval(true);
+
+  await assert.rejects(pending, /no longer active|stopped/i);
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
 });
 
@@ -1055,6 +1384,280 @@ test('hard-denied and missing target identities cannot open sessions', async () 
   await assert.rejects(begin(h), /identity is unavailable/);
 });
 
+test('Windows rejects Abu itself even when development uses electron.exe', async () => {
+  const h = harness({ platform: 'win32', selfProcessId: 9616 });
+  h.setIdentity({
+    app_name: 'electron',
+    bundle_id: 'F:\\Abu\\Abu-Cowork\\node_modules\\electron\\dist\\electron.exe',
+    process_id: 9616,
+  });
+
+  await assert.rejects(
+    begin(h, { targetApp: 'electron' }),
+    /blocked from operating Abu itself/,
+  );
+  assert.equal(h.gate.classifyIdentity({
+    app_name: 'electron',
+    bundle_id: 'F:\\Abu\\Abu-Cowork\\node_modules\\electron\\dist\\electron.exe',
+    process_id: 9616,
+  }), 'hard-deny');
+});
+
+test('Windows foreground-at-submit uses only the target frozen at turn start', async () => {
+  const selfWindow = {
+    app_name: 'electron',
+    bundle_id: 'F:\\Abu\\Abu-Cowork\\node_modules\\electron\\dist\\electron.exe',
+    app_id: 'F:\\Abu\\Abu-Cowork\\node_modules\\electron\\dist\\electron.exe',
+    process_id: 9616,
+    window_id: '0x100',
+  };
+  const notepadWindow = {
+    app_name: 'Notepad',
+    app_id: 'aumid:microsoft.windowsnotepad_8wekyb3d8bbwe!app',
+    process_id: 9676,
+    window_id: '0x200',
+    signature_status: 'package-trusted',
+    package_full_name: 'Microsoft.WindowsNotepad_11.0.0.0_x64__8wekyb3d8bbwe',
+  };
+  const calculatorWindow = {
+    app_name: 'Calculator',
+    app_id: 'aumid:microsoft.windowscalculator_8wekyb3d8bbwe!app',
+    process_id: 9680,
+    window_id: '0x300',
+    signature_status: 'package-trusted',
+    package_full_name: 'Microsoft.WindowsCalculator_11.0.0.0_x64__8wekyb3d8bbwe',
+  };
+  const h = harness({ platform: 'win32', selfProcessId: 9616 });
+  h.setIdentity(selfWindow);
+  h.setListedWindows([selfWindow, notepadWindow, calculatorWindow]);
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+
+  const capture = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_capture_turn_target',
+    { conversationId: 'conversation-1', loopId: 'loop-1', interactionMode: 'foreground' },
+  );
+  h.setListedWindows([selfWindow, calculatorWindow, notepadWindow]);
+  const session = await begin(h, {
+    targetSelector: 'foreground-at-submit',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  assert.deepEqual(capture, { captured: true });
+  assert.equal(session.status, 'authorized');
+  assert.equal(session.target.app_name, 'Notepad');
+  assert.equal(session.target.process_id, 9676);
+});
+
+test('Windows missing target returns target-required without reading foreground or Z-order', async () => {
+  let activeWindowReads = 0;
+  const h = harness({
+    platform: 'win32',
+    selfProcessId: 9616,
+    getActiveWindow: async () => {
+      activeWindowReads += 1;
+      return {
+        app_name: 'Notepad',
+        bundle_id: 'aumid:microsoft.windowsnotepad_8wekyb3d8bbwe!app',
+        process_id: 9676,
+        window_id: '0x200',
+        signature_status: 'package-trusted',
+        package_full_name: 'Microsoft.WindowsNotepad_11.0.0.0_x64__8wekyb3d8bbwe',
+      };
+    },
+  });
+
+  const result = await begin(h, {
+    targetApp: null,
+    windowRef: null,
+    targetSelector: null,
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  assert.deepEqual(result, {
+    status: 'target-error',
+    error: {
+      code: 'target-required',
+      recoverable: true,
+      next_action: 'select-target',
+    },
+  });
+  assert.equal(activeWindowReads, 0);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'list_windows'), false);
+});
+
+test('Windows window listing returns opaque candidates without starting input or observation', async () => {
+  const firstWindow = {
+    app_name: 'Notepad',
+    app_id: 'aumid:microsoft.windowsnotepad_8wekyb3d8bbwe!app',
+    process_id: 9676,
+    window_id: '0x200',
+    title: 'first.txt - Notepad',
+    signature_status: 'package-trusted',
+    package_full_name: 'Microsoft.WindowsNotepad_11.0.0.0_x64__8wekyb3d8bbwe',
+  };
+  const secondWindow = {
+    ...firstWindow,
+    process_id: 9677,
+    window_id: '0x201',
+    title: 'second.txt - Notepad',
+  };
+  const h = harness({ platform: 'win32', selfProcessId: 9616 });
+  h.setIdentity({ ...firstWindow, bundle_id: firstWindow.app_id });
+  h.setListedWindows([firstWindow, secondWindow]);
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+
+  const result = await h.gate.dispatch(h.record, h.sender, 'computer_use_list_windows', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+    interactionMode: 'foreground',
+    app: 'Notepad',
+  });
+
+  assert.equal(result.status, 'candidates');
+  assert.deepEqual(result.candidates.map(({ app_name, relation, title }) => ({ app_name, relation, title })), [
+    { app_name: 'Notepad', relation: 'root', title: 'first.txt - Notepad' },
+    { app_name: 'Notepad', relation: 'root', title: 'second.txt - Notepad' },
+  ]);
+  assert.equal(result.candidates.every(({ window_ref }) => /^wr-/.test(window_ref)), true);
+  assert.equal(JSON.stringify(result).includes('0x200'), false);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'ax_snapshot' || cmd === 'activate_window'), false);
+});
+
+test('Windows session resolves an existing windowRef before conflicting app selectors', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'WINWORD',
+    bundle_id: 'winword.exe',
+    app_id: 'winword.exe',
+    process_id: 42,
+    window_id: 'hwnd:0x100',
+  });
+  h.setListedWindows([{
+    app_name: 'WINWORD',
+    app_id: 'winword.exe',
+    process_id: 42,
+    window_id: 'hwnd:0x100',
+  }]);
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+  const listed = await h.gate.dispatch(h.record, h.sender, 'computer_use_list_windows', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+    interactionMode: 'foreground',
+    app: 'Word',
+  });
+  h.nativeCalls.length = 0;
+
+  const session = await begin(h, {
+    windowRef: listed.candidates[0].window_ref,
+    targetApp: 'Excel',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  assert.equal(session.status, 'authorized');
+  assert.equal(session.target.window_ref, listed.candidates[0].window_ref);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'resolve_app_identity'), false);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'get_active_window'), false);
+});
+
+test('Windows explicit app selection returns candidates instead of choosing one of several windows', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'WINWORD',
+    bundle_id: 'winword.exe',
+    app_id: 'winword.exe',
+    process_id: 42,
+    window_id: 'hwnd:0x100',
+  });
+  h.setListedWindows([
+    {
+      app_name: 'WINWORD', app_id: 'winword.exe', process_id: 42,
+      window_id: 'hwnd:0x100', title: 'Document 1',
+    },
+    {
+      app_name: 'WINWORD', app_id: 'winword.exe', process_id: 42,
+      window_id: 'hwnd:0x200', title: 'Document 2',
+    },
+  ]);
+
+  const result = await begin(h, {
+    targetApp: 'Word',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  assert.equal(result.status, 'target-error');
+  assert.equal(result.error.code, 'target-ambiguous');
+  assert.equal(result.error.candidates.length, 2);
+  assert.deepEqual(result.error.candidates.map((candidate) => candidate.title), [
+    'Document 1', 'Document 2',
+  ]);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'ax_snapshot'), false);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'input_lease_begin'), false);
+});
+
+test('Windows explicit app selection returns target-not-found when no visible window matches', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'WINWORD', bundle_id: 'winword.exe', process_id: 42,
+    window_id: 'hwnd:0x100',
+  });
+  h.setListedWindows([]);
+
+  const result = await begin(h, {
+    targetApp: 'Word',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  assert.deepEqual(result, {
+    status: 'target-error',
+    error: {
+      code: 'target-not-found',
+      recoverable: true,
+      next_action: 'select-target',
+    },
+  });
+  assert.equal(h.approvalRequests.length, 0);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'input_lease_begin'), false);
+});
+
+test('Windows activation uses the authorized exact window rather than resolving its app again', async () => {
+  const identity = { app_name: 'Editor', bundle_id: 'editor.exe', app_id: 'editor.exe', process_id: 42, window_id: 'hwnd:0x100' };
+  const calls = [];
+  let changed = false;
+  const h = harness({ platform: 'win32', nativeDispatch: async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+    if (cmd === 'resolve_app_identity') return { ...identity, window_id: changed ? 'hwnd:0x200' : identity.window_id };
+    if (cmd === 'get_window' || cmd === 'activate_window') return identity;
+    return { ok: true };
+  } });
+  h.setIdentity(identity);
+  const session = await begin(h, { targetApp: 'Editor', actionIntent: { action: 'get_window_state', category: 'none', summary: '' } });
+  changed = true;
+  calls.length = 0;
+  const result = await h.gate.dispatch(h.record, h.sender, 'activate_app', {
+    appName: 'Editor', [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  assert.equal(result, 'Editor');
+  assert.equal(calls.some(({ cmd }) => cmd === 'resolve_app_identity' || cmd === 'activate_app'), false);
+  assert.equal(calls.find(({ cmd }) => cmd === 'activate_window')?.args.windowId, 'hwnd:0x100');
+});
+
+test('Windows rejects a WindowRef outside its sender-bound task without app fallback', async () => {
+  const h = harness({ platform: 'win32' });
+
+  const result = await begin(h, {
+    windowRef: 'wr-not-issued-for-this-task',
+    targetApp: 'Word',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  assert.equal(result.status, 'target-error');
+  assert.equal(result.error.code, 'window-ref-invalid');
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'resolve_app_identity'), false);
+});
+
 test('permission modes and app risk decide task-local approval frequency', async () => {
   const standard = harness();
   await begin(standard);
@@ -1121,6 +1724,8 @@ test('screen-read sessions authorize the whole screen without binding to Abu or 
     app_name: 'Screen',
     bundle_id: 'abu.screen',
     process_id: null,
+    window_ref: null,
+    relation: 'root',
   });
   assert.equal(h.approvalRequests.length, 1);
   assert.equal(h.approvalRequests[0].target.bundle_id, 'abu.screen');
@@ -1135,7 +1740,17 @@ test('screen-read sessions authorize the whole screen without binding to Abu or 
   });
   assert.deepEqual(h.nativeCalls.at(-1), {
     cmd: 'capture_screen',
-    args: {},
+    args: {
+      [COMPUTER_USE_REQUEST_CONTEXT_ARG]: {
+        conversationId: 'conversation-1',
+        loopId: 'loop-1',
+        target: {
+          appId: 'abu.screen',
+          processId: null,
+          windowId: null,
+        },
+      },
+    },
   });
 });
 
@@ -1246,7 +1861,10 @@ test('a late task approval cannot revive a stopped task with reused IDs', async 
     },
   });
 
-  const staleBegin = begin(h, { permissionMode: 'autonomous' });
+  // Smart mode, because this test needs a task dialog on every loop to hold
+  // one pending — autonomous answers once per conversation, so the second
+  // begin below would not raise a second dialog to count.
+  const staleBegin = begin(h, { permissionMode: 'smart' });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(approvalCount, 1);
 
@@ -1257,7 +1875,7 @@ test('a late task approval cannot revive a stopped task with reused IDs', async 
 
   const freshSession = await begin(h, {
     toolCallId: 'tool-2',
-    permissionMode: 'autonomous',
+    permissionMode: 'smart',
   });
   assert.equal(approvalCount, 2);
 
@@ -1565,4 +2183,2504 @@ test('a reservation refused for single-flight does not burn the budget', async (
   await assert.doesNotReject(
     readStep(h, { conversationId: 'conversation-b', loopId: 'loop-b', toolCallId: 'b-final' }),
   );
+});
+
+test('Windows approval duration is excluded and the input lease starts only after consent', async () => {
+  let finishApproval;
+  const events = [];
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-duration-test',
+    nativeDispatch: async (cmd) => {
+      events.push(cmd);
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') {
+        return {
+          app_name: 'Notes',
+          bundle_id: 'notes.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'input_lease_begin') {
+        return { phase: 'observing', input_epoch: 1 };
+      }
+      return { ok: true };
+    },
+    requestAppApproval: async () => {
+      events.push('approval-open');
+      await new Promise((resolve) => { finishApproval = resolve; });
+      events.push('approval-closed');
+      return true;
+    },
+  });
+
+  const pending = begin(h, {
+    targetApp: 'Notes',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.includes('input_lease_begin'), false);
+
+  // Human review can take arbitrarily longer than the execution budget.
+  h.advance(MAX_TASK_CU_DURATION_MS * 12);
+  finishApproval();
+  await pending;
+  assert.ok(events.indexOf('approval-closed') < events.indexOf('input_lease_begin'));
+
+  // The active-time clock starts after approval, not when the dialog opened.
+  h.advance(MAX_TASK_CU_DURATION_MS - 1_000);
+  await assert.doesNotReject(begin(h, {
+    targetApp: 'Notes',
+    toolCallId: 'tool-after-long-consent',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  }));
+  h.advance(2_000);
+  await assert.rejects(begin(h, {
+    targetApp: 'Notes',
+    toolCallId: 'tool-active-time-expired',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  }), /5-minute limit/);
+});
+
+test('Windows publishes takeover only inside a native write critical section', async () => {
+  const events = [];
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-critical-section',
+    nativeDispatch: async (cmd) => {
+      events.push(cmd);
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') {
+        return {
+          app_name: 'Word',
+          bundle_id: 'winword.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') {
+        return { phase: 'observing', input_epoch: 1 };
+      }
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'activate_window') {
+        return {
+          app_name: 'Word',
+          app_id: 'winword.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'ax_snapshot') {
+        return {
+          session_id: 'ax-critical-section',
+          app: 'Word',
+          elements: [],
+          input_epoch: 1,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: 1,
+        };
+      }
+      if (cmd === 'mouse_click') return { ok: true };
+      return { ok: true };
+    },
+  });
+  h.setIdentity({
+    app_name: 'Word',
+    bundle_id: 'winword.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  });
+
+  const state = await observeState(h, { targetApp: 'Word' });
+  const commitIndex = events.lastIndexOf('input_lease_commit_observation');
+  assert.ok(commitIndex > events.lastIndexOf('ax_snapshot'));
+  assert.equal(events.slice(0, commitIndex + 1).includes('input_lease_activate'), false);
+
+  const session = await begin(h, {
+    targetApp: 'Word',
+    expectedStateId: state.state_id,
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 10,
+    y: 10,
+    expectedStateId: state.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+
+  const activateIndex = events.lastIndexOf('input_lease_activate');
+  const actionIndex = events.lastIndexOf('mouse_click');
+  const observeIndex = events.lastIndexOf('input_lease_observe');
+  assert.ok(activateIndex < actionIndex);
+  assert.ok(actionIndex < observeIndex);
+});
+
+test('Windows stateful actions stay pinned to the observed Office HWND', async () => {
+  let resolveCalls = 0;
+  const nativeCalls = [];
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-office-window-pin',
+    nativeDispatch: async (cmd, args) => {
+      nativeCalls.push({ cmd, args });
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') {
+        resolveCalls += 1;
+        return {
+          app_name: 'WINWORD',
+          bundle_id: 'winword.exe',
+          app_id: 'winword.exe',
+          process_id: 100,
+          window_id: resolveCalls <= 2 ? 'hwnd:0x100' : 'hwnd:0x200',
+        };
+      }
+      if (cmd === 'get_window') {
+        assert.equal(args.windowId, 'hwnd:0x100');
+        return {
+          app_name: 'WINWORD',
+          app_id: 'winword.exe',
+          executable_path: 'C:\\Program Files\\Microsoft Office\\WINWORD.EXE',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'frontmost_matches_target') {
+        assert.deepEqual(args, {
+          expectedAppId: 'winword.exe',
+          expectedProcessId: 100,
+          expectedWindowId: 'hwnd:0x100',
+        });
+        return {
+          matches: true,
+          actual_window_id: 'hwnd:0x300',
+          relation: 'frontmost-owned-by-target',
+        };
+      }
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') {
+        return { phase: 'observing', input_epoch: 1 };
+      }
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'activate_window') {
+        return {
+          app_name: 'WINWORD',
+          app_id: 'winword.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'ax_snapshot') {
+        return {
+          session_id: 'ax-office-window-pin',
+          app: 'WINWORD',
+          elements: [],
+          input_epoch: 1,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: 1,
+        };
+      }
+      return { ok: true };
+    },
+  });
+  h.setIdentity({
+    app_name: 'WINWORD',
+    bundle_id: 'winword.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  });
+
+  const state = await observeState(h, { targetApp: 'Word' });
+  const actionSession = await begin(h, {
+    targetApp: 'Word',
+    expectedStateId: state.state_id,
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  assert.match(actionSession.target.window_ref, /^wr-/);
+  assert.equal(actionSession.target.window_id, undefined);
+
+  h.setIdentity({
+    app_name: 'WINWORD',
+    bundle_id: 'winword.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x300',
+  });
+
+  await h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+    text: 'ABU',
+    expectedStateId: state.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: actionSession.token,
+  });
+  const write = nativeCalls.findLast(({ cmd }) => cmd === 'keyboard_type');
+  assert.equal(write.args.expectedWindowId, 'hwnd:0x100');
+});
+
+test('Windows accessibility text replacement carries the observed target and input epoch', async () => {
+  const nativeCalls = [];
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-visible-text',
+    nativeDispatch: async (cmd, args) => {
+      nativeCalls.push({ cmd, args });
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity' || cmd === 'activate_window') {
+        return {
+          app_name: 'Editor',
+          bundle_id: 'editor.exe',
+          app_id: 'editor.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'get_window') {
+        return {
+          app_name: 'Editor',
+          app_id: 'editor.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 9 };
+      if (cmd === 'input_lease_commit_observation') {
+        return { phase: 'observing', input_epoch: 9 };
+      }
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 9 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 9 };
+      if (cmd === 'ax_snapshot') {
+        return {
+          session_id: `ax-visible-text-${nativeCalls.length}`,
+          app: 'Editor',
+          elements: [{ id: 7, role: 'Document', label: 'Document' }],
+          input_epoch: 9,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: 1,
+        };
+      }
+      return { ok: true };
+    },
+  });
+  h.setIdentity({
+    app_name: 'Editor',
+    bundle_id: 'editor.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  });
+
+  const state = await observeState(h, { targetApp: 'Editor' });
+  const actionSession = await begin(h, {
+    targetApp: 'Editor',
+    expectedStateId: state.state_id,
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_replace_text', {
+    sessionId: state.session_id,
+    elementId: 7,
+    text: 'visible edit',
+    expectedStateId: state.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: actionSession.token,
+  });
+
+  const write = nativeCalls.findLast(({ cmd }) => cmd === 'ax_replace_text');
+  assert.equal(write.args.expectedBundleId, 'editor.exe');
+  assert.equal(write.args.expectedProcessId, 100);
+  assert.equal(write.args.expectedWindowId, 'hwnd:0x100');
+  assert.equal(write.args.expectedInputEpoch, 9);
+});
+
+test('Windows verification follows a same-process HWND replacement after an approved action', async () => {
+  let currentWindowId = 'hwnd:0x100';
+  let previousWindowGone = false;
+  let snapshotSequence = 0;
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-office-window-replacement',
+    nativeDispatch: async (cmd, args) => {
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') {
+        return {
+          app_name: 'WINWORD',
+          bundle_id: 'winword.exe',
+          app_id: 'winword.exe',
+          process_id: 100,
+          window_id: currentWindowId,
+        };
+      }
+      if (cmd === 'get_window') {
+        assert.equal(args.windowId, 'hwnd:0x100');
+        if (previousWindowGone) throw new Error('window is not visible');
+        return {
+          app_name: 'WINWORD',
+          app_id: 'winword.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') {
+        return { phase: 'observing', input_epoch: 1 };
+      }
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'activate_window') {
+        return {
+          app_name: 'WINWORD',
+          app_id: 'winword.exe',
+          process_id: 100,
+          window_id: currentWindowId,
+        };
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotSequence += 1;
+        return {
+          session_id: `ax-office-window-replacement-${snapshotSequence}`,
+          app: 'WINWORD',
+          elements: previousWindowGone ? [{
+            id: 0,
+            role: 'Document',
+            label: 'Document1',
+            value: null,
+            bounds: [0, 0, 100, 100],
+            patterns: [],
+            actions: [],
+            depth: 0,
+            automation_id: null,
+            class_name: null,
+            enabled: true,
+            offscreen: false,
+            focused: true,
+          }] : [],
+          input_epoch: 1,
+          window_id: currentWindowId,
+          accessibility_revision: snapshotSequence,
+        };
+      }
+      if (cmd === 'ax_press') {
+        previousWindowGone = true;
+        currentWindowId = 'hwnd:0x200';
+        return { ok: true };
+      }
+      return { ok: true };
+    },
+  });
+  h.setIdentity({
+    app_name: 'WINWORD',
+    bundle_id: 'winword.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  });
+
+  const before = await observeState(h, { targetApp: 'Word' });
+  const actionSession = await begin(h, {
+    targetApp: 'Word',
+    expectedStateId: before.state_id,
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_press', {
+    sessionId: before.session_id,
+    elementId: 0,
+    expectedStateId: before.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: actionSession.token,
+  });
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_session', {
+    [COMPUTER_USE_TOKEN_ARG]: actionSession.token,
+  });
+
+  const after = await observeState(h, { targetApp: 'Word' });
+  assert.equal(after.window_id, undefined);
+  assert.equal(after.target.relation, 'replacement');
+  assert.equal(after.target.window_ref.startsWith('wr-'), true);
+  assert.deepEqual(after.related_windows, [{
+    window_ref: after.target.window_ref,
+    app_name: 'WINWORD',
+    relation: 'replacement',
+  }]);
+  assert.equal(after.verification_receipt.status, 'verified-change');
+  assert.equal(after.verification_receipt.decision, 'continue');
+});
+
+test('Windows pauses takeover for action consent and rejects external input before dispatch', async () => {
+  const events = [];
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-consent-test',
+    nativeDispatch: async (cmd) => {
+      events.push(cmd);
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') {
+        return {
+          app_name: 'Notes',
+          bundle_id: 'notes.exe',
+          process_id: 100,
+          window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_pause') return { phase: 'paused-for-consent', input_epoch: 1 };
+      if (cmd === 'input_lease_resume') {
+        return { phase: 'observing', input_epoch: 2, dirty: true };
+      }
+      if (cmd === 'ax_snapshot') {
+        return {
+          session_id: 'ax-consent-test',
+          app: 'Notes',
+          elements: [],
+          input_epoch: 1,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: 1,
+        };
+      }
+      return { ok: true };
+    },
+    requestActionApproval: async () => {
+      events.push('action-approval');
+      return true;
+    },
+  });
+  h.setIdentity({
+    app_name: 'Notes',
+    bundle_id: 'notes.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  });
+
+  const state = await observeState(h, { targetApp: 'Notes' });
+  const session = await begin(h, {
+    targetApp: 'Notes',
+    expectedStateId: state.state_id,
+    actionIntent: {
+      action: 'click',
+      category: 'delete',
+      summary: 'Delete the selected item',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 10,
+      y: 10,
+      expectedStateId: state.state_id,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /changed another app during approval/,
+  );
+  assert.ok(events.indexOf('input_lease_pause') < events.indexOf('action-approval'));
+  assert.ok(events.indexOf('action-approval') < events.indexOf('input_lease_resume'));
+  assert.equal(events.includes('mouse_click'), false);
+});
+
+test('Windows restores the exact UIA focus after action consent before dispatch', async () => {
+  const events = [];
+  let snapshotSequence = 0;
+  const identity = {
+    app_name: 'POWERPNT',
+    bundle_id: 'powerpnt.exe',
+    app_id: 'powerpnt.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  };
+  const element = {
+    id: 7,
+    role: 'Document',
+    label: 'Slide title',
+    value: null,
+    bounds: [10, 10, 400, 200],
+    patterns: [],
+    actions: ['Focus'],
+    depth: 1,
+    automation_id: null,
+    class_name: null,
+    enabled: true,
+    offscreen: false,
+    focused: true,
+  };
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-focus-restore',
+    nativeDispatch: async (cmd, args) => {
+      events.push({ cmd, args });
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') return identity;
+      if (cmd === 'activate_window') return identity;
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') {
+        return { phase: 'observing', input_epoch: 1 };
+      }
+      if (cmd === 'input_lease_pause') return { phase: 'paused-for-consent', input_epoch: 1 };
+      if (cmd === 'input_lease_resume') {
+        return { phase: 'observing', input_epoch: 1, dirty: false };
+      }
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'ax_snapshot') {
+        snapshotSequence += 1;
+        return {
+          session_id: `ax-focus-${snapshotSequence}`,
+          app: 'POWERPNT',
+          elements: [element],
+          focused_element_id: 7,
+          input_epoch: 1,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: snapshotSequence,
+        };
+      }
+      return { ok: true };
+    },
+    requestActionApproval: async () => {
+      events.push({ cmd: 'action-approval', args: null });
+      return true;
+    },
+  });
+  h.setIdentity(identity);
+
+  const state = await observeState(h, { targetApp: 'PowerPoint' });
+  const session = await begin(h, {
+    targetApp: 'PowerPoint',
+    expectedStateId: state.state_id,
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+    key: 'Enter',
+    expectedStateId: state.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+
+  const approvalIndex = events.findIndex(({ cmd }) => cmd === 'action-approval');
+  const activateWindowIndex = events.findIndex(({ cmd }) => cmd === 'activate_window');
+  const restoreIndex = events.findIndex(({ cmd }) => cmd === 'ax_restore_focus');
+  const keyIndex = events.findIndex(({ cmd }) => cmd === 'keyboard_press');
+  assert.ok(approvalIndex < activateWindowIndex);
+  assert.ok(activateWindowIndex < restoreIndex);
+  assert.ok(restoreIndex < keyIndex);
+  assert.equal(events[restoreIndex].args.sessionId, state.session_id);
+});
+
+test('Windows rejects a stale state when an Office modal appears before input', async () => {
+  let snapshotSequence = 0;
+  let keyboardDispatched = false;
+  const identity = {
+    app_name: 'WINWORD',
+    bundle_id: 'winword.exe',
+    app_id: 'winword.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  };
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-late-modal',
+    nativeDispatch: async (cmd) => {
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') return identity;
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') {
+        return { phase: 'observing', input_epoch: 1 };
+      }
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'activate_window') return identity;
+      if (cmd === 'ax_snapshot') {
+        snapshotSequence += 1;
+        const modal = snapshotSequence > 1;
+        return {
+          session_id: `ax-late-modal-${snapshotSequence}`,
+          app: 'WINWORD',
+          elements: modal ? [{
+            id: 1,
+            role: 'Button',
+            label: 'Close',
+            value: null,
+            bounds: [100, 100, 40, 30],
+            patterns: ['Invoke'],
+            actions: ['Invoke'],
+            depth: 1,
+            automation_id: null,
+            class_name: null,
+            enabled: true,
+            offscreen: false,
+            focused: true,
+          }] : [],
+          input_epoch: 1,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: snapshotSequence,
+          modal,
+          modal_window_id: modal ? 'hwnd:0x200' : null,
+        };
+      }
+      if (cmd === 'keyboard_press') keyboardDispatched = true;
+      return { ok: true };
+    },
+  });
+  h.setIdentity(identity);
+
+  const state = await observeState(h, { targetApp: 'Word' });
+  const session = await begin(h, {
+    targetApp: 'Word',
+    expectedStateId: state.state_id,
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'Tab',
+      expectedStateId: state.state_id,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /interface changed after observation/,
+  );
+  assert.equal(keyboardDispatched, false);
+});
+
+test('Windows pre-input revalidation identifies the changed boundary without exposing window content', async () => {
+  for (const [change, reason] of [
+    [{ input_epoch: 2 }, 'input-epoch'],
+    [{ window_id: 'hwnd:0x999' }, 'target-window'],
+    [{ modal: true }, 'modal-boundary'],
+    [{ modal_window_id: 'hwnd:0x999' }, 'modal-window'],
+    [{ window_graph: { nodes: [] } }, 'window-graph'],
+  ]) {
+    const identity = { app_name: 'Editor', bundle_id: 'editor.exe', process_id: 100, window_id: 'hwnd:0x100' };
+    let sequence = 0;
+    let dispatched = false;
+    const h = harness({ platform: 'win32', nativeDispatch: async (cmd) => {
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_app_identity' || cmd === 'activate_window') return identity;
+      if (cmd.startsWith('input_lease_')) return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'ax_snapshot') return {
+        session_id: `ax-boundary-${++sequence}`, app: 'Editor', elements: [], input_epoch: 1,
+        window_id: 'hwnd:0x100', modal: false, modal_window_id: null,
+        window_graph: { target_window_id: 'hwnd:0x100', nodes: [{ window_id: 'hwnd:0x100',
+          app_id: 'editor.exe', app_name: 'Editor', process_id: 100, relation: 'exact', title: 'PRIVATE_TITLE' }] },
+        ...(sequence > 1 ? change : {}),
+      };
+      if (cmd === 'keyboard_press') dispatched = true;
+      return { ok: true };
+    } });
+    h.setIdentity(identity);
+    const state = await observeState(h, { targetApp: 'Editor' });
+    const session = await begin(h, { targetApp: 'Editor', expectedStateId: state.state_id,
+      actionIntent: { action: 'key', category: 'none', summary: '' } });
+    await assert.rejects(h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'Tab', expectedStateId: state.state_id, [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }), (error) => error.message.includes(`interface changed after observation (${reason})`)
+      && !error.message.includes('PRIVATE_TITLE'));
+    assert.equal(dispatched, false, reason);
+  }
+});
+
+test('Windows WindowGraph rejects an unclassified owned popup before input', async () => {
+  let snapshotSequence = 0;
+  let keyboardDispatched = false;
+  const identity = {
+    app_name: 'WINWORD',
+    bundle_id: 'winword.exe',
+    app_id: 'winword.exe',
+    process_id: 100,
+    window_id: 'hwnd:0x100',
+  };
+  const graphNode = {
+    window_id: 'hwnd:0x100',
+    owner_window_id: null,
+    app_id: 'winword.exe',
+    app_name: 'WINWORD',
+    process_id: 100,
+    title: 'Document1',
+    bounds: [0, 0, 1200, 800],
+    minimized: false,
+    z_index: 1,
+    relation: 'exact',
+    foreground: true,
+  };
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-window-graph',
+    nativeDispatch: async (cmd) => {
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') return identity;
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'activate_window') return identity;
+      if (cmd === 'ax_snapshot') {
+        snapshotSequence += 1;
+        const nodes = snapshotSequence === 1
+          ? [graphNode]
+          : [{
+              ...graphNode,
+              foreground: false,
+              z_index: 2,
+            }, {
+              ...graphNode,
+              window_id: 'hwnd:0x200',
+              owner_window_id: 'hwnd:0x100',
+              title: 'Compatibility notice',
+              bounds: [300, 200, 500, 300],
+              z_index: 1,
+              relation: 'owned-popup',
+              foreground: true,
+            }];
+        return {
+          session_id: `ax-window-graph-${snapshotSequence}`,
+          app: 'WINWORD',
+          elements: [],
+          input_epoch: 1,
+          window_id: 'hwnd:0x100',
+          accessibility_revision: snapshotSequence,
+          modal: false,
+          modal_window_id: null,
+          window_graph: {
+            target_window_id: 'hwnd:0x100',
+            foreground_window_id: nodes.find((node) => node.foreground)?.window_id ?? null,
+            nodes,
+          },
+        };
+      }
+      if (cmd === 'keyboard_press') keyboardDispatched = true;
+      return { ok: true };
+    },
+  });
+  h.setIdentity(identity);
+
+  const state = await observeState(h, { targetApp: 'Word' });
+  assert.equal(typeof state.window_graph_revision, 'string');
+  const session = await begin(h, {
+    targetApp: 'Word',
+    expectedStateId: state.state_id,
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'Tab',
+      expectedStateId: state.state_id,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /interface changed after observation/,
+  );
+  assert.equal(keyboardDispatched, false);
+});
+
+test('Windows WindowGraph ignores activation-only z-order changes before input', async () => {
+  let snapshotSequence = 0;
+  let pressed = false;
+  const identity = {
+    app_name: 'Editor', bundle_id: 'editor.exe', app_id: 'editor.exe',
+    process_id: 100, window_id: 'hwnd:0x200',
+  };
+  const main = {
+    window_id: 'hwnd:0x100', owner_window_id: null, app_id: 'editor.exe',
+    app_name: 'Editor', process_id: 100, title: 'Document', bounds: [0, 0, 800, 600],
+    minimized: false, z_index: 1, relation: 'same-app', foreground: false,
+  };
+  const dialog = {
+    window_id: 'hwnd:0x200', owner_window_id: 'hwnd:0x100', app_id: 'editor.exe',
+    app_name: 'Editor', process_id: 100, title: 'Dialog', bounds: [100, 100, 300, 200],
+    minimized: false, z_index: 0, relation: 'exact', foreground: true,
+  };
+  const h = harness({
+    platform: 'win32',
+    inputLeaseIdFactory: () => 'lease-z-order',
+    nativeDispatch: async (cmd) => {
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_app_identity' || cmd === 'activate_window') return identity;
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_activate') return { phase: 'running', input_epoch: 1 };
+      if (cmd === 'input_lease_observe') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'ax_snapshot') {
+        snapshotSequence += 1;
+        const nodes = snapshotSequence === 1
+          ? [main, dialog]
+          : [{ ...dialog, z_index: 1, foreground: false }, { ...main, z_index: 0, foreground: true }];
+        return {
+          session_id: `ax-z-order-${snapshotSequence}`,
+          app: 'Editor',
+          elements: [{ id: 2, role: 'Button', label: 'Cancel dialog', actions: ['Invoke'] }],
+          input_epoch: 1,
+          window_id: 'hwnd:0x200',
+          accessibility_revision: snapshotSequence,
+          modal: true,
+          modal_window_id: 'hwnd:0x200',
+          window_graph: { target_window_id: 'hwnd:0x200', foreground_window_id: nodes.find((node) => node.foreground)?.window_id ?? null, nodes },
+        };
+      }
+      if (cmd === 'ax_press') pressed = true;
+      return { ok: true };
+    },
+  });
+  h.setIdentity(identity);
+
+  const state = await observeState(h, { targetApp: 'Editor' });
+  const session = await begin(h, {
+    windowRef: state.target.window_ref,
+    expectedStateId: state.state_id,
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_press', {
+    sessionId: state.session_id,
+    elementId: 2,
+    expectedStateId: state.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  assert.equal(pressed, true);
+});
+
+for (const scenario of ['owner', 'nested-owner', 'sibling', 'reused-owner', 'security-owner', 'stopped']) {
+  test(`Windows same-session post-action observation follows only trusted live owners: ${scenario}`, async () => {
+    let closed = false;
+    let sequence = 0;
+    let writes = 0;
+    const snapshotTargets = [];
+    const identity = {
+      app_name: 'Editor', app_id: 'editor.exe', bundle_id: 'editor.exe',
+      process_id: 100, window_id: 'dialog',
+    };
+    const node = (windowId, ownerId, title = 'Document') => ({
+      window_id: windowId, owner_window_id: ownerId, app_id: 'editor.exe',
+      app_name: 'Editor', process_id: 100, title, bounds: [0, 0, 800, 600],
+      minimized: false, relation: windowId === 'dialog' ? 'exact' : 'owner',
+    });
+    const ownerId = scenario === 'nested-owner' ? 'intermediate' : 'document';
+    const nodes = [
+      node('dialog', scenario === 'sibling' ? null : ownerId),
+      node('document', null),
+      ...(scenario === 'nested-owner' ? [node('intermediate', 'document')] : []),
+    ];
+    const h = harness({
+      platform: 'win32',
+      nativeDispatch: async (cmd, args) => {
+        if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+        if (cmd === 'resolve_app_identity' || cmd === 'activate_window') return identity;
+        if (cmd.startsWith('input_lease_')) return { phase: cmd === 'input_lease_activate' ? 'running' : 'observing', input_epoch: 1 };
+        if (cmd === 'get_window') {
+          if (closed && ['dialog', 'intermediate'].includes(args.windowId)) throw new Error('window is not visible');
+          if (scenario === 'stopped') {
+            await h.gate.dispatch(h.record, h.sender, 'computer_use_stop_turn', {
+              conversationId: 'conversation-1', loopId: 'loop-1', reason: 'user-stop',
+            });
+          }
+          return {
+            ...identity, window_id: args.windowId,
+            process_id: scenario === 'reused-owner' ? 200 : 100,
+            title: scenario === 'security-owner' ? 'Windows Security authentication' : 'Document',
+          };
+        }
+        if (cmd === 'ax_snapshot') {
+          snapshotTargets.push(args.expectedWindowId);
+          assert.equal(args[COMPUTER_USE_REQUEST_CONTEXT_ARG].target.windowId, args.expectedWindowId);
+          if (closed && args.expectedWindowId === 'dialog') throw new Error('window is not visible');
+          return {
+            session_id: `ax-owner-${++sequence}`, app: 'Editor', input_epoch: 1,
+            window_id: args.expectedWindowId, accessibility_revision: sequence,
+            modal: !closed, modal_window_id: closed ? null : 'dialog',
+            elements: closed
+              ? [{ id: 3, role: 'Document', label: 'Document body', actions: [] }]
+              : [{ id: 2, role: 'Button', label: 'Cancel dialog', actions: ['Invoke'] }],
+            window_graph: { target_window_id: args.expectedWindowId, nodes: closed ? [node('document', null)] : nodes },
+          };
+        }
+        if (cmd === 'ax_press') { closed = true; writes += 1; }
+        return { ok: true };
+      },
+    });
+    h.setIdentity(identity);
+    const before = await observeState(h, { targetApp: 'Editor' });
+    const session = await begin(h, {
+      windowRef: before.target.window_ref, expectedStateId: before.state_id,
+      actionIntent: { action: 'click', category: 'none', summary: '' },
+    });
+    await h.gate.dispatch(h.record, h.sender, 'ax_press', {
+      sessionId: before.session_id, elementId: 2, expectedStateId: before.state_id,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    });
+    const observation = h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+      appName: 'Editor', [COMPUTER_USE_TOKEN_ARG]: session.token,
+    });
+    if (scenario === 'owner' || scenario === 'nested-owner') {
+      const after = await observation;
+      assert.equal(after.target.relation, 'replacement');
+      assert.notEqual(after.target.window_ref, before.target.window_ref);
+      assert.equal(after.verification_receipt.status, 'verified-change');
+      assert.equal(after.elements[0].label, 'Document body');
+      assert.equal(snapshotTargets.at(-1), 'document');
+      await h.gate.dispatch(h.record, h.sender, 'computer_use_end_session', {
+        [COMPUTER_USE_TOKEN_ARG]: session.token,
+      });
+      const nextSession = await begin(h, {
+        windowRef: after.target.window_ref, expectedStateId: after.state_id,
+        actionIntent: { action: 'get_window_state', category: 'none', summary: '' },
+      });
+      assert.equal(nextSession.target.window_ref, after.target.window_ref);
+      const refreshed = await h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+        appName: 'Editor', [COMPUTER_USE_TOKEN_ARG]: nextSession.token,
+      });
+      assert.equal(refreshed.target.window_ref, after.target.window_ref);
+    } else if (scenario === 'security-owner') {
+      const after = await observation;
+      assert.equal(after.protocol_error.code, 'manual-handoff-required');
+      assert.equal(snapshotTargets.includes('document'), false);
+    } else {
+      await assert.rejects(observation, /not visible|different|changed|authorization|active/i);
+      assert.equal(snapshotTargets.includes('document'), false);
+    }
+    assert.equal(writes, 1);
+    h.gate.teardown();
+  });
+}
+
+test('Host issues a modal ref only for a trusted owned window', async () => {
+  const h = harness({ platform: 'win32', selfProcessId: 999 });
+  const rootNode = {
+    window_id: 'root', owner_window_id: null, app_id: 'word.exe', app_name: 'Word',
+    process_id: 42, title: 'Document', bounds: [0, 0, 800, 600], minimized: false,
+    z_index: 1, relation: 'exact', foreground: false,
+  };
+  const dialogNode = {
+    window_id: 'dialog', owner_window_id: 'root', app_id: 'word.exe', app_name: 'Word',
+    process_id: 42, title: 'Dialog', bounds: [100, 100, 300, 200], minimized: false,
+    z_index: 0, relation: 'owned-popup', foreground: true,
+  };
+  h.setIdentity({ app_name: 'Word', bundle_id: 'word.exe', process_id: 42, window_id: 'root' });
+  h.setListedWindows([{
+    app_name: 'Word', app_id: 'word.exe', process_id: 42, window_id: 'root',
+  }]);
+  h.setAxSnapshotExtra({
+    window_id: 'root',
+    window_graph: {
+      target_window_id: 'root',
+      foreground_window_id: 'dialog',
+      nodes: [rootNode, dialogNode],
+    },
+    modal: true,
+    modal_window_id: 'dialog',
+  });
+
+  const result = await observeState(h, { targetApp: 'Word' });
+
+  assert.deepEqual(result.related_windows.map((item) => item.relation), ['modal']);
+  assert.equal(result.related_windows[0].window_ref.startsWith('wr-'), true);
+  assert.equal(result.window_graph, undefined);
+  assert.equal(result.modal_window_id.startsWith('wr-'), true);
+
+  const modalRef = result.related_windows[0].window_ref;
+  h.setIdentity({ app_name: 'Word', bundle_id: 'word.exe', process_id: 42, window_id: 'dialog' });
+  h.setAxSnapshotExtra({ window_id: 'dialog', modal: true, modal_window_id: 'dialog' });
+  const modalSession = await begin(h, {
+    windowRef: modalRef,
+    actionIntent: { action: 'get_window_state', category: 'none', summary: '' },
+  });
+  assert.equal(modalSession.target.window_ref, modalRef);
+  const modalState = await h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+    appName: 'Word', [COMPUTER_USE_TOKEN_ARG]: modalSession.token,
+  });
+  assert.equal(modalState.target.window_ref, modalRef);
+});
+
+test('Host does not issue writable refs for unrelated same-app siblings or security UI', async () => {
+  const h = harness({ platform: 'win32', selfProcessId: 999 });
+  h.setIdentity({ app_name: 'Word', bundle_id: 'word.exe', process_id: 42, window_id: 'root' });
+  h.setListedWindows([{
+    app_name: 'Word', app_id: 'word.exe', process_id: 42, window_id: 'root',
+  }]);
+  h.setAxSnapshotExtra({
+    window_id: 'root',
+    window_graph: {
+      target_window_id: 'root',
+      foreground_window_id: 'credential',
+      nodes: [
+        { window_id: 'root', owner_window_id: null, app_id: 'word.exe', app_name: 'Word', process_id: 42, title: 'Document', bounds: [0, 0, 800, 600], minimized: false, z_index: 1, relation: 'exact', foreground: false },
+        { window_id: 'sibling', owner_window_id: null, app_id: 'word.exe', app_name: 'Word', process_id: 42, title: 'Other document', bounds: [0, 0, 800, 600], minimized: false, z_index: 2, relation: 'same-app', foreground: false },
+        { window_id: 'credential', owner_window_id: null, app_id: 'credentialuibroker.exe', app_name: 'Credential UI', process_id: 77, title: 'Credential UI', bounds: [100, 100, 300, 200], minimized: false, z_index: 0, relation: 'same-app', foreground: true },
+      ],
+    },
+  });
+
+  const result = await observeState(h, { targetApp: 'Word' });
+
+  assert.equal(result.related_windows.some((item) => item.app_name === 'Credential UI'), false);
+  assert.equal(result.protocol_error.code, 'manual-handoff-required');
+  assert.equal(result.protocol_error.next_action, 'wait-for-user');
+  assert.equal(result.window_graph, undefined);
+});
+
+test('Host maps secure-desktop observation failure to manual-handoff without native input', async () => {
+  const nativeCommands = [];
+  const identity = {
+    app_name: 'Word', bundle_id: 'word.exe', app_id: 'word.exe',
+    process_id: 42, window_id: 'root',
+  };
+  const h = harness({
+    platform: 'win32',
+    selfProcessId: 999,
+    nativeDispatch: async (cmd) => {
+      nativeCommands.push(cmd);
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'resolve_app_identity') return identity;
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'ax_snapshot') throw new Error('Windows secure desktop is active');
+      return { ok: true };
+    },
+  });
+  h.setIdentity(identity);
+
+  const result = await observeState(h, { targetApp: 'Word' });
+
+  assert.equal(result.protocol_error.code, 'manual-handoff-required');
+  assert.equal(result.protocol_error.next_action, 'wait-for-user');
+  assert.deepEqual(result.related_windows, []);
+  assert.equal(h.actionApprovalRequests.length, 0);
+  assert.equal(nativeCommands.some((cmd) => cmd.startsWith('mouse_') || cmd.startsWith('keyboard_')), false);
+});
+
+test('native physical-input events revoke the active Windows task and stop the helper', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'notepad',
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  const interruption = h.gate.handleNativeHelperEvent({
+    type: 'user-input-detected',
+    reason: 'physical-input',
+  });
+  assert.deepEqual(interruption, {
+    type: 'user-input-detected',
+    reason: 'physical-input',
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  assert.equal(h.helperKillCount, 1);
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+      appName: 'notepad',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /authorization token is invalid or expired/,
+  );
+  assert.equal(h.gate.handleNativeHelperEvent({ type: 'user-input-detected' }), null);
+});
+
+test('a stopped turn cannot resume after task cleanup or helper restart but a new turn can', async () => {
+  const turnStopStore = createComputerUseTurnStopStore();
+  const h = harness({ turnStopStore });
+  const session = await begin(h);
+
+  const stopped = await h.gate.dispatch(h.record, h.sender, 'computer_use_stop_turn', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+    reason: 'overlay-stop-button',
+  });
+  assert.deepEqual(stopped, {
+    stopped: true,
+    reason: 'overlay-stop-button',
+    persisted: true,
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /invalid or expired/,
+  );
+
+  h.restartHelper();
+  await assert.rejects(
+    begin(h, { toolCallId: 'same-turn-retry' }),
+    /turn is stopped \(overlay-stop-button\)/,
+  );
+
+  await begin(h, { loopId: 'loop-2', toolCallId: 'new-turn' });
+});
+
+test('Windows AUMID policy hard-denies Settings, Terminal, Windows Security, and Abu', () => {
+  const h = harness({ platform: 'win32' });
+  for (const bundle_id of [
+    'aumid:windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel',
+    'aumid:microsoft.windowsterminal_8wekyb3d8bbwe!app',
+    'aumid:microsoft.windows.sechealthui_cw5n1h2txyewy!sechealthui',
+    'aumid:abu.desktop!app',
+  ]) {
+    assert.equal(h.gate.classifyIdentity({
+      app_name: 'sensitive',
+      bundle_id,
+      process_id: 10,
+    }), 'hard-deny');
+  }
+});
+
+test('Windows approval-required policy tracks vendor process-name drift', () => {
+  // WeChat 4.x runs as Weixin.exe (WeChatAppEx.exe hosts mini programs and
+  // articles), Feishu ships as Feishu.exe, and the new Outlook is the packaged
+  // olk.exe. All must classify as approval-required by their stable
+  // executable identity, alongside the legacy names they replaced.
+  const h = harness({ platform: 'win32' });
+  const cases = [
+    ['Weixin', 'C:\\Program Files\\Tencent\\Weixin\\Weixin.exe'],
+    ['Weixin', 'C:\\Users\\me\\AppData\\Roaming\\Tencent\\xwechat\\Weixin.exe'],
+    ['WeChatAppEx', 'C:\\Users\\me\\AppData\\Roaming\\Tencent\\WeChat\\XPlugin\\Plugins\\RadiumWMPF\\14315\\extracted\\runtime\\WeChatAppEx.exe'],
+    ['WeChat', 'D:\\Normal Software\\WeChat\\WeChat.exe'],
+    ['Feishu', 'D:\\Normal Software\\Feishu\\7.76.7\\Feishu.exe'],
+    ['DingTalk', 'D:\\Normal Software\\DingDing\\main\\current\\DingTalk.exe'],
+  ];
+  // An unlisted app also falls through to approval-required, so classification
+  // alone cannot prove the entry exists; assert policy membership explicitly.
+  const approvalRequired = policy.windows.approvalRequired;
+  for (const [app_name, executable_path] of cases) {
+    const stem = app_name.toLowerCase();
+    assert.ok(approvalRequired.includes(stem), `${stem} listed`);
+    assert.ok(approvalRequired.includes(`${stem}.exe`), `${stem}.exe listed`);
+    assert.equal(h.gate.classifyIdentity({
+      app_name,
+      bundle_id: executable_path,
+      app_id: executable_path,
+      executable_path,
+      process_id: 20,
+      signature_status: 'valid',
+      signer_subject: 'Vendor Publisher',
+    }), 'approval-required', executable_path);
+  }
+  assert.ok(approvalRequired.includes('olk') && approvalRequired.includes('olk.exe'));
+  // Packaged new Outlook: the AUMID is the app identity, the executable name
+  // is the stable key the policy matches on.
+  assert.equal(h.gate.classifyIdentity({
+    app_name: 'Outlook',
+    bundle_id: 'aumid:microsoft.outlookforwindows_8wekyb3d8bbwe!microsoft.outlookforwindows',
+    app_id: 'aumid:microsoft.outlookforwindows_8wekyb3d8bbwe!microsoft.outlookforwindows',
+    executable_path: 'C:\\Program Files\\WindowsApps\\Microsoft.OutlookForWindows_1.2024.327.300_x64__8wekyb3d8bbwe\\olk.exe',
+    process_id: 21,
+    signature_status: 'package-trusted',
+    package_full_name: 'Microsoft.OutlookForWindows_1.2024.327.300_x64__8wekyb3d8bbwe',
+  }), 'approval-required');
+});
+
+test('Windows ordinary allowlist requires a valid Authenticode identity', () => {
+  const h = harness({ platform: 'win32' });
+  const base = {
+    app_name: 'notepad',
+    bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+    executable_path: 'C:\\Windows\\System32\\notepad.exe',
+    process_id: 10,
+  };
+  assert.equal(h.gate.classifyIdentity({
+    ...base,
+    signature_status: 'valid',
+    signer_subject: 'Microsoft Windows',
+  }), 'ordinary');
+  assert.equal(h.gate.classifyIdentity({
+    ...base,
+    signature_status: 'untrusted',
+  }), 'approval-required');
+  assert.equal(h.gate.classifyIdentity({
+    ...base,
+    signature_status: 'valid',
+    signer_subject: 'Unrelated Publisher LLC',
+  }), 'approval-required');
+  assert.equal(h.gate.classifyIdentity(base), 'approval-required');
+  assert.equal(h.gate.classifyIdentity({
+    app_name: 'CalculatorApp',
+    bundle_id: 'aumid:microsoft.windowscalculator_8wekyb3d8bbwe!app',
+    app_id: 'aumid:microsoft.windowscalculator_8wekyb3d8bbwe!app',
+    executable_path: 'C:\\Program Files\\WindowsApps\\CalculatorApp.exe',
+    process_id: 11,
+    signature_status: 'package-trusted',
+    package_full_name: 'Microsoft.WindowsCalculator_11.0_x64__8wekyb3d8bbwe',
+  }), 'ordinary');
+  assert.equal(h.gate.classifyIdentity({
+    app_name: 'CalculatorApp',
+    bundle_id: 'aumid:attacker.fakecalculator_123!app',
+    app_id: 'aumid:attacker.fakecalculator_123!app',
+    executable_path: 'C:\\Program Files\\WindowsApps\\CalculatorApp.exe',
+    process_id: 12,
+    signature_status: 'package-trusted',
+    package_full_name: 'Attacker.FakeCalculator_1.0_x64__123',
+  }), 'approval-required');
+});
+
+test('Windows browser writes fail closed when the trusted host cannot verify origin', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'msedge',
+    bundle_id: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    process_id: 700,
+  });
+  await assert.rejects(
+    begin(h, {
+      targetApp: 'msedge',
+      permissionMode: 'autonomous',
+      actionIntent: { action: 'click', category: 'none', summary: '' },
+    }),
+    /current origin cannot be verified/,
+  );
+});
+
+test('Windows browser origin accepts one native Chromium omnibox and rejects web-content lookalikes', () => {
+  assert.equal(resolveBrowserOriginFromSnapshot({
+    elements: [{
+      role: 'TextField',
+      class_name: 'OmniboxViewViews',
+      automation_id: 'view_1012',
+      value: 'https://Example.COM:443/path?secret=not-retained',
+    }],
+  }), 'https://example.com');
+  assert.equal(resolveBrowserOriginFromSnapshot({
+    elements: [{
+      role: 'TextField',
+      class_name: 'OmniboxViewViews',
+      automation_id: 'view_1012',
+      value: 'example.com',
+    }, {
+      role: 'Button',
+      class_name: 'LocationIconView',
+      automation_id: 'view_1011',
+      label: '查看网站信息',
+    }],
+  }), 'https://example.com');
+  assert.equal(resolveBrowserOriginFromSnapshot({
+    elements: [{
+      role: 'TextField',
+      class_name: 'OmniboxViewViews',
+      automation_id: 'view_1012',
+      value: 'Example.COM/private/path?secret=not-retained',
+    }, {
+      role: 'Button',
+      class_name: 'LocationIconView',
+      automation_id: 'view_1011',
+      label: 'View site information',
+    }],
+  }), 'https://example.com');
+  assert.equal(resolveBrowserOriginFromSnapshot({
+    elements: [{
+      role: 'TextField',
+      class_name: 'OmniboxViewViews',
+      automation_id: 'view_1012',
+      value: 'plain-http.example/private',
+    }, {
+      role: 'Button',
+      class_name: 'LocationIconView',
+      automation_id: 'view_1011',
+      label: 'Not secure',
+    }],
+  }), null);
+  assert.equal(resolveBrowserOriginFromSnapshot({
+    elements: [{
+      role: 'TextField',
+      class_name: 'HTMLInputElement',
+      automation_id: 'view_1012',
+      value: 'https://attacker.example/',
+      label: 'Address and search bar',
+    }],
+  }), null);
+  assert.equal(resolveBrowserOriginFromSnapshot({
+    elements: [{
+      role: 'TextField',
+      class_name: 'OmniboxViewViews',
+      automation_id: 'view_1012',
+      value: 'file:///C:/private.txt',
+    }],
+  }), null);
+});
+
+test('Windows browser writes require an exact task-local origin approval', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'msedge',
+    bundle_id: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    process_id: 700,
+  });
+  h.setAxElements([{
+    id: 1,
+    role: 'TextField',
+    class_name: 'OmniboxViewViews',
+    automation_id: 'view_1012',
+    value: 'https://example.com/private/path?token=redacted-at-boundary',
+    bounds: [100, 20, 800, 40],
+    patterns: ['Value'],
+    actions: ['SetValue'],
+    depth: 4,
+  }]);
+  const session = await begin(h, {
+    targetApp: 'msedge',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  assert.equal(session.classification, 'approval-required');
+  assert.equal(h.browserSiteApprovalRequests.length, 1);
+  assert.equal(h.browserSiteApprovalRequests[0].origin, 'https://example.com');
+  assert.equal(JSON.stringify(h.browserSiteApprovalRequests).includes('/private/path'), false);
+
+  await begin(h, {
+    targetApp: 'msedge',
+    toolCallId: 'same-origin-second-action',
+    permissionMode: 'autonomous',
+    expectedStateId: 'state-1',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  assert.equal(h.browserSiteApprovalRequests.length, 1);
+});
+
+test('Windows browser origin is re-read immediately before native input', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'msedge',
+    bundle_id: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    process_id: 700,
+  });
+  h.setAxElements([{
+    id: 1,
+    role: 'TextField',
+    class_name: 'OmniboxViewViews',
+    automation_id: 'view_1012',
+    value: 'https://example.com/start',
+  }]);
+  const session = await begin(h, {
+    targetApp: 'msedge',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  h.setAxElements([{
+    id: 1,
+    role: 'TextField',
+    class_name: 'OmniboxViewViews',
+    automation_id: 'view_1012',
+    value: 'https://other.example/automatic-redirect',
+  }]);
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /origin changed after observation/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'ax_close_session'), true);
+});
+
+test('Host Gate blocks Windows shell and security shortcuts before native input', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'notepad',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'r',
+      modifiers: ['win'],
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /blocked dangerous system shortcut/,
+  );
+  // Review finding: modifiers were sorted but not deduplicated, so a repeated
+  // or aliased modifier spelled a combo the blocklist had never seen while
+  // the OS still saw Alt+F4 / Win+R.
+  for (const [key, modifiers] of [['f4', ['alt', 'alt']], ['r', ['win', 'meta']], ['escape', ['ctrl', 'control', 'shift']]]) {
+    await assert.rejects(
+      h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+        key,
+        modifiers,
+        [COMPUTER_USE_TOKEN_ARG]: session.token,
+      }),
+      /blocked dangerous system shortcut/,
+      `${modifiers.join('+')}+${key}`,
+    );
+  }
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
+});
+
+test('a session begun for an observation intent cannot dispatch stateful input', async () => {
+  // Review finding: browser-origin approval and the pre-write origin re-check
+  // keyed off the declared intent only. A renderer that begins a session as
+  // get_app_state but attaches a state_id could then type into the browser
+  // on an origin the user never approved.
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'msedge',
+    bundle_id: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    process_id: 700,
+  });
+  h.setAxElements([{
+    id: 1,
+    role: 'TextField',
+    class_name: 'OmniboxViewViews',
+    automation_id: 'view_1012',
+    value: 'https://example.com/start',
+    bounds: [100, 20, 800, 40],
+    patterns: ['Value'],
+    actions: ['SetValue'],
+    depth: 4,
+  }]);
+  const snapshot = await observeState(h, { targetApp: 'msedge', permissionMode: 'autonomous' });
+  const session = await begin(h, {
+    targetApp: 'msedge',
+    permissionMode: 'autonomous',
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+  assert.equal(h.browserSiteApprovalRequests.length, 0);
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'hello',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /does not authorize/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_type'), false);
+  assert.equal(h.browserSiteApprovalRequests.length, 0);
+});
+
+test('a line break typed as text or pressed as a raw key gets Return semantics; other control characters are refused', async () => {
+  const requests = [];
+  const h = harness({
+    requestActionApproval: async (request) => {
+      requests.push(request);
+      return false;
+    },
+  });
+  h.setIdentity({
+    app_name: 'Slack',
+    bundle_id: 'com.tinyspeck.slackmacgap',
+    process_id: 300,
+  });
+  const typing = await begin(h, {
+    targetApp: 'Slack',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'hello\r',
+      [COMPUTER_USE_TOKEN_ARG]: typing.token,
+    }),
+    /was not approved/,
+  );
+  assert.deepEqual(requests.at(-1).consequence, {
+    category: 'ambiguous',
+    summary: 'Type text containing a line break in Slack; this may submit or send content',
+    source: 'host-ambiguous-input',
+  });
+
+  const pressing = await begin(h, {
+    targetApp: 'Slack',
+    toolCallId: 'tool-raw-return',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: '\r',
+      modifiers: [],
+      [COMPUTER_USE_TOKEN_ARG]: pressing.token,
+    }),
+    /was not approved/,
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(requests.at(-1).consequence.summary, 'Press Return in Slack; this may submit or send content');
+
+  const control = await begin(h, {
+    targetApp: 'Slack',
+    toolCallId: 'tool-control-char',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'a\u0003b',
+      [COMPUTER_USE_TOKEN_ARG]: control.token,
+    }),
+    /control character/,
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_type' || cmd === 'keyboard_press'), false);
+});
+
+function helperError(message, helper) {
+  return Object.assign(new Error(message), { helper: Object.freeze(helper) });
+}
+
+test('a helper refusal before dispatch releases the attempt instead of blocking replay', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  h.failNativeCommand('mouse_move', helperError('frontmost target changed; observe again', {
+    code: 'target-changed',
+    execution: 'not-executed',
+    retryable: true,
+  }));
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /frontmost target changed/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.deepEqual(status.not_executed_receipt, {
+    status: 'not-executed',
+    execution: 'not-executed',
+    helper_code: 'target-changed',
+    retryable: true,
+    command: 'mouse_move',
+    before_state_id: snapshot.state_id,
+    attempt_count: 1,
+    consequential: false,
+    decision: 'observe-required',
+  });
+
+  // The world may have moved, so the next action still needs a fresh
+  // observation — but that observation has nothing to verify and the run
+  // is not stopped.
+  h.failNativeCommand(null);
+  const fresh = await observeState(h, { toolCallId: 'tool-after-refusal' });
+  assert.equal(fresh.verification_receipt, undefined);
+  const next = await begin(h, { toolCallId: 'tool-retry', expectedStateId: fresh.state_id });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+    x: 2,
+    y: 2,
+    [COMPUTER_USE_TOKEN_ARG]: next.token,
+  });
+  const after = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(after.not_executed_receipt, null);
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move').length, 2);
+});
+
+test('a structured outcome-unknown helper error still blocks replay and stamps the receipt', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  h.failNativeCommand('mouse_move', helperError('SendInput was blocked after 1/3 events', {
+    code: 'send-input-failed',
+    execution: 'outcome-unknown',
+    retryable: false,
+  }));
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /outcome is unknown after 'mouse_move'/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.not_executed_receipt, null);
+  assert.equal(status.outcome_unknown_receipt.execution, 'outcome-unknown');
+  assert.equal(status.outcome_unknown_receipt.helper_code, 'send-input-failed');
+  assert.equal(status.outcome_unknown_receipt.status, 'outcome-unknown');
+});
+
+test('classifyHelperFailure trusts a structured verdict and falls back by command kind', () => {
+  const structured = classifyHelperFailure('stateful', helperError('m', {
+    code: 'screenshot-stale', execution: 'not-executed', retryable: true,
+  }));
+  assert.deepEqual(structured, { code: 'screenshot-stale', execution: 'not-executed', retryable: true });
+
+  // retryable is never inferred.
+  assert.equal(classifyHelperFailure('stateful', helperError('m', {
+    code: 'screenshot-stale', execution: 'not-executed', retryable: 'yes',
+  })).retryable, false);
+
+  // Unstructured: the kind decides, always pessimistic for stateful commands.
+  assert.deepEqual(classifyHelperFailure('stateful', new Error('boom')),
+    { code: 'legacy', execution: 'outcome-unknown', retryable: false });
+  assert.deepEqual(classifyHelperFailure('observation', new Error('boom')),
+    { code: 'legacy', execution: 'not-executed', retryable: false });
+  assert.deepEqual(classifyHelperFailure('stateful', helperError('m', {
+    code: 'legacy', execution: 'outcome-unknown', retryable: false,
+  })), { code: 'legacy', execution: 'outcome-unknown', retryable: false });
+  // A structured object with an unknown verdict is not trusted either.
+  assert.equal(classifyHelperFailure('stateful', helperError('m', {
+    code: 'target-changed', execution: 'maybe', retryable: true,
+  })).execution, 'outcome-unknown');
+  // Even an explicit "internal" verdict is the helper's own word.
+  assert.equal(classifyHelperFailure('stateful', helperError('m', {
+    code: 'internal', execution: 'not-executed', retryable: false,
+  })).execution, 'not-executed');
+});
+
+test('classifyInputRejection reads the helper code before any message', () => {
+  assert.equal(classifyInputRejection(helperError('nothing recognisable here', {
+    code: 'secure-desktop', execution: 'not-executed', retryable: false,
+  })), 'secure-desktop');
+  assert.equal(classifyInputRejection(helperError('frontmost target changed', {
+    code: 'target-changed', execution: 'not-executed', retryable: true,
+  })), 'window-invalidated');
+  assert.equal(classifyInputRejection(helperError('screenshot_id belongs elsewhere', {
+    code: 'internal', execution: 'not-executed', retryable: false,
+  })), 'native-rejected');
+  // Only a legacy (string) error may still be classified from its text.
+  assert.equal(classifyInputRejection(helperError('input is blocked on secure desktop', {
+    code: 'legacy', execution: 'outcome-unknown', retryable: false,
+  })), 'secure-desktop');
+  assert.equal(classifyInputRejection(new Error('physical user input occurred')), 'physical-input');
+});
+
+test('an authorized session carries the driver declaration the Host was given', async () => {
+  const declared = {
+  id: 'windows-uia',
+  declared: true,
+  input: {
+    foreground_required: true,
+    background_element_actions: false,
+    unicode_text: true,
+    chords: true,
+    ime_aware: false,
+    physical_input_monitoring: true,
+  },
+  capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true },
+  elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke'] },
+  boundaries: ['secure-desktop'],
+  activation: { can_activate_window: true },
+};
+  const h = harness({ getDriverCapabilities: () => declared });
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  assert.deepEqual(session.driver, declared);
+
+  const plain = harness();
+  const plainSnapshot = await observeState(plain);
+  const plainSession = await begin(plain, {
+    expectedStateId: plainSnapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  assert.equal(plainSession.driver, null);
+});
+
+test('a Host preflight refusal is a not-executed receipt attributed to the state the renderer offered', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  // Between observation and action the user switched to another Notes process.
+  h.setIdentity({ app_name: 'Notes', bundle_id: 'com.apple.Notes', process_id: 101 });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /target process changed/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_move'), false);
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.deepEqual(status.not_executed_receipt, {
+    status: 'not-executed',
+    execution: 'not-executed',
+    helper_code: 'target-changed',
+    retryable: true,
+    command: 'mouse_move',
+    before_state_id: snapshot.state_id,
+    attempt_count: 0,
+    consequential: false,
+    decision: 'observe-required',
+  });
+
+  // Back on the observed process: a fresh observation and the same action go
+  // through, and the next attempt clears the old receipt.
+  h.setIdentity({ app_name: 'Notes', bundle_id: 'com.apple.Notes', process_id: 100 });
+  const next = await observeState(h, { toolCallId: 'tool-observe-2' });
+  const retry = await begin(h, {
+    toolCallId: 'tool-2',
+    expectedStateId: next.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  assert.deepEqual(
+    await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: retry.token,
+    }),
+    { ok: true },
+  );
+  const after = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(after.not_executed_receipt, null);
+});
+
+test('a Windows UI change caught by preflight revalidation is a not-executed receipt', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const snapshot = await observeState(h, { targetApp: 'notepad', permissionMode: 'autonomous' });
+  const session = await begin(h, {
+    targetApp: 'notepad',
+    permissionMode: 'autonomous',
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  // Physical input arrived after the observation: the epoch moved on.
+  h.setAxSnapshotExtra({ input_epoch: 2 });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /interface changed after observation \(input-epoch\)/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_move'), false);
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.equal(status.not_executed_receipt.helper_code, 'ui-changed');
+  assert.equal(status.not_executed_receipt.before_state_id, snapshot.state_id);
+  assert.equal(status.not_executed_receipt.command, 'mouse_move');
+});
+
+test('a denied consequential approval is a final refusal that nothing ran', async () => {
+  const h = harness({ requestActionApproval: async () => false });
+  const session = await begin(h, {
+    actionIntent: {
+      action: 'click',
+      category: 'delete',
+      summary: 'Delete the disposable test note',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /was not approved/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  // Two facts, and the renderer needs both. `not-executed` says the click
+  // never happened, so the turn must not be stopped as an ambiguous side
+  // effect — a "no" to one action leaves the rest of the turn usable.
+  // `retryable: false` says the user's answer is final, so no recovery is
+  // spent re-observing something that would only be refused again.
+  assert.equal(status.not_executed_receipt.helper_code, 'approval-denied');
+  assert.equal(status.not_executed_receipt.execution, 'not-executed');
+  assert.equal(status.not_executed_receipt.retryable, false);
+  assert.equal(status.not_executed_receipt.consequential, true);
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+});
+
+test('hostRefusal speaks the helper vocabulary and rejects unknown codes', () => {
+  const error = hostRefusal('target-changed', 'moved');
+  assert.equal(error.message, 'moved');
+  assert.deepEqual(classifyHelperFailure('stateful', error), {
+    code: 'target-changed', execution: 'not-executed', retryable: true,
+  });
+  assert.throws(() => hostRefusal('approval-denied', 'no'), /unknown Host refusal code/);
+  for (const code of HOST_REFUSAL_CODES) {
+    assert.equal(classifyHelperFailure('stateful', hostRefusal(code, code)).execution, 'not-executed', code);
+  }
+});
+
+const OBSERVE = { action: 'get_app_state', category: 'none', summary: '' };
+
+test('"always allow" is remembered across tasks and Gate restarts, and skips the app dialog even in standard mode', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const answers = ['always'];
+  const first = harness({
+    grantStore,
+    requestAppApproval: async (request) => {
+      first.approvalRequests.push(request);
+      return answers.shift() ?? true;
+    },
+  });
+  // Notes is ordinary; standard mode confirms ordinary apps, so this is the
+  // dialog the user sees most. The dialog offers "always" for app control.
+  const session = await begin(first, { actionIntent: OBSERVE });
+  assert.equal(first.approvalRequests.length, 1);
+  assert.equal(first.approvalRequests[0].rememberable, true);
+  assert.equal(session.grant, 'task');
+  assert.equal(grantStore.list().grants[0]?.displayName, 'Notes');
+  assert.equal(grantStore.list().grants[0]?.tier, 'ordinary');
+
+  await first.gate.dispatch(first.record, first.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  const next = await begin(first, { loopId: 'loop-2', toolCallId: 'tool-2', actionIntent: OBSERVE });
+  assert.equal(first.approvalRequests.length, 1, 'no second dialog for a remembered app');
+  assert.equal(next.grant, 'remembered');
+
+  // A fresh Gate (Abu restarted) sharing the persisted store still remembers.
+  const restarted = harness({ grantStore });
+  const afterRestart = await begin(restarted, { actionIntent: OBSERVE });
+  assert.equal(restarted.approvalRequests.length, 0);
+  assert.equal(afterRestart.grant, 'remembered');
+
+  // Revoking makes the next task ask again.
+  grantStore.revoke({ key: 'com.apple.notes' });
+  await restarted.gate.dispatch(restarted.record, restarted.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  await begin(restarted, { loopId: 'loop-2', toolCallId: 'tool-3', actionIntent: OBSERVE });
+  assert.equal(restarted.approvalRequests.length, 1);
+});
+
+test('"this task only" and mode-allowed apps are never persisted', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const h = harness({ grantStore });
+  const task = await begin(h, { actionIntent: OBSERVE });
+  assert.equal(task.grant, 'task');
+  assert.deepEqual(grantStore.list().grants, []);
+
+  const smart = harness({ grantStore });
+  const mode = await begin(smart, { permissionMode: 'smart', actionIntent: OBSERVE });
+  assert.equal(mode.grant, 'mode');
+  assert.equal(smart.approvalRequests.length, 0);
+  assert.deepEqual(grantStore.list().grants, []);
+});
+
+test('reading the whole screen cannot be remembered, and a remembered app does not cover it', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const h = harness({ grantStore, requestAppApproval: async (request) => { h.approvalRequests.push(request); return 'always'; } });
+  await begin(h, { scope: 'screen-read' });
+  assert.equal(h.approvalRequests[0].rememberable, false);
+  assert.deepEqual(grantStore.list().grants, []);
+
+  await begin(h, { toolCallId: 'tool-2', scope: 'ui-control', actionIntent: OBSERVE });
+  assert.equal(grantStore.list().grants[0]?.key, 'com.apple.notes');
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  await begin(h, { loopId: 'loop-2', toolCallId: 'tool-3', scope: 'screen-read' });
+  assert.equal(h.approvalRequests.length, 3, 'screen reading still asks per task');
+});
+
+test('a remembered Windows grant is bound to the signer, not the executable name', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'win32', now: () => 10_000 });
+  const qq = {
+    app_name: 'QQ',
+    bundle_id: 'c:\\program files\\tencent\\qqnt\\qq.exe',
+    process_id: 700,
+    signature_status: 'valid',
+    signer_subject: 'Tencent Technology (Shenzhen) Company Limited',
+  };
+  const h = harness({ platform: 'win32', grantStore, requestAppApproval: async (request) => { h.approvalRequests.push(request); return 'always'; } });
+  h.setIdentity(qq);
+  await begin(h, { targetApp: 'QQ', permissionMode: 'autonomous', actionIntent: OBSERVE });
+  assert.equal(h.approvalRequests.length, 1);
+  assert.equal(h.approvalRequests[0].classification, 'approval-required');
+
+  const impostor = harness({ platform: 'win32', grantStore, requestAppApproval: async (request) => { impostor.approvalRequests.push(request); return true; } });
+  impostor.setIdentity({ ...qq, signer_subject: 'Contoso Ltd' });
+  await begin(impostor, { targetApp: 'QQ', permissionMode: 'autonomous', actionIntent: OBSERVE });
+  assert.equal(impostor.approvalRequests.length, 1, 'same path, other signer: ask again');
+
+  const genuine = harness({ platform: 'win32', grantStore });
+  genuine.setIdentity(qq);
+  const session = await begin(genuine, { targetApp: 'QQ', permissionMode: 'autonomous', actionIntent: OBSERVE });
+  assert.equal(genuine.approvalRequests.length, 0);
+  assert.equal(session.grant, 'remembered');
+});
+
+test('an app on the user denied list is refused without a dialog', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  grantStore.setDenied({ key: 'com.tinyspeck.slackmacgap', displayName: 'Slack' }, true);
+  const h = harness({ grantStore });
+  await assert.rejects(
+    begin(h, { targetApp: 'Slack', permissionMode: 'smart', actionIntent: OBSERVE }),
+    /disabled this app in Settings/
+  );
+  assert.equal(h.approvalRequests.length, 0);
+  grantStore.setDenied({ key: 'com.tinyspeck.slackmacgap' }, false);
+  await begin(h, { targetApp: 'Slack', permissionMode: 'smart', toolCallId: 'tool-2', actionIntent: OBSERVE });
+  assert.equal(h.approvalRequests.length, 1);
+});
+
+test('cancelling the app dialog is remembered for the rest of the task only', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  let asked = 0;
+  const h = harness({
+    grantStore,
+    requestAppApproval: async () => {
+      asked += 1;
+      return false;
+    },
+  });
+  await assert.rejects(begin(h, { actionIntent: OBSERVE }), /approval was not granted/);
+  assert.equal(asked, 1);
+  await assert.rejects(
+    begin(h, { toolCallId: 'tool-2', actionIntent: OBSERVE }),
+    /declined earlier in this task/
+  );
+  assert.equal(asked, 1, 'a rephrased retry does not re-open the dialog');
+  assert.deepEqual(grantStore.list().denied, [], 'dialog cancel is not a persistent denial');
+
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  await assert.rejects(begin(h, { loopId: 'loop-2', toolCallId: 'tool-3', actionIntent: OBSERVE }), /approval was not granted/);
+  assert.equal(asked, 2, 'a new task asks again');
+});
+
+test('settings commands list, deny and revoke remembered apps without a task, and never touch red lines', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const h = harness({ grantStore, requestAppApproval: async (request) => { h.approvalRequests.push(request); return 'always'; } });
+  await begin(h, { actionIntent: OBSERVE });
+
+  const listed = await h.gate.dispatch(h.record, h.sender, 'computer_use_list_grants', {});
+  assert.equal(listed.available, true);
+  assert.equal(listed.grants[0].key, 'com.apple.notes');
+  assert.equal(listed.grants[0].tier, 'ordinary');
+  assert.equal('signer' in listed.grants[0], false);
+
+  const denied = await h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', {
+    key: 'com.apple.notes', denied: true, displayName: 'Notes',
+  });
+  assert.equal(denied.denied, true);
+  const afterDeny = await h.gate.dispatch(h.record, h.sender, 'computer_use_list_grants', {});
+  assert.deepEqual(afterDeny.grants, []);
+  assert.equal(afterDeny.denied[0].displayName, 'Notes');
+
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', { key: 'com.apple.notes', denied: false });
+  const revoked = await h.gate.dispatch(h.record, h.sender, 'computer_use_revoke_grant', { key: 'com.apple.notes' });
+  assert.equal(revoked.revoked, false, 'denying already removed the grant');
+  assert.deepEqual(await h.gate.dispatch(h.record, h.sender, 'computer_use_list_grants', {}), { available: true, grants: [], denied: [] });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', { key: 'com.apple.keychainaccess', denied: true }),
+    /red-line/
+  );
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'computer_use_revoke_grant', { key: '  ' }),
+    /grant key is invalid/
+  );
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', { key: 'com.apple.notes', denied: 'yes' }),
+    /boolean denied/
+  );
+
+  const bare = harness();
+  assert.deepEqual(
+    await bare.gate.dispatch(bare.record, bare.sender, 'computer_use_list_grants', {}),
+    { available: false, grants: [], denied: [] },
+  );
+});
+
+// The renderer used to probe the foreground app before every action and
+// refuse when that probe threw, which cost a whole turn on 2026-09-14: the
+// foreground window was one the helper reports as not visible, and nine
+// actions aimed at a live, listable window were refused over thirty seconds.
+// The renderer no longer asks. This pins the Gate behaviour that makes that
+// safe — a named target is resolved by identity, not by what is frontmost,
+// so an unidentifiable foreground window blocks neither reading nor writing.
+test('a named target is observable and writable while the foreground window is unidentifiable', async () => {
+  let activeWindowCalls = 0;
+  const h = harness({
+    platform: 'win32',
+    getActiveWindow: async () => {
+      activeWindowCalls += 1;
+      throw new Error('window is not visible');
+    },
+    nativeDispatch: async (cmd) => {
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_app_identity') {
+        return {
+          app_name: 'Notepad', bundle_id: 'notepad.exe', app_id: 'notepad.exe',
+          process_id: 100, window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'get_window') {
+        return { app_name: 'Notepad', app_id: 'notepad.exe', process_id: 100, window_id: 'hwnd:0x100' };
+      }
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'ax_snapshot') {
+        return {
+          session_id: 'ax-dead-foreground', app: 'Notepad', total_visited: 1, truncated: false,
+          elements: [], input_epoch: 1, window_id: 'hwnd:0x100', accessibility_revision: 1,
+        };
+      }
+      return { ok: true };
+    },
+  });
+  h.setIdentity({ app_name: 'Notepad', bundle_id: 'notepad.exe', process_id: 100, window_id: 'hwnd:0x100' });
+
+  const before = await observeState(h, { targetApp: 'Notepad' });
+  assert.equal(typeof before.state_id, 'string');
+
+  const actionSession = await begin(h, {
+    targetApp: 'Notepad',
+    expectedStateId: before.state_id,
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_press', {
+    sessionId: before.session_id,
+    elementId: 0,
+    expectedStateId: before.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: actionSession.token,
+  });
+
+  // Naming the app is what makes this independent of the foreground: the
+  // whole flow must never have needed to ask.
+  assert.equal(activeWindowCalls, 0);
+  h.gate.teardown();
+});
+
+// ── computer_use_launch_app ──────────────────────────────────────────────
+
+function launchIdentity(stem, dir, signer) {
+  const path = `${dir}/${stem}.exe`.toLowerCase();
+  return {
+    app_name: stem,
+    bundle_id: path,
+    app_id: path,
+    executable_path: path,
+    process_id: 0,
+    window_id: '',
+    signature_status: 'valid',
+    signer_subject: signer,
+  };
+}
+
+function launchHarness({ probe, launched, approve = true } = {}) {
+  const dispatched = [];
+  const h = harness({
+    platform: 'win32',
+    requestAppApproval: async () => approve,
+    nativeDispatch: async (cmd, args) => {
+      dispatched.push({ cmd, args });
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_launch_target') {
+        if (probe instanceof Error) throw probe;
+        return probe;
+      }
+      if (cmd === 'launch_app') return launched;
+      return { ok: true };
+    },
+  });
+  return { h, dispatched };
+}
+
+async function launch(h, extra = {}) {
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+  return h.gate.dispatch(h.record, h.sender, 'computer_use_launch_app', {
+    conversationId: 'conversation-1',
+    toolCallId: 'tool-launch',
+    loopId: 'loop-1',
+    interactionMode: 'foreground',
+    permissionMode: 'smart',
+    app: 'app',
+    ...extra,
+  });
+}
+
+test('a hard-denied program is refused before it is ever started', async () => {
+  const { h, dispatched } = launchHarness({
+    probe: {
+      running: false,
+      launch_target: 'c:/windows/system32/cmd.exe',
+      identity: launchIdentity('cmd', 'c:/windows/system32', 'Microsoft Windows'),
+    },
+  });
+  await assert.rejects(launch(h, { app: 'cmd' }), /blocked for sensitive app "cmd"/);
+  assert.equal(dispatched.some(({ cmd }) => cmd === 'launch_app'), false, 'nothing was launched');
+});
+
+test('an app that needs approval asks once, then launches exactly what was approved', async () => {
+  let asked = 0;
+  const probeIdentity = launchIdentity('qq', 'd:/qqnt', 'Tencent Technology (Shenzhen) Company Limited');
+  const dispatched = [];
+  const h = harness({
+    platform: 'win32',
+    requestAppApproval: async (request) => {
+      asked += 1;
+      assert.equal(request.target.app_name, 'qq');
+      return true;
+    },
+    nativeDispatch: async (cmd, args) => {
+      dispatched.push({ cmd, args });
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_launch_target') {
+        return { running: false, launch_target: 'd:/qqnt/qq.lnk', identity: probeIdentity };
+      }
+      if (cmd === 'launch_app') {
+        return {
+          running: false,
+          window: { ...probeIdentity, process_id: 4242, window_id: 'hwnd:0x4242', title: 'QQ' },
+        };
+      }
+      return { ok: true };
+    },
+  });
+  const result = await launch(h, { app: 'QQ' });
+  assert.equal(asked, 1);
+  const call = dispatched.find(({ cmd }) => cmd === 'launch_app');
+  assert.equal(call.args.expectedLaunchTarget, 'd:/qqnt/qq.lnk', 'the classified target is pinned');
+  assert.equal(result.status, 'launched');
+  assert.equal(result.launched, true);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].window_ref.startsWith('wr-'), true);
+});
+
+test('declining the dialog launches nothing', async () => {
+  const { h, dispatched } = launchHarness({
+    approve: false,
+    probe: {
+      running: false,
+      launch_target: 'd:/qqnt/qq.lnk',
+      identity: launchIdentity('qq', 'd:/qqnt', 'Tencent Technology (Shenzhen) Company Limited'),
+    },
+  });
+  await assert.rejects(launch(h, { app: 'QQ' }), /approval was not granted/);
+  assert.equal(dispatched.some(({ cmd }) => cmd === 'launch_app'), false);
+});
+
+test('an app that is not installed comes back as target-not-found, not a crash', async () => {
+  const notFound = Object.assign(new Error("no installed application named 'nope'"), {
+    helper: { code: 'app-not-found', execution: 'not-executed', retryable: false },
+  });
+  const { h, dispatched } = launchHarness({ probe: notFound });
+  const result = await launch(h, { app: 'nope' });
+  assert.equal(result.status, 'target-error');
+  assert.equal(result.error.code, 'target-not-found');
+  assert.equal(dispatched.some(({ cmd }) => cmd === 'launch_app'), false);
+  // The reservation taken for the failed launch must not block the task.
+  const again = await launch(h, { app: 'nope', toolCallId: 'tool-launch-2' });
+  assert.equal(again.status, 'target-error');
+});
+
+test('a launch that hands off to a hard-denied process gets no window_ref', async () => {
+  const { h } = launchHarness({
+    probe: {
+      running: false,
+      launch_target: 'c:/tools/helper.exe',
+      identity: launchIdentity('helper', 'c:/tools', 'Some Vendor'),
+    },
+    launched: {
+      running: false,
+      window: {
+        ...launchIdentity('powershell', 'c:/windows/system32/windowspowershell/v1.0', 'Microsoft Windows'),
+        process_id: 77,
+        window_id: 'hwnd:0x77',
+      },
+    },
+  });
+  await assert.rejects(launch(h, { app: 'helper' }), /blocked for sensitive app "powershell"/);
+});
+
+test('a background task cannot launch applications', async () => {
+  const { h, dispatched } = launchHarness({ probe: { running: false } });
+  await assert.rejects(
+    launch(h, { app: 'notepad', interactionMode: 'background' }),
+    /Background tasks cannot launch applications/,
+  );
+  assert.equal(dispatched.length, 0);
+});
+
+/// One agent loop, start to finish. The Gate refuses a second task while one
+/// is still open, so a test that wants a genuinely new task — a new turn —
+/// has to end the previous one, exactly as the agent loop does.
+async function turn(h, loopId, extra = {}) {
+  const session = await begin(h, { loopId, toolCallId: `tool-${loopId}`, ...extra });
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: extra.conversationId ?? 'conversation-1',
+    loopId,
+  });
+  return session;
+}
+
+// A task is one agent loop, so the task dialog reappeared on every turn — the
+// more autonomous the mode, the more often the user was interrupted. It is
+// held for the conversation instead of dropped, because `permissionMode` comes
+// from the renderer and in autonomous mode this is the only checkpoint a
+// renderer claiming a relaxed mode cannot talk its way past.
+test('autonomous mode asks once per conversation, not once per turn', async () => {
+  const ordinary = harness();
+  await turn(ordinary, 'loop-1', { permissionMode: 'autonomous' });
+  assert.equal(ordinary.taskApprovalRequests.length, 1, 'asked on the first turn');
+  await turn(ordinary, 'loop-2', { permissionMode: 'autonomous' });
+  await turn(ordinary, 'loop-3', { permissionMode: 'autonomous' });
+  assert.equal(ordinary.taskApprovalRequests.length, 1, 'and not again in this conversation');
+  assert.equal(ordinary.approvalRequests.length, 0, 'an ordinary app is allowed by the mode');
+
+  // A different conversation is a different sitting, and is asked again.
+  await turn(ordinary, 'loop-4', { conversationId: 'conversation-2', permissionMode: 'autonomous' });
+  assert.equal(ordinary.taskApprovalRequests.length, 2);
+
+  // Smart mode keeps asking per task. That is now the only thing separating
+  // the two modes, whose modePolicy entries are identical.
+  const smart = harness();
+  await turn(smart, 'loop-1', { permissionMode: 'smart' });
+  await turn(smart, 'loop-2', { permissionMode: 'smart' });
+  assert.equal(smart.taskApprovalRequests.length, 2);
+});
+
+// What holding the answer must NOT carry with it.
+test('a held conversation consent does not stand in for any other approval', async () => {
+  // Messaging apps are approval-required, so they keep their own dialog on
+  // every task even after the task dialog has been answered once.
+  const messaging = harness();
+  await turn(messaging, 'loop-1', { targetApp: 'Slack', permissionMode: 'autonomous' });
+  await turn(messaging, 'loop-2', { targetApp: 'Slack', permissionMode: 'autonomous' });
+  assert.equal(messaging.taskApprovalRequests.length, 1, 'the task dialog is held');
+  assert.equal(messaging.approvalRequests.length, 2, 'the app dialog is not');
+
+  // Hard-denied apps are refused before any of this runs, and are never put
+  // to the user at all.
+  const forbidden = harness();
+  forbidden.setIdentity({ app_name: 'Terminal', bundle_id: 'com.apple.Terminal', process_id: 900 });
+  await assert.rejects(begin(forbidden, { permissionMode: 'autonomous' }));
+  assert.equal(forbidden.approvalRequests.length, 0);
+
+  // Refusing the dialog holds nothing, so the next turn asks again rather
+  // than inheriting a "yes" that was never given.
+  // Counted here rather than through `refused.taskApprovalRequests`: that
+  // array is filled by the harness's own default, which this override
+  // replaces, so it would stay empty however many times the dialog ran.
+  let asked = 0;
+  const refused = harness({
+    requestTaskApproval: async () => {
+      asked += 1;
+      return false;
+    },
+  });
+  await assert.rejects(
+    turn(refused, 'loop-1', { permissionMode: 'autonomous' }),
+    /not approved for this task/,
+  );
+  await assert.rejects(
+    turn(refused, 'loop-2', { permissionMode: 'autonomous' }),
+    /not approved for this task/,
+  );
+  assert.equal(asked, 2, 'a refusal holds nothing for the next turn');
+
+  // The consent belongs to the renderer that gave it, so it dies with the
+  // window rather than surviving into whatever opens next.
+  const reloaded = harness();
+  await turn(reloaded, 'loop-1', { permissionMode: 'autonomous' });
+  assert.equal(reloaded.taskApprovalRequests.length, 1);
+  reloaded.gate.revokeSender(reloaded.sender);
+  await turn(reloaded, 'loop-2', { permissionMode: 'autonomous' });
+  assert.equal(reloaded.taskApprovalRequests.length, 2, 'asked again after the window went away');
+});
+
+// Observed in acceptance: a click declared `send` was refused (physical input
+// during approval), and the model reached the same consequence with Return
+// instead. "The click was blocked, so press Enter" must not be a route around
+// the confirmation — the keyboard action has to raise its own dialog, carrying
+// the same description, every time.
+test('reaching a consequence by keyboard asks exactly as the click did', async () => {
+  const h = harness();
+  const session = await begin(h, {
+    permissionMode: 'autonomous',
+    actionIntent: {
+      action: 'key',
+      category: 'send',
+      summary: 'Send the prepared message to Shawn in QQ',
+    },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+    key: 'Return',
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+
+  assert.equal(h.actionApprovalRequests.length, 1, 'Return with a declared send must ask');
+  assert.deepEqual(h.actionApprovalRequests[0].consequence, {
+    category: 'send',
+    summary: 'Send the prepared message to Shawn in QQ',
+    source: 'declared-intent',
+  });
+});
+
+// And a denial has to stop it, rather than leaving the door open for the next
+// spelling of the same action.
+test('denying the keyboard route refuses it and executes nothing', async () => {
+  const h = harness({ requestActionApproval: async () => false });
+  const session = await begin(h, {
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'key', category: 'send', summary: 'Send the message' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'Return',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /not approved/,
+  );
+  assert.equal(
+    h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'),
+    false,
+    'nothing reached the helper',
+  );
+});
+
+// "(window-graph)" is equally true of a tooltip appearing, the user dragging
+// the window, a dialog opening and a window closing. Measured: asked to draw
+// in Paint, Abu hit this three times, guessed aloud that a tooltip was to
+// blame and told the user to stop touching the mouse — while the same run
+// recorded the window going 2048 → 819 → 2560 pixels wide, which is a person
+// dragging it. The refusal has to say which.
+test('a changed window graph says what moved, and never says it with a title', async () => {
+  const identity = { app_name: 'Editor', bundle_id: 'editor.exe', process_id: 100, window_id: 'hwnd:0x100' };
+  const base = {
+    window_id: 'hwnd:0x100', owner_window_id: null, app_id: 'editor.exe', app_name: 'Editor',
+    process_id: 100, title: 'PRIVATE_TITLE', bounds: [0, 0, 800, 600], minimized: false,
+    z_index: 1, relation: 'exact', foreground: true,
+  };
+  const second = {
+    ...base, window_id: 'hwnd:0x200', owner_window_id: 'hwnd:0x100', title: 'PRIVATE_POPUP',
+    bounds: [10, 10, 200, 100], relation: 'owned-popup', z_index: 2, foreground: false,
+  };
+
+  for (const [after, expected] of [
+    [[{ ...base, bounds: [300, 300, 819, 600] }], 'a window moved or was resized'],
+    [[{ ...base, minimized: true }], 'a window was minimized'],
+    [[base, second], 'a window opened in editor.exe'],
+  ]) {
+    let sequence = 0;
+    let dispatched = false;
+    const h = harness({
+      platform: 'win32',
+      nativeDispatch: async (cmd) => {
+        if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+        if (cmd === 'resolve_app_identity' || cmd === 'activate_window') return identity;
+        if (cmd.startsWith('input_lease_')) return { phase: 'observing', input_epoch: 1 };
+        if (cmd === 'ax_snapshot') {
+          sequence += 1;
+          return {
+            session_id: `ax-describe-${sequence}`, app: 'Editor', elements: [], input_epoch: 1,
+            window_id: 'hwnd:0x100', modal: false, modal_window_id: null,
+            window_graph: {
+              target_window_id: 'hwnd:0x100',
+              nodes: sequence === 1 ? [base] : after,
+            },
+          };
+        }
+        if (cmd === 'keyboard_press') dispatched = true;
+        return { ok: true };
+      },
+    });
+    h.setIdentity(identity);
+    const state = await observeState(h, { targetApp: 'Editor' });
+    const session = await begin(h, {
+      targetApp: 'Editor',
+      expectedStateId: state.state_id,
+      actionIntent: { action: 'key', category: 'none', summary: '' },
+    });
+
+    await assert.rejects(
+      h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+        key: 'Tab', expectedStateId: state.state_id, [COMPUTER_USE_TOKEN_ARG]: session.token,
+      }),
+      (error) => error.message.includes(`window-graph: ${expected}`)
+        && !error.message.includes('PRIVATE_TITLE')
+        && !error.message.includes('PRIVATE_POPUP'),
+      expected,
+    );
+    assert.equal(dispatched, false, expected);
+  }
+});
+
+// Catalog verification made every built-in Windows binary report a valid
+// Microsoft signature — including the ones that must never be driven. The
+// hard-deny list is checked by name before any signature is consulted, and
+// this pins that it stays that way: a better signature must not buy access.
+test('a hard-denied Windows binary stays denied however well it is signed', async () => {
+  for (const name of ['cmd.exe', 'powershell.exe', 'regedit.exe', 'taskmgr.exe']) {
+    const h = harness({ platform: 'win32' });
+    h.setIdentity({
+      app_name: name.replace(/\.exe$/, ''),
+      bundle_id: `c:/windows/system32/${name}`,
+      app_id: `c:/windows/system32/${name}`,
+      process_id: 400,
+      window_id: 'hwnd:0x400',
+      signature_status: 'valid',
+      signer_subject: 'Microsoft Windows',
+    });
+    await assert.rejects(begin(h, { targetApp: name, permissionMode: 'autonomous' }), undefined, name);
+    assert.equal(h.approvalRequests.length, 0, `${name} is never put to the user`);
+  }
+});
+
+// The other half: a signature is what keeps an allow-listed *name* honest.
+test('an allow-listed name without a trusted signer is not ordinary', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'notepad',
+    bundle_id: 'c:/users/pmsha/downloads/notepad.exe',
+    app_id: 'c:/users/pmsha/downloads/notepad.exe',
+    process_id: 401,
+    window_id: 'hwnd:0x401',
+    signature_status: 'untrusted',
+  });
+  await begin(h, { targetApp: 'notepad', permissionMode: 'autonomous' });
+  assert.equal(h.approvalRequests.length, 1, 'a renamed binary still has to be approved');
+  assert.equal(h.approvalRequests[0].classification, 'approval-required');
 });

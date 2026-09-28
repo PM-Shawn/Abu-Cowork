@@ -3,6 +3,8 @@ import { format, getI18n } from '@/i18n';
 import { joinPath } from '@/utils/pathUtils';
 import { parseSkillFile } from '@/core/skill/loader';
 import type { PackageScan } from './fsOps';
+import type { ParsedPluginTeam } from '@/types/app';
+import { parseTeamFile } from '../../../electron/shared/pluginAppSpec.mjs';
 import { PluginManifestError, parseMcpServerMap, type McpServerSpec, type PluginManifest } from './manifest';
 import { normalizePluginComponentPath } from './paths';
 
@@ -112,4 +114,29 @@ export async function discoverPluginSkills(
     skills.push({ name: skill.name, path });
   }
   return skills;
+}
+
+/**
+ * Every `teams/<id>.json` the package ships (developer spec §6), validated
+ * with references resolved against `ctx.agentNames` — the names of the
+ * package's own experts. Sorted by id so the disclosure and the install record
+ * list them in one stable order.
+ */
+export async function readPluginTeams(
+  packageDir: string,
+  scan: PackageScan,
+  ctx: { agentNames: Iterable<string> },
+  readText: (path: string) => Promise<string> = readTextFile,
+): Promise<ParsedPluginTeam[]> {
+  const teams: ParsedPluginTeam[] = [];
+  const entries = (await scan.children('teams')).filter(entry => !entry.isDirectory && /\.json$/i.test(entry.name));
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const file = `teams/${entry.name}`;
+    let raw: unknown;
+    try { raw = JSON.parse(await readText(joinPath(packageDir, file))); } catch {
+      throw new PluginManifestError(format(getI18n().toolbox.pluginsComponentInvalidJson, { field: file }), file);
+    }
+    teams.push(parseTeamFile(raw, entry.name.replace(/\.json$/i, ''), ctx));
+  }
+  return teams;
 }

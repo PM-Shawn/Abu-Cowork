@@ -16,6 +16,8 @@ import AccountLoginDialog from '@/components/account/AccountLoginDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
+import AppPageView from '@/components/app/AppPageView';
+import AppMarketDialog from '@/components/toolbox/plugins/AppMarketDialog';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
@@ -928,6 +930,7 @@ function App() {
                 {viewMode === 'automation' && <AutomationView />}
                 {viewMode === 'extensions' && <ExtensionsView />}
                 {viewMode === 'team' && <TeamView />}
+                {viewMode === 'app-page' && <AppPageView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}
                 {(viewMode === 'chat' || !viewMode) && (
@@ -951,6 +954,9 @@ function App() {
         <ImageLightbox />
 
         <ConversationSearchModal open={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
+
+        {/* 应用市场 — one dialog for the whole shell, self-gates on appStore. */}
+        <AppMarketDialog />
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />

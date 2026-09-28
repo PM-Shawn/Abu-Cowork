@@ -91,7 +91,7 @@ Recent highlights: **Workspace file tree + code canvas** (browse / preview / edi
 </tr>
 <tr>
 <td align="center"><b>Personal Memory</b><br/>Remembers your preferences and work habits<br/><br/><img src="website/assets/screenshot-memory.en.png" width="100%" /></td>
-<td align="center"><b>Security Sandbox</b><br/>Seatbelt sandbox + network isolation for privacy<br/><br/><img src="website/assets/screenshot-security.en.png" width="100%" /></td>
+<td align="center"><b>Security Sandbox</b><br/>Seatbelt sandbox (macOS) + proxy-based network isolation<br/><br/><img src="website/assets/screenshot-security.en.png" width="100%" /></td>
 </tr>
 <tr>
 <td align="center"><b>Soul (Personality)</b><br/>3 proactivity presets + custom SOUL.md for tone & style<br/><br/><img src="website/assets/screenshot-soul.en.png" width="100%" /></td>
@@ -185,10 +185,10 @@ Turn Abu into your team bot — just @Abu in your chat:
 
 - **Three Permission Modes** — **Request Approval** (free read/write inside workspace; out-of-bounds writes and dangerous commands need confirmation; default) / **Smart Review** (out-of-bounds ops go to an AI reviewer: allow low-risk, block high-risk, ask only when unsure) / **Full Autonomy** (everything runs automatically except hard system red-lines); global default in Settings → Sandbox, also switchable per conversation via the chip above the composer
 - **Content Safety Scan** — Scans agent-authored skills / memory entries to catch dangerous instructions, prompt injection, hardware commands, and 120+ other risk patterns
-- **OS Sandbox** — macOS Seatbelt (`sandbox-exec`) / Windows PowerShell ConstrainedLanguage isolates shell command file access
-- **Network Isolation** — Local proxy + domain whitelist + private-network toggle to control every outbound request
+- **OS Sandbox (macOS only)** — macOS Seatbelt (`sandbox-exec`) confines a shell command's file access to the workspace. **Windows has no OS-enforced sandbox**: PowerShell ConstrainedLanguage restricts in-process language features, not file access, and a child `powershell.exe` does not inherit it. Treat Windows shell containment as advisory, not as a security boundary
+- **Network Isolation** — Local proxy + domain allowlist + private-network toggle. **Enforced through environment variables, not by the OS**: a command that bypasses the proxy (`curl --noproxy`, a runtime with its own proxy settings) still reaches the network. On Windows the toggle is not exposed in Settings and isolation is off by default
 - **Path & Command Safety** — Sensitive directories (system folders, SSH keys, etc.) blocked by default; dangerous commands (`rm -rf /`, etc.) caught statically
-- **Computer Use Safeguards** — 15+ blocked sensitive apps (Keychain, System Settings, WeChat, Slack, etc.), dangerous key interception (Cmd+Q, Cmd+Tab, Force Quit), session-level window hiding, 5-minute timeout
+- **Computer Use Safeguards** — Blocked sensitive apps (terminals, system settings, credential managers, IDEs), dangerous key interception (Cmd+Q, Cmd+Tab, Force Quit, Win+R), per-app grants you can revoke, confirmation before any consequential action, 5-minute timeout. These govern the Computer Use tool; **they do not constrain the shell tool**, which can reach the desktop by other means while no OS sandbox is in place
 - **Encrypted API Key Storage** — Windows DPAPI / macOS AES-256-GCM with a hardware-UUID-derived key; keys are no longer written to localStorage in plaintext
 - **Local-First** — Your data stays local, your API keys stay local — nothing goes through third-party servers
 - **Cross-Platform** — Supports macOS (Apple Silicon / Intel) and Windows

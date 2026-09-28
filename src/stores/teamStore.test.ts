@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
-import { mergeTeamState, migrateTeamState, partializeTeamState, useTeamStore } from './teamStore';
+import { isPluginTeam } from '@/core/team/pluginTeams';
+import { getVisibleTeamById, getVisibleTeams, mergeTeamState, migrateTeamState, partializeTeamState, useTeamStore } from './teamStore';
 import type { Team } from './teamStore';
 
 // Looked up by id, not by position: the shelf order is product copy, not a contract.
 const SOFTWARE_RD_TEAM = BUILTIN_TEAMS.find((team) => team.id === 'builtin-team:software-rd')!;
 
 function reset() {
-  useTeamStore.setState({ teams: []});
+  useTeamStore.setState({ teams: [], managedTeamSources: {} });
 }
 
 describe('teamStore', () => {
@@ -147,6 +148,55 @@ describe('teamStore', () => {
       expect(out.teams[0].description).toBeUndefined();
     });
   });
+  describe('managed teams', () => {
+    const managed: Team = {
+      id: 'managed-team-1', name: '组织审阅团队', leaderRoleId: 'enterprise-agent:1',
+      memberRoleIds: ['enterprise-agent:1'], createdAt: 1,
+      managed: { source: 'enterprise', id: 'managed-team-1', version: '1', readOnly: true, ready: true },
+    };
+
+    it('keeps an active source in memory without persisting it', () => {
+      let active = true;
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => active);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [managed]);
+      expect(getVisibleTeamById(managed.id)).toEqual(managed);
+      expect(partializeTeamState(useTeamStore.getState()).teams).toEqual([]);
+      active = false;
+      expect(getVisibleTeams()).toEqual([]);
+    });
+
+    it('shows a managed update alongside its same-name built-in team and resolves the managed one first', () => {
+      const builtin = BUILTIN_TEAMS[0];
+      const updated = { ...managed, name: builtin.name };
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [updated]);
+
+      const matches = getVisibleTeams().filter(team => team.name === builtin.name);
+      expect(matches.map(team => team.id)).toEqual([updated.id, builtin.id]);
+      expect(getVisibleTeamById(updated.id)).toEqual(updated);
+    });
+
+    it('does not let a personal team shadow an active managed name', () => {
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [managed]);
+      expect(() => useTeamStore.getState().createTeam({
+        name: managed.name, leaderRoleId: 'local-role', memberRoleIds: [],
+      })).toThrow('duplicate team name');
+    });
+
+    it('does not let a personal team rename onto an active managed name', () => {
+      const local = useTeamStore.getState().createTeam({
+        name: '我的团队', leaderRoleId: 'local-role', memberRoleIds: [],
+      });
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [managed]);
+
+      expect(() => useTeamStore.getState().updateTeam(local.id, { name: managed.name }))
+        .toThrow('duplicate team name');
+      expect(useTeamStore.getState().teams[0].name).toBe('我的团队');
+    });
+  });
   describe('built-in teams', () => {
     it('are present after a reset to the initial state and never written to disk', () => {
       useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
@@ -222,6 +272,47 @@ describe('teamStore', () => {
     it('rejects a user team named like a built-in one', () => {
       useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
       expect(() => useTeamStore.getState().createTeam({ name: SOFTWARE_RD_TEAM.name, leaderRoleId: 'role-a', memberRoleIds: [] })).toThrow('duplicate team name');
+    });
+  });
+
+  describe('plugin teams', () => {
+    const shopOps: Team = { id: 'plugin-team:shop@market/store-ops', name: '店铺运营小组', leaderRoleId: 'plugin:advisor', memberRoleIds: ['plugin:advisor', 'builtin:数据分析师'], createdAt: 0 };
+    const mine: Team = { id: 'team-mine', name: '我的小队', leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1 };
+
+    it('are appended after the user and built-in teams and never written to disk', () => {
+      useTeamStore.setState({ teams: [mine, ...BUILTIN_TEAMS] });
+      useTeamStore.getState().setPluginTeams([shopOps]);
+      expect(useTeamStore.getState().teams.map((t) => t.id)).toEqual([mine.id, ...BUILTIN_TEAMS.map((t) => t.id), shopOps.id]);
+      expect(partializeTeamState(useTeamStore.getState()).teams).toEqual([mine]);
+    });
+
+    it('survive hydration and are replaced as a set on the next load', () => {
+      useTeamStore.setState({ teams: [shopOps] });
+      const merged = mergeTeamState({ teams: [mine, shopOps] }, useTeamStore.getState());
+      expect(merged.teams).toEqual([mine, ...BUILTIN_TEAMS, shopOps]);
+      useTeamStore.setState(merged);
+      useTeamStore.getState().setPluginTeams([]);
+      expect(useTeamStore.getState().teams.map((t) => t.id)).toEqual([mine.id, ...BUILTIN_TEAMS.map((t) => t.id)]);
+    });
+
+    it('keep a plugin team\'s lastPlan across a reload of the same id', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS, shopOps] });
+      useTeamStore.getState().updateTeam(shopOps.id, { name: '改名', lastPlan: { request: 'r', steps: ['s'], savedAt: 1 } });
+      useTeamStore.getState().setPluginTeams([{ ...shopOps, description: 'updated' }]);
+      const after = useTeamStore.getState().teams.find((t) => t.id === shopOps.id)!;
+      expect(after.name).toBe(shopOps.name);
+      expect(after.description).toBe('updated');
+      expect(after.lastPlan?.steps).toEqual(['s']);
+    });
+
+    it('cannot be deleted, and take a numbered name when a user or shipped team holds theirs', () => {
+      useTeamStore.setState({ teams: [mine, ...BUILTIN_TEAMS] });
+      useTeamStore.getState().setPluginTeams([{ ...shopOps, name: mine.name }, { ...shopOps, id: 'plugin-team:other@market/rd', name: SOFTWARE_RD_TEAM.name }]);
+      const names = useTeamStore.getState().teams.filter(isPluginTeam).map((t) => t.name);
+      expect(names).toEqual([`${mine.name} 2`, `${SOFTWARE_RD_TEAM.name} 2`]);
+      useTeamStore.getState().deleteTeam(shopOps.id);
+      expect(useTeamStore.getState().teams.find((t) => t.id === shopOps.id)).toBeDefined();
+      expect(() => useTeamStore.getState().createTeam({ name: `${mine.name} 2`, leaderRoleId: 'role-a', memberRoleIds: [] })).toThrow('duplicate team name');
     });
   });
 });

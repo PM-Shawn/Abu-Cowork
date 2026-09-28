@@ -38,6 +38,8 @@ import { startToolSpan } from '../observability/langfuse';
 import { checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
+import { isMacOS } from '../../utils/platform';
+import { isToolResultError } from './toolResultErrors';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
 import { getExecutionPort } from './ports/executionPort';
 import { firstImageContent } from '../tools/toolResultContent';
@@ -176,6 +178,10 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // (e.g. dynamically-registered MCP tools).
   const blockedTools = params.blockedTools ?? [];
   const allowedTools = params.allowedTools ?? [];
+  const computerToolNames = new Set(toolInvoker.getAllTools()
+    .filter(tool => tool.execution?.presentation === 'computer-use')
+    .map(tool => tool.name));
+  const isComputerTool = (tc: ToolCall) => computerToolNames.has(tc.name);
   const isScopedRun = toolContext.authorizationScopeId !== undefined;
 
   // Update the assistant message with tool calls
@@ -349,11 +355,18 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const resultStr = toolInvoker.toolResultToString(rawResult);
       const resultContent: ToolResultContent[] | undefined =
         typeof rawResult !== 'string' ? rawResult : undefined;
-      const requiresUserRecovery = Boolean(metadata?.sandboxRecovery);
+      const requiresUserRecovery = Boolean(
+        metadata?.sandboxRecovery || metadata?.requiresUserRecovery,
+      );
       const structuredSubagentFailure = metadata?.subagentStopReason !== undefined
         && metadata.subagentStopReason !== 'completed';
       const batchTerminalFailure = batchSummaryHasNonSuccess(metadata?.batchTerminalSummary);
-      const isError = requiresUserRecovery || structuredSubagentFailure || batchTerminalFailure;
+      // Computer tools report failures as result-string envelopes rather than
+      // throwing, so their error flag must also read the result text.
+      const isError = requiresUserRecovery
+        || structuredSubagentFailure
+        || batchTerminalFailure
+        || (isComputerTool(tc) && isToolResultError(resultStr));
       // Emit postToolCall hook
       await emitHook({
         type: 'postToolCall',
@@ -410,7 +423,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // If batch contains any computer tool call, execute ALL sequentially
   // (e.g. click → wait → type must run in order, not race each other)
-  const hasComputerTool = collectedToolCalls.some(tc => tc.name === TOOL_NAMES.COMPUTER);
+  const hasComputerTool = collectedToolCalls.some(isComputerTool);
 
   const allRunCommand = collectedToolCalls.every(tc => tc.name === TOOL_NAMES.RUN_COMMAND);
 
@@ -422,7 +435,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // max. isReadOnlyCommand is called directly rather than through the tool
   // registry: the registry's isConcurrencySafe is a function and does not
   // cross the sidecar RPC boundary (SerializableToolDefinition carries only
-  // name/description/inputSchema), so a registry lookup would silently
+  // wire-safe schema/execution data), so a registry lookup would silently
   // disable this on the sidecar-hosted loop. The pure classifier works
   // identically in both planes.
   const allCommandsConcurrencySafe = allRunCommand &&
@@ -456,14 +469,24 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Pure screenshot batches use capture_screen_excluding and don't need window hide.
     const ACTION_TYPES = new Set(['click', 'move', 'scroll', 'drag', 'type', 'key']);
     const hasInteractiveAction = collectedToolCalls.some(tc =>
-      tc.name === TOOL_NAMES.COMPUTER && ACTION_TYPES.has(tc.input.action as string)
+      isComputerTool(tc) && ACTION_TYPES.has(tc.input.action as string)
     );
 
     // Session-level window management: only hide on first interactive batch.
     // Subsequent batches in the same agent loop skip hide/show to avoid flickering.
     if (hasInteractiveAction && !isSessionWindowHidden()) {
-      try { await invoke('show_screen_border', { stopLabel: getI18n().computerUse.stopControl }); } catch { /* ignore */ }
-      try { await invoke('window_hide'); } catch { /* ignore */ }
+      try {
+        await invoke('show_screen_border', {
+          stopLabel: getI18n().computerUse.stopControl,
+          unresponsiveLabel: getI18n().computerUse.unresponsive,
+          pausedLabel: getI18n().computerUse.pausedByTakeover,
+          resumeLabel: getI18n().computerUse.resume,
+          endLabel: getI18n().computerUse.end,
+        });
+      } catch { /* ignore */ }
+      if (isMacOS()) {
+        try { await invoke('window_hide'); } catch { /* ignore */ }
+      }
       await new Promise(r => setTimeout(r, 200));
       setSessionWindowHidden(true);
     }
@@ -475,16 +498,35 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       for (let i = 0; i < collectedToolCalls.length; i++) {
         const tc = collectedToolCalls[i];
         // Only auto-screenshot on the last computer tool in the batch
-        const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(t => t.name === TOOL_NAMES.COMPUTER);
-        setSkipAutoScreenshot(tc.name === TOOL_NAMES.COMPUTER && hasMoreComputerTools);
+        const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(isComputerTool);
+        setSkipAutoScreenshot(isComputerTool(tc) && hasMoreComputerTools);
         try {
-          if (tc.name === TOOL_NAMES.COMPUTER) {
+          if (isComputerTool(tc)) {
             const action = tc.input.action as string;
             setCurrentAction(actionToDescription(action, tc.input));
             incrementComputerUseStep(action);
           }
           const value = await executeSingleTool(tc);
           sequentialResults.push({ status: 'fulfilled', value });
+          if (value.metadata?.requiresUserRecovery) {
+            // A missing explicitly named GUI target is a user precondition,
+            // not an invitation for the model to escape through run_command
+            // and launch/retarget another app. Fail the rest of this already-
+            // emitted batch closed, then agentLoop stops the turn below.
+            for (const skipped of collectedToolCalls.slice(i + 1)) {
+              sequentialResults.push({
+                status: 'fulfilled',
+                value: {
+                  id: skipped.id,
+                  result: 'Error: skipped because Computer Use requires user review before dependent actions can continue.',
+                  resultContent: undefined,
+                  error: true,
+                  duration: 0,
+                },
+              });
+            }
+            break;
+          }
         } catch (err) {
           sequentialResults.push({ status: 'rejected', reason: err });
         }
@@ -575,7 +617,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Determine hideScreenshot for computer tool
       let hideScreenshot: boolean | undefined;
       const matchedTc = collectedToolCalls[i];
-      if (matchedTc?.name === TOOL_NAMES.COMPUTER) {
+      if (matchedTc && isComputerTool(matchedTc)) {
         const showUser = matchedTc.input.show_user;
         const action = matchedTc.input.action as string;
         if (typeof showUser === 'boolean') {
@@ -682,7 +724,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     tc.name === 'install_mcp_server' || tc.name === 'uninstall_mcp_server'
   );
   const requiresUserRecovery = results.some(
-    (result) => result.status === 'fulfilled' && Boolean(result.value.metadata?.sandboxRecovery),
+    (result) => result.status === 'fulfilled' && Boolean(
+      result.value.metadata?.sandboxRecovery || result.value.metadata?.requiresUserRecovery,
+    ),
   );
 
   const observations = results.map((result, index) => {

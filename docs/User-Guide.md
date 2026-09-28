@@ -101,6 +101,8 @@ Set the global default under **Settings → Security → Default Permission Mode
 
 A permission mode is not a global safety off-switch. Sandbox rules, protected paths, dangerous-command checks, content scanning, and operating-system permissions still apply independently.
 
+> **The sandbox is advisory on Windows.** macOS uses Seatbelt, where the system itself confines a shell command's file access; Windows has no equivalent — PowerShell's ConstrainedLanguage restricts in-process language features, not file access. Network isolation works the same way: it is applied through environment variables, so a command that bypasses the proxy still reaches the network, and on Windows the toggle is not exposed in Settings and is off by default. Protected paths, dangerous-command detection, and permission-mode confirmations are unaffected — those still apply.
+
 ### Execution plans
 
 When a plan includes high-risk steps such as deletion, overwrite, sending, publishing, or installation, Abu presents an **Execution Plan** and waits for approval. Approving a plan allows work to continue under that plan; it does not permanently authorize every downstream result. Abu may still ask immediately before a consequential action.
@@ -180,6 +182,27 @@ On macOS, two separate permissions are required:
 Use Abu's setup guide to open System Settings, then return to Abu for an automatic recheck. Development builds may appear as Electron in the permission list; installed releases appear as Abu.
 
 Computer Use remains subject to sensitive-app blocking, dangerous-key interception, permission modes, and confirmation for consequential results. After you disable Computer Use, neither the model nor a background task can turn it back on.
+
+## Apps
+
+An app is Abu prepared for one line of work: its own home page, a few groups of scenes, a fixed expert team or expert behind each scene, and its own navigation. The **app switcher** at the top of the sidebar shows **General** by default — the Abu you already know.
+
+### Install and enter
+
+- Choose **Discover apps → See more** in the switcher to open the app market, which holds apps only. **Use** opens a review screen listing the teams, navigation entries and web origins the app brings, with any connector configuration to fill in; **Agree and use** takes you straight into the app. Three apps ship with Abu in the official market: **Recruiting**, **Finance reconciliation** and **Content creation**.
+- Inside an app, the home page starts with the app's name and a line about it, then its modes and scenes. Opening a scene shows a few templates; clicking one puts the text into the composer, where you can edit it before sending. Each scene card says who handles it — which team, expert or skill.
+- When a connector the app needs is not connected yet, the home page offers **Connect** and **Not now**.
+- The sidebar navigation follows the app's definition. The app's own web page opens in the main area and stays on the sites the app declared; links elsewhere open in the system browser.
+
+### Conversations and apps
+
+- A conversation started inside an app carries the app's mark and can be reopened from the conversation list whichever app is current.
+- After an app is uninstalled, its conversations still open and read as before; the title notes that the app was removed.
+- **Exit app** in the switcher returns to **General**; recently used apps stay listed in the switcher.
+
+### Build your own app
+
+Choose **Create app** in the switcher and describe, in the conversation, who the app is for, which groups of scenes it offers and who handles each. Once Abu has written it, open **Extensions → Plugins → Mine**, click **Validate and preview** — the same review screen as a market install — and **Install and enter**. The packaging rules are in the [plugin and app developer spec](plugin-spec.md).
 
 ## Toolbox: Skills, Agents, and Connectors
 

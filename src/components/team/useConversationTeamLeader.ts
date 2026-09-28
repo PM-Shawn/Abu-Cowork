@@ -2,7 +2,8 @@ import { useMemo } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { usePluginStore } from '@/stores/pluginStore';
-import { useTeamStore, type Team } from '@/stores/teamStore';
+import type { Team } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { resolveRoleId } from '@/core/team/roleIdentity';
 import type { SubagentDefinition } from '@/types';
 
@@ -35,7 +36,8 @@ export function teamLeaderFromTeam(team: Team | null | undefined): ConversationT
  */
 export function useConversationTeamLeader(conversationId: string | null | undefined): ConversationTeamLeader | null {
   const teamId = useChatStore((s) => (conversationId ? s.conversations[conversationId]?.teamId : undefined));
-  const team = useTeamStore((s) => (teamId ? s.teams.find((entry) => entry.id === teamId) ?? null : null));
+  const teams = useVisibleTeams();
+  const team = teamId ? teams.find((entry) => entry.id === teamId) ?? null : null;
   // The leader resolves through the agent registry, which fills in after launch.
   const agents = useDiscoveryStore((s) => s.agents);
   // …and a file-backed leader only resolves once plugin records are ready,

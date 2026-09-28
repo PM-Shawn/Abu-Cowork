@@ -93,6 +93,7 @@ export interface ConversationMeta {
   scheduledTaskId?: string;
   triggerId?: string;
   teamId?: string;
+  appBinding?: import('@/types/app').ConversationAppBinding;
   projectId?: string;
   totalCost?: number;
   /** Imported share bundle — conversation is read-only. See Conversation.readOnly. */

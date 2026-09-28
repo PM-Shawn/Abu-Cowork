@@ -177,7 +177,8 @@ app.whenReady().then(async () => {
     // inline <script> plumbing (guiHost.cjs/guiTauriGlobalPreload.cjs)
     // threads the caption through correctly end-to-end.
     const stopBtnWin = BrowserWindow.getAllWindows().find(
-      (w) => w.getBounds().width === 160 && w.getBounds().height === 40
+      // Since L5 W3 the stop control lives on the bottom status strip.
+      (w) => /overlay-strip.html/.test(w.webContents.getURL())
     );
     if (stopBtnWin) {
       const label = await stopBtnWin.webContents.executeJavaScript(

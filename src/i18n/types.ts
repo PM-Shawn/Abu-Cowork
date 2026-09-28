@@ -1797,6 +1797,23 @@ export interface TranslationDict {
     appAutomationContinuePrompt: string;
     appAutomationContinueFailed: string;
     appAutomationOutcomeUncertain: string;
+    // Computer Use › remembered per-app grants (Settings › Security)
+    computerUseGrantsTitle: string;
+    computerUseGrantsDescription: string;
+    computerUseGrantsEmpty: string;
+    computerUseGrantsUnavailable: string;
+    computerUseGrantsLoadFailed: string;
+    computerUseGrantsAlwaysTitle: string;
+    computerUseGrantsDeniedTitle: string;
+    computerUseGrantsDeniedEmpty: string;
+    computerUseGrantTierOrdinary: string;
+    computerUseGrantTierApprovalRequired: string;
+    computerUseGrantGrantedAt: string; // {date}
+    computerUseGrantLastUsed: string; // {date}
+    computerUseGrantRevoke: string;
+    computerUseGrantDeny: string;
+    computerUseGrantRestore: string;
+    computerUseGrantsRedLines: string;
   };
 
   // Diagnostic
@@ -1906,6 +1923,7 @@ export interface TranslationDict {
       aiAuth: string;
       aiContentPolicy: string;
       aiRateLimit: string;
+      aiQuotaExceeded: string;
       aiOverloaded: string;
       aiServerError: string;
       aiNetworkError: string;
@@ -2032,6 +2050,7 @@ export interface TranslationDict {
     /** Singular of `teamRowSummary`, for exactly one member. */
     teamRowSummaryOne: string;
     detailStartChat: string;
+    detailUnavailable: string;
     detailLeader: string;
     detailMembers: string;
     detailNoMembers: string;
@@ -2058,6 +2077,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
+    teamsNotFound: string;
     /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;
@@ -2097,6 +2117,46 @@ export interface TranslationDict {
     deleteTeamTitle: string;
     deleteTeamMessage: string;
     teamArchived: string;
+    appScopeThis: string;
+    appScopeAll: string;
+  };
+
+  /** Sidebar app switcher (product spec §5.1). */
+  appSwitcher: {
+    general: string;
+    generalDescription: string;
+    recent: string;
+    mine: string;
+    discover: string;
+    viewMore: string;
+    create: string;
+    enter: string;
+    current: string;
+    openLabel: string;
+  };
+  appMarket: {
+    title: string;
+    subtitle: string;
+    searchPlaceholder: string;
+    entryCount: string;
+    emptyTitle: string;
+    emptyHint: string;
+  };
+
+  /** App home page (product spec §5.4) and app-bound conversations. */
+  appHome: {
+    modes: string;
+    sceneRunTeam: string;
+    sceneRunExpert: string;
+    sceneRunSkill: string;
+    sceneRunDefault: string;
+    templates: string;
+    connectorHintTitle: string;
+    connectorHintBody: string;
+    connectorHintConnect: string;
+    connectorHintLater: string;
+    removedNotice: string;
+    removedAction: string;
   };
 
   toolbox: {
@@ -2176,6 +2236,8 @@ export interface TranslationDict {
     pluginsRetryRecovery: string;
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;
+    pluginsRequiresNewerAbu: string;
+    pluginsProvidesAppWithoutApp: string;
     pluginsComponentConflict: string;
     pluginsMarketplaceDirLabel: string;
     pluginsMarketplaceDirPlaceholder: string;
@@ -2200,14 +2262,31 @@ export interface TranslationDict {
     pluginsUninstall: string;
     pluginsUninstallTitle: string;
     pluginsUninstallMessage: string;
+    pluginsUninstallTeamsNote: string;
+    pluginsUninstallAppNote: string;
     pluginsUninstallFailed: string;
     pluginsSkillCount: string;
     pluginsServerCount: string;
     pluginsFromMarketplace: string;
     pluginsGoToMarketplace: string;
     /** 「我的」 empty state — the user has authored no plugins yet. */
-    pluginsMineEmptyTitle: string;
     pluginsMineEmptyHint: string;
+    pluginsUse: string;
+    pluginsEnter: string;
+    pluginsInstallAndEnter: string;
+    pluginsAgreeAndUse: string;
+    pluginsAppEntered: string;
+    pluginsDisclosureTeams: string;
+    pluginsDisclosureApp: string;
+    pluginsAppContents: string;
+    pluginsDisclosureAppNav: string;
+    pluginsDisclosureAppPages: string;
+    pluginsDisclosureAppScenes: string;
+    pluginsDisclosureRunTeam: string;
+    pluginsDisclosureRunExpert: string;
+    pluginsDisclosureRunSkill: string;
+    pluginsDisclosureRunDefault: string;
+    pluginsAuthorAppPrompt: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
     /** One line under it: they still work, and the detail dialog uninstalls. */
@@ -2335,6 +2414,9 @@ export interface TranslationDict {
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;
+    sourceFromPlugin: string;
+    sourcePlugin: string;
+    sourceEnterprise: string;
     sourceUnknown: string;
     // Generic "Description" label used in the agent/skill/MCP detail views
     detailDescription: string;
@@ -2464,7 +2546,10 @@ export interface TranslationDict {
     skillsMarketHintBody: string;
     skillsMarketGoPlugins: string;
     /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
+    /** 市场 card state — bundled items ship installed; the switch is on 我的. */
+    installedMark: string;
     skillsMineEmptyTitle: string;
+    skillsMineEmptyHint: string;
     /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
     connectorsMarketTitle: string;
     connectorsFromPlugins: string;
@@ -2473,8 +2558,10 @@ export interface TranslationDict {
     connectorAddLabel: string;
     /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
     connectorsMineEmptyTitle: string;
+    connectorsMineEmptyHint: string;
     /** Experts 「我的」 empty state — nothing the user created themselves yet. */
     agentsMineEmpty: string;
+    agentsMineEmptyHint: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;
@@ -2508,6 +2595,7 @@ export interface TranslationDict {
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
     agentFromPluginRemoveHint: string;
+    itemFromPluginRemoveHint: string;
     /** Deleting an agent that one or more teams reference. */
     agentDeleteInTeamsTitle: string;
     agentDeleteInTeamsMessage: string;
@@ -2651,8 +2739,6 @@ export interface TranslationDict {
     // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
-    personalSource: string;
-    organizationSource: string;
   };
 
   // Permission Dialog
@@ -3964,18 +4050,25 @@ export interface TranslationDict {
     instanceLabel: string;
     loginIdentityLabel: string;
     boundAtLabel: string;
-    myDataTitle: string;
-    collapseData: string;
-    viewMyData: string;
-    migrationTitle: string;
-    migrateButton: string;
-    migrateDescription: string;
     unbindConfirm: string;
     unbindButton: string;
     /** Usage lane label — org gateway (shared with model picker). */
     laneGateway: string;
     /** Usage lane label — personal API key. */
     lanePersonal: string;
+    agentCatalog: {
+      unavailableTitle: string;
+      unavailableDescription: string;
+      syncing: string;
+      noMatches: string;
+      empty: string;
+      configured: string;
+      dependenciesPending: string;
+      preparing: string;
+      prepareAndStart: string;
+      /** `{version}` = the published Agent version. */
+      configuredByAdministrator: string;
+    };
     /** /me transparency panel (Settings → Enterprise → My Data). */
     meTransparency: {
       tabProfile: string;
@@ -4018,7 +4111,61 @@ export interface TranslationDict {
     overlayStep: string;
     /** Overlay stop-button label. */
     stopControl: string;
+    /** Overlay watchdog caption when the Host stops sending heartbeats. */
+    unresponsive: string;
+    /** Strip step label, interpolates {step} and {max}, e.g. "Step {step}/{max}". */
+    overlayStepOf: string;
+    /** Strip caption after the user took over the mouse/keyboard. */
+    pausedByTakeover: string;
+    /** Strip 【继续】 button. */
+    resume: string;
+    /** Strip 【结束】 button (replaces Stop while paused). */
+    end: string;
+    /** The user turn sent when 【继续】 is clicked. */
+    resumePrompt: string;
+    /** Run report card (proposal §4.2 "分步汇报 + 截图回看"). */
+    report: {
+      title: string;
+      /** Interpolates {apps}. */
+      titleWithApps: string;
+      /** Interpolates {steps} and {verified}. */
+      summary: string;
+      /** Interpolates {count}. */
+      consequentialCount: string;
+      /** Interpolates {category}. */
+      consequenceApproved: string;
+      consequenceNotApproved: string;
+      screenshotAlt: string;
+      outcomeVerifiedChange: string;
+      outcomeNoChange: string;
+      outcomeAmbiguous: string;
+      outcomeDone: string;
+      outcomeObserved: string;
+      outcomeNotExecuted: string;
+      outcomeHandoff: string;
+      outcomeBoundary: string;
+      outcomePaused: string;
+      outcomeStopped: string;
+      outcomeMismatch: string;
+      outcomeUnknown: string;
+      outcomeError: string;
+      /** Interpolates {id}. */
+      targetElement: string;
+      actionClick: string;
+      actionType: string;
+      actionKey: string;
+      actionScroll: string;
+      actionDrag: string;
+      actionMove: string;
+      actionPerform: string;
+      actionActivate: string;
+      actionObserve: string;
+      actionScreenshot: string;
+      actionListWindows: string;
+      actionWait: string;
+    };
     phaseChecking: string;
+    phaseAwaitingApproval: string;
     phaseObserving: string;
     phaseActing: string;
     phaseVerifying: string;
@@ -4038,6 +4185,7 @@ export interface TranslationDict {
       invalidInput: string;
       unavailableAgents: string;
       builtinTeamReadOnly: string;
+      pluginTeamReadOnly: string;
       saved: string;
       approvalOn: string;
       approvalOff: string;
@@ -4693,6 +4841,17 @@ export interface TranslationDict {
     file: {
       /** Non-vision model image skip note. {path}, {mediaType} */
       imageSkipNoVision: string;
+      /** File held open by another program, so the write could not land. {path} */
+      errFileHeldByAnotherApp: string;
+      errFileHeldCheckHint: string;
+      /** Display names for the application tokens the Host reports. */
+      docCheckApps: Record<string, string>;
+      docCheckUnsupported: string;
+      docCheckUnknown: string;
+      docCheckNotOpen: string;
+      docCheckOpenUnsaved: string;
+      docCheckOpenSaved: string;
+      docCheckSameNameElsewhere: string;
       /** File locked by another agent. {path} */
       errFileLocked: string;
       /** delete_file succeeded — moved to OS Trash. {path} */
@@ -4826,6 +4985,8 @@ export interface TranslationDict {
       dangerXargsRm: string;
       dangerFindDelete: string;
       dangerFindExecRm: string;
+      dangerSynthesizeInput: string;
+      dangerDriveWindow: string;
       // DANGEROUS_PATTERNS — warn tier
       warnSudo: string;
       warnRm: string;
@@ -4915,8 +5076,30 @@ export interface TranslationDict {
       errPermissionRelaunch: string;
       errModelUnsupported: string;
       errModelUnknown: string;
-      /** Foreground target identity probe failed. {msg} */
-      errTargetIdentityFailed: string;
+      /** A specifically requested app has no visible target window. {app} */
+      errTargetUnavailable: string;
+      /** launch_app: no installed application by that name. {app} */
+      launchAppNotInstalled: string;
+      /** launch_app: started, but its window has not appeared yet. {app} */
+      launchAppNoWindowYet: string;
+      /** launch_app: started; window candidates follow. {app} */
+      launchAppLaunched: string;
+      /** launch_app: was already running and brought forward; window candidates follow. {app} */
+      launchAppActivated: string;
+      /** No target selector was supplied for a window operation. */
+      errTargetRequired: string;
+      /** No visible window matched the supplied selector. */
+      errTargetNotFound: string;
+      /** More than one visible window matched; select a returned WindowRef. */
+      errTargetAmbiguous: string;
+      /** The opaque WindowRef is invalid or expired. */
+      errWindowRefStale: string;
+      /** Coordinate input is not bound to the latest screenshot. */
+      errScreenshotStale: string;
+      /** Secure desktop or another protected surface needs the user. */
+      errManualHandoff: string;
+      /** Separately authorized whole-screen read was denied. */
+      errScreenReadDenied: string;
       /** Main-process Computer Use authorization failed. {msg} */
       errAuthorizationFailed: string;
       /** Every computer action must declare whether it has a consequential outcome. */
@@ -4940,15 +5123,42 @@ export interface TranslationDict {
       ambiguousSideEffectStopped: string;
       /** Native input returned an ambiguous failure and must not be retried automatically. {msg} */
       errActionAmbiguous: string;
+      actionNotExecuted: string;
+      actionNotExecutedHandoff: string;
+      actionNotExecutedHandoffPhysicalInput: string;
+      actionNotExecutedStopped: string;
+      actionNotExecutedReobserveFailed: string;
+      /** Platform boundaries the user must clear; the helper marked the refusal non-retryable. {msg} */
+      boundarySecureDesktop: string;
+      boundaryHigherIntegrity: string;
+      boundaryInputLease: string;
+      boundaryDpiUnaware: string;
+      boundaryInputBlocked: string;
+      boundaryRemoteSessionDisconnected: string;
+      boundarySessionZero: string;
+      /** The user took over mouse/keyboard mid-action; the run pauses and can be resumed by replying. */
+      userTakeoverPaused: string;
       /** Invalid state/effect protocol input. {reason} */
       errStateProtocol: string;
       /** Observation state header. {stateId} */
       stateHeader: string;
       /** Automatic post-action verification result. {status}, {stateId} */
       verificationResult: string;
-      verificationChanged: string;
-      verificationNoChange: string;
-      verificationAmbiguous: string;
+      /** A modal appeared during post-action verification. {formatted} */
+      screenshotMaskedWindows: string;
+      verificationModal: string;
+      /** Office reports that desktop editing is unavailable until activation. */
+      officeEditingUnavailable: string;
+      verificationObservationChanged: string;
+      verificationObservationUnchanged: string;
+      verificationObservationUnavailable: string;
+      verificationChangedNoExpectation: string;
+      verificationUnchangedNoExpectation: string;
+      verificationUnavailableNoExpectation: string;
+      verificationExpectationSatisfied: string;
+      verificationExpectationNotSatisfied: string;
+      verificationExpectationUnverifiable: string;
+      verificationLegacyWeak: string;
       /** formatAxElements: no interactive elements found. */
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */
@@ -4961,6 +5171,8 @@ export interface TranslationDict {
       errActivateFailed: string;
       /** get_app_state: AX tree truncated note. */
       axTreeTruncated: string;
+      /** get_app_state: modal boundary note. */
+      axTreeModal: string;
       /** get_app_state: AX tree header. {app}, {count}, {visited}, {note}, {formatted} */
       axTreeHeader: string;
       /** get_app_state: AX tree fetch failed. {msg} */
@@ -4991,6 +5203,8 @@ export interface TranslationDict {
       errScrollNeedsCoords: string;
       /** type: AXSetValue succeeded. {elemId} */
       typeAxSuccess: string;
+    /** Windows replaces the value with guarded keystrokes, so it must not claim otherwise. */
+    typeAxSuccessWindows: string;
       /** type: AXSetValue failed, fallback to keyboard. {msg} */
       typeAxFallback: string;
       /** perform_action: missing action_name. */
@@ -5013,12 +5227,13 @@ export interface TranslationDict {
       errAxTypeNoSession: string;
       /** ax_type: AXSetValue succeeded. {elemId} */
       axTypeSuccess: string;
+      axTypeSuccessWindows: string;
       /** ax_type: AXSetValue failed, fallback to keyboard. {msg} */
       axTypeFallback: string;
       /** Screen recording permission denied (bilingual). zh half. */
       errNoScreenRecording: string;
       /** Windows: accessibility requires elevation (bilingual). zh half. */
-      errWindowsNeedsAdmin: string;
+      errWindowsControlUnavailable: string;
       /** macOS: accessibility permission denied (bilingual). zh half. */
       errMacOSNeedsAccessibility: string;
     };

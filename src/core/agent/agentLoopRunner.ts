@@ -1050,6 +1050,27 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
         session.abortWatchdog = undefined;
       }
 
+      // Persist the turn-level Computer Use stop before any process-bound
+      // cleanup. The normal end-task call in run.finally releases leases, but
+      // must never make this same stopped run executable after a helper,
+      // renderer, or sidecar restart.
+      try {
+        const { stopComputerUseTurn } = await import('../tools/definitions/computerTools');
+        await stopComputerUseTurn(
+          session.conversationId,
+          session.runId ?? session.loopId,
+          typeof session.shellAbortController.signal.reason === 'string'
+            ? session.shellAbortController.signal.reason
+            : `agent-abort-${source}`,
+        );
+      } catch (error) {
+        logger.warn('Computer Use turn-stop marker failed; abort continues', {
+          runId: session.runId ?? session.loopId,
+          conversationId: session.conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       await (session.frameApplyTail ?? Promise.resolve());
 
       // Permission dialogs live in the shell and must not survive a force-stop.
@@ -1169,6 +1190,11 @@ function requestSidecarRunAbort(session: RunSession): Promise<void> {
     runId: session.runId ?? session.loopId,
     method: 'agent.abort',
     stage: 'abort_requested',
+    reason: typeof session.shellAbortController.signal.reason === 'string'
+      ? session.shellAbortController.signal.reason
+      : session.shellAbortController.signal.reason instanceof Error
+        ? session.shellAbortController.signal.reason.name
+        : 'unspecified',
   });
   session.abortWatchdog = setTimeout(() => {
     traceRuntimeEvent('renderer.agent_abort_watchdog_fired', {
@@ -1364,6 +1390,7 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'atomic_write_text',
   'ax_close_session',
   'computer_use_end_task',
+  'computer_use_stop_turn',
   // P1-3d-5 slice 3: delete_file runs locally in the sidecar and reverses its
   // OS-Trash move here. Safe to allowlist — move_to_trash is recoverable (lands
   // in Finder Trash, never a permanent delete), delete_file's write-path approval
@@ -1808,9 +1835,16 @@ function assertRunToolAllowed(
   // wildcards (`abu-browser__*`, the read_tools trigger tier's browser
   // ceiling). resolveTools (agentLoop.ts) and executeToolBatch
   // (toolExecutor.ts) already match these as patterns; this shell-boundary
-  // check is the third enforcement point and has to cover the same set, or a
-  // reverse `tool.invoke` for a wildcard-blocked tool would sail through the
-  // one gate that is supposed to be authoritative.
+  // check is the third enforcement point, or a reverse `tool.invoke` for a
+  // wildcard-blocked tool would sail through the one gate that is supposed to
+  // be authoritative.
+  //
+  // It covers the run's own restrictions, not the per-iteration list the other
+  // two build: a skill the model activates mid-run adds `computer` there, and
+  // that addition does not reach here. Not a hole today — the sidecar's own
+  // executeToolBatch applies the merged list first, and every skill that
+  // blocks `computer` blocks `delegate_to_agent` with it — but the three
+  // points are no longer the same set, so do not read this as one.
   if (session.options.blockedTools?.some((pattern) => matchesToolName(toolName, pattern))) {
     throw new SidecarRequestError(-32602, `Tool is blocked for this agent run: ${toolName}`);
   }
@@ -3078,13 +3112,14 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   ownership: { messageTaken: boolean },
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
+  const entryConversation = getConversationReader().getConversation(conversationId);
   const inProcessEnvironment = isInProcessAgentEnvironment();
 
   // ── Concurrency guard — see doc above for the two-venue rationale. This
   // runs before venue selection so a renderer-hosted run cannot bypass the
   // same one-live-run-per-conversation invariant.
   {
-    const runningConv = getConversationReader().getConversation(conversationId);
+    const runningConv = entryConversation;
     const hasAttachments = Boolean(options?.images?.length);
     const stageable = userMessage.trim().length > 0 && !hasAttachments;
     const getBusyError = (): string => hasAttachments
@@ -3132,8 +3167,26 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     }
   }
 
+  // Settle the loop identity before choosing an execution venue. The Windows
+  // foreground snapshot is task-scoped, so an in-process run, a sidecar run,
+  // and any safe pre-commit fallback must all use this exact same identifier.
   const ownedLoopId = options?.loopId ?? generateRunId();
   options = { ...options, loopId: ownedLoopId };
+  if (isInteractiveDesktop(options, entryConversation)) {
+    try {
+      const { captureComputerUseTurnTarget } = await import('../computer-use/windowProtocol');
+      await captureComputerUseTurnTarget(conversationId, ownedLoopId);
+    } catch (error) {
+      // This snapshot is an optional selector. A named-app/window_ref request
+      // can still resolve explicitly, so capture transport failure must not
+      // prevent the model run from starting.
+      logger.debug('computer-use turn target capture unavailable', {
+        conversationId,
+        runId: ownedLoopId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
   if (inProcessEnvironment) {

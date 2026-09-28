@@ -74,11 +74,17 @@ export function initLanguage(setting: LanguageSetting) {
   setLanguage(setting);
 }
 
-// External store for React
-function subscribe(callback: () => void): () => void {
+/**
+ * Notified whenever the language setting changes. Backs `useI18n` for React
+ * and lets non-React code (the plugin team loader) re-resolve locale-bound
+ * text.
+ */
+export function subscribeLanguage(callback: () => void): () => void {
   listeners.add(callback);
   return () => listeners.delete(callback);
 }
+
+const subscribe = subscribeLanguage;
 
 function getSnapshot(): LanguageSetting {
   return currentLanguageSetting;

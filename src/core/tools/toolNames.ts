@@ -12,6 +12,7 @@ export const TOOL_NAMES = {
   LIST_DIRECTORY: 'list_directory',
   SEARCH_FILES: 'search_files',
   FIND_FILES: 'find_files',
+  CHECK_OPEN_DOCUMENT: 'check_open_document',
   RUN_COMMAND: 'run_command',
   DELETE_FILE: 'delete_file',
 

@@ -2,13 +2,16 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { prepareMacProtocolShell } from './mac-protocol-shell.mjs';
+import { devBundleId, prepareMacProtocolShell } from './mac-protocol-shell.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const binary = process.platform === 'darwin' ? prepareMacProtocolShell(root) : require('electron');
+const env = { ...process.env };
+if (process.platform === 'darwin') env.ABU_DEV_SHELL_BUNDLE_ID = devBundleId(root);
 const child = spawn(binary, [path.join(root, 'electron/main.cjs'), ...process.argv.slice(2)], {
   cwd: root,
+  env,
   stdio: 'inherit',
   windowsHide: false,
 });

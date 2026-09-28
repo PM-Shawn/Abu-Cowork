@@ -6,6 +6,32 @@ import { vi, beforeEach, afterEach } from 'vitest';
 // (toBeInTheDocument / toBeDisabled / toHaveTextContent / etc.)
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
+import { initLanguage } from '../i18n';
+
+// Product strings follow the OS when the setting is `system`, but unit tests
+// assert the repository's English contract. Pin each isolated test worker's
+// initial locale so results do not depend on the machine display language.
+// Individual suites remain free to select another locale in their own hooks.
+initLanguage('en-US');
+
+// ── Locale: the test host is en-US, whatever the OS says ──
+// `src/i18n` resolves the default `'system'` setting through `navigator.language`.
+// Under happy-dom that getter is hard-coded to 'en-US', so every suite used to be
+// locale-independent by construction. The `node` default (TESTING.md §6) exposes
+// Node's own navigator instead, which Node ≥ 21 fills from the OS: 'en-US' on
+// CI's runners, 'zh-CN' on a Chinese Windows box — where 95 tests across 18
+// files then read Chinese tool-result copy and fail. A bare `initLanguage('en-US')`
+// here does not hold: settingsStore's `onRehydrateStorage` re-applies the
+// persisted default `'system'`. So pin what `'system'` resolves to, exactly as
+// happy-dom does. Own properties shadow the prototype getters in both
+// environments; `configurable` so a suite can still override with
+// `vi.stubGlobal('navigator', …)` or `Object.defineProperty`. Suites that need
+// another locale keep calling `initLanguage`/`setLanguage` in their own hooks
+// and restoring afterwards (see `src/i18n/index.test.ts` for the contract).
+if (typeof navigator !== 'undefined') {
+  Object.defineProperty(navigator, 'language', { value: 'en-US', configurable: true });
+  Object.defineProperty(navigator, 'languages', { value: ['en-US', 'en'], configurable: true });
+}
 
 // ── @tauri-apps/api ──
 vi.mock('@tauri-apps/api/path', () => ({

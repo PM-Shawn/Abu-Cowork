@@ -29,8 +29,9 @@ const twMerge = extendTailwindMerge({
         "caption", "minor", "body", "h-xs", "h-sm", "h-md", "h-lg", "h-xl",
         "title-lg", "title", "ui", "ui-sm", "h1", "h2", "h3", "mono",
       ] }],
-      // In this codebase every `text-[var(--…)]` arbitrary value is a color, never a size
-      "text-color": [{ text: [(v: string) => /^\[var\(--/.test(v), ...DS_TEXT_COLORS] }],
+      // `text-[var(--…)]` needs no validator here: tailwind-merge's default text-color group
+      // already claims every arbitrary value before any extension is consulted
+      "text-color": [{ text: DS_TEXT_COLORS }],
       "bg-color": [{ bg: DS_BG_COLORS }],
       "border-color": [{ border: ["separator", "control-border"] }],
       "ring-color": [{ ring: ["focus"] }],

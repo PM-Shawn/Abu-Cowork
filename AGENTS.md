@@ -342,6 +342,7 @@ All form controls **MUST** use components from `src/components/ui/`. **Do NOT** 
 - Custom CSS classes (`btn-ghost`, `btn-claude-primary`, `streaming-cursor`) defined in global CSS files are legacy; do not add new ones.
 
 ### 6.1 Font sizes — 8-token scale (MANDATORY)
+Applies to legacy files. Files on the design-system migration list use the §6.3 type scale.
 All font sizes go through the `--text-*` token scale defined in `src/styles/index.css`
 (`@theme` block). Each token binds font-size + line-height + font-weight (TRAE-style).
 **Never** hand-roll a size with `text-[Npx]`, and **do not** use Tailwind's default named
@@ -363,6 +364,7 @@ heading. Neutral text uses `text-[var(--abu-text-*)]` (`--abu-text-muted` is AA-
 as of 2026-07). Semantic/link colors are tokenized too — see §6.2.
 
 ### 6.2 Semantic + link colors — token scale (MANDATORY)
+Applies to legacy files. Files on the design-system migration list use the §6.3 color tokens.
 Link and status colors go through the `--abu-*` semantic tokens in `src/styles/index.css`
 (both themes). **Never** use raw Tailwind status/link hues (`text/bg/border/ring/fill-`
 `red/green/emerald/lime/amber/yellow/blue/sky/indigo/orange-*`) — banned by ESLint

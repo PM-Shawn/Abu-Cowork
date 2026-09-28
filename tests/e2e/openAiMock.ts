@@ -30,7 +30,8 @@ export type MockReplyPlan =
       toolCallId: string;
       toolName: string;
     }
-  | { kind: 'hold-open'; partialText: string };
+  | { kind: 'hold-open'; partialText: string }
+  | { kind: 'http-error'; status: number; body: unknown };
 
 export interface OpenAiMock {
   baseUrl: string;
@@ -98,6 +99,12 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
     if (!replyPlan) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
+      return;
+    }
+
+    if (replyPlan.kind === 'http-error') {
+      res.writeHead(replyPlan.status, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(replyPlan.body));
       return;
     }
 

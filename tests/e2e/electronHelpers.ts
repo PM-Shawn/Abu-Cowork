@@ -284,6 +284,10 @@ export interface LocalMockProviderOptions {
   providerName?: string;
   supportsReasoning?: boolean | null;
   supportsTools?: boolean;
+  /** The model's 能看图 checkbox; omitted leaves it undeclared. */
+  supportsImages?: boolean;
+  /** Turn computer use on before the reload. */
+  computerUseEnabled?: boolean;
 }
 
 /** Configure an isolated loopback provider while preserving each spec's metadata. */
@@ -304,6 +308,8 @@ export async function configureLocalMockProvider(
     providerName = 'Abu E2E loopback mock',
     supportsReasoning = false,
     supportsTools = false,
+    supportsImages,
+    computerUseEnabled = false,
   } = options;
 
   await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
@@ -316,6 +322,7 @@ export async function configureLocalMockProvider(
       supportsTools: configuration.supportsTools,
       ...(configuration.supportsReasoning === null ? {} : { supportsReasoning: configuration.supportsReasoning }),
       ...(configuration.contextWindowSize === null ? {} : { maxInputTokens: configuration.contextWindowSize }),
+      ...(configuration.supportsImages === undefined ? {} : { supportsImages: configuration.supportsImages }),
     };
 
     state.providers = [{
@@ -345,6 +352,7 @@ export async function configureLocalMockProvider(
     state.hasRunSensitiveAudit_v015 = true;
     if (configuration.permissionMode !== null) state.permissionMode = configuration.permissionMode;
     if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
+    if (configuration.computerUseEnabled) state.computerUseEnabled = true;
 
     // Write `persisted` back whole, version untouched. Stamping a literal here
     // (this line carried a stale `version: 42` through four store bumps) makes
@@ -367,6 +375,8 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
+    supportsImages,
+    computerUseEnabled,
   })]);
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }

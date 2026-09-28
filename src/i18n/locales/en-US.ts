@@ -497,6 +497,7 @@ const enUS: TranslationDict = {
     contextInputTooLarge: 'This message is too large for the current model context. Shorten the message or attachments, or switch to a model with a larger context window.',
     contextFixedTooLarge: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.',
     contextFixedTooLargeLocal: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more, or raise the context length in {service}.',
+    malformedToolCall: 'This model could not send the action correctly. Try again, or switch to another model.',
     notificationTaskFallback: 'Task',
     outputLimitError:
       '\n\n**Error:** The model hit the output token limit {limit} times in a row without finishing. Suggestions:\n' +

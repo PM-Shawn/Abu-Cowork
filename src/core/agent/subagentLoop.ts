@@ -56,6 +56,7 @@ import { createLogger } from '../logging/logger';
 import { isToolResultError } from './toolResultErrors';
 import { scanMemoryFiles, loadMemoryIndex } from '../memdir/scan';
 import { deriveRunInteractionMode } from './runInteractionMode';
+import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
 import { browserNarrationSection } from './browserNarrationRules';
 import {
@@ -825,6 +826,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // calls at all trips this — without it the loop would spin up to maxTurns
     // (200) burning tokens.
     let consecutiveNoProgress = 0;
+    const malformedToolCallGuard = createMalformedToolCallGuard();
 
     // Max-output-tokens recovery state (mirrors agentLoop): on a max_tokens
     // truncation with no tool call, re-prompt with an escalated budget rather than
@@ -867,6 +869,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       let shouldContinue = false;
       let lastStopReason = '';
       let sawThinking = false;
+      let malformedToolCallSeen = false;
       /**
        * 当前这一次 chat() 调用的用量。provider 的流内用量是累计快照，同一次请求里
        * 后到的事件是修订，按字段取最新值；加进总计的时机见下面的 chatFn。
@@ -1025,6 +1028,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             });
             onProgress?.({ type: 'tool-start', id: event.id, toolName: event.name, toolInput: event.input });
             break;
+          case 'malformed_tool_call':
+            malformedToolCallSeen = true;
+            break;
           case 'usage':
             turnUsage.current = { ...(turnUsage.current ?? {}), ...event.usage };
             break;
@@ -1108,6 +1114,33 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       resultBuffer = appendTurnText(resultBuffer, turnText, resumingFromTruncation);
       resumingFromTruncation = false;
       completedTurns = turn + 1;
+
+      // 与主循环相同：写坏的操作悄悄重写一次，连续第二次把那句说明交回给派活的一方；
+      // 撞到输出上限的回答交给下面的截断续写
+      if (
+        !shouldContinue
+        && malformedToolCallSeen
+        && collectedToolCalls.length === 0
+        && lastStopReason !== 'max_tokens'
+      ) {
+        if (malformedToolCallGuard.decide() === 'retry') {
+          consecutiveNoProgress = 0;
+          messages.push({ id: `sub-asst-${turn}`, role: 'assistant', content: turnText, timestamp: Date.now() });
+          messages.push({ id: `sub-malformed-${turn}`, role: 'user', content: MALFORMED_TOOL_CALL_NUDGE, timestamp: Date.now() });
+          onProgress?.({
+            type: 'turn-complete',
+            turn: turn + 1,
+            totalTurns: maxTurns,
+            usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+          });
+          continue;
+        }
+        const note = getI18n().chat.malformedToolCall;
+        resultBuffer = resultBuffer ? `${resultBuffer}\n\n${note}` : note;
+        terminalStopReason = 'error';
+        break;
+      }
+      if (collectedToolCalls.length > 0) malformedToolCallGuard.reset();
 
       // Max-output-tokens recovery: output truncated mid-thought with no tool call →
       // preserve the partial output in local history, re-prompt to resume, and let the

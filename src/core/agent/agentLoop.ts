@@ -4,7 +4,7 @@ import { teamRosterNames } from '../team/leaderRoute';
 import type { ToolCallContext } from '../../types/execution';
 import type { AdapterKind, LLMAdapter } from '../llm/adapter';
 import { promptTokensOf } from '../llm/usageAccounting';
-import { LLMError, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
+import { LLMError, LOG_TOOL_ARG_PREVIEW, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
@@ -88,6 +88,7 @@ import {
   type ToolLoopObservation,
 } from './loopGuards';
 import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
+import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import {
   drainSystemQueuedInputs,
   enqueueUserInput,
@@ -1669,6 +1670,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const autoCompactTracker = new AutoCompactTracker();
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
+  const malformedToolCallGuard = createMalformedToolCallGuard();
   // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载）；
   // 用户填了「上下文长度」就不问
   const runProbedContextWindow = entryProvider && entryModelDeclared?.maxInputTokens === undefined
@@ -1832,6 +1834,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     let finalUsage: TokenUsage | undefined;
     let thinkingEndTime: number | undefined;  // Track when thinking ends
     let lastStopReason = '';
+    let malformedToolCallSeen = false;
     let modelSupportsVision = false;
     let streamFlushTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -2553,6 +2556,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               break;
 
+            case 'malformed_tool_call':
+              // 原文不显示；本轮结束后决定是悄悄重写还是告诉用户
+              malformedToolCallSeen = true;
+              logger.warn('Model wrote a malformed operation into its reply', {
+                rawLength: event.raw.length,
+                rawPreview: event.raw.slice(0, LOG_TOOL_ARG_PREVIEW),
+              });
+              break;
+
             case 'error':
               chatDelta.appendText(conversationId, `\n\n**Error:** ${event.error}`, assistantMsgId);
               break;
@@ -2886,6 +2898,34 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         getCapsPort().recordReasoningObserved(activeProvider.id, effectiveModelId);
       }
 
+      // 模型把操作写坏了：本轮第一次悄悄让它重写，连续第二次在回答里说明并结束。
+      // 回答撞到输出上限（max_tokens）时操作多半是被截断的，交给下面的截断续写，
+      // 它会调大输出上限；这里不处理，也不消耗重写机会
+      let malformedToolCallGaveUp = false;
+      if (
+        !continueLoop
+        && malformedToolCallSeen
+        && collectedToolCalls.length === 0
+        && lastStopReason !== 'max_tokens'
+      ) {
+        if (malformedToolCallGuard.decide() === 'retry') {
+          chatDelta.addMessage(conversationId, {
+            id: generateId(),
+            role: 'user' as const,
+            content: MALFORMED_TOOL_CALL_NUDGE,
+            timestamp: Date.now(),
+            loopId,
+            isSystem: true as const,
+          });
+          continueLoop = true;
+        } else {
+          malformedToolCallGaveUp = true;
+          chatDelta.appendText(conversationId, `\n\n${getI18n().chat.malformedToolCall}`, assistantMsgId);
+        }
+      } else if (collectedToolCalls.length > 0) {
+        malformedToolCallGuard.reset();
+      }
+
       // Max Output Tokens recovery: if LLM output was truncated (not tool_use),
       // inject a continuation prompt and retry, up to MAX_OUTPUT_TOKENS_RECOVERY_LIMIT times.
       // This matches Claude Code's max_output_tokens_recovery pattern.
@@ -2989,7 +3029,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         abortRegistry.clearAbortController(conversationId);
         const endReason = awaitingUserRecovery
           ? 'awaiting_user'
-          : noProgressAborted
+          : noProgressAborted || malformedToolCallGaveUp
           ? 'no_progress'
           : maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
@@ -3030,7 +3070,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         } else if (maxTokensRecoveryExhausted) {
           exitReason = 'error';
           exitError = 'Max output tokens recovery exhausted';
-        } else if (noProgressAborted) {
+        } else if (noProgressAborted || malformedToolCallGaveUp) {
+          // 重写后操作仍然写坏：任务没有做成，按未完成交给调用方
           exitReason = 'no_progress';
         }
         chatDelta.setConversationStatus(

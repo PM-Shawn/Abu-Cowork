@@ -402,7 +402,7 @@ import { LLMError } from '../core/llm/adapter';
 import * as delegatedMediaStore from '../core/subagent/delegatedMediaStore';
 import { executeToolBatch } from '../core/agent/toolExecutor';
 import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
-import { getLanguageSetting, setLanguage } from '../i18n';
+import { getI18n, getLanguageSetting, setLanguage } from '../i18n';
 import * as notifications from '../utils/notifications';
 import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
@@ -846,6 +846,129 @@ describe('Agent Pipeline Integration', () => {
 
       expect(result.reason).toBe('no_progress');
       expect(calls).toBe(3); // two tolerated retries, abort on the third
+    });
+
+    it('quietly asks the model to rewrite a malformed operation once, then carries on', async () => {
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls === 1) {
+            onEvent({ type: 'malformed_tool_call', raw: '<tool_call>{"name":' });
+          } else {
+            onEvent({ type: 'text', text: 'rewritten properly' });
+          }
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      expect(result.reason).toBe('completed');
+      expect(calls).toBe(2);
+      expect(JSON.stringify(sent[1])).toContain('could not be parsed');
+      const messages = useChatStore.getState().conversations[convId].messages;
+      const visible = messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain('<tool_call>');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      expect(visible).toContain('rewritten properly');
+      // 给模型的纠错消息只进模型的上下文，聊天界面不显示
+      const nudge = messages.find((m) => String(m.content).includes('could not be parsed'));
+      expect(nudge?.isSystem).toBe(true);
+      expect(messages.filter((m) => !m.isSystem).map((m) => String(m.content)).join(''))
+        .not.toContain('could not be parsed');
+    });
+
+    it('tells the user in one sentence when the rewrite is malformed too', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      expect(calls).toBe(2);
+      // 操作没有做成，按未完成结束，定时任务等后台调用方不会当成成功
+      expect(result.reason).toBe('no_progress');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain(getI18n().chat.malformedToolCall);
+      expect(visible).not.toContain('<invoke');
+    });
+
+    it('treats an operation cut off by the output limit as a truncation and keeps the rewrite for later', async () => {
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls === 1) {
+            onEvent({ type: 'malformed_tool_call', raw: '<tool_call>{"name":"read_file","arguments":{"path"' });
+            onEvent({ type: 'done', stopReason: 'max_tokens' });
+          } else if (calls === 2) {
+            onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          } else {
+            onEvent({ type: 'text', text: 'done at last' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          }
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      expect(result.reason).toBe('completed');
+      expect(calls).toBe(3);
+      // 被截断的那一次只走截断续写，不消耗写坏重写的机会
+      expect(JSON.stringify(sent[1])).toContain('Output token limit reached');
+      expect(JSON.stringify(sent[1])).not.toContain('could not be parsed');
+      expect(JSON.stringify(sent[2])).toContain('could not be parsed');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      expect(visible).toContain('done at last');
+    });
+
+    it('stops at the truncation limit when every reply is an operation cut off by the output limit', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'malformed_tool_call', raw: '<tool_call>{"name":"write_file","arguments":{"content":"' });
+          onEvent({ type: 'done', stopReason: 'max_tokens' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      // 第一次加三次截断续写，写坏重写一次也没有发生
+      expect(calls).toBe(4);
+      expect(result.reason).toBe('error');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      const conversationText = JSON.stringify(useChatStore.getState().conversations[convId].messages);
+      expect(conversationText).not.toContain('could not be parsed');
     });
 
     it('stops a well-formed repeated tool loop after three unchanged observations', async () => {

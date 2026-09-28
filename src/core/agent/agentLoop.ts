@@ -106,6 +106,7 @@ import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { resolveContextWindow } from '../llm/contextWindow';
+import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
@@ -1666,6 +1667,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const autoCompactTracker = new AutoCompactTracker();
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
+  // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载）；
+  // 用户填了「上下文长度」就不问
+  const runProbedContextWindow = entryProvider && entryModelDeclared?.maxInputTokens === undefined
+    ? await probeContextWindow(entryProvider, effectiveModelId)
+    : undefined;
 
   // Phase 2 relevant-memory injection — content of memories most relevant to
   // *this* user message, surfaced as a dynamic system-prompt section. The
@@ -1972,7 +1978,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const contextWindowSize = resolveContextWindow({
         modelId: effectiveModelId,
         userSetting: modelDeclared?.maxInputTokens,
-        probed: activeProvider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
+        probed: runProbedContextWindow
+          ?? activeProvider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
         discovered: discoveredCaps?.contextWindow,
         discoveredProbe: discoveredCaps?.contextWindowProbe,
         isLocal: localServerKind(activeProvider) !== null,

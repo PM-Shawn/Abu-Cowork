@@ -27,6 +27,7 @@ import {
   type ModelCapabilities,
 } from '../llm/modelCapabilities';
 import { resolveContextWindow } from '../llm/contextWindow';
+import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
@@ -625,6 +626,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     ? 'openai-compatible'
     : 'claude';
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
+  const probedContextWindow = startupProvider && startupDeclared?.maxInputTokens === undefined
+    ? await probeContextWindow(startupProvider, effectiveModelId)
+    : undefined;
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
   const delegatedPreflight = preflightDelegatedMedia(
     options.delegatedUserTurn,
@@ -891,7 +895,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       const contextWindowSize = resolveContextWindow({
         modelId: effectiveModelId,
         userSetting: declared?.maxInputTokens,
-        probed: provider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
+        probed: probedContextWindow ?? provider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
         discovered: discovered?.contextWindow,
         discoveredProbe: discovered?.contextWindowProbe,
         isLocal: localServerKind(provider) !== null,

@@ -19,7 +19,7 @@ import { isKnownModel } from '@/core/llm/modelCapabilities';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities } from './providerCapabilities';
-import { toModelInfo } from './modelInfoUtil';
+import { toModelInfo, withContextWindows } from './modelInfoUtil';
 import { sortKnownFirst, unionSelectAll, filterModels, MODEL_FILTER_MIN_ITEMS } from './fetchModelUtils';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 import type { LLMProvider, ApiFormat } from '@/types';
@@ -30,6 +30,7 @@ import {
   formatOllamaModelLabel,
 } from '@/core/llm/ollama';
 import { fetchProviderModels, type FetchModelsResult } from '@/core/llm/modelFetcher';
+import { fetchLmStudioContextWindows, fetchOllamaContextWindows } from '@/core/llm/contextWindowProbe';
 import { SECRET_KEYS } from '@/utils/secretStore';
 
 /**
@@ -732,7 +733,9 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       // recognizable ids sit at the top; the search box narrows the rest.
       // LM Studio is the exception, for the same reason as Ollama: it lists
       // the models already loaded on this machine, so check them all.
-      const sorted = sortKnownFirst(result.models, isKnownModel);
+      const listed = sortKnownFirst(result.models, isKnownModel);
+      // LM Studio 在自己的接口里报告已加载长度，一并记下
+      const sorted = isLMStudio ? withContextWindows(listed, await fetchLmStudioContextWindows(baseUrl)) : listed;
       setFetchedModels(sorted);
       if (isLMStudio) {
         setSelectedModels((prev) => unionSelectAll(sorted, prev));
@@ -779,7 +782,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
         label: formatOllamaModelLabel(m),
         isCustom: false,
       }));
-      setOllamaModels(modelInfos);
+      const withWindows = withContextWindows(modelInfos, await fetchOllamaContextWindows(url, modelInfos.map((m) => m.id)));
+      setOllamaModels(withWindows);
 
       // Auto-select every detected model — unlike a cloud catalog, these are
       // models the user already deliberately pulled onto this machine, and
@@ -832,6 +836,13 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     }
   }, [baseUrl, apiKey, selectedModels, effectiveFormat, t]);
 
+  /** 获取模型时记下的窗口：本次获取的列表优先，其次是编辑前已保存的值。 */
+  const detectedContextWindowFor = useCallback((id: string): number | undefined =>
+    ollamaModels.find((m) => m.id === id)?.contextWindow
+      ?? fetchedModels.find((m) => m.id === id)?.contextWindow
+      ?? editProvider?.models.find((m) => m.id === id)?.contextWindow,
+  [ollamaModels, fetchedModels, editProvider]);
+
   // ── Save ──
 
   const handleSave = useCallback(() => {
@@ -843,6 +854,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       return toModelInfo(id, {
         label: ollamaModel?.label,
         declaredCapabilities: showAdvanced ? perModelDeclared[id] : undefined,
+        contextWindow: detectedContextWindowFor(id),
       });
     });
 
@@ -946,7 +958,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   }, [
     serviceName, selectedModels, ollamaModels, selectedOption,
     isCustom, showAdvanced, perModelDeclared, useRawUrl, baseUrl, apiKey, providers,
-    effectiveFormat, activePlan, editProvider,
+    effectiveFormat, activePlan, editProvider, detectedContextWindowFor,
     addProvider, updateProvider, selectModel, onClose,
   ]);
 

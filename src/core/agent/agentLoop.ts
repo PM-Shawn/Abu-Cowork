@@ -108,6 +108,7 @@ import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningPar
 import { resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
+import { contextTooSmallMessage } from './contextWindowMessages';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
@@ -1969,11 +1970,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           ? { thinking: 'uncontrollable' as const }
           : {}),
       };
-      const reasoningParams = computeReasoningParams(
-        effectiveCaps,
-        modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
-      );
-      let maxOutputTokens = reasoningParams.maxTokens;
       // 窗口按四级优先级取值：用户填写 > 服务报告与超长报错学到的值取小 > 按名字估计
       const contextWindowSize = resolveContextWindow({
         modelId: effectiveModelId,
@@ -1985,6 +1981,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         isLocal: localServerKind(activeProvider) !== null,
         ceiling: freshSettings.contextWindowSize,
       }).size;
+      const reasoningParams = computeReasoningParams(
+        effectiveCaps,
+        modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
+        contextWindowSize,
+      );
+      let maxOutputTokens = reasoningParams.maxTokens;
 
       // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
       // clamped to the model's true output ceiling so we never re-ask above a known limit.
@@ -3237,12 +3239,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         errorCode,
       );
       const isContextBudgetError = err instanceof ContextBudgetError;
+      const contextTooSmall = contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(settingsForModel)));
       let displayError = managedProviderUnreachable
         ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
-        : isContextBudgetError
-        ? getI18n().chat.contextFixedTooLarge
+        : isContextBudgetError || errorCode === 'context_too_long'
+        ? contextTooSmall
         : isLikelyVisionError
         ? getI18n().chat.visionUnsupported
         : isOllamaForbidden

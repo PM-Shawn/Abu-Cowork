@@ -7,6 +7,8 @@ import {
   isKnownModel,
   resolveAgentModelCapabilities,
   CONTENT_FLOOR_TOKENS,
+  reserveOutputTokens,
+  type ModelCapabilities,
 } from './modelCapabilities';
 import { classifyThinking } from './model-data/classify';
 
@@ -168,6 +170,38 @@ describe('modelCapabilities', () => {
         4096,
       );
       expect(p.thinkingBudget).toBe(1024);
+    });
+  });
+
+  describe('computeReasoningParams — the answer reserve follows the window', () => {
+    const plain: ModelCapabilities = {
+      vision: false, thinking: false, toolResultImages: 'none', documentBlock: false,
+      maxOutputTokens: 8192, contextWindow: 131072,
+    };
+
+    it('reserves a quarter of an 8K window, leaving room for input', () => {
+      expect(computeReasoningParams(plain, 32768, 8192).maxTokens).toBe(2048);
+    });
+
+    it('keeps min(model cap, user setting) when the window is large', () => {
+      expect(computeReasoningParams(plain, 4096, 200000).maxTokens).toBe(4096);
+      expect(computeReasoningParams(plain, 32768, 200000).maxTokens).toBe(8192);
+    });
+
+    it('also caps a reasoning model and keeps its thinking budget within the answer budget', () => {
+      const params = computeReasoningParams({ ...plain, thinking: 'qwen', maxOutputTokens: 65536 }, 32768, 16384);
+      expect(params.maxTokens).toBe(4096);
+      expect(params.thinkingBudget).toBe(1024);
+    });
+
+    it('is unchanged when no window is given', () => {
+      expect(computeReasoningParams(plain, 32768).maxTokens).toBe(8192);
+    });
+  });
+
+  describe('reserveOutputTokens', () => {
+    it('never goes below one token', () => {
+      expect(reserveOutputTokens(8192, 2)).toBe(1);
     });
   });
 

@@ -577,6 +577,8 @@ export interface TranslationDict {
     contextInputTooLarge: string;
     /** System prompt and tool definitions leave no safe room for user input. */
     contextFixedTooLarge: string;
+    /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
+    contextFixedTooLargeLocal: string;
     /** Conversation-title fallback used in task notifications. */
     notificationTaskFallback: string;
     /** Error after repeated output-token-limit hits (multi-line). {limit} */

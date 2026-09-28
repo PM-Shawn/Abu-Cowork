@@ -211,6 +211,13 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
 /** Tokens always reserved for the visible answer so reasoning can't starve it. */
 export const CONTENT_FLOOR_TOKENS = 4096;
 
+/** 给回答预留的空间最多占窗口的四分之一，8K 窗口也留得出输入空间。 */
+export const OUTPUT_RESERVE_RATIO = 0.25;
+
+export function reserveOutputTokens(requested: number, contextWindow: number): number {
+  return Math.max(1, Math.min(requested, Math.floor(contextWindow * OUTPUT_RESERVE_RATIO)));
+}
+
 export interface ReasoningRequestParams {
   /** Output token budget to request (max_tokens). */
   maxTokens: number;
@@ -235,18 +242,21 @@ export interface ReasoningRequestParams {
  *
  * @param caps  Resolved capabilities (overlay any discovered limits before calling).
  * @param requestedMaxTokens  The caller's desired budget (e.g. user setting).
+ * @param contextWindow  Effective context window; caps the answer reserve at 25% of it.
  */
 export function computeReasoningParams(
   caps: ModelCapabilities,
   requestedMaxTokens: number,
+  contextWindow?: number,
 ): ReasoningRequestParams {
   const isReasoning = caps.thinking !== false;
   // Reasoning models need room for both reasoning and answer → use the model's
   // full ceiling. Non-reasoning models take the smaller of the user budget and
   // the model ceiling (avoids over-asking → a guaranteed 400).
-  const maxTokens = isReasoning
+  const uncapped = isReasoning
     ? caps.maxOutputTokens
     : Math.min(requestedMaxTokens, caps.maxOutputTokens);
+  const maxTokens = contextWindow === undefined ? uncapped : reserveOutputTokens(uncapped, contextWindow);
 
   // Reasoning cap that still leaves CONTENT_FLOOR_TOKENS for the answer.
   const reasoningCap = Math.max(1024, maxTokens - CONTENT_FLOOR_TOKENS);

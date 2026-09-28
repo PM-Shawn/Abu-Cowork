@@ -888,10 +888,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           ? { thinking: 'uncontrollable' as const }
           : {}),
       };
-      const reasoningParams = computeReasoningParams(
-        subagentCaps,
-        settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
-      );
       // Apply context management to prevent subagent context overflow
       const contextWindowSize = resolveContextWindow({
         modelId: effectiveModelId,
@@ -902,6 +898,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         isLocal: localServerKind(provider) !== null,
         ceiling: settings.contextWindowSize,
       }).size;
+      const reasoningParams = computeReasoningParams(
+        subagentCaps,
+        settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
+        contextWindowSize,
+      );
       // True output ceiling (distinct from the conservative per-turn budget below):
       // max_tokens-recovery escalation may climb toward this, never above a known limit.
       const effectiveModelCeiling = discovered?.maxOutputTokens ?? baseCaps.outputCeiling ?? subagentCaps.maxOutputTokens;

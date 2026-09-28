@@ -495,7 +495,8 @@ const enUS: TranslationDict = {
     insufficientBalance: "Insufficient balance or no available resource package. Please recharge on the corresponding model provider's platform.",
     compactingInlineNotice: '\n*Context is getting long, optimizing context...*',
     contextInputTooLarge: 'This message is too large for the current model context. Shorten the message or attachments, or switch to a model with a larger context window.',
-    contextFixedTooLarge: 'The current system instructions and tool definitions exceed this model’s safe context budget. Disable some tools or switch to a model with a larger context window.',
+    contextFixedTooLarge: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.',
+    contextFixedTooLargeLocal: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more, or raise the context length in {service}.',
     notificationTaskFallback: 'Task',
     outputLimitError:
       '\n\n**Error:** The model hit the output token limit {limit} times in a row without finishing. Suggestions:\n' +

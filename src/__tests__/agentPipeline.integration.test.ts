@@ -300,6 +300,8 @@ vi.mock('../core/llm/modelCapabilities', () => ({
     (stopReason: string, contentLength: number, toolCallCount: number) =>
       (stopReason === 'max_tokens' || stopReason === 'length') && contentLength === 0 && toolCallCount === 0,
   ),
+  reserveOutputTokens: (requested: number, contextWindow: number) =>
+    Math.max(1, Math.min(requested, Math.floor(contextWindow * 0.25))),
 }));
 
 vi.mock('../core/tools/toolNames', () => ({
@@ -772,6 +774,41 @@ describe('Agent Pipeline Integration', () => {
       .map((message) => typeof message.content === 'string' ? message.content : '')
       .join('\n');
     expect(assistantText).toMatch(/上下文容量|too large/i);
+  });
+
+  it('explains a model whose window cannot hold the instructions in plain words', async () => {
+    vi.mocked(contextManagerModule.enforceContextBudget).mockImplementationOnce(() => {
+      throw new contextManagerModule.ContextBudgetError('FIXED_TOO_LARGE', 20_000, 10_000);
+    });
+
+    const convId = useChatStore.getState().createConversation();
+    await runAgentLoop(convId, 'hello');
+
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    const assistantText = useChatStore.getState().conversations[convId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.');
+    expect(assistantText).not.toContain('raise the context length');
+  });
+
+  it('replaces the raw provider text when the request stays too long after recovery', async () => {
+    const overflow = new LLMError('raw provider overflow text', 'context_too_long', { retryable: false, statusCode: 400 });
+    // 第一次是正常请求，第二次是整理内容后的重试
+    mockClaudeChat.mockRejectedValueOnce(overflow).mockRejectedValueOnce(overflow);
+
+    const convId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(convId, 'hello');
+
+    expect(result.reason).toBe('error');
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    const assistantText = useChatStore.getState().conversations[convId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs.');
+    expect(assistantText).not.toContain('raw provider overflow text');
   });
 
   it('escalateMaxOutputTokens pure function works correctly', () => {

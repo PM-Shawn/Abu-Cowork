@@ -25,6 +25,8 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     ['arbitrary radius', '<div className="rounded-[12px]" />'],
     ['Tailwind palette gray', '<div className="bg-gray-100" />'],
     ['Tailwind palette white', '<div className="text-white" />'],
+    ['Tailwind palette black shadow', '<div className="shadow-black/20" />'],
+    ['Tailwind palette white gradient stop', '<div className="from-white" />'],
     ['hand-written scrim', '<div className="fixed inset-0" />'],
   ])('flags %s in a migrated file', async (_name, jsx) => {
     expect(await messages(component(jsx), MIGRATED)).not.toEqual([]);
@@ -42,6 +44,11 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
 
   it('accepts design-system tokens in a migrated file', async () => {
     const jsx = '<div className="bg-surface text-label rounded-panel shadow-float z-popover duration-base ease-enter" />';
+    expect(await messages(component(jsx), MIGRATED)).toEqual([]);
+  });
+
+  it('does not flag class names that only contain a palette prefix as a word part', async () => {
+    const jsx = '<div className="divide-y history-item auto-cols-fr go-to-top" />';
     expect(await messages(component(jsx), MIGRATED)).toEqual([]);
   });
 

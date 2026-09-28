@@ -72,7 +72,7 @@ export const DESIGN_SYSTEM_UI_FILES = [
 ]
 
 const ARBITRARY_VALUE = '\\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|shadow|z|rounded|duration|ease)-\\['
-const PALETTE_COLOR = '\\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|shadow)-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]|\\b(bg|text|border|ring|fill|stroke|outline|divide)-(black|white)\\b'
+const PALETTE_COLOR = '\\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|shadow)-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]|\\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|shadow)-(black|white)\\b'
 const HAND_WRITTEN_SCRIM = '\\bfixed\\b.*\\binset-0\\b|\\binset-0\\b.*\\bfixed\\b'
 
 const DESIGN_VALUE_SELECTORS = [

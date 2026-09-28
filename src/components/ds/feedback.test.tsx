@@ -17,7 +17,7 @@ import { MAX_VISIBLE_TOASTS, Toaster } from './toaster';
 
 const toast = (n: number, extra: Partial<Toast> = {}): Toast => ({ id: `t${n}`, type: 'success', title: `Saved ${n}`, ...extra });
 
-const shown = () => within(screen.getByRole('status', { name: 'Notifications' }));
+const shown = () => within(screen.getByRole('region', { name: 'Notifications' }));
 // Titles of the rendered notifications, in DOM order.
 const shownTitles = () => [...document.querySelectorAll('li[data-ds-motion]')].map((item) => item.textContent ?? '');
 
@@ -82,17 +82,52 @@ describe('feedback components', () => {
     expect(shown().getByText('Saved 5')).toBeInTheDocument();
   });
 
-  it('Toaster names its list with the localized label', () => {
+  it('Toaster names its region with the localized label', () => {
     const previous = getLanguageSetting();
     setLanguage('zh-CN');
     try {
       render(<ToasterHarness initial={[toast(1)]} />, { wrapper: DesignSystemProvider });
-      const list = screen.getByRole('status', { name: '通知' });
-      expect(list).toHaveAttribute('aria-live', 'polite');
-      expect(list).toHaveAttribute('data-electron-no-drag');
+      const region = screen.getByRole('region', { name: '通知' });
+      expect(region).toHaveAttribute('data-electron-no-drag');
     } finally {
       setLanguage(previous);
     }
+  });
+
+  it('Toaster announces only additions and keeps list semantics', () => {
+    render(<ToasterHarness initial={[toast(1), toast(2)]} />, { wrapper: DesignSystemProvider });
+    const region = screen.getByRole('region', { name: 'Notifications' });
+    const live = region.querySelector('[aria-live]');
+    expect(live).toHaveAttribute('aria-live', 'polite');
+    expect(live).toHaveAttribute('aria-atomic', 'false');
+    const list = within(region).getByRole('list');
+    expect(list).not.toHaveAttribute('role');
+    expect(list).not.toHaveAttribute('aria-live');
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  it('Toaster moves focus to the next notification after a keyboard Close or Undo', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToasterHarness
+        initial={[
+          toast(1, { type: 'info', title: 'Task deleted', actions: [{ label: 'Undo', onClick: () => undefined }] }),
+          toast(2),
+          toast(3),
+        ]}
+      />,
+      { wrapper: DesignSystemProvider },
+    );
+    screen.getByRole('button', { name: 'Undo' }).focus();
+    await user.keyboard('{Enter}');
+    expect(shownTitles()).toEqual(['Saved 2', 'Saved 3']);
+    const firstClose = within(document.querySelectorAll('li[data-ds-motion]')[0] as HTMLElement).getByRole('button', { name: 'Close' });
+    expect(firstClose).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(shownTitles()).toEqual(['Saved 3']);
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(shownTitles()).toEqual([]);
   });
 
   it('Toaster keeps store order when a hidden older notification comes back', async () => {

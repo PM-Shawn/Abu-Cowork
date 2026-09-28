@@ -12,6 +12,7 @@ export interface ComboboxOption {
   value: string;
   label: string;
   keywords?: string[];
+  disabled?: boolean;
 }
 
 // A select with a search box, for lists too long to scan (models, skills, experts).
@@ -71,6 +72,7 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
                     key={option.value}
                     value={option.value}
                     keywords={[option.label, ...(option.keywords ?? [])]}
+                    disabled={option.disabled}
                     onSelect={() => {
                       onValueChange(option.value);
                       setOpen(false);

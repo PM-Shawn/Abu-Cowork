@@ -48,6 +48,27 @@ export function FormSection() {
           emptyText="No matching model"
         />
       </div>
+      <h3 className="mt-6 mb-3 text-ui font-medium text-label-secondary">Disabled and invalid</h3>
+      <div className="grid max-w-3xl grid-cols-2 gap-4">
+        <TextField aria-label="Disabled field" disabled defaultValue="Read only" />
+        <TextArea aria-label="Disabled notes" disabled defaultValue="Locked while the task runs" />
+        <TextArea aria-label="Notes with an error" invalid defaultValue="Too short" />
+        <div className="flex flex-col gap-2">
+          <Checkbox label="Disabled checkbox" checked disabled onCheckedChange={() => undefined} />
+          <Slider label="Disabled volume" value={60} disabled onValueChange={() => undefined} />
+        </div>
+        <Select label="Disabled model" value="sonnet" disabled onValueChange={() => undefined} options={PREVIEW_MODELS} />
+        <Combobox
+          label="Disabled model search"
+          value="sonnet"
+          disabled
+          onValueChange={() => undefined}
+          options={PREVIEW_MODELS}
+          placeholder="Choose a model"
+          searchPlaceholder="Filter models"
+          emptyText="No matching model"
+        />
+      </div>
       <div className="mt-4 max-w-3xl">
         <SettingRow title="Follow system appearance" description={CJK_SPECIMEN} htmlFor="preview-follow-system">
           <Switch id="preview-follow-system" checked={followSystem} onCheckedChange={setFollowSystem} />

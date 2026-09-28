@@ -8,6 +8,7 @@ import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon, type StatusTone } from '@/components/ds/status-icon';
 import { Tag } from '@/components/ds/tag';
 import { Section } from './Section';
+import { PREVIEW_AVATAR_IMAGE } from './specimen';
 
 const VARIANTS = ['primary', 'secondary', 'plain', 'danger'] as const;
 const TONES: StatusTone[] = ['success', 'warning', 'danger', 'info'];
@@ -33,9 +34,12 @@ export function BasicsSection() {
           <Tag tone="warning">Expiring</Tag>
           <Tag tone="danger">Failed</Tag>
           <Tag tone="info">New</Tag>
+          <Avatar name="Sam" size="sm" />
           <Avatar name="Abu" />
           <Avatar name="Shawn" size="lg" />
+          <Avatar name="Photo avatar" src={PREVIEW_AVATAR_IMAGE} size="lg" />
         </div>
+        <Separator decorative={false} />
         <div className="flex h-6 items-center gap-4">
           <Spinner label="Reading 9 files" />
           <Separator orientation="vertical" decorative={false} />

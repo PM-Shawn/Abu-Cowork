@@ -29,6 +29,15 @@ export function OverlaySection() {
     setAnswer(confirmed ? 'deleted' : 'kept');
   };
 
+  const askToArchive = async () => {
+    const confirmed = await confirm({
+      title: 'Move this task to the archive?',
+      message: 'You can bring it back from the archive at any time.',
+      confirmLabel: 'Move',
+    });
+    setAnswer(confirmed ? 'archived' : 'kept');
+  };
+
   return (
     <Section id="overlays" title="Menus, popovers and dialogs">
       <div className="flex flex-wrap items-center gap-3">
@@ -36,6 +45,7 @@ export function OverlaySection() {
           <MenuLabel>Task</MenuLabel>
           <MenuItem icon={AppIcons.rename} shortcut="⌘R">Rename</MenuItem>
           <MenuItem icon={AppIcons.copy}>Copy link</MenuItem>
+          <MenuItem icon={AppIcons.share} disabled>Share (not available)</MenuItem>
           <MenuSeparator />
           <MenuItem icon={AppIcons.delete} tone="danger">Delete</MenuItem>
         </Menu>
@@ -65,7 +75,24 @@ export function OverlaySection() {
         >
           <TextField aria-label="New name" placeholder="New name" value={draft} onChange={(event) => setDraft(event.target.value)} />
         </Dialog>
+        <Dialog
+          size="sm"
+          title="Small dialog"
+          description="The narrow width, for short questions."
+          trigger={<Button>Small dialog</Button>}
+          footer={<DialogClose asChild><Button variant="primary">Done</Button></DialogClose>}
+        />
+        <Dialog
+          size="lg"
+          title="Large dialog"
+          description="The wide width, for forms and lists."
+          trigger={<Button>Large dialog</Button>}
+          footer={<DialogClose asChild><Button variant="primary">Done</Button></DialogClose>}
+        >
+          <TextField aria-label="Folder path" placeholder="Folder path" />
+        </Dialog>
         <Button variant="danger" onClick={() => { void askToDelete(); }}>Confirm dialog</Button>
+        <Button onClick={() => { void askToArchive(); }}>Confirm (default tone)</Button>
         <span className="text-ui-sm text-label-secondary">{`Last answer: ${answer}`}</span>
       </div>
     </Section>

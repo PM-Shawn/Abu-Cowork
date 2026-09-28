@@ -40,6 +40,7 @@ export function ContainerSection() {
             <TabList label="Task panels">
               <Tab value="summary">Summary</Tab>
               <Tab value="files">Files</Tab>
+              <Tab value="history" disabled>History</Tab>
             </TabList>
             <TabPanel value="summary">
               <Disclosure title="Steps" defaultOpen><Steps label="Progress" steps={STEPS} /></Disclosure>

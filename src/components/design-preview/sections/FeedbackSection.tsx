@@ -43,6 +43,7 @@ export function FeedbackSection() {
         </Card>
         <div className="flex flex-col gap-2">
           {(Object.keys(MESSAGES) as StatusTone[]).map((tone) => <InlineMessage key={tone} tone={tone}>{MESSAGES[tone]}</InlineMessage>)}
+          <InlineMessage tone="warning" action={<Button size="sm">Renew</Button>}>Renew the key before it expires.</InlineMessage>
         </div>
         <div className="flex flex-wrap items-start gap-2">
           {TOAST_TYPES.map((type) => <Button key={type} onClick={() => show(type)}>{`Show ${type}`}</Button>)}

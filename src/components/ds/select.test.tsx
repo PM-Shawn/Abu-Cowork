@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { Combobox } from './combobox';
 import { Popover } from './popover';
@@ -94,6 +94,29 @@ describe('Combobox', () => {
     expect(option).toHaveAttribute('data-disabled', 'false');
     expect(option).not.toHaveClass('data-[disabled]:opacity-40');
     expect(option).toHaveClass('data-[disabled=true]:opacity-40');
+  });
+
+  it('shows a disabled option that cannot be picked', async () => {
+    const user = userEvent.setup();
+    const onValueChange = vi.fn();
+    render(
+      <Combobox
+        label="Model"
+        value=""
+        onValueChange={onValueChange}
+        options={[...MODELS, { value: 'retired', label: 'Retired model', disabled: true }]}
+        placeholder="Choose a model"
+        searchPlaceholder="Search models"
+        emptyText="No matching model"
+      />,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
+    const retired = screen.getByRole('option', { name: 'Retired model' });
+    expect(retired).toHaveAttribute('aria-disabled', 'true');
+    expect(retired).toHaveAttribute('data-disabled', 'true');
+    await user.click(retired);
+    expect(onValueChange).not.toHaveBeenCalled();
   });
 
   it('matches keywords and says when nothing matches', async () => {

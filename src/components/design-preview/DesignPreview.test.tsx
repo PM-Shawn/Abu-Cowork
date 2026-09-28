@@ -48,4 +48,53 @@ describe('DesignPreview', () => {
     expect(root.hasAttribute('data-transparency')).toBe(false);
     expect(root.hasAttribute('data-motion')).toBe(false);
   });
+
+  it('shows every color token with a value that follows the appearance', async () => {
+    const user = userEvent.setup();
+    root.style.setProperty('--ds-focus', '#111111');
+    try {
+      render(<DesignPreview />);
+      for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft']) {
+        expect(document.querySelector(`[data-token="${name}"]`), name).not.toBeNull();
+      }
+      const focusValue = () => document.querySelector('[data-token="focus"] [data-token-value]')?.textContent;
+      expect(focusValue()).toBe('#111111');
+      root.style.setProperty('--ds-focus', '#222222');
+      await user.click(within(screen.getByRole('group', { name: 'Appearance' })).getByRole('radio', { name: 'Dark' }));
+      expect(focusValue()).toBe('#222222');
+    } finally {
+      root.style.removeProperty('--ds-focus');
+    }
+  });
+
+  it('lists the layer, duration, easing, corner and elevation scales', () => {
+    render(<DesignPreview />);
+    const tokens = within(document.querySelector('[data-preview-section="tokens"]') as HTMLElement);
+    const table = tokens.getByRole('table', { name: 'Scales' });
+    for (const name of ['z-sticky', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip', 'duration-fast', 'duration-base', 'duration-slow', 'ease-enter', 'ease-exit', 'rounded-window', 'rounded-panel', 'rounded-control', 'shadow-panel', 'shadow-float', 'shadow-dialog']) {
+      expect(within(table).getByText(name), name).toBeInTheDocument();
+    }
+  });
+
+  it('shows the disabled, invalid and size variants', () => {
+    render(<DesignPreview />);
+    expect(screen.getByRole('textbox', { name: 'Disabled field' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'Disabled notes' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'Notes with an error' })).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('checkbox', { name: 'Disabled checkbox' })).toBeDisabled();
+    expect(screen.getByRole('slider', { name: 'Disabled volume' })).toHaveAttribute('data-disabled');
+    expect(screen.getByRole('combobox', { name: 'Disabled model' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Disabled model search' })).toBeDisabled();
+    expect(screen.getByRole('tab', { name: 'History' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Small dialog' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Large dialog' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm (default tone)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Renew' })).toBeInTheDocument();
+    const basics = within(document.querySelector('[data-preview-section="basics"]') as HTMLElement);
+    expect(basics.getAllByRole('separator').map((node) => node.getAttribute('aria-orientation') ?? 'horizontal').sort()).toEqual(['horizontal', 'vertical']);
+    expect(basics.getByRole('img', { name: 'Sam' })).toBeInTheDocument();
+    const icons = document.querySelector('[data-preview-icons]') as HTMLElement;
+    expect(icons.querySelectorAll('svg[width="14"]').length).toBeGreaterThan(0);
+    expect(icons.querySelectorAll('svg[width="20"]').length).toBeGreaterThan(0);
+  });
 });

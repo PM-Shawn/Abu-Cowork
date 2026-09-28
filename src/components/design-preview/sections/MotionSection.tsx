@@ -19,7 +19,8 @@ export function MotionSection() {
           <div
             key={`${label}-${run}`}
             data-ds-motion
-            className={cn('flex h-16 w-32 items-center justify-center rounded-panel bg-raised text-ui-sm text-label-secondary shadow-float animate-in fade-in-0 zoom-in-97 ease-enter', duration)}
+            data-state="open"
+            className={cn('flex h-16 w-32 items-center justify-center rounded-panel bg-raised text-ui-sm text-label-secondary shadow-float data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-97 data-[state=open]:ease-enter', duration)}
           >
             {label}
           </div>

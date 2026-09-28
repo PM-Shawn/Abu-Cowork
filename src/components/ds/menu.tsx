@@ -33,6 +33,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
           onCloseAutoFocus={onCloseAutoFocus}
           data-ds-layer
           data-ds-motion
+          data-electron-no-drag
           className={cn(MENU_PANEL, FLOAT_SURFACE, FLOAT_MOTION)}
         >
           <LayerScope id={id}>

@@ -51,6 +51,7 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
           onCloseAutoFocus={onCloseAutoFocus}
           data-ds-layer
           data-ds-motion
+          data-electron-no-drag
           className={cn('z-popover w-(--radix-popover-trigger-width) min-w-56 origin-(--radix-popover-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
         >
           <LayerScope id={id}>

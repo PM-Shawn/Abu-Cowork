@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { getLanguageSetting, setLanguage } from '@/i18n';
 import type { Toast } from '@/stores/toastStore';
 import { Button } from './button';
+import { Dialog } from './dialog';
 import { EmptyState } from './empty-state';
 import { AppIcons } from './icons';
 import { InlineMessage } from './inline-message';
@@ -15,9 +17,25 @@ import { MAX_VISIBLE_TOASTS, Toaster } from './toaster';
 
 const toast = (n: number, extra: Partial<Toast> = {}): Toast => ({ id: `t${n}`, type: 'success', title: `Saved ${n}`, ...extra });
 
-// Radix also copies each toast into a hidden live region for screen readers, so look
-// for titles inside the visible notification area only.
-const shown = () => within(screen.getByRole('region'));
+const shown = () => within(screen.getByRole('status', { name: 'Notifications' }));
+// Titles of the rendered notifications, in DOM order.
+const shownTitles = () => [...document.querySelectorAll('li[data-ds-motion]')].map((item) => item.textContent ?? '');
+
+function DialogAndToasts({ toasts, onDialogChange }: { toasts: Toast[]; onDialogChange: (open: boolean) => void }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => { onDialogChange(next); setOpen(next); }}
+        title="Rename task"
+      >
+        <input aria-label="New name" />
+      </Dialog>
+      <Toaster toasts={toasts} onDismiss={() => undefined} />
+    </>
+  );
+}
 
 function ToasterHarness({ initial, onDismissed }: { initial: Toast[]; onDismissed?: (id: string) => void }) {
   const [toasts, setToasts] = useState(initial);
@@ -64,7 +82,40 @@ describe('feedback components', () => {
     expect(shown().getByText('Saved 5')).toBeInTheDocument();
   });
 
-  it('Toaster runs an action such as Undo and then dismisses the notification', async () => {
+  it('Toaster names its list with the localized label', () => {
+    const previous = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      render(<ToasterHarness initial={[toast(1)]} />, { wrapper: DesignSystemProvider });
+      const list = screen.getByRole('status', { name: '通知' });
+      expect(list).toHaveAttribute('aria-live', 'polite');
+      expect(list).toHaveAttribute('data-electron-no-drag');
+    } finally {
+      setLanguage(previous);
+    }
+  });
+
+  it('Toaster keeps store order when a hidden older notification comes back', async () => {
+    const user = userEvent.setup();
+    render(<ToasterHarness initial={[1, 2, 3, 4].map((n) => toast(n))} />, { wrapper: DesignSystemProvider });
+    expect(shownTitles()).toEqual(['Saved 2', 'Saved 3', 'Saved 4']);
+    const newest = document.querySelectorAll('li[data-ds-motion]')[2];
+    await user.click(within(newest as HTMLElement).getByRole('button', { name: 'Close' }));
+    expect(shownTitles()).toEqual(['Saved 1', 'Saved 2', 'Saved 3']);
+  });
+
+  it('Escape closes an open dialog even after a notification arrives', async () => {
+    const user = userEvent.setup();
+    const onDialogChange = vi.fn();
+    const { rerender } = render(<DialogAndToasts toasts={[]} onDialogChange={onDialogChange} />, { wrapper: DesignSystemProvider });
+    rerender(<DialogAndToasts toasts={[toast(1, { title: 'Copied' })]} onDialogChange={onDialogChange} />);
+    await user.keyboard('{Escape}');
+    expect(onDialogChange).toHaveBeenCalledWith(false);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(shownTitles()).toEqual(['Copied']);
+  });
+
+  it('Toaster runs an action such as Undo and then dismisses the notification exactly once', async () => {
     const user = userEvent.setup();
     const onUndo = vi.fn();
     const onDismissed = vi.fn();
@@ -74,8 +125,10 @@ describe('feedback components', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Undo' }));
     expect(onUndo).toHaveBeenCalledOnce();
+    expect(onDismissed).toHaveBeenCalledOnce();
     expect(onDismissed).toHaveBeenCalledWith('t1');
-    expect(shown().queryByText('Task deleted')).toBeNull();
+    expect(onUndo.mock.invocationCallOrder[0]).toBeLessThan(onDismissed.mock.invocationCallOrder[0]);
+    expect(shownTitles()).toEqual([]);
   });
 
   it('Toaster closes a notification from its close button', async () => {

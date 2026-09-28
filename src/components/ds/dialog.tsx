@@ -58,10 +58,11 @@ export function Dialog({
         {trigger && <DialogPrimitive.Trigger asChild>{trigger}</DialogPrimitive.Trigger>}
         <DialogPrimitive.Portal container={container}>
           {/* eslint-disable-next-line no-restricted-syntax -- Dialog owns the app's only scrim */}
-          <DialogPrimitive.Overlay data-ds-motion className={cn('fixed inset-0 z-dialog bg-scrim', SCRIM_MOTION)} />
+          <DialogPrimitive.Overlay data-ds-motion data-electron-no-drag className={cn('fixed inset-0 z-dialog bg-scrim', SCRIM_MOTION)} />
           <DialogPrimitive.Content
             data-ds-layer
             data-ds-motion
+            data-electron-no-drag
             role={role}
             onCloseAutoFocus={onCloseAutoFocus}
             {...(description ? {} : { 'aria-describedby': undefined })}
@@ -80,7 +81,7 @@ export function Dialog({
       </DialogPrimitive.Root>
       <AlertDialogPrimitive.Root open={pendingDiscard !== null} onOpenChange={(next) => { if (!next) setPendingDiscard(null); }}>
         <AlertDialogPrimitive.Portal container={container}>
-          <AlertDialogPrimitive.Content data-ds-layer data-ds-motion className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}>
+          <AlertDialogPrimitive.Content data-ds-layer data-ds-motion data-electron-no-drag className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}>
             <AlertDialogPrimitive.Title className="text-title text-label">{t.designSystem.discardTitle}</AlertDialogPrimitive.Title>
             <AlertDialogPrimitive.Description className="mt-1 text-ui text-label-secondary">
               {t.designSystem.discardMessage}

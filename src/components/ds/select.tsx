@@ -44,6 +44,7 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
           onCloseAutoFocus={onCloseAutoFocus}
           data-ds-layer
           data-ds-motion
+          data-electron-no-drag
           className={cn('z-popover max-h-72 min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden p-1', FLOAT_SURFACE, FLOAT_MOTION)}
         >
           <SelectPrimitive.Viewport>

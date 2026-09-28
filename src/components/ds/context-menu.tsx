@@ -34,6 +34,7 @@ export function ContextMenu({ children, content, onOpenChange }: {
           <ContextMenuPrimitive.Content
             data-ds-layer
             data-ds-motion
+            data-electron-no-drag
             onCloseAutoFocus={onCloseAutoFocus}
             className={cn('z-popover min-w-40 origin-(--radix-context-menu-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
           >

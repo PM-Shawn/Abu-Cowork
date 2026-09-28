@@ -42,7 +42,8 @@ export function installDesignPreview(): () => void {
     if (event.key === 'Escape' && host) {
       // Keep Escape from reaching the app's own handlers behind the preview.
       event.preventDefault();
-      event.stopPropagation();
+      // Immediate: other window capture listeners (e.g. dialogs) must not see it either.
+      event.stopImmediatePropagation();
       close();
     }
   };

@@ -68,6 +68,18 @@ describe('installDesignPreview', () => {
     expect(appHandler).not.toHaveBeenCalled();
   });
 
+  it('keeps the Escape that closes the preview away from later capture listeners on window', () => {
+    uninstall = installDesignPreview();
+    const laterCaptureHandler = vi.fn();
+    window.addEventListener('keydown', laterCaptureHandler, { capture: true });
+    press(OPEN);
+    laterCaptureHandler.mockClear();
+    press({ key: 'Escape', code: 'Escape' });
+    window.removeEventListener('keydown', laterCaptureHandler, { capture: true });
+    expect(document.querySelector('[data-design-preview-root]')).toBeNull();
+    expect(laterCaptureHandler).not.toHaveBeenCalled();
+  });
+
   it('does nothing on the shortcut after the uninstaller runs', () => {
     const remove = installDesignPreview();
     remove();

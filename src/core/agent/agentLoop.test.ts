@@ -17,6 +17,7 @@ import {
   runAgentLoop,
 } from './agentLoop';
 import { trimOldScreenshots } from '../context/contextManager';
+import { resetCalibration } from '../context/tokenEstimator';
 import { resolveSubagentToolNames } from './subagentToolRoster';
 import { applyTeamLeaderRoute } from '../team/leaderRoute';
 import type { Message, ToolDefinition, ToolResultContent, SubagentDefinition, StreamEvent } from '../../types';
@@ -42,6 +43,8 @@ vi.mock('../llm/contextWindowProbe', () => ({ probeContextWindow: mockProbeConte
 beforeEach(() => {
   mockProbeContextWindow.mockReset();
   mockProbeContextWindow.mockResolvedValue(undefined);
+  // 跑过的用例会按上报的用量校准估算比例（模块级状态），不清掉会让后面用例的估算变小
+  resetCalibration();
 });
 
 describe('runAgentLoop live-run queue ownership', () => {
@@ -1272,7 +1275,7 @@ describe('服务说内容太长后按真实上限恢复', () => {
   it('记住报错里的上限并带上运行开始时服务报告的值，按新上限重试', async () => {
     const { useChatStore, LLMError, chat, recordContextWindow, restore } = await setup();
     mockProbeContextWindow.mockResolvedValue(32768);
-    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 8192 }));
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 16384 }));
     try {
       const conversationId = useChatStore.getState().createConversation();
       const result = await runAgentLoop(conversationId, 'hello');
@@ -1281,11 +1284,11 @@ describe('服务说内容太长后按真实上限恢复', () => {
       expect(chat).toHaveBeenCalledTimes(2);
       // 报错已经说了上限，不再询问服务
       expect(mockProbeContextWindow).toHaveBeenCalledOnce();
-      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 8192, 32768);
+      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 16384, 32768);
       const retryOptions = chat.mock.calls[1][1] as { maxTokens: number };
-      expect(retryOptions.maxTokens).toBeLessThanOrEqual(8192 / 4);
+      expect(retryOptions.maxTokens).toBeLessThanOrEqual(16384 / 4);
       const conversation = useChatStore.getState().conversations[conversationId];
-      expect(conversation.contextUsage?.tokensMax).toBe(8192);
+      expect(conversation.contextUsage?.tokensMax).toBe(16384);
       const assistantText = conversation.messages
         .filter((message) => message.role === 'assistant')
         .map((message) => typeof message.content === 'string' ? message.content : '')
@@ -1322,9 +1325,11 @@ describe('服务说内容太长后按真实上限恢复', () => {
       label: 'qwen 类',
       caps: { thinking: 'qwen' as const, maxOutputTokens: 8192, contextWindow: 32768 },
       probed: 32768,
-      learned: 8192,
+      // 按原窗口 32768 算出的思考预算是 4096；学到 16384 后回答预算为 4096，
+      // 思考预算不重新计算就会等于回答预算
+      learned: 16384,
       // 回答预算不超过学到窗口的四分之一
-      expectedMaxTokens: 8192 / 4,
+      expectedMaxTokens: 16384 / 4,
       expectedEnableThinking: undefined,
     },
     {

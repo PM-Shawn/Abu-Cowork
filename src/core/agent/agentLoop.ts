@@ -118,6 +118,7 @@ import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
+import { isWindows } from '../../utils/platform';
 import { prefetchTools } from '../tools/toolPrefetch';
 import {
   classifyTools,
@@ -1900,7 +1901,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         : deferredTools.length === 0
           ? rawTools.filter(tool => tool.name !== TOOL_NAMES.TOOL_SEARCH)
           : rawTools
-      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier));
+      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows()));
       options?.runtimeEvent?.('agent_tool_exposure', {
         conversationId,
         loopId,
@@ -1923,7 +1924,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const toolBreakdownWeights = computeToolBreakdownWeights(tools);
       const toolTokens = toolBreakdownWeights.tools + toolBreakdownWeights.mcp;
       const dynamicCapabilities = buildDynamicCapabilities(tools);
-      const deferredToolsSummary = buildDeferredToolsSummary(deferredTools);
+      // 摘要取工具说明的首句，延后加载的工具同样按电脑操控档位换成对应版本
+      const deferredToolsSummary = buildDeferredToolsSummary(
+        deferredTools.map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows())),
+      );
       const activeSkillContent = await loadActiveSkillContent(
         conv?.activeSkills,
         conv?.activeSkillArgs,

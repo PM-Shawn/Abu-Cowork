@@ -163,6 +163,8 @@ import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
+import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
+import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
@@ -380,6 +382,9 @@ interface RunSession {
   imReplyTarget?: { platform: string; chatId: string };
   /** Frozen shell-side mirror of the roster sent to the sidecar loop. */
   offeredToolNames: ReadonlySet<string>;
+  /** 子代理模型的电脑操控档位与能否看图，按发给 sidecar 的同一份设置快照由外壳自己算出 */
+  computerUseTier: ComputerUseModelTier;
+  supportsVision: boolean;
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
   firstToolInvokeArrived: boolean;
   /** Progress received before the sidecar run reaches a no-rerun commit point. */
@@ -421,6 +426,9 @@ function buildTrustedSubagentToolContext(
     abortSignal: session.options.signal,
     // 本次运行给子代理的工具名单由 shell 自己保存，不用 sidecar 发来的副本
     offeredToolNames: [...session.offeredToolNames],
+    // 电脑操控档位与能否看图决定截图、坐标动作放不放行，同样用 shell 自己算的值
+    computerUseTier: session.computerUseTier,
+    supportsVision: session.supportsVision,
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
     commandConfirmCallback: session.options.commandConfirmCallback,
@@ -989,6 +997,8 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     ...withPreloadedSkills,
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
+  // 与 sidecar 里的子代理循环用同一份设置快照、同一算法
+  const delegatedCapabilities = resolveDelegatedModelCapabilities(options.agent.model, params.settingsSnapshot);
   const session: RunSession = {
     runId,
     options: sessionOptions,
@@ -1003,6 +1013,8 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         options.blockedTools,
       ).map((tool) => tool.name),
     ),
+    computerUseTier: delegatedCapabilities.computerUseTier,
+    supportsVision: delegatedCapabilities.vision,
     firstToolInvokeArrived: false,
     bufferedProgress: [],
     progressApplyTail: Promise.resolve(),

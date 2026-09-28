@@ -37,6 +37,7 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
 import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -1512,11 +1513,29 @@ function assertWireOfferedToolNames(incoming: ToolExecutionContext | undefined):
   }
 }
 
+const COMPUTER_USE_TIERS: ReadonlySet<unknown> = new Set<ComputerUseModelTier>(['full', 'structured', 'unsupported', 'unknown']);
+
+/**
+ * 电脑操控档位与能否看图同样只由 sidecar 里的运行时写入（agentLoop 按入口模型算出）。
+ * 工具说明、截图与坐标动作都按它们取舍，值不在约定范围内说明两端不一致，就地报错。
+ */
+function assertWireModelCapabilities(incoming: ToolExecutionContext | undefined): void {
+  const tier: unknown = incoming?.computerUseTier;
+  if (tier !== undefined && !COMPUTER_USE_TIERS.has(tier)) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: computerUseTier must be one of full, structured, unsupported, unknown');
+  }
+  const vision: unknown = incoming?.supportsVision;
+  if (vision !== undefined && typeof vision !== 'boolean') {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: supportsVision must be a boolean');
+  }
+}
+
 function contextForSession(
   session: RunSession,
   incoming: ToolExecutionContext | undefined,
 ): ToolExecutionContext {
   assertWireOfferedToolNames(incoming);
+  assertWireModelCapabilities(incoming);
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,

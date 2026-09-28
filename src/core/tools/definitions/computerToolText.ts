@@ -33,17 +33,37 @@ Two cases that read as harmless and are not:
   say what you are unsure about rather than assuming a plain name is a
   document.`;
 
-const STRUCTURED_ACTIONS = [
-  'list_windows', 'get_window_state', 'get_app_state', 'activate_app', 'launch_app',
-  'click', 'type', 'perform_action', 'scroll', 'key', 'wait',
-] as const;
+/**
+ * 看不了图时给模型的动作。Windows 上的 scroll 走坐标通道，执行时要求截图编号
+ * （computerTools.ts 执行前的 Windows 坐标检查），看不了图时没有截图，所以不列。
+ */
+function structuredActions(windows: boolean): readonly string[] {
+  return [
+    'list_windows', 'get_window_state', 'get_app_state', 'activate_app', 'launch_app',
+    'click', 'type', 'perform_action', ...(windows ? [] : ['scroll']), 'key', 'wait',
+  ];
+}
+
+/** 会写入窗口、需要 expected_state_id 的动作 */
+function structuredWriteActions(windows: boolean): readonly string[] {
+  return ['click', 'type', 'perform_action', ...(windows ? [] : ['scroll']), 'key'];
+}
 
 /** 看不了图时不给的参数：截图编号、截图裁剪、所有坐标。 */
 const STRUCTURED_OMITTED_PROPERTIES: ReadonlySet<string> = new Set([
   'screenshot_id', 'x', 'y', 'startX', 'startY', 'endX', 'endY', 'path', 'width', 'height', 'show_user',
 ]);
 
-export const STRUCTURED_COMPUTER_DESCRIPTION = `Operate applications through their accessibility (AX) tree. The current model cannot see images, so this tool never returns pictures of the screen: you read each window as text (elements with ids, roles, labels and values) and act on elements by id.
+/** Windows 上不列 scroll，它专用的参数也不给 */
+const STRUCTURED_WINDOWS_OMITTED_PROPERTIES: ReadonlySet<string> = new Set(['direction', 'amount']);
+
+const STRUCTURED_SCROLL_LINE = {
+  mac: '• scroll          Scroll at an element. element_id=N, direction (up/down/left/right), amount (default 3).',
+  windows: '• scrolling       There is no scroll action: click the target element by element_id so it has focus, then use key to send PageDown or ArrowDown.',
+} as const;
+
+export function structuredComputerDescription(windows: boolean): string {
+  return `Operate applications through their accessibility (AX) tree. The current model cannot see images, so this tool never returns pictures of the screen: you read each window as text (elements with ids, roles, labels and values) and act on elements by id.
 
 [Workflow]
 ① list_windows when an app can have multiple visible windows, then get_window_state with exactly one returned window_ref. get_app_state remains a compatibility alias. When the user refers to the window active at submission, explicitly pass target_selector="foreground-at-submit".
@@ -72,27 +92,47 @@ ${COMPUTER_SAFETY_RULES}
 • click           Click an element. element_id=N (AXPress). Optional button (left/right/middle/double).
 • type            Type text. element_id=N (AXSetValue) + text, or text alone (keyboard input into the focused element). Text containing line breaks is inserted through the clipboard automatically and presses nothing, so type the whole multi-line block in one call rather than pressing Return between lines (Return may send or submit). Optional method=paste (clipboard + Ctrl+V) only after a previous type verified as no change.
 • perform_action  Execute a secondary AX action, e.g. context menu (AXShowMenu), select (AXPick), increment/decrement (AXIncrement/AXDecrement). Parameters: element_id, action_name.
-• scroll          Scroll at an element. element_id=N, direction (up/down/left/right), amount (default 3).
+${windows ? STRUCTURED_SCROLL_LINE.windows : STRUCTURED_SCROLL_LINE.mac}
 • key             Press a named key or a modifier chord. Parameters: key (Return/Tab/Escape/Space/ArrowUp/Home/F1…), modifiers ([ctrl/shift/alt/meta]). A single plain character is injected as text (IME-safe); for words use type.
 • wait            Wait. Parameters: duration (ms, default 1000, max 10000).`;
+}
 
 /**
  * 当前模型看不了图（structured 档位）时，电脑操控工具换成只读窗口文字的版本：
- * 动作列表去掉截图，参数去掉截图编号与坐标。执行层的 errNoVision 拦截仍然保留。
+ * 动作列表去掉截图，参数去掉截图编号与坐标；Windows 上再去掉 scroll。
+ * 执行层对看不了图的截图、坐标动作另有 errNoVision 拦截。
  */
-export function adaptComputerToolForTier(tool: ToolDefinition, tier: ComputerUseModelTier | undefined): ToolDefinition {
+export function adaptComputerToolForTier(
+  tool: ToolDefinition,
+  tier: ComputerUseModelTier | undefined,
+  windows: boolean,
+): ToolDefinition {
   if (tool.name !== TOOL_NAMES.COMPUTER || tier !== 'structured') return tool;
   const properties = Object.fromEntries(
-    Object.entries(tool.inputSchema.properties).filter(([key]) => !STRUCTURED_OMITTED_PROPERTIES.has(key)),
+    Object.entries(tool.inputSchema.properties).filter(([key]) =>
+      !STRUCTURED_OMITTED_PROPERTIES.has(key) && !(windows && STRUCTURED_WINDOWS_OMITTED_PROPERTIES.has(key))),
   );
+  // 这两个参数的说明里列着动作名，只保留这一版还提供的动作
+  if (properties.expected_state_id) {
+    properties.expected_state_id = {
+      ...properties.expected_state_id,
+      description: `Required for ${structuredWriteActions(windows).join('/')}. Use the exact state_id from the latest get_app_state. It expires after 30 seconds and is consumed once.`,
+    };
+  }
+  if (properties.element_id) {
+    properties.element_id = {
+      ...properties.element_id,
+      description: `Element id from get_app_state output. Used with ${['click', 'type', 'perform_action', ...(windows ? [] : ['scroll'])].join(', ')}.`,
+    };
+  }
   return {
     ...tool,
-    description: STRUCTURED_COMPUTER_DESCRIPTION,
+    description: structuredComputerDescription(windows),
     inputSchema: {
       ...tool.inputSchema,
       properties: {
         ...properties,
-        action: { type: 'string', description: `Action: ${STRUCTURED_ACTIONS.join(', ')}` },
+        action: { type: 'string', description: `Action: ${structuredActions(windows).join(', ')}` },
       },
     },
   };

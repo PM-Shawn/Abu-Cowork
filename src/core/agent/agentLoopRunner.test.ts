@@ -1990,6 +1990,42 @@ describe('agentLoopRunner', () => {
       expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
 
+    // 模型能不能看图、电脑操控档位由 sidecar 里的运行时写入，工具说明与电脑操控都按它们取舍
+    it('tool.invoke carries the model tier and vision from the sidecar run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'tool_search',
+        input: { query: 'computer' },
+        context: { computerUseTier: 'structured', supportsVision: false },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        computerUseTier: 'structured',
+        supportsVision: false,
+      }));
+    });
+
+    it.each([
+      ['an unknown tier', { computerUseTier: 'vision' }, /computerUseTier must be one of/],
+      ['a non-string tier', { computerUseTier: 1 }, /computerUseTier must be one of/],
+      ['a non-boolean vision flag', { supportsVision: 'no' }, /supportsVision must be a boolean/],
+    ])('tool.invoke and approval.check refuse %s', async (_label, context, message) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const params = { runId: 'run-1', toolName: 'read_file', input: {}, context };
+
+      await expect(handlerFor(onSidecarRequest, 'tool.invoke')(params)).rejects.toThrow(message);
+      await expect(handlerFor(onSidecarRequest, 'approval.check')(params)).rejects.toThrow(message);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
     it('tool.invoke overwrites a forged IM reply target with the shell session target', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

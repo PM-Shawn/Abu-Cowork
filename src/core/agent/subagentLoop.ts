@@ -23,15 +23,16 @@ import {
   resolveCapabilities,
   computeReasoningParams,
   isReasoningStarvation,
-  deriveDeclaredDefaults,
   type ModelCapabilities,
 } from '../llm/modelCapabilities';
+import { resolveDelegatedDeclaredCapabilities, resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
+import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
+import { isWindows } from '../../utils/platform';
 import { resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor } from '../llm/adapterKind';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
-import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
@@ -78,20 +79,6 @@ import {
 import { preflightDelegatedMedia, type DelegatedMediaFailureReason } from '../subagent/delegatedMediaPreflight';
 
 const logger = createLogger('subagentLoop');
-
-function resolveDelegatedDeclaredCapabilities(
-  provider: ReturnType<typeof getActiveProvider>,
-  modelId: string,
-) {
-  const declared = resolveModelDeclared(provider, modelId);
-  if (provider?.source !== 'custom' || declared?.supportsImages !== undefined) {
-    return declared;
-  }
-  return {
-    ...declared,
-    supportsImages: deriveDeclaredDefaults(modelId).supportsImages,
-  };
-}
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -628,6 +615,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   const adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
+  // 子代理自己的模型能不能看图、电脑操控走哪一档（与主循环同一算法）
+  const agentCapabilities = resolveDelegatedModelCapabilities(agent.model, settings);
   const delegatedPreflight = preflightDelegatedMedia(
     options.delegatedUserTurn,
     startupCaps,
@@ -770,7 +759,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       agent,
       options.allowedTools,
       options.blockedTools,
-    );
+    ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows()));
     // The resolver always strips orchestration tools from sub-agents to prevent recursive
     // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
     // is no depth/total-agent cap). Multi-agent orchestration is a main-agent-only
@@ -1294,6 +1283,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             reportBrowserAllow: options.reportBrowserAllow,
             abortSignal: signal,
             offeredToolNames: [...offeredToolNames],
+            // 电脑操控按子代理自己的模型取舍，不沿用会话的全局模型
+            computerUseTier: agentCapabilities.computerUseTier,
+            supportsVision: agentCapabilities.vision,
             // Forward the IM reply target so send_file works from a subagent
             // delegated inside an IM run (without it the tool would falsely
             // report "not in an IM channel").

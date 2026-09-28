@@ -1410,6 +1410,25 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       return format(t.errModelUnknown, { model: context.modelId ?? 'current model' });
     }
 
+    // Whether the active model can understand images. Non-vision models (many
+    // Chinese / local models, e.g. GLM, Qwen, MiMo) reject image inputs — sending
+    // a screenshot makes the provider fail the whole request ("No endpoints found
+    // that support image input"), crashing the agent turn. For those models the
+    // pixel/screenshot path is useless; we steer to the AX path instead.
+    const modelSupportsVision = context?.supportsVision ?? resolveCapabilities(
+      getSettingsReader().getSnapshot().activeModel.modelId,
+    ).vision;
+    // 只能靠截图或截图坐标完成的动作：看不了图时在开设置、开会话、弹确认之前就拒绝
+    if (!modelSupportsVision && (
+      action === 'screenshot'
+      || action === 'get_screen_state'
+      || action === 'move'
+      || action === 'drag'
+      || ((action === 'click' || action === 'scroll') && input.element_id === undefined)
+    )) {
+      return t.errNoVision;
+    }
+
     // The user-facing switch is a hard gate. An interactive request can open
     // the setup surface, but neither the model nor a background task may grant
     // itself Computer Use.
@@ -1478,15 +1497,6 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         return stateErrorMessage(error, t);
       }
     }
-
-    // Whether the active model can understand images. Non-vision models (many
-    // Chinese / local models, e.g. GLM, Qwen, MiMo) reject image inputs — sending
-    // a screenshot makes the provider fail the whole request ("No endpoints found
-    // that support image input"), crashing the agent turn. For those models the
-    // pixel/screenshot path is useless; we steer to the AX path instead.
-    const modelSupportsVision = context?.supportsVision ?? resolveCapabilities(
-      getSettingsReader().getSnapshot().activeModel.modelId,
-    ).vision;
 
     // Check session limits (max steps / timeout)
     const limitError = checkCUSessionLimits();
@@ -1885,9 +1895,6 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       switch (action) {
         case 'screenshot':
         case 'get_screen_state':
-          if (!modelSupportsVision) {
-            return t.errNoVision;
-          }
           return await executeScreenshot(
             sessionInput,
             context?.workspacePath,

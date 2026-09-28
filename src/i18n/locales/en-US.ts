@@ -19,6 +19,7 @@ const enUS: TranslationDict = {
 
   designSystem: {
     discardTitle: 'Discard these changes?',
+    discardMessage: 'What you typed will not be kept.',
     discard: 'Discard',
     keepEditing: 'Keep editing',
   },

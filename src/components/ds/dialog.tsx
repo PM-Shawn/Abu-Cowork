@@ -50,7 +50,7 @@ export function Dialog({
     onDiscard();
   };
 
-  const id = useLayer('dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  const id = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
 
   return (
     <>
@@ -79,8 +79,11 @@ export function Dialog({
       </DialogPrimitive.Root>
       <AlertDialogPrimitive.Root open={pendingDiscard !== null} onOpenChange={(next) => { if (!next) setPendingDiscard(null); }}>
         <AlertDialogPrimitive.Portal container={container}>
-          <AlertDialogPrimitive.Content data-ds-layer data-ds-motion aria-describedby={undefined} className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}>
+          <AlertDialogPrimitive.Content data-ds-layer data-ds-motion className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}>
             <AlertDialogPrimitive.Title className="text-title text-label">{t.designSystem.discardTitle}</AlertDialogPrimitive.Title>
+            <AlertDialogPrimitive.Description className="mt-1 text-ui text-label-secondary">
+              {t.designSystem.discardMessage}
+            </AlertDialogPrimitive.Description>
             <div className="mt-6 flex justify-end gap-2">
               <AlertDialogPrimitive.Cancel asChild>
                 <Button variant="secondary">{t.designSystem.keepEditing}</Button>

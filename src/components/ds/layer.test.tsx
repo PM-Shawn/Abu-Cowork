@@ -132,6 +132,33 @@ describe('LayerProvider', () => {
     expect(screen.getByTestId('second')).toBeInTheDocument();
   });
 
+  it('stacks an alert over an open dialog and closes popovers', async () => {
+    const user = userEvent.setup();
+    render(
+      <LayerProvider>
+        <FakeLayer name="dialog" kind="dialog" dirty />
+        <FakeLayer name="menu" kind="popover" />
+        <FakeLayer name="alert" kind="alert" />
+      </LayerProvider>,
+    );
+    await user.click(screen.getByText('open dialog'));
+    await user.click(screen.getByText('open menu'));
+    await user.click(screen.getByText('open alert'));
+    expect(screen.getByTestId('dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('alert')).toBeInTheDocument();
+    expect(screen.queryByTestId('menu')).toBeNull();
+    expect(screen.queryByText('discard dialog')).toBeNull();
+  });
+
+  it('replaces an older alert with a new one', async () => {
+    const user = userEvent.setup();
+    render(<LayerProvider><FakeLayer name="older" kind="alert" /><FakeLayer name="newer" kind="alert" /></LayerProvider>);
+    await user.click(screen.getByText('open older'));
+    await user.click(screen.getByText('open newer'));
+    expect(screen.queryByTestId('older')).toBeNull();
+    expect(screen.getByTestId('newer')).toBeInTheDocument();
+  });
+
   it('asks a dirty dialog to discard before another dialog replaces it', async () => {
     const user = userEvent.setup();
     render(<LayerProvider><FakeLayer name="draft" kind="dialog" dirty /><FakeLayer name="other" kind="dialog" /></LayerProvider>);

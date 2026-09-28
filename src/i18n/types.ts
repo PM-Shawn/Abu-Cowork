@@ -35,6 +35,7 @@ export interface TranslationDict {
 
   designSystem: {
     discardTitle: string;
+    discardMessage: string;
     discard: string;
     keepEditing: string;
   };

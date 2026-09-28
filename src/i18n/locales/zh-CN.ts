@@ -19,6 +19,7 @@ const zhCN: TranslationDict = {
 
   designSystem: {
     discardTitle: '放弃这些内容？',
+    discardMessage: '已填写的内容不会保存。',
     discard: '放弃',
     keepEditing: '继续填写',
   },

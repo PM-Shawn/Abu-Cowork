@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useId, useLayoutEffect, useRef, useState } from 'react';
 
-export type LayerKind = 'dialog' | 'popover';
+// An alert is a question about whatever is on screen, so it stacks over an open dialog.
+export type LayerKind = 'dialog' | 'popover' | 'alert';
 
 export interface DialogGuard {
   isDirty: () => boolean;

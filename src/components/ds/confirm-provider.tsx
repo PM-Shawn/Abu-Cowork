@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ConfirmDialog } from './confirm-dialog';
 import { ConfirmContext, type Confirm, type ConfirmOptions } from './confirm-context';
 
@@ -10,6 +10,12 @@ interface Pending {
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
+
+  // A request still open when the provider goes away is answered like Cancel.
+  useEffect(() => () => {
+    pendingRef.current?.resolve(false);
+    pendingRef.current = null;
+  }, []);
 
   const confirm = useCallback<Confirm>((options) => new Promise<boolean>((resolve) => {
     pendingRef.current?.resolve(false);

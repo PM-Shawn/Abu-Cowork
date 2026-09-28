@@ -211,34 +211,6 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
 /** Tokens always reserved for the visible answer so reasoning can't starve it. */
 export const CONTENT_FLOOR_TOKENS = 4096;
 
-/**
- * Compute the effective context window for a model, clamped by the user's
- * preference. Used by both agentLoop (for compression/truncation thresholds)
- * and ContextIndicator (for the UI denominator) — keeping them aligned.
- *
- * Rule: take the MIN of any non-empty candidate among
- *   - the model's published contextWindow (from `resolveCapabilities`)
- *   - the user's configured `contextWindowSize` (typically 200000 by default)
- *   - the runtime-discovered contextWindow (if the provider returned one)
- *
- * This guarantees the UI never claims more context than the model actually
- * supports, even when the user setting is the project default of 200k but
- * the model is smaller (e.g. mimo / gpt-4o / kimi at 128k).
- */
-export function resolveEffectiveContextWindow(
-  modelId: string,
-  userSetting?: number,
-  discoveredContextWindow?: number,
-): number {
-  const modelCap = resolveCapabilities(modelId).contextWindow;
-  const candidates: number[] = [modelCap];
-  if (typeof userSetting === 'number' && userSetting > 0) candidates.push(userSetting);
-  if (typeof discoveredContextWindow === 'number' && discoveredContextWindow > 0) {
-    candidates.push(discoveredContextWindow);
-  }
-  return Math.min(...candidates);
-}
-
 export interface ReasoningRequestParams {
   /** Output token budget to request (max_tokens). */
   maxTokens: number;

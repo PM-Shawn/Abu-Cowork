@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveCapabilities,
-  resolveEffectiveContextWindow,
   computeReasoningParams,
   isReasoningStarvation,
   deriveDeclaredDefaults,
@@ -188,35 +187,6 @@ describe('modelCapabilities', () => {
 
     it('false on normal end_turn', () => {
       expect(isReasoningStarvation('end_turn', 0, 0)).toBe(false);
-    });
-  });
-
-  describe('resolveEffectiveContextWindow', () => {
-    it('returns model cap when no user setting or discovered value provided', () => {
-      // mimo-v2.5-pro falls back to FALLBACK_DEFAULT which has contextWindow=128000
-      expect(resolveEffectiveContextWindow('mimo-v2.5-pro')).toBe(128_000);
-    });
-
-    it('does NOT overstate when user setting exceeds model cap (the 200k-on-128k bug)', () => {
-      // User has settingsStore default of 200000, but the model is 128k.
-      // The effective window must be clamped to 128k so the indicator does not
-      // claim more headroom than the model actually has.
-      expect(resolveEffectiveContextWindow('mimo-v2.5-pro', 200_000)).toBe(128_000);
-    });
-
-    it('honours a smaller user setting as an intentional self-limit', () => {
-      // If the user sets a tighter window than the model cap, respect it.
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 100_000)).toBe(100_000);
-    });
-
-    it('clamps further when runtime-discovered cap is smaller still', () => {
-      // Provider returned a smaller window at runtime (e.g. tenant-scoped quota).
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 200_000, 50_000)).toBe(50_000);
-    });
-
-    it('ignores invalid (zero / negative / undefined) candidates', () => {
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 0)).toBe(200_000);
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', undefined, -5)).toBe(200_000);
     });
   });
 

@@ -1412,7 +1412,15 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarNotification, 'caps.record');
       handler({ providerId: 'p1', modelId: 'm1', field: 'contextWindow', value: 128000 });
-      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 128000);
+      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 128000, undefined);
+    });
+
+    it('contextWindow field with probe → recordContextWindow carries the service value', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'caps.record');
+      handler({ providerId: 'p1', modelId: 'm1', field: 'contextWindow', value: 6000, probe: 8192 });
+      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 6000, 8192);
     });
 
     it('reasoningObserved field → recordReasoningObserved', async () => {
@@ -5035,6 +5043,32 @@ describe('agentLoopRunner', () => {
         settingsReader?: { getSnapshot: () => { activeModel: unknown } };
       };
       expect(installedContext.settingsReader?.getSnapshot().activeModel).toEqual(p1Model);
+    });
+
+    it('hands the sidecar the learned window together with the service value it was learned against', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      getSettingsSnapshotMock.mockReturnValue({
+        agentMaxTurns: 200,
+        activeModel: { providerId: 'p1', modelId: 'model-a' },
+        providers: [
+          { id: 'p1', name: 'P1', apiFormat: 'openai-compatible', enabled: true, apiKey: 'p1-key', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'model-a', name: 'Model A' }] },
+        ],
+      });
+      getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'idle' });
+      capsGetMock.mockReturnValue({ contextWindow: 6000, contextWindowProbe: 8192, source: 'error-derived', updatedAt: 0 });
+      resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({
+        apiKey,
+        baseUrl,
+        forceOpenAiCompatible: false,
+      }));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const params = sidecarRequestMock.mock.calls[0][1] as { capsSnapshot?: unknown };
+      expect(params.capsSnapshot).toMatchObject({
+        providerId: 'p1', modelId: 'model-a', contextWindow: 6000, contextWindowProbe: 8192,
+      });
     });
 
     it('creates the task controller before prompt preprocessing and stops without dispatching when it is aborted there', async () => {

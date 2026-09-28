@@ -1282,22 +1282,23 @@ function handlePlanClear(rawParams: unknown): void {
 }
 
 /** The three CapsPort record* methods, addressable by `caps.record`'s `field`. */
-const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown) => void> = {
+const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown, probe: unknown) => void> = {
   maxOutputTokens: (providerId, modelId, value) => getCapsPort().recordMaxOutputTokens(providerId, modelId, value as number),
-  contextWindow: (providerId, modelId, value) => getCapsPort().recordContextWindow(providerId, modelId, value as number),
+  contextWindow: (providerId, modelId, value, probe) =>
+    getCapsPort().recordContextWindow(providerId, modelId, value as number, probe as number | undefined),
   reasoningObserved: (providerId, modelId) => getCapsPort().recordReasoningObserved(providerId, modelId),
 };
 
-/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value} → getCapsPort().record*. Unknown field → warn + drop. */
+/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value, probe?} → getCapsPort().record*. Unknown field → warn + drop. */
 function handleCapsRecord(rawParams: unknown): void {
-  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown } | null;
+  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown; probe?: unknown } | null;
   if (!params || typeof params.providerId !== 'string' || typeof params.modelId !== 'string' || typeof params.field !== 'string') return;
   const record = CAPS_RECORD_BY_FIELD[params.field];
   if (!record) {
     logger.warn('caps.record: unknown field, dropping', { field: params.field });
     return;
   }
-  record(params.providerId, params.modelId, params.value);
+  record(params.providerId, params.modelId, params.value, params.probe);
 }
 
 /** `shell.notifyTask` (NOTIFICATION) → {kind, title, conversationId} → notifyTaskCompleted/notifyTaskError. Unknown kind → warn + drop. */
@@ -2511,7 +2512,7 @@ interface AgentRunParams {
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
   settingsSnapshot: SettingsState;
-  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; isReasoningModel?: boolean };
+  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; contextWindowProbe?: number; isReasoningModel?: boolean };
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
   toolList: ReturnType<typeof toSerializableTool>[];
   planMode?: 'off' | 'planning' | 'approved';
@@ -2963,6 +2964,7 @@ async function buildAgentRunParams(
         modelId: effectiveModelId,
         maxOutputTokens: discovered.maxOutputTokens,
         contextWindow: discovered.contextWindow,
+        contextWindowProbe: discovered.contextWindowProbe,
         isReasoningModel: discovered.isReasoningModel,
       };
     }

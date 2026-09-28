@@ -104,7 +104,9 @@ import { startConversationTrace, endConversationTrace, startGeneration } from '.
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveAgentModelCapabilities, resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveContextWindow } from '../llm/contextWindow';
+import { localServerKind } from '../llm/localProvider';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
@@ -1966,15 +1968,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
-      // Effective context window = min(model published cap, user setting, runtime-discovered).
-      // This prevents the UI/agent from claiming more capacity than the model actually
-      // supports — e.g. mimo/gpt-4o/kimi at 128k were silently being reported as 200k
-      // because the project default settingsStore.contextWindowSize is 200k.
-      const contextWindowSize = resolveEffectiveContextWindow(
-        effectiveModelId,
-        modelDeclared?.maxInputTokens ?? freshSettings.contextWindowSize,
-        discoveredCaps?.contextWindow,
-      );
+      // 窗口按四级优先级取值：用户填写 > 服务报告与超长报错学到的值取小 > 按名字估计
+      const contextWindowSize = resolveContextWindow({
+        modelId: effectiveModelId,
+        userSetting: modelDeclared?.maxInputTokens,
+        probed: activeProvider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
+        discovered: discoveredCaps?.contextWindow,
+        discoveredProbe: discoveredCaps?.contextWindowProbe,
+        isLocal: localServerKind(activeProvider) !== null,
+        ceiling: freshSettings.contextWindowSize,
+      }).size;
 
       // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
       // clamped to the model's true output ceiling so we never re-ask above a known limit.

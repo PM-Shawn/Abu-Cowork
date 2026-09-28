@@ -292,15 +292,6 @@ vi.mock('../core/llm/modelCapabilities', () => ({
     maxTokens: 8192,
     enableThinking: false,
   }),
-  resolveEffectiveContextWindow: vi.fn().mockImplementation(
-    (_modelId: string, userSetting?: number, discovered?: number) => {
-      // Mirror the real implementation: min of model cap (200000 here) + user + discovered
-      const candidates = [200000];
-      if (typeof userSetting === 'number' && userSetting > 0) candidates.push(userSetting);
-      if (typeof discovered === 'number' && discovered > 0) candidates.push(discovered);
-      return Math.min(...candidates);
-    },
-  ),
   deriveUiCaps: vi.fn().mockReturnValue([]),
   // subagentLoop's per-turn starvation check — reached as soon as a delegate
   // run takes a tool_use turn, so the factory has to provide it. Mirror the

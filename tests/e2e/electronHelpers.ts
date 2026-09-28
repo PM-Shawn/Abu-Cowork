@@ -268,7 +268,12 @@ export async function dismissFirstRunOverlays(page: Page): Promise<void> {
 
 export interface LocalMockProviderOptions {
   apiKey?: string;
-  contextWindowSize?: number;
+  /**
+   * The model's 上下文长度 (per-model maxInputTokens). Defaults to 128000 so
+   * a loopback provider keeps the window specs were written against; `null`
+   * leaves it blank so the app has to find the window itself.
+   */
+  contextWindowSize?: number | null;
   /** Additional models offered by the same provider, after the default one. */
   extraModels?: ReadonlyArray<{ id: string; label: string }>;
   maxOutputTokens?: number;
@@ -289,7 +294,7 @@ export async function configureLocalMockProvider(
 ): Promise<void> {
   const {
     apiKey = 'abu-e2e-test-key-not-a-real-secret',
-    contextWindowSize,
+    contextWindowSize = 128_000,
     extraModels = [],
     maxOutputTokens,
     modelId = 'abu-e2e-local-model',
@@ -307,12 +312,11 @@ export async function configureLocalMockProvider(
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
     const state = persisted.state;
-    const declaredCapabilities = configuration.supportsReasoning === null
-      ? { supportsTools: configuration.supportsTools }
-      : {
-          supportsReasoning: configuration.supportsReasoning,
-          supportsTools: configuration.supportsTools,
-        };
+    const declaredCapabilities = {
+      supportsTools: configuration.supportsTools,
+      ...(configuration.supportsReasoning === null ? {} : { supportsReasoning: configuration.supportsReasoning }),
+      ...(configuration.contextWindowSize === null ? {} : { maxInputTokens: configuration.contextWindowSize }),
+    };
 
     state.providers = [{
       id: configuration.providerId,
@@ -340,7 +344,6 @@ export async function configureLocalMockProvider(
     state.hasAcknowledgedDisclaimer = true;
     state.hasRunSensitiveAudit_v015 = true;
     if (configuration.permissionMode !== null) state.permissionMode = configuration.permissionMode;
-    if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
     if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
 
     // Write `persisted` back whole, version untouched. Stamping a literal here

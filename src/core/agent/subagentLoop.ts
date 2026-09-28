@@ -21,12 +21,13 @@ import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../uti
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import {
   resolveCapabilities,
-  resolveEffectiveContextWindow,
   computeReasoningParams,
   isReasoningStarvation,
   deriveDeclaredDefaults,
   type ModelCapabilities,
 } from '../llm/modelCapabilities';
+import { resolveContextWindow } from '../llm/contextWindow';
+import { localServerKind } from '../llm/localProvider';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
@@ -887,11 +888,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
       );
       // Apply context management to prevent subagent context overflow
-      const contextWindowSize = resolveEffectiveContextWindow(
-        effectiveModelId,
-        declared?.maxInputTokens ?? settings.contextWindowSize,
-        discovered?.contextWindow,
-      );
+      const contextWindowSize = resolveContextWindow({
+        modelId: effectiveModelId,
+        userSetting: declared?.maxInputTokens,
+        probed: provider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
+        discovered: discovered?.contextWindow,
+        discoveredProbe: discovered?.contextWindowProbe,
+        isLocal: localServerKind(provider) !== null,
+        ceiling: settings.contextWindowSize,
+      }).size;
       // True output ceiling (distinct from the conservative per-turn budget below):
       // max_tokens-recovery escalation may climb toward this, never above a known limit.
       const effectiveModelCeiling = discovered?.maxOutputTokens ?? baseCaps.outputCeiling ?? subagentCaps.maxOutputTokens;

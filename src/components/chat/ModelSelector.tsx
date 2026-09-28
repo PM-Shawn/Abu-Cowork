@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import type { ModelInfo, ProviderInstance } from '@/types';
 import { refreshManagedProvider } from '@/core/llm/managedProviderRefresh';
+import { resolveModelVision } from '@/core/llm/resolveModelDeclared';
 import { applyModelPick } from './modelPick';
 
 interface ModelSelectorProps {
@@ -22,6 +23,7 @@ function ModelRow({
   isFavorite,
   onSelect,
   onToggleFavorite,
+  canSeeImages,
   dim = false,
 }: {
   model: ModelInfo;
@@ -29,8 +31,10 @@ function ModelRow({
   isFavorite: boolean;
   onSelect: () => void;
   onToggleFavorite: () => void;
+  canSeeImages: boolean;
   dim?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div
       role="button"
@@ -49,6 +53,12 @@ function ModelRow({
       )}>
         {model.label || model.id}
       </span>
+
+      {canSeeImages && (
+        <span className="shrink-0 mr-1 px-1.5 rounded border border-[var(--abu-border)] text-caption text-[var(--abu-text-tertiary)]">
+          {t.chat.modelCanSeeImages}
+        </span>
+      )}
 
       {isActive && !dim && (
         <Check className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0 mr-1" />
@@ -315,6 +325,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                       isFavorite={true}
                       onSelect={() => handleSelect(provider.id, model.id)}
                       onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                      canSeeImages={resolveModelVision(provider, model.id)}
                     />
                   </div>
                 ))}
@@ -338,6 +349,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                       isFavorite={isModelFavorite(provider.id, model.id)}
                       onSelect={() => handleSelect(provider.id, model.id)}
                       onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                      canSeeImages={resolveModelVision(provider, model.id)}
                       dim
                     />
                   </div>
@@ -391,6 +403,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                       isFavorite={isModelFavorite(provider.id, model.id)}
                       onSelect={() => handleSelect(provider.id, model.id)}
                       onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                      canSeeImages={resolveModelVision(provider, model.id)}
                     />
                   </div>
                 ))}

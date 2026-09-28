@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateContextWindow, LOCAL_ESTIMATE_CAP, positiveInteger, resolveContextWindow } from './contextWindow';
+import { estimateContextWindow, formatContextLength, LOCAL_ESTIMATE_CAP, positiveInteger, resolveContextWindow } from './contextWindow';
 
 describe('positiveInteger', () => {
   it('keeps positive safe integers only', () => {
@@ -68,5 +68,15 @@ describe('resolveContextWindow', () => {
   it('ignores empty and invalid candidates', () => {
     expect(resolveContextWindow({ ...base, userSetting: 0, probed: -5, discovered: Number.NaN }))
       .toEqual({ size: 32768, source: 'estimate' });
+  });
+});
+
+describe('formatContextLength', () => {
+  it('prints lengths the way local model apps do', () => {
+    expect(formatContextLength(8192)).toBe('8K');
+    expect(formatContextLength(16384)).toBe('16K');
+    expect(formatContextLength(32768)).toBe('32K');
+    expect(formatContextLength(131072)).toBe('128K');
+    expect(formatContextLength(128000)).toBe('128K');
   });
 });

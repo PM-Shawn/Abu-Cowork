@@ -13,6 +13,17 @@ export function estimateContextWindow(modelId: string, isLocal: boolean): number
   return isLocal ? Math.min(byName, LOCAL_ESTIMATE_CAP) : byName;
 }
 
+/**
+ * 界面上显示的长度写法：8K、16K、128K。
+ * 云端常写整千（128000），本地常写 1024 的倍数（131072），两种都显示为 128K；
+ * 128000 同时是 1024 的倍数（125 × 1024），所以先认整千。
+ */
+export function formatContextLength(tokens: number): string {
+  if (tokens % 1000 === 0) return `${tokens / 1000}K`;
+  if (tokens % 1024 === 0) return `${tokens / 1024}K`;
+  return `${Math.round(tokens / 1000)}K`;
+}
+
 export interface ContextWindowInputs {
   modelId: string;
   /** 1. 用户在「上下文长度」里填的值 */

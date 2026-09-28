@@ -1,8 +1,9 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
+import { formatContextLength } from '@/core/llm/contextWindow';
 import { toggleEffort } from './providerCapabilities';
 import type { ApiFormat } from '@/types';
 import type { ModelDeclaredCapabilities } from '@/types/provider';
@@ -16,10 +17,16 @@ export default function AdvancedCapabilitiesFields({
   declared,
   setDeclared,
   apiFormat,
+  detectedContextWindow,
+  estimatedContextWindow,
 }: {
   declared: ModelDeclaredCapabilities;
   setDeclared: Dispatch<SetStateAction<ModelDeclaredCapabilities>>;
   apiFormat: ApiFormat;
+  /** 获取模型时服务报告的长度；没有就是 undefined */
+  detectedContextWindow?: number;
+  /** 留空时阿布按名字估计的长度 */
+  estimatedContextWindow: number;
 }) {
   const { t } = useI18n();
   const isAnthropic = apiFormat === 'anthropic';
@@ -29,18 +36,23 @@ export default function AdvancedCapabilitiesFields({
         {t.settings.advancedConfig}
       </div>
       <div className="space-y-2">
-        <div className="grid grid-cols-2 gap-2">
+        {/* items-start：每格按自身高度靠上，「能看图」多一行说明时两列第一行仍在同一水平线 */}
+        <div className="grid grid-cols-2 gap-2 items-start">
           <div className="flex items-center gap-2 cursor-pointer select-none"
             onClick={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))}>
             <Checkbox checked={!!declared.supportsTools}
               onChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))} />
             <span className="text-body text-[var(--abu-text-primary)]">{t.settings.capTools}</span>
           </div>
-          <div className="flex items-center gap-2 cursor-pointer select-none"
+          <div className="flex flex-col cursor-pointer select-none"
             onClick={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))}>
-            <Checkbox checked={!!declared.supportsImages}
-              onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
-            <span className="text-body text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
+            <div className="flex items-center gap-2">
+              <Checkbox checked={!!declared.supportsImages}
+                onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
+              <span className="text-body text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
+            </div>
+            {/* pl-6 = 勾选框宽度 16px + 间距 8px，说明与「能看图」文字左对齐 */}
+            <span className="pl-6 text-caption text-[var(--abu-text-tertiary)]">{t.settings.capImagesHint}</span>
           </div>
           <div className="flex items-center gap-2 cursor-pointer select-none"
             onClick={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))}>
@@ -68,19 +80,22 @@ export default function AdvancedCapabilitiesFields({
         )}
         <div className="grid grid-cols-2 gap-2 mt-3">
           <div className="space-y-1">
-            <div className="text-body text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
+            <div className="text-body text-[var(--abu-text-primary)]">{t.settings.capContextLength}</div>
+            <div className="text-caption text-[var(--abu-text-tertiary)]">{t.settings.capContextLengthHint}</div>
             <Input
               type="text"
               inputMode="numeric"
-              placeholder={t.settings.capTokenDefault}
+              placeholder={detectedContextWindow !== undefined
+                ? format(t.settings.capContextLengthDetected, { size: formatContextLength(detectedContextWindow) })
+                : format(t.settings.capContextLengthEstimated, { size: formatContextLength(estimatedContextWindow) })}
               value={declared.maxInputTokens ?? ''}
               className="h-8"
               onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxInputTokens: raw === '' ? undefined : Number(raw) })); }}
             />
             <div className="flex gap-1 flex-wrap">
-              {[32768, 65536, 131072, 262144].map(v => (
+              {[8192, 16384, 32768, 65536, 131072, 262144].map(v => (
                 <Button key={v} variant="ghost" size="xs" type="button"
-                  onClick={() => setDeclared(d => ({ ...d, maxInputTokens: v }))}>{v / 1024}K</Button>
+                  onClick={() => setDeclared(d => ({ ...d, maxInputTokens: v }))}>{formatContextLength(v)}</Button>
               ))}
             </div>
           </div>

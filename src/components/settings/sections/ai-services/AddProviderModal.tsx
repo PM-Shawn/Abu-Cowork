@@ -16,6 +16,8 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { isKnownModel } from '@/core/llm/modelCapabilities';
+import { estimateContextWindow } from '@/core/llm/contextWindow';
+import { localServerKind } from '@/core/llm/localProvider';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities } from './providerCapabilities';
@@ -705,6 +707,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           // (design doc §7b), and `selectedOption.format` never changes for
           // it — only `effectiveFormat` (which follows `activePlan`) does.
           apiFormat={effectiveFormat}
+          detectedContextWindow={detectedContextWindowFor(modelId)}
+          estimatedContextWindow={estimateContextWindow(
+            modelId,
+            localServerKind({ id: selectedOption?.provider ?? '', source: isCustom ? 'custom' : 'builtin', baseUrl }) !== null,
+          )}
         />
       </div>
     );

@@ -409,6 +409,8 @@ export interface TranslationDict {
     // Model selector — managed provider group
     /** Header above the user's own providers, shown when a managed provider is listed. */
     myModels: string;
+    /** Tag next to a model that can see images. */
+    modelCanSeeImages: string;
     managedModelsSyncing: string;
     /** `{org}` = the managed provider's name. */
     managedProviderUnreachable: string;
@@ -1737,6 +1739,7 @@ export interface TranslationDict {
     advancedConfig: string;
     capTools: string;
     capImages: string;
+    capImagesHint: string;
     capReasoning: string;
     capRawUrl: string;
     capRawUrlHint: string;
@@ -1744,7 +1747,12 @@ export interface TranslationDict {
     effortLow: string;
     effortMedium: string;
     effortHigh: string;
-    capMaxInput: string;
+    capContextLength: string;
+    capContextLengthHint: string;
+    /** Placeholder when the service reported the length. {size} */
+    capContextLengthDetected: string;
+    /** Placeholder when nothing was reported. {size} */
+    capContextLengthEstimated: string;
     capMaxOutput: string;
     capTokenDefault: string;
     capPerModelHint: string;

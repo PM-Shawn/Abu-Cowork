@@ -35,6 +35,19 @@ const requests = new Map();
 /** responseRid -> { reader } */
 const bodies = new Map();
 
+// Node 自带的 fetch（undici）默认 300 秒没收到响应头、或两段内容之间空闲 300 秒就断开，
+// 并报成普通的 fetch 失败。本地模型服务在慢机器上处理长输入时，首次回答前的等待会超过
+// 这个时长；渲染进程标了 localServer 的请求由适配器自己计时，这里不另设上限。
+// 用同一个 undici 包的 fetch 与 Agent，避免与 Node 自带的 undici 版本混用；第一次用到时才加载。
+let localServerTransport = null;
+function getLocalServerTransport() {
+  if (!localServerTransport) {
+    const { Agent, fetch: undiciFetch } = require('undici');
+    localServerTransport = { fetch: undiciFetch, dispatcher: new Agent({ headersTimeout: 0, bodyTimeout: 0 }) };
+  }
+  return localServerTransport;
+}
+
 async function httpHandle(cmd, a) {
   switch (cmd) {
     case 'plugin:http|fetch': {
@@ -54,7 +67,12 @@ async function httpHandle(cmd, a) {
       }
       let res;
       try {
-        res = await fetch(url, init);
+        if (req.config.localServer === true) {
+          const transport = getLocalServerTransport();
+          res = await transport.fetch(url, { ...init, dispatcher: transport.dispatcher });
+        } else {
+          res = await fetch(url, init);
+        }
       } finally {
         requests.delete(a.rid);
       }

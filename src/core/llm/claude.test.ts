@@ -24,6 +24,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 
 import { ClaudeAdapter } from './claude';
 import { LLMError } from './adapter';
+import { getTauriFetch } from './tauriFetch';
 
 // Filler timestamp (TESTING.md §3) — not asserted on below.
 const FIXED_TIMESTAMP = 1_700_000_000_000;
@@ -94,6 +95,7 @@ describe('ClaudeAdapter', () => {
       // No error/done events emitted — the failure flows through the thrown error
       expect(events.find((e) => e.type === 'done')).toBeUndefined();
       await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
+      expect(vi.mocked(getTauriFetch).mock.calls).toEqual([[{ localServer: false }]]);
     });
 
     it('gives a local Anthropic-format server 10 minutes before its first event, and does not retry that', async () => {
@@ -125,6 +127,8 @@ describe('ClaudeAdapter', () => {
 
       await vi.advanceTimersByTimeAsync(2_000);
       await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+      // 按本地服务发出请求，传输层不会先于这 10 分钟断开
+      expect(vi.mocked(getTauriFetch).mock.calls).toEqual([[{ localServer: true }]]);
     });
 
     it('ends at once when the user stops a local Anthropic-format server during the 10 minute wait', async () => {

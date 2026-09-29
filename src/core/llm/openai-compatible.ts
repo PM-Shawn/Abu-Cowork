@@ -470,7 +470,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     if (options.apiKey) {
       requestHeaders['Authorization'] = `Bearer ${options.apiKey}`;
     }
-    const fetchFn = await getTauriFetch();
+    const fetchFn = await getTauriFetch({ localServer: options.localServer === true });
     // 尝试身份在 fetch 层铸造：下面的限额重试会再走一次 fetch，它在账本里单独
     // 占一条尝试（任务书 U02）。
     const countingFetch: typeof fetchFn = (...args) => {

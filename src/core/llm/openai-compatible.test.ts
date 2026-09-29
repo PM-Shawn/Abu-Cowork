@@ -26,8 +26,12 @@ function abortError(): Error {
 
 // Mock getTauriFetch BEFORE importing the adapter so the singleton picks up the mock.
 const mockFetch = vi.fn();
+const fetchRequests: Array<{ localServer?: boolean } | undefined> = [];
 vi.mock('./tauriFetch', () => ({
-  getTauriFetch: () => Promise.resolve(mockFetch),
+  getTauriFetch: (fetchOptions?: { localServer?: boolean }) => {
+    fetchRequests.push(fetchOptions);
+    return Promise.resolve(mockFetch);
+  },
 }));
 
 // Import after mock is registered.
@@ -883,6 +887,16 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
       return { chatPromise, settled: () => settled };
     }
 
+    it('sends the request as a local model server request, so the transport does not end the wait first', async () => {
+      fetchRequests.length = 0;
+      neverAnswers();
+      const { chatPromise } = start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchRequests).toEqual([{ localServer: true }]);
+      await vi.advanceTimersByTimeAsync(601_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout' });
+    });
+
     it('gets 10 minutes before its first output, and that failure is not retried', async () => {
       neverAnswers();
       const { chatPromise, settled } = start();
@@ -949,10 +963,12 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     });
 
     it('leaves a cloud provider on the 180 second header wait', async () => {
+      fetchRequests.length = 0;
       neverAnswers();
       const { chatPromise } = start({ localServer: false, baseUrl: 'https://api.test.example.com/v1' });
       await vi.advanceTimersByTimeAsync(181_000);
       await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+      expect(fetchRequests[0]).toEqual({ localServer: false });
     });
   });
 });

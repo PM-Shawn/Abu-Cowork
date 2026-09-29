@@ -161,7 +161,7 @@ export class OllamaNativeAdapter implements LLMAdapter {
       ...(hasTools ? { tools: toOllamaTools(options.tools!) } : {}),
     };
 
-    const fetchFn = await getTauriFetch();
+    const fetchFn = await getTauriFetch({ localServer: true });
     const streamAbort = new AbortController();
     const signal = options.signal ? anySignal([options.signal, streamAbort.signal]) : streamAbort.signal;
     // Ollama 处理长输入时在处理完之前不回响应头：从发出请求到第一段输出算一个整体，

@@ -5,8 +5,12 @@ import type { UsageAttempt } from './usageAccounting';
 import type { PreparedTurn } from './messageNormalizer';
 
 const mockFetch = vi.fn();
+const fetchRequests: Array<{ localServer?: boolean } | undefined> = [];
 vi.mock('./tauriFetch', () => ({
-  getTauriFetch: () => Promise.resolve(mockFetch),
+  getTauriFetch: (fetchOptions?: { localServer?: boolean }) => {
+    fetchRequests.push(fetchOptions);
+    return Promise.resolve(mockFetch);
+  },
 }));
 
 const emitted: UsageAttempt[] = [];
@@ -61,6 +65,7 @@ const DONE = { model: 'qwen3:0.6b', done: true, done_reason: 'stop', prompt_eval
 
 beforeEach(() => {
   mockFetch.mockReset();
+  fetchRequests.length = 0;
   emitted.length = 0;
 });
 
@@ -170,6 +175,15 @@ describe('OllamaNativeAdapter waiting for the first answer', () => {
     chatPromise.then(() => { settled = true; }, () => { settled = true; });
     return { chatPromise, settled: () => settled };
   }
+
+  it('sends the request as a local model server request, so the transport does not end the wait first', async () => {
+    neverAnswers();
+    const { chatPromise } = start({ baseUrl: 'http://192.168.1.20:11434' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchRequests).toEqual([{ localServer: true }]);
+    await vi.advanceTimersByTimeAsync(601_000);
+    await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout' });
+  });
 
   it('waits 10 minutes for a model that has not started answering, then fails without retry', async () => {
     neverAnswers();

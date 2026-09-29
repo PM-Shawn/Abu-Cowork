@@ -185,7 +185,7 @@ export class ClaudeAdapter implements LLMAdapter {
     options: ChatOptions,
     onEvent: (event: StreamEvent) => void
   ): Promise<void> {
-    const fetchFn = await getTauriFetch();
+    const fetchFn = await getTauriFetch({ localServer: options.localServer === true });
     // 用量采集在 provider 边界，尝试身份在 fetch 层铸造：SDK 自己的重试会再走一次
     // fetch，它在账本里单独占一条尝试（任务书 U02）。
     const recorder = createDefaultUsageRecorder({

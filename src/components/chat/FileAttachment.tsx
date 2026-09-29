@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { memo, useState, useEffect, useCallback } from 'react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -247,7 +247,7 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
       >
         <img
           src={thumbUrl}
-          alt={fileName}
+          alt=""
           className="max-h-44 w-full object-cover"
           onError={() => setThumbUrl(null)}
         />
@@ -339,8 +339,9 @@ export function ImageThumbnail({ src }: { src: string }) {
   );
 }
 
-// Compact image preview card for generated images
-export function ImagePreviewCard({ filePath }: { filePath: string }) {
+// Compact image preview card for generated images. Memoized: its reveal button carries a
+// tooltip, and finished message groups re-render with every streamed token of a later reply.
+export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { filePath: string }) {
   const openPreview = usePreviewStore((s) => s.openPreview);
   const { t } = useI18n();
   const fileName = getBaseName(filePath);
@@ -414,7 +415,7 @@ export function ImagePreviewCard({ filePath }: { filePath: string }) {
             )}
           </span>
           <IconButton
-            icon={AppIcons.openExternal}
+            icon={AppIcons.folderOpen}
             label={t.chat.openInFinder}
             size="sm"
             onClick={handleReveal}
@@ -424,4 +425,4 @@ export function ImagePreviewCard({ filePath }: { filePath: string }) {
       )}
     </div>
   );
-}
+});

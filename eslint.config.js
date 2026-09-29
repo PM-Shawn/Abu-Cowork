@@ -86,6 +86,14 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/design-preview/**/*.{ts,tsx}',
   'src/components/window/**/*.{ts,tsx}',
   'src/components/sidebar/**/*.{ts,tsx}',
+  // Chat area, file by file (batch 4). The directory glob joins in batch 8 with the scrims.
+  'src/components/chat/MarkdownRenderer*.{ts,tsx}',
+  'src/components/chat/syntaxTheme*.ts',
+  'src/components/chat/MermaidBlock.tsx',
+  'src/components/chat/SvgHtmlBlock.tsx',
+  'src/components/chat/HtmlWidgetBlock*.{ts,tsx}',
+  'src/components/chat/ShowWidgetCard*.{ts,tsx}',
+  'src/components/chat/codeBlockRenderers.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

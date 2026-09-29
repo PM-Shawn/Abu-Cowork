@@ -678,7 +678,7 @@ export default function HtmlWidgetBlock({ code, title }: { code: string; title?:
       <RenderableCodeBlock code={code} config={config} />
       {lastError && (
         <div
-          className="-mt-2 mb-3 px-1 text-caption text-[var(--abu-text-muted)]"
+          className="-mt-2 mb-3 px-1 text-caption text-label-tertiary"
           title={lastError}
         >
           {t.chat.htmlWidgetErrorRow}

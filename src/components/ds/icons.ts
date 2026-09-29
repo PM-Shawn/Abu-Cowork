@@ -1,8 +1,8 @@
 import {
-  Archive, ArrowLeft, Check, CheckSquare, ChevronDown, ChevronRight, ChevronsUpDown, CircleCheck, CircleHelp, CircleX,
-  Compass, Copy, Download, Ellipsis, ExternalLink, Folder, FolderInput, FolderOpen, Globe, Inbox, Info, LayoutGrid, ListTree, LoaderCircle, LogIn, LogOut, MessageCircle, MessageSquare, Minus, Palette, PanelLeft,
+  Archive, ArrowLeft, Check, CheckSquare, ChevronDown, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp, CircleX,
+  Code, Compass, Copy, Download, Ellipsis, ExternalLink, Eye, Folder, FolderInput, FolderOpen, Globe, Inbox, Info, LayoutGrid, ListTree, LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, Minus, Palette, PanelLeft,
   PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Puzzle, Redo2, RefreshCw, RotateCcw, Search, Settings, Share,
-  SquarePen, Trash2, TriangleAlert, Undo2, UserRound, UsersRound, Wand2, Workflow, X, type LucideIcon,
+  SquarePen, Trash2, TriangleAlert, Undo2, UserRound, UsersRound, Wand2, Workflow, X, ZoomIn, ZoomOut, type LucideIcon,
 } from 'lucide-react';
 
 // One icon per standard action across the whole app (Apple HIG "Standard icons").
@@ -67,6 +67,13 @@ export const AppIcons = {
   restart: RotateCcw,
   signIn: LogIn,
   signOut: LogOut,
+  // Chat: message content
+  collapse: ChevronUp,
+  viewSource: Code,
+  preview: Eye,
+  enlarge: Maximize2,
+  zoomIn: ZoomIn,
+  zoomOut: ZoomOut,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

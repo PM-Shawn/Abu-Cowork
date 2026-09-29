@@ -9,10 +9,15 @@
  * - cleanup(container): optional cleanup on unmount
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Code, Eye, Maximize2, X, Download, ZoomIn, ZoomOut } from 'lucide-react';
+import { X } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
+import { Button, IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
+import { Tooltip } from '@/components/ds/tooltip';
 import { CollapsibleCodeBlock } from './MarkdownRenderer';
 import { zoomIn as zoomInFn, zoomOut as zoomOutFn, zoomByWheel, clampZoom, formatZoomPercent, ZOOM_MIN, ZOOM_MAX } from '@/utils/zoom';
 
@@ -366,97 +371,71 @@ export default function RenderableCodeBlock({
   );
 
   const shimmerOverlay = isPreviewing && (
-    <div className="absolute inset-0 z-[5] pointer-events-none">
-      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent"
+    <div className="pointer-events-none absolute inset-0">
+      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-surface/40 to-transparent"
         style={{ backgroundSize: '200% 100%', animation: 'shimmer 3s infinite linear' }} />
       <style>{`@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
     </div>
   );
 
   const expandButton = isCollapsed && (
-    <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-white to-transparent flex items-end justify-center pb-2">
-      <button
-        onClick={() => setExpanded(true)}
-        className="flex items-center gap-1 px-3 py-1 rounded-full bg-black/5 hover:bg-black/10 text-minor text-[var(--abu-text-muted)] transition-colors"
-      >
-        <ChevronDown className="h-3.5 w-3.5" />
+    <div className="absolute bottom-0 left-0 right-0 flex h-20 items-end justify-center bg-gradient-to-t from-surface to-transparent pb-2">
+      <Button variant="secondary" size="sm" icon={AppIcons.expand} onClick={() => setExpanded(true)}>
         {config.i18n.expand}
-      </button>
+      </Button>
     </div>
   );
 
   const collapseButton = overflows && expanded && (
-    <button
-      onClick={() => setExpanded(false)}
-      className="flex items-center gap-0.5 text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-    >
-      <ChevronUp className="h-3.5 w-3.5" />
+    <Button variant="plain" size="sm" icon={AppIcons.collapse} onClick={() => setExpanded(false)}>
       {config.i18n.collapse}
-    </button>
+    </Button>
   );
 
   const loadingOverlay = isLoading && (seamless ? (
-    // Skeleton placeholder for seamless mode — pulse animation instead of blank white
-    <div className="rounded-lg bg-[var(--abu-bg-muted)] p-5 space-y-3 animate-pulse">
-      <div className="h-5 w-2/5 rounded bg-[var(--abu-bg-pressed)]" />
-      <div className="h-3 w-4/5 rounded bg-[var(--abu-bg-pressed)]" />
-      <div className="h-3 w-3/5 rounded bg-[var(--abu-bg-pressed)]" />
-      <div className="flex gap-3 mt-4">
-        <div className="h-16 flex-1 rounded bg-[var(--abu-bg-pressed)]" />
-        <div className="h-16 flex-1 rounded bg-[var(--abu-bg-pressed)]" />
-        <div className="h-16 flex-1 rounded bg-[var(--abu-bg-pressed)]" />
-      </div>
+    <div className="flex justify-center rounded-panel bg-code p-6">
+      <Spinner label={config.i18n.loading} />
     </div>
   ) : (
-    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-[var(--abu-bg-muted)] text-body text-[var(--abu-text-muted)]">
-      {config.i18n.loading}
+    <div className="absolute inset-0 z-sticky flex items-center justify-center bg-surface">
+      <Spinner label={config.i18n.loading} />
     </div>
   ));
 
   // --- Right-top hover toolbar (visualization mode) ---
-  const btnClass = 'p-1.5 rounded-lg hover:bg-black/5 transition-colors text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]';
   const vizToolbar = !isLoading && !showSource && (
-    <div className="absolute top-2 right-2 z-10 opacity-0 group-hover/widget:opacity-100 transition-opacity">
-      <div className="flex items-center gap-0.5 bg-white/90 rounded-lg shadow-sm border border-[var(--abu-bg-pressed)] p-0.5 relative">
-        <button onClick={handleZoomOut} disabled={scale <= ZOOM_MIN} className={cn(btnClass, 'disabled:opacity-40 disabled:cursor-not-allowed')} title="Zoom out">
-          <ZoomOut className="h-3.5 w-3.5" />
-        </button>
-        <button onClick={handleZoomReset} className={cn(btnClass, 'text-caption tabular-nums w-10')} title="Reset zoom">
-          {formatZoomPercent(scale)}
-        </button>
-        <button onClick={handleZoomIn} disabled={scale >= ZOOM_MAX} className={cn(btnClass, 'disabled:opacity-40 disabled:cursor-not-allowed')} title="Zoom in">
-          <ZoomIn className="h-3.5 w-3.5" />
-        </button>
-        <div className="w-px h-4 bg-[var(--abu-bg-pressed)] mx-0.5" />
-        <button onClick={handleCopy} className={btnClass} title={copied ? '✓' : 'Copy'}>
-          {copied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
-        </button>
-        <button onClick={handleDownload} className={btnClass} title="Download">
-          <Download className="h-3.5 w-3.5" />
-        </button>
+    <div className="absolute top-2 right-2 z-sticky opacity-0 transition-opacity duration-fast group-hover/widget:opacity-100 focus-within:opacity-100">
+      <div className="relative flex items-center gap-1 rounded-control bg-raised p-1 text-label shadow-float">
+        <IconButton size="sm" icon={AppIcons.zoomOut} label={t.panel.pdfZoomOut} onClick={handleZoomOut} disabled={scale <= ZOOM_MIN} />
+        <Tooltip content="Reset zoom">
+          <Button variant="plain" size="sm" onClick={handleZoomReset} className="w-10 text-caption tabular-nums">
+            {formatZoomPercent(scale)}
+          </Button>
+        </Tooltip>
+        <IconButton size="sm" icon={AppIcons.zoomIn} label={t.panel.pdfZoomIn} onClick={handleZoomIn} disabled={scale >= ZOOM_MAX} />
+        <div className="mx-1 h-4 w-px bg-separator" />
+        <IconButton
+          size="sm"
+          icon={copied ? AppIcons.done : AppIcons.copy}
+          label={t.chat.copy}
+          onClick={handleCopy}
+          className={cn(copied && 'text-success hover:text-success')}
+        />
+        <IconButton size="sm" icon={AppIcons.download} label="Download" onClick={handleDownload} />
         {config.buildFullscreenHtml && (
-          <button onClick={() => setFullscreen(true)} className={btnClass} title="Fullscreen">
-            <Maximize2 className="h-3.5 w-3.5" />
-          </button>
+          <IconButton size="sm" icon={AppIcons.enlarge} label={t.chat.htmlWidgetFullscreen} onClick={() => setFullscreen(true)} />
         )}
-        <button onClick={() => setShowSource(true)} className={btnClass} title="View source">
-          <Code className="h-3.5 w-3.5" />
-        </button>
+        <IconButton size="sm" icon={AppIcons.viewSource} label="View source" onClick={() => setShowSource(true)} />
       </div>
     </div>
   );
 
   // --- "Back to visual" button for source code view ---
   const backToVisualBtn = showSource && state.status === 'success' && (
-    <div className="absolute top-2 right-2 z-10">
-      <button
-        onClick={() => setShowSource(false)}
-        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/90 shadow-sm border border-[var(--abu-bg-pressed)]
-          text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-      >
-        <Eye className="h-3 w-3" />
+    <div className="absolute right-2 top-2 z-sticky">
+      <Button variant="secondary" size="sm" icon={AppIcons.preview} onClick={() => setShowSource(false)}>
         {config.i18n.viewPreview ?? t.chat.htmlWidgetViewPreview}
-      </button>
+      </Button>
     </div>
   );
 
@@ -494,9 +473,7 @@ export default function RenderableCodeBlock({
     // Error-only fallback for seamless mode
     const seamlessErrorFallback = isError && !showSource && (
       <div>
-        <div className="rounded-t-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] border-b-0 px-3 py-2 text-minor text-[var(--abu-danger)]">
-          {config.i18n.renderError}
-        </div>
+        <InlineMessage tone="danger">{config.i18n.renderError}</InlineMessage>
         <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
       </div>
     );
@@ -504,7 +481,7 @@ export default function RenderableCodeBlock({
     return (
       <div className="my-3 group/widget">
         {seamlessErrorFallback}
-        <div className={cn('rounded-lg overflow-hidden', isError && !showSource && 'hidden')}>
+        <div className={cn('overflow-hidden rounded-panel', isError && !showSource && 'hidden')}>
           <div ref={zoomHostRef} className="relative">
             {/* Source code view with "back to visual" button */}
             {showSource && (
@@ -538,9 +515,7 @@ export default function RenderableCodeBlock({
   // Error-only fallback (showSource is handled inside the bordered container)
   const errorFallback = isError && !showSource && (
     <div>
-      <div className="rounded-t-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] border-b-0 px-3 py-2 text-minor text-[var(--abu-danger)]">
-        {config.i18n.renderError}
-      </div>
+      <InlineMessage tone="danger">{config.i18n.renderError}</InlineMessage>
       <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
     </div>
   );
@@ -548,8 +523,8 @@ export default function RenderableCodeBlock({
   return (
     <div className="my-3 group/widget">
       {errorFallback}
-      <div className={cn('rounded-lg overflow-hidden border border-[var(--abu-bg-pressed)]', isError && !showSource && 'hidden')}>
-        <div ref={zoomHostRef} className="relative bg-white">
+      <div className={cn('overflow-hidden rounded-panel border border-separator bg-surface', isError && !showSource && 'hidden')}>
+        <div ref={zoomHostRef} className="relative">
           {/* Source code view with "back to visual" button */}
           {showSource && (
             <div className="relative">
@@ -568,7 +543,7 @@ export default function RenderableCodeBlock({
         </div>
         {/* Collapse button */}
         {collapseButton && !showSource && (
-          <div className="flex justify-center py-1 border-t border-[var(--abu-bg-pressed)]">{collapseButton}</div>
+          <div className="flex justify-center border-t border-separator py-1">{collapseButton}</div>
         )}
       </div>
       {fullscreenOverlay}

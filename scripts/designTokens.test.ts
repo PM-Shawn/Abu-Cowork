@@ -5,6 +5,7 @@ import postcss from 'postcss';
 import { blend, parse, wcagContrast, type Color } from 'culori';
 import { describe, it, expect } from 'vitest';
 import { APPEARANCE_ATTRIBUTES } from '../src/styles/appearance';
+import { MERMAID_THEME_VARIABLES } from '../src/components/chat/mermaidTheme';
 
 const TOKENS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/styles/tokens.css');
 
@@ -147,6 +148,13 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
   // Code is content (brief P1-1): every highlight color stays readable on the code block.
   it.each(SYNTAX)('%s on code is at least 4.5:1', (token) => {
     expect(wcagContrast(color(values, token), color(values, 'code'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // Diagrams keep Mermaid's fixed light colors, so their canvas stays light in every appearance.
+  it('Mermaid text on the diagram canvas is at least 4.5:1', () => {
+    const text = parse(MERMAID_THEME_VARIABLES.primaryTextColor);
+    if (!text) throw new Error('Mermaid text color is unparseable');
+    expect(wcagContrast(text, color(values, 'diagram-canvas'))).toBeGreaterThanOrEqual(4.5);
   });
 
   // The user's own message sits on a fill over the content card.

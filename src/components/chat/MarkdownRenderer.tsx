@@ -17,7 +17,6 @@ import { AppIcons } from '@/components/ds/icons';
 import { Link } from '@/components/ds/link';
 import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
-import { Tooltip } from '@/components/ds/tooltip';
 
 import { getCodeBlockRenderer } from './codeBlockRenderers';
 import { closeOpenFences } from './markdownUtils';
@@ -46,7 +45,7 @@ function CitationBadge({ index, title, onClick }: {
     e.stopPropagation();
     onClick?.(index);
   };
-  const badge = (
+  return (
     <Pressable
       onClick={handleClick}
       aria-label={title ? `[${index}] ${title}` : String(index)}
@@ -55,7 +54,6 @@ function CitationBadge({ index, title, onClick }: {
       {index}
     </Pressable>
   );
-  return title ? <Tooltip content={title}>{badge}</Tooltip> : badge;
 }
 
 /** Split text to replace [1]-style citation markers with CitationBadge components */
@@ -161,7 +159,9 @@ const LANG_EXT_MAP: Record<string, string> = {
 
 const COLLAPSE_THRESHOLD = 15;
 
-export function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
+// Memoized: ReactMarkdown rebuilds its tree on every streamed token, and a finished block
+// (with its toolbar tooltips) should not re-render while the text after it grows.
+export const CollapsibleCodeBlock = memo(function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -263,7 +263,7 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
       </div>
     </div>
   );
-}
+});
 
 // Placeholder while a diagram or widget renderer chunk loads. A component of its own
 // because the markdown `code` override is a plain function and cannot call hooks.

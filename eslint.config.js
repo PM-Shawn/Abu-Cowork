@@ -90,6 +90,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/MarkdownRenderer*.{ts,tsx}',
   'src/components/chat/syntaxTheme*.ts',
   'src/components/chat/MermaidBlock.tsx',
+  'src/components/chat/mermaidTheme.ts',
   'src/components/chat/SvgHtmlBlock.tsx',
   'src/components/chat/HtmlWidgetBlock*.{ts,tsx}',
   'src/components/chat/ShowWidgetCard*.{ts,tsx}',

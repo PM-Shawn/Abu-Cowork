@@ -379,7 +379,7 @@ export default function RenderableCodeBlock({
   );
 
   const expandButton = isCollapsed && (
-    <div className="absolute bottom-0 left-0 right-0 flex h-20 items-end justify-center bg-gradient-to-t from-surface to-transparent pb-2">
+    <div className="absolute bottom-0 left-0 right-0 flex h-20 items-end justify-center bg-gradient-to-t from-diagram-canvas to-transparent pb-2">
       <Button variant="secondary" size="sm" icon={AppIcons.expand} onClick={() => setExpanded(true)}>
         {config.i18n.expand}
       </Button>
@@ -408,7 +408,7 @@ export default function RenderableCodeBlock({
       <div className="relative flex items-center gap-1 rounded-control bg-raised p-1 text-label shadow-float">
         <IconButton size="sm" icon={AppIcons.zoomOut} label={t.panel.pdfZoomOut} onClick={handleZoomOut} disabled={scale <= ZOOM_MIN} />
         <Tooltip content="Reset zoom">
-          <Button variant="plain" size="sm" onClick={handleZoomReset} className="w-10 text-caption tabular-nums">
+          <Button variant="plain" size="sm" onClick={handleZoomReset} className="w-10 tabular-nums">
             {formatZoomPercent(scale)}
           </Button>
         </Tooltip>
@@ -532,7 +532,8 @@ export default function RenderableCodeBlock({
               {backToVisualBtn}
             </div>
           )}
-          <div className={cn(showSource && 'hidden')}>
+          {/* Diagrams keep their own light colors, so they sit on a fixed light canvas. */}
+          <div className={cn('bg-diagram-canvas', showSource && 'hidden')}>
             {loadingOverlay}
             {renderContainer}
             {shimmerOverlay}

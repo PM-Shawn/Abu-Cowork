@@ -64,6 +64,8 @@
   --ds-syntax-number: #1c00cf;
   --ds-syntax-function: #326d74;
   --ds-syntax-property: #6c36a9;
+  /* Diagrams keep their own light colors, like an image; the canvas does not follow the appearance. */
+  --ds-diagram-canvas: #ffffff;
 
   --ds-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.09), 0 2px 8px rgba(0, 0, 0, 0.05);
   --ds-shadow-float: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 18px 40px rgba(0, 0, 0, 0.22);
@@ -114,6 +116,7 @@
   --ds-syntax-number: #d9c97c;
   --ds-syntax-function: #67b7a4;
   --ds-syntax-property: #c9a0ff;
+  --ds-diagram-canvas: #ffffff;
 
   --ds-shadow-panel: 0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 2px 8px rgba(0, 0, 0, 0.30);
   --ds-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 18px 40px rgba(0, 0, 0, 0.45);
@@ -147,6 +150,7 @@
   --ds-syntax-number: #1500a0;
   --ds-syntax-function: #1f4d52;
   --ds-syntax-property: #522783;
+  --ds-diagram-canvas: #ffffff;
 }
 :root[data-contrast="more"].dark {
   --ds-desk: #000000;
@@ -172,6 +176,7 @@
   --ds-syntax-number: #ece0a3;
   --ds-syntax-function: #93d3c3;
   --ds-syntax-property: #dcc2ff;
+  --ds-diagram-canvas: #ffffff;
 }
 
 /* Reduced transparency (data-transparency="reduced"): desk, the only translucent surface, is opaque. */
@@ -191,6 +196,7 @@
   --color-surface: var(--ds-surface);
   --color-raised: var(--ds-raised);
   --color-code: var(--ds-code);
+  --color-diagram-canvas: var(--ds-diagram-canvas);
   --color-field: var(--ds-field);
   --color-fill: var(--ds-fill);
   --color-fill-hover: var(--ds-fill-hover);

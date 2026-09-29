@@ -96,6 +96,8 @@ describe('MarkdownRenderer inline content', () => {
     );
     const badge = screen.getByRole('button', { name: '[1] Annual report' });
     expect(badge).not.toHaveAttribute('title');
+    // A tooltip trigger carries data-state; badges sit in streaming text and stay tooltip-free.
+    expect(badge).not.toHaveAttribute('data-state');
     fireEvent.click(badge);
     expect(onCitationClick).toHaveBeenCalledWith(1);
   });

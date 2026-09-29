@@ -13,7 +13,8 @@ export function Tooltip({ content, children, side = 'top' }: {
 }) {
   const container = useLayerContainer();
   return (
-    <TooltipPrimitive.Root>
+    // Set on the root: the app's legacy TooltipProvider (200 ms) is the nearest provider.
+    <TooltipPrimitive.Root delayDuration={500}>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal container={container}>
         <TooltipPrimitive.Content

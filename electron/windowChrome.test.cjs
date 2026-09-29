@@ -162,6 +162,35 @@ test('picks the window material the OS can actually draw', () => {
   assert.throws(() => windowMaterial('win32', 'unknown'), /Windows version/);
 });
 
+test('an omitted material comes from the running OS version', (t) => {
+  // tauriHost.cjs calls syncMainWindowChromeTheme(win, dark) and relies on these defaults.
+  // Plain node has no process.getSystemVersion, so this test supplies one.
+  const original = process.getSystemVersion;
+  t.after(() => {
+    if (original === undefined) delete process.getSystemVersion;
+    else process.getSystemVersion = original;
+  });
+  const colors = [];
+  const win = { isDestroyed: () => false, setBackgroundColor: (c) => colors.push(c), setTitleBarOverlay: () => {} };
+
+  process.getSystemVersion = () => '10.0.19045';
+  assert.equal(windowMaterial('win32'), 'none');
+  assert.equal(mainWindowPlatformOptions('win32', true).backgroundColor, DARK_CHROME.backgroundColor);
+  syncMainWindowChromeTheme(win, true, 'win32');
+  assert.deepEqual(colors, [DARK_CHROME.backgroundColor]);
+
+  process.getSystemVersion = () => '10.0.22631';
+  assert.equal(windowMaterial('win32'), 'mica');
+  assert.equal(mainWindowPlatformOptions('win32', true).backgroundMaterial, 'mica');
+  syncMainWindowChromeTheme(win, false, 'win32');
+  assert.deepEqual(colors, [DARK_CHROME.backgroundColor]);
+
+  process.getSystemVersion = () => '15.5.0';
+  assert.equal(windowMaterial('darwin'), 'vibrancy');
+  syncMainWindowChromeTheme(win, false, 'darwin');
+  assert.deepEqual(colors, [DARK_CHROME.backgroundColor]);
+});
+
 test('a window with a system material keeps a transparent background', () => {
   const mac = mainWindowPlatformOptions('darwin', false, 'vibrancy');
   assert.equal(mac.backgroundColor, '#00000000');

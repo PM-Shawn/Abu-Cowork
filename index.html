@@ -51,7 +51,7 @@
         min-height: 100vh;
         box-sizing: border-box;
       }
-      #app-error h2 { font-size: 18px; margin-bottom: 12px; color: #d97757; }
+      #app-error h2 { font-size: 18px; margin-bottom: 12px; color: #1d1d1f; }
       #app-error p  { font-size: 14px; color: #1d1d1f; line-height: 1.6; margin: 8px 0; }
       #app-error pre {
         margin-top: 16px;
@@ -63,7 +63,10 @@
         white-space: pre-wrap;
         word-break: break-all;
       }
-      #app-error a { color: #d97757; }
+      #app-error a { color: #1d1d1f; }
+      html.dark #app-error h2,
+      html.dark #app-error p,
+      html.dark #app-error a { color: #f5f5f7; }
     </style>
     <script>
       // Catch fatal JS errors that occur before React mounts.

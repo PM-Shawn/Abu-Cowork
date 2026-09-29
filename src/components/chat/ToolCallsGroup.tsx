@@ -1,6 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Wrench, ChevronDown, ChevronRight, CheckCircle2, Loader2, Circle, Maximize2, MessageSquare, ImageOff, RefreshCw } from 'lucide-react';
 import type { ToolCall, ToolResultContent, Message } from '@/types';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
@@ -83,6 +89,7 @@ export default function ToolCallsGroup({ toolCalls, conversationId }: ToolCallsG
   // Count completed tools
   const completedCount = visibleToolCalls.filter((tc) => tc.result !== undefined).length;
   const totalCount = visibleToolCalls.length;
+  const anyFailed = visibleToolCalls.some((tc) => tc.result !== undefined && tc.isError);
 
   // Get current tool to display in collapsed state
   const currentTool = visibleToolCalls[currentDisplayIndex] || visibleToolCalls[0];
@@ -97,57 +104,48 @@ export default function ToolCallsGroup({ toolCalls, conversationId }: ToolCallsG
   return (
     <div className="my-2 space-y-2">
       {/* Tool calls block */}
-      <div className="rounded-lg overflow-hidden border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)]">
-        {/* Collapsed header - single line */}
-        <button
+      <div className="overflow-hidden rounded-panel border border-separator bg-surface">
+        {/* Collapsed header - single line. While tools run it carries the
+            group's only spinner; the rows below show a still loading icon. */}
+        <Pressable
           onClick={() => setExpanded(!expanded)}
-          className="btn-ghost w-full flex items-center gap-2 px-3 py-2 text-body hover:bg-[var(--abu-bg-muted)] transition-colors"
+          aria-expanded={expanded}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-ui text-label transition-colors hover:bg-fill-hover"
         >
         {/* Expand/collapse chevron */}
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        )}
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="text-label-tertiary" />
 
-        {/* Tool icon with status color */}
-        <div className="relative shrink-0">
-          <Wrench className={cn(
-            "h-3.5 w-3.5",
-            isAnyExecuting ? "text-[var(--abu-clay)]" : allCompleted ? "text-[var(--abu-success)]" : "text-[var(--abu-text-tertiary)]"
-          )} />
-        </div>
+        {/* Group status: one spinner, a check when done, a cross when a tool failed */}
+        {isAwaitingUserCurrent ? (
+          <Icon icon={AppIcons.awaitingAnswer} size="sm" className="text-label-tertiary" />
+        ) : isAnyExecuting ? (
+          <Spinner size="sm" labelHidden label={t.task.running} />
+        ) : allCompleted ? (
+          <StatusIcon tone={anyFailed ? 'danger' : 'success'} size="sm" />
+        ) : (
+          <Icon icon={AppIcons.tool} size="sm" className="text-label-tertiary" />
+        )}
 
         {/* Scrolling tool name display */}
         <div className="flex-1 min-w-0 overflow-hidden">
           <div
             ref={scrollRef}
-            className="flex items-center gap-1.5 transition-transform duration-300"
+            className="flex items-center gap-2 transition-transform duration-slow"
           >
             {isAwaitingUserCurrent ? (
-              <>
-                <MessageSquare className="h-3 w-3 text-[var(--abu-clay)] shrink-0" />
-                <span className="text-minor text-[var(--abu-clay)] truncate">
-                  {t.userQuestion.waitingForAnswer}
-                </span>
-              </>
-            ) : isAnyExecuting ? (
-              <>
-                <Loader2 className="h-3 w-3 animate-spin text-[var(--abu-clay)] shrink-0" />
-                <span className="font-mono text-minor text-[var(--abu-text-primary)] truncate">
-                  {currentTool?.name}
-                </span>
-              </>
+              <span className="text-ui-sm text-label-secondary truncate">
+                {t.userQuestion.waitingForAnswer}
+              </span>
             ) : allCompleted ? (
-              <span className="text-minor text-[var(--abu-text-tertiary)]">
+              <span className="text-ui-sm text-label-secondary">
                 {totalCount === 1 ? (
-                  <span className="font-mono">{currentTool?.name}</span>
+                  <span className="font-code">{currentTool?.name}</span>
                 ) : (
                   `${totalCount} tools completed`
                 )}
               </span>
             ) : (
-              <span className="font-mono text-minor text-[var(--abu-text-primary)] truncate">
+              <span className="font-code text-ui-sm text-label truncate">
                 {currentTool?.name}
               </span>
             )}
@@ -157,30 +155,18 @@ export default function ToolCallsGroup({ toolCalls, conversationId }: ToolCallsG
         {/* Status badge */}
         <div className="shrink-0">
           {isAwaitingUserCurrent ? (
-            <span className="flex items-center gap-1 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium">
-              <MessageSquare className="h-3 w-3" />
-              {t.userQuestion.waitingForAnswer}
-            </span>
-          ) : isAnyExecuting ? (
-            <span className="text-caption px-1.5 py-0.5 rounded bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium">
-              {completedCount}/{totalCount}
-            </span>
+            <Tag>{t.userQuestion.waitingForAnswer}</Tag>
           ) : allCompleted ? (
-            <span className="flex items-center gap-1 text-caption text-[var(--abu-success)]">
-              <CheckCircle2 className="h-3 w-3" />
-              Done
-            </span>
+            <span className="text-ui-sm text-label-tertiary">Done</span>
           ) : (
-            <span className="text-caption text-[var(--abu-text-tertiary)]">
-              {completedCount}/{totalCount}
-            </span>
+            <Tag>{completedCount}/{totalCount}</Tag>
           )}
         </div>
-      </button>
+      </Pressable>
 
       {/* Expanded content - tool list with details */}
       {expanded && (
-        <div className="border-t border-[var(--abu-border-subtle)]">
+        <div className="border-t border-separator">
           {visibleToolCalls.map((tc, index) => (
             <ToolCallItem
               key={tc.id}
@@ -222,35 +208,29 @@ function ToolCallItem({
   );
 
   return (
-    <div className={cn("border-b border-[var(--abu-border-subtle)]", isLast && "border-b-0")}>
+    <div className={cn("border-b border-separator", isLast && "border-b-0")}>
       {/* Tool header */}
-      <button
+      <Pressable
         onClick={() => setShowDetails(!showDetails)}
-        className="btn-ghost w-full flex items-center gap-2.5 px-3 py-2 text-body hover:bg-[var(--abu-bg-muted)]"
+        aria-expanded={showDetails}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-ui text-label transition-colors hover:bg-fill-hover"
       >
-        {/* Status indicator */}
-        <div className={cn(
-          "w-4 h-4 rounded-full flex items-center justify-center shrink-0",
-          isCompleted && "bg-[var(--abu-success-bg)]",
-          (isExecuting || awaitingUser) && "bg-[var(--abu-clay-bg-15)]",
-          !isCompleted && !isExecuting && !awaitingUser && "bg-[var(--abu-bg-hover)]"
-        )}>
-          {isCompleted && <CheckCircle2 className="h-2.5 w-2.5 text-[var(--abu-success)]" />}
-          {awaitingUser && <MessageSquare className="h-2.5 w-2.5 text-[var(--abu-clay)]" />}
-          {isExecuting && <Loader2 className="h-2.5 w-2.5 text-[var(--abu-clay)] animate-spin" />}
-          {!isCompleted && !isExecuting && !awaitingUser && <Circle className="h-1.5 w-1.5 text-[var(--abu-text-muted)] fill-current" />}
-        </div>
+        {/* Status indicator: still icons only, the group header holds the spinner */}
+        <span className="flex size-3.5 shrink-0 items-center justify-center">
+          {isCompleted && <StatusIcon tone={toolCall.isError ? 'danger' : 'success'} size="sm" />}
+          {awaitingUser && <Icon icon={AppIcons.awaitingAnswer} size="sm" className="text-label-tertiary" />}
+          {isExecuting && <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />}
+          {!isCompleted && !isExecuting && !awaitingUser && <span className="size-1.5 rounded-full bg-label-tertiary" />}
+        </span>
 
         {/* Tool name */}
         <span className={cn(
-          "font-mono text-minor truncate flex-1 text-left",
-          isCompleted && "text-[var(--abu-text-primary)]",
-          (isExecuting || awaitingUser) && "text-[var(--abu-clay)] font-medium",
-          !isCompleted && !isExecuting && !awaitingUser && "text-[var(--abu-text-muted)]"
+          "font-code text-ui-sm truncate flex-1",
+          isCompleted || isExecuting || awaitingUser ? "text-label" : "text-label-tertiary"
         )}>
           {toolCall.name}
           {awaitingUser && (
-            <span className="ml-1.5 font-sans text-caption text-[var(--abu-clay)]">
+            <span className="ml-2 font-sans text-caption text-label-secondary">
               · {t.userQuestion.waitingForAnswer}
             </span>
           )}
@@ -258,47 +238,47 @@ function ToolCallItem({
 
         {/* Expand indicator for details */}
         {(isCompleted || isExecuting || awaitingUser) && (
-          <ChevronRight className={cn(
-            "h-3 w-3 text-[var(--abu-text-muted)] transition-transform",
-            showDetails && "rotate-90"
-          )} />
+          <Icon
+            icon={AppIcons.disclose}
+            size="sm"
+            className={cn("text-label-tertiary transition-transform", showDetails && "rotate-90")}
+          />
         )}
-      </button>
+      </Pressable>
 
       {/* Details panel */}
       {showDetails && (isCompleted || isExecuting || awaitingUser) && (
-        <div className="bg-[#1c1c1e] px-3 py-2.5 space-y-2">
+        <div className="mx-3 mb-3 space-y-2 rounded-control bg-code px-3 py-2">
           {/* Input */}
           <div>
-            <div className="text-caption font-semibold text-white/30 uppercase tracking-wider mb-1">Input</div>
-            <pre className="text-caption font-mono text-[#a8c5da] whitespace-pre-wrap break-words leading-relaxed max-h-[240px] overflow-y-auto">
+            <div className="mb-1 text-caption font-medium uppercase tracking-wider text-label-tertiary">Input</div>
+            <pre className="font-code text-mono text-label whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto">
               {JSON.stringify(toolCall.input, null, 2)}
             </pre>
           </div>
           {/* Output */}
           {toolCall.result !== undefined && (
-            <div className="border-t border-white/10 pt-2">
-              <div className="text-caption font-semibold text-white/30 uppercase tracking-wider mb-1">Output</div>
+            <div className="border-t border-separator pt-2">
+              <div className="mb-1 text-caption font-medium uppercase tracking-wider text-label-tertiary">Output</div>
               {toolCall.name === TOOL_NAMES.RUN_AGENT_BATCH ? (
                 <div>
                   {/* Collapsed summary line with expand toggle */}
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-caption text-[#b5c9a8]">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-ui-sm text-label">
                       {toolCall.result.split('\n')[0]}
                     </span>
-                    <button
+                    <Button
+                      variant="plain"
+                      size="sm"
+                      icon={batchResultExpanded ? AppIcons.expand : AppIcons.disclose}
+                      aria-expanded={batchResultExpanded}
                       onClick={() => setBatchResultExpanded((v) => !v)}
-                      className="inline-flex items-center gap-0.5 text-caption text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)]"
                     >
-                      {batchResultExpanded ? (
-                        <><ChevronDown className="h-3 w-3" />{t.batch.collapse}</>
-                      ) : (
-                        <><ChevronRight className="h-3 w-3" />{t.batch.expand}</>
-                      )}
-                    </button>
+                      {batchResultExpanded ? t.batch.collapse : t.batch.expand}
+                    </Button>
                   </div>
                   {batchResultExpanded && (
-                    <pre className="mt-2 text-caption font-mono text-[#b5c9a8] whitespace-pre-wrap break-words leading-relaxed max-h-64 overflow-y-auto">
+                    <pre className="mt-2 font-code text-mono text-label whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
                       {toolCall.result}
                     </pre>
                   )}
@@ -314,18 +294,21 @@ function ToolCallItem({
                     <ScreenshotThumbnail resultContent={toolCall.resultContent} conversationId={conversationId} />
                   )}
                   {sandboxBlocked ? (
-                    <div className="space-y-1.5">
-                      <div className="px-2 py-1.5 rounded bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)]">
-                        <p data-testid="sandbox-blocked-reason" className="text-caption font-mono text-[var(--abu-danger)] leading-relaxed">
+                    <div className="space-y-2">
+                      <div className="flex items-start gap-2 rounded-control bg-danger-soft px-2 py-1">
+                        <span className="flex h-4 shrink-0 items-center">
+                          <StatusIcon tone="danger" size="sm" />
+                        </span>
+                        <p data-testid="sandbox-blocked-reason" className="font-code text-caption text-danger">
                           {sandboxBlocked.reason}
                         </p>
                       </div>
-                      <pre data-testid="sandbox-blocked-details" className="text-caption font-mono text-[#b5c9a8]/70 whitespace-pre-wrap break-words leading-relaxed max-h-24 overflow-y-auto">
+                      <pre data-testid="sandbox-blocked-details" className="font-code text-mono text-label-secondary whitespace-pre-wrap break-words max-h-24 overflow-y-auto">
                         {sandboxBlocked.details}
                       </pre>
                     </div>
                   ) : (
-                    <pre className="text-caption font-mono text-[#b5c9a8] whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">
+                    <pre className="font-code text-mono text-label whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
                       {toolCall.result}
                     </pre>
                   )}
@@ -426,25 +409,25 @@ export function ToolResultImagePreview({
   const unavailable = state === 'unavailable';
   if (!src) {
     return (
-      <div className={cn(frameClassName, 'flex items-center justify-center bg-[var(--abu-bg-muted)]')}>
+      <div className={cn(frameClassName, 'flex items-center justify-center bg-fill')}>
         {state === 'loading' ? (
-          <Loader2 className="h-5 w-5 animate-spin text-[var(--abu-text-muted)]" />
+          <Spinner size="sm" labelHidden label={t.chat.imageLoading} />
         ) : unavailable ? (
-          <div className="flex flex-col items-center gap-1 px-3 text-center text-caption text-[var(--abu-text-muted)]">
-            <ImageOff className="h-5 w-5" />
+          <div className="flex flex-col items-center gap-1 px-3 text-center text-caption text-label-tertiary">
+            <Icon icon={AppIcons.imageMissing} size="lg" />
             <span>{t.chat.imageUnavailable}</span>
             {block.outputRef?.basename && <span className="max-w-full truncate">{block.outputRef.basename}</span>}
-            <button
-              type="button"
+            <Button
+              variant="plain"
+              size="sm"
+              icon={AppIcons.retry}
               onClick={(e) => {
                 e.stopPropagation();
                 setRetryNonce((value) => value + 1);
               }}
-              className="inline-flex items-center gap-1 text-[var(--abu-link)] hover:text-[var(--abu-link-hover)]"
             >
-              <RefreshCw className="h-3 w-3" />
               {t.chat.imageRetry}
-            </button>
+            </Button>
           </div>
         ) : null}
       </div>
@@ -453,8 +436,8 @@ export function ToolResultImagePreview({
 
   return (
     <>
-      <div
-        className={cn('relative group cursor-pointer inline-block', frameClassName)}
+      <Pressable
+        className={cn('relative group inline-block cursor-pointer', frameClassName)}
         onClick={() => setExpanded(true)}
       >
         <img
@@ -462,10 +445,12 @@ export function ToolResultImagePreview({
           alt={alt}
           className={thumbnailClassName}
         />
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors rounded flex items-center justify-center">
-          <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
-        </div>
-      </div>
+        <span className="absolute inset-0 flex items-center justify-center transition-colors group-hover:bg-scrim group-focus-visible:bg-scrim">
+          <span className="rounded-control bg-raised p-1 text-label opacity-0 shadow-float transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <Icon icon={AppIcons.enlarge} size="md" />
+          </span>
+        </span>
+      </Pressable>
       {expanded && (
         <div
           data-electron-no-drag
@@ -500,8 +485,8 @@ function ScreenshotThumbnail({ resultContent, conversationId }: {
       block={imageBlock}
       conversationId={conversationId}
       alt="Screenshot"
-      frameClassName="mb-2 rounded border border-white/20 max-w-[280px] max-h-[180px] min-w-[120px] min-h-[80px] overflow-hidden"
-      thumbnailClassName="rounded max-w-[280px] max-h-[180px] object-contain"
+      frameClassName="mb-2 rounded-control border border-separator max-w-[280px] max-h-[180px] min-w-[120px] min-h-[80px] overflow-hidden"
+      thumbnailClassName="rounded-control max-w-[280px] max-h-[180px] object-contain"
     />
   );
 }
@@ -584,7 +569,7 @@ export function InlineToolResultImages({ toolCalls, conversationId }: { toolCall
           block={block}
           conversationId={conversationId}
           alt="Image"
-          frameClassName="rounded-lg overflow-hidden border border-[var(--abu-border)] bg-[var(--abu-bg-base)] min-w-[96px] min-h-[96px]"
+          frameClassName="rounded-panel overflow-hidden border border-separator bg-surface min-w-24 min-h-24"
           thumbnailClassName="block w-auto max-w-[240px] max-h-[240px] object-contain"
         />
       ))}

@@ -660,17 +660,17 @@ describe('MessageGroup stopped terminal', () => {
     };
     setConversationState(conversation);
 
-    // Phase 1 — fresh placeholder: typing dots only, no divider and no fold
-    // header row yet.
+    // Phase 1 — fresh placeholder: the thinking status line only, no divider
+    // and no fold header row yet.
     const view = render(
       <MessageGroup conversationId={conversation.id} messages={[userMessage, placeholder]} isLastGroup />,
     );
-    expect(document.querySelector('.typing-dot')).not.toBeNull();
+    expect(document.querySelector('[data-ds-spinner]')).not.toBeNull();
     expect(screen.queryByText(/Worked for/)).toBeNull();
     expect(screen.queryByText(/Working/)).toBeNull();
 
     // Phase 2 — first process content arrives: the ticking in-run divider
-    // takes the dots' slot (progressive wording, not a button), and the
+    // takes the status line's slot (progressive wording, not a button), and the
     // settled "Worked for" header still does not exist.
     const batchMessage: Message = {
       ...placeholder,

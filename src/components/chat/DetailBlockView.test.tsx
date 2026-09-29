@@ -101,4 +101,86 @@ describe('DetailBlockView outputRef image loading', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(mockResolveOutputRefSource).toHaveBeenCalledTimes(2));
   });
+
+  it('names its loading spinner while the saved image is read', () => {
+    mockResolveOutputRefSource.mockReturnValue(new Promise(() => {}));
+
+    render(<DetailBlockView block={outputRefImageBlock()} onToggle={() => {}} />);
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Loading image...');
+    expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
+  });
+
+  it('opens the enlarged view from the image button', async () => {
+    mockResolveOutputRefSource.mockResolvedValue({ status: 'available', path: '/snapshot/result.png', isFromSnapshot: true });
+    mockLoadLocalImage.mockResolvedValue('blob:result');
+
+    render(<DetailBlockView block={outputRefImageBlock()} onToggle={() => {}} />);
+
+    const image = await screen.findByRole('img', { name: /line_chart/ });
+    const button = image.closest('button')!;
+    expect(button).not.toBeNull();
+    fireEvent.click(button);
+    expect(screen.getAllByRole('img', { name: /line_chart/ })).toHaveLength(2);
+  });
+});
+
+function textBlock(overrides: Partial<DetailBlock>): DetailBlock {
+  return {
+    id: 'block-text',
+    stepId: 'step-1',
+    type: 'script',
+    label: 'Details',
+    content: 'echo hi',
+    isTruncated: false,
+    isExpanded: true,
+    ...overrides,
+  };
+}
+
+describe('DetailBlockView neutral surfaces', () => {
+  beforeEach(() => {
+    initLanguage('en-US');
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('draws every block kind in neutral grey on the code surface', () => {
+    render(<DetailBlockView block={textBlock({ type: 'json', content: '{"a":1}' })} onToggle={() => {}} />);
+
+    const chip = screen.getByRole('button', { name: /Details/ });
+    expect(chip).toHaveClass('bg-fill');
+    expect(chip).toHaveClass('text-label-secondary');
+    expect(chip).toHaveAttribute('aria-expanded', 'true');
+    const pre = screen.getByText(/"a": 1/);
+    expect(pre).toHaveClass('font-code');
+    expect(pre.closest('.bg-code')).not.toBeNull();
+    expect(document.body.innerHTML).not.toMatch(/purple/);
+  });
+
+  it('marks an error block with the danger status icon', () => {
+    render(<DetailBlockView block={textBlock({ type: 'error', content: 'boom' })} onToggle={() => {}} />);
+
+    const chip = screen.getByRole('button', { name: /Details/ });
+    expect(chip.querySelector('svg.lucide-circle-x')).not.toBeNull();
+    expect(screen.getByText('boom')).toHaveClass('text-danger');
+  });
+
+  it('opens list results as links in the browser', () => {
+    render(
+      <DetailBlockView
+        block={textBlock({ type: 'list', parsedItems: [{ title: 'Result page', url: 'https://example.com/a' }] })}
+        onToggle={() => {}}
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: /Result page/ });
+    expect(link).toHaveAttribute('href', 'https://example.com/a');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).toHaveClass('text-link');
+  });
 });

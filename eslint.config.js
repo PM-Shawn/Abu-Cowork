@@ -102,6 +102,9 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/SourcesSection.tsx',
   'src/components/chat/CompactDivider*.{ts,tsx}',
   'src/components/chat/WelcomeAvatar.tsx',
+  'src/components/chat/ThinkingStatusLine.tsx',
+  'src/components/chat/TaskBlock*.{ts,tsx}',
+  'src/components/chat/SmoothHeight*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

@@ -1,5 +1,6 @@
 import type React from 'react';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ds/spinner';
 import abuAvatar from '@/assets/abu-avatar.png';
 
 // Single source of truth for the "thinking…" status typography shared by the
@@ -9,42 +10,12 @@ import abuAvatar from '@/assets/abu-avatar.png';
 //   3. TaskBlock's active header (first thinking/tool step has arrived)
 // Because each state swap REPLACES the previous row in the same visual spot,
 // the label must keep the exact same size and baseline across all three — any
-// divergence reads as the text hopping lines ("错行"). Keeping the markup here
-// means a typography tweak propagates to every call site automatically.
+// divergence reads as the text hopping lines ("错行"). All three rows set their
+// words in text-ui next to the one Spinner of their area.
 
-/** The three bouncing dots. `md` is the standalone status-line size; `sm` is
- *  the compact inline variant the TaskBlock active header appends to its
- *  summary text. */
-export function TypingDots({
-  size = 'md',
-  className,
-}: {
-  size?: 'md' | 'sm';
-  className?: string;
-}) {
-  const dot =
-    size === 'md'
-      ? 'typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]'
-      : 'typing-dot w-[3px] h-[3px] rounded-full bg-[var(--abu-clay)]';
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center',
-        size === 'md' ? 'gap-1.5' : 'gap-[3px]',
-        className,
-      )}
-    >
-      <span className={dot} />
-      <span className={dot} />
-      <span className={dot} />
-    </span>
-  );
-}
-
-/** One status row: tertiary text-body label + bouncing dots. text-body (not
- *  text-minor) and no vertical padding of its own — successors (TaskBlock
- *  active header, "已处理 Ns" divider / "用时 Xs" fold header) are text-body buttons with mb-2,
- *  so callers that need the mb-2 pass it via className. */
+/** One status row: the area's Spinner with its words. No vertical padding of
+ *  its own — callers that need the mb-2 of the successor rows pass it via
+ *  className. */
 export function ThinkingStatusLine({
   label,
   className,
@@ -53,9 +24,8 @@ export function ThinkingStatusLine({
   className?: string;
 }) {
   return (
-    <div className={cn('flex items-center gap-1.5', className)}>
-      <span className="text-body text-[var(--abu-text-tertiary)]">{label}</span>
-      <TypingDots />
+    <div className={cn('flex items-center', className)}>
+      <Spinner label={label} />
     </div>
   );
 }

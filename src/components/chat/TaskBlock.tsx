@@ -1,28 +1,12 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
-import {
-  Clock,
-  FileSearch,
-  FilePen,
-  FilePlus,
-  Wrench,
-  Wand2,
-  Terminal,
-  Globe,
-  FolderOpen,
-  ChevronDown,
-  ChevronRight,
-  Check,
-  Loader2,
-  AlertCircle,
-  Info,
-  RotateCcw,
-  Search,
-  Plug,
-  Users,
-  MessageSquare,
-  CircleStop,
-} from 'lucide-react';
+import { useState, useMemo, useEffect, useRef, type ComponentProps, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { WorkflowStep, StepType } from '@/utils/workflowExtractor';
@@ -31,7 +15,11 @@ import { generateCompletionMessage } from '@/utils/workflowExtractor';
 import { getToolLabel } from '@/utils/toolLabels';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import DetailBlockView from './DetailBlockView';
-import { TypingDots } from './ThinkingStatusLine';
+
+type StepGlyph = ComponentProps<typeof Icon>['icon'];
+
+// Small toggle chip that opens a step's details (thinking text, input, output).
+const DETAIL_CHIP = 'inline-flex h-5 items-center gap-1 rounded-control bg-fill px-2 text-caption text-label-secondary hover:bg-fill-hover';
 
 // Unified step type for rendering
 export type UnifiedStep = {
@@ -59,31 +47,31 @@ export type UnifiedStep = {
 };
 
 // Icon mapping for step types
-const stepIcons: Record<string, React.ElementType> = {
-  thinking: Clock,
-  'file-read': FileSearch,
-  'file-write': FilePen,
-  'file-create': FilePlus,
-  tool: Wrench,
-  skill: Wand2,
-  command: Terminal,
-  search: Search,
-  mcp: Plug,  // MCP tools use Plug icon
-  delegate: Users,  // Delegate/subagent icon
+const stepIcons: Record<string, StepGlyph> = {
+  thinking: AppIcons.clock,
+  'file-read': AppIcons.fileRead,
+  'file-write': AppIcons.fileEdit,
+  'file-create': AppIcons.fileCreate,
+  tool: AppIcons.tool,
+  skill: AppIcons.skill,
+  command: AppIcons.terminal,
+  search: AppIcons.search,
+  mcp: AppIcons.plug,  // MCP tools use Plug icon
+  delegate: AppIcons.team,  // Delegate/subagent icon
 };
 
 // Get icon for specific tool names
-function getStepIcon(step: UnifiedStep): React.ElementType {
+function getStepIcon(step: UnifiedStep): StepGlyph {
   if (step.detail?.includes(TOOL_NAMES.LIST_DIRECTORY) || step.label.includes('目录') || step.label.includes('directory')) {
-    return FolderOpen;
+    return AppIcons.folderOpen;
   }
   if (step.label.includes('搜索') || step.label.includes('search') || step.type === 'search') {
-    return Globe;
+    return AppIcons.webPage;
   }
   if (step.label.includes('系统信息') || step.label.includes('system')) {
-    return Info;
+    return AppIcons.info;
   }
-  return stepIcons[step.type] || Wrench;
+  return stepIcons[step.type] || AppIcons.tool;
 }
 
 // Get type label for step (displayed on the right side like Cowork's "Script")
@@ -349,37 +337,23 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
 
   return (
     <div className="task-block mb-4">
-      {/* Summary Header */}
-      {(allCompleted || isStopped) && !hasError ? (
-        // Minimal settled header — single text line, no icons
-        <button
-          onClick={handleHeaderClick}
-          className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] transition-colors mb-2"
-        >
-          <span>{summary}</span>
-          <ChevronDown
-            className={cn(
-              'h-3.5 w-3.5 transition-transform',
-              !isOpen && '-rotate-90'
-            )}
-          />
-        </button>
-      ) : (
-        // Active / error header — with animated dots and chevron
-        <button
-          onClick={handleHeaderClick}
-          className="flex items-center gap-1.5 text-body text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors mb-2"
-        >
-          <span>{isActive ? summary.replace(/\.{3}$/, '').replace(/…$/, '') : summary}</span>
-          {isActive && <TypingDots size="sm" className="ml-0.5" />}
-          <ChevronDown
-            className={cn(
-              'h-3.5 w-3.5 transition-transform',
-              !isOpen && '-rotate-90'
-            )}
-          />
-        </button>
-      )}
+      {/* Summary header. While the block runs it carries the block's only
+          spinner (one per place); the steps below show a still loading icon. */}
+      <Pressable
+        onClick={handleHeaderClick}
+        aria-expanded={isOpen}
+        className="mb-2 flex w-full items-center gap-2 rounded-control px-2 text-left text-ui text-label hover:bg-fill-hover"
+      >
+        {isActive && <Spinner size="sm" labelHidden label={t.task.running} />}
+        <span className="text-label-secondary">
+          {isActive ? summary.replace(/\.{3}$/, '').replace(/…$/, '') : summary}
+        </span>
+        <Icon
+          icon={AppIcons.expand}
+          size="sm"
+          className={cn('text-label-tertiary transition-transform', !isOpen && '-rotate-90')}
+        />
+      </Pressable>
 
       {/* Flow Timeline. block-expand-enter animates the height open when this
           mounts mid-stream (the "思考中" dots swapping to the first thinking/
@@ -425,23 +399,11 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           {/* Show more / Collapse toggle */}
           {needsTruncation && (
             <div className="flex items-start gap-3">
-              <div className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <div className="w-3.5 shrink-0" />
               <div className="flex-1 min-w-0 pb-2">
-                {displayMode === 'preview' ? (
-                  <button
-                    onClick={handleShowMore}
-                    className="text-minor text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] transition-colors"
-                  >
-                    {t.task.showMore}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleCollapse}
-                    className="text-minor text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] transition-colors"
-                  >
-                    {t.task.collapse}
-                  </button>
-                )}
+                <Button variant="plain" size="sm" onClick={displayMode === 'preview' ? handleShowMore : handleCollapse}>
+                  {displayMode === 'preview' ? t.task.showMore : t.task.collapse}
+                </Button>
               </div>
             </div>
           )}
@@ -449,11 +411,11 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           {/* Done node — only in fully expanded or no truncation needed */}
           {allCompleted && !isStopped && (displayMode === 'expanded' || !needsTruncation) && (
             <div className="flex items-start gap-3">
-              <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-                <Check className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-              </div>
+              <StepIconSlot>
+                <StatusIcon tone="success" size="sm" />
+              </StepIconSlot>
               <div className="flex-1 min-w-0 pb-2">
-                <div className="text-body leading-5 text-[var(--abu-text-muted)]">{t.task.done}</div>
+                <div className="text-ui text-label-tertiary">{t.task.done}</div>
               </div>
             </div>
           )}
@@ -461,11 +423,11 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           {/* User-stopped node — distinct from successful completion. */}
           {isStopped && (displayMode === 'expanded' || !needsTruncation) && (
             <div className="flex items-start gap-3">
-              <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-                <CircleStop className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-              </div>
+              <StepIconSlot>
+                <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />
+              </StepIconSlot>
               <div className="flex-1 min-w-0 pb-2">
-                <div className="text-body leading-5 text-[var(--abu-text-muted)]">{t.task.stopped}</div>
+                <div className="text-ui text-label-tertiary">{t.task.stopped}</div>
               </div>
             </div>
           )}
@@ -473,36 +435,32 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
           {/* Error node */}
           {hasError && !isActive && (displayMode === 'expanded' || !needsTruncation) && (
             <div className="flex items-start gap-3">
-              <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-                <AlertCircle className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
-              </div>
+              <StepIconSlot>
+                <StatusIcon tone="danger" size="sm" />
+              </StepIconSlot>
               <div className="flex-1 min-w-0 pb-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-body leading-5 text-[var(--abu-danger)]">
+                  <span className="text-ui text-danger">
                     {t.task.errorOccurred}
                   </span>
                   {onRetry && (
-                    <button
-                      onClick={onRetry}
-                      className="flex items-center gap-1 px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] bg-[var(--abu-bg-hover)] hover:bg-[var(--abu-bg-pressed)] rounded transition-colors"
-                    >
-                      <RotateCcw className="h-3 w-3" />
+                    <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={onRetry}>
                       {t.task.retryAction}
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Running node */}
+          {/* Running node: still icon, the header holds the block's spinner */}
           {isActive && (
             <div className="flex items-start gap-3">
-              <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-                <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin" />
-              </div>
+              <StepIconSlot>
+                <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />
+              </StepIconSlot>
               <div className="flex-1 min-w-0 pb-2">
-                <div className="text-body leading-5 text-[var(--abu-text-muted)]">
+                <div className="text-ui text-label-tertiary">
                   {t.task.running}
                 </div>
               </div>
@@ -513,6 +471,12 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
       )}
     </div>
   );
+}
+
+/** Icon column cell: one text-ui line high, so a 14px icon centers on the
+ *  first line of the step label next to it. */
+function StepIconSlot({ children }: { children: ReactNode }) {
+  return <div className="flex h-lh w-3.5 shrink-0 items-center justify-center text-ui">{children}</div>;
 }
 
 /**
@@ -527,7 +491,7 @@ export interface TaskStepItemProps {
 }
 
 export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: TaskStepItemProps) {
-  const Icon = getStepIcon(step);
+  const stepGlyph = getStepIcon(step);
   const typeLabel = getTypeLabel(step, t);
   const isRunning = step.status === 'running';
   const isCompleted = step.status === 'completed';
@@ -616,7 +580,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
     }
 
     return (
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-2">
         {step.detailBlocks.map((block) => (
           <DetailBlockView
             key={block.id}
@@ -654,13 +618,14 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
             {/* pb-2 (the button→panel gap) sits inside the animated slot so it
                 grows in with the button instead of jumping in separately. */}
             <div className="pb-2">
-              <button
+              <Pressable
                 onClick={() => setThinkingExpanded(!thinkingExpanded)}
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-caption bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-pressed)] hover:text-[var(--abu-text-tertiary)] transition-colors"
+                aria-expanded={thinkingExpanded}
+                className={DETAIL_CHIP}
               >
-                {thinkingExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                <Icon icon={thinkingExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
                 {t.chat.thinkingProcess}
-              </button>
+              </Pressable>
             </div>
           </div>
         )}
@@ -678,11 +643,11 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
             isRunning && 'block-expand-enter',
           )}
         >
-          <div className="rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-hover)] overflow-hidden">
+          <div className="overflow-hidden rounded-panel border border-separator bg-surface">
             <div ref={thinkingScrollRef} className="px-3 py-2 max-h-48 overflow-y-auto">
-              <pre className="text-minor text-[var(--abu-text-tertiary)] italic whitespace-pre-wrap break-words leading-relaxed font-sans m-0">
+              <pre className="m-0 whitespace-pre-wrap break-words font-sans text-ui-sm italic text-label-secondary">
                 {step.detail}
-                {isRunning && <span className="streaming-cursor inline-block ml-0.5" />}
+                {isRunning && <span aria-hidden="true" className="ml-1 inline-block h-4 w-0.5 bg-label-secondary align-text-bottom" />}
               </pre>
             </div>
           </div>
@@ -702,7 +667,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
     }
 
     return (
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-2">
         {typeLabel && (
           <CollapsibleDetail
             label={typeLabel}
@@ -729,21 +694,24 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
     <div className="flex items-start gap-3">
       {/* Icon column with vertical line */}
       <div className="flex flex-col items-center">
-        <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
+        {/* Still icons only: the block header holds the one spinner. */}
+        <StepIconSlot>
           {isWaitingForAnswer ? (
-            <MessageSquare aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+            <Icon icon={AppIcons.awaitingAnswer} size="sm" className="text-label-tertiary" />
           ) : isRunning ? (
-            <Loader2 aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-clay)] motion-safe:animate-spin" />
+            <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />
           ) : isError ? (
-            <AlertCircle aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
+            <StatusIcon tone="danger" size="sm" />
           ) : isCancelled ? (
-            <CircleStop aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+            <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />
+          ) : isCompleted ? (
+            <StatusIcon tone="success" size="sm" />
           ) : (
-            <Icon aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+            <Icon icon={stepGlyph} size="sm" className="text-label-tertiary" />
           )}
-        </div>
+        </StepIconSlot>
         {showConnector && (
-          <div className="w-px flex-1 min-h-[16px] bg-[var(--abu-bg-hover)] mt-1" />
+          <div className="mt-1 min-h-4 w-px flex-1 bg-separator" />
         )}
       </div>
 
@@ -752,29 +720,24 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
         {/* Step label */}
         <div
           className={cn(
-            'text-body leading-5',
+            'text-ui',
             isRunning
-              ? 'text-[var(--abu-text-tertiary)]'
+              ? 'text-label-secondary'
               : isError
-                ? 'text-[var(--abu-danger)]'
-                : 'text-[var(--abu-text-muted)]'
+                ? 'text-danger'
+                : 'text-label-tertiary'
           )}
         >
           {stepLabel}
           {isCancelled && (
-            <span
-              role="status"
-              aria-label={t.task.cancelled}
-              className="ml-1.5 inline-flex items-center rounded bg-[var(--abu-bg-hover)] px-1.5 py-0 text-caption text-[var(--abu-text-muted)]"
-            >
-              {t.task.cancelled}
+            <span role="status" aria-label={t.task.cancelled} className="ml-2 inline-flex align-middle">
+              <Tag>{t.task.cancelled}</Tag>
             </span>
           )}
           {/* Token warning for large tool outputs */}
           {isCompleted && step.toolResult && step.toolResult.length > 10000 && (
-            <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0 rounded bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] text-caption" title={`${Math.round(step.toolResult.length / 1000)}K chars`}>
-              <AlertCircle className="h-3 w-3" />
-              {Math.round(step.toolResult.length / 1000)}K
+            <span className="ml-2 inline-flex align-middle" title={`${Math.round(step.toolResult.length / 1000)}K chars`}>
+              <Tag tone="warning">{Math.round(step.toolResult.length / 1000)}K</Tag>
             </span>
           )}
         </div>
@@ -788,7 +751,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
 
         {/* Completion message */}
         {isCompleted && completionMsg && (
-          <div className="text-minor text-[var(--abu-text-muted)] mt-0.5">
+          <div className="mt-1 text-ui-sm text-label-tertiary">
             {completionMsg}
           </div>
         )}
@@ -798,7 +761,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
             already rendered above by renderThinkingDetail (inline / collapsible). */}
         {step.detail && !isThinking && !completionMsg && !typeLabel && !step.detailBlocks?.length && (
           <div className="mt-1">
-            <span className="inline-flex items-center px-2 py-0.5 rounded bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)] font-mono">
+            <span className="inline-flex h-5 items-center rounded-control bg-fill px-2 font-code text-ui-sm text-label-tertiary">
               {getFileName(step.detail)}
             </span>
           </div>
@@ -806,7 +769,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
 
         {/* Nested child steps for delegate (subagent) */}
         {step.type === 'delegate' && step.childSteps && step.childSteps.length > 0 && !hasBatchTaggedChildren(step) && (
-          <div className="mt-2 pl-1 border-l-2 border-[var(--abu-bg-hover)] ml-0.5">
+          <div className="mt-2 ml-1 border-l-2 border-separator pl-1">
             {step.childSteps.map((childStep, childIndex) => {
               const isLastChild = childIndex === step.childSteps!.length - 1;
               const childHasLaterToolStep = step.childSteps!
@@ -878,28 +841,25 @@ function CollapsibleDetail({
 
   return (
     <div className="mt-1">
-      <button
+      <Pressable
         onClick={() => setExpanded(!expanded)}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-caption bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-pressed)] hover:text-[var(--abu-text-tertiary)] transition-colors"
+        aria-expanded={expanded}
+        className={DETAIL_CHIP}
       >
-        {expanded ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
         {label}
-      </button>
+      </Pressable>
 
       {expanded && (
-        <div className="mt-2 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-hover)] overflow-hidden">
+        <div className="mt-2 overflow-hidden rounded-panel bg-code">
           {formattedInput && (
-            <div className="border-b border-[var(--abu-bg-hover)]">
-              <div className="px-3 py-1.5 text-caption text-[var(--abu-text-muted)] bg-[var(--abu-bg-hover)]">
+            <div className="border-b border-separator">
+              <div className="border-b border-separator px-3 py-1 text-caption text-label-tertiary">
                 {toolName && [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'].includes(toolName)
                   ? 'bash'
                   : t.task.input}
               </div>
-              <pre className="px-3 py-2 text-minor text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[200px] overflow-y-auto">
+              <pre className="px-3 py-2 font-code text-mono text-label whitespace-pre-wrap break-all overflow-x-auto max-h-[200px] overflow-y-auto">
                 {formattedInput}
               </pre>
             </div>
@@ -907,10 +867,10 @@ function CollapsibleDetail({
 
           {truncatedResult && (
             <div>
-              <div className="px-3 py-1.5 text-caption text-[var(--abu-text-muted)] bg-[var(--abu-bg-hover)]">
+              <div className="border-b border-separator px-3 py-1 text-caption text-label-tertiary">
                 {t.task.output}
               </div>
-              <pre className="px-3 py-2 text-minor text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
+              <pre className="px-3 py-2 font-code text-mono text-label whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
                 {truncatedResult}
               </pre>
             </div>

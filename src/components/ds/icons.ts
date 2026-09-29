@@ -1,9 +1,10 @@
 import {
-  Archive, ArrowLeft, AtSign, Brain, Check, CheckSquare, ChevronDown, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp, CircleX,
-  Code, Compass, Copy, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FileSearch, FileText, FileType2, FileWarning, FileX,
-  Folder, FolderInput, FolderOpen, Globe, ImageOff, Inbox, Info, LayoutGrid, ListTree, LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare,
-  MessageSquarePlus, Minimize2, Minus, Palette, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Presentation, Puzzle, Redo2, RefreshCw, RotateCcw,
-  Search, Settings, Share, Sheet, Sparkles, SquarePen, ThumbsDown, ThumbsUp, Trash2, TriangleAlert, Undo2, UserRound, UsersRound, Wand2, Workflow, X, ZoomIn, ZoomOut,
+  Archive, ArrowLeft, AtSign, Brain, Check, CheckSquare, ChevronDown, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp, CircleStop, CircleX,
+  Clock, Code, Compass, Copy, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FilePen, FilePlus, FileSearch, FileText, FileType2,
+  FileWarning, FileX, Folder, FolderInput, FolderOpen, Globe, ImageOff, Inbox, Info, LayoutGrid, ListTree, LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle,
+  MessageSquare, MessageSquarePlus, Minimize2, Minus, Palette, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plug, Plus, Presentation, Puzzle, Redo2,
+  RefreshCw, RotateCcw, Search, Settings, Share, Sheet, Sparkles, SquarePen, Terminal, ThumbsDown, ThumbsUp, Trash2, TriangleAlert, Undo2, UserRound, UsersRound,
+  Wand2, Workflow, Wrench, X, ZoomIn, ZoomOut,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -97,6 +98,16 @@ export const AppIcons = {
   newTaskFromMessage: MessageSquarePlus,
   compact: Minimize2,
   sparkles: Sparkles,
+  // Chat: tool steps
+  tool: Wrench,
+  terminal: Terminal,
+  plug: Plug,
+  clock: Clock,
+  fileRead: FileSearch,
+  fileEdit: FilePen,
+  fileCreate: FilePlus,
+  stopped: CircleStop,
+  awaitingAnswer: MessageSquare,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

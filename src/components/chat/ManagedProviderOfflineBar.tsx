@@ -1,5 +1,5 @@
-import { WifiOff } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { InlineMessage } from '@/components/ds/inline-message';
 import { readManagedProviderPersonalFallback } from '@/core/llm/managedProviderRefresh';
 import { format, useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -29,25 +29,24 @@ export function ManagedProviderOfflineBar({
   const fallback = findPersonalFallbackModel({ providers }, readManagedProviderPersonalFallback(provider.id));
 
   return (
-    <div
-      role="status"
-      data-testid="managed-provider-offline"
-      className="mb-2 flex items-center gap-2 rounded-xl border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] px-3 py-2 text-minor text-[var(--abu-text-primary)]"
-    >
-      <WifiOff className="h-3.5 w-3.5 shrink-0 text-[var(--abu-warning)]" />
-      <span className="min-w-0 flex-1 truncate">{format(t.chat.managedProviderUnreachable, { org: provider.name })}</span>
-      {fallback && (
-        <Button
-          size="xs"
-          variant="outline"
-          onClick={() => applyModelPick(
-            { activeConversationId: conversationId, ...fallback },
-            { selectModel, touchRecentModel, setConversationModel },
-          )}
-        >
-          {t.chat.useMyOwnModel}
-        </Button>
-      )}
+    <div data-testid="managed-provider-offline" className="mb-2">
+      <InlineMessage
+        tone="warning"
+        action={fallback && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => applyModelPick(
+              { activeConversationId: conversationId, ...fallback },
+              { selectModel, touchRecentModel, setConversationModel },
+            )}
+          >
+            {t.chat.useMyOwnModel}
+          </Button>
+        )}
+      >
+        <span className="block truncate">{format(t.chat.managedProviderUnreachable, { org: provider.name })}</span>
+      </InlineMessage>
     </div>
   );
 }

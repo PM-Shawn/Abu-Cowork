@@ -125,6 +125,35 @@ describe('MaxTurnsNoticeCard', () => {
     expect(mockCancelStreaming).toHaveBeenCalledWith('conv-1');
   });
 
+  it('fills only the action that leads: Continue on the first hit, the cap on a repeat', () => {
+    renderCard();
+    const filledFirst = screen.getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+    expect(filledFirst).toEqual([screen.getByRole('button', { name: /Continue/i })]);
+    expect(screen.getByRole('button', { name: /Change the cap/i })).toHaveClass('bg-fill');
+    cleanup();
+
+    renderCard({ streak: 2 });
+    const filledAgain = screen.getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+    expect(filledAgain).toEqual([screen.getByRole('button', { name: /Change the cap/i })]);
+    expect(screen.getByRole('button', { name: /Continue/i })).toHaveClass('bg-fill');
+  });
+
+  it('says what is happening once, after the buttons, while it picks the run back up', async () => {
+    let finishSettle!: () => void;
+    mockSetAction.mockReturnValueOnce(new Promise<void>((resolve) => { finishSettle = resolve; }));
+    renderCard();
+
+    await userEvent.click(screen.getByRole('button', { name: /Continue/i }));
+
+    expect(screen.getAllByText('Picking up…')).toHaveLength(1);
+    const status = screen.getByText('Picking up…').closest('[role="status"]')!;
+    expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
+    expect(status.parentElement!.lastElementChild).toBe(status);
+    expect(screen.getByRole('button', { name: /Continue/i })).toBeDisabled();
+    finishSettle();
+    await waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalled());
+  });
+
   it('opens the general settings tab where the cap lives', async () => {
     renderCard();
 

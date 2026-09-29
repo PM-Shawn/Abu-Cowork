@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import UserQuestionDock from './UserQuestionDock';
 import * as bridge from '@/core/agent/permissionBridge';
 import type { UserQuestionPayload } from '@/types';
@@ -91,6 +92,7 @@ function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
       toolCallId={toolCallId}
       payload={payload}
     />,
+    { wrapper: DesignSystemProvider },
   );
 }
 
@@ -112,6 +114,24 @@ describe('UserQuestionDock', () => {
     expect(screen.getByText('简洁')).toBeInTheDocument();
     expect(screen.getByText('其他…')).toBeInTheDocument();
     expect(screen.getByText('跳过')).toBeInTheDocument();
+  });
+
+  it('makes the submit button the only filled button', () => {
+    renderDock(MULTI_PAYLOAD);
+    const submit = screen.getByRole('button', { name: '提交' });
+    const filled = screen.getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+    expect(filled).toEqual([submit]);
+    expect(screen.getByRole('button', { name: '跳过' })).not.toHaveClass('bg-emphasis');
+    expect(screen.getByRole('button', { name: '关闭' })).not.toHaveClass('bg-emphasis');
+  });
+
+  it('marks a chosen option with the selected fill', async () => {
+    const user = userEvent.setup();
+    renderDock(MULTI_PAYLOAD);
+    const option = screen.getByText('引言').closest('button')!;
+    expect(option).not.toHaveClass('bg-fill-selected');
+    await user.click(option);
+    expect(option).toHaveClass('bg-fill-selected');
   });
 
   it('shows the pager counter', () => {

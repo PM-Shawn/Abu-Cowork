@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { act, render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SkillProposalCard from './SkillProposalCard';
 import type { InteractiveNoticeCard } from '@/types';
@@ -205,6 +205,31 @@ describe('SkillProposalCard · accept', () => {
     // Crucially: we did NOT settle the card to "accepted" — user can retry.
     expect(mockSetAction).not.toHaveBeenCalled();
   });
+
+  it('makes Accept the only filled button', () => {
+    renderCard();
+    const accept = screen.getByRole('button', { name: /^Accept$/ });
+    const filled = screen.getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+    expect(filled).toEqual([accept]);
+    expect(screen.getByRole('button', { name: /^Reject$/ })).toHaveClass('bg-fill');
+    expect(screen.getByRole('button', { name: /Don't propose this kind/ })).toHaveClass('bg-fill');
+  });
+
+  it('shows one spinner after the actions while the draft is being accepted', async () => {
+    let finish!: (value: { ok: boolean }) => void;
+    mockAcceptDraft.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    renderCard();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^Accept$/ }));
+
+    expect(screen.getByRole('status')).toHaveTextContent('Processing...');
+    expect(screen.getByRole('button', { name: /^Accept$/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Accept$/ }).querySelector('[data-ds-spinner]')).toBeNull();
+    await act(async () => finish({ ok: true }));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
 });
 
 describe('SkillProposalCard · reject', () => {
@@ -303,6 +328,14 @@ describe('SkillProposalCard · settled state', () => {
     // skill, which only the 我的 panel lists.
     expect(mockOpenExtensions).toHaveBeenCalledWith('skills', 'mine');
     expect(mockSetExtensionsSearchQuery).toHaveBeenCalledWith('skills', 'weekly-digest');
+  });
+
+  it('shows the outcome as a tag: success once accepted, neutral once rejected', () => {
+    renderCard({ settledAction: 'accepted' });
+    expect(screen.getByText(/✓ Accepted/)).toHaveClass('text-success');
+    cleanup();
+    renderCard({ settledAction: 'rejected' });
+    expect(screen.getByText(/Rejected \(in trash for 7 days\)/)).toHaveClass('bg-fill');
   });
 
   it('rejected pill is non-interactive (no toolbox jump link)', () => {

@@ -105,6 +105,19 @@ describe('ComputerUseStatusBar', () => {
     expect(onStop).not.toHaveBeenCalled();
   });
 
+  it('is a flat panel with a still screen icon and a secondary Stop button', () => {
+    setSnapshot({ activeConversationId: 'conversation-2' });
+    const { container } = render(<ComputerUseStatusBar onStop={() => {}} />);
+    const bar = container.firstElementChild as HTMLElement;
+    expect(bar).toHaveClass('rounded-panel');
+    expect(bar).toHaveClass('border-separator');
+    expect(bar).toHaveClass('bg-surface');
+    expect(container.querySelector('svg.lucide-monitor')).not.toHaveClass('animate-pulse');
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(stop).toHaveClass('bg-fill');
+    expect(stop.querySelector('svg.lucide-square')).not.toBeNull();
+  });
+
   it('renders nothing when idle', () => {
     setSnapshot({ status: 'idle' });
     const { container } = render(<ComputerUseStatusBar onStop={() => {}} />);

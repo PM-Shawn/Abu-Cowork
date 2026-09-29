@@ -1,6 +1,4 @@
-import { useState } from 'react';
-import { Check, Loader2, XCircle, Square, ChevronDown, ChevronUp } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { memo, useCallback, useState } from 'react';
 import { useI18n, format } from '@/i18n';
 import type { TranslationDict } from '@/i18n/types';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -8,6 +6,13 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { memberDefByName, useTeamDispatches } from '@/components/team/useTeamDispatches';
 import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import AgentAvatar from '@/components/common/AgentAvatar';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { StatusIcon } from '@/components/ds/status-icon';
+
+const CHIP = 'inline-flex h-6 max-w-45 items-center gap-1 rounded-control border border-separator bg-surface px-2 text-caption text-label transition-colors duration-fast hover:bg-fill-hover';
 
 /**
  * Pill that reports how many stored team members no longer resolve to a live
@@ -18,16 +23,44 @@ import AgentAvatar from '@/components/common/AgentAvatar';
 function UnresolvedMembersPill({ t, unresolved, onOpen }: { t: TranslationDict; unresolved: number; onOpen: () => void }) {
   if (unresolved <= 0) return null;
   return (
-    <button
-      type="button"
-      className="inline-flex items-center rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-danger)] hover:bg-[var(--abu-bg-hover)] transition-colors"
+    <Pressable
+      className="inline-flex h-6 items-center gap-1 rounded-control border border-separator px-2 text-caption text-danger transition-colors duration-fast hover:bg-fill-hover"
       onClick={onOpen}
       title={t.workspace.teamMemberBarUnresolvedHint}
       data-testid="team-member-bar-unresolved"
     >
+      <StatusIcon tone="danger" size="sm" />
       {unresolved === 1 ? t.workspace.teamMemberBarUnresolvedOne : format(t.workspace.teamMemberBarUnresolved, { n: unresolved })}
-    </button>
+    </Pressable>
   );
+}
+
+/**
+ * The collapse control carries a tooltip, and the bar re-renders on every
+ * streamed token (it reads the conversation's messages). Memoized with a
+ * stable toggle so the tooltip is left alone while text streams.
+ */
+const CollapseToggle = memo(function CollapseToggle({ collapsed, onToggle, expandLabel, collapseLabel }: {
+  collapsed: boolean;
+  onToggle: () => void;
+  expandLabel: string;
+  collapseLabel: string;
+}) {
+  return (
+    <IconButton
+      size="sm"
+      icon={collapsed ? AppIcons.expand : AppIcons.collapse}
+      label={collapsed ? expandLabel : collapseLabel}
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+    />
+  );
+});
+
+// The bar's running marks stand still: the step block in the chat above holds
+// the one spinner for the hand-off that is running.
+function RunningMark() {
+  return <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />;
 }
 
 /**
@@ -43,41 +76,40 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   // Before plugin records are ready every file-backed expert fails to resolve
   // (launch, a plugin install), so "unavailable" would be a false claim then.
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
-  // Collapsed = leader chip + a "{n} members" pill (running spinner kept so
+  // Collapsed = leader chip + a "{n} members" pill (running mark kept so
   // activity stays visible). Session-local on purpose: it is a glance control,
   // not a preference.
   const [collapsed, setCollapsed] = useState(false);
+  const toggleCollapsed = useCallback(() => setCollapsed((value) => !value), []);
 
   if (!team) return null;
   const defOf = (name: string) => memberDefByName(team, name);
-  const chip = 'inline-flex max-w-[180px] items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] px-2 py-0.5 text-caption text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors';
   const anyRunning = members.some((member) => member.status === 'running');
   const unresolved = pluginRecordsReady ? (team.unresolvedMemberRoleIds?.length ?? 0) : 0;
   const toggle = (
-    <button
-      type="button"
-      onClick={() => setCollapsed((value) => !value)}
-      aria-label={collapsed ? t.workspace.teamMemberBarExpand : t.workspace.teamMemberBarCollapse}
-      aria-expanded={!collapsed}
-      title={collapsed ? t.workspace.teamMemberBarExpand : t.workspace.teamMemberBarCollapse}
-      className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
-    >
-      {collapsed ? <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" /> : <ChevronUp aria-hidden="true" className="h-3.5 w-3.5" />}
-    </button>
+    <CollapseToggle
+      collapsed={collapsed}
+      onToggle={toggleCollapsed}
+      expandLabel={t.workspace.teamMemberBarExpand}
+      collapseLabel={t.workspace.teamMemberBarCollapse}
+    />
+  );
+  const leaderChip = (
+    <Pressable className={CHIP} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
+      <AgentAvatar agent={defOf(team.leader.name)} size="xs" round />
+      <span className="truncate">{team.leader.name}</span>
+      <span className="text-label-tertiary">{t.workspace.teamLeaderBadge}</span>
+    </Pressable>
   );
 
   if (collapsed) {
     return (
-      <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5" data-testid="team-member-bar" data-collapsed="true" aria-label={t.workspace.teamTitle}>
-        <button type="button" className={chip} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
-          <AgentAvatar agent={defOf(team.leader.name)} size="xs" round />
-          <span className="truncate">{team.leader.name}</span>
-          <span className="text-[var(--abu-text-tertiary)]">{t.workspace.teamLeaderBadge}</span>
-        </button>
-        <button type="button" className={cn(chip, anyRunning && 'border-[var(--abu-clay)]')} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="team-member-bar" data-collapsed="true" aria-label={t.workspace.teamTitle}>
+        {leaderChip}
+        <Pressable className={CHIP} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
           <span className="truncate">{members.length === 1 ? t.workspace.teamMemberBarCollapsedOne : format(t.workspace.teamMemberBarCollapsed, { n: members.length })}</span>
-          {anyRunning && <Loader2 aria-hidden="true" className="h-3 w-3 text-[var(--abu-clay)] motion-safe:animate-spin" />}
-        </button>
+          {anyRunning && <RunningMark />}
+        </Pressable>
         <UnresolvedMembersPill t={t} unresolved={unresolved} onOpen={() => openTeam(conversationId)} />
         {toggle}
       </div>
@@ -85,41 +117,36 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5" data-testid="team-member-bar" aria-label={t.workspace.teamTitle}>
-      <button type="button" className={chip} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
-        <AgentAvatar agent={defOf(team.leader.name)} size="xs" round />
-        <span className="truncate">{team.leader.name}</span>
-        <span className="text-[var(--abu-text-tertiary)]">{t.workspace.teamLeaderBadge}</span>
-      </button>
+    <div className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="team-member-bar" aria-label={t.workspace.teamTitle}>
+      {leaderChip}
       {members.map((member) => (
-        <button
+        <Pressable
           key={member.agent}
-          type="button"
-          className={cn(chip, member.status === 'running' && 'border-[var(--abu-clay)]')}
+          className={CHIP}
           onClick={() => (member.latest ? openSubagent(member.latest.identity, member.latest.taskIndex, member.agent) : openTeam(conversationId))}
           title={member.latest ? format(t.workspace.teamDispatchCount, { n: member.dispatches.length }) : t.workspace.teamNoDispatchYet}
           data-status={member.status}
         >
           <AgentAvatar agent={defOf(member.agent)} size="xs" round />
           <span className="truncate">{member.agent}</span>
-          {member.status === 'running' && <Loader2 aria-hidden="true" className="h-3 w-3 text-[var(--abu-clay)] motion-safe:animate-spin" />}
-          {member.status === 'completed' && <Check aria-hidden="true" className="h-3 w-3 text-[var(--abu-success)]" />}
-          {member.status === 'error' && <XCircle aria-hidden="true" className="h-3 w-3 text-[var(--abu-danger)]" />}
-        </button>
+          {member.status === 'running' && <RunningMark />}
+          {member.status === 'completed' && <StatusIcon tone="success" size="sm" />}
+          {member.status === 'error' && <StatusIcon tone="danger" size="sm" />}
+        </Pressable>
       ))}
       <UnresolvedMembersPill t={t} unresolved={unresolved} onOpen={() => openTeam(conversationId)} />
       {members.map((m) => ({ m, running: m.dispatches.find((d) => d.live && d.status === 'running') })).filter((x) => x.running).map(({ m, running }) => (
-        <button
+        <Button
           key={`stop-${m.agent}`}
-          type="button"
+          variant="secondary"
+          size="sm"
+          icon={AppIcons.stop}
           onClick={() => running && requestDispatchCancel(running.key)}
           aria-label={format(t.workspace.teamStopDispatch, { member: m.agent })}
           title={format(t.workspace.teamStopDispatch, { member: m.agent })}
-          className="inline-flex items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
         >
-          <Square aria-hidden="true" className="h-3 w-3" />
           <span className="truncate">{format(t.workspace.teamStopDispatchShortNamed, { member: m.agent })}</span>
-        </button>
+        </Button>
       ))}
       {toggle}
     </div>

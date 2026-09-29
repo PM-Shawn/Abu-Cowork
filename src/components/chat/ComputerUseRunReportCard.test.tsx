@@ -80,6 +80,35 @@ describe('ComputerUseRunReportCard', () => {
     expect(screen.getByText(/1 步有后果/)).toBeInTheDocument();
   });
 
+  it('is a flat card whose outcomes are status tags with their shape', () => {
+    const { container } = render(
+      <ComputerUseRunReportCard
+        steps={[
+          step('t1', { action: 'click', element_id: 3 }, { action: 'click', targetApp: 'Finder', consequence: 'delete', outcome: 'error', detail: 'approval-denied' }),
+        ]}
+      />,
+    );
+    const card = screen.getByTestId('cu-run-report');
+    expect(card).toHaveClass('rounded-panel');
+    expect(card).toHaveClass('border-separator');
+    expect(card).toHaveClass('bg-surface');
+    const header = screen.getByRole('button', { name: /操作回放/ });
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('cu-run-final').querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
+    expect(screen.getByTestId('cu-run-consequence').querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
+    expect(container.innerHTML).not.toContain('--abu-');
+  });
+
+  it('marks a settled run with a success tag and folds it', () => {
+    render(
+      <ComputerUseRunReportCard
+        steps={[step('t1', { action: 'click', element_id: 3 }, { action: 'click', targetApp: 'Finder', consequence: 'none', outcome: 'verified-change' })]}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /操作回放/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('cu-run-final').querySelector('svg.lucide-circle-check')).toHaveClass('text-success');
+  });
+
   it('marks a consequential step that never ran as not executed', () => {
     render(
       <ComputerUseRunReportCard

@@ -105,6 +105,14 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/ThinkingStatusLine.tsx',
   'src/components/chat/TaskBlock*.{ts,tsx}',
   'src/components/chat/SmoothHeight*.{ts,tsx}',
+  'src/components/chat/BrowserRunReportCard*.{ts,tsx}',
+  'src/components/chat/ComputerUseRunReportCard*.{ts,tsx}',
+  'src/components/chat/ComputerUseStatusBar*.{ts,tsx}',
+  'src/components/chat/TeamMemberBar*.{ts,tsx}',
+  'src/components/chat/AgentStatusStrip*.{ts,tsx}',
+  'src/components/chat/BatchProgress*.{ts,tsx}',
+  'src/components/chat/batchProgressViewModel*.ts',
+  'src/components/chat/PlanStepsCard*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

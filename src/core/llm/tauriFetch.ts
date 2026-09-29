@@ -86,7 +86,7 @@ async function localFetch(input: RequestInfo | URL, init?: RequestInit, localSer
   }
 
   // Step 1: create the request resource on Rust side
-  // localServer 让 Electron 主进程（electron/httpHost.cjs）发请求时不设响应头与正文的传输上限
+  // localServer 让 Electron 主进程（electron/httpHost.cjs）把响应头与正文的传输上限放到适配器 10 分钟之后
   const rid = await invoke<number>('plugin:http|fetch', {
     clientConfig: {
       method, url, headers, data, maxRedirections: undefined, connectTimeout: undefined,
@@ -188,7 +188,8 @@ export interface TauriFetchOptions {
   /**
    * 请求发给本地模型服务（Ollama、LM Studio、地址在本机的自定义服务商）。首次回答前的
    * 等待与之后的空闲由适配器自己计时；桌面端发请求的 Node fetch（undici）默认 300 秒
-   * 没收到响应头或正文空闲 300 秒就断开，带上这一项后不设这两个上限。
+   * 没收到响应头或正文空闲 300 秒就断开，带上这一项后这两个上限放到适配器 10 分钟之后
+   * 10 秒（LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000），只作兜底。
    */
   localServer?: boolean;
 }

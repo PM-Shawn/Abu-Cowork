@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createRequire } from 'node:module';
+import { LOCAL_FIRST_RESPONSE_TIMEOUT_MS } from '../src/core/llm/heartbeat';
 
 // httpHost.cjs 由 Node 自己的 require 加载，vi.mock 管不到它；按 mediaSignature.test.cjs 的做法
 // 先加载真实的 undici，再把 require 缓存里的导出换成记录调用的替身
@@ -50,7 +51,7 @@ describe('httpHost plugin:http|fetch_send', () => {
     globalFetch.mockImplementation(async () => new Response('ok'));
   });
 
-  it('sends a local model server request without the transport header and body timeouts', async () => {
+  it('sends a local model server request with header and body limits past the adapters\' 10 minute wait', async () => {
     const meta = await send({
       method: 'POST',
       url: 'http://192.168.1.20:11434/api/chat',
@@ -68,8 +69,12 @@ describe('httpHost plugin:http|fetch_send', () => {
     expect(Buffer.from(init.body as Buffer).toString()).toBe('{}');
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(init.dispatcher).toBeInstanceOf(FakeAgent);
-    // undici 默认 300 秒没收到响应头、或两段内容之间空闲 300 秒就断开；本地服务的等待由适配器计时
-    expect((init.dispatcher as FakeAgent).options).toEqual({ headersTimeout: 0, bodyTimeout: 0 });
+    // undici 默认 300 秒没收到响应头、或两段内容之间空闲 300 秒就断开；本地服务的等待由适配器计时，
+    // 传输层上限放在适配器 10 分钟之后 10 秒，只作兜底
+    expect((init.dispatcher as FakeAgent).options).toEqual({
+      headersTimeout: LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000,
+      bodyTimeout: LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000,
+    });
   });
 
   it('reuses one connection pool for every local model server request', async () => {

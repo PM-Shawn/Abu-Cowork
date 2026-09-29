@@ -15,6 +15,7 @@ const undici = vi.hoisted(() => {
 vi.mock('undici', () => ({ Agent: undici.Agent, fetch: undici.fetch }));
 
 import { getTauriFetch } from './tauriFetch';
+import { LOCAL_FIRST_RESPONSE_TIMEOUT_MS } from '@/core/llm/heartbeat';
 
 describe('sidecar getTauriFetch', () => {
   beforeEach(() => {
@@ -26,7 +27,7 @@ describe('sidecar getTauriFetch', () => {
     expect(await getTauriFetch({ localServer: false })).toBe(globalThis.fetch);
   });
 
-  it('sends local model server requests without the transport header and body timeouts', async () => {
+  it('sends local model server requests with header and body limits past the adapters\' 10 minute wait', async () => {
     const response = new Response('{"done":true}\n');
     undici.fetch.mockResolvedValue(response);
     const controller = new AbortController();
@@ -42,8 +43,13 @@ describe('sidecar getTauriFetch', () => {
     expect(sentInit).toMatchObject(init);
     expect(sentInit.signal).toBe(controller.signal);
     expect(sentInit.dispatcher).toBeInstanceOf(undici.Agent);
-    // undici 默认 300 秒没收到响应头、或两段内容之间空闲 300 秒就断开；本地服务的等待由适配器计时
-    expect((sentInit.dispatcher as InstanceType<typeof undici.Agent>).options).toEqual({ headersTimeout: 0, bodyTimeout: 0 });
+    // undici 默认 300 秒没收到响应头、或两段内容之间空闲 300 秒就断开；本地服务的等待由适配器计时，
+    // 传输层上限放在适配器 10 分钟之后 10 秒，只作兜底
+    expect((sentInit.dispatcher as InstanceType<typeof undici.Agent>).options).toEqual({
+      headersTimeout: LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000,
+      bodyTimeout: LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000,
+    });
+    expect(LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000).toBe(610_000);
   });
 
   it('reuses one connection pool for every local model server request', async () => {

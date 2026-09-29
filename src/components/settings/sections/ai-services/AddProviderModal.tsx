@@ -687,6 +687,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     return (
       <button
         type="button"
+        aria-label={t.settings.advancedConfig}
+        aria-expanded={isExpanded}
         onClick={(e) => { e.stopPropagation(); toggleModelExpand(modelId); }}
         className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
       >

@@ -43,6 +43,14 @@ describe('AdvancedCapabilitiesFields', () => {
     expect(screen.getByText('模型一次能记住的对话长度')).toBeInTheDocument();
   });
 
+  it('names the 能看图 checkbox so it can be found by its label', async () => {
+    render(<Harness estimated={32768} />);
+    const canSeeImages = screen.getByRole('checkbox', { name: '能看图' });
+    expect(canSeeImages).toHaveAttribute('aria-checked', 'false');
+    await userEvent.click(canSeeImages);
+    expect(canSeeImages).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('shows the length the service reported', () => {
     render(<Harness detected={8192} estimated={32768} />);
     expect(screen.getByPlaceholderText('已识别：8K')).toBeInTheDocument();

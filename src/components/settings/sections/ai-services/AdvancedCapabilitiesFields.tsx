@@ -47,7 +47,7 @@ export default function AdvancedCapabilitiesFields({
           <div className="flex flex-col cursor-pointer select-none"
             onClick={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))}>
             <div className="flex items-center gap-2">
-              <Checkbox checked={!!declared.supportsImages}
+              <Checkbox checked={!!declared.supportsImages} label={t.settings.capImages}
                 onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
               <span className="text-body text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
             </div>

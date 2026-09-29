@@ -392,8 +392,8 @@ Model-data freshness (`gen:models:check`) runs automatically before tests via th
 and again inside `npm run build` — no separate CI step is needed.
 
 Steps that are NOT part of verify (and must be kept):
-- Test-infra scripts (`npm run test:infra`) — `node:test` checks over the CI workflow and the
-  inventory generator; not wired into `verify:full`.
+- Test-infra scripts (`npm run test:infra`) — `node:test` checks over the CI workflow, the
+  inventory generator and the enterprise leak-guard wiring; not wired into `verify:full`.
 - Build frontend (`npm run build`) — separate from tests, validates production bundle.
 - Chrome extension bundle sync check — validates committed extension artifact is up to date.
 

@@ -30,27 +30,33 @@ function run(cmd, args, cwd) {
 // the real npm script, the real .husky/pre-commit, installed by the real husky.
 function fixtureRepo() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'abu-leak-guard-'));
-  mkdirSync(path.join(root, 'scripts'));
-  mkdirSync(path.join(root, '.husky'));
-  mkdirSync(path.join(root, 'src'));
-  copyFileSync(
-    path.join(repoRoot, 'scripts/enterprise-leak-guard.sh'),
-    path.join(root, 'scripts/enterprise-leak-guard.sh'),
-  );
-  copyFileSync(path.join(repoRoot, '.husky/pre-commit'), path.join(root, '.husky/pre-commit'));
-  writeFileSync(
-    path.join(root, 'package.json'),
-    JSON.stringify({
-      name: 'leak-guard-fixture',
-      private: true,
-      scripts: { 'check:enterprise-leak': packageScripts['check:enterprise-leak'] },
-    }),
-  );
-  writeFileSync(path.join(root, 'src/ok.ts'), 'export const ok = true;\n');
-  assert.equal(run('git', ['init', '-q'], root).status, 0);
-  const husky = run(process.execPath, [path.join(repoRoot, 'node_modules/husky/bin.js')], root);
-  assert.equal(husky.status, 0, husky.stderr);
-  assert.equal(run('git', ['config', 'core.hooksPath'], root).stdout.trim(), '.husky/_');
+  // Callers only clean up once they hold the path, so a failed setup removes its own directory.
+  try {
+    mkdirSync(path.join(root, 'scripts'));
+    mkdirSync(path.join(root, '.husky'));
+    mkdirSync(path.join(root, 'src'));
+    copyFileSync(
+      path.join(repoRoot, 'scripts/enterprise-leak-guard.sh'),
+      path.join(root, 'scripts/enterprise-leak-guard.sh'),
+    );
+    copyFileSync(path.join(repoRoot, '.husky/pre-commit'), path.join(root, '.husky/pre-commit'));
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'leak-guard-fixture',
+        private: true,
+        scripts: { 'check:enterprise-leak': packageScripts['check:enterprise-leak'] },
+      }),
+    );
+    writeFileSync(path.join(root, 'src/ok.ts'), 'export const ok = true;\n');
+    assert.equal(run('git', ['init', '-q'], root).status, 0);
+    const husky = run(process.execPath, [path.join(repoRoot, 'node_modules/husky/bin.js')], root);
+    assert.equal(husky.status, 0, husky.stderr);
+    assert.equal(run('git', ['config', 'core.hooksPath'], root).stdout.trim(), '.husky/_');
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
   return root;
 }
 

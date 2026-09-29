@@ -630,7 +630,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           data-electron-no-drag
           data-ds-motion
           data-state="open"
-          className="fixed bottom-6 left-1/2 z-toast flex -translate-x-1/2 items-center gap-3 rounded-panel bg-material px-4 py-2 text-label shadow-float backdrop-blur-xl data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[state=open]:duration-base data-[state=open]:ease-enter"
+          className="fixed bottom-6 left-1/2 z-toast flex -translate-x-1/2 items-center gap-3 rounded-panel bg-raised px-4 py-2 text-label shadow-float data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[state=open]:duration-base data-[state=open]:ease-enter"
         >
           <span className="text-ui">{t.sidebar.conversationDeleted}</span>
           <Button size="sm" icon={AppIcons.undo} onClick={handleUndoDelete}>

@@ -16,7 +16,7 @@ const ICON_SIZES = ['sm', 'md', 'lg'] as const;
 // Every color token of tokens.css, as a swatch. Class names must be complete literals so
 // Tailwind can generate them.
 const COLOR_CLASS: Record<string, string> = {
-  desk: 'bg-desk', 'desk-solid': 'bg-desk-solid', surface: 'bg-surface', raised: 'bg-raised', material: 'bg-material',
+  desk: 'bg-desk', 'desk-solid': 'bg-desk-solid', surface: 'bg-surface', raised: 'bg-raised',
   code: 'bg-code', field: 'bg-field', fill: 'bg-fill', 'fill-hover': 'bg-fill-hover', 'fill-selected': 'bg-fill-selected',
   'fill-pressed': 'bg-fill-pressed', emphasis: 'bg-emphasis', 'on-emphasis': 'bg-on-emphasis', scrim: 'bg-scrim',
   brand: 'bg-brand', 'brand-ink': 'bg-brand-ink',

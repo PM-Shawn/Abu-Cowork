@@ -435,6 +435,13 @@ never uses a bare `animate-in` class, because the legacy global `.animate-in` ru
 off those attributes only — never add `prefers-*` media queries to it. Animated floating
 layers carry `data-ds-motion` and spinners `data-ds-spinner` so reduced motion can stop them.
 
+**Window material**: `electron/windowChrome.cjs` `windowMaterial()` decides what the OS draws
+behind the window (`vibrancy` on macOS, `mica` on Windows 11 22H2+, otherwise `none`), passes
+it to the page as `--abu-window-material`, and `src/styles/windowMaterial.ts` writes
+`data-window-material` on `<html>` before the first paint. With a material the window
+background is transparent and `bg-desk` is translucent; with `none` tokens.css makes `desk`
+opaque. Content cards (`bg-surface`) are always opaque.
+
 When a directory finishes migrating, append its glob to the list in the same PR. Never remove an
 entry. `scripts/designTokens.test.ts` fails if a token change breaks WCAG contrast in any of the
 four appearances (light, dark, and each with increased contrast).

@@ -28,6 +28,8 @@ export const iconButtonVariants = cva(
       variant: {
         plain: 'hover:bg-fill-hover active:bg-fill-pressed',
         secondary: 'bg-fill hover:bg-fill-selected active:bg-fill-pressed',
+        // The one filled button of an area when it has no words (Send).
+        primary: 'bg-emphasis text-on-emphasis hover:text-on-emphasis hover:opacity-90 active:opacity-80',
       },
       size: { sm: 'h-6 w-6', md: 'h-7 w-7' },
     },

@@ -106,6 +106,7 @@ const LEGACY_CLASS_PATTERNS = [
   [`${CLASS_START}duration-([0-9]+|initial)${CLASS_END}`, 'Design system: use duration-fast / duration-base / duration-slow.'],
   [`${CLASS_START}shadow(-(2xs|xs|sm|md|lg|xl|2xl|inner))?${CLASS_END}`, 'Design system: use shadow-panel / shadow-float / shadow-dialog.'],
   [`${CLASS_START}ease-(linear|in|out|in-out)${CLASS_END}`, 'Design system: use ease-enter / ease-exit.'],
+  ['(^|[\\s!])animate-in(?![\\w-])', 'Design system: the legacy global .animate-in rule overrides a bare animate-in. Use data-[state=…]:animate-in.'],
 ]
 
 const DESIGN_VALUE_SELECTORS = [

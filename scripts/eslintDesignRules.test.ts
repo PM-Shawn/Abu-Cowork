@@ -119,4 +119,13 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const code = `import { Command } from 'cmdk';\n${component('<Command />')}`;
     expect(await messages(code, MIGRATED)).not.toEqual([]);
   });
+
+  it('flags a bare animate-in class that the legacy global rule hijacks', async () => {
+    expect(await messages(component('<div className="animate-in fade-in-0" />'), MIGRATED)).not.toEqual([]);
+  });
+
+  it('accepts state-scoped animate-in forms', async () => {
+    const jsx = '<div className="data-[state=open]:animate-in data-[state=closed]:animate-out" />';
+    expect(await messages(component(jsx), MIGRATED)).toEqual([]);
+  });
 });

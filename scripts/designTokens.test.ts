@@ -68,6 +68,7 @@ const APPEARANCES: Appearance[] = ['light', 'dark', 'light-contrast', 'dark-cont
 const TEXT = ['label', 'label-secondary', 'label-tertiary', 'link', 'success', 'warning', 'danger', 'info'];
 const SURFACES = ['surface', 'raised', 'code', 'field', 'desk-solid'];
 const STATUS = ['success', 'warning', 'danger', 'info'];
+const SYNTAX = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property'];
 
 describe('design tokens — completeness', () => {
   it('overrides every semantic light token in dark', () => {
@@ -141,5 +142,15 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
 
   it.each(['surface', 'desk-solid'])('focus ring on %s is at least 3:1', (surface) => {
     expect(wcagContrast(color(values, 'focus'), color(values, surface))).toBeGreaterThanOrEqual(3);
+  });
+
+  // Code is content (brief P1-1): every highlight color stays readable on the code block.
+  it.each(SYNTAX)('%s on code is at least 4.5:1', (token) => {
+    expect(wcagContrast(color(values, token), color(values, 'code'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // The user's own message sits on a fill over the content card.
+  it.each(['label', 'label-secondary'])('%s on fill over surface is at least 4.5:1', (text) => {
+    expect(wcagContrast(color(values, text), over(values, 'fill', 'surface'))).toBeGreaterThanOrEqual(4.5);
   });
 });

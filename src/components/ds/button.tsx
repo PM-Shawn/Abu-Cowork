@@ -23,7 +23,7 @@ export function IconButton({ icon, label, variant, size = 'md', className, type 
   Omit<ComponentProps<'button'>, 'children' | 'aria-label'> & {
     icon: LucideIcon;
     label: string;
-    variant?: 'plain' | 'secondary';
+    variant?: 'plain' | 'secondary' | 'primary';
     size?: ControlSize;
   }) {
   return (

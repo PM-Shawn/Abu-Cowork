@@ -27,7 +27,7 @@ const twMerge = extendTailwindMerge({
       // Legacy 8-token scale + design-system scale (index.css / tokens.css --text-*)
       "font-size": [{ text: [
         "caption", "minor", "body", "h-xs", "h-sm", "h-md", "h-lg", "h-xl",
-        "title-lg", "title", "ui", "ui-sm", "h1", "h2", "h3", "mono",
+        "title-lg", "title", "ui", "ui-sm", "h1", "h2", "h3", "mono", "code-inline",
       ] }],
       // `text-[var(--…)]` needs no validator here: tailwind-merge's default text-color group
       // already claims every arbitrary value before any extension is consulted
@@ -36,7 +36,7 @@ const twMerge = extendTailwindMerge({
       "border-color": [{ border: ["separator", "control-border"] }],
       "ring-color": [{ ring: ["focus"] }],
       rounded: [{ rounded: ["window", "panel", "control"] }],
-      shadow: [{ shadow: ["panel", "float", "dialog"] }],
+      shadow: [{ shadow: ["panel", "float", "dialog", "composer"] }],
       z: [{ z: ["sticky", "popover", "dialog", "toast", "tooltip"] }],
       duration: [{ duration: ["fast", "base", "slow"] }],
       ease: [{ ease: ["enter", "exit"] }],

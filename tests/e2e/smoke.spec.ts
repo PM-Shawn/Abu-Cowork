@@ -84,6 +84,9 @@ test.describe.serial('Electron shell — real app smoke', () => {
     // matched by a loose locator.
     await expect(page.getByText(WELCOME_TITLE).first()).toBeVisible({ timeout: READY_TIMEOUT });
 
+    // The system material shows through the page only while body paints nothing.
+    expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+
     fs.mkdirSync(path.dirname(SCREENSHOT_PATH), { recursive: true });
     await page.screenshot({ path: SCREENSHOT_PATH });
   });

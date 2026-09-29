@@ -57,4 +57,10 @@ describe('IconButton', () => {
   it('fails fast outside DesignSystemProvider', () => {
     expect(() => render(<IconButton icon={AppIcons.copy} label="Copy" />)).toThrow(/DesignSystemProvider/);
   });
+
+  it('renders the primary icon button filled with the emphasis color', () => {
+    render(<IconButton icon={AppIcons.add} label="Send" variant="primary" />, { wrapper: DesignSystemProvider });
+    const button = screen.getByRole('button', { name: 'Send' });
+    expect(button).toHaveClass('bg-emphasis', 'text-on-emphasis');
+  });
 });

@@ -117,6 +117,26 @@ test('release CI explicitly skips the local-only branch-protection read', () => 
   assert.doesNotMatch(e2e, /check-branch-protection|skip-branch-protection/);
 });
 
+test('release preflight checks the tag commit against origin/main before installing or building', () => {
+  const preflight = YAML.parse(release).jobs.preflight;
+  const checkout = preflight.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(checkout.with?.['fetch-depth'], 0, 'the tag-commit check needs full history and origin/main');
+
+  const names = preflight.steps.map((step) => step.name);
+  const tagCheck = names.indexOf('Validate tag commit, version, and changelogs');
+  assert.ok(tagCheck > -1, 'tag-commit preflight step missing');
+  assert.ok(tagCheck < names.indexOf('Install dependencies'), 'the tag-commit check must run before npm ci');
+
+  const run = preflight.steps[tagCheck].run;
+  assert.match(
+    run,
+    /if \[ "\$GITHUB_EVENT_NAME" = "workflow_dispatch" \]; then\n\s+node scripts\/release-preflight\.mjs --tag "\$CANDIDATE_VERSION" --skip-branch-protection --skip-tag-commit-check\nelse\n\s+node scripts\/release-preflight\.mjs --tag "\$CANDIDATE_VERSION" --skip-branch-protection\nfi/,
+    'only a manual dispatch may skip the tag-commit check',
+  );
+  assert.equal(run.match(/--skip-tag-commit-check/g).length, 1);
+  assert.doesNotMatch(packageScripts['release:check'], /skip-tag-commit-check/);
+});
+
 test('CI injects QUARANTINE_ASOF so the quarantine SLA clock advances', () => {
   assert.match(ci, /QUARANTINE_ASOF=\$\(date -u \+%F\)/);
 });

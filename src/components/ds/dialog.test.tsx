@@ -169,6 +169,17 @@ describe('Dialog', () => {
     expect(dialog.querySelector('.mt-4')).toBeNull();
   });
 
+  it('centres itself by default and anchors its top edge with placement top', () => {
+    const { unmount } = render(<Dialog open title="Centred" />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('dialog')).toHaveClass('top-1/2', '-translate-y-1/2');
+    unmount();
+    render(<Dialog open title="Anchored" placement="top" />, { wrapper: DesignSystemProvider });
+    const anchored = screen.getByRole('dialog');
+    expect(anchored).toHaveClass('top-1/7', 'translate-y-0', 'left-1/2', '-translate-x-1/2');
+    expect(anchored).not.toHaveClass('top-1/2');
+    expect(anchored).not.toHaveClass('-translate-y-1/2');
+  });
+
   it('marks its content as an open layer and dims the window behind it', async () => {
     const user = userEvent.setup();
     render(<RenameDialog />, { wrapper: DesignSystemProvider });

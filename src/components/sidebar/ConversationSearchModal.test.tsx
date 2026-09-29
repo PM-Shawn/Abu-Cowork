@@ -97,4 +97,14 @@ describe('ConversationSearchModal', () => {
     expect(screen.getByText('没有匹配的对话')).toBeInTheDocument();
     expect(within(screen.getByRole('dialog')).queryByRole('button', { name: /report|plan/i })).toBeNull();
   });
+
+  it('sizes the results to their content and keeps the top edge still while typing', () => {
+    renderSearch();
+    const dialog = screen.getByRole('dialog');
+    const results = within(dialog).getByRole('button', { name: 'Quarterly report' }).parentElement as HTMLElement;
+    // A maximum height, then scrolling; never a fixed height that leaves an empty area.
+    expect(results).toHaveClass('max-h-80', 'overflow-y-auto');
+    expect(results).not.toHaveClass('h-80');
+    expect(dialog).toHaveClass('top-1/7');
+  });
 });

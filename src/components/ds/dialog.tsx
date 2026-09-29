@@ -8,6 +8,8 @@ import { useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { DIALOG_BOX, DIALOG_MOTION, SCRIM_MOTION } from './styles';
 
 const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl' } as const;
+// `top` keeps the top edge still while the content grows or shrinks (search as you type).
+const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0' } as const;
 
 export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close {...props} />;
@@ -17,7 +19,7 @@ export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>)
 // except while `dirty`: then the user is asked whether to discard what they typed.
 export function Dialog({
   title, description, children, footer, trigger, open, defaultOpen = false, onOpenChange,
-  dirty = false, size = 'md', role = 'dialog', titleHidden = false,
+  dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
 }: {
   title: ReactNode;
   // Keeps the title as the accessible name without showing it.
@@ -31,6 +33,7 @@ export function Dialog({
   onOpenChange?: (open: boolean) => void;
   dirty?: boolean;
   size?: keyof typeof WIDTH;
+  placement?: keyof typeof PLACEMENT;
   role?: 'dialog' | 'alertdialog';
 }) {
   const { t } = useI18n();
@@ -91,7 +94,7 @@ export function Dialog({
               giveFocusBack(returnTo, event, trigger !== undefined);
             }}
             {...(description ? {} : { 'aria-describedby': undefined })}
-            className={cn(DIALOG_BOX, WIDTH[size], DIALOG_MOTION)}
+            className={cn(DIALOG_BOX, WIDTH[size], PLACEMENT[placement], DIALOG_MOTION)}
           >
             <LayerScope id={id}>
               {titleHidden ? (

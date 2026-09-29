@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import type { ChatOptions } from './adapter';
 import type { UsageAttempt } from './usageAccounting';
@@ -65,7 +65,7 @@ beforeEach(() => {
 });
 
 describe('OllamaNativeAdapter request', () => {
-  it('posts to /api/chat with the same window as num_ctx', async () => {
+  it('posts to /api/chat without num_ctx when the user left the context length blank', async () => {
     await run([{ message: { role: 'assistant', content: 'hi' } }, DONE], { baseUrl: 'http://127.0.0.1:11434/v1/' });
     const [url, init] = mockFetch.mock.calls[0] as [string, { method: string; body: string }];
     expect(url).toBe('http://127.0.0.1:11434/api/chat');
@@ -74,10 +74,28 @@ describe('OllamaNativeAdapter request', () => {
     expect(body).toMatchObject({
       model: 'qwen3:0.6b',
       stream: true,
-      options: { num_ctx: 32768, num_predict: 2048 },
+      truncate: false,
+      shift: false,
       tools: [{ type: 'function', function: { name: 'read_file' } }],
     });
+    // 阿布安排内容用的窗口（contextWindow: 32768）不发给 Ollama，Ollama 按自己的设置运行
+    expect(body.options).toEqual({ num_predict: 2048 });
     expect((body.messages as Array<{ role: string }>)[0]).toEqual({ role: 'system', content: 'sys' });
+  });
+
+  it('sends the context length the user filled in as num_ctx', async () => {
+    await run([DONE], { requestedContextLength: 8192 });
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect(body.options).toEqual({ num_ctx: 8192, num_predict: 2048 });
+    expect(body.truncate).toBe(false);
+    expect(body.shift).toBe(false);
+  });
+
+  it('still sends the request when no window is known at all', async () => {
+    const events = await run([{ message: { role: 'assistant', content: 'hi' } }, DONE], { contextWindow: undefined });
+    expect(events.at(-1)).toEqual({ type: 'done', stopReason: 'end_turn' });
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect(body.options).toEqual({ num_predict: 2048 });
   });
 
   it('turns off Ollama\'s own truncation and context shift so an overflow is reported', async () => {
@@ -107,10 +125,91 @@ describe('OllamaNativeAdapter request', () => {
     expect(body.tools).toBeUndefined();
   });
 
-  it('refuses to send a request without a window', async () => {
-    await expect(new OllamaNativeAdapter().chat([userMessage], options({ contextWindow: undefined }), () => {}))
-      .rejects.toMatchObject({ code: 'invalid_request' });
-    expect(mockFetch).not.toHaveBeenCalled();
+});
+
+describe('OllamaNativeAdapter waiting for the first answer', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function abortError(): Error {
+    const error = new Error('Request cancelled');
+    error.name = 'AbortError';
+    return error;
+  }
+
+  /** 服务收下请求后一直不回响应头，直到请求被中止。 */
+  function neverAnswers(): void {
+    mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => new Promise<Response>((_resolve, reject) => {
+      if (init?.signal?.aborted) return reject(abortError());
+      init?.signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+    }));
+  }
+
+  /** 响应头马上到，正文先送出 head 里的几行，之后一直不动，直到请求被中止。 */
+  function stallsAfter(head: unknown[]): void {
+    mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const line of head) controller.enqueue(encoder.encode(`${JSON.stringify(line)}\n`));
+          if (init?.signal?.aborted) return controller.error(abortError());
+          init?.signal?.addEventListener('abort', () => controller.error(abortError()), { once: true });
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }));
+    });
+  }
+
+  function start(overrides: Partial<ChatOptions> = {}): { chatPromise: Promise<void>; settled: () => boolean } {
+    let settled = false;
+    const chatPromise = new OllamaNativeAdapter().chat([userMessage], options(overrides), () => {});
+    chatPromise.then(() => { settled = true; }, () => { settled = true; });
+    return { chatPromise, settled: () => settled };
+  }
+
+  it('waits 10 minutes for a model that has not started answering, then fails without retry', async () => {
+    neverAnswers();
+    const { chatPromise, settled } = start();
+    await vi.advanceTimersByTimeAsync(599_000);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+    expect(emitted.at(-1)).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('counts the whole wait until the first output, headers alone do not end it', async () => {
+    stallsAfter([]);
+    const { chatPromise, settled } = start();
+    await vi.advanceTimersByTimeAsync(599_000);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+  });
+
+  it('keeps the 180 second idle rule once output has started', async () => {
+    stallsAfter([{ message: { role: 'assistant', content: 'Hel' } }]);
+    const { chatPromise, settled } = start();
+    await vi.advanceTimersByTimeAsync(179_000);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+  });
+
+  it('ends at once when the user stops during the wait', async () => {
+    neverAnswers();
+    const controller = new AbortController();
+    const { chatPromise, settled } = start({ signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(settled()).toBe(false);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled()).toBe(true);
+    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error' });
+    expect(emitted.at(-1)).toMatchObject({ outcome: 'cancelled' });
   });
 });
 

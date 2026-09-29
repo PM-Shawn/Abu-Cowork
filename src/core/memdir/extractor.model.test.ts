@@ -105,7 +105,33 @@ describe('memory extraction runs on the conversation\'s own provider', () => {
 
     await extractMemoriesFromConversation('c1', null);
 
-    // 没问到时按名字估计是 32768，与任务请求的 num_ctx 不同，Ollama 会重新加载模型
-    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'llama3.2', contextWindow: 8192 });
+    // 窗口与任务请求按同一套优先级取；用户没填「上下文长度」，Ollama 不会收到 num_ctx
+    const options = mockChat.mock.calls[0][1] as { requestedContextLength?: number };
+    expect(options).toMatchObject({ model: 'llama3.2', contextWindow: 8192, localServer: true });
+    expect(options.requestedContextLength).toBeUndefined();
+  });
+
+  it('passes on only the context length the user filled in for Ollama', async () => {
+    mockProbeContextWindow.mockClear();
+    mockProbeContextWindow.mockResolvedValue(8192);
+    useSettingsStore.setState({
+      providers: [{
+        ...provider('ollama'), source: 'builtin', baseUrl: 'http://127.0.0.1:11434', apiKey: 'local-key',
+        models: [{ id: 'llama3.2', label: 'llama3.2', declaredCapabilities: { maxInputTokens: 24576 } }],
+      }],
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+    });
+    setConversationReader({
+      getConversation: () => ({}) as never,
+      getIndexEntry: () => undefined,
+      getThinkingStartTime: () => null,
+    } as ConversationReader);
+
+    await extractMemoriesFromConversation('c1', null);
+
+    expect(mockChat.mock.calls[0][1]).toMatchObject({
+      model: 'llama3.2', contextWindow: 24576, requestedContextLength: 24576, localServer: true,
+    });
+    expect(mockProbeContextWindow).not.toHaveBeenCalled();
   });
 });

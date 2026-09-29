@@ -4,7 +4,13 @@ import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedContentBlock } from './messageNormalizer';
-import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import {
+  createHeartbeat,
+  anySignal,
+  localFirstResponseTimeoutError,
+  DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS,
+  LOCAL_FIRST_RESPONSE_TIMEOUT_MS,
+} from './heartbeat';
 import { createLogger } from '../logging/logger';
 import { resolveOpenAIBaseUrl, buildFullChatUrl } from './urlUtils';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
@@ -23,19 +29,22 @@ const logger = createLogger('openai-compatible');
 // in one place; only the per-phase message wording still varies by call site.
 
 /**
- * Arm a hang-ceiling timer: aborts `streamAbort` after
- * `STREAM_HANG_TIMEOUT_MS` and flips a flag the caller's catch block can
- * check to distinguish "timed out" from any other abort/connection failure.
- * Returns `timedOut()` (a function, since the flag flips asynchronously
- * after `armHangTimer` returns) and `clear()` to cancel the timer once the
- * awaited operation settles.
+ * Arm a hang-ceiling timer: aborts `streamAbort` after `timeoutMs` (the shared
+ * 180s ceiling unless a caller passes another) and flips a flag the caller's
+ * catch block can check to distinguish "timed out" from any other
+ * abort/connection failure. Returns `timedOut()` (a function, since the flag
+ * flips asynchronously after `armHangTimer` returns) and `clear()` to cancel
+ * the timer once the awaited operation settles.
  */
-function armHangTimer(streamAbort: AbortController): { timedOut: () => boolean; clear: () => void } {
+function armHangTimer(
+  streamAbort: AbortController,
+  timeoutMs: number = STREAM_HANG_TIMEOUT_MS,
+): { timedOut: () => boolean; clear: () => void } {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     streamAbort.abort();
-  }, STREAM_HANG_TIMEOUT_MS);
+  }, timeoutMs);
   return {
     timedOut: () => timedOut,
     clear: () => clearTimeout(timer),
@@ -485,7 +494,14 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // Connect/header-phase timeout: the idle heartbeat only arms after the body
     // stream is obtained, so a server that accepts the connection but never
     // returns headers would hang here unbounded. Abort once the ceiling is hit.
-    const connectHangTimer = armHangTimer(streamAbort);
+    // 本地服务（LM Studio、本机自定义地址）处理长输入时在处理完之前不回响应头，也不发
+    // 第一段输出：从发出请求到第一段输出算一个整体，最多等 10 分钟，超时不重试；
+    // 云端保持响应头 180 秒。
+    const localServer = options.localServer === true;
+    const firstResponseTimeoutMs = localServer ? LOCAL_FIRST_RESPONSE_TIMEOUT_MS : STREAM_HANG_TIMEOUT_MS;
+    const firstResponseTimeoutError = (): LLMError =>
+      localServer ? localFirstResponseTimeoutError() : hangTimeoutError('连接超时', '未收到服务器响应头');
+    let connectHangTimer = armHangTimer(streamAbort, firstResponseTimeoutMs);
     let response: Awaited<ReturnType<typeof fetchFn>>;
     try {
       response = await countingFetch(fullUrl, {
@@ -495,17 +511,17 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         signal: effectiveSignal,
       });
     } catch (fetchErr) {
+      connectHangTimer.clear();
       // Connection-level failure (DNS, timeout, refused) — not an agent bug
-      if (connectHangTimer.timedOut()) {
-        throw hangTimeoutError('连接超时', '未收到服务器响应头');
-      }
+      if (connectHangTimer.timedOut()) throw firstResponseTimeoutError();
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       throw new LLMError(msg, 'network_error', { retryable: true, retryAfterMs: 2000 });
-    } finally {
-      connectHangTimer.clear();
     }
+    // 云端：响应头到了就结束这一段计时；本地：计时持续到第一段输出
+    if (!localServer) connectHangTimer.clear();
 
     if (!response.ok) {
+      connectHangTimer.clear();
       const errorText = await response.text();
       // Auto-retry once when the model's actual max_tokens limit is lower than
       // what the capabilities registry advertised. Extract the real limit from
@@ -517,10 +533,10 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
           limit: retryLimit,
         });
         body.max_tokens = retryLimit;
-        // The first attempt's connect timer was already cleared, so arm a fresh
-        // one — otherwise a server that stalls on this retry before returning
+        // The first attempt's timer was already cleared, so arm a fresh one —
+        // otherwise a server that stalls on this retry before returning
         // headers would wait unbounded (only a user abort could cancel it).
-        const retryConnectHangTimer = armHangTimer(streamAbort);
+        connectHangTimer = armHangTimer(streamAbort, firstResponseTimeoutMs);
         try {
           response = await countingFetch(fullUrl, {
             method: 'POST',
@@ -529,16 +545,15 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
             signal: effectiveSignal,
           });
         } catch (retryErr) {
-          if (retryConnectHangTimer.timedOut()) {
-            throw hangTimeoutError('连接超时', '未收到服务器响应头');
-          }
+          connectHangTimer.clear();
+          if (connectHangTimer.timedOut()) throw firstResponseTimeoutError();
           throw retryErr instanceof LLMError
             ? retryErr
             : new LLMError(retryErr instanceof Error ? retryErr.message : String(retryErr), 'network_error', { retryable: true, retryAfterMs: 2000 });
-        } finally {
-          retryConnectHangTimer.clear();
         }
+        if (!localServer) connectHangTimer.clear();
         if (!response.ok) {
+          connectHangTimer.clear();
           throw classifyError(response.status, await response.text());
         }
         // Retry succeeded — surface the discovered limit so the caller can
@@ -550,7 +565,10 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     }
 
     const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
+    if (!reader) {
+      connectHangTimer.clear();
+      throw new Error('No response body');
+    }
 
     // Idle timeout: if no data received within the window, treat as a network
     // hang. Aborting streamAbort rejects the pending reader.read() so chat()
@@ -611,11 +629,17 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       return true;
     }
 
+    // 本地服务的空闲计时从第一段输出才开始，之前由 connectHangTimer 的 10 分钟管着
+    let outputStarted = false;
     try {
-      heartbeat.reset();
+      if (!localServer) heartbeat.reset();
       while (true) {
         const { done: streamDone, value } = await reader.read();
         if (streamDone) break;
+        if (!outputStarted) {
+          outputStarted = true;
+          connectHangTimer.clear();
+        }
         heartbeat.reset();
 
         buffer += decoder.decode(value, { stream: true });
@@ -861,6 +885,8 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         onEvent({ type: 'done', stopReason: toolCallBuffers.size > 0 || hasTextTC ? 'tool_use' : 'end_turn' });
       }
     } catch (streamErr) {
+      // 本地服务响应头到了但 10 分钟内没有第一段输出：与响应头没到同样处理，不重试
+      if (connectHangTimer.timedOut()) throw firstResponseTimeoutError();
       // Idle-heartbeat abort: surface a clear retryable error (the underlying
       // reject is a generic "Request cancelled" from the aborted body stream).
       if (idleTimedOut) {
@@ -874,6 +900,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       }
       throw streamErr;
     } finally {
+      connectHangTimer.clear();
       heartbeat.clear();
       reader.releaseLock();
     }

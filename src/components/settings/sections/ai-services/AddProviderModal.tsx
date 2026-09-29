@@ -32,7 +32,7 @@ import {
   formatOllamaModelLabel,
 } from '@/core/llm/ollama';
 import { fetchProviderModels, type FetchModelsResult } from '@/core/llm/modelFetcher';
-import { fetchLmStudioContextWindows, fetchOllamaContextWindows } from '@/core/llm/contextWindowProbe';
+import { fetchLmStudioContextWindows, fetchOllamaLoadedContextWindows } from '@/core/llm/contextWindowProbe';
 import { SECRET_KEYS } from '@/utils/secretStore';
 
 /**
@@ -794,7 +794,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
         label: formatOllamaModelLabel(m),
         isCustom: false,
       }));
-      const withWindows = withContextWindows(modelInfos, await fetchOllamaContextWindows(url, modelInfos.map((m) => m.id)));
+      // Ollama 只报告已加载模型实际使用的长度；没加载的不写，高级配置显示「未识别」
+      const withWindows = withContextWindows(modelInfos, await fetchOllamaLoadedContextWindows(url, modelInfos.map((m) => m.id)));
       setOllamaModels(withWindows);
 
       // Auto-select every detected model — unlike a cloud catalog, these are

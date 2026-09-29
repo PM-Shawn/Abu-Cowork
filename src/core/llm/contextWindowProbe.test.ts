@@ -10,8 +10,7 @@ import {
   CONTEXT_PROBE_TIMEOUT_MS,
   fetchLlamaCppContextWindows,
   fetchLmStudioContextWindows,
-  fetchOllamaContextWindows,
-  fetchOllamaTrainingContext,
+  fetchOllamaLoadedContextWindows,
   ollamaApiRoot,
   probeContextWindow,
 } from './contextWindowProbe';
@@ -39,36 +38,46 @@ describe('ollamaApiRoot', () => {
   });
 });
 
-describe('fetchOllamaTrainingContext', () => {
-  it('reads <architecture>.context_length from /api/show', async () => {
-    mockFetch.mockResolvedValueOnce(json({ model_info: { 'general.architecture': 'qwen3', 'qwen3.context_length': 40960 } }));
-    await expect(fetchOllamaTrainingContext('http://127.0.0.1:11434', 'qwen3:0.6b')).resolves.toBe(40960);
-    expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:11434/api/show', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({ model: 'qwen3:0.6b' }),
-    }));
+/** /api/ps 里的一条已加载模型，字段按 Ollama api/types.go 的 ProcessModelResponse 写。 */
+function loaded(name: string, contextLength: number): Record<string, unknown> {
+  return {
+    name, model: name, size: 7_500_000_000, digest: 'a80c4f17acd5', details: { family: 'llama' },
+    expires_at: '2026-09-29T16:10:00Z', size_vram: 4_821_616_640, context_length: contextLength,
+  };
+}
+
+describe('fetchOllamaLoadedContextWindows', () => {
+  it('reads the context_length of the loaded models from GET /api/ps', async () => {
+    mockFetch.mockResolvedValueOnce(json({ models: [loaded('qwen3:0.6b', 4096)] }));
+    const windows = await fetchOllamaLoadedContextWindows('http://127.0.0.1:11434/v1', ['qwen3:0.6b', 'llama3.2:latest']);
+    expect(windows).toEqual(new Map([['qwen3:0.6b', 4096]]));
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:11434/api/ps');
+    expect(init.method).toBeUndefined();
+    expect(init.body).toBeUndefined();
   });
 
-  it('falls back to any *.context_length key when the architecture is missing', async () => {
-    mockFetch.mockResolvedValueOnce(json({ model_info: { 'llama.context_length': 131072 } }));
-    await expect(fetchOllamaTrainingContext('http://127.0.0.1:11434', 'llama3.2')).resolves.toBe(131072);
+  it('matches a model written without a tag to its :latest entry', async () => {
+    mockFetch.mockResolvedValueOnce(json({ models: [loaded('llama3.2:latest', 32768), loaded('qwen3:0.6b', 4096)] }));
+    const windows = await fetchOllamaLoadedContextWindows('http://127.0.0.1:11434', ['llama3.2', 'qwen3:0.6b', 'qwen3']);
+    expect(windows).toEqual(new Map([['llama3.2', 32768], ['qwen3:0.6b', 4096]]));
   });
 
-  it('returns undefined when the service does not answer usefully', async () => {
-    mockFetch.mockResolvedValueOnce(json({ error: 'model not found' }, 404));
-    await expect(fetchOllamaTrainingContext('http://127.0.0.1:11434', 'x')).resolves.toBeUndefined();
+  it('answers nothing for models that are not loaded', async () => {
+    mockFetch.mockResolvedValueOnce(json({ models: [] }));
+    await expect(fetchOllamaLoadedContextWindows('http://127.0.0.1:11434', ['llama3.2'])).resolves.toEqual(new Map());
+  });
+
+  it('ignores an entry whose context_length is not a positive integer', async () => {
+    mockFetch.mockResolvedValueOnce(json({ models: [{ ...loaded('llama3.2:latest', 0) }, { name: 'broken' }] }));
+    await expect(fetchOllamaLoadedContextWindows('http://127.0.0.1:11434', ['llama3.2', 'broken'])).resolves.toEqual(new Map());
+  });
+
+  it('answers nothing when the service does not answer usefully', async () => {
+    mockFetch.mockResolvedValueOnce(json({ error: 'not found' }, 404));
+    await expect(fetchOllamaLoadedContextWindows('http://127.0.0.1:11434', ['x'])).resolves.toEqual(new Map());
     mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-    await expect(fetchOllamaTrainingContext('http://127.0.0.1:11434', 'x')).resolves.toBeUndefined();
-  });
-});
-
-describe('fetchOllamaContextWindows', () => {
-  it('caps every model at 32768', async () => {
-    mockFetch
-      .mockResolvedValueOnce(json({ model_info: { 'general.architecture': 'qwen3', 'qwen3.context_length': 40960 } }))
-      .mockResolvedValueOnce(json({ model_info: { 'general.architecture': 'llama', 'llama.context_length': 4096 } }));
-    const windows = await fetchOllamaContextWindows('http://127.0.0.1:11434', ['qwen3:0.6b', 'tiny']);
-    expect(windows).toEqual(new Map([['qwen3:0.6b', 32768], ['tiny', 4096]]));
+    await expect(fetchOllamaLoadedContextWindows('http://127.0.0.1:11434', ['x'])).resolves.toEqual(new Map());
   });
 });
 
@@ -110,10 +119,16 @@ describe('probeContextWindow', () => {
     await expect(probeContextWindow(provider({}), 'qwen3-8b')).resolves.toBe(8192);
   });
 
-  it('decides the Ollama window as min(training length, 32768)', async () => {
-    mockFetch.mockResolvedValueOnce(json({ model_info: { 'general.architecture': 'qwen3', 'qwen3.context_length': 40960 } }));
+  it('takes the length Ollama actually loaded the model with, without capping it', async () => {
+    mockFetch.mockResolvedValueOnce(json({ models: [loaded('qwen3:0.6b', 131072)] }));
     await expect(probeContextWindow(provider({ id: 'ollama', source: 'builtin', baseUrl: 'http://127.0.0.1:11434' }), 'qwen3:0.6b'))
-      .resolves.toBe(32768);
+      .resolves.toBe(131072);
+  });
+
+  it('answers nothing for an Ollama model that is not loaded yet', async () => {
+    mockFetch.mockResolvedValueOnce(json({ models: [loaded('other:latest', 8192)] }));
+    await expect(probeContextWindow(provider({ id: 'ollama', source: 'builtin', baseUrl: 'http://127.0.0.1:11434' }), 'qwen3:0.6b'))
+      .resolves.toBeUndefined();
   });
 
   it('does not touch the network for a cloud provider', async () => {

@@ -218,6 +218,24 @@ describe('SidecarLLMAdapter', () => {
       });
     });
 
+    it('rebuilds a local first-response timeout as the same non-retryable error', async () => {
+      requestMock.mockRejectedValue(
+        new SidecarRpcError(-32000, 'local server timeout', {
+          name: 'LLMError',
+          code: 'local_server_timeout',
+          retryable: false,
+          message: '本地服务 600 秒内没有开始回答',
+        }),
+      );
+      const adapter = new SidecarLLMAdapter('ollama');
+
+      await expect(adapter.chat([], { model: 'm', apiKey: '' }, () => {})).rejects.toMatchObject({
+        code: 'local_server_timeout',
+        retryable: false,
+        message: '本地服务 600 秒内没有开始回答',
+      });
+    });
+
     it.each([
       '{"private":"legacy provider body"}',
       '<html><body>legacy proxy response</body></html>',

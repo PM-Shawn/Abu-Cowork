@@ -33,7 +33,7 @@ vi.mock('@/stores/chatStore', () => ({
 vi.mock('@/stores/settingsStore', () => ({
   readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: { getState: () => ({}) },
-  getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined }),
+  getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined, models: [] }),
   getActiveApiKey: vi.fn().mockReturnValue('test-api-key'),
   getEffectiveModel: vi.fn().mockReturnValue('claude-haiku-4-5'),
 }));
@@ -255,22 +255,43 @@ describe('compactConversationManually', () => {
       expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'global-model' });
     });
 
-    it('summarizes on Ollama with the window the service reported, the same the task used', async () => {
-      mockSnapshotProviders.push({
+    /** 快照与 settingsStore 的 getActiveProvider 给出同一个 Ollama 服务商。 */
+    function useOllamaProvider(models: Array<{ id: string; label: string; declaredCapabilities?: { maxInputTokens: number } }>) {
+      const ollama = {
         id: 'ollama', source: 'builtin', name: 'Ollama', enabled: true, apiFormat: 'openai-compatible',
-        baseUrl: 'http://127.0.0.1:11434', apiKey: '', models: [{ id: 'llama3.2', label: 'llama3.2' }],
-        status: 'verified', sortOrder: 0,
-      });
+        baseUrl: 'http://127.0.0.1:11434', apiKey: '', models, status: 'verified', sortOrder: 0,
+      };
+      mockSnapshotProviders.push(ollama);
+      vi.mocked(settingsStore.getActiveProvider).mockReturnValueOnce(ollama as never);
       mockConversations[CONV_ID] = { messages: buildRounds(6), model: { providerId: 'ollama', modelId: 'llama3.2' } };
       vi.mocked(settingsStore.getEffectiveModel).mockReturnValueOnce('llama3.2');
+    }
+
+    it('summarizes on Ollama with the window the service reported, the same the task used', async () => {
+      useOllamaProvider([{ id: 'llama3.2', label: 'llama3.2' }]);
       mockProbeContextWindow.mockResolvedValue(8192);
       mockSummarize.mockResolvedValue('summary');
 
       const result = await compactConversationManually(CONV_ID);
 
       expect(result.compacted).toBe(true);
-      // 没问到时按名字估计是 32768，与任务请求的 num_ctx 不同，Ollama 会重新加载模型
-      expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({ model: 'llama3.2', contextWindow: 8192 });
+      // 窗口与任务请求按同一套优先级取；用户没填「上下文长度」，Ollama 不会收到 num_ctx
+      const config = mockSummarize.mock.calls.at(-1)?.[1] as { requestedContextLength?: number };
+      expect(config).toMatchObject({ model: 'llama3.2', contextWindow: 8192, localServer: true });
+      expect(config.requestedContextLength).toBeUndefined();
+    });
+
+    it('passes on only the context length the user filled in for Ollama', async () => {
+      useOllamaProvider([{ id: 'llama3.2', label: 'llama3.2', declaredCapabilities: { maxInputTokens: 24576 } }]);
+      mockSummarize.mockResolvedValue('summary');
+
+      const result = await compactConversationManually(CONV_ID);
+
+      expect(result.compacted).toBe(true);
+      expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({
+        model: 'llama3.2', contextWindow: 24576, requestedContextLength: 24576, localServer: true,
+      });
+      expect(mockProbeContextWindow).not.toHaveBeenCalled();
     });
   });
 

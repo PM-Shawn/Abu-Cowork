@@ -106,7 +106,7 @@ import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
-import { resolveContextWindow } from '../llm/contextWindow';
+import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor } from '../llm/adapterKind';
@@ -1997,6 +1997,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const contextWindowSize = resolvedContextWindow.size;
       // 回答预留按模型自己的窗口算，全局上限只约束输入
       const reserveWindowSize = resolvedContextWindow.uncappedSize;
+      // 交给适配器的两项：本地服务首次回答前等 10 分钟且超时不重试；只有用户填写的长度才让 Ollama 按它运行
+      const isLocalServer = localServerKind(activeProvider) !== null;
+      const requestedContextLength = positiveInteger(modelDeclared?.maxInputTokens);
       const requestedMaxOutputTokens = modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput;
       const reasoningParams = computeReasoningParams(
         effectiveCaps,
@@ -2105,6 +2108,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 conversationId,
                 providerInstanceId: activeProvider?.id ?? 'unknown',
                 contextWindow: contextWindowSize,
+                requestedContextLength,
+                localServer: isLocalServer,
               },
               toolTokens
             );
@@ -2230,6 +2235,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               conversationId,
               providerInstanceId: activeProvider?.id ?? 'unknown',
               contextWindow: contextWindowSize,
+              requestedContextLength,
+              localServer: isLocalServer,
             });
           } catch (err) {
             // Defensive: summarizeConversation is contractually no-throw (it
@@ -2357,6 +2364,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
         contextWindow: contextWindowSize,
+        requestedContextLength,
+        localServer: isLocalServer,
         signal: abortController.signal,
         enableThinking: reasoningParams.enableThinking,
         thinkingBudget: reasoningParams.thinkingBudget,
@@ -2691,6 +2700,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   conversationId,
                   providerInstanceId: activeProvider?.id ?? 'unknown',
                   contextWindow: recoveryContextWindowSize,
+                  requestedContextLength,
+                  localServer: isLocalServer,
                 },
                 toolTokens
               );
@@ -3329,12 +3340,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const showsContextTooSmall = !managedProviderUnreachable
         && !(isContextBudgetError && err.code === 'INPUT_TOO_LARGE')
         && (isContextBudgetError || errorCode === 'context_too_long');
+      // 本地服务 10 分钟没开始回答：同样是一句普通说明，运行按 error 结束
+      const showsLocalServerTimeout = !managedProviderUnreachable && errorCode === 'local_server_timeout';
+      const showsPlainNote = showsContextTooSmall || showsLocalServerTimeout;
       let displayError = managedProviderUnreachable
         ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
         : showsContextTooSmall
         ? contextTooSmall
+        : showsLocalServerTimeout
+        ? getI18n().chat.localServerNoFirstResponse
         : isLikelyVisionError
         ? getI18n().chat.visionUnsupported
         : isOllamaForbidden
@@ -3350,7 +3366,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       chatDelta.appendText(
         conversationId,
-        showsContextTooSmall ? `\n\n${displayError}` : `\n\n**Error:** ${displayError}`,
+        showsPlainNote ? `\n\n${displayError}` : `\n\n**Error:** ${displayError}`,
         assistantMsgId
       );
       chatDelta.finishStreaming(conversationId, assistantMsgId);

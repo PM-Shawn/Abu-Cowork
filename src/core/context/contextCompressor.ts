@@ -44,8 +44,12 @@ export interface CompressionConfig {
   conversationId?: string | null;
   /** 记账归属：Abu 自己的服务商配置 id。 */
   providerInstanceId?: string;
-  /** 与主请求相同的上下文窗口，Ollama 原生适配器用它作为 num_ctx。 */
+  /** 与主请求相同：阿布安排内容用的上下文窗口，作为这次请求的记录。 */
   contextWindow?: number;
+  /** 与主请求相同：用户填写的上下文长度，只有 Ollama 按它运行。 */
+  requestedContextLength?: number;
+  /** 与主请求相同：本地服务首次回答前最多等 10 分钟，超时不重试。 */
+  localServer?: boolean;
 }
 
 /**
@@ -139,6 +143,8 @@ ${middleText}
     baseUrl: config.baseUrl,
     maxTokens: SUMMARY_MAX_TOKENS,
     contextWindow: config.contextWindow,
+    requestedContextLength: config.requestedContextLength,
+    localServer: config.localServer,
     signal: combinedSignal,
     accounting: compactionAccounting(config),
   };
@@ -274,6 +280,8 @@ ${middleText}
       baseUrl: config.baseUrl,
       maxTokens: SUMMARY_MAX_TOKENS,
       contextWindow: config.contextWindow,
+      requestedContextLength: config.requestedContextLength,
+      localServer: config.localServer,
       signal: combinedSignal,
       accounting: compactionAccounting(config),
     };

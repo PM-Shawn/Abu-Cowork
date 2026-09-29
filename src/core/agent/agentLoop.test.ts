@@ -1658,3 +1658,147 @@ describe('runAgentLoop pinned-model availability guard', () => {
     }
   });
 });
+
+describe('本地服务的请求选项与首次回答超时', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  async function setup(maxInputTokens?: number) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { LLMError } = await import('../llm/adapter');
+    const settings = useSettingsStore.getState();
+    const savedModel = {
+      id: 'llama3.2', label: 'llama3.2', contextWindow: 65536,
+      ...(maxInputTokens !== undefined ? { declaredCapabilities: { maxInputTokens } } : {}),
+    };
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: [...p.models.filter((m) => m.id !== 'llama3.2'), savedModel] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const restore = () => {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, LLMError, chat, restore };
+  }
+
+  type Setup = Awaited<ReturnType<typeof setup>>;
+
+  async function runMain(useChatStore: Setup['useChatStore']) {
+    const conversationId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(conversationId, 'hello');
+    const text = useChatStore.getState().conversations[conversationId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    return { ended: result.reason, text };
+  }
+
+  async function runSub() {
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const agent = { name: 'helper', description: 'helps', systemPrompt: 'help', tools: [], filePath: '__preset__' };
+    const result = await runSubagentLoop({
+      agent, task: 'hello',
+      toolInvoker: { getAllTools: () => [], toolResultToString: String, executeAnyTool: vi.fn() },
+    });
+    return { ended: result.stopReason, text: result.text };
+  }
+
+  type RequestOptions = { contextWindow?: number; requestedContextLength?: number; localServer?: boolean };
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：用户没填上下文长度时，不把估计或问到的窗口交给 Ollama 运行',
+    async (_name, run) => {
+      const { useChatStore, chat, restore } = await setup();
+      mockProbeContextWindow.mockResolvedValue(98304);
+      try {
+        expect((await run(useChatStore)).ended).toBe('completed');
+        const options = chat.mock.calls[0][1] as RequestOptions;
+        expect(options.contextWindow).toBe(98304);
+        expect(options.requestedContextLength).toBeUndefined();
+        expect(options.localServer).toBe(true);
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：用户填了上下文长度时，只把这个值交给 Ollama 运行',
+    async (_name, run) => {
+      const { useChatStore, chat, restore } = await setup(24576);
+      try {
+        expect((await run(useChatStore)).ended).toBe('completed');
+        expect(chat.mock.calls[0][1] as RequestOptions).toMatchObject({
+          contextWindow: 24576, requestedContextLength: 24576, localServer: true,
+        });
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：本地服务首次回答超时不重试，回答里是概念对照表那句普通说明',
+    async (_name, run) => {
+      const { useChatStore, LLMError, chat, restore } = await setup();
+      const { getI18n } = await import('../../i18n');
+      chat.mockRejectedValue(new LLMError('本地服务 600 秒内没有开始回答', 'local_server_timeout', { retryable: false }));
+      try {
+        const { ended, text } = await run(useChatStore);
+        expect(ended).toBe('error');
+        expect(chat).toHaveBeenCalledTimes(1);
+        expect(text).toContain(getI18n().chat.localServerNoFirstResponse);
+        expect(text).not.toContain('本地服务 600 秒内没有开始回答');
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it('runAgentLoop：超时说明前面不带 Error 前缀', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    chat.mockRejectedValue(new LLMError('本地服务 600 秒内没有开始回答', 'local_server_timeout', { retryable: false }));
+    try {
+      const { text } = await runMain(useChatStore);
+      expect(text).not.toContain('Error:');
+    } finally {
+      restore();
+    }
+  });
+
+  it('runAgentLoop：云端的连接超时照旧重试', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+      providers: settings.providers.map((p) =>
+        p.id === 'deepseek' ? { ...p, enabled: true, apiKey: 'sk-test', models: [{ id: 'deepseek-chat', label: 'deepseek-chat' }] } : p),
+    });
+    chat.mockRejectedValueOnce(new LLMError('连接超时：180 秒未收到服务器响应头', 'network_error', { retryable: true, retryAfterMs: 1 }));
+    try {
+      const { ended } = await runMain(useChatStore);
+      expect(ended).toBe('completed');
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect((chat.mock.calls[0][1] as RequestOptions).localServer).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+});

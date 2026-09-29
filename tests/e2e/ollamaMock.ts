@@ -1,16 +1,18 @@
 /**
- * Loopback mock of the two Ollama native routes Abu talks to: `POST /api/show`
- * (the model's trained context length) and `POST /api/chat` (NDJSON stream).
- * Listens on 127.0.0.1 only and never receives a real credential or user content.
+ * Loopback mock of the two Ollama native routes Abu talks to: `GET /api/ps`
+ * (the models Ollama has loaded, with the context length each one runs at) and
+ * `POST /api/chat` (NDJSON stream). Listens on 127.0.0.1 only and never
+ * receives a real credential or user content.
  */
 import { createServer, type ServerResponse } from 'node:http';
 import { classifyMockRequestPurpose, closeServer, type MockRequest } from './openAiMock';
 
 export interface OllamaMockOptions {
-  /** `general.architecture` in the /api/show reply. */
-  architecture: string;
-  /** `<architecture>.context_length` in the /api/show reply. */
-  contextLength: number;
+  /**
+   * `context_length` of the model in the /api/ps reply, i.e. the length Ollama
+   * loaded it with. Omitted means the model is not loaded and /api/ps lists nothing.
+   */
+  loadedContextLength?: number;
   modelId: string;
   /** Replies to the task's /api/chat calls, in order. */
   replies: readonly string[];
@@ -21,8 +23,8 @@ export interface OllamaMock {
   close: () => Promise<void>;
   /** Every /api/chat request, including memory extraction and compression. */
   chatRequests: MockRequest[];
-  /** Model names asked about through /api/show. */
-  showRequests: string[];
+  /** How many times Abu asked GET /api/ps. */
+  readonly psRequests: number;
 }
 
 function ndjsonLine(value: Record<string, unknown>): string {
@@ -31,7 +33,7 @@ function ndjsonLine(value: Record<string, unknown>): string {
 
 export async function startOllamaMock(options: OllamaMockOptions): Promise<OllamaMock> {
   const chatRequests: MockRequest[] = [];
-  const showRequests: string[] = [];
+  const counters = { ps: 0 };
   let taskReplyCount = 0;
   const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
@@ -48,14 +50,21 @@ export async function startOllamaMock(options: OllamaMockOptions): Promise<Ollam
       // 原样保留，断言失败时能看到收到了什么
     }
 
-    if (req.method === 'POST' && requestUrl.pathname === '/api/show') {
-      showRequests.push(String((body as { model?: unknown } | null)?.model ?? ''));
+    if (req.method === 'GET' && requestUrl.pathname === '/api/ps') {
+      counters.ps += 1;
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      // 字段按 Ollama api/types.go 的 ProcessModelResponse 写；名字带标签
       res.end(JSON.stringify({
-        model_info: {
-          'general.architecture': options.architecture,
-          [`${options.architecture}.context_length`]: options.contextLength,
-        },
+        models: options.loadedContextLength === undefined ? [] : [{
+          name: options.modelId,
+          model: options.modelId,
+          size: 1_000_000_000,
+          digest: 'abu-e2e-digest',
+          details: { family: 'qwen3', parameter_size: '0.6B', quantization_level: 'Q4_K_M' },
+          expires_at: '2099-01-01T00:00:00Z',
+          size_vram: 1_000_000_000,
+          context_length: options.loadedContextLength,
+        }],
       }));
       return;
     }
@@ -125,6 +134,8 @@ export async function startOllamaMock(options: OllamaMockOptions): Promise<Ollam
     baseUrl: `http://127.0.0.1:${address.port}`,
     close: () => closeServer(server, activeResponses),
     chatRequests,
-    showRequests,
+    get psRequests() {
+      return counters.ps;
+    },
   };
 }

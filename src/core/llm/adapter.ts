@@ -73,10 +73,22 @@ export interface ChatOptions {
   tools?: ToolDefinition[];
   maxTokens?: number;
   /**
-   * 本次请求使用的上下文窗口（resolveContextWindow 的结果）。Ollama 原生适配器
-   * 把它作为 options.num_ctx 发送；其余适配器不读。随 llm.chat 序列化进 sidecar。
+   * 阿布安排这次请求内容时用的上下文窗口（resolveContextWindow 的结果）。适配器不读它，
+   * 也不把它发给任何服务；随 llm.chat 序列化进 sidecar，作为这次请求的记录。
    */
   contextWindow?: number;
+  /**
+   * 用户在模型「上下文长度」里填写的值。只有 Ollama 原生适配器读它：填了才发
+   * options.num_ctx，没填时请求不带 num_ctx，Ollama 按它自己的设置运行。阿布估计或
+   * 向服务问到的窗口不会经这里发出。随 llm.chat 序列化进 sidecar。
+   */
+  requestedContextLength?: number;
+  /**
+   * 服务商是本地服务（Ollama、LM Studio、地址在本机的自定义服务商，见 localServerKind）。
+   * 本地服务首次回答前最多等 LOCAL_FIRST_RESPONSE_TIMEOUT_MS，超时按 local_server_timeout
+   * 结束、不重试；云端服务商保持 180 秒。随 llm.chat 序列化进 sidecar。
+   */
+  localServer?: boolean;
   // New parameters for enhanced control
   toolChoice?: ToolChoice;
   temperature?: number;        // 0-1, controls randomness
@@ -149,6 +161,7 @@ export type LLMErrorCode =
   | 'network_error'        // fetch/connection failures
   | 'network_blocked'      // WAF / proxy intercepted the request and returned HTML
   | 'payload_too_large'    // shell↔sidecar IPC payload exceeded its limit (#549)
+  | 'local_server_timeout' // 本地服务在等待上限内没有开始回答；不重试，也不走其他恢复路径
   | 'cancelled'            // user abort
   | 'unknown';
 
@@ -165,6 +178,7 @@ const LLM_ERROR_CODES: ReadonlySet<string> = new Set<LLMErrorCode>([
   'network_error',
   'network_blocked',
   'payload_too_large',
+  'local_server_timeout',
   'cancelled',
   'unknown',
 ]);

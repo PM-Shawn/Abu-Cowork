@@ -508,6 +508,7 @@ const zhCN: TranslationDict = {
     contextFixedTooLarge: '这个模型一次能记住的内容太少，放不下阿布需要的说明。可以换一个能记得更多的模型。',
     contextFixedTooLargeLocal: '这个模型一次能记住的内容太少，放不下阿布需要的说明。可以换一个能记得更多的模型，或者在 {service} 里把上下文长度调大。',
     malformedToolCall: '这个模型没能正确发出操作，可以重试，或者换一个模型。',
+    localServerNoFirstResponse: '本地模型等了 10 分钟还没开始回答。可以换一个小一点的模型，或者在 Ollama / LM Studio 里把上下文长度调小后再试。',
     notificationTaskFallback: '任务',
     outputLimitError:
       '\n\n**Error:** 模型连续 {limit} 次输出达到 token 上限仍未完成。建议：\n' +

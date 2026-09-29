@@ -3,7 +3,14 @@ import { LLMError, classifyError, isContextOverflowMessage } from './adapter';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages, type PreparedContentBlock, type PreparedTurn } from './messageNormalizer';
-import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import {
+  createHeartbeat,
+  anySignal,
+  armFirstResponseTimer,
+  localFirstResponseTimeoutError,
+  DEFAULT_STREAM_HANG_TIMEOUT_MS,
+  LOCAL_FIRST_RESPONSE_TIMEOUT_MS,
+} from './heartbeat';
 import { createDefaultUsageRecorder, type UsageAttemptRecorder } from './usageRecorder';
 import { createTextToolCallParser, type TextSegment, type TextToolCall } from './textToolCalls';
 import { ollamaApiRoot } from './contextWindowProbe';
@@ -93,8 +100,10 @@ function idleTimeoutError(): LLMError {
 }
 
 /**
- * Ollama 原生接口适配器。OpenAI 兼容接口不转发上下文长度，Ollama 会按显存给默认值
- * 并从最早的消息开始静默丢弃；这里每次请求都带 options.num_ctx。
+ * Ollama 原生接口适配器。OpenAI 兼容接口传不了 truncate / shift，也传不了用户填写的
+ * 上下文长度。这里关掉 Ollama 自己的截断与上下文平移，让超长报错交给恢复流程；
+ * 上下文长度跟随 Ollama 自己的设置，只有用户在阿布里填了值才发 options.num_ctx。
+ * Ollama 是本地服务：首次回答前最多等 LOCAL_FIRST_RESPONSE_TIMEOUT_MS，超时不重试。
  */
 export class OllamaNativeAdapter implements LLMAdapter {
   async chat(messages: Message[], options: ChatOptions, emitEvent: (event: StreamEvent) => void): Promise<void> {
@@ -125,9 +134,6 @@ export class OllamaNativeAdapter implements LLMAdapter {
     onEvent: (event: StreamEvent) => void,
     recorder: UsageAttemptRecorder,
   ): Promise<void> {
-    if (options.contextWindow === undefined) {
-      throw new LLMError('Ollama request is missing its context window', 'invalid_request', { retryable: false });
-    }
     if (!options.baseUrl) {
       throw new LLMError('Ollama request is missing its address', 'invalid_request', { retryable: false });
     }
@@ -144,7 +150,8 @@ export class OllamaNativeAdapter implements LLMAdapter {
       // 不支持思考的模型收到 think: true 会被拒绝，所以只在关闭时发送
       ...(options.enableThinking === false ? { think: false } : {}),
       options: {
-        num_ctx: options.contextWindow,
+        // 只有用户填了「上下文长度」才让 Ollama 按这个长度运行；没填时 Ollama 按自己的设置加载
+        ...(options.requestedContextLength !== undefined ? { num_ctx: options.requestedContextLength } : {}),
         num_predict: options.maxTokens ?? 4096,
         ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
         ...(options.topP !== undefined ? { top_p: options.topP } : {}),
@@ -156,11 +163,9 @@ export class OllamaNativeAdapter implements LLMAdapter {
     const fetchFn = await getTauriFetch();
     const streamAbort = new AbortController();
     const signal = options.signal ? anySignal([options.signal, streamAbort.signal]) : streamAbort.signal;
-    let connectTimedOut = false;
-    const connectTimer = setTimeout(() => {
-      connectTimedOut = true;
-      streamAbort.abort();
-    }, DEFAULT_STREAM_HANG_TIMEOUT_MS);
+    // Ollama 处理长输入时在处理完之前不回响应头：从发出请求到第一段输出算一个整体，
+    // 最多等 10 分钟；这段时间里响应头到了也不算开始回答
+    const firstResponse = armFirstResponseTimer(streamAbort, LOCAL_FIRST_RESPONSE_TIMEOUT_MS);
     let response: Response;
     recorder.beginAttempt();
     try {
@@ -171,24 +176,25 @@ export class OllamaNativeAdapter implements LLMAdapter {
         signal,
       });
     } catch (fetchErr) {
-      if (connectTimedOut) {
-        throw new LLMError(`连接超时：${DEFAULT_STREAM_HANG_TIMEOUT_MS / 1000} 秒未收到服务器响应头`, 'network_error', {
-          retryable: true,
-          retryAfterMs: 2000,
-        });
-      }
+      firstResponse.clear();
+      if (firstResponse.timedOut()) throw localFirstResponseTimeoutError();
       throw new LLMError(fetchErr instanceof Error ? fetchErr.message : String(fetchErr), 'network_error', {
         retryable: true,
         retryAfterMs: 2000,
       });
-    } finally {
-      clearTimeout(connectTimer);
     }
 
-    if (!response.ok) throw classifyError(response.status, await response.text());
+    if (!response.ok) {
+      firstResponse.clear();
+      throw classifyError(response.status, await response.text());
+    }
     const reader = response.body?.getReader();
-    if (!reader) throw new LLMError('Ollama returned no response body', 'network_error', { retryable: true });
+    if (!reader) {
+      firstResponse.clear();
+      throw new LLMError('Ollama returned no response body', 'network_error', { retryable: true });
+    }
 
+    // 开始输出之后，两段输出之间的空闲仍按 180 秒
     let idleTimedOut = false;
     const heartbeat = createHeartbeat(DEFAULT_STREAM_HANG_TIMEOUT_MS, () => {
       idleTimedOut = true;
@@ -255,11 +261,15 @@ export class OllamaNativeAdapter implements LLMAdapter {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let outputStarted = false;
     try {
-      heartbeat.reset();
       while (!finished) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (!outputStarted) {
+          outputStarted = true;
+          firstResponse.clear();
+        }
         heartbeat.reset();
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -274,10 +284,12 @@ export class OllamaNativeAdapter implements LLMAdapter {
         throw new LLMError('Ollama stream ended before it finished', 'network_error', { retryable: true });
       }
     } catch (streamErr) {
+      if (firstResponse.timedOut()) throw localFirstResponseTimeoutError();
       if (idleTimedOut) throw idleTimeoutError();
       if (streamErr instanceof LLMError) throw streamErr;
       throw new LLMError(streamErr instanceof Error ? streamErr.message : String(streamErr), 'network_error', { retryable: true });
     } finally {
+      firstResponse.clear();
       heartbeat.clear();
       reader.releaseLock();
     }

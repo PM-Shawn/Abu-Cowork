@@ -8,7 +8,10 @@ export interface LearnedContextWindow {
   probe: number | undefined;
 }
 
-/** 7.4：先用报错里读出的上限；读不到时，本地服务商按运行开始时的办法再问一次。 */
+/**
+ * 7.4：先用报错里读出的上限；读不到时，本地服务商按运行开始时的办法再问一次。
+ * Ollama 的超长报错不带数字，而这次请求已经让它加载了模型，再问 /api/ps 得到的就是实际加载的长度。
+ */
 export async function learnContextWindowAfterOverflow(input: {
   error: LLMError;
   provider: ProviderInstance | undefined;

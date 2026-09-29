@@ -508,6 +508,7 @@ const enUS: TranslationDict = {
     contextFixedTooLarge: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.',
     contextFixedTooLargeLocal: 'This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more, or raise the context length in {service}.',
     malformedToolCall: 'This model could not send the action correctly. Try again, or switch to another model.',
+    localServerNoFirstResponse: 'The local model has not started answering after 10 minutes. Try a smaller model, or lower the context length in Ollama / LM Studio and try again.',
     notificationTaskFallback: 'Task',
     outputLimitError:
       '\n\n**Error:** The model hit the output token limit {limit} times in a row without finishing. Suggestions:\n' +

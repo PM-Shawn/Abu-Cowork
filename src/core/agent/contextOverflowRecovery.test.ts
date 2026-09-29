@@ -37,6 +37,16 @@ describe('learnContextWindowAfterOverflow', () => {
     expect(probe).toHaveBeenCalledWith(lmstudio, 'm');
   });
 
+  it('asks Ollama again after its overflow error, which names no limit, and takes the length it loaded the model with', async () => {
+    const ollama = provider({ id: 'ollama', name: 'Ollama', baseUrl: 'http://127.0.0.1:11434' });
+    const probe = vi.fn().mockResolvedValue(4096);
+    await expect(learnContextWindowAfterOverflow({
+      error: new LLMError('the prompt is longer than the context length currently available to the model', 'context_too_long'),
+      provider: ollama, modelId: 'llama3.2:latest', runProbe: undefined, probe,
+    })).resolves.toEqual({ size: 4096, probe: 4096 });
+    expect(probe).toHaveBeenCalledWith(ollama, 'llama3.2:latest');
+  });
+
   it('learns nothing when asking again gets no answer', async () => {
     await expect(learnContextWindowAfterOverflow({
       error: new LLMError('too long', 'context_too_long'), provider: provider({}), modelId: 'm', runProbe: 32768,

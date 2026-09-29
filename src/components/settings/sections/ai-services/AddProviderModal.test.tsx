@@ -30,7 +30,7 @@ import { fetchProviderModels } from '@/core/llm/modelFetcher';
 // LM Studio / Ollama 获取模型后会询问窗口；测试里不发真实请求
 vi.mock('@/core/llm/contextWindowProbe', () => ({
   fetchLmStudioContextWindows: vi.fn(async () => new Map<string, number>()),
-  fetchOllamaContextWindows: vi.fn(async () => new Map<string, number>()),
+  fetchOllamaLoadedContextWindows: vi.fn(async () => new Map<string, number>()),
 }));
 
 // ── Tests ──────────────────────────────────────────────────────────

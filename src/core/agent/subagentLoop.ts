@@ -28,7 +28,7 @@ import {
 import { resolveDelegatedDeclaredCapabilities, resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
 import { isWindows } from '../../utils/platform';
-import { resolveContextWindow } from '../llm/contextWindow';
+import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { rememberProbedContextWindow } from './modelContextWindow';
 import { localServerKind } from '../llm/localProvider';
@@ -897,6 +897,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       const contextWindowSize = resolvedContextWindow.size;
       // 回答预留按模型自己的窗口算，全局上限只约束输入
       const reserveWindowSize = resolvedContextWindow.uncappedSize;
+      // 与主循环相同：本地服务首次回答前等 10 分钟且超时不重试；只有用户填写的长度才让 Ollama 按它运行
+      const isLocalServer = localServerKind(provider) !== null;
+      const requestedContextLength = positiveInteger(declared?.maxInputTokens);
       const reasoningParams = computeReasoningParams(
         subagentCaps,
         settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
@@ -940,6 +943,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               conversationId: options.parentConversationId ?? null,
               providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
               contextWindow: contextWindowSize,
+              requestedContextLength,
+              localServer: isLocalServer,
             }
           );
           if (compressionResult.compressed) {
@@ -990,6 +995,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
         contextWindow: contextWindowSize,
+        requestedContextLength,
+        localServer: isLocalServer,
         enableThinking: reasoningParams.enableThinking,
         thinkingBudget: reasoningParams.thinkingBudget,
         reasoningEffort: reasoningParams.reasoningEffort,
@@ -1475,6 +1482,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const errorResult = new SubagentResult({
       text: `Error: ${err instanceof LLMError && err.code === 'content_policy'
         ? getI18n().chat.contentPolicyRejected
+        : err instanceof LLMError && err.code === 'local_server_timeout'
+        ? getI18n().chat.localServerNoFirstResponse
         : err instanceof LLMError
         ? formatLlmDisplayError(err, errMsg, getI18n().chat.errorEmptyBody)
         : errMsg}`,

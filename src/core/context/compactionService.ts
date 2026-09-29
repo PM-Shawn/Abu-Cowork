@@ -13,6 +13,7 @@ import { resolveEffectiveLlmCreds } from '@/core/enterprise/llm-resolver';
 import { adapterKindFor } from '@/core/llm/adapterKind';
 import { createAdapterForKind } from '@/core/llm/createAdapter';
 import { contextWindowForModel } from '@/core/agent/modelContextWindow';
+import { providerChatOptions } from '@/core/llm/providerChatOptions';
 import type { LLMAdapter } from '@/core/llm/adapter';
 
 export type CompactionReason = 'ok' | 'too-few' | 'summarize-failed' | 'no-conversation';
@@ -98,6 +99,7 @@ async function resolveSummarizeConfig(convId: string): Promise<CompressionConfig
     conversationId: convId,
     providerInstanceId: provider?.id ?? 'unknown',
     contextWindow: await contextWindowForModel(scoped, model),
+    ...providerChatOptions(provider, model),
   };
 }
 

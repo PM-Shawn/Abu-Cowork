@@ -10,7 +10,7 @@ import { getCapsPort } from './ports/capsPort';
 /**
  * 本进程里每个「服务商:模型」最近一次向服务问到的窗口；`size` 为 undefined 表示问了但没问到。
  * 主循环与子代理每次运行开始询问后刷新，同一进程里的记忆提取、技能辅助调用、压缩读它，
- * 发给 Ollama 的 num_ctx 与任务请求相同，模型不会被重新加载。
+ * 这些请求安排内容用的窗口与任务请求相同。
  */
 const latestProbes = new Map<string, { size: number | undefined }>();
 
@@ -18,8 +18,14 @@ function probeKey(providerId: string, modelId: string): string {
   return `${providerId}:${modelId}`;
 }
 
+/**
+ * 记下本次运行问到的值。没问到（Ollama 已把模型卸载、服务没回应）时保留上一次问到的值，
+ * 只在还没有任何已知值时记成「问过但没问到」，免得其他入口再问一次。
+ */
 export function rememberProbedContextWindow(providerId: string, modelId: string, size: number | undefined): void {
-  latestProbes.set(probeKey(providerId, modelId), { size });
+  const key = probeKey(providerId, modelId);
+  if (size === undefined && latestProbes.get(key)?.size !== undefined) return;
+  latestProbes.set(key, { size });
 }
 
 export function __resetProbedContextWindowsForTests(): void {

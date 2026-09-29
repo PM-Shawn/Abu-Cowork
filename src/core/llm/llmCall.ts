@@ -13,6 +13,7 @@ import type { LLMAdapter } from './adapter';
 import { adapterKindFor } from './adapterKind';
 import { createAdapterForKind } from './createAdapter';
 import { contextWindowForModel } from '../agent/modelContextWindow';
+import { providerChatOptions } from './providerChatOptions';
 import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { settingsForConversation } from '../agent/conversationSettings';
@@ -102,6 +103,7 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
     tools: options.tools,
     maxTokens: options.maxTokens ?? 4096,
     contextWindow: await contextWindowForModel(settings, getEffectiveModel(settings)),
+    ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
     signal: options.signal,
     // 这条路径是技能与内部工具的单轮调用（test_skill_trigger、
     // improve_skill_description 等），页面上归到「系统辅助」那一组。

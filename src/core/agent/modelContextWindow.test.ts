@@ -65,6 +65,15 @@ describe('contextWindowForModel', () => {
     expect(mockProbeContextWindow).not.toHaveBeenCalled();
   });
 
+  it('keeps the last value the service gave when a later run gets no answer', async () => {
+    setCapsPort(capsWith(undefined));
+    rememberProbedContextWindow('ollama', 'qwen3:0.6b', 8192);
+    // Ollama 卸载了模型，下一次运行开始时 /api/ps 里没有它
+    rememberProbedContextWindow('ollama', 'qwen3:0.6b', undefined);
+    await expect(contextWindowForModel(settingsWith({ id: 'qwen3:0.6b', label: 'q', contextWindow: 16384 }), 'qwen3:0.6b')).resolves.toBe(8192);
+    expect(mockProbeContextWindow).not.toHaveBeenCalled();
+  });
+
   it('asks a local service once when nothing is known yet, then reuses the answer', async () => {
     setCapsPort(capsWith(undefined));
     mockProbeContextWindow.mockResolvedValue(8192);

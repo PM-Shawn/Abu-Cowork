@@ -846,6 +846,115 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     });
     expect(call).toBe(2); // the retry actually fired
   });
+
+  describe('a local server (Ollama / LM Studio / a loopback custom provider)', () => {
+    const local = { localServer: true, baseUrl: 'http://127.0.0.1:1234/v1' } as const;
+
+    /** 服务收下请求后一直不回响应头，直到请求被中止。 */
+    function neverAnswers(): void {
+      mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+        const signal = init?.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          if (signal?.aborted) return reject(abortError());
+          signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+        });
+      });
+    }
+
+    /** 响应头马上到，正文先送出 head，之后一直不动，直到请求被中止。 */
+    function stallsAfter(head: string): void {
+      mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+        const signal = init?.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            if (head) controller.enqueue(new TextEncoder().encode(head));
+            if (signal?.aborted) return controller.error(abortError());
+            signal?.addEventListener('abort', () => controller.error(abortError()), { once: true });
+          },
+        });
+        return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+      });
+    }
+
+    function start(overrides: Partial<ChatOptions> = {}): { chatPromise: Promise<void>; settled: () => boolean } {
+      let settled = false;
+      const chatPromise = new OpenAICompatibleAdapter().chat([userMessage], makeOptions({ ...local, ...overrides }), () => {});
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+      return { chatPromise, settled: () => settled };
+    }
+
+    it('gets 10 minutes before its first output, and that failure is not retried', async () => {
+      neverAnswers();
+      const { chatPromise, settled } = start();
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+      await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
+    });
+
+    it('is waited for as one 10 minute budget even after the headers arrived', async () => {
+      stallsAfter('');
+      const { chatPromise, settled } = start();
+      // 云端在这里 180 秒就会中止；本地服务的响应头不算开始回答
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+    });
+
+    it('keeps the 180 second idle rule once output has started', async () => {
+      stallsAfter('data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n');
+      const { chatPromise, settled } = start();
+      await vi.advanceTimersByTimeAsync(179_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+    });
+
+    it('ends at once when the user stops during the wait', async () => {
+      neverAnswers();
+      const controller = new AbortController();
+      const { chatPromise, settled } = start({ signal: controller.signal });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled()).toBe(false);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled()).toBe(true);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'network_error' });
+    });
+
+    it('restarts the 10 minute wait for the max_tokens retry', async () => {
+      let call = 0;
+      mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+        call++;
+        if (call === 1) {
+          return Promise.resolve(new Response(
+            JSON.stringify({ error: { param: 'max_tokens', message: 'max_tokens supports at most 4096' } }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          ));
+        }
+        const signal = init?.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          if (signal?.aborted) return reject(abortError());
+          signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+        });
+      });
+      const { chatPromise, settled } = start();
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+      expect(call).toBe(2);
+    });
+
+    it('leaves a cloud provider on the 180 second header wait', async () => {
+      neverAnswers();
+      const { chatPromise } = start({ localServer: false, baseUrl: 'https://api.test.example.com/v1' });
+      await vi.advanceTimersByTimeAsync(181_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+    });
+  });
 });
 
 describe('toOpenAIToolChoice (pure helper)', () => {

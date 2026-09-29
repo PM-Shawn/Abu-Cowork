@@ -95,6 +95,37 @@ describe('ClaudeAdapter', () => {
       expect(events.find((e) => e.type === 'done')).toBeUndefined();
       await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
     });
+
+    it('gives a local Anthropic-format server 10 minutes before its first event, and does not retry that', async () => {
+      // 本机的自定义服务商（apiFormat anthropic）：请求建立后一直没有事件，直到被中止
+      mockCreate.mockImplementation((_params: unknown, options?: { signal?: AbortSignal }) => {
+        const signal = options?.signal;
+        return Promise.resolve({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise((_resolve, reject) => {
+              if (signal?.aborted) return reject(abortError());
+              signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+            }),
+          }),
+        });
+      });
+
+      const adapter = new ClaudeAdapter();
+      const chatPromise = adapter.chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: '', baseUrl: 'http://127.0.0.1:8080', model: 'local-model', maxTokens: 1024, localServer: true },
+        () => {},
+      );
+      let settled = false;
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+    });
   });
 
   describe('tool_use input parsing', () => {

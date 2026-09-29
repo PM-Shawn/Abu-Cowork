@@ -593,6 +593,8 @@ export interface TranslationDict {
     contextFixedTooLargeLocal: string;
     /** The model failed to send an operation even after one quiet rewrite. */
     malformedToolCall: string;
+    /** A local model server gave no first output within its 10-minute wait; nothing retries it. */
+    localServerNoFirstResponse: string;
     /** Conversation-title fallback used in task notifications. */
     notificationTaskFallback: string;
     /** Error after repeated output-token-limit hits (multi-line). {limit} */

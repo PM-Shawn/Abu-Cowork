@@ -1,7 +1,7 @@
 import type { ProviderInstance } from '@/types/provider';
 import { getTauriFetch } from './tauriFetch';
 import { resolveOpenAIBaseUrl } from './urlUtils';
-import { LOCAL_ESTIMATE_CAP, positiveInteger } from './contextWindow';
+import { positiveInteger } from './contextWindow';
 import { localServerKind } from './localProvider';
 
 export const CONTEXT_PROBE_TIMEOUT_MS = 2000;
@@ -39,29 +39,34 @@ export function ollamaApiRoot(baseUrl: string): string {
   return stripV1(baseUrl);
 }
 
-export async function fetchOllamaTrainingContext(baseUrl: string, modelId: string): Promise<number | undefined> {
-  const data = await getJson(`${ollamaApiRoot(baseUrl)}/api/show`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: modelId }),
-  });
-  if (!isRecord(data) || !isRecord(data.model_info)) return undefined;
-  const info = data.model_info;
-  const architecture = info['general.architecture'];
-  if (typeof architecture === 'string') {
-    const exact = positiveInteger(info[`${architecture}.context_length`]);
-    if (exact !== undefined) return exact;
-  }
-  const anyKey = Object.keys(info).find((key) => key.endsWith('.context_length'));
-  return anyKey === undefined ? undefined : positiveInteger(info[anyKey]);
+/**
+ * Ollama 报告已加载模型时的名字总带标签：server/routes.go:2338 用
+ * model.ParseName(m.ShortName).DisplayShortest() 生成，types/model/name.go:244-248 固定写成
+ * 「模型:标签」，没写标签的名字由 ParseName 补上 latest（name.go:41,56）。阿布这边的模型名
+ * 来自 /api/tags，同样带标签；用户手填的名字可能没有标签，比较前补上 :latest。
+ */
+function ollamaModelKey(name: string): string {
+  const slash = name.lastIndexOf('/');
+  return name.includes(':', slash + 1) ? name : `${name}:latest`;
 }
 
-/** Ollama 的窗口由阿布决定：训练上限与 32768 取小。 */
-export async function fetchOllamaContextWindows(baseUrl: string, modelIds: readonly string[]): Promise<Map<string, number>> {
-  const entries = await Promise.all(modelIds.map(async (id) => [id, await fetchOllamaTrainingContext(baseUrl, id)] as const));
+/**
+ * Ollama 按它自己的设置加载模型，实际长度只能从已加载的模型上读：GET /api/ps 返回
+ * `models[]`，每条带 `name` 与 `context_length`（api/types.go:854-863 ProcessModelResponse，
+ * server/routes.go:2333-2364 PsHandler 填的是运行器实际使用的 v.contextLength）。
+ * 返回的 Map 以传入的 modelIds 为键，没加载的模型不在其中。
+ */
+export async function fetchOllamaLoadedContextWindows(baseUrl: string, modelIds: readonly string[]): Promise<Map<string, number>> {
+  const data = await getJson(`${ollamaApiRoot(baseUrl)}/api/ps`);
+  const loaded = new Map<string, number>();
+  for (const entry of records(isRecord(data) ? data.models : undefined)) {
+    const size = positiveInteger(entry.context_length);
+    if (typeof entry.name === 'string' && size !== undefined) loaded.set(ollamaModelKey(entry.name), size);
+  }
   const windows = new Map<string, number>();
-  for (const [id, trained] of entries) {
-    if (trained !== undefined) windows.set(id, Math.min(trained, LOCAL_ESTIMATE_CAP));
+  for (const id of modelIds) {
+    const size = loaded.get(ollamaModelKey(id));
+    if (size !== undefined) windows.set(id, size);
   }
   return windows;
 }
@@ -91,10 +96,9 @@ export async function fetchLlamaCppContextWindows(baseUrl: string, apiKey: strin
 /** 7.2 第 2 步：本地服务商问一次服务实际能记多长。非本地服务商不发请求。 */
 export async function probeContextWindow(provider: ProviderInstance, modelId: string): Promise<number | undefined> {
   switch (localServerKind(provider)) {
-    case 'ollama': {
-      const trained = await fetchOllamaTrainingContext(provider.baseUrl, modelId);
-      return trained === undefined ? undefined : Math.min(trained, LOCAL_ESTIMATE_CAP);
-    }
+    case 'ollama':
+      // 模型还没加载时问不到，调用方按下一级取值；第一次请求让 Ollama 加载后就能问到
+      return (await fetchOllamaLoadedContextWindows(provider.baseUrl, [modelId])).get(modelId);
     case 'lmstudio':
       return (await fetchLmStudioContextWindows(provider.baseUrl)).get(modelId);
     case 'custom-local': {

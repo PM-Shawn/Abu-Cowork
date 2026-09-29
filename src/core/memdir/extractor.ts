@@ -25,6 +25,7 @@ import { settingsForConversation } from '../agent/conversationSettings';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { adapterKindFor } from '../llm/adapterKind';
 import { contextWindowForModel } from '../agent/modelContextWindow';
+import { providerChatOptions } from '../llm/providerChatOptions';
 import type { LLMAdapter } from '../llm/adapter';
 import type { StreamEvent } from '../../types';
 import type { Message } from '../../types';
@@ -245,6 +246,7 @@ export async function extractMemoriesFromConversation(
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         maxTokens: 1024,
         contextWindow: await contextWindowForModel(settings, getEffectiveModel(settings)),
+        ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
         accounting: {
           source: 'memory' as const,
           conversationId,

@@ -359,36 +359,63 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     await expect(page.getByText('abu-e2e-never-sent')).toHaveCount(0);
   });
 
-  test('P1-3 talks to Ollama natively with the context size and no silent trimming', async () => {
-    const modelId = 'qwen3:0.6b';
-    const answer = `abu-e2e-ollama-answer-${randomUUID()}`;
-    ollama = await startOllamaMock({ architecture: 'qwen3', contextLength: 16384, modelId, replies: [answer] });
-    const page = await launchChat(ollama.baseUrl, {
+  const OLLAMA_MODEL = 'qwen3:0.6b';
+
+  /** 内置 Ollama 服务商指向模拟服务；Ollama 已按 loadedContextLength 加载了模型。 */
+  async function openOllamaChat(answer: string, contextWindowSize: number | null): Promise<Page> {
+    ollama = await startOllamaMock({ loadedContextLength: 16384, modelId: OLLAMA_MODEL, replies: [answer] });
+    return launchChat(ollama.baseUrl, {
       apiKey: '',
-      contextWindowSize: null,
-      modelId,
-      modelLabel: modelId,
+      contextWindowSize,
+      modelId: OLLAMA_MODEL,
+      modelLabel: OLLAMA_MODEL,
       providerId: 'ollama',
       providerName: 'Ollama',
       providerSource: 'builtin',
       keepOtherProviders: true,
     });
+  }
+
+  type OllamaChatBody = { options?: { num_ctx?: unknown }; shift?: unknown; truncate?: unknown };
+
+  test('P1-3 follows the context length Ollama loaded the model with and lets nothing be trimmed quietly', async () => {
+    const answer = `abu-e2e-ollama-answer-${randomUUID()}`;
+    const page = await openOllamaChat(answer, null);
 
     await send(page, `abu-e2e-ollama-question-${randomUUID()}`);
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expectRunEnded(page);
 
-    expect(ollama.showRequests).toContain(modelId);
-    const taskCalls = ollama.chatRequests.filter((request) => request.purpose === 'task');
+    // 运行开始问了 /api/ps，水位上限就是 Ollama 报告的已加载长度
+    expect(ollama!.psRequests).toBeGreaterThan(0);
+    const taskCalls = ollama!.chatRequests.filter((request) => request.purpose === 'task');
     expect(taskCalls).toHaveLength(1);
-    for (const request of ollama.chatRequests) {
-      const body = request.body as { options?: { num_ctx?: unknown }; shift?: unknown; truncate?: unknown };
-      // 训练上限 16384 小于本地封顶 32768，窗口就是 16384
-      expect(body.options?.num_ctx).toBe(16384);
+    for (const request of ollama!.chatRequests) {
+      const body = request.body as OllamaChatBody;
+      // 用户没填「上下文长度」：不带 num_ctx，Ollama 按自己的设置运行
+      expect(body.options ?? {}).not.toHaveProperty('num_ctx');
       expect(body.truncate).toBe(false);
       expect(body.shift).toBe(false);
     }
     await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 16\.4k tokens$/);
+  });
+
+  test('P1-3 lets Ollama run at the context length the user filled in', async () => {
+    const answer = `abu-e2e-ollama-answer-${randomUUID()}`;
+    const page = await openOllamaChat(answer, 24576);
+
+    await send(page, `abu-e2e-ollama-question-${randomUUID()}`);
+    await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expectRunEnded(page);
+
+    expect(ollama!.chatRequests.filter((request) => request.purpose === 'task')).toHaveLength(1);
+    for (const request of ollama!.chatRequests) {
+      const body = request.body as OllamaChatBody;
+      expect(body.options?.num_ctx).toBe(24576);
+      expect(body.truncate).toBe(false);
+      expect(body.shift).toBe(false);
+    }
+    await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 24\.6k tokens$/);
   });
 
   test('P1-5 asks the model once, quietly, to rewrite a broken operation and then says it could not', async () => {

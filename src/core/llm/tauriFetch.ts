@@ -15,6 +15,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { LOCAL_FIRST_RESPONSE_TIMEOUT_MS } from './heartbeat';
 
 let _loadPromise: Promise<typeof globalThis.fetch> | null = null;
 
@@ -26,13 +27,14 @@ const STRIP_LOCAL_HEADERS = new Set(['origin', 'referer', 'host']);
 const LOCAL_URL_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?[/]/i;
 
 // Hard ceiling for the connect + response-header phase. tauri-plugin-http's
-// clientConfig.connectTimeout is undefined (no built-in timeout), and the
-// streaming idle-heartbeat in the LLM adapters only arms AFTER response.body
-// is obtained — so a server that accepts the TCP connection but never returns
-// headers would hang forever with zero protection. Headers come back when the
-// server starts responding (well before generation finishes), so 120s is
-// generous for even slow reasoning models while still bounding a true hang.
-const HEADER_TIMEOUT_MS = 120_000;
+// clientConfig.connectTimeout is undefined (no built-in timeout), so a server
+// that accepts the TCP connection but never returns headers would otherwise
+// hang forever. This path only serves localhost / 127.0.0.1 addresses, i.e.
+// local model servers, which do not send headers until they have processed
+// the whole input — the ceiling therefore matches the local first-response
+// wait the LLM adapters use (10 minutes); the adapters abort earlier
+// requests themselves through the request signal.
+const HEADER_TIMEOUT_MS = LOCAL_FIRST_RESPONSE_TIMEOUT_MS;
 
 /**
  * A fetch implementation that talks directly to tauri-plugin-http's IPC

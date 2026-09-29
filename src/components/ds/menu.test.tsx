@@ -3,11 +3,11 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent, { PointerEventsCheckLevel } from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { ContextMenu } from './context-menu';
 import { AppIcons } from './icons';
-import { Menu, MenuItem, MenuLabel, MenuSeparator } from './menu';
+import { Menu, MenuItem, MenuLabel, MenuSeparator, MenuSub } from './menu';
 import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
 
@@ -248,6 +248,149 @@ describe('ContextMenu', () => {
     fireEvent.contextMenu(screen.getByText('Message body'));
     expect(screen.queryByRole('menuitem', { name: /Rename/ })).toBeNull();
     expect(screen.getByRole('menuitem', { name: /Copy/ })).toBeInTheDocument();
+  });
+});
+
+describe('onCloseAutoFocus', () => {
+  // Radix restores focus from a timer once the closed menu has unmounted.
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function FocusField({ kind, onClose }: { kind: 'dropdown' | 'context'; onClose: (event: Event) => void }) {
+    const items = <MenuItem>Rename</MenuItem>;
+    return (
+      <>
+        {kind === 'dropdown'
+          ? <Menu trigger={<Button>Actions</Button>} onCloseAutoFocus={onClose}>{items}</Menu>
+          : <ContextMenu content={items} onCloseAutoFocus={onClose}><div tabIndex={0}>Message body</div></ContextMenu>}
+        <input aria-label="Title" />
+      </>
+    );
+  }
+
+  const focusTitle = (event: Event) => {
+    event.preventDefault();
+    screen.getByRole('textbox', { name: 'Title', hidden: true }).focus();
+  };
+
+  it('lets a Menu caller keep focus off the trigger', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onClose = vi.fn(focusTitle);
+    render(<FocusField kind="dropdown" onClose={onClose} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
+  });
+
+  it('returns focus to the Menu trigger when the caller does not prevent it', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onClose = vi.fn();
+    render(<FocusField kind="dropdown" onClose={onClose} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Actions' })).toHaveFocus();
+  });
+
+  it('runs after the layer handler, which still keeps focus where a replacing layer put it', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const seen: boolean[] = [];
+    function MenuThenPopover({ popoverOpen }: { popoverOpen: boolean }) {
+      return (
+        <>
+          <Menu trigger={<Button>Actions</Button>} onCloseAutoFocus={(event) => seen.push(event.defaultPrevented)}>
+            <MenuItem>Rename</MenuItem>
+          </Menu>
+          <Popover open={popoverOpen} trigger={<Button>Details</Button>}>Popover body</Popover>
+        </>
+      );
+    }
+    const { rerender } = render(<MenuThenPopover popoverOpen={false} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    rerender(<MenuThenPopover popoverOpen />);
+    await act(() => vi.runOnlyPendingTimersAsync());
+    // The registry closed the menu, so the layer handler prevented the focus restore
+    // before the caller's handler ran.
+    expect(seen).toEqual([true]);
+  });
+
+  it('lets a ContextMenu caller keep focus off the element focused before it opened', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onClose = vi.fn(focusTitle);
+    render(<FocusField kind="context" onClose={onClose} />, { wrapper: DesignSystemProvider });
+    const target = screen.getByText('Message body');
+    act(() => target.focus());
+    fireEvent.contextMenu(target);
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
+  });
+});
+
+describe('MenuSub', () => {
+  function MoveMenu({ onMove }: { onMove: () => void }) {
+    return (
+      <Menu trigger={<Button>Actions</Button>}>
+        <MenuItem>Rename</MenuItem>
+        <MenuSub icon={AppIcons.folder} label="Move to">
+          <MenuItem onSelect={onMove}>Launch plan</MenuItem>
+        </MenuSub>
+      </Menu>
+    );
+  }
+
+  it('opens from its trigger with ArrowRight and closes the whole menu when an item is chosen', async () => {
+    const user = userEvent.setup();
+    const onMove = vi.fn();
+    render(<MoveMenu onMove={onMove} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    expect(screen.queryByRole('menuitem', { name: 'Launch plan' })).toBeNull();
+    await user.keyboard('{ArrowDown}{ArrowDown}');
+    expect(screen.getByRole('menuitem', { name: 'Move to' })).toHaveFocus();
+    await user.keyboard('{ArrowRight}');
+    const item = await screen.findByRole('menuitem', { name: 'Launch plan' });
+    expect(item).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(onMove).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('opens on hover and floats in its own panel that never drags the window', async () => {
+    const user = userEvent.setup();
+    render(<MoveMenu onMove={() => undefined} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const trigger = screen.getByRole('menuitem', { name: 'Move to' });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    await user.hover(trigger);
+    const submenu = (await screen.findByRole('menuitem', { name: 'Launch plan' })).closest('[role="menu"]');
+    expect(submenu).not.toBeNull();
+    expect(submenu).not.toContainElement(trigger);
+    expect(submenu).toHaveAttribute('data-electron-no-drag');
+    expect(submenu).toHaveAttribute('data-ds-motion');
+    expect(trigger).toHaveAttribute('data-state', 'open');
+  });
+
+  it('works inside a ContextMenu too', async () => {
+    const user = userEvent.setup();
+    const onMove = vi.fn();
+    render(
+      <ContextMenu content={<MenuSub label="Move to"><MenuItem onSelect={onMove}>Launch plan</MenuItem></MenuSub>}>
+        <div>Message body</div>
+      </ContextMenu>,
+      { wrapper: DesignSystemProvider },
+    );
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    await user.keyboard('{ArrowDown}');
+    expect(screen.getByRole('menuitem', { name: 'Move to' })).toHaveFocus();
+    await user.keyboard('{ArrowRight}');
+    expect(await screen.findByRole('menuitem', { name: 'Launch plan' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(onMove).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });
 

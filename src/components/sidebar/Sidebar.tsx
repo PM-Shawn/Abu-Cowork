@@ -12,7 +12,7 @@ import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { Button, IconButton } from '@/components/ds/button';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { NavItem } from '@/components/ds/nav-item';
 import { ScrollArea } from '@/components/ds/scroll-area';
 import { FOCUS_RING } from '@/components/ds/styles';
@@ -139,6 +139,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
+  const renameAfterClose = useRef<string | null>(null);
 
   // Guide modal state lives in the store so it can be reopened from Settings ›
   // About. Auto-opens on first launch only (below).
@@ -226,24 +227,31 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   const activeProjects = Object.values(projectsMap).filter((p) => !p.archived);
 
+  // 重命名 only marks the row; the rename field opens once the menu has gone, from its
+  // close-focus hook, and preventDefault stops the menu handing focus back to the
+  // trigger or the row so the field keeps it.
+  const startRenameAfterClose = (convId: string) => (event: Event) => {
+    if (renameAfterClose.current !== convId) return;
+    renameAfterClose.current = null;
+    event.preventDefault();
+    setEditingId(convId);
+  };
+
   // One menu for a row, shown both by right-click and by the "⋯" button.
   const conversationMenuItems = (convId: string) => {
     const convMeta = conversationIndex[convId];
     return (
       <>
-        {/* The rename field opens once the menu has let go of focus: a menu
-            still closing traps focus and would pull it out of the field. */}
-        <MenuItem icon={AppIcons.rename} onSelect={() => { setTimeout(() => setEditingId(convId), 0); }}>
+        {/* Rename starts from the menu's close-focus hook; see startRenameAfterClose. */}
+        <MenuItem icon={AppIcons.rename} onSelect={() => { renameAfterClose.current = convId; }}>
           {t.sidebar.renameConversation}
         </MenuItem>
         <MenuItem icon={AppIcons.download} onSelect={() => { void handleExport(convId); }}>
           {t.sidebar.exportConversation}
         </MenuItem>
         {activeProjects.length > 0 && (
-          <>
-            <MenuSeparator />
-            <MenuLabel>{t.project.moveToProject}</MenuLabel>
-            {/* A long project list scrolls inside the menu instead of running off the window. */}
+          <MenuSub icon={AppIcons.import} label={t.project.moveToProject}>
+            {/* A long project list scrolls inside the submenu instead of running off the window. */}
             <div className="max-h-60 overflow-y-auto">
               {activeProjects.map((p) => (
                 <MenuItem
@@ -256,14 +264,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               ))}
             </div>
             {convMeta?.projectId && (
-              <MenuItem
-                icon={AppIcons.remove}
-                onSelect={() => useChatStore.getState().setConversationProject(convId, undefined)}
-              >
-                {t.project.removeFromProject}
-              </MenuItem>
+              <>
+                <MenuSeparator />
+                <MenuItem
+                  icon={AppIcons.remove}
+                  onSelect={() => useChatStore.getState().setConversationProject(convId, undefined)}
+                >
+                  {t.project.removeFromProject}
+                </MenuItem>
+              </>
             )}
-          </>
+          </MenuSub>
         )}
         <MenuSeparator />
         <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { void handleDeleteConversation(convId); }}>
@@ -378,7 +389,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 label={navTitle(item, t.sidebar.extensions)}
                 selected={viewMode === 'extensions'}
                 trailing={pluginUpdateCount > 0
-                  ? <Tag tone="info"><PluginUpdateBadge testId="extensions-update-badge" /></Tag>
+                  ? <PluginUpdateBadge testId="extensions-update-badge" />
                   : undefined}
                 onClick={() => { openExtensions(); setShowFileTree(false); }}
               />
@@ -475,12 +486,14 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               const editing = editingId === conv.id;
               const menuOpen = menuConvId === conv.id;
               return (
-              <ContextMenu key={conv.id} content={conversationMenuItems(conv.id)}>
+              <ContextMenu
+                key={conv.id}
+                content={conversationMenuItems(conv.id)}
+                onCloseAutoFocus={startRenameAfterClose(conv.id)}
+              >
               <div
                 role="button"
-                // Not focusable while renaming, so a closing menu cannot pull
-                // focus back to the row and end the rename.
-                tabIndex={editing ? undefined : 0}
+                tabIndex={0}
                 onClick={(e) => {
                   // The "⋯" menu renders inside this row in React's tree; its
                   // portaled items must not also open the conversation.
@@ -534,7 +547,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   status={convStatus}
                   onComplete={() => handleClearCompletedStatus(conv.id)}
                 />
-                {/* Row actions step aside while renaming; see tabIndex above. */}
+                {/* Row actions step aside while renaming so the field gets the row's width. */}
                 {!editing && conv.workspacePath && (
                   <IconButton
                     icon={AppIcons.fileTree}
@@ -554,6 +567,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   <Menu
                     open={menuOpen}
                     onOpenChange={(open) => setMenuConvId(open ? conv.id : null)}
+                    onCloseAutoFocus={startRenameAfterClose(conv.id)}
                     trigger={
                       <IconButton
                         icon={AppIcons.more}

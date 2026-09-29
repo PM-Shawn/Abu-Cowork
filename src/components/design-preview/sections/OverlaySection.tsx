@@ -4,7 +4,7 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Dialog, DialogClose } from '@/components/ds/dialog';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuLabel, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { Popover } from '@/components/ds/popover';
 import { Select } from '@/components/ds/select';
 import { TextField } from '@/components/ds/text-field';
@@ -46,6 +46,10 @@ export function OverlaySection() {
           <MenuItem icon={AppIcons.rename} shortcut="⌘R">Rename</MenuItem>
           <MenuItem icon={AppIcons.copy}>Copy link</MenuItem>
           <MenuItem icon={AppIcons.share} disabled>Share (not available)</MenuItem>
+          <MenuSub icon={AppIcons.folder} label="Move to">
+            <MenuItem icon={AppIcons.folder}>Launch plan</MenuItem>
+            <MenuItem icon={AppIcons.folder}>Weekly report</MenuItem>
+          </MenuSub>
           <MenuSeparator />
           <MenuItem icon={AppIcons.delete} tone="danger">Delete</MenuItem>
         </Menu>

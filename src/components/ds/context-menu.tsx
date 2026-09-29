@@ -6,10 +6,13 @@ import { useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext } from './menu-context';
 import { FLOAT_MOTION, FLOAT_SURFACE } from './styles';
 
-export function ContextMenu({ children, content, onOpenChange }: {
+// onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
+// event.preventDefault() there to stop Radix restoring focus (e.g. to focus a field).
+export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus }: {
   children: ReactNode;
   content: ReactNode;
   onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(undefined, false, onOpenChange);
@@ -18,7 +21,7 @@ export function ContextMenu({ children, content, onOpenChange }: {
   // close through onOpenChange. The trigger's Radix data-state may stay "open" until
   // that next right-click, so callers style an open menu from onOpenChange.
   const [dismissed, setDismissed] = useState(false);
-  const { id, onCloseAutoFocus } = useLayer('popover', isOpen && !dismissed, () => {
+  const { id, onCloseAutoFocus: layerCloseAutoFocus } = useLayer('popover', isOpen && !dismissed, () => {
     setDismissed(true);
     setOpen(false);
   });
@@ -35,7 +38,7 @@ export function ContextMenu({ children, content, onOpenChange }: {
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
-            onCloseAutoFocus={onCloseAutoFocus}
+            onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
             className={cn('z-popover min-w-40 origin-(--radix-context-menu-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
           >
             <LayerScope id={id}>

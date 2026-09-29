@@ -231,55 +231,73 @@ describe('Sidebar — Recents row menu', () => {
     await user.click(screen.getByRole('button', { name: '更多操作' }));
     const menu = await screen.findByRole('menu');
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
-      '重命名', '导出会话', 'Launch plan', '删除会话',
+      '重命名', '导出会话', '移入项目', '删除会话',
     ]);
-    expect(within(menu).getByText('移入项目')).toBeInTheDocument();
     // An open menu hides the rest of the page from screen readers.
     expect(screen.getByRole('button', { name: '更多操作', hidden: true })).toHaveAttribute('aria-expanded', 'true');
     expect(chat.state.switchConversation).not.toHaveBeenCalled();
+  });
+
+  it('lists the projects inside the 移入项目 submenu', async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+    await user.click(screen.getByRole('button', { name: '更多操作' }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: 'Launch plan' })).toBeNull();
+    await user.click(within(menu).getByRole('menuitem', { name: '移入项目' }));
+    const project = await screen.findByRole('menuitem', { name: 'Launch plan' });
+    const submenu = project.closest('[role="menu"]');
+    expect(submenu).not.toBe(menu);
+    expect(submenu).toHaveAttribute('data-electron-no-drag');
   });
 
   it('moves the task into a project without also opening it', async () => {
     const user = userEvent.setup();
     renderSidebar();
     await user.click(screen.getByRole('button', { name: '更多操作' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Launch plan' }));
+    await user.click(await screen.findByRole('menuitem', { name: '移入项目' }));
+    // Choose it from the keyboard: happy-dom has no layout for Radix's pointer path into
+    // a submenu. The pointer path is covered by the real shell check.
+    await user.keyboard('{ArrowRight}');
+    expect(await screen.findByRole('menuitem', { name: 'Launch plan' })).toHaveFocus();
+    await user.keyboard('{Enter}');
     expect(chat.state.setConversationProject).toHaveBeenCalledWith('c1', 'p1');
     expect(chat.state.switchConversation).not.toHaveBeenCalled();
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  it('renames in place and keeps the field focused after the menu closes', async () => {
-    const user = userEvent.setup();
-    renderSidebar();
-    await user.click(screen.getByRole('button', { name: '更多操作' }));
-    await user.click(await screen.findByRole('menuitem', { name: '重命名' }));
-    const field = await screen.findByRole('textbox', { name: '重命名' });
-    // Let the menu finish closing and hand focus back.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
-    expect(field).toHaveFocus();
-    await user.clear(field);
-    await user.type(field, 'Q3 summary{Enter}');
-    expect(chat.state.renameConversation).toHaveBeenCalledWith('c1', 'Q3 summary');
-  });
+  describe('rename', () => {
+    // The rename field mounts from Radix's focus-scope timer once the menu has gone.
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
 
-  it('renames from the right-click menu and keeps the field focused', async () => {
-    // A closing right-click menu hands focus back to whatever was focused when
-    // it opened: <body>, or this row after a right mouse press. Chromium cannot
-    // focus either (<body> and a div without tabindex are not focusable), so
-    // the field keeps focus. happy-dom focuses <body>; mirror Chromium here.
-    const bodyFocus = vi.spyOn(document.body, 'focus').mockImplementation(() => {});
-    const user = userEvent.setup();
-    renderSidebar();
-    const row = screen.getByText('Quarterly summary').closest<HTMLElement>('[role="button"]')!;
-    expect(row).toHaveAttribute('tabindex', '0');
-    fireEvent.contextMenu(row);
-    await user.click(await screen.findByRole('menuitem', { name: '重命名' }));
-    const field = await screen.findByRole('textbox', { name: '重命名' });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
-    expect(field).toHaveFocus();
-    expect(field.closest('[role="button"]')).not.toHaveAttribute('tabindex');
-    bodyFocus.mockRestore();
+    it('renames in place from 更多操作 and keeps the field focused after the menu closes', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      await user.click(screen.getByRole('button', { name: '更多操作' }));
+      await user.click(await screen.findByRole('menuitem', { name: '重命名' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const field = screen.getByRole('textbox', { name: '重命名' });
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(field).toHaveFocus();
+      await user.clear(field);
+      await user.type(field, 'Q3 summary{Enter}');
+      expect(chat.state.renameConversation).toHaveBeenCalledWith('c1', 'Q3 summary');
+    });
+
+    it('renames from the right-click menu and keeps the field focused', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      const row = screen.getByText('Quarterly summary').closest<HTMLElement>('[role="button"]')!;
+      act(() => row.focus());
+      fireEvent.contextMenu(row);
+      await user.click(await screen.findByRole('menuitem', { name: '重命名' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const field = screen.getByRole('textbox', { name: '重命名' });
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(field).toHaveFocus();
+      expect(field.closest('[role="button"]')).toHaveAttribute('tabindex', '0');
+    });
   });
 
   it('deletes from the menu and offers 撤销 in a notice', async () => {

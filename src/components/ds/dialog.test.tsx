@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { useConfirm } from './confirm-context';
 import { Dialog, DialogClose } from './dialog';
@@ -37,6 +37,8 @@ function TwoDialogs({ firstDirty = false }: { firstDirty?: boolean }) {
 }
 
 describe('Dialog', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it('opens from its trigger, closes on Escape, and returns focus to the trigger', async () => {
     const user = userEvent.setup();
     render(<RenameDialog />, { wrapper: DesignSystemProvider });
@@ -140,12 +142,14 @@ describe('Dialog', () => {
   });
 
   it('keeps focus in the new dialog when the registry closes the old one', async () => {
-    const user = userEvent.setup();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<TwoDialogs />, { wrapper: DesignSystemProvider });
     await user.click(screen.getByRole('button', { name: 'Open first' }));
     await user.click(screen.getByRole('button', { name: 'Open second' }));
     const second = screen.getByRole('dialog', { name: 'Second' });
-    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    // Flush the closing dialog's deferred focus return.
+    await act(() => vi.runOnlyPendingTimersAsync());
     expect(second).toContainElement(document.activeElement as HTMLElement);
   });
 

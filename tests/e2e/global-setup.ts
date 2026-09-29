@@ -84,10 +84,9 @@ export default async function globalSetup(): Promise<void> {
     'dist-electron-spike',
   ], {
     cwd: REPO_ROOT,
-    env: runtimeEnv,
     stdio: 'inherit',
     env: {
-      ...process.env,
+      ...runtimeEnv,
       // The production default remains intentionally empty until its origin is
       // approved. Electron E2E uses an isolated loopback account service.
       VITE_PERSONAL_ACCOUNT_SERVER_URL: ACCOUNT_E2E_SERVER_URL,

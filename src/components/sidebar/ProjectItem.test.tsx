@@ -217,7 +217,10 @@ describe('ProjectItem — project row', () => {
       expect(focused.slice(rowAt + 1).every((el) => question.contains(el))).toBe(true);
       expect(question).toContainElement(document.activeElement as HTMLElement);
       await user.click(within(question).getByRole('button', { name: '取消' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
       expect(mocks.project.archiveProject).not.toHaveBeenCalled();
+      // Answering gives focus back to the row that asked.
+      expect(header).toHaveFocus();
     } finally {
       document.removeEventListener('focusin', record);
       vi.useRealTimers();

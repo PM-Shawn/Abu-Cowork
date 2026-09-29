@@ -54,6 +54,23 @@ export function Dialog({
 
   const { id, onCloseAutoFocus } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
 
+  // Radix gives focus back only to a Dialog.Trigger. A dialog opened by code (search,
+  // useConfirm(), the discard question) has none, so it would leave focus on the page
+  // body; these give focus back to whatever had it when the dialog opened.
+  const returnTo = useRef<HTMLElement | null>(null);
+  const discardReturnTo = useRef<HTMLElement | null>(null);
+  const remember = (target: { current: HTMLElement | null }) => {
+    target.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  };
+  const giveFocusBack = (target: { current: HTMLElement | null }, event: Event, hasTrigger: boolean) => {
+    const element = target.current;
+    target.current = null;
+    // A caller or the layer registry that already chose where focus goes keeps its choice.
+    if (event.defaultPrevented || hasTrigger) return;
+    event.preventDefault();
+    if (element?.isConnected) element.focus();
+  };
+
   return (
     <>
       <DialogPrimitive.Root open={isOpen} onOpenChange={(next) => (next ? setOpen(true) : requestClose())}>
@@ -66,7 +83,13 @@ export function Dialog({
             data-ds-motion
             data-electron-no-drag
             role={role}
-            onCloseAutoFocus={onCloseAutoFocus}
+            onOpenAutoFocus={() => remember(returnTo)}
+            onCloseAutoFocus={(event) => {
+              // The layer's handler first: it prevents the default when the registry
+              // closed this dialog to make room for another.
+              onCloseAutoFocus(event);
+              giveFocusBack(returnTo, event, trigger !== undefined);
+            }}
             {...(description ? {} : { 'aria-describedby': undefined })}
             className={cn(DIALOG_BOX, WIDTH[size], DIALOG_MOTION)}
           >
@@ -90,7 +113,14 @@ export function Dialog({
       </DialogPrimitive.Root>
       <AlertDialogPrimitive.Root open={pendingDiscard !== null} onOpenChange={(next) => { if (!next) setPendingDiscard(null); }}>
         <AlertDialogPrimitive.Portal container={container}>
-          <AlertDialogPrimitive.Content data-ds-layer data-ds-motion data-electron-no-drag className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}>
+          <AlertDialogPrimitive.Content
+            data-ds-layer
+            data-ds-motion
+            data-electron-no-drag
+            onOpenAutoFocus={() => remember(discardReturnTo)}
+            onCloseAutoFocus={(event) => giveFocusBack(discardReturnTo, event, false)}
+            className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}
+          >
             <AlertDialogPrimitive.Title className="text-title text-label">{t.designSystem.discardTitle}</AlertDialogPrimitive.Title>
             <AlertDialogPrimitive.Description className="mt-1 text-ui text-label-secondary">
               {t.designSystem.discardMessage}

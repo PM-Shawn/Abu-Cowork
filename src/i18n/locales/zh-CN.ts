@@ -17,6 +17,14 @@ const zhCN: TranslationDict = {
     retry: '重试',
   },
 
+  designSystem: {
+    discardTitle: '放弃这些内容？',
+    discardMessage: '已填写的内容不会保存。',
+    discard: '放弃',
+    keepEditing: '继续填写',
+    notifications: '通知',
+  },
+
   errorBoundary: {
     renderError: '渲染出错了',
     unknownError: '未知错误',

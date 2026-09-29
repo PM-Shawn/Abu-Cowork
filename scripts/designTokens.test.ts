@@ -1,0 +1,135 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import postcss from 'postcss';
+import { blend, parse, wcagContrast, type Color } from 'culori';
+import { describe, it, expect } from 'vitest';
+import { APPEARANCE_ATTRIBUTES } from '../src/styles/appearance';
+
+const TOKENS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/styles/tokens.css');
+
+type Block = 'root' | 'dark' | 'rootContrast' | 'darkContrast' | 'reducedTransparency';
+type Appearance = 'light' | 'dark' | 'light-contrast' | 'dark-contrast';
+
+const [CONTRAST_ATTR, CONTRAST_ON] = APPEARANCE_ATTRIBUTES.contrast;
+const [TRANSPARENCY_ATTR, TRANSPARENCY_ON] = APPEARANCE_ATTRIBUTES.transparency;
+const [MOTION_ATTR, MOTION_ON] = APPEARANCE_ATTRIBUTES.motion;
+const CONTRAST = `:root[${CONTRAST_ATTR}="${CONTRAST_ON}"]`;
+const SELECTORS: Record<Block, string> = {
+  root: ':root',
+  dark: '.dark',
+  rootContrast: `${CONTRAST}:not(.dark)`,
+  darkContrast: `${CONTRAST}.dark`,
+  reducedTransparency: `:root[${TRANSPARENCY_ATTR}="${TRANSPARENCY_ON}"]`,
+};
+
+const css = readFileSync(TOKENS_PATH, 'utf8');
+
+function collectBlocks(source: string): Record<Block, Map<string, string>> {
+  const blocks = Object.fromEntries(
+    (Object.keys(SELECTORS) as Block[]).map((block) => [block, new Map<string, string>()]),
+  ) as Record<Block, Map<string, string>>;
+  postcss.parse(source).walkRules((rule) => {
+    if (rule.parent?.type !== 'root') return;
+    const block = (Object.keys(SELECTORS) as Block[]).find((name) => SELECTORS[name] === rule.selector);
+    if (!block) return;
+    rule.walkDecls(/^--ds-/, (decl) => { blocks[block].set(decl.prop, decl.value); });
+  });
+  return blocks;
+}
+
+const blocks = collectBlocks(css);
+
+function appearance(name: Appearance): Map<string, string> {
+  const light = new Map(blocks.root);
+  const dark = new Map([...light, ...blocks.dark]);
+  if (name === 'light') return light;
+  if (name === 'dark') return dark;
+  if (name === 'light-contrast') return new Map([...light, ...blocks.rootContrast]);
+  return new Map([...dark, ...blocks.darkContrast]);
+}
+
+function color(values: Map<string, string>, token: string): Color {
+  const raw = values.get(`--ds-${token}`);
+  if (raw === undefined) throw new Error(`--ds-${token} is not defined`);
+  const reference = /^var\((--ds-[a-z0-9-]+)\)$/.exec(raw);
+  if (reference) return color(values, reference[1].slice('--ds-'.length));
+  const parsed = parse(raw);
+  if (!parsed) throw new Error(`--ds-${token} has an unparseable color: ${raw}`);
+  return parsed;
+}
+
+function over(values: Map<string, string>, top: string, bottom: string): Color {
+  return blend([color(values, bottom), color(values, top)], 'normal');
+}
+
+const APPEARANCES: Appearance[] = ['light', 'dark', 'light-contrast', 'dark-contrast'];
+const TEXT = ['label', 'label-secondary', 'label-tertiary', 'link', 'success', 'warning', 'danger', 'info'];
+const SURFACES = ['surface', 'raised', 'code', 'field', 'desk-solid'];
+const STATUS = ['success', 'warning', 'danger', 'info'];
+
+describe('design tokens — completeness', () => {
+  it('overrides every semantic light token in dark', () => {
+    const semantic = [...blocks.root.keys()].filter((k) => !k.startsWith('--ds-palette-') && !k.startsWith('--ds-font-'));
+    const missing = semantic.filter((k) => !blocks.dark.has(k));
+    expect(missing).toEqual([]);
+  });
+
+  it('lists the same properties in both increased-contrast blocks', () => {
+    expect([...blocks.darkContrast.keys()].sort()).toEqual([...blocks.rootContrast.keys()].sort());
+  });
+
+  it('finds both increased-contrast blocks', () => {
+    expect(blocks.rootContrast.size).toBeGreaterThan(0);
+    expect(blocks.darkContrast.size).toBeGreaterThan(0);
+  });
+
+  it('makes desk and material opaque when transparency is reduced', () => {
+    expect(blocks.reducedTransparency.get('--ds-desk')).toBe('var(--ds-desk-solid)');
+    expect(blocks.reducedTransparency.get('--ds-material')).toBe('var(--ds-raised)');
+  });
+
+  it('keys accessibility appearances off <html> attributes, never media queries', () => {
+    const queries: string[] = [];
+    postcss.parse(css).walkAtRules('media', (rule) => { queries.push(rule.params); });
+    expect(queries).toEqual([]);
+  });
+
+  it('stops scaling and sliding floating layers when motion is reduced', () => {
+    const declarations = new Map<string, string>();
+    postcss.parse(css).walkRules(`[${MOTION_ATTR}="${MOTION_ON}"] [data-ds-motion]`, (rule) => {
+      rule.walkDecls((decl) => { declarations.set(decl.prop, `${decl.value}${decl.important ? ' !important' : ''}`); });
+    });
+    expect(declarations.get('--tw-enter-scale')).toBe('1 !important');
+    expect(declarations.get('--tw-exit-scale')).toBe('1 !important');
+    expect(declarations.get('animation-duration')).toBe('120ms !important');
+  });
+});
+
+describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
+  const values = appearance(name);
+
+  it.each(TEXT.flatMap((text) => SURFACES.map((surface) => [text, surface] as const)))(
+    '%s on %s is at least 4.5:1',
+    (text, surface) => {
+      expect(wcagContrast(color(values, text), color(values, surface))).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
+  it.each(STATUS)('%s on its soft background is at least 4.5:1', (role) => {
+    const background = over(values, `${role}-soft`, 'surface');
+    expect(wcagContrast(color(values, role), background)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(['surface', 'field'])('placeholder on %s is at least 3:1', (surface) => {
+    expect(wcagContrast(color(values, 'label-placeholder'), color(values, surface))).toBeGreaterThanOrEqual(3);
+  });
+
+  it('on-emphasis on emphasis is at least 4.5:1', () => {
+    expect(wcagContrast(color(values, 'on-emphasis'), color(values, 'emphasis'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(['surface', 'desk-solid'])('focus ring on %s is at least 3:1', (surface) => {
+    expect(wcagContrast(color(values, 'focus'), color(values, surface))).toBeGreaterThanOrEqual(3);
+  });
+});

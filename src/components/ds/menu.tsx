@@ -49,13 +49,15 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   );
 }
 
+// onSelect receives Radix's select event; event.preventDefault() keeps the menu open
+// (an item whose result shows in the item itself, like checking for updates).
 export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect }: {
   children: ReactNode;
   icon?: LucideIcon;
   shortcut?: string;
   tone?: 'default' | 'danger';
   disabled?: boolean;
-  onSelect?: () => void;
+  onSelect?: (event: Event) => void;
 }) {
   const kind = useMenuKind();
   const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger');
@@ -67,8 +69,8 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
     </>
   );
   return kind === 'dropdown'
-    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={() => onSelect?.()} className={className}>{body}</DropdownMenuPrimitive.Item>
-    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={() => onSelect?.()} className={className}>{body}</ContextMenuPrimitive.Item>;
+    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</DropdownMenuPrimitive.Item>
+    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</ContextMenuPrimitive.Item>;
 }
 
 // A nested list inside a Menu or ContextMenu. It belongs to the parent menu's layer:

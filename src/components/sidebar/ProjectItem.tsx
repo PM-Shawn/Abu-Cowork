@@ -1,27 +1,30 @@
-import { useState, useEffect, useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useI18n } from '@/i18n';
-import { FolderClosed, FolderOpen, Plus, Pin, PinOff, Settings, Archive, Trash2, Pencil, Download, FolderMinus, ListTree, MoreHorizontal } from 'lucide-react';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { ContextMenu } from '@/components/ds/context-menu';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
+import { NavItem } from '@/components/ds/nav-item';
+import { Spinner } from '@/components/ds/spinner';
+import { FOCUS_RING } from '@/components/ds/styles';
+import { TextField } from '@/components/ds/text-field';
 import ImportedBadge from './ImportedBadge';
 import { cn } from '@/lib/utils';
 import { format } from '@/i18n';
 import type { Project } from '@/types/project';
-import type { ConversationStatus } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 
 const MAX_VISIBLE_CONVERSATIONS = 5;
-
-function ConvStatusDot({ status }: { status: ConversationStatus }) {
-  if (status === 'running') {
-    return <span className="w-1.5 h-1.5 rounded-full bg-[var(--abu-warning-solid)] animate-pulse shrink-0" />;
-  }
-  return null;
-}
+// Hover-revealed row actions; they stay reachable from the keyboard.
+const REVEAL = 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100';
 
 interface ProjectItemProps {
   project: Project;
@@ -33,6 +36,7 @@ interface ProjectItemProps {
 
 export default function ProjectItem({ project, conversations, expanded, onNewTask, onOpenSettings }: ProjectItemProps) {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const toggleExpanded = useProjectStore((s) => s.toggleExpanded);
   const togglePin = useProjectStore((s) => s.togglePin);
   const archiveProject = useProjectStore((s) => s.archiveProject);
@@ -50,37 +54,36 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
 
   const setConversationProject = useChatStore((s) => s.setConversationProject);
 
-  // Project header context menu
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  // Conversation context menu
-  const [convMenu, setConvMenu] = useState<{ x: number; y: number; convId: string } | null>(null);
+  // The task row whose "⋯" menu is open; right-click menus track their own state.
+  const [menuConvId, setMenuConvId] = useState<string | null>(null);
   // Inline rename state — mirrors Sidebar.tsx's editingId pattern so the
   // UX matches Recents exactly.
   const [editingConvId, setEditingConvId] = useState<string | null>(null);
   // Share export dialog target (conversation id)
   const [shareConvId, setShareConvId] = useState<string | null>(null);
-  // Archive confirmation dialog
-  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // Whether to show every conversation under this project, or just the first
   // MAX_VISIBLE_CONVERSATIONS. Toggled by the "+N more" / "show less" button.
   const [showAll, setShowAll] = useState(false);
+  // What a menu item starts once its menu has gone: a rename field, a confirmation or
+  // a legacy dialog must not open while the closing menu still holds focus.
+  const afterMenuClose = useRef<(() => void) | null>(null);
+  const renameAfterClose = useRef<string | null>(null);
 
-  useEffect(() => {
-    if (!contextMenu && !convMenu) return;
-    const handleClick = () => { setContextMenu(null); setConvMenu(null); };
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
-  }, [contextMenu, convMenu]);
-
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const menuWidth = 180, menuHeight = 200;
-    const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
-    const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
-    setContextMenu({ x, y });
+  // Runs from the menus' close-focus hook. Rename calls preventDefault so the menu
+  // does not hand focus back to its trigger or the row and the field keeps it; the
+  // other actions let focus return as before.
+  const runAfterMenuClose = (event: Event) => {
+    const renameId = renameAfterClose.current;
+    if (renameId) {
+      renameAfterClose.current = null;
+      event.preventDefault();
+      setEditingConvId(renameId);
+      return;
+    }
+    const action = afterMenuClose.current;
+    if (!action) return;
+    afterMenuClose.current = null;
+    action();
   };
 
   const handleConvClick = (convId: string) => {
@@ -88,18 +91,89 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
     setViewMode('chat');
   };
 
-  // Claude-style "⋯" trigger: same menu as right-click, anchored under the button.
-  const handleConvMenuButton = (e: React.MouseEvent<HTMLButtonElement>, convId: string) => {
-    e.stopPropagation();
-    if (convMenu?.convId === convId) {
-      setConvMenu(null);
-      return;
-    }
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.min(rect.left, window.innerWidth - 180);
-    const y = Math.min(rect.bottom + 4, window.innerHeight - 100);
-    setConvMenu({ x, y, convId });
+  const confirmArchive = async () => {
+    const confirmed = await confirm({
+      title: t.project.archiveProject,
+      message: format(t.project.archiveConfirm, { name: project.name }),
+      confirmLabel: t.project.archive,
+      tone: 'danger',
+    });
+    if (confirmed) archiveProject(project.id);
   };
+
+  const confirmDelete = async () => {
+    const confirmed = await confirm({
+      title: t.project.deleteProject,
+      message: t.project.deleteConfirm,
+      confirmLabel: t.project.delete,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    // Unlink conversations → they go back to Recents
+    for (const conv of conversations) {
+      setConversationProject(conv.id, undefined);
+    }
+    deleteProject(project.id);
+  };
+
+  const projectMenuItems = (
+    <>
+      <MenuItem icon={project.pinned ? AppIcons.unpin : AppIcons.pin} onSelect={() => togglePin(project.id)}>
+        {project.pinned ? t.project.unpin : t.project.pin}
+      </MenuItem>
+      <MenuItem icon={AppIcons.settings} onSelect={() => { afterMenuClose.current = () => onOpenSettings(project.id); }}>
+        {t.project.editSettings}
+      </MenuItem>
+      <MenuItem
+        icon={AppIcons.folderOpen}
+        onSelect={() => {
+          // Open folder in Finder/Explorer
+          import('@tauri-apps/plugin-opener').then(({ revealItemInDir }) => {
+            revealItemInDir(project.workspacePath).catch(console.error);
+          });
+        }}
+      >
+        {t.project.openInFinder}
+      </MenuItem>
+      <MenuSeparator />
+      <MenuItem icon={AppIcons.archive} onSelect={() => { afterMenuClose.current = () => { void confirmArchive(); }; }}>
+        {t.project.archive}
+      </MenuItem>
+      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { afterMenuClose.current = () => { void confirmDelete(); }; }}>
+        {t.project.delete}
+      </MenuItem>
+    </>
+  );
+
+  // Aligned with Sidebar.tsx's recents menu (rename / export / move-out / delete) so
+  // users get the same verbs whether or not the conversation lives under a project.
+  // One list, shown both by right-click and by the "⋯" button.
+  const conversationMenuItems = (convId: string) => (
+    <>
+      <MenuItem icon={AppIcons.rename} onSelect={() => { renameAfterClose.current = convId; }}>
+        {t.sidebar.renameConversation}
+      </MenuItem>
+      <MenuItem
+        icon={AppIcons.download}
+        onSelect={() => {
+          // Pre-load so the share dialog opens straight into ready state,
+          // matching Sidebar.handleExport's behavior.
+          afterMenuClose.current = () => {
+            void loadConversation(convId).then(() => setShareConvId(convId));
+          };
+        }}
+      >
+        {t.sidebar.exportConversation}
+      </MenuItem>
+      <MenuItem icon={AppIcons.remove} onSelect={() => setConversationProject(convId, undefined)}>
+        {t.project.removeFromProject}
+      </MenuItem>
+      <MenuSeparator />
+      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => deleteConversation(convId)}>
+        {t.sidebar.deleteConversation}
+      </MenuItem>
+    </>
+  );
 
   const hasMore = conversations.length > MAX_VISIBLE_CONVERSATIONS;
   const visibleConvs = showAll ? conversations : conversations.slice(0, MAX_VISIBLE_CONVERSATIONS);
@@ -107,248 +181,151 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   return (
     <div>
       {/* Project header row */}
-      <div
-        className="group flex items-center gap-1.5 px-2 rounded-lg transition-colors hover:bg-[var(--abu-bg-hover)]"
-        onContextMenu={handleContextMenu}
-      >
-        <button
-          onClick={() => toggleExpanded(project.id)}
-          className="flex-1 min-w-0 flex items-center gap-1.5 py-1.5 text-left"
-        >
-          {expanded
-            ? <FolderOpen className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.5} />
-            : <FolderClosed className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.5} />
-          }
-          <span className="flex-1 truncate text-body text-[var(--abu-text-secondary)]">
-            {project.name}
-          </span>
-          {project.pinned && (
-            <Pin className="h-3 w-3 text-[var(--abu-text-muted)] shrink-0" />
-          )}
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            useWorkspaceStore.getState().setWorkspace(project.workspacePath);
-            setShowFileTree(true);
-            setViewMode('chat');
-          }}
-          className="p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-          title={t.sidebar.projectFiles}
-        >
-          <ListTree className="h-3 w-3" strokeWidth={1.5} />
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onNewTask(project.id); }}
-          className="p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-          title={t.project.newTask}
-        >
-          <Plus className="h-3 w-3" />
-        </button>
-      </div>
+      <ContextMenu content={projectMenuItems} onCloseAutoFocus={runAfterMenuClose}>
+        <div className="group flex items-center gap-1">
+          <NavItem
+            icon={expanded ? AppIcons.folderOpen : AppIcons.folder}
+            label={project.name}
+            trailing={project.pinned ? <span className="flex"><Icon icon={AppIcons.pin} size="sm" /></span> : undefined}
+            onClick={() => toggleExpanded(project.id)}
+            className="min-w-0 flex-1"
+          />
+          <IconButton
+            icon={AppIcons.fileTree}
+            label={t.sidebar.projectFiles}
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              useWorkspaceStore.getState().setWorkspace(project.workspacePath);
+              setShowFileTree(true);
+              setViewMode('chat');
+            }}
+            className={REVEAL}
+          />
+          <IconButton
+            icon={AppIcons.add}
+            label={t.project.newTask}
+            size="sm"
+            onClick={(e) => { e.stopPropagation(); onNewTask(project.id); }}
+            className={REVEAL}
+          />
+        </div>
+      </ContextMenu>
 
       {/* Expanded content */}
       {expanded && (
-        <div className="mt-0.5 space-y-px">
+        <div className="mt-1 space-y-1">
           {visibleConvs.map((conv) => {
-            const isActive = conv.id === activeConversationId && viewMode === 'chat';
+            const selected = conv.id === activeConversationId && viewMode === 'chat';
+            const editing = editingConvId === conv.id;
+            const menuOpen = menuConvId === conv.id;
+            const running = (loadedConversations[conv.id]?.status ?? 'idle') === 'running';
             return (
-              <div
-                key={conv.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => handleConvClick(conv.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const x = Math.min(e.clientX, window.innerWidth - 180);
-                  const y = Math.min(e.clientY, window.innerHeight - 100);
-                  setConvMenu({ x, y, convId: conv.id });
-                }}
-                className={cn(
-                  'group/conv flex items-center gap-1.5 w-full pl-8 pr-2 py-1.5 rounded-lg text-minor transition-colors cursor-pointer',
-                  isActive
-                    // Selected = --abu-bg-hover (same as hover); --abu-bg-active is
-                    // nearly identical to the sidebar canvas bg and reads as invisible.
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]'
-                )}
-              >
-                {conv.importedFrom && (
-                  <ImportedBadge importedAt={conv.importedFrom.importedAt} />
-                )}
-                {editingConvId === conv.id ? (
-                  <input
-                    autoFocus
-                    defaultValue={conv.title}
-                    className="flex-1 text-minor bg-transparent border-b border-[var(--abu-clay)] outline-none min-w-0"
-                    onClick={(e) => e.stopPropagation()}
-                    onBlur={(e) => {
-                      const val = e.target.value.trim();
-                      if (val && val !== conv.title) renameConversation(conv.id, val);
-                      setEditingConvId(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                      if (e.key === 'Escape') setEditingConvId(null);
-                    }}
-                  />
-                ) : (
-                  <span className="flex-1 truncate">
-                    {conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}
-                  </span>
-                )}
-                <ConvStatusDot status={loadedConversations[conv.id]?.status ?? 'idle'} />
-                {conv.workspacePath && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      switchConversation(conv.id);
-                      setViewMode('chat');
-                      setShowFileTree(true);
-                    }}
-                    className="h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] shrink-0"
-                    title={t.sidebar.projectFiles}
-                  >
-                    <ListTree className="h-3 w-3" strokeWidth={1.5} />
-                  </button>
-                )}
-                <button
-                  onClick={(e) => handleConvMenuButton(e, conv.id)}
+              <ContextMenu key={conv.id} content={conversationMenuItems(conv.id)} onCloseAutoFocus={runAfterMenuClose}>
+                {/* Not a NavItem: the row holds its own buttons, and a button cannot contain buttons. */}
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    // The "⋯" menu renders inside this row in React's tree; its
+                    // portaled items must not also open the conversation.
+                    if (!e.currentTarget.contains(e.target as Node)) return;
+                    handleConvClick(conv.id);
+                  }}
+                  onContextMenu={(e) => {
+                    // Same for a right-click inside the open "⋯" menu: it must not
+                    // open this row's right-click menu on top of it.
+                    if (!e.currentTarget.contains(e.target as Node)) e.preventDefault();
+                  }}
+                  aria-current={selected ? 'true' : undefined}
                   className={cn(
-                    'h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 focus-visible:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] shrink-0',
-                    convMenu?.convId === conv.id && 'opacity-100 text-[var(--abu-text-primary)]'
+                    'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control pl-8 pr-2 text-left text-ui-sm transition-colors duration-fast',
+                    FOCUS_RING,
+                    selected ? 'bg-fill-selected text-label' : 'text-label-secondary hover:bg-fill-hover hover:text-label'
                   )}
-                  title={t.sidebar.moreActions}
-                  aria-label={t.sidebar.moreActions}
-                  aria-haspopup="menu"
-                  aria-expanded={convMenu?.convId === conv.id}
                 >
-                  <MoreHorizontal className="h-3 w-3" />
-                </button>
-              </div>
+                  {conv.importedFrom && (
+                    <ImportedBadge importedAt={conv.importedFrom.importedAt} />
+                  )}
+                  {editing ? (
+                    <TextField
+                      autoFocus
+                      aria-label={t.sidebar.renameConversation}
+                      defaultValue={conv.title}
+                      className="min-w-0 flex-1"
+                      onClick={(e) => e.stopPropagation()}
+                      onBlur={(e) => {
+                        const val = e.target.value.trim();
+                        if (val && val !== conv.title) renameConversation(conv.id, val);
+                        setEditingConvId(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                        if (e.key === 'Escape') setEditingConvId(null);
+                      }}
+                    />
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate">
+                      {conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}
+                    </span>
+                  )}
+                  {running && (
+                    <span className="flex shrink-0">
+                      <Spinner size="sm" label={t.task.running} labelHidden />
+                    </span>
+                  )}
+                  {/* Row actions step aside while renaming so the field gets the row's width. */}
+                  {!editing && conv.workspacePath && (
+                    <IconButton
+                      icon={AppIcons.fileTree}
+                      label={t.sidebar.projectFiles}
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        switchConversation(conv.id);
+                        setViewMode('chat');
+                        setShowFileTree(true);
+                      }}
+                      className={REVEAL}
+                    />
+                  )}
+                  {!editing && (
+                    <Menu
+                      open={menuOpen}
+                      onOpenChange={(open) => setMenuConvId(open ? conv.id : null)}
+                      onCloseAutoFocus={runAfterMenuClose}
+                      trigger={
+                        <IconButton
+                          icon={AppIcons.more}
+                          label={t.sidebar.moreActions}
+                          size="sm"
+                          onClick={(e) => e.stopPropagation()}
+                          className={cn(REVEAL, menuOpen && 'opacity-100')}
+                        />
+                      }
+                    >
+                      {conversationMenuItems(conv.id)}
+                    </Menu>
+                  )}
+                </div>
+              </ContextMenu>
             );
           })}
 
           {hasMore && (
-            <button
-              onClick={() => setShowAll((v) => !v)}
-              className="w-full pl-8 pr-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] text-left"
-            >
-              {showAll
-                ? t.project.showLess
-                : format(t.project.showMore, { count: conversations.length - MAX_VISIBLE_CONVERSATIONS })}
-            </button>
+            <div className="pl-6">
+              <Button
+                variant="plain"
+                size="sm"
+                onClick={() => setShowAll((v) => !v)}
+                className="text-label-tertiary hover:text-label"
+              >
+                {showAll
+                  ? t.project.showLess
+                  : format(t.project.showMore, { count: conversations.length - MAX_VISIBLE_CONVERSATIONS })}
+              </Button>
+            </div>
           )}
-
-        </div>
-      )}
-
-      {/* Context menu */}
-      {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[160px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          <button
-            onClick={() => { togglePin(project.id); setContextMenu(null); }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            {project.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
-            {project.pinned ? t.project.unpin : t.project.pin}
-          </button>
-          <button
-            onClick={() => { onOpenSettings(project.id); setContextMenu(null); }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Settings className="h-3.5 w-3.5" />
-            {t.project.editSettings}
-          </button>
-          <button
-            onClick={() => {
-              // Open folder in Finder/Explorer
-              import('@tauri-apps/plugin-opener').then(({ revealItemInDir }) => {
-                revealItemInDir(project.workspacePath).catch(console.error);
-              });
-              setContextMenu(null);
-            }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            {t.project.openInFinder}
-          </button>
-          <div className="my-1 border-t border-[var(--abu-border)]" />
-          <button
-            onClick={() => { setContextMenu(null); setShowArchiveConfirm(true); }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Archive className="h-3.5 w-3.5" />
-            {t.project.archive}
-          </button>
-          <button
-            onClick={() => { setContextMenu(null); setShowDeleteConfirm(true); }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-danger)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t.project.delete}
-          </button>
-        </div>
-      )}
-
-      {/* Conversation context menu — aligned with Sidebar.tsx's recents menu
-          (rename / export / move-out / delete) so users get the same verbs
-          regardless of whether the conversation lives under a project. */}
-      {convMenu && (
-        <div
-          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
-          style={{ left: convMenu.x, top: convMenu.y }}
-        >
-          <button
-            onClick={() => {
-              setEditingConvId(convMenu.convId);
-              setConvMenu(null);
-            }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            {t.sidebar.renameConversation}
-          </button>
-          <button
-            onClick={async () => {
-              const targetId = convMenu.convId;
-              setConvMenu(null);
-              // Pre-load so the share dialog opens straight into ready state,
-              // matching Sidebar.handleExport's behavior.
-              await loadConversation(targetId);
-              setShareConvId(targetId);
-            }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Download className="h-3.5 w-3.5" />
-            {t.sidebar.exportConversation}
-          </button>
-          <button
-            onClick={() => {
-              setConversationProject(convMenu.convId, undefined);
-              setConvMenu(null);
-            }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <FolderMinus className="h-3.5 w-3.5" />
-            {t.project.removeFromProject}
-          </button>
-          <div className="my-1 border-t border-[var(--abu-border)]" />
-          <button
-            onClick={() => {
-              deleteConversation(convMenu.convId);
-              setConvMenu(null);
-            }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-danger)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t.sidebar.deleteConversation}
-          </button>
         </div>
       )}
 
@@ -359,80 +336,6 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           defaultFilename={`abu-conversation-${conversationIndex[shareConvId]?.title || shareConvId}.abu.json`}
           onClose={() => setShareConvId(null)}
         />
-      )}
-
-      {/* Archive confirmation dialog */}
-      {showArchiveConfirm && (
-        <div
-          data-electron-no-drag
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-          onClick={(e) => { if (e.target === e.currentTarget) setShowArchiveConfirm(false); }}
-        >
-          <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
-            <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-2">
-              {t.project.archiveProject}
-            </h3>
-            <p className="text-body text-[var(--abu-text-tertiary)] leading-relaxed mb-6">
-              {format(t.project.archiveConfirm, { name: project.name })}
-            </p>
-            <div className="flex items-center justify-end gap-3">
-              <button
-                onClick={() => setShowArchiveConfirm(false)}
-                className="px-4 py-2 rounded-lg text-body font-medium text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-              >
-                {t.project.cancel}
-              </button>
-              <button
-                onClick={() => {
-                  archiveProject(project.id);
-                  setShowArchiveConfirm(false);
-                }}
-                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-[var(--abu-danger-solid)] hover:opacity-90 transition-colors"
-              >
-                {t.project.archive}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete confirmation dialog */}
-      {showDeleteConfirm && (
-        <div
-          data-electron-no-drag
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-          onClick={(e) => { if (e.target === e.currentTarget) setShowDeleteConfirm(false); }}
-        >
-          <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
-            <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-2">
-              {t.project.deleteProject}
-            </h3>
-            <p className="text-body text-[var(--abu-text-tertiary)] leading-relaxed mb-6">
-              {t.project.deleteConfirm}
-            </p>
-            <div className="flex items-center justify-end gap-3">
-              <button
-                onClick={() => setShowDeleteConfirm(false)}
-                className="px-4 py-2 rounded-lg text-body font-medium text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-              >
-                {t.project.cancel}
-              </button>
-              <button
-                onClick={() => {
-                  // Unlink conversations → they go back to Recents
-                  for (const conv of conversations) {
-                    setConversationProject(conv.id, undefined);
-                  }
-                  deleteProject(project.id);
-                  setShowDeleteConfirm(false);
-                }}
-                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-[var(--abu-danger-solid)] hover:opacity-90 transition-colors"
-              >
-                {t.project.delete}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

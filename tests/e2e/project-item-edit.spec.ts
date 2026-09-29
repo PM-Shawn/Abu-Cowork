@@ -101,7 +101,10 @@ test.describe('editing an item outside ~/.abu', () => {
 
       // ---- 2. The project skill ------------------------------------------------
       await page.getByText(PROJECT_NAME, { exact: true }).hover();
-      await page.getByTitle('新任务', { exact: true }).first().click();
+      // The project row's own 新任务 button, beside the project name (the main
+      // navigation has a 新任务 entry too).
+      await page.getByRole('button', { name: PROJECT_NAME, exact: true }).locator('xpath=..')
+        .getByRole('button', { name: '新任务', exact: true }).click();
       await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
       await page.getByRole('button', { name: '技能', exact: true }).click();
       // The project skill is a file of the user's, so it is on the 我的 shelf.

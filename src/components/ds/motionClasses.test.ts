@@ -11,6 +11,7 @@ const SCANNED_DIRS = [
   path.join(COMPONENTS_DIR, 'ds'),
   path.join(COMPONENTS_DIR, 'design-preview'),
   path.join(COMPONENTS_DIR, 'window'),
+  path.join(COMPONENTS_DIR, 'sidebar'),
 ];
 
 function listSourceFiles(dir: string): string[] {

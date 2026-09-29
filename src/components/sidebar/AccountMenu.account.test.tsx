@@ -1,8 +1,20 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+/// <reference types="@testing-library/jest-dom" />
+import { act, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import AccountMenu from './AccountMenu';
+
+function renderMenu(onEditProfile: () => void = () => {}) {
+  return render(<AccountMenu onEditProfile={onEditProfile} />, { wrapper: DesignSystemProvider });
+}
+
+// Menu items that open a dialog run once the menu has gone, from Radix's focus-scope timer.
+async function flushMenuClose() {
+  await act(() => vi.runOnlyPendingTimersAsync());
+}
 
 const mocks = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
@@ -30,7 +42,16 @@ vi.mock('@/stores/enterpriseStore', () => ({
 }));
 
 describe('AccountMenu identity', () => {
+  beforeAll(() => {
+    // happy-dom lacks the pointer-capture and scroll APIs Radix menus call.
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => {};
+    Element.prototype.scrollIntoView ??= () => {};
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
   beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     initLanguage('zh-CN');
     mocks.settings = {
       userAvatar: '',
@@ -66,12 +87,12 @@ describe('AccountMenu identity', () => {
   });
 
   it('does not present the local nickname as authenticated identity when profile loading fails', () => {
-    render(<AccountMenu onEditProfile={() => {}} />);
+    renderMenu();
     expect(screen.getByRole('button', { name: '账号' })).toBeInTheDocument();
     expect(screen.queryByText('本地昵称')).toBeNull();
   });
 
-  it('shows the enterprise identity when no personal account is signed in', () => {
+  it('shows the enterprise identity when no personal account is signed in', async () => {
     mocks.account = {
       status: 'signed_out',
       account: null,
@@ -90,9 +111,10 @@ describe('AccountMenu identity', () => {
       },
     };
 
-    render(<AccountMenu onEditProfile={() => {}} />);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderMenu();
 
-    fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
+    await user.click(screen.getByRole('button', { name: /Admin/ }));
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
     expect(screen.queryByText('切换账号')).not.toBeInTheDocument();
@@ -100,7 +122,7 @@ describe('AccountMenu identity', () => {
     expect(screen.queryByText('登录 / 注册')).not.toBeInTheDocument();
   });
 
-  it('shows only enterprise actions while stale personal credentials are being cleaned up', () => {
+  it('shows only enterprise actions while stale personal credentials are being cleaned up', async () => {
     mocks.account = {
       status: 'signed_in',
       account: {
@@ -126,8 +148,9 @@ describe('AccountMenu identity', () => {
       unbind: vi.fn(),
     };
 
-    render(<AccountMenu onEditProfile={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Enterprise Admin/ }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderMenu();
+    await user.click(screen.getByRole('button', { name: /Enterprise Admin/ }));
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
     expect(screen.queryByText('Personal User')).not.toBeInTheDocument();
@@ -137,34 +160,51 @@ describe('AccountMenu identity', () => {
     expect(screen.queryByText('退出个人账号')).not.toBeInTheDocument();
   });
 
-  it('keeps enterprise sign-out at the footer and profile editing in the identity header', () => {
+  it('keeps enterprise sign-out at the footer and profile editing in the identity header', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const editProfile = vi.fn();
     mocks.enterprise.mode = {
       kind: 'enterprise',
       binding: { userName: 'Admin', userEmail: 'admin@example.com', orgName: 'Example' },
     };
-    render(<AccountMenu onEditProfile={editProfile} />);
-    fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
+    renderMenu(editProfile);
+    await user.click(screen.getByRole('button', { name: /Admin/ }));
     const rows = screen.getAllByRole('menuitem');
     expect(rows.at(-1)).toHaveTextContent('退出企业账号');
     expect(rows.some(row => row.textContent?.includes('编辑资料'))).toBe(false);
-    fireEvent.click(screen.getByTitle('编辑资料'));
+    await user.click(screen.getByRole('button', { name: '编辑资料' }));
+    await flushMenuClose();
     expect(editProfile).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '退出企业账号' }));
+    await user.click(screen.getByRole('button', { name: /Admin/ }));
+    await user.click(screen.getByRole('menuitem', { name: '退出企业账号' }));
     expect(mocks.enterprise.unbind).toHaveBeenCalledOnce();
     expect(mocks.account.signOut).not.toHaveBeenCalled();
   });
 
-  it('starts enterprise login from an active personal account', async () => {
-    render(<AccountMenu onEditProfile={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: '账号' }));
-    fireEvent.click(screen.getByText('切换到企业账号'));
+  it('starts enterprise login from an active personal account once the menu has gone', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderMenu();
+    await user.click(screen.getByRole('button', { name: '账号' }));
+    await user.click(screen.getByRole('menuitem', { name: '切换到企业账号' }));
+    await flushMenuClose();
 
+    expect(screen.queryByRole('menu')).toBeNull();
     expect(mocks.startEnterpriseLogin).toHaveBeenCalledOnce();
   });
 
-  it('keeps the local identity head separate from the signed-out login action', () => {
+  it('opens settings only after the menu has gone', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderMenu();
+    await user.click(screen.getByRole('button', { name: '账号' }));
+    await user.click(screen.getByRole('menuitem', { name: '设置' }));
+    await flushMenuClose();
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(mocks.settings.openSystemSettings).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the local identity head separate from the signed-out login action', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const onEditProfile = vi.fn();
     mocks.settings = { ...mocks.settings, userNickname: '' };
     mocks.account = {
@@ -174,10 +214,11 @@ describe('AccountMenu identity', () => {
       profileStatus: 'idle',
     };
 
-    render(<AccountMenu onEditProfile={onEditProfile} />);
-    fireEvent.click(screen.getByRole('button', { name: '我' }));
+    renderMenu(onEditProfile);
+    await user.click(screen.getByRole('button', { name: '我' }));
 
-    expect(screen.getAllByText('我')).toHaveLength(2);
+    // The name shows on the trigger and in the menu head; the avatars' initials are pictures.
+    expect(screen.getAllByText('我').filter((el) => el.getAttribute('role') !== 'img')).toHaveLength(2);
     expect(screen.getByText('本地模式')).toBeInTheDocument();
     const menuItems = within(screen.getByRole('menu')).getAllByRole('menuitem');
     expect(menuItems.at(-1)).toHaveAccessibleName('登录');
@@ -185,12 +226,14 @@ describe('AccountMenu identity', () => {
 
     const editProfile = screen.getByRole('button', { name: '编辑资料' });
     expect(editProfile).toHaveClass('group-hover:opacity-100', 'focus-visible:opacity-100');
-    fireEvent.click(editProfile);
+    await user.click(editProfile);
+    await flushMenuClose();
     expect(onEditProfile).toHaveBeenCalledOnce();
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  it('places sign-out last, after update, behind its own divider', () => {
+  it('places sign-out last, after update, behind its own divider', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.account = {
       ...mocks.account,
       account: {
@@ -203,8 +246,8 @@ describe('AccountMenu identity', () => {
       profileStatus: 'ready',
     };
 
-    render(<AccountMenu onEditProfile={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Ada' }));
+    renderMenu();
+    await user.click(screen.getByRole('button', { name: 'Ada' }));
 
     const menuItems = within(screen.getByRole('menu')).getAllByRole('menuitem');
     const signOut = screen.getByRole('menuitem', { name: '退出个人账号' });

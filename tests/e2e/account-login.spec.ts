@@ -259,7 +259,7 @@ test.describe.serial('personal account login UI', () => {
     await expect(localMenu.getByText('本地模式', { exact: true })).toBeVisible();
     await expect(localMenu.getByRole('menuitem').last()).toHaveAccessibleName('登录');
     await expect(localMenu.getByRole('menuitem', { name: '编辑资料', exact: true })).toHaveCount(0);
-    const editProfileButton = localMenu.getByTitle('编辑资料');
+    const editProfileButton = localMenu.getByRole('button', { name: '编辑资料', exact: true });
     await captureLightAndDark(page, testInfo, '01-local-menu-signed-out');
     await captureHoveredLightAndDark(
       page,

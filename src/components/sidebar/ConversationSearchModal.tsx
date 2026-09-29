@@ -1,14 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useI18n } from '@/i18n';
-import { Search, MessageSquare } from 'lucide-react';
+import { Dialog } from '@/components/ds/dialog';
+import { EmptyState } from '@/components/ds/empty-state';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { NavItem } from '@/components/ds/nav-item';
+import { TextField } from '@/components/ds/text-field';
 import { catalogSearch, type SearchHit, type ConversationMeta } from '@/core/session/conversationStorage';
 import { renderMarkedText, highlightQuery } from '@/utils/searchHighlight';
 
-const HL = 'bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)] rounded-sm';
+const HL = 'rounded-control bg-fill-selected font-semibold text-label';
 
 // Strip the `[Attachment: `name`]` prefix from a title for display (mirrors the
 // sidebar's row rendering), falling back to the raw title if stripping empties it.
@@ -21,11 +26,12 @@ const cleanTitle = (title: string): string => title.replace(ATTACH_RE, '').trim(
 const isFlat = (c: ConversationMeta): boolean => !c.scheduledTaskId && !c.triggerId && !c.projectId;
 
 /**
- * Centered command-palette-style conversation search. Opened from the title-bar
- * search icon. Empty query lists recent conversations; typing shows instant
- * in-memory title matches PLUS FTS5 body-content hits (via `catalogSearch`),
- * so an existing conversation is always findable by title even if the catalog
- * is cold/unindexed. Picking a result jumps to that conversation.
+ * Command-palette-style conversation search. Opened from the title-bar search
+ * icon. Empty query lists recent conversations; typing shows instant in-memory
+ * title matches PLUS FTS5 body-content hits (via `catalogSearch`), so an existing
+ * conversation is always findable by title even if the catalog is cold/unindexed.
+ * Enter opens the first result, the arrow keys move between the field and the
+ * results, and picking a result jumps to that conversation.
  */
 export default function ConversationSearchModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useI18n();
@@ -38,6 +44,7 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   // Race guard: a stale in-flight request (from a previous keystroke) must not
   // overwrite the latest results once both resolve out of order.
   const tokenRef = useRef(0);
@@ -45,27 +52,13 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
   const trimmed = query.trim();
   const isSearching = trimmed.length > 0;
 
-  // Reset + focus each time the modal opens.
+  // Start empty each time the dialog opens; the dialog focuses the field itself.
   useEffect(() => {
     if (open) {
       setQuery('');
       setHits([]);
-      setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [open]);
-
-  // Close at the document boundary so Escape remains reliable during the
-  // short interval before the asynchronously focused input becomes active.
-  // Packaged arm64 runners exposed this race by pressing Escape immediately
-  // after the modal became visible.
-  useEffect(() => {
-    if (!open) return;
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [open, onClose]);
 
   // Debounced full-text search. Empty query clears hits (recents are shown).
   useEffect(() => {
@@ -114,8 +107,6 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
     });
   }, [hits, titleMatches, conversationIndex, isSearching]);
 
-  if (!open) return null;
-
   const pick = (id: string, jumpQuery?: string) => {
     switchConversation(id);
     setViewMode('chat');
@@ -130,91 +121,86 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
     onClose();
   };
 
+  // ArrowDown / ArrowUp step through the field and the results in order.
+  const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    const results = listRef.current ? [...listRef.current.querySelectorAll<HTMLButtonElement>('button')] : [];
+    const stops: HTMLElement[] = inputRef.current ? [inputRef.current, ...results] : results;
+    const at = stops.indexOf(document.activeElement as HTMLElement);
+    if (at === -1) return;
+    const next = event.key === 'ArrowDown' ? Math.min(at + 1, stops.length - 1) : Math.max(at - 1, 0);
+    event.preventDefault();
+    stops[next].focus();
+  };
+
   const firstId = isSearching ? (titleMatches[0]?.id ?? bodyHits[0]?.conv_id) : recents[0]?.id;
   const isEmpty = isSearching ? titleMatches.length === 0 && bodyHits.length === 0 : recents.length === 0;
 
   return (
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[60] bg-black/20 flex items-start justify-center"
-      onMouseDown={onClose}
-    >
-      <div
-        className="mt-[14vh] w-[560px] max-w-[90vw] max-h-[60vh] flex flex-col rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-[0_12px_40px_-4px_rgba(0,0,0,0.18)] overflow-hidden"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {/* Search input */}
-        <div className="shrink-0 flex items-center gap-2 px-4 h-12 border-b border-[var(--abu-border)]">
-          <Search className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" strokeWidth={1.5} />
-          <input
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t.common.search} size="lg">
+      <div onKeyDown={moveFocus}>
+        <div className="flex items-center gap-2">
+          <Icon icon={AppIcons.search} className="text-label-tertiary" />
+          <TextField
             ref={inputRef}
-            type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && firstId) pick(firstId);
             }}
             placeholder={t.sidebar.searchPlaceholder}
-            className="flex-1 bg-transparent text-body text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-muted)] focus:outline-none"
+            className="min-w-0 flex-1"
           />
         </div>
 
         {/* Results */}
-        <div className="flex-1 min-h-0 overflow-y-auto overlay-scroll py-1">
+        <div ref={listRef} className="mt-3 h-80 space-y-1 overflow-y-auto">
           {isEmpty ? (
-            <div className="px-4 py-8 text-center text-body text-[var(--abu-text-muted)]">
-              {t.sidebar.noSearchResults}
-            </div>
+            <EmptyState icon={AppIcons.search} title={t.sidebar.noSearchResults} />
           ) : isSearching ? (
             <>
               {/* Instant title matches */}
               {titleMatches.map((c) => (
-                <button
+                <NavItem
                   key={c.id}
+                  icon={AppIcons.conversation}
+                  label={highlightQuery(cleanTitle(c.title), trimmed, HL)}
                   onClick={() => pick(c.id)}
-                  className="flex items-center gap-2.5 w-full px-4 py-2 text-left hover:bg-[var(--abu-bg-hover)]"
-                >
-                  <MessageSquare className="h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.5} />
-                  <span className="flex-1 min-w-0 truncate text-body text-[var(--abu-text-primary)]">
-                    {highlightQuery(cleanTitle(c.title), trimmed, HL)}
-                  </span>
-                </button>
+                />
               ))}
-              {/* FTS body-content hits */}
+              {/* FTS body-content hits: the title, and the matching passage under it */}
               {bodyHits.map((h) => (
-                <button
-                  key={h.conv_id}
-                  onClick={() => pick(h.conv_id, trimmed)}
-                  className="flex flex-col items-start gap-0.5 w-full px-4 py-2 text-left hover:bg-[var(--abu-bg-hover)]"
-                >
-                  <div className="flex items-center gap-2.5 w-full min-w-0">
-                    <MessageSquare className="h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.5} />
-                    <span className="flex-1 min-w-0 truncate text-body text-[var(--abu-text-primary)]">
-                      {highlightQuery(cleanTitle(h.title), trimmed, HL)}
-                    </span>
-                  </div>
+                <div key={h.conv_id}>
+                  <NavItem
+                    icon={AppIcons.conversation}
+                    label={highlightQuery(cleanTitle(h.title), trimmed, HL)}
+                    aria-describedby={h.snippet ? `search-snippet-${h.conv_id}` : undefined}
+                    onClick={() => pick(h.conv_id, trimmed)}
+                  />
                   {h.snippet && (
-                    <span className="w-full pl-[26px] truncate text-minor text-[var(--abu-text-muted)]">
+                    <div
+                      id={`search-snippet-${h.conv_id}`}
+                      onClick={() => pick(h.conv_id, trimmed)}
+                      className="cursor-pointer truncate pl-8 pr-2 text-ui-sm text-label-tertiary"
+                    >
                       {renderMarkedText(h.snippet, HL)}
-                    </span>
+                    </div>
                   )}
-                </button>
+                </div>
               ))}
             </>
           ) : (
             recents.map((c) => (
-              <button
+              <NavItem
                 key={c.id}
+                icon={AppIcons.conversation}
+                label={cleanTitle(c.title)}
                 onClick={() => pick(c.id)}
-                className="flex items-center gap-2.5 w-full px-4 py-2 text-left hover:bg-[var(--abu-bg-hover)]"
-              >
-                <MessageSquare className="h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.5} />
-                <span className="flex-1 min-w-0 truncate text-body text-[var(--abu-text-primary)]">{cleanTitle(c.title)}</span>
-              </button>
+              />
             ))
           )}
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

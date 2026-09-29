@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import AccountMenu from './AccountMenu';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { setLanguage } from '@/i18n';
@@ -15,18 +16,23 @@ vi.mock('@/core/updates/checker', () => ({
 }));
 
 /**
- * 语言和外观两行用的是 Select，它的下拉面板渲染到 document.body，不在账户菜单
- * 的 DOM 子树里。账户菜单判断「点在外面」只看自己的子树，所以按下选项的那一刻
- * 整个菜单就关掉了，选项按钮跟着消失，click 再也到不了它的处理函数——下拉看得
- * 见、点不动。这两条用例钉住修好后的行为。
+ * 语言和外观两行各带一个下拉框。下拉框的列表是账户菜单里面再打开的一层，
+ * 选中一项只关掉这一层：设置写进去，账户菜单保持打开，用户能看到改动生效。
+ * 检查更新同样留在菜单里，把结果显示在这一行。
  */
 describe('AccountMenu 里的下拉选项', () => {
+  beforeAll(() => {
+    // happy-dom lacks the pointer-capture and scroll APIs Radix menus and selects call.
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => {};
+    Element.prototype.scrollIntoView ??= () => {};
+  });
+
   beforeEach(() => {
     setLanguage('zh-CN');
     useSettingsStore.setState({
       userNickname: '我',
       userAvatar: '',
-      // 外观固定成「亮色」，这样「跟随系统」只会出现在语言那一行，定位不会撞车
       theme: 'light',
       language: 'system',
       updateInfo: null,
@@ -42,13 +48,17 @@ describe('AccountMenu 里的下拉选项', () => {
     setLanguage('system');
   });
 
+  function renderMenu() {
+    return render(<AccountMenu onEditProfile={() => {}} />, { wrapper: DesignSystemProvider });
+  }
+
   it('选中语言选项后写入设置，账户菜单保持打开', async () => {
     const user = userEvent.setup();
-    render(<AccountMenu onEditProfile={() => {}} />);
+    renderMenu();
 
-    await user.click(screen.getByRole('button', { name: /我/ }));
-    await user.click(screen.getByRole('button', { name: '跟随系统' }));
-    await user.click(screen.getByRole('button', { name: '简体中文' }));
+    await user.click(screen.getByRole('button', { name: '我' }));
+    await user.click(screen.getByRole('combobox', { name: '语言' }));
+    await user.click(screen.getByRole('option', { name: '简体中文' }));
 
     expect(useSettingsStore.getState().language).toBe('zh-CN');
     expect(screen.getByRole('menu')).toBeInTheDocument();
@@ -56,13 +66,36 @@ describe('AccountMenu 里的下拉选项', () => {
 
   it('选中外观选项后写入设置，账户菜单保持打开', async () => {
     const user = userEvent.setup();
-    render(<AccountMenu onEditProfile={() => {}} />);
+    renderMenu();
 
-    await user.click(screen.getByRole('button', { name: /我/ }));
-    await user.click(screen.getByRole('button', { name: '亮色' }));
-    await user.click(screen.getByRole('button', { name: '暗色' }));
+    await user.click(screen.getByRole('button', { name: '我' }));
+    expect(screen.getByRole('combobox', { name: '外观' })).toHaveTextContent('亮色');
+    await user.click(screen.getByRole('combobox', { name: '外观' }));
+    await user.click(screen.getByRole('option', { name: '暗色' }));
 
     expect(useSettingsStore.getState().theme).toBe('dark');
     expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
+  it('检查更新后菜单保持打开，结果显示在这一行', async () => {
+    const user = userEvent.setup();
+    renderMenu();
+
+    await user.click(screen.getByRole('button', { name: '我' }));
+    await user.click(screen.getByRole('menuitem', { name: /更新/ }));
+
+    expect(await screen.findByRole('menuitem', { name: '已是最新版本' })).toBeInTheDocument();
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
+  it('检查中的这一行不可点，并显示正在检查', async () => {
+    useSettingsStore.setState({ updateChecking: true });
+    const user = userEvent.setup();
+    renderMenu();
+
+    await user.click(screen.getByRole('button', { name: '我' }));
+    const row = screen.getByRole('menuitem', { name: '检查中...' });
+    expect(row).toHaveAttribute('data-disabled');
+    expect(screen.getByRole('status')).toHaveTextContent('检查中...');
   });
 });

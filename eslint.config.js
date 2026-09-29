@@ -85,6 +85,7 @@ const UPDATER_IMPORT_RESTRICTION = [{
 export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/design-preview/**/*.{ts,tsx}',
   'src/components/window/**/*.{ts,tsx}',
+  'src/components/sidebar/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useRef, useCallback, type ComponentProps, type ReactNode } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useAccountStore } from '@/core/account/accountStore';
@@ -6,41 +6,30 @@ import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
-import {
-  Settings,
-  Globe,
-  Palette,
-  HelpCircle,
-  MessageCircle,
-  RefreshCw,
-  RotateCcw,
-  Download,
-  LoaderCircle,
-  ChevronsUpDown,
-  Pencil,
-  ExternalLink,
-  LogIn,
-  LogOut,
-  UserRound,
-} from 'lucide-react';
-import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
-import { Select } from '@/components/ui/select';
-import { isInsidePortalMenu } from '@/components/ui/portal-menu';
+import { Avatar } from '@/components/ds/avatar';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
+import { Select } from '@/components/ds/select';
+import { Spinner } from '@/components/ds/spinner';
 import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
 import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
 
+type IconGlyph = ComponentProps<typeof Icon>['icon'];
+
 /**
- * Account / preferences popover anchored to the sidebar's bottom user row.
+ * Account / preferences menu anchored to the sidebar's bottom user row.
  *
- * Replaces the previous three flat icon buttons (avatar / settings / help) with
- * a single avatar trigger that opens a popover — mirrors Claude / TRAE / WorkBuddy.
+ * A single avatar trigger opens the menu — mirrors Claude / TRAE / WorkBuddy.
  * High-frequency prefs are surfaced inline so the user doesn't have to open the
- * full settings dialog: theme toggles in place, language switches via an inline
- * select, and check-for-updates runs the real update flow (check → download →
- * restart) reusing the store-backed update state.
+ * full settings dialog: theme and language switch via inline selects, and
+ * check-for-updates runs the real update flow (check → download → restart)
+ * reusing the store-backed update state. Those inline controls keep the menu
+ * open so the user sees the change take effect.
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
   const { t, locale } = useI18n();
@@ -66,36 +55,10 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
 
   const [open, setOpen] = useState(false);
   const [checkedResult, setCheckedResult] = useState<'idle' | 'up-to-date'>('idle');
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  // Close on outside click / Esc
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      // 语言和外观两行的下拉面板渲染到 document.body，不在这棵子树里。按下面板
-      // 里的选项不算点在外面——否则菜单先关，选项按钮跟着卸载，选择永远不生效。
-      if (isInsidePortalMenu(e.target)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
-
-  // Navigation items close the popover; inline controls (theme, language,
-  // update) keep it open so the user sees the change take effect.
-  const run = useCallback((fn: () => void) => {
-    setOpen(false);
-    fn();
-  }, []);
+  // Settings, profile, feedback and sign-in open dialogs of their own: they start
+  // once the menu has gone, so no dialog opens inside or under the closing menu.
+  const afterMenuClose = useRef<(() => void) | null>(null);
+  const openAfterClose = (action: () => void) => { afterMenuClose.current = action; };
 
   const handleCheck = useCallback(async () => {
     setCheckedResult('idle');
@@ -126,7 +89,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     try {
       await downloadAndInstallUpdate();
     } catch {
-      // download error is reflected in the About section; keep popover quiet
+      // download error is reflected in the About section; keep the menu quiet
     }
   }, []);
 
@@ -163,7 +126,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     { value: 'system', label: t.settings.appearanceSystem },
     { value: 'light', label: t.settings.appearanceLight },
     { value: 'dark', label: t.settings.appearanceDark },
-  ] as const;
+  ];
 
   const progressPresentation = downloadProgress
     ? getUpdateProgressPresentation(downloadProgress)
@@ -176,49 +139,46 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
         ? `${t.updates.downloading} ${progressPresentation.percentLabel}%`
         : t.updates.downloading;
 
-  // Resolve the check-update row into a single state.
+  // Resolve the check-update row into a single state. A spinning row shows a
+  // spinner in place of its icon.
   const updateRow: {
-    icon: typeof RefreshCw;
+    icon?: IconGlyph;
     label: string;
     onClick?: () => void;
     disabled?: boolean;
-    spin?: boolean;
     accent?: boolean;
-    trailing?: ReactNode;
+    version?: string;
   } = updateInstalling
-    ? { icon: RotateCcw, label: t.updates.restartToInstall, onClick: handleRestart, accent: true }
+    ? { icon: AppIcons.restart, label: t.updates.restartToInstall, onClick: handleRestart, accent: true }
     : downloadProgress
-      ? { icon: LoaderCircle, label: downloadLabel, disabled: true, spin: true, accent: true }
+      ? { label: downloadLabel, disabled: true, accent: true }
       : updateInfo
         ? {
-            icon: Download,
+            icon: AppIcons.download,
             label: t.updates.downloadUpdate,
             onClick: handleDownload,
             accent: true,
-            trailing: (
-              <span className="text-caption font-semibold text-[var(--abu-clay)]">v{updateInfo.version}</span>
-            ),
+            version: `v${updateInfo.version}`,
           }
         : updateChecking
-          ? { icon: RefreshCw, label: t.updates.checking, disabled: true, spin: true }
+          ? { label: t.updates.checking, disabled: true }
           : updaterUnsupported
             // Never claim "up to date" when the updater is disabled in this
             // build (non-official package / dev shell) — offer the official
             // download site instead.
             ? {
-                icon: ExternalLink,
+                icon: AppIcons.openExternal,
                 label: t.updates.unsupportedBuildShort,
                 onClick: () => void openUrl(OFFICIAL_WEBSITE_URL).catch(() => {}),
               }
             : checkedResult === 'up-to-date'
-              ? { icon: RefreshCw, label: t.updates.upToDate, onClick: handleCheck }
+              ? { icon: AppIcons.retry, label: t.updates.upToDate, onClick: handleCheck }
               : {
-                  icon: RefreshCw,
+                  icon: AppIcons.retry,
                   label: t.updates.update,
                   onClick: handleCheck,
-                  trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
+                  version: `v${APP_VERSION}`,
                 };
-  const UpdateIcon = updateRow.icon;
   const signedIn = accountStatus === 'signed_in' && account !== null;
   const expired = accountStatus === 'expired' && account !== null;
   const localLabel = userNickname || t.sidebar.defaultNickname;
@@ -242,198 +202,148 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           : account.email || t.account.title
       : t.sidebar.localMode;
 
+  // The name beside it already says who this is, so the picture stays out of the
+  // accessible name.
+  const avatar = (size: 'sm' | 'lg') => (
+    <span aria-hidden="true" className="flex shrink-0">
+      <Avatar name={accountLabel} src={userAvatar || undefined} size={size} />
+    </span>
+  );
+
   return (
-    <div ref={rootRef} className="relative">
-      {/* Trigger — single row replacing the old three buttons */}
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          'w-full flex items-center gap-2.5 px-2 py-1.5 rounded-xl border transition-colors text-left',
-          open
-            ? 'bg-[var(--abu-bg-hover)] border-[var(--abu-border)]'
-            : 'border-transparent hover:bg-[var(--abu-bg-hover)]'
-        )}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        <span className="w-8 h-8 rounded-full overflow-hidden shrink-0">
-          {userAvatar ? (
-            <img src={userAvatar} alt="" className="w-full h-full object-cover" />
-          ) : (
-            <DefaultUserAvatar />
-          )}
-        </span>
-        <span
-          className={cn(
-            'flex-1 min-w-0 text-h-xs font-semibold truncate',
-            hasDisplayedIdentity ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
-          )}
-        >
-          {accountLabel}
-        </span>
-        {updateInfo && !open && <span className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0" />}
-        <ChevronsUpDown className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" strokeWidth={1.6} />
-      </button>
-
-      {/* Popover */}
-      {open && (
-        <div
-          role="menu"
-          className="absolute bottom-full left-0 right-0 mb-2 z-50 p-1.5 rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-[0_12px_34px_-8px_rgba(20,20,19,0.22),0_2px_8px_-2px_rgba(20,20,19,0.10)]"
-        >
-          {/* Authenticated identity, or the local-mode account entry. */}
-          <div className="group flex w-full items-center gap-2.5 px-2 py-2">
-            <span className="w-9 h-9 rounded-full overflow-hidden shrink-0">
-              {userAvatar ? (
-                <img src={userAvatar} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <DefaultUserAvatar />
-              )}
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="text-body font-semibold truncate text-[var(--abu-text-primary)]">
-                {accountLabel}
-              </div>
-              <div className="text-caption text-[var(--abu-text-muted)] truncate">{accountDetail}</div>
-            </div>
-            <button
-              onClick={() => run(onEditProfile)}
-              title={t.sidebar.editProfile}
-              className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
-            >
-              <Pencil className="h-[15px] w-[15px]" strokeWidth={1.7} />
-            </button>
+    <Menu
+      open={open}
+      onOpenChange={setOpen}
+      side="top"
+      onCloseAutoFocus={() => {
+        const action = afterMenuClose.current;
+        if (!action) return;
+        afterMenuClose.current = null;
+        // Focus still returns to the trigger, as before; a dialog that focuses a field
+        // on mount takes it after this.
+        action();
+      }}
+      trigger={
+        <Button variant="plain" className="w-full justify-start gap-2 px-2">
+          {avatar('sm')}
+          <span className={cn('min-w-0 flex-1 truncate text-left', hasDisplayedIdentity ? 'text-label' : 'text-label-tertiary')}>
+            {accountLabel}
+          </span>
+          {updateInfo && !open && <span className="h-2 w-2 shrink-0 rounded-full bg-danger" />}
+          <Icon icon={AppIcons.selectorChevrons} size="sm" className="text-label-tertiary" />
+        </Button>
+      }
+    >
+      <div className="w-60">
+        {/* Authenticated identity, or the local-mode account entry. */}
+        <div className="group flex items-center gap-2 px-2 py-2">
+          {avatar('lg')}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-ui font-semibold text-label">{accountLabel}</div>
+            <div className="truncate text-caption text-label-tertiary">{accountDetail}</div>
           </div>
-
-          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
-
-          {!enterpriseSignedIn && signedIn && (
-            <>
-              <MenuRow icon={UserRound} label={t.account.accountSettings}
-                onClick={() => run(() => openSystemSettings('account'))} />
-              {IS_ENTERPRISE_BUILD && (
-                <MenuRow icon={LogIn} label={t.account.switchToEnterprise}
-                  onClick={() => run(handleEnterpriseLogin)} />
-              )}
-              <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
-            </>
-          )}
-
-          {/* Settings */}
-          <MenuRow icon={Settings} label={t.settings.title} onClick={() => run(() => openSystemSettings())} />
-
-          {/* Language — borderless ghost select (value + small chevron, iOS-style) */}
-          <div className="flex items-center gap-3 px-2.5 py-1.5 rounded-xl">
-            <Globe className="h-[17px] w-[17px] shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.6} />
-            <span className="flex-1 text-body text-[var(--abu-text-secondary)]">{t.settings.language}</span>
-            <Select
-              variant="ghost"
-              value={language}
-              options={languageOptions}
-              onChange={(v) => setLanguage(v as LanguageSetting)}
-            />
-          </div>
-
-          {/* Appearance — borderless ghost select (matches the Language row) */}
-          <div className="flex items-center gap-3 px-2.5 py-1.5 rounded-xl">
-            <Palette className="h-[17px] w-[17px] shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.6} />
-            <span className="flex-1 text-body text-[var(--abu-text-secondary)]">{t.settings.appearance}</span>
-            <Select
-              variant="ghost"
-              value={theme}
-              options={themeOptions.map(({ value, label }) => ({ value, label }))}
-              onChange={(v) => setTheme(v as typeof theme)}
-            />
-          </div>
-
-          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
-
-          {/* Help */}
-          <MenuRow
-            icon={HelpCircle}
-            label={t.sidebar.help}
-            onClick={() => run(handleOpenHelp)}
-            trailing={
-              <ExternalLink
-                className="h-3.5 w-3.5 text-[var(--abu-text-muted)]"
-                strokeWidth={1.6}
-                aria-hidden="true"
-              />
-            }
+          <IconButton
+            icon={AppIcons.rename}
+            label={t.sidebar.editProfile}
+            size="sm"
+            onClick={() => { afterMenuClose.current = onEditProfile; setOpen(false); }}
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           />
-
-          {/* Feedback */}
-          <MenuRow
-            icon={MessageCircle}
-            label={t.about.feedback}
-            onClick={() => run(() => openSystemSettings('feedback'))}
-          />
-
-          {/* Check for updates — runs the real flow inline (keeps popover open) */}
-          <button
-            role="menuitem"
-            onClick={updateRow.onClick}
-            disabled={updateRow.disabled}
-            className={cn(
-              'w-full flex items-center gap-3 px-2.5 py-2 rounded-xl text-left transition-colors',
-              updateRow.disabled ? 'cursor-default' : 'hover:bg-[var(--abu-bg-hover)]'
-            )}
-          >
-            <UpdateIcon
-              className={cn(
-                'h-[17px] w-[17px] shrink-0',
-                updateRow.accent ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]',
-                updateRow.spin && 'animate-spin'
-              )}
-              strokeWidth={1.6}
-            />
-            <span
-              className={cn(
-                'flex-1 text-body',
-                updateRow.accent ? 'text-[var(--abu-clay)] font-medium' : 'text-[var(--abu-text-secondary)]'
-              )}
-            >
-              {updateRow.label}
-            </span>
-            {updateRow.trailing}
-          </button>
-          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
-          {enterpriseSignedIn ? (
-            <MenuRow icon={LogOut} label={t.account.signOutEnterprise}
-              onClick={() => run(() => void unbindEnterprise())} />
-          ) : signedIn ? (
-            <MenuRow icon={LogOut} label={IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
-              onClick={() => run(() => void signOut())} />
-          ) : (
-            <MenuRow icon={LogIn} label={expired ? t.account.retry : t.account.signIn}
-              onClick={() => run(openAccountLogin)} />
-          )}
         </div>
-      )}
-    </div>
+
+        <MenuSeparator />
+
+        {!enterpriseSignedIn && signedIn && (
+          <>
+            <MenuItem icon={AppIcons.account} onSelect={() => openAfterClose(() => openSystemSettings('account'))}>
+              {t.account.accountSettings}
+            </MenuItem>
+            {IS_ENTERPRISE_BUILD && (
+              <MenuItem icon={AppIcons.signIn} onSelect={() => openAfterClose(handleEnterpriseLogin)}>
+                {t.account.switchToEnterprise}
+              </MenuItem>
+            )}
+            <MenuSeparator />
+          </>
+        )}
+
+        <MenuItem icon={AppIcons.settings} onSelect={() => openAfterClose(() => openSystemSettings())}>
+          {t.settings.title}
+        </MenuItem>
+
+        <PreferenceRow icon={AppIcons.language} label={t.settings.language}>
+          <Select
+            label={t.settings.language}
+            value={language}
+            options={languageOptions}
+            onValueChange={(v) => setLanguage(v as LanguageSetting)}
+          />
+        </PreferenceRow>
+
+        <PreferenceRow icon={AppIcons.appearance} label={t.settings.appearance}>
+          <Select
+            label={t.settings.appearance}
+            value={theme}
+            options={themeOptions}
+            onValueChange={(v) => setTheme(v as typeof theme)}
+          />
+        </PreferenceRow>
+
+        <MenuSeparator />
+
+        <MenuItem icon={AppIcons.help} onSelect={handleOpenHelp}>
+          <span className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate">{t.sidebar.help}</span>
+            <Icon icon={AppIcons.openExternal} size="sm" className="text-label-tertiary" />
+          </span>
+        </MenuItem>
+
+        <MenuItem icon={AppIcons.feedback} onSelect={() => openAfterClose(() => openSystemSettings('feedback'))}>
+          {t.about.feedback}
+        </MenuItem>
+
+        {/* Check for updates — runs the real flow inline and keeps the menu open */}
+        <MenuItem
+          icon={updateRow.icon}
+          shortcut={updateRow.version}
+          disabled={updateRow.disabled}
+          onSelect={(event) => {
+            event.preventDefault();
+            updateRow.onClick?.();
+          }}
+        >
+          {updateRow.icon
+            ? <span className={cn(updateRow.accent && 'font-medium')}>{updateRow.label}</span>
+            : <Spinner size="sm" label={updateRow.label} />}
+        </MenuItem>
+
+        <MenuSeparator />
+
+        {enterpriseSignedIn ? (
+          <MenuItem icon={AppIcons.signOut} onSelect={() => void unbindEnterprise()}>
+            {t.account.signOutEnterprise}
+          </MenuItem>
+        ) : signedIn ? (
+          <MenuItem icon={AppIcons.signOut} onSelect={() => void signOut()}>
+            {IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
+          </MenuItem>
+        ) : (
+          <MenuItem icon={AppIcons.signIn} onSelect={() => openAfterClose(openAccountLogin)}>
+            {expired ? t.account.retry : t.account.signIn}
+          </MenuItem>
+        )}
+      </div>
+    </Menu>
   );
 }
 
-function MenuRow({
-  icon: Icon,
-  label,
-  onClick,
-  trailing,
-}: {
-  icon: typeof Settings;
-  label: string;
-  onClick: () => void;
-  trailing?: ReactNode;
-}) {
+// A menu line that holds its own control (language, appearance) instead of being an item.
+function PreferenceRow({ icon, label, children }: { icon: IconGlyph; label: string; children: ReactNode }) {
   return (
-    <button
-      role="menuitem"
-      onClick={onClick}
-      className="w-full flex items-center gap-3 px-2.5 py-2 rounded-xl text-left transition-colors hover:bg-[var(--abu-bg-hover)]"
-    >
-      <Icon className="h-[17px] w-[17px] shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.6} />
-      <span className="flex-1 text-body text-[var(--abu-text-secondary)]">{label}</span>
-      {trailing}
-    </button>
+    <div className="flex h-7 items-center gap-2 px-2">
+      <Icon icon={icon} size="sm" className="text-label-secondary" />
+      <span className="min-w-0 flex-1 truncate text-ui text-label">{label}</span>
+      {children}
+    </div>
   );
 }

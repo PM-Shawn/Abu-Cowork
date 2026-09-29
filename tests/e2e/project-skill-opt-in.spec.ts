@@ -55,7 +55,7 @@ function projectRow(page: Page, name: string) {
 }
 
 async function startTaskIn(page: Page, projectName: string): Promise<void> {
-  await projectRow(page, projectName).getByTitle('新任务', { exact: true }).click();
+  await projectRow(page, projectName).getByRole('button', { name: '新任务', exact: true }).click();
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible();
 }
 

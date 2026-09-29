@@ -114,6 +114,21 @@ describe('Menu', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('stays open when the chosen item prevents the select event', async () => {
+    const user = userEvent.setup();
+    const onCheck = vi.fn((event: Event) => event.preventDefault());
+    render(
+      <Menu trigger={<Button>Actions</Button>}>
+        <MenuItem onSelect={onCheck}>Check for updates</MenuItem>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Check for updates' }));
+    expect(onCheck).toHaveBeenCalledOnce();
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
   it('colors a destructive item and its icon', async () => {
     const user = userEvent.setup();
     render(<TaskMenu onRename={() => undefined} />, { wrapper: DesignSystemProvider });

@@ -234,6 +234,15 @@ describe('TaskBlock — one spinner per block', () => {
     }
   });
 
+  it('starts its header text in the same column as the rows it replaces', () => {
+    render(<TaskBlock executionSteps={[execCommandStep('s1', 'Step one')]} isActive />);
+    const header = screen.getAllByRole('button')[0];
+    expect(header.className).not.toMatch(/(^|\s)px-/);
+    expect(header.className).not.toMatch(/(^|\s)pl-/);
+    expect(header).toHaveClass('text-label-secondary');
+    expect(header).toHaveClass('hover:text-label');
+  });
+
   it('marks finished steps with a check and failed steps with a cross', () => {
     render(
       <TaskBlock

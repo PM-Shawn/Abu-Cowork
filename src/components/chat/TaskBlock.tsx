@@ -342,10 +342,10 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
       <Pressable
         onClick={handleHeaderClick}
         aria-expanded={isOpen}
-        className="mb-2 flex w-full items-center gap-2 rounded-control px-2 text-left text-ui text-label hover:bg-fill-hover"
+        className="mb-2 flex items-center gap-2 rounded-control text-left text-ui text-label-secondary transition-colors duration-fast hover:text-label"
       >
         {isActive && <Spinner size="sm" labelHidden label={t.task.running} />}
-        <span className="text-label-secondary">
+        <span>
           {isActive ? summary.replace(/\.{3}$/, '').replace(/…$/, '') : summary}
         </span>
         <Icon

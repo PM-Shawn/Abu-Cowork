@@ -370,7 +370,8 @@ opening a PR.
 
 **`security-test` job.** Runs `npm run electron:security-test` (the `node --test` security-boundary
 suite: plugin git / snapshot / registry / operations, filesystem, computer-use permissions,
-attachments, raw IPC bodies) on `macos-15` after a root `npm ci`, about one minute of test time.
+attachments, raw IPC bodies) on `macos-15` after a root `npm ci`. The tests themselves take about
+12 seconds; the whole job, including the install, takes about one minute.
 Its result gates `check`, so a security-boundary regression blocks the PR. The same script also
 runs in the macOS and Windows release builds (`electron-build.yml`); `verify:full` does not run it.
 

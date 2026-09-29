@@ -1,7 +1,7 @@
 import {
   Check, ChevronDown, ChevronRight, ChevronsUpDown, CircleCheck, CircleX, Copy, Download, Ellipsis,
-  ExternalLink, Folder, Info, LoaderCircle, Minus, Paperclip, Pencil, Plus, Redo2, RefreshCw, Search,
-  Settings, Share, SquarePen, Trash2, TriangleAlert, Undo2, X, type LucideIcon,
+  ExternalLink, Folder, Info, LoaderCircle, Minus, PanelLeft, PanelRight, Paperclip, Pencil, Plus, Redo2,
+  RefreshCw, Search, Settings, Share, SquarePen, Trash2, TriangleAlert, Undo2, X, type LucideIcon,
 } from 'lucide-react';
 
 // One icon per standard action across the whole app (Apple HIG "Standard icons").
@@ -34,6 +34,8 @@ export const AppIcons = {
   loading: LoaderCircle,
   mixed: Minus,
   selectorChevrons: ChevronsUpDown,
+  sidebar: PanelLeft,
+  rightPanel: PanelRight,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

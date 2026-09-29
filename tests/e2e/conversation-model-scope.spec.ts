@@ -272,9 +272,9 @@ async function sendAndAwait(page: Page, marker: string, modelId: string, mock: M
 
 /** The sidebar starts collapsed once a conversation is open; expand it if so. */
 async function ensureSidebar(page: Page): Promise<void> {
-  const showSidebar = page.getByTitle('显示侧栏', { exact: true });
+  const showSidebar = page.getByRole('button', { name: '显示侧栏', exact: true });
   if (await showSidebar.isVisible()) await showSidebar.click();
-  await expect(page.getByTitle('显示侧栏', { exact: true })).toHaveCount(0);
+  await expect(showSidebar).toHaveCount(0);
 }
 
 async function openConversation(page: Page, title: string): Promise<void> {

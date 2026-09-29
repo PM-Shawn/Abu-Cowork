@@ -24,7 +24,6 @@ import { settingsForConversation } from '../agent/conversationSettings';
 // call convention `agentLoop.ts`/`subagentLoop.ts` already use.
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { adapterKindFor } from '../llm/adapterKind';
-import { contextWindowForModel } from '../agent/modelContextWindow';
 import { providerChatOptions } from '../llm/providerChatOptions';
 import type { LLMAdapter } from '../llm/adapter';
 import type { StreamEvent } from '../../types';
@@ -245,7 +244,6 @@ export async function extractMemoriesFromConversation(
         baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         maxTokens: 1024,
-        contextWindow: await contextWindowForModel(settings, getEffectiveModel(settings)),
         ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
         accounting: {
           source: 'memory' as const,

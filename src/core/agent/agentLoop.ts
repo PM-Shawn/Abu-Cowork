@@ -112,7 +112,6 @@ import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor } from '../llm/adapterKind';
 import { contextTooSmallMessage } from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
-import { rememberProbedContextWindow } from './modelContextWindow';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
@@ -1672,12 +1671,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
   const malformedToolCallGuard = createMalformedToolCallGuard();
-  // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载）；
-  // 用户填了「上下文长度」就不问。问到的值同时交给本进程里主循环之外的入口
+  // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载，
+  // Ollama 只报告已加载的模型）；用户填了「上下文长度」就不问
   let runProbedContextWindow: number | undefined;
   if (entryProvider && entryModelDeclared?.maxInputTokens === undefined) {
     runProbedContextWindow = await probeContextWindow(entryProvider, effectiveModelId);
-    rememberProbedContextWindow(entryProvider.id, effectiveModelId, runProbedContextWindow);
   }
 
   // Phase 2 relevant-memory injection — content of memories most relevant to
@@ -2107,7 +2105,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 signal: abortController.signal,
                 conversationId,
                 providerInstanceId: activeProvider?.id ?? 'unknown',
-                contextWindow: contextWindowSize,
                 requestedContextLength,
                 localServer: isLocalServer,
               },
@@ -2234,7 +2231,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               signal: abortController.signal,
               conversationId,
               providerInstanceId: activeProvider?.id ?? 'unknown',
-              contextWindow: contextWindowSize,
               requestedContextLength,
               localServer: isLocalServer,
             });
@@ -2363,7 +2359,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         },
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
-        contextWindow: contextWindowSize,
         requestedContextLength,
         localServer: isLocalServer,
         signal: abortController.signal,
@@ -2635,10 +2630,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           if (learnedWindow !== undefined) {
             recoveryContextWindowSize = Math.min(contextWindowSize, learnedWindow.size);
             recoveryReserveWindowSize = Math.min(reserveWindowSize, learnedWindow.size);
-            // 再问一次得到的是服务此刻报告的值，本次运行之后的轮次与本进程的其他入口都按它取第 2 级
+            // 再问一次得到的是服务此刻报告的值，本次运行之后的轮次按它取第 2 级
             if (learnedWindow.probe !== runProbedContextWindow && learnedWindow.probe !== undefined) {
               runProbedContextWindow = learnedWindow.probe;
-              if (activeProvider) rememberProbedContextWindow(activeProvider.id, effectiveModelId, learnedWindow.probe);
             }
             if (activeProvider) {
               // 带上学到上限那一刻服务报告的值，用户之后在服务里调大长度时，读取端能认出这条记录已经过时
@@ -2699,7 +2693,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   signal: abortController.signal,
                   conversationId,
                   providerInstanceId: activeProvider?.id ?? 'unknown',
-                  contextWindow: recoveryContextWindowSize,
                   requestedContextLength,
                   localServer: isLocalServer,
                 },
@@ -2753,7 +2746,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const recoveryChatOptions = {
             ...chatOptions,
             maxTokens: recoveryMaxOutputTokens,
-            contextWindow: recoveryContextWindowSize,
             enableThinking: recoveryReasoningParams.enableThinking,
             thinkingBudget: recoveryReasoningParams.thinkingBudget,
             reasoningEffort: recoveryReasoningParams.reasoningEffort,

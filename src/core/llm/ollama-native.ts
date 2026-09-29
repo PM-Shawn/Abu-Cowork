@@ -143,8 +143,9 @@ export class OllamaNativeAdapter implements LLMAdapter {
       model: options.model,
       messages: toOllamaMessages(turns, options.systemPrompt, options.volatileContextTail),
       stream: true,
-      // 关掉 Ollama 自己的截断与上下文平移：超过 num_ctx 时它才会报「the prompt is longer
-      // than the context length…」，阿布据此按真实上限整理后重试，而这两项默认都是开着的
+      // 关掉 Ollama 自己的截断与上下文平移（两项默认都开着，超长时会悄悄丢掉前面的话）：
+      // 关掉后 Ollama 原样转交 llama-server 的报错「request (N tokens) exceeds the available
+      // context size (M tokens), try increasing it」，阿布从中读出上限 M，整理后重试
       truncate: false,
       shift: false,
       // 不支持思考的模型收到 think: true 会被拒绝，所以只在关闭时发送

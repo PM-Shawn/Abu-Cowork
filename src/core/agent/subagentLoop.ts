@@ -30,7 +30,6 @@ import { adaptComputerToolForTier } from '../tools/definitions/computerToolText'
 import { isWindows } from '../../utils/platform';
 import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
-import { rememberProbedContextWindow } from './modelContextWindow';
 import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor } from '../llm/adapterKind';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
@@ -642,11 +641,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     return new SubagentResult({ text: failureText[delegatedPreflight.diagnostic.reason], toolCallCount: 0, turnCount: 0, tokenUsage: { input: 0, output: 0 }, duration: 0, stopReason: 'error' });
   }
 
-  // 与主循环相同：问到的值同时交给本进程里主循环之外的入口
+  // 与主循环相同：本地服务商运行开始问一次实际加载的长度，用户填了「上下文长度」就不问
   let probedContextWindow: number | undefined;
   if (startupProvider && startupDeclared?.maxInputTokens === undefined) {
     probedContextWindow = await probeContextWindow(startupProvider, effectiveModelId);
-    rememberProbedContextWindow(startupProvider.id, effectiveModelId, probedContextWindow);
   }
 
   // Lifecycle: subagentStart
@@ -942,7 +940,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               signal,
               conversationId: options.parentConversationId ?? null,
               providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
-              contextWindow: contextWindowSize,
               requestedContextLength,
               localServer: isLocalServer,
             }
@@ -994,7 +991,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
-        contextWindow: contextWindowSize,
         requestedContextLength,
         localServer: isLocalServer,
         enableThinking: reasoningParams.enableThinking,

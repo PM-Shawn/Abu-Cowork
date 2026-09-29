@@ -1236,23 +1236,6 @@ describe('运行开始询问本地服务的窗口', () => {
     },
   );
 
-  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
-    '%s：运行开始问到的值交给同一进程里的记忆提取、技能辅助调用与压缩',
-    async (_name, run) => {
-      const { useChatStore, restore } = await setup();
-      const { useSettingsStore } = await import('../../stores/settingsStore');
-      const { contextWindowForModel } = await import('./modelContextWindow');
-      mockProbeContextWindow.mockResolvedValue(98304);
-      try {
-        await run(useChatStore);
-        expect(await contextWindowForModel(useSettingsStore.getState(), 'llama3.2')).toBe(98304);
-        // 读的是这次运行问到的值，没有再问一次
-        expect(mockProbeContextWindow).toHaveBeenCalledOnce();
-      } finally {
-        restore();
-      }
-    },
-  );
 });
 
 describe('回答预留按模型自己的窗口计算', () => {
@@ -1335,9 +1318,7 @@ describe('回答预留按模型自己的窗口计算', () => {
       mockProbeContextWindow.mockResolvedValue(window);
       try {
         await run(useChatStore);
-        const options = chat.mock.calls[0][1] as { maxTokens: number; contextWindow?: number };
-        expect(options.contextWindow).toBe(window);
-        expect(options.maxTokens).toBe(expectedMaxTokens);
+        expect((chat.mock.calls[0][1] as { maxTokens: number }).maxTokens).toBe(expectedMaxTokens);
       } finally {
         restore();
       }
@@ -1380,7 +1361,7 @@ describe('服务说内容太长后按真实上限恢复', () => {
     return { useChatStore, LLMError, chat, selectAdapter, recordContextWindow, restore };
   }
 
-  it('Ollama 走自己的适配器，首次请求与重试都带窗口，重试用学到的值', async () => {
+  it('Ollama 走自己的适配器，重试按学到的上限安排内容', async () => {
     const { useChatStore, LLMError, chat, selectAdapter, restore } = await setup();
     mockProbeContextWindow.mockResolvedValue(32768);
     chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400, contextLimit: 16384 }));
@@ -1391,9 +1372,48 @@ describe('服务说内容太长后按真实上限恢复', () => {
       expect(result.reason).toBe('completed');
       expect(selectAdapter).toHaveBeenCalledWith('ollama');
       expect(chat).toHaveBeenCalledTimes(2);
-      expect((chat.mock.calls[0][1] as { contextWindow?: number }).contextWindow).toBe(32768);
-      expect((chat.mock.calls[1][1] as { contextWindow?: number }).contextWindow).toBe(16384);
+      // 首次请求按运行开始问到的 32768 预留回答；重试按学到的 16384，水位分母也换成它
+      expect((chat.mock.calls[0][1] as { maxTokens: number }).maxTokens).toBeLessThanOrEqual(32768 / 4);
+      expect((chat.mock.calls[1][1] as { maxTokens: number }).maxTokens).toBeLessThanOrEqual(16384 / 4);
+      expect(useChatStore.getState().conversations[conversationId].contextUsage?.tokensMax).toBe(16384);
     } finally {
+      restore();
+    }
+  });
+
+  it('Ollama 报错带上限而运行开始时模型没加载：补问一次，之后用户调大长度时学到的值作废', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const { getCapsPort, setCapsPort } = await import('./ports/capsPort');
+    const learned = new Map<string, { contextWindow: number; contextWindowProbe?: number; source: 'error-derived'; updatedAt: number }>();
+    const fakeCapsPort = getCapsPort();
+    setCapsPort({
+      ...fakeCapsPort,
+      get: (providerId: string, modelId: string) => learned.get(`${providerId}:${modelId}`),
+      recordContextWindow: (providerId: string, modelId: string, contextWindow: number, contextWindowProbe?: number) => {
+        learned.set(`${providerId}:${modelId}`, { contextWindow, contextWindowProbe, source: 'error-derived', updatedAt: 0 });
+      },
+    });
+    // 第一次运行：开始时 /api/ps 里没有这个模型；Ollama 按默认 4096 加载后转交 llama-server 的报错，带上限 4096
+    mockProbeContextWindow.mockResolvedValueOnce(undefined).mockResolvedValueOnce(4096);
+    chat.mockRejectedValueOnce(new LLMError(
+      'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it',
+      'context_too_long',
+      { statusCode: 400, contextLimit: 4096 },
+    ));
+    try {
+      const first = useChatStore.getState().createConversation();
+      // 4096 放不下阿布的说明，这次运行按「模型能记的太少」结束；学到的值在整理之前就已记下
+      await runAgentLoop(first, 'hello');
+      expect(mockProbeContextWindow).toHaveBeenCalledTimes(2);
+      expect(learned.get('ollama:llama3.2')).toMatchObject({ contextWindow: 4096, contextWindowProbe: 4096 });
+
+      // 用户按提示在 Ollama 里把长度调到 32768：下一次运行 /api/ps 报 32768，窗口跟着变
+      mockProbeContextWindow.mockResolvedValue(32768);
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('completed');
+      expect(useChatStore.getState().conversations[second].contextUsage?.tokensMax).toBe(32768);
+    } finally {
+      setCapsPort(fakeCapsPort);
       restore();
     }
   });
@@ -1471,7 +1491,7 @@ describe('服务说内容太长后按真实上限恢复', () => {
       mockProbeContextWindow.mockResolvedValue(32768);
       const second = useChatStore.getState().createConversation();
       expect((await runAgentLoop(second, 'hello')).reason).toBe('completed');
-      expect((chat.mock.calls.at(-1)![1] as { contextWindow?: number }).contextWindow).toBe(32768);
+      expect(useChatStore.getState().conversations[second].contextUsage?.tokensMax).toBe(32768);
     } finally {
       restore();
     }
@@ -1719,7 +1739,7 @@ describe('本地服务的请求选项与首次回答超时', () => {
     return { ended: result.stopReason, text: result.text };
   }
 
-  type RequestOptions = { contextWindow?: number; requestedContextLength?: number; localServer?: boolean };
+  type RequestOptions = { requestedContextLength?: number; localServer?: boolean };
 
   it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
     '%s：用户没填上下文长度时，不把估计或问到的窗口交给 Ollama 运行',
@@ -1729,9 +1749,9 @@ describe('本地服务的请求选项与首次回答超时', () => {
       try {
         expect((await run(useChatStore)).ended).toBe('completed');
         const options = chat.mock.calls[0][1] as RequestOptions;
-        expect(options.contextWindow).toBe(98304);
         expect(options.requestedContextLength).toBeUndefined();
         expect(options.localServer).toBe(true);
+        expect('contextWindow' in options).toBe(false);
       } finally {
         restore();
       }
@@ -1744,9 +1764,7 @@ describe('本地服务的请求选项与首次回答超时', () => {
       const { useChatStore, chat, restore } = await setup(24576);
       try {
         expect((await run(useChatStore)).ended).toBe('completed');
-        expect(chat.mock.calls[0][1] as RequestOptions).toMatchObject({
-          contextWindow: 24576, requestedContextLength: 24576, localServer: true,
-        });
+        expect(chat.mock.calls[0][1] as RequestOptions).toMatchObject({ requestedContextLength: 24576, localServer: true });
       } finally {
         restore();
       }

@@ -31,10 +31,10 @@ const LOCAL_URL_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?[/]/i;
 // that accepts the TCP connection but never returns headers would otherwise
 // hang forever. This path only serves localhost / 127.0.0.1 addresses, i.e.
 // local model servers, which do not send headers until they have processed
-// the whole input — the ceiling therefore matches the local first-response
-// wait the LLM adapters use (10 minutes); the adapters abort earlier
-// requests themselves through the request signal.
-const HEADER_TIMEOUT_MS = LOCAL_FIRST_RESPONSE_TIMEOUT_MS;
+// the whole input. The LLM adapters' own local first-response timer (10
+// minutes) fires first and aborts the request through its signal; this
+// ceiling sits slightly above it as a last resort for callers without one.
+const HEADER_TIMEOUT_MS = LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000;
 
 /**
  * A fetch implementation that talks directly to tauri-plugin-http's IPC

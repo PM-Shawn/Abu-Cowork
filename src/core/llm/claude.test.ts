@@ -126,6 +126,39 @@ describe('ClaudeAdapter', () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
     });
+
+    it('ends at once when the user stops a local Anthropic-format server during the 10 minute wait', async () => {
+      mockCreate.mockImplementation((_params: unknown, options?: { signal?: AbortSignal }) => {
+        const signal = options?.signal;
+        return Promise.resolve({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise((_resolve, reject) => {
+              if (signal?.aborted) return reject(abortError());
+              signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+            }),
+          }),
+        });
+      });
+
+      const controller = new AbortController();
+      const events: Array<{ type: string; stopReason?: string }> = [];
+      const chatPromise = new ClaudeAdapter().chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: '', baseUrl: 'http://127.0.0.1:8080', model: 'local-model', maxTokens: 1024, localServer: true, signal: controller.signal },
+        (event) => events.push(event),
+      );
+      let settled = false;
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(false);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      // 用户主动停止：按现有路径以 cancelled 结束，不算超时
+      await chatPromise;
+      expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'cancelled' });
+    });
   });
 
   describe('tool_use input parsing', () => {

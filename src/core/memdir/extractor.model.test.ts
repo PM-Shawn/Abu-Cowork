@@ -87,8 +87,8 @@ describe('memory extraction runs on the conversation\'s own provider', () => {
     expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'default-model', apiKey: 'sk-default' });
   });
 
-  it('sends Ollama the window the service reported, the same the task used', async () => {
-    mockProbeContextWindow.mockResolvedValue(8192);
+  it('marks Ollama as a local server and asks it nothing when the user left the context length blank', async () => {
+    mockProbeContextWindow.mockClear();
     useSettingsStore.setState({
       // 记忆提取要求服务商有密钥，没有密钥时整个提取直接跳过
       providers: [{
@@ -105,15 +105,15 @@ describe('memory extraction runs on the conversation\'s own provider', () => {
 
     await extractMemoriesFromConversation('c1', null);
 
-    // 窗口与任务请求按同一套优先级取；用户没填「上下文长度」，Ollama 不会收到 num_ctx
+    // 用户没填「上下文长度」，Ollama 不会收到 num_ctx；这条路径不再问 /api/ps
     const options = mockChat.mock.calls[0][1] as { requestedContextLength?: number };
-    expect(options).toMatchObject({ model: 'llama3.2', contextWindow: 8192, localServer: true });
+    expect(options).toMatchObject({ model: 'llama3.2', localServer: true });
     expect(options.requestedContextLength).toBeUndefined();
+    expect(mockProbeContextWindow).not.toHaveBeenCalled();
   });
 
   it('passes on only the context length the user filled in for Ollama', async () => {
     mockProbeContextWindow.mockClear();
-    mockProbeContextWindow.mockResolvedValue(8192);
     useSettingsStore.setState({
       providers: [{
         ...provider('ollama'), source: 'builtin', baseUrl: 'http://127.0.0.1:11434', apiKey: 'local-key',
@@ -129,9 +129,7 @@ describe('memory extraction runs on the conversation\'s own provider', () => {
 
     await extractMemoriesFromConversation('c1', null);
 
-    expect(mockChat.mock.calls[0][1]).toMatchObject({
-      model: 'llama3.2', contextWindow: 24576, requestedContextLength: 24576, localServer: true,
-    });
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'llama3.2', requestedContextLength: 24576, localServer: true });
     expect(mockProbeContextWindow).not.toHaveBeenCalled();
   });
 });

@@ -267,18 +267,18 @@ describe('compactConversationManually', () => {
       vi.mocked(settingsStore.getEffectiveModel).mockReturnValueOnce('llama3.2');
     }
 
-    it('summarizes on Ollama with the window the service reported, the same the task used', async () => {
+    it('marks Ollama as a local server and asks it nothing when the user left the context length blank', async () => {
       useOllamaProvider([{ id: 'llama3.2', label: 'llama3.2' }]);
-      mockProbeContextWindow.mockResolvedValue(8192);
       mockSummarize.mockResolvedValue('summary');
 
       const result = await compactConversationManually(CONV_ID);
 
       expect(result.compacted).toBe(true);
-      // 窗口与任务请求按同一套优先级取；用户没填「上下文长度」，Ollama 不会收到 num_ctx
+      // 用户没填「上下文长度」，Ollama 不会收到 num_ctx；手动整理不再问 /api/ps
       const config = mockSummarize.mock.calls.at(-1)?.[1] as { requestedContextLength?: number };
-      expect(config).toMatchObject({ model: 'llama3.2', contextWindow: 8192, localServer: true });
+      expect(config).toMatchObject({ model: 'llama3.2', localServer: true });
       expect(config.requestedContextLength).toBeUndefined();
+      expect(mockProbeContextWindow).not.toHaveBeenCalled();
     });
 
     it('passes on only the context length the user filled in for Ollama', async () => {
@@ -288,9 +288,7 @@ describe('compactConversationManually', () => {
       const result = await compactConversationManually(CONV_ID);
 
       expect(result.compacted).toBe(true);
-      expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({
-        model: 'llama3.2', contextWindow: 24576, requestedContextLength: 24576, localServer: true,
-      });
+      expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({ model: 'llama3.2', requestedContextLength: 24576, localServer: true });
       expect(mockProbeContextWindow).not.toHaveBeenCalled();
     });
   });

@@ -294,20 +294,37 @@ describe('OllamaNativeAdapter streaming', () => {
   });
 });
 
+/** truncate:false 下 Ollama 原样转交的 llama-server 报错，JSON 文本包在 {"error": …} 里。 */
+const LLAMA_SERVER_OVERFLOW_BODY = JSON.stringify({
+  error: {
+    code: 400,
+    message: 'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it',
+    type: 'exceed_context_size_error',
+    n_prompt_tokens: 9000,
+    n_ctx: 4096,
+  },
+});
+
 describe('OllamaNativeAdapter errors', () => {
   it('turns an in-stream overflow error into context_too_long', async () => {
-    mockFetch.mockResolvedValueOnce(ndjson([{ error: 'the prompt is longer than the context length currently available to the model' }]));
+    mockFetch.mockResolvedValueOnce(ndjson([{ error: 'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it' }]));
     await expect(new OllamaNativeAdapter().chat([userMessage], options(), () => {}))
-      .rejects.toMatchObject({ code: 'context_too_long' });
+      .rejects.toMatchObject({ code: 'context_too_long', contextLimit: 4096 });
   });
 
   it('turns an HTTP 400 overflow into context_too_long', async () => {
     mockFetch.mockResolvedValueOnce(new Response(
-      JSON.stringify({ error: 'the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length' }),
+      JSON.stringify({ error: 'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it' }),
       { status: 400 },
     ));
     await expect(new OllamaNativeAdapter().chat([userMessage], options(), () => {}))
       .rejects.toMatchObject({ code: 'context_too_long', statusCode: 400 });
+  });
+
+  it('reads the limit out of the llama-server error body Ollama forwards as text', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: LLAMA_SERVER_OVERFLOW_BODY }), { status: 400 }));
+    await expect(new OllamaNativeAdapter().chat([userMessage], options(), () => {}))
+      .rejects.toMatchObject({ code: 'context_too_long', statusCode: 400, contextLimit: 4096 });
   });
 
   it('turns any other in-stream error into a retryable server error', async () => {

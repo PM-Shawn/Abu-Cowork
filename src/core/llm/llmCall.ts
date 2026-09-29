@@ -12,7 +12,6 @@ import type { StreamEvent, Message, ToolDefinition } from '../../types';
 import type { LLMAdapter } from './adapter';
 import { adapterKindFor } from './adapterKind';
 import { createAdapterForKind } from './createAdapter';
-import { contextWindowForModel } from '../agent/modelContextWindow';
 import { providerChatOptions } from './providerChatOptions';
 import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
 import { getSettingsReader } from '../agent/ports/settingsReader';
@@ -102,7 +101,6 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
     systemPrompt: options.system,
     tools: options.tools,
     maxTokens: options.maxTokens ?? 4096,
-    contextWindow: await contextWindowForModel(settings, getEffectiveModel(settings)),
     ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
     signal: options.signal,
     // 这条路径是技能与内部工具的单轮调用（test_skill_trigger、

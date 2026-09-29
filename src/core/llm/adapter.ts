@@ -73,11 +73,6 @@ export interface ChatOptions {
   tools?: ToolDefinition[];
   maxTokens?: number;
   /**
-   * 阿布安排这次请求内容时用的上下文窗口（resolveContextWindow 的结果）。适配器不读它，
-   * 也不把它发给任何服务；随 llm.chat 序列化进 sidecar，作为这次请求的记录。
-   */
-  contextWindow?: number;
-  /**
    * 用户在模型「上下文长度」里填写的值。只有 Ollama 原生适配器读它：填了才发
    * options.num_ctx，没填时请求不带 num_ctx，Ollama 按它自己的设置运行。阿布估计或
    * 向服务问到的窗口不会经这里发出。随 llm.chat 序列化进 sidecar。

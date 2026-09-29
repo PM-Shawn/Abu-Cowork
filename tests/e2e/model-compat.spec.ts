@@ -36,7 +36,7 @@ let ollama: OllamaMock | undefined;
 
 interface ChatRequestBody {
   max_tokens?: number;
-  messages: Array<{ role: string; content: unknown; tool_call_id?: unknown }>;
+  messages: Array<{ role: string; content: unknown }>;
   model?: string;
   tools?: Array<{ function: { name: string } }>;
 }
@@ -104,6 +104,13 @@ async function expectRunEnded(page: Page): Promise<void> {
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeEditable({ timeout: READY_TIMEOUT });
 }
 
+/** 给用户的一句普通说明：显示出来，所在段落前面不带「Error:」。 */
+async function expectPlainNotice(page: Page, sentence: string): Promise<void> {
+  const paragraph = page.getByRole('paragraph').filter({ hasText: sentence });
+  await expect(paragraph).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(paragraph).not.toContainText('Error:');
+}
+
 function contextIndicator(page: Page): Locator {
   return page.getByTestId('context-indicator').first();
 }
@@ -144,6 +151,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
   test('learns the real context size from a llama.cpp overflow, tidies up and finishes', async () => {
     const runId = randomUUID();
     const answer = `abu-e2e-context-recovered-${runId}`;
+    const nextAnswer = `abu-e2e-context-next-round-${runId}`;
     const page = await openChat([
       {
         kind: 'http-error',
@@ -159,6 +167,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
         },
       },
       { kind: 'complete', responseText: answer },
+      { kind: 'complete', responseText: nextAnswer },
     ], { contextWindowSize: null });
 
     await send(page, `abu-e2e-context-overflow-${runId}`);
@@ -176,6 +185,20 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
 
     await page.getByTestId('context-indicator').click();
     await expect(page.getByTestId('context-breakdown-header')).toContainText('/ 30.7k');
+    await page.keyboard.press('Escape');
+    await expectRunEnded(page);
+
+    // 下一轮直接按学到的上限计算，服务不再报超长，也不再出现整理提示
+    await send(page, `abu-e2e-context-next-${runId}`);
+    await expect(page.getByText(nextAnswer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expectRunEnded(page);
+    const allRequests = taskRequests(mock!);
+    expect(allRequests).toHaveLength(3);
+    expect((allRequests[2].body as { max_tokens?: number }).max_tokens)
+      .toBe((allRequests[1].body as { max_tokens?: number }).max_tokens);
+    expect((allRequests[2].body as { max_tokens?: number }).max_tokens).toBe(7680);
+    await expect(page.getByText('对话较长，正在整理前面的内容…')).toHaveCount(1);
+    await expect(page.getByText('Error:')).toHaveCount(0);
   });
 
   test('runs an operation the model wrote as <invoke> text and never shows that text', async () => {
@@ -248,9 +271,10 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     expect(JSON.stringify(computer).toLowerCase()).not.toContain('screenshot');
   });
 
-  test('P1-1 asks LM Studio for the loaded 32K length and runs a tool-enabled model within it', async () => {
+  test('P1-1 asks LM Studio for the loaded length and runs a tool-enabled model within it', async () => {
     const answer = `abu-e2e-lmstudio-answer-${randomUUID()}`;
-    const page = await openLmStudioChat([{ kind: 'complete', responseText: answer }], 32768);
+    // 40960 与按名字估计的 32768 不同，用来证明窗口取自 LM Studio 的报告
+    const page = await openLmStudioChat([{ kind: 'complete', responseText: answer }], 40960);
 
     await send(page, `abu-e2e-lmstudio-question-${randomUUID()}`);
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -258,17 +282,18 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
 
     // 上下文长度留空，窗口来自 LM Studio 报告的已加载长度
     expect(mock!.getRequests).toContain('/api/v0/models');
-    // 水位上限就是 32768（formatK 按千位显示为 32.8k）
-    await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 32\.8k tokens$/);
+    // 水位上限就是 40960（formatK 按千位显示为 41.0k）
+    await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 41\.0k tokens$/);
     const requests = taskRequests(mock!);
     expect(requests).toHaveLength(1);
     const body = requests[0].body as ChatRequestBody;
     expect(body.model).toBe(LM_STUDIO_MODEL);
     expect(body.tools?.length ?? 0).toBeGreaterThan(0);
     // 回答预留窗口的 25%
-    expect(body.max_tokens).toBeLessThanOrEqual(8192);
+    expect(body.max_tokens).toBeLessThanOrEqual(10240);
   });
 
+  // 32768 与按名字估计的值相同；窗口取自 LM Studio 报告这一点由上一条（40960）和 8192 那条用例区分
   test('P1-1 tidies up the earlier conversation before reaching the 32K length and finishes', async () => {
     test.setTimeout(120_000);
     const runId = randomUUID();
@@ -322,9 +347,10 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     const page = await openLmStudioChat([{ kind: 'complete', responseText: 'abu-e2e-never-sent' }], 8192);
 
     await send(page, `abu-e2e-lmstudio-too-small-${randomUUID()}`);
-    await expect(page.getByText(
+    await expectPlainNotice(
+      page,
       '这个模型一次能记住的内容太少，放不下阿布需要的说明。可以换一个能记得更多的模型，或者在 LM Studio 里把上下文长度调大。',
-    )).toBeVisible({ timeout: READY_TIMEOUT });
+    );
     await expectRunEnded(page);
 
     expect(mock!.getRequests).toContain('/api/v0/models');
@@ -373,7 +399,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     ], { supportsTools: true, permissionMode: 'standard' });
 
     await send(page, `abu-e2e-malformed-${randomUUID()}`);
-    await expect(page.getByText('这个模型没能正确发出操作，可以重试，或者换一个模型。')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expectPlainNotice(page, '这个模型没能正确发出操作，可以重试，或者换一个模型。');
     await expectRunEnded(page);
 
     // 给模型的纠错消息与写坏的原文都不出现在聊天里
@@ -406,9 +432,10 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     const page = await openChat([tooSmall, tooSmall, tooSmall, tooSmall], { contextWindowSize: null });
 
     await send(page, `abu-e2e-too-small-${randomUUID()}`);
-    await expect(page.getByText(
+    await expectPlainNotice(
+      page,
       '这个模型一次能记住的内容太少，放不下阿布需要的说明。可以换一个能记得更多的模型，或者在 LM Studio / Ollama 里把上下文长度调大。',
-    )).toBeVisible({ timeout: READY_TIMEOUT });
+    );
     await expectRunEnded(page);
     await expect(page.getByText('exceeds the available context size')).toHaveCount(0);
 
@@ -499,19 +526,20 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     await page.getByRole('button', { name: '获取模型列表' }).click();
     await expect(page.getByText('获取到 1 个模型')).toBeVisible({ timeout: READY_TIMEOUT });
 
-    // 展开这个模型的高级配置：「能看图」默认已勾上
-    const modelRow = page.locator('div.rounded-lg.border').filter({ hasText: visionModel }).last();
-    await modelRow.getByRole('button').first().click();
-    const canSeeImages = modelRow.getByText('能看图', { exact: true }).locator('xpath=..').getByRole('checkbox');
-    await expect(canSeeImages).toHaveAttribute('aria-checked', 'true');
+    // 展开这个模型（列表里只有它一个）的高级配置：「能看图」默认已勾上
+    await expect(page.getByText(visionModel, { exact: true })).toBeVisible();
+    const advancedConfig = page.getByRole('button', { name: '高级配置', exact: true });
+    await advancedConfig.click();
+    await expect(advancedConfig).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('checkbox', { name: '能看图', exact: true })).toHaveAttribute('aria-checked', 'true');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await page.locator('[data-abu-settings-close]').click();
     await expect(settings).toHaveCount(0);
 
     // 在输入框旁的模型选择里换成它；它带着「能看图」标记
-    await page.getByTestId('composer-toolbar').locator('button[title]')
-      .filter({ hasText: 'Abu E2E deterministic model' }).click();
-    await page.getByRole('button', { name: `${visionModel}，能看图` }).last().click();
+    await page.getByTestId('composer-toolbar')
+      .getByRole('button', { name: 'Abu E2E deterministic model', exact: true }).click();
+    await page.getByRole('button', { name: `${visionModel}，能看图`, exact: true }).click();
 
     await send(page, '帮我看看记事本里写了什么');
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });

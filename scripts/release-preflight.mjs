@@ -12,12 +12,16 @@
  *      src-tauri/Cargo.lock — and, when --tag is passed, matches the tag.
  *   2. CHANGELOG.md has this version's section, English only (no CJK).
  *   3. CHANGELOG.zh-CN.md has this version's section, containing Chinese (CJK).
- *   4. Local runs read GitHub branch protection and compare it with the
+ *   4. A stable --tag must point at a commit that is already on origin/main
+ *      (release-tag-commit.mjs). Only a manually dispatched candidate build
+ *      may pass --skip-tag-commit-check.
+ *   5. Local runs read GitHub branch protection and compare it with the
  *      committed policy. Release CI opts out explicitly because its token lacks
  *      administration:read; it never claims to have performed this check.
  *
- * Pre-release tags (vX.Y.Z-rc1) skip the changelog checks — RC builds only
- * exercise signing/notarization and may have no changelog entry.
+ * Pre-release tags (vX.Y.Z-rc1) skip the changelog and tag-commit checks — RC
+ * builds are cut on dev before promotion, only exercise signing/notarization,
+ * and may have no changelog entry.
  *
  * See RELEASING.md and the Release Process in CLAUDE.md for the convention.
  */
@@ -26,6 +30,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { shouldCheckBranchProtection } from './check-branch-protection.mjs';
+import { shouldCheckTagCommit, spawnGit, verifyTagCommitOnReleaseBranch } from './release-tag-commit.mjs';
 
 const args = process.argv.slice(2);
 const tagIdx = args.indexOf('--tag');
@@ -34,6 +39,11 @@ const skipBranchProtection = args.includes('--skip-branch-protection');
 const checkBranchProtection = shouldCheckBranchProtection({
   skipRequested: skipBranchProtection,
   githubActions: process.env.GITHUB_ACTIONS,
+});
+const checkTagCommit = shouldCheckTagCommit({
+  tag: tagArg,
+  skipRequested: args.includes('--skip-tag-commit-check'),
+  githubEventName: process.env.GITHUB_EVENT_NAME,
 });
 
 const errors = [];
@@ -109,6 +119,11 @@ if (!isPrerelease) {
   else if (!CJK.test(zh)) fail(`CHANGELOG.zh-CN.md v${ref} section has no Chinese text — it must be the Chinese changelog`);
 }
 
+// ── 4. Stable tag commit is on the release branch ──
+if (checkTagCommit) {
+  for (const e of verifyTagCommitOnReleaseBranch({ tag: tagArg, git: spawnGit })) fail(e);
+}
+
 // The release workflow cannot read branch protection with GITHUB_TOKEN. It
 // passes --skip-branch-protection explicitly and the workflow structure test
 // pins that boundary. Local `npm run release:check` takes this read-only path.
@@ -129,7 +144,7 @@ if (errors.length === 0) {
 }
 
 // ── Report ──
-const label = `v${ref}${tagArg ? ` (tag ${tagArg})` : ''}${isPrerelease ? ' [pre-release: changelog checks skipped]' : ''}`;
+const label = `v${ref}${tagArg ? ` (tag ${tagArg})` : ''}${isPrerelease ? ' [pre-release: changelog and tag-commit checks skipped]' : ''}`;
 if (errors.length) {
   console.error(`\n✗ Release preflight FAILED for ${label}:\n`);
   for (const e of errors) console.error(`  • ${e}`);
@@ -137,7 +152,8 @@ if (errors.length) {
     '\nFix before tagging. Convention (RELEASING.md): CHANGELOG.md is English, ' +
       'CHANGELOG.zh-CN.md is Chinese, and the version must match across package.json, ' +
       'package-lock.json, tauri.conf.json, Cargo.toml, and Cargo.lock. ' +
-      'Re-sync the lockfile with `npm install --package-lock-only`. Branch-protection ' +
+      'Re-sync the lockfile with `npm install --package-lock-only`. A stable tag must point ' +
+      'at a commit already on origin/main. Branch-protection ' +
       'drift must be restored separately; this preflight never mutates GitHub.\n',
   );
   process.exit(1);

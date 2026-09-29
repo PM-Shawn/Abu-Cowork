@@ -164,6 +164,7 @@ Consistent with the house voice style — use numbers when you have them:
 
 - [ ] **Both changelogs written for this version**: `CHANGELOG.md` (English) and `CHANGELOG.zh-CN.md` (Chinese)?
 - [ ] **`npm run release:check` passes** (version consistency + both changelog sections in the right language)? CI also gates this in the `preflight` job, but run it locally first.
+- [ ] **`npm run release:check -- --tag vX.Y.Z` passes after tagging** (the stable tag points at a commit already on `origin/main`)? The `preflight` job runs the same check first and fails the release before any build or upload; RC tags (`vX.Y.Z-rcN`) are cut on `dev` and skip it.
 - [ ] Tag pushed **on its own** (`git push origin vX.Y.Z`), not with `--tags`?
 - [ ] Does the title have a descriptive subtitle?
 - [ ] Does every bullet clearly state the user-facing impact?

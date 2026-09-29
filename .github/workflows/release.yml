@@ -37,20 +37,32 @@ jobs:
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.website_metadata_only) }}
     runs-on: ubuntu-latest
     steps:
+      # Full history and origin/main let the preflight prove that a stable tag
+      # points at a commit already on main.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Validate version, changelogs, and release staging logic
+      - name: Validate tag commit, version, and changelogs
         env:
           CANDIDATE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
         run: |
           # GITHUB_TOKEN cannot read branch protection. The release operator's
           # local `npm run release:check` performs that read-only verification.
-          node scripts/release-preflight.mjs --tag "$CANDIDATE_VERSION" --skip-branch-protection
+          # A manual dispatch builds a private candidate from a branch and never
+          # publishes, so only that event skips the tag-commit check.
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            node scripts/release-preflight.mjs --tag "$CANDIDATE_VERSION" --skip-branch-protection --skip-tag-commit-check
+          else
+            node scripts/release-preflight.mjs --tag "$CANDIDATE_VERSION" --skip-branch-protection
+          fi
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate release staging logic
+        run: |
           npm run test:electron:release-stage
           npm run test:electron:release-workflow
 

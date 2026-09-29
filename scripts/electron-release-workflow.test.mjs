@@ -631,7 +631,7 @@ test('release publishes only after all Electron targets and switches root pointe
   assert.match(release.jobs['electron-transition'].if, /website_metadata_only/);
   assert.match(
     release.jobs.preflight.steps.find(
-      (step) => step.name === 'Validate version, changelogs, and release staging logic'
+      (step) => step.name === 'Validate release staging logic'
     ).run,
     /npm run test:electron:release-workflow/
   );

@@ -19,6 +19,7 @@ import {
 import {
   CHAT_PLACEHOLDER,
   READY_TIMEOUT,
+  compressionRequests,
   startOpenAiMock,
   taskRequests,
   waitForApp,
@@ -57,6 +58,38 @@ async function openChat(
 ): Promise<Page> {
   mock = await startOpenAiMock(plans, mockOptions);
   return launchChat(mock.baseUrl, options);
+}
+
+const LM_STUDIO_MODEL = 'qwen3-8b';
+
+/** 内置 LM Studio 服务商指向模拟服务，模型带工具，「上下文长度」留空，LM Studio 报告已加载长度。 */
+async function openLmStudioChat(plans: readonly MockReplyPlan[], loadedContextLength: number): Promise<Page> {
+  return openChat(plans, {
+    apiKey: '',
+    contextWindowSize: null,
+    keepOtherProviders: true,
+    modelId: LM_STUDIO_MODEL,
+    modelLabel: LM_STUDIO_MODEL,
+    providerId: 'lmstudio',
+    providerName: 'LM Studio',
+    providerSource: 'builtin',
+    supportsTools: true,
+  }, {
+    getRoutes: {
+      // 字段按 contextWindowProbe.ts 的 fetchLmStudioContextWindows 读取的写
+      '/api/v0/models': {
+        object: 'list',
+        data: [{
+          id: LM_STUDIO_MODEL,
+          object: 'model',
+          type: 'llm',
+          state: 'loaded',
+          max_context_length: 131072,
+          loaded_context_length: loadedContextLength,
+        }],
+      },
+    },
+  });
 }
 
 async function send(page: Page, text: string): Promise<void> {
@@ -215,46 +248,89 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     expect(JSON.stringify(computer).toLowerCase()).not.toContain('screenshot');
   });
 
-  // 8192 的窗口放不下阿布自身的说明（约 7.9k），这里用 16384 验证「问服务、按真实长度算」这条路径
-  test('P1-1 asks LM Studio how much the loaded model remembers and sizes the run to it', async () => {
-    const modelId = 'qwen3-8b';
+  test('P1-1 asks LM Studio for the loaded 32K length and runs a tool-enabled model within it', async () => {
     const answer = `abu-e2e-lmstudio-answer-${randomUUID()}`;
-    const page = await openChat([{ kind: 'complete', responseText: answer }], {
-      apiKey: '',
-      contextWindowSize: null,
-      modelId,
-      modelLabel: modelId,
-      providerId: 'lmstudio',
-      providerName: 'LM Studio',
-      providerSource: 'builtin',
-      keepOtherProviders: true,
-    }, {
-      getRoutes: {
-        // 字段按 contextWindowProbe.ts 的 fetchLmStudioContextWindows 读取的写
-        '/api/v0/models': {
-          object: 'list',
-          data: [{
-            id: modelId,
-            object: 'model',
-            type: 'llm',
-            state: 'loaded',
-            max_context_length: 32768,
-            loaded_context_length: 16384,
-          }],
-        },
-      },
-    });
+    const page = await openLmStudioChat([{ kind: 'complete', responseText: answer }], 32768);
 
     await send(page, `abu-e2e-lmstudio-question-${randomUUID()}`);
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expectRunEnded(page);
 
-    // 水位的上限是服务报告的 16384，设置里一个数字都没填；按名字估计会是 32768
-    await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 16\.4k tokens$/);
-    const body = taskRequests(mock!)[0].body as ChatRequestBody;
-    expect(body.model).toBe(modelId);
+    // 上下文长度留空，窗口来自 LM Studio 报告的已加载长度
+    expect(mock!.getRequests).toContain('/api/v0/models');
+    // 水位上限就是 32768（formatK 按千位显示为 32.8k）
+    await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 32\.8k tokens$/);
+    const requests = taskRequests(mock!);
+    expect(requests).toHaveLength(1);
+    const body = requests[0].body as ChatRequestBody;
+    expect(body.model).toBe(LM_STUDIO_MODEL);
+    expect(body.tools?.length ?? 0).toBeGreaterThan(0);
     // 回答预留窗口的 25%
-    expect(body.max_tokens).toBeLessThanOrEqual(4096);
+    expect(body.max_tokens).toBeLessThanOrEqual(8192);
+  });
+
+  test('P1-1 tidies up the earlier conversation before reaching the 32K length and finishes', async () => {
+    test.setTimeout(120_000);
+    const runId = randomUUID();
+    // 语义整理要求保留第一轮与最近四轮之外还有可整理的轮次，所以先聊六轮
+    const turnAnswers = Array.from({ length: 6 }, (_, index) => `abu-e2e-lmstudio-turn-${index}-${runId}`);
+    const finalAnswer = `abu-e2e-lmstudio-after-tidy-${runId}`;
+    dataRoot = createElectronDataRoot();
+    const fixtureDir = path.join(dataRoot.rootDir, 'owned-lmstudio-fixtures');
+    const fixtures = ['first', 'second'].map((name) => ({
+      marker: `abu-e2e-lmstudio-fixture-${name}-${runId}`,
+      path: path.join(fixtureDir, `${name}.txt`),
+    }));
+    fs.mkdirSync(fixtureDir, { recursive: true });
+    for (const fixture of fixtures) fs.writeFileSync(fixture.path, fixture.marker);
+    const page = await openLmStudioChat([
+      ...turnAnswers.map((responseText) => ({ kind: 'complete' as const, responseText })),
+      // 最后一个任务要来回好几步：读两个文件，再回答
+      ...fixtures.map((fixture, index) => ({
+        kind: 'tool-call' as const,
+        arguments: { path: fixture.path },
+        toolCallId: `call-lmstudio-read-${index}-${runId}`,
+        toolName: 'read_file',
+      })),
+      { kind: 'complete', responseText: finalAnswer },
+    ], 32768);
+
+    // 前面几轮每轮带一段较长的内容，让对话逐步接近 32K
+    const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
+    const longPayload = 'x'.repeat(6_000);
+    for (const [index, answer] of turnAnswers.entries()) {
+      await send(page, `abu-e2e-lmstudio-step-${index}-${runId}\n${longPayload}`);
+      await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
+    }
+    await send(page, `请依次读取 ${fixtures[0].path} 和 ${fixtures[1].path}`);
+    await expect(page.getByText(finalAnswer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expectRunEnded(page);
+
+    // 整理发生在服务报超长之前：服务一次都没有拒绝，最后一步带着整理后的摘要和两次读取的结果发出
+    expect(compressionRequests(mock!).length).toBeGreaterThan(0);
+    const requests = taskRequests(mock!);
+    expect(requests).toHaveLength(turnAnswers.length + fixtures.length + 1);
+    const lastBody = JSON.stringify(requests.at(-1)!.body);
+    expect(lastBody).toContain('Abu E2E compacted conversation summary.');
+    for (const fixture of fixtures) expect(lastBody).toContain(fixture.marker);
+    await expect(page.getByText('exceeds the available context size')).toHaveCount(0);
+    await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 32\.8k tokens$/);
+  });
+
+  test('P1-1 stops before sending when LM Studio loaded the model with too little room for Abu', async () => {
+    const page = await openLmStudioChat([{ kind: 'complete', responseText: 'abu-e2e-never-sent' }], 8192);
+
+    await send(page, `abu-e2e-lmstudio-too-small-${randomUUID()}`);
+    await expect(page.getByText(
+      '这个模型一次能记住的内容太少，放不下阿布需要的说明。可以换一个能记得更多的模型，或者在 LM Studio 里把上下文长度调大。',
+    )).toBeVisible({ timeout: READY_TIMEOUT });
+    await expectRunEnded(page);
+
+    expect(mock!.getRequests).toContain('/api/v0/models');
+    // 请求发出前就停下：模拟服务一次对话请求都没收到
+    expect(mock!.requests).toHaveLength(0);
+    await expect(page.getByText('abu-e2e-never-sent')).toHaveCount(0);
   });
 
   test('P1-3 talks to Ollama natively with the context size and no silent trimming', async () => {

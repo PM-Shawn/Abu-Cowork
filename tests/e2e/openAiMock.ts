@@ -37,6 +37,8 @@ export interface OpenAiMock {
   baseUrl: string;
   close: () => Promise<void>;
   requests: MockRequest[];
+  /** Pathnames of the answered `getRoutes` requests, in order. */
+  getRequests: string[];
 }
 
 function sseChunk(content: string, finishReason: string | null): string {
@@ -76,6 +78,7 @@ export async function startOpenAiMock(
   options: OpenAiMockOptions = {},
 ): Promise<OpenAiMock> {
   const requests: MockRequest[] = [];
+  const getRequests: string[] = [];
   let taskRequestCount = 0;
   const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
@@ -102,6 +105,7 @@ export async function startOpenAiMock(
     };
     const getRoute = options.getRoutes?.[requestUrl.pathname];
     if (req.method === 'GET' && getRoute !== undefined) {
+      getRequests.push(requestUrl.pathname);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(getRoute));
       return;
@@ -224,6 +228,7 @@ export async function startOpenAiMock(
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     close: () => closeServer(server, activeResponses),
     requests,
+    getRequests,
   };
 }
 

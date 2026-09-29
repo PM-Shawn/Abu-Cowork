@@ -137,7 +137,7 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
   const isEmpty = isSearching ? titleMatches.length === 0 && bodyHits.length === 0 : recents.length === 0;
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t.common.search} size="lg">
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t.common.search} titleHidden size="lg">
       <div onKeyDown={moveFocus}>
         <div className="flex items-center gap-2">
           <Icon icon={AppIcons.search} className="text-label-tertiary" />

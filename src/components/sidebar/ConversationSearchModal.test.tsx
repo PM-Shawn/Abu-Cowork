@@ -56,6 +56,9 @@ describe('ConversationSearchModal', () => {
     renderSearch();
     const dialog = screen.getByRole('dialog', { name: '搜索' });
     expect(dialog).toHaveAttribute('data-ds-layer');
+    // 「搜索」 names the dialog for screen readers but is not shown: the field says it.
+    expect(within(dialog).getByText('搜索')).not.toHaveClass('text-title');
+    expect(within(dialog).getByText('搜索').style.position).toBe('absolute');
     expect(within(dialog).getByPlaceholderText('搜索对话...')).toHaveFocus();
     expect(within(dialog).getAllByRole('button').map((b) => b.textContent)).toEqual([
       'Quarterly report', 'Travel plan', 'Report draft',

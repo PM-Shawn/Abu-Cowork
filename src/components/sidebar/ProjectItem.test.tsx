@@ -174,18 +174,52 @@ describe('ProjectItem — project row', () => {
     }
   });
 
-  it('opens project settings only after the menu has gone', async () => {
+  it('opens project settings only after the menu has gone, with focus off the row behind it', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       const onOpenSettings = vi.fn();
       renderItem([], { onOpenSettings });
-      fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+      const header = screen.getByRole('button', { name: 'fastapi-bridge-dev' });
+      act(() => header.focus());
+      fireEvent.contextMenu(header);
       await user.click(await screen.findByRole('menuitem', { name: '项目设置' }));
       await act(() => vi.runOnlyPendingTimersAsync());
       expect(screen.queryByRole('menu')).toBeNull();
       expect(onOpenSettings).toHaveBeenCalledWith('p1');
+      // The settings dialog is a legacy one that takes no focus: Enter on the row
+      // behind it must not act, so focus stays on the page body.
+      expect(document.activeElement).toBe(document.body);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets the menu give focus back to the row before the archive question takes it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const focused: Element[] = [];
+    const record = (event: FocusEvent) => { focused.push(event.target as Element); };
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderItem([]);
+      const header = screen.getByRole('button', { name: 'fastapi-bridge-dev' });
+      act(() => header.focus());
+      fireEvent.contextMenu(header);
+      const archive = await screen.findByRole('menuitem', { name: '归档' });
+      document.addEventListener('focusin', record);
+      await user.click(archive);
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const question = await screen.findByRole('alertdialog', { name: '归档项目' });
+      // The question is a ds dialog: it remembers the row as where focus was, so the
+      // menu must not keep focus off the row the way it does for legacy dialogs.
+      const rowAt = focused.lastIndexOf(header);
+      expect(rowAt).toBeGreaterThanOrEqual(0);
+      expect(focused.slice(rowAt + 1).every((el) => question.contains(el))).toBe(true);
+      expect(question).toContainElement(document.activeElement as HTMLElement);
+      await user.click(within(question).getByRole('button', { name: '取消' }));
+      expect(mocks.project.archiveProject).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener('focusin', record);
       vi.useRealTimers();
     }
   });

@@ -71,7 +71,10 @@ describe('AppSwitcher', () => {
     expect(menu).toHaveAttribute('data-ds-layer');
     expect(menu).toHaveAttribute('data-electron-no-drag');
     expect(within(menu).getByTestId('app-switcher-menu')).toBeInTheDocument();
-    // The current app carries the check and no 进入 hint.
+    // The rows are one radio group: the current app is checked and has no 进入 hint.
+    const current = screen.getByRole('menuitemradio', { name: /店铺运营/ });
+    expect(current).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('menuitemradio', { name: /招聘/ })).toHaveAttribute('aria-checked', 'false');
     expect(screen.queryByTestId('app-switcher-enter-shop@org')).toBeNull();
     expect(screen.getByTestId('app-switcher-enter-hr@org')).toHaveTextContent('进入');
   });

@@ -160,7 +160,7 @@ describe('AccountMenu identity', () => {
     expect(screen.queryByText('退出个人账号')).not.toBeInTheDocument();
   });
 
-  it('keeps enterprise sign-out at the footer and profile editing in the identity header', async () => {
+  it('keeps enterprise sign-out at the footer and profile editing first, under the identity head', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const editProfile = vi.fn();
     mocks.enterprise.mode = {
@@ -171,8 +171,8 @@ describe('AccountMenu identity', () => {
     await user.click(screen.getByRole('button', { name: /Admin/ }));
     const rows = screen.getAllByRole('menuitem');
     expect(rows.at(-1)).toHaveTextContent('退出企业账号');
-    expect(rows.some(row => row.textContent?.includes('编辑资料'))).toBe(false);
-    await user.click(screen.getByRole('button', { name: '编辑资料' }));
+    expect(rows[0]).toHaveAccessibleName('编辑资料');
+    await user.click(rows[0]);
     await flushMenuClose();
     expect(editProfile).toHaveBeenCalledOnce();
     await user.click(screen.getByRole('button', { name: /Admin/ }));
@@ -192,15 +192,20 @@ describe('AccountMenu identity', () => {
     expect(mocks.startEnterpriseLogin).toHaveBeenCalledOnce();
   });
 
-  it('opens settings only after the menu has gone', async () => {
+  it('opens settings only after the menu has gone, with focus off the account trigger', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderMenu();
-    await user.click(screen.getByRole('button', { name: '账号' }));
+    const trigger = screen.getByRole('button', { name: '账号' });
+    await user.click(trigger);
     await user.click(screen.getByRole('menuitem', { name: '设置' }));
     await flushMenuClose();
 
     expect(screen.queryByRole('menu')).toBeNull();
     expect(mocks.settings.openSystemSettings).toHaveBeenCalledOnce();
+    // Settings is a legacy dialog that takes no focus; Enter on the trigger behind it
+    // would reopen this menu underneath, so focus stays on the page body.
+    expect(trigger).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
   });
 
   it('keeps the local identity head separate from the signed-out login action', async () => {
@@ -222,11 +227,10 @@ describe('AccountMenu identity', () => {
     expect(screen.getByText('本地模式')).toBeInTheDocument();
     const menuItems = within(screen.getByRole('menu')).getAllByRole('menuitem');
     expect(menuItems.at(-1)).toHaveAccessibleName('登录');
-    expect(screen.queryByRole('menuitem', { name: '编辑资料' })).toBeNull();
+    // Profile editing is its own item, apart from sign-in.
+    expect(menuItems[0]).toHaveAccessibleName('编辑资料');
 
-    const editProfile = screen.getByRole('button', { name: '编辑资料' });
-    expect(editProfile).toHaveClass('group-hover:opacity-100', 'focus-visible:opacity-100');
-    await user.click(editProfile);
+    await user.click(menuItems[0]);
     await flushMenuClose();
     expect(onEditProfile).toHaveBeenCalledOnce();
     expect(screen.queryByRole('menu')).toBeNull();

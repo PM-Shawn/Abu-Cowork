@@ -121,6 +121,38 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
   );
 }
 
+// A set of choices where exactly one is current (language, appearance, the current app).
+// Items read as menuitemradio with aria-checked; the current one shows a check.
+export function MenuRadioGroup({ value, onValueChange, children }: {
+  value: string;
+  onValueChange: (value: string) => void;
+  children: ReactNode;
+}) {
+  return useMenuKind() === 'dropdown'
+    ? <DropdownMenuPrimitive.RadioGroup value={value} onValueChange={onValueChange}>{children}</DropdownMenuPrimitive.RadioGroup>
+    : <ContextMenuPrimitive.RadioGroup value={value} onValueChange={onValueChange}>{children}</ContextMenuPrimitive.RadioGroup>;
+}
+
+export function MenuRadioItem({ value, children, disabled }: { value: string; children: ReactNode; disabled?: boolean }) {
+  const kind = useMenuKind();
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6');
+  const check = <Icon icon={AppIcons.done} size="sm" />;
+  const body = <span className="min-w-0 flex-1 truncate">{children}</span>;
+  return kind === 'dropdown'
+    ? (
+      <DropdownMenuPrimitive.RadioItem value={value} disabled={disabled} className={className}>
+        {body}
+        <DropdownMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</DropdownMenuPrimitive.ItemIndicator>
+      </DropdownMenuPrimitive.RadioItem>
+    )
+    : (
+      <ContextMenuPrimitive.RadioItem value={value} disabled={disabled} className={className}>
+        {body}
+        <ContextMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</ContextMenuPrimitive.ItemIndicator>
+      </ContextMenuPrimitive.RadioItem>
+    );
+}
+
 export function MenuSeparator() {
   const className = 'my-1 h-px bg-separator';
   return useMenuKind() === 'dropdown'

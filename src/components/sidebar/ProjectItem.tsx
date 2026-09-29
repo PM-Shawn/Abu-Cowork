@@ -66,24 +66,19 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const [showAll, setShowAll] = useState(false);
   // What a menu item starts once its menu has gone: a rename field, a confirmation or
   // a legacy dialog must not open while the closing menu still holds focus.
-  const afterMenuClose = useRef<(() => void) | null>(null);
-  const renameAfterClose = useRef<string | null>(null);
+  // `holdFocus`: the rename field and the legacy dialogs (项目设置, 导出会话) must not
+  // have the menu hand focus back to its trigger or the row — the field needs it, and
+  // behind a legacy dialog Enter would reopen the menu. The confirmations are ds
+  // dialogs that take focus and give it back themselves.
+  const afterMenuClose = useRef<{ run: () => void; holdFocus: boolean } | null>(null);
 
-  // Runs from the menus' close-focus hook. Rename calls preventDefault so the menu
-  // does not hand focus back to its trigger or the row and the field keeps it; the
-  // other actions let focus return as before.
+  // Runs from the menus' close-focus hook, once the menu has gone.
   const runAfterMenuClose = (event: Event) => {
-    const renameId = renameAfterClose.current;
-    if (renameId) {
-      renameAfterClose.current = null;
-      event.preventDefault();
-      setEditingConvId(renameId);
-      return;
-    }
-    const action = afterMenuClose.current;
-    if (!action) return;
+    const pending = afterMenuClose.current;
+    if (!pending) return;
     afterMenuClose.current = null;
-    action();
+    if (pending.holdFocus) event.preventDefault();
+    pending.run();
   };
 
   const handleConvClick = (convId: string) => {
@@ -121,7 +116,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       <MenuItem icon={project.pinned ? AppIcons.unpin : AppIcons.pin} onSelect={() => togglePin(project.id)}>
         {project.pinned ? t.project.unpin : t.project.pin}
       </MenuItem>
-      <MenuItem icon={AppIcons.settings} onSelect={() => { afterMenuClose.current = () => onOpenSettings(project.id); }}>
+      <MenuItem icon={AppIcons.settings} onSelect={() => { afterMenuClose.current = { run: () => onOpenSettings(project.id), holdFocus: true }; }}>
         {t.project.editSettings}
       </MenuItem>
       <MenuItem
@@ -136,10 +131,10 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
         {t.project.openInFinder}
       </MenuItem>
       <MenuSeparator />
-      <MenuItem icon={AppIcons.archive} onSelect={() => { afterMenuClose.current = () => { void confirmArchive(); }; }}>
+      <MenuItem icon={AppIcons.archive} onSelect={() => { afterMenuClose.current = { run: () => { void confirmArchive(); }, holdFocus: false }; }}>
         {t.project.archive}
       </MenuItem>
-      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { afterMenuClose.current = () => { void confirmDelete(); }; }}>
+      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { afterMenuClose.current = { run: () => { void confirmDelete(); }, holdFocus: false }; }}>
         {t.project.delete}
       </MenuItem>
     </>
@@ -150,7 +145,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   // One list, shown both by right-click and by the "⋯" button.
   const conversationMenuItems = (convId: string) => (
     <>
-      <MenuItem icon={AppIcons.rename} onSelect={() => { renameAfterClose.current = convId; }}>
+      <MenuItem icon={AppIcons.rename} onSelect={() => { afterMenuClose.current = { run: () => setEditingConvId(convId), holdFocus: true }; }}>
         {t.sidebar.renameConversation}
       </MenuItem>
       <MenuItem
@@ -158,8 +153,9 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
         onSelect={() => {
           // Pre-load so the share dialog opens straight into ready state,
           // matching Sidebar.handleExport's behavior.
-          afterMenuClose.current = () => {
-            void loadConversation(convId).then(() => setShareConvId(convId));
+          afterMenuClose.current = {
+            run: () => { void loadConversation(convId).then(() => setShareConvId(convId)); },
+            holdFocus: true,
           };
         }}
       >

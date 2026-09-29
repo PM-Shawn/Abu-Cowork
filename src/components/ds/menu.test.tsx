@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { ContextMenu } from './context-menu';
 import { AppIcons } from './icons';
-import { Menu, MenuItem, MenuLabel, MenuSeparator, MenuSub } from './menu';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from './menu';
 import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
 
@@ -343,6 +343,70 @@ describe('onCloseAutoFocus', () => {
     await act(() => vi.runOnlyPendingTimersAsync());
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
+  });
+});
+
+describe('MenuRadioGroup', () => {
+  const themes = (
+    <>
+      <MenuRadioItem value="system">System</MenuRadioItem>
+      <MenuRadioItem value="light">Light</MenuRadioItem>
+      <MenuRadioItem value="dark">Dark</MenuRadioItem>
+    </>
+  );
+
+  it('marks the current choice, reports a new one, and closes the menu', async () => {
+    const user = userEvent.setup();
+    const onValueChange = vi.fn();
+    render(
+      <Menu trigger={<Button>Appearance</Button>}>
+        <MenuRadioGroup value="light" onValueChange={onValueChange}>{themes}</MenuRadioGroup>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Appearance' }));
+    const light = screen.getByRole('menuitemradio', { name: 'Light' });
+    expect(light).toHaveAttribute('aria-checked', 'true');
+    expect(light.querySelector('svg')).not.toBeNull();
+    const dark = screen.getByRole('menuitemradio', { name: 'Dark' });
+    expect(dark).toHaveAttribute('aria-checked', 'false');
+    expect(dark.querySelector('svg')).toBeNull();
+    await user.click(dark);
+    expect(onValueChange).toHaveBeenCalledWith('dark');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('is reachable from the keyboard inside a submenu', async () => {
+    const user = userEvent.setup();
+    const onValueChange = vi.fn();
+    render(
+      <Menu trigger={<Button>Account</Button>}>
+        <MenuSub label="Appearance">
+          <MenuRadioGroup value="system" onValueChange={onValueChange}>{themes}</MenuRadioGroup>
+        </MenuSub>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Account' }));
+    await user.keyboard('{ArrowDown}{ArrowRight}');
+    expect(await screen.findByRole('menuitemradio', { name: 'System' })).toHaveFocus();
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(onValueChange).toHaveBeenCalledWith('light');
+  });
+
+  it('works inside a ContextMenu too', async () => {
+    const user = userEvent.setup();
+    const onValueChange = vi.fn();
+    render(
+      <ContextMenu content={<MenuRadioGroup value="dark" onValueChange={onValueChange}>{themes}</MenuRadioGroup>}>
+        <div>Message body</div>
+      </ContextMenu>,
+      { wrapper: DesignSystemProvider },
+    );
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(await screen.findByRole('menuitemradio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('menuitemradio', { name: 'System' }));
+    expect(onValueChange).toHaveBeenCalledWith('system');
   });
 });
 

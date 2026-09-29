@@ -10,7 +10,7 @@ import AppLogo from '@/components/app/AppLogo';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator } from '@/components/ds/menu';
 
 /**
  * The app switcher, beside Abu's own name in the sidebar's brand row (product
@@ -52,29 +52,28 @@ export default function AppSwitcher({ className }: { className?: string }) {
     void usePluginAuthorStore.getState().create('app').catch((error) => addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) }));
   };
 
-  // An app row carries a logo, a name and a one-line description. The current app
-  // shows a check; the others show 进入 while highlighted.
+  // An app row carries a logo, a name and a one-line description. The rows are one
+  // radio group, so the current app is checked (aria-checked); the others show 进入
+  // while highlighted.
   const row = (app: AppDefinition, current: boolean) => (
-    <MenuItem key={app.appId} onSelect={() => enter(app.appId)}>
+    <MenuRadioItem key={app.appId} value={app.appId}>
       <span data-testid={`app-switcher-item-${app.appId}`} className="flex items-center gap-2">
         <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} general={app.appId === GENERAL_APP_ID} size="sm" />
         <span className="min-w-0 flex-1 truncate">
           {app.name}
           {app.description && <span className="ml-2 text-ui-sm text-label-tertiary">{app.description}</span>}
         </span>
-        {current
-          ? <Icon icon={AppIcons.done} size="sm" className="text-label-secondary" />
-          : (
-            <span
-              data-testid={`app-switcher-enter-${app.appId}`}
-              aria-hidden="true"
-              className="hidden shrink-0 text-ui-sm text-label-tertiary in-data-highlighted:inline"
-            >
-              {t.appSwitcher.enter}
-            </span>
-          )}
+        {!current && (
+          <span
+            data-testid={`app-switcher-enter-${app.appId}`}
+            aria-hidden="true"
+            className="hidden shrink-0 text-ui-sm text-label-tertiary in-data-highlighted:inline"
+          >
+            {t.appSwitcher.enter}
+          </span>
+        )}
       </span>
-    </MenuItem>
+    </MenuRadioItem>
   );
 
   return (
@@ -82,12 +81,13 @@ export default function AppSwitcher({ className }: { className?: string }) {
       <Menu
         open={open}
         onOpenChange={setOpen}
-        onCloseAutoFocus={() => {
+        onCloseAutoFocus={(event) => {
           const action = afterMenuClose.current;
           if (!action) return;
           afterMenuClose.current = null;
-          // Focus still returns to the trigger, as before; a dialog that focuses a
-          // field on mount takes it after this.
+          // These open legacy dialogs that take no focus themselves; keeping focus off
+          // the trigger stops Enter or Space from reopening the menu underneath them.
+          event.preventDefault();
           action();
         }}
         trigger={
@@ -113,9 +113,11 @@ export default function AppSwitcher({ className }: { className?: string }) {
         <div data-testid="app-switcher-menu" className="w-60">
           {/* A long app list scrolls inside the menu instead of running off the window. */}
           <div className="max-h-96 overflow-y-auto">
-            {!isGeneral && allowExit && row(apps[0], false)}
-            {recent.length > 0 && (<><MenuLabel>{t.appSwitcher.recent}</MenuLabel>{recent.map((app) => row(app, app.appId === selected.appId))}</>)}
-            {rest.length > 0 && (<><MenuLabel>{t.appSwitcher.mine}</MenuLabel>{rest.map((app) => row(app, app.appId === selected.appId))}</>)}
+            <MenuRadioGroup value={selected.appId} onValueChange={enter}>
+              {!isGeneral && allowExit && row(apps[0], false)}
+              {recent.length > 0 && (<><MenuLabel>{t.appSwitcher.recent}</MenuLabel>{recent.map((app) => row(app, app.appId === selected.appId))}</>)}
+              {rest.length > 0 && (<><MenuLabel>{t.appSwitcher.mine}</MenuLabel>{rest.map((app) => row(app, app.appId === selected.appId))}</>)}
+            </MenuRadioGroup>
           </div>
           <MenuSeparator />
           <MenuItem icon={AppIcons.appMarket} onSelect={() => { afterMenuClose.current = () => setAppMarketOpen(true); }}>

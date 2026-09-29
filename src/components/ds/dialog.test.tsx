@@ -97,6 +97,22 @@ describe('Dialog', () => {
     expect(screen.getByRole('dialog', { name: 'Second' })).toBeInTheDocument();
   });
 
+  it('keeps a hidden title as the accessible name without showing it', () => {
+    render(
+      <Dialog open title="Search" titleHidden>
+        <input aria-label="Query" />
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Search' });
+    const title = screen.getByText('Search');
+    expect(title).not.toHaveClass('text-title');
+    // Radix VisuallyHidden clips the element to one pixel.
+    expect(title.style.position).toBe('absolute');
+    expect(title.style.width).toBe('1px');
+    expect(dialog.querySelector('.mt-4')).toBeNull();
+  });
+
   it('marks its content as an open layer and dims the window behind it', async () => {
     const user = userEvent.setup();
     render(<RenameDialog />, { wrapper: DesignSystemProvider });

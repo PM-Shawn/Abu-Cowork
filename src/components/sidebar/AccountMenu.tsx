@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type ComponentProps, type ReactNode } from 'react';
+import { useState, useRef, useCallback, type ComponentProps } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useAccountStore } from '@/core/account/accountStore';
@@ -7,11 +7,10 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import { Avatar } from '@/components/ds/avatar';
-import { Button, IconButton } from '@/components/ds/button';
+import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
-import { Select } from '@/components/ds/select';
+import { Menu, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { Spinner } from '@/components/ds/spinner';
 import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
@@ -26,10 +25,10 @@ type IconGlyph = ComponentProps<typeof Icon>['icon'];
  *
  * A single avatar trigger opens the menu — mirrors Claude / TRAE / WorkBuddy.
  * High-frequency prefs are surfaced inline so the user doesn't have to open the
- * full settings dialog: theme and language switch via inline selects, and
+ * full settings dialog: theme and language switch from their own submenus, and
  * check-for-updates runs the real update flow (check → download → restart)
- * reusing the store-backed update state. Those inline controls keep the menu
- * open so the user sees the change take effect.
+ * reusing the store-backed update state; that row keeps the menu open so the
+ * user sees the result in place.
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
   const { t, locale } = useI18n();
@@ -55,7 +54,8 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
 
   const [open, setOpen] = useState(false);
   const [checkedResult, setCheckedResult] = useState<'idle' | 'up-to-date'>('idle');
-  // Settings, profile, feedback and sign-in open dialogs of their own: they start
+  // Profile, settings, account settings, feedback, enterprise login and sign-in open
+  // dialogs of their own: they start
   // once the menu has gone, so no dialog opens inside or under the closing menu.
   const afterMenuClose = useRef<(() => void) | null>(null);
   const openAfterClose = (action: () => void) => { afterMenuClose.current = action; };
@@ -215,12 +215,14 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
       open={open}
       onOpenChange={setOpen}
       side="top"
-      onCloseAutoFocus={() => {
+      onCloseAutoFocus={(event) => {
         const action = afterMenuClose.current;
         if (!action) return;
         afterMenuClose.current = null;
-        // Focus still returns to the trigger, as before; a dialog that focuses a field
-        // on mount takes it after this.
+        // These open legacy dialogs that take no focus themselves; keeping focus off the
+        // trigger (it stays on the page body, as before) stops Enter or Space from
+        // reopening the menu underneath the dialog.
+        event.preventDefault();
         action();
       }}
       trigger={
@@ -236,20 +238,16 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     >
       <div className="w-60">
         {/* Authenticated identity, or the local-mode account entry. */}
-        <div className="group flex items-center gap-2 px-2 py-2">
+        <div className="flex items-center gap-2 px-2 py-2">
           {avatar('lg')}
           <div className="min-w-0 flex-1">
             <div className="truncate text-ui font-semibold text-label">{accountLabel}</div>
             <div className="truncate text-caption text-label-tertiary">{accountDetail}</div>
           </div>
-          <IconButton
-            icon={AppIcons.rename}
-            label={t.sidebar.editProfile}
-            size="sm"
-            onClick={() => { afterMenuClose.current = onEditProfile; setOpen(false); }}
-            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-          />
         </div>
+        <MenuItem icon={AppIcons.rename} onSelect={() => openAfterClose(onEditProfile)}>
+          {t.sidebar.editProfile}
+        </MenuItem>
 
         <MenuSeparator />
 
@@ -271,23 +269,21 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           {t.settings.title}
         </MenuItem>
 
-        <PreferenceRow icon={AppIcons.language} label={t.settings.language}>
-          <Select
-            label={t.settings.language}
-            value={language}
-            options={languageOptions}
-            onValueChange={(v) => setLanguage(v as LanguageSetting)}
-          />
-        </PreferenceRow>
+        <PreferenceSub
+          icon={AppIcons.language}
+          label={t.settings.language}
+          value={language}
+          options={languageOptions}
+          onValueChange={(v) => setLanguage(v as LanguageSetting)}
+        />
 
-        <PreferenceRow icon={AppIcons.appearance} label={t.settings.appearance}>
-          <Select
-            label={t.settings.appearance}
-            value={theme}
-            options={themeOptions}
-            onValueChange={(v) => setTheme(v as typeof theme)}
-          />
-        </PreferenceRow>
+        <PreferenceSub
+          icon={AppIcons.appearance}
+          label={t.settings.appearance}
+          value={theme}
+          options={themeOptions}
+          onValueChange={(v) => setTheme(v as typeof theme)}
+        />
 
         <MenuSeparator />
 
@@ -337,13 +333,31 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   );
 }
 
-// A menu line that holds its own control (language, appearance) instead of being an item.
-function PreferenceRow({ icon, label, children }: { icon: IconGlyph; label: string; children: ReactNode }) {
+// Language and appearance: a submenu whose line shows the current choice and whose
+// items pick one, reachable with the arrow keys like every other item.
+function PreferenceSub({ icon, label, value, options, onValueChange }: {
+  icon: IconGlyph;
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onValueChange: (value: string) => void;
+}) {
+  const current = options.find((option) => option.value === value)?.label;
   return (
-    <div className="flex h-7 items-center gap-2 px-2">
-      <Icon icon={icon} size="sm" className="text-label-secondary" />
-      <span className="min-w-0 flex-1 truncate text-ui text-label">{label}</span>
-      {children}
-    </div>
+    <MenuSub
+      icon={icon}
+      label={(
+        <span className="flex items-center gap-2">
+          <span className="min-w-0 flex-1 truncate">{label}</span>
+          {current && <span className="shrink-0 text-ui-sm text-label-tertiary">{current}</span>}
+        </span>
+      )}
+    >
+      <MenuRadioGroup value={value} onValueChange={onValueChange}>
+        {options.map((option) => (
+          <MenuRadioItem key={option.value} value={option.value}>{option.label}</MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
+    </MenuSub>
   );
 }

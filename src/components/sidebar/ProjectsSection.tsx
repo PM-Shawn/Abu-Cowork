@@ -4,8 +4,10 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useI18n } from '@/i18n';
-import { Plus, FolderClosed } from 'lucide-react';
 import { format } from '@/i18n';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import ProjectItem from './ProjectItem';
 import CreateProjectDialog from '@/components/common/CreateProjectDialog';
 import ProjectSettingsDialog from '@/components/common/ProjectSettingsDialog';
@@ -95,25 +97,27 @@ export default function ProjectsSection() {
     <>
       <div className="px-4 pb-1">
         {/* Section header */}
-        <div className="group/header flex items-center justify-between px-2 py-1.5">
-          <button
+        <div className="group/header flex h-7 items-center justify-between pr-2">
+          <Button
+            variant="plain"
+            size="sm"
             onClick={() => setSectionCollapsed(!sectionCollapsed)}
-            className="flex items-center gap-1 text-body font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+            className="text-label-tertiary hover:text-label"
           >
-            <span>{t.project.sectionTitle}</span>
-          </button>
-          <button
+            {t.project.sectionTitle}
+          </Button>
+          <IconButton
+            icon={AppIcons.add}
+            label={t.project.createProject}
+            size="sm"
             onClick={() => setShowCreateDialog(true)}
-            className="p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors opacity-0 group-hover/header:opacity-100"
-            title={t.project.createProject}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
+            className="opacity-0 group-hover/header:opacity-100 focus-visible:opacity-100"
+          />
         </div>
 
         {/* Project list */}
         {!sectionCollapsed && projects.length > 0 ? (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             {projects.map((project) => (
               <ProjectItem
                 key={project.id}
@@ -126,35 +130,41 @@ export default function ProjectsSection() {
             ))}
           </div>
         ) : !sectionCollapsed ? (
-          <button
+          <Button
+            variant="plain"
+            size="sm"
             onClick={() => setShowCreateDialog(true)}
-            className="w-full px-2 py-2 text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors text-left"
+            className="w-full justify-start font-normal text-label-tertiary hover:text-label"
           >
             + {t.project.emptyState}
-          </button>
+          </Button>
         ) : null}
 
         {/* Archived projects */}
         {!sectionCollapsed && archivedProjects.length > 0 && (
-          <div className="px-2 mt-1">
-            <button
+          <div className="mt-1">
+            <Button
+              variant="plain"
+              size="sm"
               onClick={() => setShowArchived(!showArchived)}
-              className="text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] transition-colors"
+              className="font-normal text-label-tertiary hover:text-label-secondary"
             >
               {format(t.project.archivedCount, { count: String(archivedProjects.length) })}
-            </button>
+            </Button>
             {showArchived && (
-              <div className="mt-1 space-y-0.5">
+              <div className="mt-1 space-y-1">
                 {archivedProjects.map((p) => (
-                  <div key={p.id} className="flex items-center gap-1.5 px-2 py-1 text-minor text-[var(--abu-text-muted)]">
-                    <span className="truncate flex-1 flex items-center gap-1.5"><FolderClosed className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />{p.name}</span>
-                    <button
-                      onClick={() => restoreProject(p.id)}
-                      className="shrink-0 text-[var(--abu-clay)] hover:underline"
-                    >
+                  <div key={p.id} className="flex h-6 items-center gap-2 px-2 text-ui-sm text-label-tertiary">
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <Icon icon={AppIcons.folder} size="sm" />
+                      <span className="truncate">{p.name}</span>
+                    </span>
+                    <Button variant="plain" size="sm" onClick={() => restoreProject(p.id)} className="text-link">
                       {t.project.restore}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={() => {
                         // Unlink conversations then delete
                         const convs = Object.values(conversationIndex).filter(c => c.projectId === p.id);
@@ -162,10 +172,9 @@ export default function ProjectsSection() {
                         for (const c of convs) setProj(c.id, undefined);
                         deleteProject(p.id);
                       }}
-                      className="shrink-0 text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:underline"
                     >
                       {t.project.delete}
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>

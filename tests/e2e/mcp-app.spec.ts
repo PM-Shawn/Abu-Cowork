@@ -280,7 +280,7 @@ async function toggleDemoConnector(page: Page, expectConnected: boolean): Promis
 
 /** Reveal the sidebar if it is collapsed; a no-op when it is already open. */
 async function showSidebar(page: Page): Promise<void> {
-  const sidebarToggle = page.getByTitle(/显示侧栏|Show sidebar/);
+  const sidebarToggle = page.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ });
   if (await sidebarToggle.count()) await sidebarToggle.first().click();
 }
 

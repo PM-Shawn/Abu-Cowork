@@ -258,14 +258,15 @@ test.describe.serial('personal account login UI', () => {
     const localMenu = page.getByRole('menu');
     await expect(localMenu.getByText('本地模式', { exact: true })).toBeVisible();
     await expect(localMenu.getByRole('menuitem').last()).toHaveAccessibleName('登录');
-    await expect(localMenu.getByRole('menuitem', { name: '编辑资料', exact: true })).toHaveCount(0);
-    const editProfileButton = localMenu.getByTitle('编辑资料');
+    // Profile editing is the first item, apart from the sign-in item at the end.
+    const editProfileButton = localMenu.getByRole('menuitem', { name: '编辑资料', exact: true });
+    await expect(localMenu.getByRole('menuitem').first()).toHaveAccessibleName('编辑资料');
     await captureLightAndDark(page, testInfo, '01-local-menu-signed-out');
     await captureHoveredLightAndDark(
       page,
       testInfo,
       '01b-profile-edit-hover',
-      editProfileButton.locator('..'),
+      editProfileButton,
       editProfileButton,
     );
     await editProfileButton.click();

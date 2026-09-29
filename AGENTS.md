@@ -403,7 +403,7 @@ radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `durat
 
 | Category | Classes |
 |---|---|
-| Surfaces | `bg-desk` `bg-surface` `bg-raised` `bg-material` `bg-code` `bg-field` `bg-scrim` |
+| Surfaces | `bg-desk` `bg-surface` `bg-raised` `bg-code` `bg-field` `bg-scrim` |
 | Fills | `bg-fill` `bg-fill-hover` `bg-fill-selected` `bg-fill-pressed` |
 | Text | `text-label` `text-label-secondary` `text-label-tertiary` `text-label-placeholder` `text-link` |
 | Primary action | `bg-emphasis` + `text-on-emphasis` |
@@ -434,6 +434,15 @@ never uses a bare `animate-in` class, because the legacy global `.animate-in` ru
 `data-transparency="reduced"` and `data-motion="reduced"` on `<html>`; `tokens.css` keys
 off those attributes only — never add `prefers-*` media queries to it. Animated floating
 layers carry `data-ds-motion` and spinners `data-ds-spinner` so reduced motion can stop them.
+
+**Window material**: `electron/windowChrome.cjs` `windowMaterial()` decides what the OS draws
+behind the window (`vibrancy` on macOS, `mica` on Windows 11 22H2+, otherwise `none`), passes
+it to the page as `--abu-window-material`, and `src/styles/windowMaterial.ts` writes
+`data-window-material` on `<html>` before the first paint. With a material the window
+background is transparent and `bg-desk` is translucent; with `none` tokens.css makes `desk`
+opaque. Content cards (`bg-surface`) and every floating layer — menus, popovers, tooltips,
+toasts and dialogs (`bg-raised`) — are always opaque, and the page never uses `backdrop-filter`
+(`backdrop-blur-*`): the window material is the only translucent layer.
 
 When a directory finishes migrating, append its glob to the list in the same PR. Never remove an
 entry. `scripts/designTokens.test.ts` fails if a token change breaks WCAG contrast in any of the

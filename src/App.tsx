@@ -58,6 +58,7 @@ const platformInitialization = initPlatform().then((detectedPlatform) => {
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS, isWindows } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
@@ -877,10 +878,11 @@ function App() {
 
   return (
     <ErrorBoundary onError={traceAppRootRenderError}>
+    <DesignSystemProvider>
     <TooltipProvider delayDuration={200}>
       <div
         data-abu-app-shell
-        className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--abu-bg-canvas)]"
+        className="relative flex h-full w-full flex-col overflow-hidden bg-desk"
       >
         {/* Chromium builds the OS drag region by walking the layout tree in
             DOCUMENT order, unioning `drag` rects and subtracting `no-drag`
@@ -894,7 +896,7 @@ function App() {
 
         <div
           data-abu-app-layout
-          className="flex min-h-0 w-full flex-1 overflow-hidden bg-[var(--abu-bg-canvas)]"
+          className="flex min-h-0 w-full flex-1 overflow-hidden"
         >
           {/* Sidebar - width changes are always instant (no slide animation). */}
           <div
@@ -919,8 +921,8 @@ function App() {
               <main
                 data-electron-no-drag
                 className={cn(
-                  'relative bg-[var(--abu-bg-base)]',
-                  'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
+                  'relative bg-surface',
+                  'mt-2 mb-2 ml-2 rounded-panel shadow-panel overflow-hidden',
                   previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
                   // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
                   rightPanelBeside ? 'mr-1' : 'mr-2',
@@ -1003,6 +1005,7 @@ function App() {
 
       </div>
     </TooltipProvider>
+    </DesignSystemProvider>
     </ErrorBoundary>
   );
 }

@@ -4,7 +4,7 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Dialog, DialogClose } from '@/components/ds/dialog';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { Popover } from '@/components/ds/popover';
 import { Select } from '@/components/ds/select';
 import { TextField } from '@/components/ds/text-field';
@@ -18,6 +18,7 @@ export function OverlaySection() {
   const [draft, setDraft] = useState('');
   const [popoverModel, setPopoverModel] = useState('opus');
   const [answer, setAnswer] = useState('none yet');
+  const [menuTheme, setMenuTheme] = useState('system');
 
   const askToDelete = async () => {
     const confirmed = await confirm({
@@ -46,6 +47,17 @@ export function OverlaySection() {
           <MenuItem icon={AppIcons.rename} shortcut="⌘R">Rename</MenuItem>
           <MenuItem icon={AppIcons.copy}>Copy link</MenuItem>
           <MenuItem icon={AppIcons.share} disabled>Share (not available)</MenuItem>
+          <MenuSub icon={AppIcons.folder} label="Move to">
+            <MenuItem icon={AppIcons.folder}>Launch plan</MenuItem>
+            <MenuItem icon={AppIcons.folder}>Weekly report</MenuItem>
+          </MenuSub>
+          <MenuSub icon={AppIcons.appearance} label="Appearance">
+            <MenuRadioGroup value={menuTheme} onValueChange={setMenuTheme}>
+              <MenuRadioItem value="system">System</MenuRadioItem>
+              <MenuRadioItem value="light">Light</MenuRadioItem>
+              <MenuRadioItem value="dark">Dark</MenuRadioItem>
+            </MenuRadioGroup>
+          </MenuSub>
           <MenuSeparator />
           <MenuItem icon={AppIcons.delete} tone="danger">Delete</MenuItem>
         </Menu>
@@ -90,6 +102,14 @@ export function OverlaySection() {
           footer={<DialogClose asChild><Button variant="primary">Done</Button></DialogClose>}
         >
           <TextField aria-label="Folder path" placeholder="Folder path" />
+        </Dialog>
+        <Dialog
+          size="lg"
+          title="Search"
+          titleHidden
+          trigger={<Button>Dialog without a visible title</Button>}
+        >
+          <TextField aria-label="Search tasks" placeholder="Search tasks..." />
         </Dialog>
         <Button variant="danger" onClick={() => { void askToDelete(); }}>Confirm dialog</Button>
         <Button onClick={() => { void askToArchive(); }}>Confirm (default tone)</Button>

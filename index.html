@@ -34,36 +34,39 @@
         align-items: center;
         justify-content: center;
         height: 100vh;
-        background: #faf9f5;
-        color: #656358;
+        background: #ececf0;
+        color: #1d1d1f;
         font-family: -apple-system, BlinkMacSystemFont, sans-serif;
         font-size: 14px;
       }
-      html.dark #app-loading { background: #1a1917; color: #8a8479; }
-      html.dark #app-error   { background: #1a1917; color: #f0ede8; }
+      html.dark #app-loading { background: #141416; color: #f5f5f7; }
+      html.dark #app-error   { background: #141416; color: #f5f5f7; }
       /* Shown only if React fails to mount (JS crash before React renders) */
       #app-error {
         display: none;
         padding: 40px;
-        background: #faf9f5;
-        color: #141413;
+        background: #ececf0;
+        color: #1d1d1f;
         font-family: -apple-system, BlinkMacSystemFont, sans-serif;
         min-height: 100vh;
         box-sizing: border-box;
       }
-      #app-error h2 { font-size: 18px; margin-bottom: 12px; color: #d97757; }
-      #app-error p  { font-size: 14px; color: #3d3929; line-height: 1.6; margin: 8px 0; }
+      #app-error h2 { font-size: 18px; margin-bottom: 12px; color: #1d1d1f; }
+      #app-error p  { font-size: 14px; color: #1d1d1f; line-height: 1.6; margin: 8px 0; }
       #app-error pre {
         margin-top: 16px;
         padding: 12px;
-        background: #f0eee6;
+        background: #e3e3e8;
         border-radius: 8px;
         font-size: 12px;
-        color: #656358;
+        color: #1d1d1f;
         white-space: pre-wrap;
         word-break: break-all;
       }
-      #app-error a { color: #d97757; }
+      #app-error a { color: #1d1d1f; }
+      html.dark #app-error h2,
+      html.dark #app-error p,
+      html.dark #app-error a { color: #f5f5f7; }
     </style>
     <script>
       // Catch fatal JS errors that occur before React mounts.

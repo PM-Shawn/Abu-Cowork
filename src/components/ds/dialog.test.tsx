@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
+import { useConfirm } from './confirm-context';
 import { Dialog, DialogClose } from './dialog';
 import { DesignSystemProvider } from './provider';
 
@@ -36,6 +37,8 @@ function TwoDialogs({ firstDirty = false }: { firstDirty?: boolean }) {
 }
 
 describe('Dialog', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it('opens from its trigger, closes on Escape, and returns focus to the trigger', async () => {
     const user = userEvent.setup();
     render(<RenameDialog />, { wrapper: DesignSystemProvider });
@@ -95,6 +98,86 @@ describe('Dialog', () => {
     await user.click(screen.getByRole('button', { name: 'Open second' }));
     expect(screen.queryByRole('dialog', { name: 'First' })).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Second' })).toBeInTheDocument();
+  });
+
+  it('gives focus back to the element focused before a dialog without a trigger opened', async () => {
+    const user = userEvent.setup();
+    function OpenedByCode() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <Button onClick={() => setOpen(true)}>Search</Button>
+          <Dialog open={open} onOpenChange={setOpen} title="Search" titleHidden>
+            <input aria-label="Query" />
+          </Dialog>
+        </>
+      );
+    }
+    render(<OpenedByCode />, { wrapper: DesignSystemProvider });
+    const opener = screen.getByRole('button', { name: 'Search' });
+    await user.click(opener);
+    expect(screen.getByRole('textbox', { name: 'Query' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it('gives focus back to the element that asked a useConfirm() question', async () => {
+    const user = userEvent.setup();
+    function AskingRow() {
+      const confirm = useConfirm();
+      return (
+        <Button onClick={() => { void confirm({ title: 'Archive this project?', confirmLabel: 'Archive' }); }}>
+          Launch plan
+        </Button>
+      );
+    }
+    render(<AskingRow />, { wrapper: DesignSystemProvider });
+    const row = screen.getByRole('button', { name: 'Launch plan' });
+    await user.click(row);
+    const question = screen.getByRole('alertdialog', { name: 'Archive this project?' });
+    await user.click(within(question).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await waitFor(() => expect(row).toHaveFocus());
+  });
+
+  it('keeps focus in the new dialog when the registry closes the old one', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<TwoDialogs />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Open first' }));
+    await user.click(screen.getByRole('button', { name: 'Open second' }));
+    const second = screen.getByRole('dialog', { name: 'Second' });
+    // Flush the closing dialog's deferred focus return.
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(second).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it('keeps a hidden title as the accessible name without showing it', () => {
+    render(
+      <Dialog open title="Search" titleHidden>
+        <input aria-label="Query" />
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Search' });
+    const title = screen.getByText('Search');
+    expect(title).not.toHaveClass('text-title');
+    // Radix VisuallyHidden clips the element to one pixel.
+    expect(title.style.position).toBe('absolute');
+    expect(title.style.width).toBe('1px');
+    expect(dialog.querySelector('.mt-4')).toBeNull();
+  });
+
+  it('centres itself by default and anchors its top edge with placement top', () => {
+    const { unmount } = render(<Dialog open title="Centred" />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('dialog')).toHaveClass('top-1/2', '-translate-y-1/2');
+    unmount();
+    render(<Dialog open title="Anchored" placement="top" />, { wrapper: DesignSystemProvider });
+    const anchored = screen.getByRole('dialog');
+    expect(anchored).toHaveClass('top-1/7', 'translate-y-0', 'left-1/2', '-translate-x-1/2');
+    expect(anchored).not.toHaveClass('top-1/2');
+    expect(anchored).not.toHaveClass('-translate-y-1/2');
   });
 
   it('marks its content as an open layer and dims the window behind it', async () => {

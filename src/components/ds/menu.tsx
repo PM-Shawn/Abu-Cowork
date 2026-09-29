@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './icon';
+import { AppIcons } from './icons';
 import { LayerScope } from './layer';
 import { useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
@@ -10,7 +11,9 @@ import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './s
 
 const MENU_PANEL = 'z-popover min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) p-1';
 
-export function Menu({ trigger, children, align = 'start', side = 'bottom', open, defaultOpen = false, onOpenChange }: {
+// onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
+// event.preventDefault() there to keep focus off the trigger (e.g. to focus a field).
+export function Menu({ trigger, children, align = 'start', side = 'bottom', open, defaultOpen = false, onOpenChange, onCloseAutoFocus }: {
   trigger: ReactNode;
   children: ReactNode;
   align?: 'start' | 'center' | 'end';
@@ -18,10 +21,11 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   open?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
+  const { id, onCloseAutoFocus: layerCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
       <DropdownMenuPrimitive.Trigger asChild>{trigger}</DropdownMenuPrimitive.Trigger>
@@ -30,7 +34,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
           align={align}
           side={side}
           sideOffset={4}
-          onCloseAutoFocus={onCloseAutoFocus}
+          onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
           data-ds-layer
           data-ds-motion
           data-electron-no-drag
@@ -45,13 +49,15 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   );
 }
 
+// onSelect receives Radix's select event; event.preventDefault() keeps the menu open
+// (an item whose result shows in the item itself, like checking for updates).
 export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect }: {
   children: ReactNode;
   icon?: LucideIcon;
   shortcut?: string;
   tone?: 'default' | 'danger';
   disabled?: boolean;
-  onSelect?: () => void;
+  onSelect?: (event: Event) => void;
 }) {
   const kind = useMenuKind();
   const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger');
@@ -63,8 +69,88 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
     </>
   );
   return kind === 'dropdown'
-    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={() => onSelect?.()} className={className}>{body}</DropdownMenuPrimitive.Item>
-    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={() => onSelect?.()} className={className}>{body}</ContextMenuPrimitive.Item>;
+    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</DropdownMenuPrimitive.Item>
+    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</ContextMenuPrimitive.Item>;
+}
+
+// A nested list inside a Menu or ContextMenu. It belongs to the parent menu's layer:
+// choosing one of its items closes the whole menu.
+export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: LucideIcon; children: ReactNode }) {
+  const kind = useMenuKind();
+  const container = useLayerContainer();
+  const triggerBody = (
+    <>
+      {icon && <Icon icon={icon} size="sm" className="text-label-secondary" />}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <Icon icon={AppIcons.disclose} size="sm" className="text-label-tertiary" />
+    </>
+  );
+  const triggerClass = cn(MENU_ITEM, 'data-[state=open]:bg-fill-selected');
+  const contentClass = cn('z-popover min-w-40 p-1', FLOAT_SURFACE, FLOAT_MOTION);
+  if (kind === 'dropdown') {
+    return (
+      <DropdownMenuPrimitive.Sub>
+        <DropdownMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</DropdownMenuPrimitive.SubTrigger>
+        <DropdownMenuPrimitive.Portal container={container}>
+          <DropdownMenuPrimitive.SubContent
+            sideOffset={4}
+            data-ds-motion
+            data-electron-no-drag
+            className={cn('origin-(--radix-dropdown-menu-content-transform-origin)', contentClass)}
+          >
+            {children}
+          </DropdownMenuPrimitive.SubContent>
+        </DropdownMenuPrimitive.Portal>
+      </DropdownMenuPrimitive.Sub>
+    );
+  }
+  return (
+    <ContextMenuPrimitive.Sub>
+      <ContextMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</ContextMenuPrimitive.SubTrigger>
+      <ContextMenuPrimitive.Portal container={container}>
+        <ContextMenuPrimitive.SubContent
+          sideOffset={4}
+          data-ds-motion
+          data-electron-no-drag
+          className={cn('origin-(--radix-context-menu-content-transform-origin)', contentClass)}
+        >
+          {children}
+        </ContextMenuPrimitive.SubContent>
+      </ContextMenuPrimitive.Portal>
+    </ContextMenuPrimitive.Sub>
+  );
+}
+
+// A set of choices where exactly one is current (language, appearance, the current app).
+// Items read as menuitemradio with aria-checked; the current one shows a check.
+export function MenuRadioGroup({ value, onValueChange, children }: {
+  value: string;
+  onValueChange: (value: string) => void;
+  children: ReactNode;
+}) {
+  return useMenuKind() === 'dropdown'
+    ? <DropdownMenuPrimitive.RadioGroup value={value} onValueChange={onValueChange}>{children}</DropdownMenuPrimitive.RadioGroup>
+    : <ContextMenuPrimitive.RadioGroup value={value} onValueChange={onValueChange}>{children}</ContextMenuPrimitive.RadioGroup>;
+}
+
+export function MenuRadioItem({ value, children, disabled }: { value: string; children: ReactNode; disabled?: boolean }) {
+  const kind = useMenuKind();
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6');
+  const check = <Icon icon={AppIcons.done} size="sm" />;
+  const body = <span className="min-w-0 flex-1 truncate">{children}</span>;
+  return kind === 'dropdown'
+    ? (
+      <DropdownMenuPrimitive.RadioItem value={value} disabled={disabled} className={className}>
+        {body}
+        <DropdownMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</DropdownMenuPrimitive.ItemIndicator>
+      </DropdownMenuPrimitive.RadioItem>
+    )
+    : (
+      <ContextMenuPrimitive.RadioItem value={value} disabled={disabled} className={className}>
+        {body}
+        <ContextMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</ContextMenuPrimitive.ItemIndicator>
+      </ContextMenuPrimitive.RadioItem>
+    );
 }
 
 export function MenuSeparator() {

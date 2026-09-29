@@ -1,14 +1,24 @@
-import { useEffect, useLayoutEffect, useCallback, useState, useRef } from 'react';
+import { useEffect, useCallback, useState, useRef } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useInboxStore } from '@/stores/inboxStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { useI18n } from '@/i18n';
 import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, UsersRound, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle, Globe } from 'lucide-react';
+import { Button, IconButton } from '@/components/ds/button';
+import { ContextMenu } from '@/components/ds/context-menu';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
+import { NavItem } from '@/components/ds/nav-item';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { FOCUS_RING } from '@/components/ds/styles';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
+import { Tooltip } from '@/components/ds/tooltip';
 import AppSwitcher from '@/components/sidebar/AppSwitcher';
 import AppLogo from '@/components/app/AppLogo';
 import { useAppStore, useSelectedApp } from '@/stores/appStore';
@@ -18,8 +28,6 @@ import type { AppNavItem } from '@/types/app';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
-import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { getPlatformShortLabel } from '@/core/im/platformLabels';
 import type { ConversationStatus } from '@/types';
@@ -56,25 +64,24 @@ function StatusIndicator({ status, onComplete }: StatusIndicatorProps) {
   }, [status, onComplete]);
 
   if (status === 'running') {
-    return <span className="w-2 h-2 rounded-full bg-[var(--abu-warning-solid)] animate-pulse shrink-0" />;
+    return <span className="w-2 h-2 rounded-full bg-warning animate-pulse shrink-0" />;
   }
   if (status === 'completed') {
-    return <span className="w-2 h-2 rounded-full bg-[var(--abu-success-solid)] shrink-0" />;
+    return <span className="w-2 h-2 rounded-full bg-success shrink-0" />;
   }
   if (status === 'error') {
-    return <span className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0" />;
+    return <span className="w-2 h-2 rounded-full bg-danger shrink-0" />;
   }
   return null;
 }
 
 function IMPlatformDot({ platform }: { platform: string }) {
   return (
-    <span
-      className="shrink-0 h-4 w-4 rounded text-caption font-bold leading-4 text-center bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]"
-      title={platform}
-    >
-      {getPlatformShortLabel(platform)}
-    </span>
+    <Tooltip content={platform}>
+      <span className="inline-flex shrink-0">
+        <Tag>{getPlatformShortLabel(platform)}</Tag>
+      </span>
+    </Tooltip>
   );
 }
 
@@ -108,16 +115,13 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   // Once a user accepts/ignores an item, the count drops even if other items
   // remain unread — matches the "things you still owe a decision on" mental model.
   const pendingInboxCount = useInboxStore((s) => s.getPendingCount());
+  const pluginUpdateCount = usePluginStore((s) => s.updateAvailableCount);
   const { t } = useI18n();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
 
-  // Context menu state
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; convId: string } | null>(null);
+  // The row whose "⋯" menu is open; right-click menus track their own state.
+  const [menuConvId, setMenuConvId] = useState<string | null>(null);
   const [shareConvId, setShareConvId] = useState<string | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const moveSubmenuRef = useRef<HTMLDivElement>(null);
-  const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
-  const [moveSubmenuStyle, setMoveSubmenuStyle] = useState<React.CSSProperties>({});
   const projectsMap = useProjectStore((s) => s.projects);
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
   // File-tree mode: the sidebar swaps its conversation list for the active
@@ -135,6 +139,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
+  const renameAfterClose = useRef<string | null>(null);
 
   // Guide modal state lives in the store so it can be reopened from Settings ›
   // About. Auto-opens on first launch only (below).
@@ -165,50 +170,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   // Profile edit modal state
   const [profileOpen, setProfileOpen] = useState(false);
 
-  // Close context menu when clicking outside
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleClick = () => { setContextMenu(null); setShowMoveSubmenu(false); };
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
-  }, [contextMenu]);
-
-  // Clamp context menu inside viewport once its real size is known.
-  useLayoutEffect(() => {
-    if (!contextMenu) return;
-    const el = contextMenuRef.current;
-    if (!el) return;
-    const margin = 8;
-    const rect = el.getBoundingClientRect();
-    const overflowX = rect.right - (window.innerWidth - margin);
-    const overflowY = rect.bottom - (window.innerHeight - margin);
-    if (overflowX <= 0 && overflowY <= 0) return;
-    setContextMenu((prev) => prev && {
-      ...prev,
-      x: Math.max(margin, prev.x - Math.max(0, overflowX)),
-      y: Math.max(margin, prev.y - Math.max(0, overflowY)),
-    });
-  }, [contextMenu]);
-
-  // Position "move to project" submenu: clamp to viewport, flip up when there isn't enough space below.
-  useLayoutEffect(() => {
-    if (!showMoveSubmenu) { setMoveSubmenuStyle({}); return; }
-    const el = moveSubmenuRef.current;
-    const trigger = el?.parentElement;
-    if (!el || !trigger) return;
-    const margin = 8;
-    const triggerRect = trigger.getBoundingClientRect();
-    const viewportH = window.innerHeight;
-    const spaceBelow = viewportH - triggerRect.top - margin;
-    const spaceAbove = triggerRect.bottom - margin;
-    const contentH = el.scrollHeight;
-    const flipUp = contentH > spaceBelow && spaceAbove > spaceBelow;
-    const maxH = Math.max(120, flipUp ? spaceAbove : spaceBelow);
-    setMoveSubmenuStyle(flipUp
-      ? { bottom: 0, top: 'auto', maxHeight: `${maxH}px` }
-      : { top: 0, maxHeight: `${maxH}px` });
-  }, [showMoveSubmenu]);
-
   // Sort by createdAt to keep positions stable during status updates
   // Filter out conversations belonging to projects, scheduled tasks, or triggers — they appear in their own sections
   // Use conversationIndex (lightweight metadata) instead of full conversations for listing
@@ -229,8 +190,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     .filter((c) => c.messageCount !== 0 || c.id === activeConversationId || !!c.imChannelId)
     .sort((a, b) => b.createdAt - a.createdAt);
 
-  const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
-    e.stopPropagation();
+  const handleDeleteConversation = async (convId: string) => {
     // Ensure conversation is loaded before exporting for undo
     await loadConversation(convId);
     // Save conversation data for undo before deleting
@@ -256,26 +216,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     clearCompletedStatus(convId);
   }, [clearCompletedStatus]);
 
-  const handleContextMenu = (e: React.MouseEvent, convId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // Initial position — useLayoutEffect below fine-tunes after measuring real size.
-    setContextMenu({ x: e.clientX, y: e.clientY, convId });
-  };
-
-  // Claude-style "⋯" trigger: same menu as right-click, anchored under the button.
-  const handleMenuButton = (e: React.MouseEvent<HTMLButtonElement>, convId: string) => {
-    e.stopPropagation();
-    if (contextMenu?.convId === convId) {
-      setContextMenu(null);
-      setShowMoveSubmenu(false);
-      return;
-    }
-    const rect = e.currentTarget.getBoundingClientRect();
-    setShowMoveSubmenu(false);
-    setContextMenu({ x: rect.left, y: rect.bottom + 4, convId });
-  };
-
   const handleExport = async (convId: string) => {
     // Ensure the conversation is loaded before the dialog reads from it;
     // the dialog itself will call exportConversationForShare which also
@@ -283,7 +223,65 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     // opens straight into the "ready" state when possible.
     await loadConversation(convId);
     setShareConvId(convId);
-    setContextMenu(null);
+  };
+
+  const activeProjects = Object.values(projectsMap).filter((p) => !p.archived);
+
+  // 重命名 only marks the row; the rename field opens once the menu has gone, from its
+  // close-focus hook, and preventDefault stops the menu handing focus back to the
+  // trigger or the row so the field keeps it.
+  const startRenameAfterClose = (convId: string) => (event: Event) => {
+    if (renameAfterClose.current !== convId) return;
+    renameAfterClose.current = null;
+    event.preventDefault();
+    setEditingId(convId);
+  };
+
+  // One menu for a row, shown both by right-click and by the "⋯" button.
+  const conversationMenuItems = (convId: string) => {
+    const convMeta = conversationIndex[convId];
+    return (
+      <>
+        {/* Rename starts from the menu's close-focus hook; see startRenameAfterClose. */}
+        <MenuItem icon={AppIcons.rename} onSelect={() => { renameAfterClose.current = convId; }}>
+          {t.sidebar.renameConversation}
+        </MenuItem>
+        <MenuItem icon={AppIcons.download} onSelect={() => { void handleExport(convId); }}>
+          {t.sidebar.exportConversation}
+        </MenuItem>
+        {activeProjects.length > 0 && (
+          <MenuSub icon={AppIcons.import} label={t.project.moveToProject}>
+            {/* A long project list scrolls inside the submenu instead of running off the window. */}
+            <div className="max-h-60 overflow-y-auto">
+              {activeProjects.map((p) => (
+                <MenuItem
+                  key={p.id}
+                  icon={convMeta?.projectId === p.id ? AppIcons.done : AppIcons.folder}
+                  onSelect={() => useChatStore.getState().setConversationProject(convId, p.id)}
+                >
+                  {p.name}
+                </MenuItem>
+              ))}
+            </div>
+            {convMeta?.projectId && (
+              <>
+                <MenuSeparator />
+                <MenuItem
+                  icon={AppIcons.remove}
+                  onSelect={() => useChatStore.getState().setConversationProject(convId, undefined)}
+                >
+                  {t.project.removeFromProject}
+                </MenuItem>
+              </>
+            )}
+          </MenuSub>
+        )}
+        <MenuSeparator />
+        <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { void handleDeleteConversation(convId); }}>
+          {t.sidebar.deleteConversation}
+        </MenuItem>
+      </>
+    );
   };
 
   const handleImport = async () => {
@@ -302,11 +300,12 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   };
 
   return (
-    <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-canvas)]">
+    // Paints no background: the shell's desk shows through.
+    <div className="flex flex-col h-full w-[260px]">
       {/* Electron Windows aligns this brand row with the raised center/right
-          headers: 8px canvas gutter + 44px header. The canvas background stays
-          unchanged, without a card edge or divider. Other hosts retain their
-          existing platform-specific clearance. */}
+          headers: 8px desk gutter + 44px header, without a card edge or
+          divider. Other hosts retain their existing platform-specific
+          clearance. */}
       {windowsWorkspaceHeader ? (
         // Abu's own name keeps the brand row; the switcher sits beside it and
         // reads 发现应用 until the user is inside an app.
@@ -316,7 +315,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
         >
           {/* Abu's name only: the version lives in the account menu, and the
               row's width belongs to the switcher beside it. */}
-          <span className="shrink-0 whitespace-nowrap text-h-xs font-semibold text-[var(--abu-text-primary)]">
+          <span className="shrink-0 whitespace-nowrap text-ui font-semibold text-label">
             {t.common.appName}
           </span>
           <AppSwitcher className="min-w-0 flex-1" />
@@ -339,123 +338,84 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       )}
       {/* Top Navigation — the current app's entries (the general shell lists
           Abu's six), rendered from one table of targets. */}
-      <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
+      <nav className="flex flex-col gap-1 px-4 pb-2" aria-label="Main navigation">
         {navItems.map((item) => {
           const target = item.target;
           if (target === 'builtin:chat') {
-            const active = activeConversationId === null && viewMode === 'chat';
             return (
-              <button
+              <NavItem
                 key={item.id}
                 data-sidebar-action="new-task"
+                icon={AppIcons.add}
+                label={navTitle(item, t.sidebar.newTask)}
+                selected={activeConversationId === null && viewMode === 'chat'}
                 onClick={() => { startNewConversation(); setViewMode('chat'); setShowFileTree(false); }}
-                className={cn(
-                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body font-medium rounded-lg',
-                  active
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                )}
-              >
-                <Plus className={cn('h-[18px] w-[18px]', active ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
-                <span>{navTitle(item, t.sidebar.newTask)}</span>
-              </button>
+              />
             );
           }
           if (target === 'builtin:todos' || target === 'builtin:inbox') {
             if (!showTodosInbox) return null;
             const mode = target === 'builtin:todos' ? 'todos' : 'inbox';
-            const Icon = mode === 'todos' ? CheckSquare : Inbox;
             return (
-              <button
+              <NavItem
                 key={item.id}
+                icon={mode === 'todos' ? AppIcons.todos : AppIcons.inbox}
+                label={navTitle(item, mode === 'todos' ? t.sidebar.todos : t.sidebar.inbox)}
+                selected={viewMode === mode}
+                trailing={mode === 'inbox' && pendingInboxCount > 0
+                  ? <Tag tone="info">{pendingInboxCount > 99 ? '99+' : pendingInboxCount}</Tag>
+                  : undefined}
                 onClick={() => setViewMode(mode)}
-                className={cn(
-                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-                  viewMode === mode
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                )}
-              >
-                <Icon className={cn('h-[18px] w-[18px]', viewMode === mode ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-                <span className="flex-1 text-left">{navTitle(item, mode === 'todos' ? t.sidebar.todos : t.sidebar.inbox)}</span>
-                {mode === 'inbox' && pendingInboxCount > 0 && (
-                  <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-[var(--abu-danger-solid)] text-white text-caption font-medium leading-[18px] text-center">
-                    {pendingInboxCount > 99 ? '99+' : pendingInboxCount}
-                  </span>
-                )}
-              </button>
+              />
             );
           }
           if (target === 'builtin:team') {
             return (
-              <button
+              <NavItem
                 key={item.id}
-                onClick={() => { openTeam(); setShowFileTree(false); }}
-                className={cn(
-                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-                  viewMode === 'team'
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                )}
                 data-testid="sidebar-team"
-              >
-                <UsersRound className={cn('h-[18px] w-[18px]', viewMode === 'team' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-                <span>{navTitle(item, t.sidebar.team)}</span>
-              </button>
+                icon={AppIcons.team}
+                label={navTitle(item, t.sidebar.team)}
+                selected={viewMode === 'team'}
+                onClick={() => { openTeam(); setShowFileTree(false); }}
+              />
             );
           }
           if (target === 'builtin:extensions') {
             return (
-              <button
+              <NavItem
                 key={item.id}
+                icon={AppIcons.extensions}
+                label={navTitle(item, t.sidebar.extensions)}
+                selected={viewMode === 'extensions'}
+                trailing={pluginUpdateCount > 0
+                  ? <span className="flex"><PluginUpdateBadge testId="extensions-update-badge" /></span>
+                  : undefined}
                 onClick={() => { openExtensions(); setShowFileTree(false); }}
-                className={cn(
-                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-                  viewMode === 'extensions'
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                )}
-              >
-                <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'extensions' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-                <span className="flex-1 text-left">{navTitle(item, t.sidebar.extensions)}</span>
-                <PluginUpdateBadge testId="extensions-update-badge" />
-              </button>
+              />
             );
           }
           if (target === 'builtin:automation') {
             return (
-              <button
+              <NavItem
                 key={item.id}
+                icon={AppIcons.automation}
+                label={navTitle(item, t.sidebar.automation)}
+                selected={viewMode === 'automation'}
                 onClick={() => { openAutomation(); setShowFileTree(false); }}
-                className={cn(
-                  'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-                  viewMode === 'automation'
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                )}
-              >
-                <Workflow className={cn('h-[18px] w-[18px]', viewMode === 'automation' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-                <span>{navTitle(item, t.sidebar.automation)}</span>
-              </button>
+              />
             );
           }
           // `url:` — the app's own page, shown in the main area.
-          const active = viewMode === 'app-page' && activeAppPage?.navItemId === item.id;
           return (
-            <button
+            <NavItem
               key={item.id}
               data-testid={`sidebar-app-page-${item.id}`}
+              icon={AppIcons.webPage}
+              label={navTitle(item, item.id)}
+              selected={viewMode === 'app-page' && activeAppPage?.navItemId === item.id}
               onClick={() => { openAppPage(item.id); setShowFileTree(false); }}
-              className={cn(
-                'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-                active
-                  ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                  : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-              )}
-            >
-              <Globe className={cn('h-[18px] w-[18px]', active ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-              <span className="flex-1 truncate text-left">{navTitle(item, item.id)}</span>
-            </button>
+            />
           );
         })}
       </nav>
@@ -465,13 +425,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           right PreviewPanel, so the tree (here in the sidebar) stays put. */}
       {showFileTree ? (
         <div className="flex-1 min-h-0 flex flex-col">
-          <button
-            onClick={() => setShowFileTree(false)}
-            className="flex items-center gap-1.5 px-4 py-2 text-body font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" strokeWidth={2} />
-            <span>{t.sidebar.backToConversations}</span>
-          </button>
+          <div className="shrink-0 px-4 py-1">
+            <Button
+              variant="plain"
+              size="sm"
+              icon={AppIcons.back}
+              onClick={() => setShowFileTree(false)}
+              className="text-label-tertiary hover:text-label"
+            >
+              {t.sidebar.backToConversations}
+            </Button>
+          </div>
           <div className="flex-1 min-h-0 px-4">
             <WorkspaceFileTree />
           </div>
@@ -483,25 +447,25 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
         <ProjectsSection />
 
         {/* Recents Section */}
-        <div className="px-4 pt-2 pb-0">
-          <div className="group flex items-center justify-between pr-1">
-            <button
+        <div className="px-4 pt-2">
+          <div className="group flex h-7 items-center justify-between pr-2">
+            <Button
+              variant="plain"
+              size="sm"
               onClick={() => setRecentsCollapsed(!recentsCollapsed)}
-              className="flex items-center gap-1 px-2 py-1.5 text-body font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+              className="text-label-tertiary hover:text-label"
             >
-              <span>{t.sidebar.recents}</span>
-            </button>
+              {t.sidebar.recents}
+            </Button>
             {!recentsCollapsed && (
-              <div className="flex items-center gap-0.5">
-                {/* Import is a rare action — revealed only on row hover (or keyboard focus) to keep the header clean */}
-                <button
-                  onClick={handleImport}
-                  className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
-                  title={t.sidebar.importSession}
-                >
-                  <FolderInput className="h-3.5 w-3.5" strokeWidth={2} />
-                </button>
-              </div>
+              // Import is a rare action — revealed only on row hover (or keyboard focus) to keep the header clean
+              <IconButton
+                icon={AppIcons.import}
+                label={t.sidebar.importSession}
+                size="sm"
+                onClick={handleImport}
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              />
             )}
           </div>
         </div>
@@ -511,30 +475,41 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
         <div className="px-4">
         {sortedConvs.length === 0 ? (
           <div className="px-4 py-3">
-            <p className="text-body text-[var(--abu-text-tertiary)]">{t.sidebar.noSessionsYet}</p>
+            <p className="text-ui text-label-tertiary">{t.sidebar.noSessionsYet}</p>
           </div>
         ) : (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             {sortedConvs.map((conv) => {
               // Look up runtime status from loaded conversations (ConversationMeta doesn't have status)
               const convStatus = conversations[conv.id]?.status ?? 'idle';
+              const selected = conv.id === activeConversationId && viewMode === 'chat';
+              const editing = editingId === conv.id;
+              const menuOpen = menuConvId === conv.id;
               return (
-              <div
+              <ContextMenu
                 key={conv.id}
+                content={conversationMenuItems(conv.id)}
+                onCloseAutoFocus={startRenameAfterClose(conv.id)}
+              >
+              <div
                 role="button"
                 tabIndex={0}
-                onClick={() => { switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id); }}
-                onContextMenu={(e) => handleContextMenu(e, conv.id)}
-                aria-current={conv.id === activeConversationId && viewMode === 'chat' ? 'true' : undefined}
+                onClick={(e) => {
+                  // The "⋯" menu renders inside this row in React's tree; its
+                  // portaled items must not also open the conversation.
+                  if (!e.currentTarget.contains(e.target as Node)) return;
+                  switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id);
+                }}
+                onContextMenu={(e) => {
+                  // Same for a right-click inside the open "⋯" menu: it must not
+                  // open this row's right-click menu on top of it.
+                  if (!e.currentTarget.contains(e.target as Node)) e.preventDefault();
+                }}
+                aria-current={selected ? 'true' : undefined}
                 className={cn(
-                  'group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors w-full text-left',
-                  conv.id === activeConversationId && viewMode === 'chat'
-                    // Selected uses --abu-bg-hover (same color as hover), not
-                    // --abu-bg-active: the redesign darkened the sidebar to
-                    // --abu-bg-canvas (#f2f0e9), nearly identical to
-                    // --abu-bg-active (#f0eee6), which made the selection invisible.
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                  'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-left text-ui text-label transition-colors duration-fast',
+                  FOCUS_RING,
+                  selected ? 'bg-fill-selected' : 'hover:bg-fill-hover'
                 )}
               >
                 {conv.imPlatform && (
@@ -545,14 +520,15 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 )}
                 {conv.appBinding && (
                   <span title={conv.appBinding.appName} data-testid="conversation-app-icon">
-                    <AppLogo name={conv.appBinding.appName} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} size="sm" className="rounded" />
+                    <AppLogo name={conv.appBinding.appName} logo={conv.appBinding.appLogo} logoDark={conv.appBinding.appLogoDark} size="sm" className="rounded-control" />
                   </span>
                 )}
-                {editingId === conv.id ? (
-                  <input
+                {editing ? (
+                  <TextField
                     autoFocus
+                    aria-label={t.sidebar.renameConversation}
                     defaultValue={conv.title}
-                    className="flex-1 text-body bg-transparent border-b border-[var(--abu-clay)] outline-none min-w-0"
+                    className="min-w-0 flex-1"
                     onClick={(e) => e.stopPropagation()}
                     onBlur={(e) => {
                       const val = e.target.value.trim();
@@ -565,16 +541,18 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                     }}
                   />
                 ) : (
-                  <span className="flex-1 truncate text-body">{conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}</span>
+                  <span className="min-w-0 flex-1 truncate">{conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}</span>
                 )}
                 <StatusIndicator
                   status={convStatus}
                   onComplete={() => handleClearCompletedStatus(conv.id)}
                 />
-                {conv.workspacePath && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
+                {/* Row actions step aside while renaming so the field gets the row's width. */}
+                {!editing && conv.workspacePath && (
+                  <IconButton
+                    icon={AppIcons.fileTree}
+                    label={t.sidebar.projectFiles}
+                    size="sm"
                     onClick={(e) => {
                       e.stopPropagation();
                       switchConversation(conv.id);
@@ -582,28 +560,32 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                       clearBadge(conv.id);
                       setShowFileTree(true);
                     }}
-                    className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-transparent shrink-0"
-                    title={t.sidebar.projectFiles}
-                  >
-                    <ListTree className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  </Button>
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                  />
                 )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={(e) => handleMenuButton(e, conv.id)}
-                  className={cn(
-                    'h-5 w-5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-transparent shrink-0',
-                    contextMenu?.convId === conv.id && 'opacity-100 text-[var(--abu-text-primary)]'
-                  )}
-                  title={t.sidebar.moreActions}
-                  aria-label={t.sidebar.moreActions}
-                  aria-haspopup="menu"
-                  aria-expanded={contextMenu?.convId === conv.id}
-                >
-                  <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} />
-                </Button>
+                {!editing && (
+                  <Menu
+                    open={menuOpen}
+                    onOpenChange={(open) => setMenuConvId(open ? conv.id : null)}
+                    onCloseAutoFocus={startRenameAfterClose(conv.id)}
+                    trigger={
+                      <IconButton
+                        icon={AppIcons.more}
+                        label={t.sidebar.moreActions}
+                        size="sm"
+                        onClick={(e) => e.stopPropagation()}
+                        className={cn(
+                          'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+                          menuOpen && 'opacity-100'
+                        )}
+                      />
+                    }
+                  >
+                    {conversationMenuItems(conv.id)}
+                  </Menu>
+                )}
               </div>
+              </ContextMenu>
               );
             })}
           </div>
@@ -617,102 +599,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       <div className="px-3 py-3 shrink-0">
         <AccountMenu onEditProfile={() => setProfileOpen(true)} />
       </div>
-
-      {/* Context menu */}
-      {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          <button
-            onClick={() => {
-              setEditingId(contextMenu.convId);
-              setContextMenu(null);
-            }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            {t.sidebar.renameConversation}
-          </button>
-          <button
-            onClick={() => handleExport(contextMenu.convId)}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Download className="h-3.5 w-3.5" />
-            {t.sidebar.exportConversation}
-          </button>
-          {/* Move to project — submenu with project list */}
-          {(() => {
-            const activeProjects = Object.values(projectsMap).filter(p => !p.archived);
-            if (activeProjects.length === 0) return null;
-            const convMeta = conversationIndex[contextMenu.convId];
-            return (
-              <div className="relative">
-                <button
-                  onClick={(e) => { e.stopPropagation(); setShowMoveSubmenu(!showMoveSubmenu); }}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
-                >
-                  <FolderInput className="h-3.5 w-3.5" />
-                  <span className="flex-1 text-left">{t.project.moveToProject}</span>
-                  <ChevronRight className="h-3 w-3" />
-                </button>
-                {showMoveSubmenu && (
-                  <div
-                    ref={moveSubmenuRef}
-                    style={moveSubmenuStyle}
-                    className="absolute left-full ml-1 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px] overflow-y-auto overscroll-contain z-10"
-                  >
-                    {activeProjects.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => {
-                          useChatStore.getState().setConversationProject(contextMenu.convId, p.id);
-                          setContextMenu(null);
-                          setShowMoveSubmenu(false);
-                        }}
-                        className={cn(
-                          'flex items-center gap-2 w-full px-3 py-1.5 text-body hover:bg-[var(--abu-bg-active)]',
-                          convMeta?.projectId === p.id ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-secondary)]'
-                        )}
-                      >
-                        <FolderClosed className="h-3.5 w-3.5" strokeWidth={1.5} />
-                        <span className="truncate">{p.name}</span>
-                      </button>
-                    ))}
-                    {convMeta?.projectId && (
-                      <>
-                        <div className="my-1 border-t border-[var(--abu-border)]" />
-                        <button
-                          onClick={() => {
-                            useChatStore.getState().setConversationProject(contextMenu.convId, undefined);
-                            setContextMenu(null);
-                            setShowMoveSubmenu(false);
-                          }}
-                          className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-active)]"
-                        >
-                          <Minus className="h-3.5 w-3.5" />
-                          {t.project.removeFromProject}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-          <button
-            onClick={(e) => {
-              handleDeleteConversation(e, contextMenu.convId);
-              setContextMenu(null);
-            }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-danger)] hover:bg-[var(--abu-bg-active)]"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t.sidebar.deleteConversation}
-          </button>
-        </div>
-      )}
 
       {/* Guide modal */}
       <GuideModal
@@ -738,15 +624,18 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
       {/* Undo delete toast */}
       {pendingDelete && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 bg-[var(--abu-text-primary)] text-white rounded-xl shadow-lg animate-in fade-in slide-in-from-bottom-2 duration-200" role="alert" aria-live="assertive">
-          <span className="text-body">{t.sidebar.conversationDeleted}</span>
-          <button
-            onClick={handleUndoDelete}
-            className="flex items-center gap-1 text-body font-medium text-[var(--abu-clay)] hover:text-[var(--abu-clay)] transition-colors"
-          >
-            <Undo2 className="h-3.5 w-3.5" />
+        <div
+          role="alert"
+          aria-live="assertive"
+          data-electron-no-drag
+          data-ds-motion
+          data-state="open"
+          className="fixed bottom-6 left-1/2 z-toast flex -translate-x-1/2 items-center gap-3 rounded-panel bg-raised px-4 py-2 text-label shadow-float data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[state=open]:duration-base data-[state=open]:ease-enter"
+        >
+          <span className="text-ui">{t.sidebar.conversationDeleted}</span>
+          <Button size="sm" icon={AppIcons.undo} onClick={handleUndoDelete}>
             {t.sidebar.undo}
-          </button>
+          </Button>
         </div>
       )}
     </div>

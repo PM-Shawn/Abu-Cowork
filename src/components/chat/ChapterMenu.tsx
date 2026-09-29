@@ -56,7 +56,7 @@ export default function ChapterMenu({
         aria-expanded={open}
         title={t.chat.chapters.openList}
         onClick={() => setOpen((v) => !v)}
-        // Same recipe as the window controls in WindowTitleBar (CONTROL_CLASS)
+        // Matches the title-bar icon controls in WindowTitleBar (IconButton size sm)
         // so this button sits at the same visual weight as the panel toggles
         // it shares a row with — including strokeWidth 1.5 on the glyph, which
         // is what actually separates "same colour" from "looks the same".

@@ -59,7 +59,9 @@ describe('basic components', () => {
     render(<Avatar name="shawn" />);
     const fallback = screen.getByRole('img', { name: 'shawn' });
     expect(fallback).toHaveTextContent('S');
-    expect(fallback.parentElement).toHaveClass('bg-brand');
+    expect(fallback).toHaveClass('bg-brand', 'text-brand-ink');
+    // The green belongs to the initial only, so a transparent photo never shows it.
+    expect(fallback.parentElement).not.toHaveClass('bg-brand');
   });
 
   it('Separator is announced only when it is not decorative', () => {

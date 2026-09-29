@@ -131,7 +131,7 @@ test('vitest emits junit + machine-readable coverage for CI reports', () => {
 test('CI checks changed-line coverage against the pull request base with full history', () => {
   assert.match(
     ci,
-    /pull_request:\n\s+branches: \[main, dev\]\n(?:\s+#[^\n]*\n)*\s+types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]/,
+    /pull_request:\n\s+branches: \[main, dev, feat\/design-system-next\]\n(?:\s+#[^\n]*\n)*\s+types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]/,
     'body and label edits must re-evaluate gate exemptions',
   );
   const testJob = jobBlock(ci, 'test');

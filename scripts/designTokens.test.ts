@@ -8,7 +8,7 @@ import { APPEARANCE_ATTRIBUTES } from '../src/styles/appearance';
 
 const TOKENS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/styles/tokens.css');
 
-type Block = 'root' | 'dark' | 'rootContrast' | 'darkContrast' | 'reducedTransparency';
+type Block = 'root' | 'dark' | 'rootContrast' | 'darkContrast' | 'reducedTransparency' | 'noMaterial';
 type Appearance = 'light' | 'dark' | 'light-contrast' | 'dark-contrast';
 
 const [CONTRAST_ATTR, CONTRAST_ON] = APPEARANCE_ATTRIBUTES.contrast;
@@ -21,6 +21,7 @@ const SELECTORS: Record<Block, string> = {
   rootContrast: `${CONTRAST}:not(.dark)`,
   darkContrast: `${CONTRAST}.dark`,
   reducedTransparency: `:root[${TRANSPARENCY_ATTR}="${TRANSPARENCY_ON}"]`,
+  noMaterial: ':root[data-window-material="none"]',
 };
 
 const css = readFileSync(TOKENS_PATH, 'utf8');
@@ -84,9 +85,18 @@ describe('design tokens — completeness', () => {
     expect(blocks.darkContrast.size).toBeGreaterThan(0);
   });
 
-  it('makes desk and material opaque when transparency is reduced', () => {
+  it('makes desk opaque when transparency is reduced', () => {
     expect(blocks.reducedTransparency.get('--ds-desk')).toBe('var(--ds-desk-solid)');
-    expect(blocks.reducedTransparency.get('--ds-material')).toBe('var(--ds-raised)');
+  });
+
+  // Menus, popovers, tooltips, toasts and dialogs paint `raised`; the window material is the
+  // only translucent layer.
+  it.each(APPEARANCES)('keeps the floating-layer surface opaque in %s', (name) => {
+    expect(color(appearance(name), 'raised').alpha ?? 1).toBe(1);
+  });
+
+  it('makes desk opaque when the window has no system material', () => {
+    expect(blocks.noMaterial.get('--ds-desk')).toBe('var(--ds-desk-solid)');
   });
 
   it('keys accessibility appearances off <html> attributes, never media queries', () => {
@@ -121,7 +131,7 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
     expect(wcagContrast(color(values, role), background)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it.each(['surface', 'field'])('placeholder on %s is at least 3:1', (surface) => {
+  it.each(['surface', 'raised', 'field'])('placeholder on %s is at least 3:1', (surface) => {
     expect(wcagContrast(color(values, 'label-placeholder'), color(values, surface))).toBeGreaterThanOrEqual(3);
   });
 

@@ -29,7 +29,6 @@
   --ds-desk-solid: #ececf0;
   --ds-surface: #ffffff;
   --ds-raised: #ffffff;
-  --ds-material: rgba(252, 252, 254, 0.74);
   --ds-code: #f5f5f7;
   --ds-field: #ffffff;
   --ds-fill: rgba(120, 120, 128, 0.12);
@@ -71,7 +70,6 @@
   --ds-desk-solid: #141416;
   --ds-surface: #1c1c1e;
   --ds-raised: #2c2c2e;
-  --ds-material: rgba(44, 44, 48, 0.74);
   --ds-code: #2a2a2d;
   --ds-field: #232326;
   --ds-fill: rgba(120, 120, 128, 0.24);
@@ -146,10 +144,15 @@
   --ds-info: #7cc0ff;
 }
 
-/* Reduced transparency (data-transparency="reduced"): every translucent surface is opaque. */
+/* Reduced transparency (data-transparency="reduced"): desk, the only translucent surface, is opaque. */
 :root[data-transparency="reduced"] {
   --ds-desk: var(--ds-desk-solid);
-  --ds-material: var(--ds-raised);
+}
+
+/* No system material behind the window (Windows 10, Linux, a plain browser page):
+   desk would show nothing through it, so it becomes the opaque desk gray. */
+:root[data-window-material="none"] {
+  --ds-desk: var(--ds-desk-solid);
 }
 
 @theme inline {
@@ -157,7 +160,6 @@
   --color-desk-solid: var(--ds-desk-solid);
   --color-surface: var(--ds-surface);
   --color-raised: var(--ds-raised);
-  --color-material: var(--ds-material);
   --color-code: var(--ds-code);
   --color-field: var(--ds-field);
   --color-fill: var(--ds-fill);

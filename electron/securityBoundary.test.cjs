@@ -720,11 +720,14 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'saveImageAttachment',
     'selectUserAttachments',
     'subscribeSidecarEvents',
+    'windowMaterial',
   ]);
   // This sandbox has no `process`, which is the point: assembling the bridge
   // must never depend on a Node global. Without the launch flag the scheme
   // stays on the production default rather than throwing at preload eval.
   assert.equal(shellBridge.deepLinkScheme, 'abu');
+  // Without the launch flag there is no system material behind the page.
+  assert.equal(shellBridge.windowMaterial, 'none');
   assert.equal(
     await shellBridge.canonicalizePathForPolicy('/native/report.png'),
     '/canonical/native/report.png',
@@ -1030,4 +1033,44 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     type: 'close', payload: '', sequence: 3, generation: 1,
   });
   assert.equal(sidecarEvents.length, 1);
+});
+
+// Evaluates preload.cjs with the given launch arguments and returns the shell bridge.
+function loadShellBridgeWithArgv(argv) {
+  const exposed = new Map();
+  const context = {
+    process: { argv },
+    require(id) {
+      assert.equal(id, 'electron');
+      return {
+        contextBridge: { exposeInMainWorld: (key, value) => exposed.set(key, value) },
+        ipcRenderer: {
+          invoke: async () => undefined,
+          on: () => {},
+          send: () => {},
+          sendSync: () => null,
+        },
+        webUtils: { getPathForFile: () => '' },
+      };
+    },
+  };
+  context.globalThis = context;
+  const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8');
+  vm.runInNewContext(preloadSource, context, { filename: 'preload.cjs' });
+  return exposed.get('__ABU_SHELL__');
+}
+
+test('preload reports the window material main passed on the command line', () => {
+  for (const material of ['vibrancy', 'mica', 'none']) {
+    const bridge = loadShellBridgeWithArgv(['electron', '.', `--abu-window-material=${material}`]);
+    assert.equal(bridge.windowMaterial, material);
+  }
+  assert.equal(loadShellBridgeWithArgv(['electron', '.']).windowMaterial, 'none');
+});
+
+test('preload refuses a window material main never sends', () => {
+  assert.throws(
+    () => loadShellBridgeWithArgv(['electron', '.', '--abu-window-material=acrylic']),
+    /Unknown window material: acrylic/,
+  );
 });

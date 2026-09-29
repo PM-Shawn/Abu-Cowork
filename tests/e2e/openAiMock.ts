@@ -53,7 +53,28 @@ function sseChunk(content: string, finishReason: string | null): string {
   })}\n\n`;
 }
 
-export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<OpenAiMock> {
+export interface OpenAiMockOptions {
+  /**
+   * Extra read-only routes a local model server offers besides chat, keyed by
+   * pathname (e.g. LM Studio's `/api/v0/models`). Each answers GET with the
+   * given JSON; any other route still answers 404.
+   */
+  getRoutes?: Readonly<Record<string, unknown>>;
+}
+
+/** Which kind of model call a request body is: memory extraction, compression, or the task itself. */
+export function classifyMockRequestPurpose(body: unknown): MockRequest['purpose'] {
+  return isMemoryExtractionRequest(body)
+    ? 'memory'
+    : isCompressionRequest(body)
+      ? 'compression'
+      : 'task';
+}
+
+export async function startOpenAiMock(
+  replyPlans: readonly MockReplyPlan[],
+  options: OpenAiMockOptions = {},
+): Promise<OpenAiMock> {
   const requests: MockRequest[] = [];
   let taskRequestCount = 0;
   const activeResponses = new Set<ServerResponse>();
@@ -71,11 +92,7 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
     } catch {
       // Keep malformed input available in the assertion output if this ever regresses.
     }
-    const purpose = isMemoryExtractionRequest(body)
-      ? 'memory'
-      : isCompressionRequest(body)
-        ? 'compression'
-        : 'task';
+    const purpose = classifyMockRequestPurpose(body);
     const mockRequest: MockRequest = {
       authorization: req.headers.authorization,
       body,
@@ -83,6 +100,12 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
       purpose,
       responseAborted: false,
     };
+    const getRoute = options.getRoutes?.[requestUrl.pathname];
+    if (req.method === 'GET' && getRoute !== undefined) {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(getRoute));
+      return;
+    }
     if (req.method !== 'POST' || requestUrl.pathname !== '/v1/chat/completions') {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected local E2E mock route' }));
@@ -259,7 +282,7 @@ export function compressionRequests(mock: OpenAiMock): MockRequest[] {
   return mock.requests.filter((request) => request.purpose === 'compression');
 }
 
-function closeServer(server: Server, activeResponses: ReadonlySet<ServerResponse>): Promise<void> {
+export function closeServer(server: Server, activeResponses: ReadonlySet<ServerResponse>): Promise<void> {
   // A failed assertion can leave a hold-open SSE response active. Destroy it
   // before close() so afterEach cannot wait forever on that client connection.
   for (const response of activeResponses) response.destroy();

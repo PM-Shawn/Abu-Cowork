@@ -288,6 +288,13 @@ export interface LocalMockProviderOptions {
   supportsImages?: boolean;
   /** Turn computer use on before the reload. */
   computerUseEnabled?: boolean;
+  /**
+   * 'builtin' configures one of the app's own provider entries (pass its id,
+   * e.g. 'lmstudio' or 'ollama', as providerId). Defaults to 'custom'.
+   */
+  providerSource?: 'custom' | 'builtin';
+  /** Keep the other provider entries (disabled built-ins included) instead of replacing them all. */
+  keepOtherProviders?: boolean;
 }
 
 /** Configure an isolated loopback provider while preserving each spec's metadata. */
@@ -310,6 +317,8 @@ export async function configureLocalMockProvider(
     supportsTools = false,
     supportsImages,
     computerUseEnabled = false,
+    providerSource = 'custom',
+    keepOtherProviders = false,
   } = options;
 
   await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
@@ -325,9 +334,12 @@ export async function configureLocalMockProvider(
       ...(configuration.supportsImages === undefined ? {} : { supportsImages: configuration.supportsImages }),
     };
 
-    state.providers = [{
+    const otherProviders = configuration.keepOtherProviders && Array.isArray(state.providers)
+      ? (state.providers as Array<{ id?: unknown }>).filter((provider) => provider.id !== configuration.providerId)
+      : [];
+    state.providers = [...otherProviders, {
       id: configuration.providerId,
-      source: 'custom',
+      source: configuration.providerSource,
       name: configuration.providerName,
       enabled: true,
       apiFormat: 'openai-compatible',
@@ -377,6 +389,8 @@ export async function configureLocalMockProvider(
     supportsTools,
     supportsImages,
     computerUseEnabled,
+    providerSource,
+    keepOtherProviders,
   })]);
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }

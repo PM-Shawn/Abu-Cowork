@@ -1,8 +1,10 @@
 import {
-  Archive, ArrowLeft, Check, CheckSquare, ChevronDown, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp, CircleX,
-  Code, Compass, Copy, Download, Ellipsis, ExternalLink, Eye, Folder, FolderInput, FolderOpen, Globe, Inbox, Info, LayoutGrid, ListTree, LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, Minus, Palette, PanelLeft,
-  PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Puzzle, Redo2, RefreshCw, RotateCcw, Search, Settings, Share,
-  SquarePen, Trash2, TriangleAlert, Undo2, UserRound, UsersRound, Wand2, Workflow, X, ZoomIn, ZoomOut, type LucideIcon,
+  Archive, ArrowLeft, AtSign, Brain, Check, CheckSquare, ChevronDown, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp, CircleX,
+  Code, Compass, Copy, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FileSearch, FileText, FileType2, FileWarning, FileX,
+  Folder, FolderInput, FolderOpen, Globe, ImageOff, Inbox, Info, LayoutGrid, ListTree, LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare,
+  MessageSquarePlus, Minimize2, Minus, Palette, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Presentation, Puzzle, Redo2, RefreshCw, RotateCcw,
+  Search, Settings, Share, Sheet, Sparkles, SquarePen, ThumbsDown, ThumbsUp, Trash2, TriangleAlert, Undo2, UserRound, UsersRound, Wand2, Workflow, X, ZoomIn, ZoomOut,
+  type LucideIcon,
 } from 'lucide-react';
 
 // One icon per standard action across the whole app (Apple HIG "Standard icons").
@@ -74,6 +76,27 @@ export const AppIcons = {
   enlarge: Maximize2,
   zoomIn: ZoomIn,
   zoomOut: ZoomOut,
+  // Chat: messages
+  thinking: Brain,
+  skill: Wand2,
+  mention: AtSign,
+  file: FileText,
+  fileCode: FileCode,
+  fileImage: FileImage,
+  fileJson: FileJson,
+  fileSlides: Presentation,
+  fileSheet: Sheet,
+  fileDocument: FileType2,
+  filePdf: FileSearch,
+  fileGeneric: File,
+  fileMissing: FileX,
+  fileNotBackedUp: FileWarning,
+  imageMissing: ImageOff,
+  thumbsUp: ThumbsUp,
+  thumbsDown: ThumbsDown,
+  newTaskFromMessage: MessageSquarePlus,
+  compact: Minimize2,
+  sparkles: Sparkles,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

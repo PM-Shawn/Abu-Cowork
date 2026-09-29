@@ -1,12 +1,17 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import MessageBubble from './MessageBubble';
+
+// The action row's icon buttons carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const mockResolveOutputRefSource = vi.hoisted(() => vi.fn());
 const mockLoadLocalImage = vi.hoisted(() => vi.fn());

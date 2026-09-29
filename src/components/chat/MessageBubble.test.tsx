@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
@@ -27,6 +29,9 @@ vi.mock('./ToolCallsGroup', () => ({
 vi.mock('@/core/agent/agentLoopRunner', () => ({
   runAgentLoopDispatched: vi.fn(),
 }));
+
+// The action row's icon buttons carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const baseMessage: Message = {
   id: 'message-1',
@@ -474,5 +479,145 @@ describe('MessageBubble user run status', () => {
       expectNothingSent(spy, before);
       expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe('MessageBubble on the design system', () => {
+  const writeText = vi.fn(async () => {});
+
+  beforeEach(() => {
+    initLanguage('en-US');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    writeText.mockClear();
+  });
+
+  const answer: Message = { id: 'message-answer', role: 'assistant', content: 'first answer', timestamp: 1 };
+
+  it('paints the user bubble with the fill surface and the panel radius', () => {
+    setConversation(baseMessage, 'idle');
+    render(<MessageBubble message={baseMessage} />);
+
+    const bubble = screen.getByText(baseMessage.content as string).closest('.rounded-panel');
+    expect(bubble).not.toBeNull();
+    expect(bubble).toHaveClass('bg-fill');
+    expect(bubble).toHaveClass('text-label');
+    expect(bubble).toHaveClass('py-2');
+  });
+
+  it('puts the failure, its reason and the upstream fields in one danger message', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'Abu could not prepare this message, so it was not sent. Click Retry to try again.',
+      runErrorKind: 'dispatch_failed',
+      runErrorDetails: { status: 403, traceId: 'trace-403-local', summary: 'Rejected upstream.' },
+    };
+    setConversation(message, 'idle');
+    render(<MessageBubble message={message} />);
+
+    const alerts = screen.getAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    const [alert] = alerts;
+    expect(alert).toHaveClass('bg-danger-soft');
+    expect(alert).toHaveTextContent('Send failed');
+    expect(alert).toHaveTextContent(message.runError as string);
+    expect(alert).toHaveTextContent('Rejected upstream.');
+    expect(screen.getByText('HTTP 403').parentElement).toHaveClass('font-code');
+    expect(alert).toContainElement(screen.getByRole('button', { name: 'Retry' }));
+  });
+
+  it('names every action button without a native title and swaps the copy icon after copying', async () => {
+    setConversation(answer, 'idle');
+    const { container } = render(<MessageBubble message={answer} />);
+
+    for (const name of ['Copy', 'Regenerate', 'Helpful', 'Not helpful']) {
+      expect(screen.getByRole('button', { name })).not.toHaveAttribute('title');
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('first answer'));
+    expect(container.querySelector('button[aria-label="Copy"] svg.lucide-check')).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(container.querySelector('button[aria-label="Copy"] svg.lucide-copy')).not.toBeNull();
+  });
+
+  it('marks the chosen rating with the selected fill instead of a status color', () => {
+    setConversation(answer, 'idle');
+    render(<MessageBubble message={answer} />);
+
+    const helpful = screen.getByRole('button', { name: 'Helpful' });
+    expect(helpful).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(helpful);
+    expect(helpful).toHaveAttribute('aria-pressed', 'true');
+    expect(helpful).toHaveClass('bg-fill-selected');
+    expect(helpful).toHaveClass('text-label');
+    expect(helpful).not.toHaveClass('text-success');
+  });
+
+  it('draws a still streaming cursor in the secondary label color', () => {
+    const streaming: Message = { ...answer, isStreaming: true };
+    setConversation(streaming, 'running');
+    const { container } = render(<MessageBubble message={streaming} hideAvatar />);
+
+    expect(container.querySelector('.streaming-cursor')).toBeNull();
+    const cursor = container.querySelector('span[aria-hidden="true"].bg-label-secondary');
+    expect(cursor).not.toBeNull();
+    expect(cursor).not.toHaveClass('animate-pulse');
+  });
+
+  it('opens the thinking block from a named disclosure button', () => {
+    const thinking: Message = { ...answer, thinking: 'weighing the options' };
+    setConversation(thinking, 'idle');
+    render(<MessageBubble message={thinking} hideAvatar />);
+
+    const header = screen.getByRole('button', { name: 'Thinking Process' });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('weighing the options')).not.toBeInTheDocument();
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    const text = screen.getByText('weighing the options');
+    expect(text).toHaveClass('text-ui-sm');
+    expect(text).toHaveClass('text-label-secondary');
+  });
+
+  it('edits in a flat card with a text area, a route tag and one primary button', () => {
+    const routed: Message = { ...baseMessage, delegateAgent: { name: '研究员', description: 'researcher' } };
+    setConversation(routed, 'idle');
+    render(<MessageBubble message={routed} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const textbox = screen.getByRole('textbox');
+    expect(textbox).toHaveClass('text-body');
+    expect(screen.getByText('@研究员')).toHaveClass('rounded-control');
+    expect(screen.getByRole('button', { name: 'Save & Resend' })).toHaveClass('bg-emphasis');
+    expect(screen.getByRole('button', { name: 'Cancel' })).not.toHaveClass('bg-emphasis');
+  });
+
+  it('fades a long user message with a mask and expands it from a plain button', () => {
+    const long: Message = { ...baseMessage, content: 'line\n'.repeat(12) };
+    setConversation(long, 'idle');
+    const { container } = render(<MessageBubble message={long} />);
+
+    expect(container.querySelector('.mask-b-from-22')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(container.querySelector('.mask-b-from-22')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Collapse' })).toBeInTheDocument();
+  });
+
+  it('opens a file chip in the preview and names its reveal button', () => {
+    const withFile: Message = { ...baseMessage, content: 'see [Attachment: `/workspace/report.pdf`]' };
+    setConversation(withFile, 'idle');
+    usePreviewStore.setState(usePreviewStore.getInitialState(), true);
+    render(<MessageBubble message={withFile} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'report.pdf' }));
+    expect(usePreviewStore.getState().previewFilePath).toBe('/workspace/report.pdf');
+    expect(screen.getByRole('button', { name: 'Show in File Manager' })).toBeInTheDocument();
   });
 });

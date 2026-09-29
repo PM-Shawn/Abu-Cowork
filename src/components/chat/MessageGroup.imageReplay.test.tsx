@@ -1,14 +1,19 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import type { Conversation, Message, ToolResultContent } from '@/types';
 import type { ExecutionStepSnapshot } from '@/types/execution';
 import MessageGroup from './MessageGroup';
+
+// The action row's icon buttons carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 /**
  * History-replay regression guard for tool-result images.

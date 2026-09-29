@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatView from './ChatView';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { useChatStore } from '@/stores/chatStore';
@@ -21,6 +23,9 @@ import {
   readComposerDraft,
   WELCOME_COMPOSER_DRAFT_KEY,
 } from '@/stores/composerDraftStore';
+
+// Message action rows carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const { dispatchMock } = vi.hoisted(() => ({
   dispatchMock: vi.fn(),

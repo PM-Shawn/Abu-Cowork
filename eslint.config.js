@@ -95,6 +95,13 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/HtmlWidgetBlock*.{ts,tsx}',
   'src/components/chat/ShowWidgetCard*.{ts,tsx}',
   'src/components/chat/codeBlockRenderers.ts',
+  'src/components/chat/MessageBubble*.{ts,tsx}',
+  'src/components/chat/MessageGroup*.{ts,tsx}',
+  'src/components/chat/FileAttachment.tsx',
+  'src/components/chat/SourceCard.tsx',
+  'src/components/chat/SourcesSection.tsx',
+  'src/components/chat/CompactDivider*.{ts,tsx}',
+  'src/components/chat/WelcomeAvatar.tsx',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

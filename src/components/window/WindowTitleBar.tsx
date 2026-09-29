@@ -110,7 +110,7 @@ export default function WindowTitleBar({
             data-electron-no-drag
             data-window-control="sidebar"
             onClick={onToggleSidebar}
-            className={cn(CONTROL_CLASS, 'absolute transition-[left] duration-base')}
+            className={cn(CONTROL_CLASS, 'absolute')}
             style={{ top, left: sidebarCollapsed ? 96 : 200 }}
           />
 
@@ -122,7 +122,7 @@ export default function WindowTitleBar({
               data-electron-no-drag
               data-window-control="search"
               onClick={onOpenSearch}
-              className={cn(CONTROL_CLASS, 'absolute transition-[left] duration-base')}
+              className={cn(CONTROL_CLASS, 'absolute')}
               style={{ top, left: sidebarCollapsed ? 126 : 230 }}
             />
           )}
@@ -288,10 +288,11 @@ export default function WindowTitleBar({
             </div>
           </div>
 
-          {/* A pointer-transparent plane over the window; only its controls take clicks. */}
+          {/* A zero-height band on the window's top edge that anchors the workspace
+              controls; it ignores the pointer, only its controls take clicks. */}
           <div
             data-abu-windows-workspace-controls
-            className="pointer-events-none fixed inset-x-0 inset-y-0 z-sticky"
+            className="pointer-events-none fixed inset-x-0 top-0 z-sticky"
           >
             <div
               data-abu-titlebar-control-group="left"

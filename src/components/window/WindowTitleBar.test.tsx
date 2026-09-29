@@ -146,6 +146,11 @@ describe('WindowTitleBar', () => {
     expect(sidebarButton).toHaveAttribute('data-electron-no-drag');
     expect(sidebarButton).toHaveStyle({ top: '23px', left: '200px' });
     expect(overlay?.contains(sidebarButton)).toBe(true);
+    // The buttons move with the sidebar at once and keep the icon button's colour fade.
+    [sidebarButton, screen.getByRole('button', { name: 'Search' })].forEach((button) => {
+      expect(button).toHaveClass('transition-colors', 'duration-fast');
+      expect(button.className).not.toMatch(/transition-\[left\]|duration-base/);
+    });
 
     await user.click(sidebarButton);
     await user.click(screen.getByRole('button', { name: 'Search' }));

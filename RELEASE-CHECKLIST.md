@@ -80,9 +80,9 @@ git rev-list --left-right --count origin/dev...origin/main  # expect 0 0
 
 ## 4. CI does the rest (automatic, ~40 min)
 
-`Release` workflow: `preflight` (a stable tag whose commit is not on
-`origin/main` fails here, before any install, build, signing, or upload; then
-version and changelogs) → native Electron builds (mac arm64 + mac x64 +
+`Release` workflow: `preflight` (checks the stable tag's commit is on
+`origin/main`, the version, and the changelogs in one step, and fails before
+any install, build, signing, or upload) → native Electron builds (mac arm64 + mac x64 +
 Windows x64) → macOS sign/notarize + Windows installed smoke → stage and
 byte-verify all artifacts → publish the three Electron self-update feeds →
 switch the Tauri `latest.json` last.

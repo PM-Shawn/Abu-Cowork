@@ -48,7 +48,7 @@ npm test
 npm run test:electron:release-stage
 npm run test:electron:release-workflow
 npm run parity:check
-bash scripts/enterprise-leak-guard.sh
+npm run check:enterprise-leak
 ```
 
 - [ ] Every command above passes.

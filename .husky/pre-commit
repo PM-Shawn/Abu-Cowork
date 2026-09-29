@@ -1,3 +1,10 @@
+# Stop closed-source enterprise files before they reach a commit: once pushed to
+# this public repo they cannot be removed from history. The guard scans every
+# tracked and untracked (non-ignored) file under src/ in well under a second, so
+# it runs over the whole tree, not only the staged files. husky runs hooks with
+# `sh -e`, so a hit exits here and blocks the commit.
+npm run check:enterprise-leak
+
 # Make the hook safe against an abrupt kill (e.g. an outer timeout under heavy
 # multi-worktree load SIGKILLing the hook mid-run). lint-staged loses uncommitted
 # work in two ways, and BOTH flags are needed (verified on lint-staged 17):

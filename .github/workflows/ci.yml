@@ -20,7 +20,9 @@ concurrency:
 jobs:
   # Runs without installing dependencies; its result independently gates check,
   # so a build or test pass cannot mask a leak. Uses `git ls-files --cached --others`, which
-  # reads the index and working tree — a shallow checkout is enough.
+  # reads the index and working tree — a shallow checkout is enough. It calls the same npm
+  # script as the local pre-commit hook and `npm run verify`; the script is plain bash, so
+  # the runner's preinstalled npm runs it without `npm ci`.
   leak-guard:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -29,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Enterprise leak guard (open-core)
-        run: bash scripts/enterprise-leak-guard.sh
+        run: npm run check:enterprise-leak
 
   lint:
     runs-on: ubuntu-latest

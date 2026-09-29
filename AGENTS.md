@@ -100,6 +100,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 - 🔒 **私有仓库 `Abu-enterprise-modules` 放全部客户端企业实现**：登录/绑定、SSO、token、心跳、品牌、License、策略、LiteLLM 网关与模型、Skills/MCP/知识库、迁移和员工 UI。私有入口在企业构建中注册组件并提供运行时适配器。
 - 🔴 **公开仓库不得保留“协议层实现”作为例外**：`src/core/enterprise/` 只能保留类型、挂载注册表和转发到 `@enterprise-modules` 的薄文件；`src/enterprise-modules-stub` 只能返回个人模式默认值。任何网络请求、凭证持久化、策略判断或企业 UI 都属于私有仓库。
 - 🔴 **`npm run build` / `npm test` 全绿 ≠ 没泄露**——这是保密违规，工具链抓不到。一旦闭源逻辑进了本仓 commit 并 push，git 历史里**洗不掉**。`npm run electron:dev` 看不到企业功能是正常的；企业功能开发和验收统一使用 `npm run electron:dev:enterprise`（需私有仓库在 sibling 位置）。
+- 🔴 **`npm run check:enterprise-leak`**（`scripts/enterprise-leak-guard.sh`）按文件名/路径黑名单扫描 `src/` 下的已跟踪和未跟踪文件，命中闭源模块就失败。它在三处运行同一条命令：`.husky/pre-commit` 的第一步（命中即阻止提交）、`npm run verify` 的第一步、CI 的 `leak-guard` job。它只检查文件名和路径，换了文件名的闭源逻辑仍要靠上面“公开仓库只放形状”的规则由开发者自己把关。
 
 ## Key Commands
 - `npm run dev` — Start Vite dev server (frontend preview only; not desktop acceptance)
@@ -112,6 +113,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 - `npm run test:watch` — Watch mode
 - `npm run test:coverage` — Coverage report
 - `npm run lint` — ESLint check
+- `npm run check:enterprise-leak` — Enterprise closed-source leak guard (also runs in the pre-commit hook, `npm run verify` and CI `leak-guard`)
 - `npm run parity:check` — Static guard on renderer API ↔ Electron host parity (not a substitute for real workflow tests)
 - `npm run electron:test` / `npm run test:e2e:electron` — Electron unit + E2E
 - `npm run pack:electron` / `npm run smoke:electron:packaged` — Package the Electron app and smoke-test the packaged build
@@ -472,7 +474,7 @@ four appearances (light, dark, and each with increased contrast).
 
 ### 11. Testing
 - 🔴 **本仓测试的"宪法"是 [`TESTING.md`](./TESTING.md)** —— 分层（unit/integration/contract/e2e）、确定性铁律、门禁脚本、quarantine、覆盖率阈值、契约测试全在那，写/改测试前先读它。本节只是速览摘要。
-- **门禁**：`npm run verify` 退出码为 0 才算完（= `verify:full`：lint + typecheck + 全量 + 覆盖率）；秒级自检 `npm run verify:quick`；集成 `npm run test:integration`；E2E `npm run test:e2e`（外层门禁，独立于 verify）。跨端质量底线（DoD）见 `../AGENTS.md`。
+- **门禁**：`npm run verify` 退出码为 0 才算完（= `verify:full`：企业闭源泄露检查 + lint + typecheck + 全量 + 覆盖率）；秒级自检 `npm run verify:quick`；集成 `npm run test:integration`；E2E `npm run test:e2e`（外层门禁，独立于 verify）。跨端质量底线（DoD）见 `../AGENTS.md`。
 - **Vitest**, `environment: 'node'` by default; component tests opt in per file with `// @vitest-environment happy-dom` (see TESTING.md §6). Config in `vitest.config.ts`.
 - **Test files co-located** next to source: `chatStore.ts` → `chatStore.test.ts`.
 - **Global mocks** in `src/test/setup.ts`: All Tauri APIs and external SDKs are mocked globally.

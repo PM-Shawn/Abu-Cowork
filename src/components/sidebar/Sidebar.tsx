@@ -389,7 +389,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 label={navTitle(item, t.sidebar.extensions)}
                 selected={viewMode === 'extensions'}
                 trailing={pluginUpdateCount > 0
-                  ? <PluginUpdateBadge testId="extensions-update-badge" />
+                  ? <span className="flex"><PluginUpdateBadge testId="extensions-update-badge" /></span>
                   : undefined}
                 onClick={() => { openExtensions(); setShowFileTree(false); }}
               />

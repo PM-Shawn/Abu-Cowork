@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles/index.css'
 import { installAppearanceAttributes } from './styles/appearance'
+import { installWindowMaterial } from './styles/windowMaterial'
 import App from './App.tsx'
 import { initializeAccountProtocol } from './core/account/runtime'
 
@@ -10,6 +11,7 @@ if (import.meta.env.DEV) void import('./core/observability/langfuse')
 
 // Accessibility appearance attributes must exist before the first paint (tokens.css reads them).
 installAppearanceAttributes()
+installWindowMaterial()
 
 // Developer design preview (Cmd/Ctrl+Option/Alt+Shift+D). Compiled out unless the
 // renderer was built with VITE_ABU_DESIGN_PREVIEW=1, which only electron:dev does.

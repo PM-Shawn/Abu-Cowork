@@ -15,6 +15,7 @@ const {
   popupWindowsMenu,
   syncMainWindowChromeTheme,
   attachEditContextMenu,
+  windowMaterial,
 } = require('./windowChrome.cjs');
 
 /** Fake win/Menu pair capturing the context-menu handler and built templates. */
@@ -39,7 +40,7 @@ function contextMenuHarness() {
 }
 
 test('Windows overlays native caption buttons and removes the second menu-bar row', () => {
-  assert.deepEqual(mainWindowPlatformOptions('win32', false), {
+  assert.deepEqual(mainWindowPlatformOptions('win32', false, 'none'), {
     backgroundColor: LIGHT_CHROME.backgroundColor,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
@@ -114,10 +115,12 @@ test('macOS retains its application menu and traffic-light overlay', () => {
     false,
   );
   assert.deepEqual(calls, []);
-  assert.deepEqual(mainWindowPlatformOptions('darwin', false), {
-    backgroundColor: LIGHT_CHROME.backgroundColor,
+  assert.deepEqual(mainWindowPlatformOptions('darwin', false, 'vibrancy'), {
+    backgroundColor: '#00000000',
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 20, y: 27 },
+    vibrancy: 'sidebar',
+    visualEffectState: 'followWindow',
   });
 });
 
@@ -129,8 +132,8 @@ test('Windows background follows Abu dark and light theme changes', () => {
     setBackgroundColor: (color) => backgrounds.push(color),
     setTitleBarOverlay: (options) => overlays.push(options),
   };
-  assert.equal(syncMainWindowChromeTheme(win, true, 'win32'), true);
-  assert.equal(syncMainWindowChromeTheme(win, false, 'win32'), true);
+  assert.equal(syncMainWindowChromeTheme(win, true, 'win32', 'none'), true);
+  assert.equal(syncMainWindowChromeTheme(win, false, 'win32', 'none'), true);
   assert.deepEqual(backgrounds, [
     DARK_CHROME.backgroundColor,
     LIGHT_CHROME.backgroundColor,
@@ -147,6 +150,41 @@ test('Windows background follows Abu dark and light theme changes', () => {
       height: WINDOWS_TOOLBAR_HEIGHT,
     },
   ]);
+});
+
+test('picks the window material the OS can actually draw', () => {
+  assert.equal(windowMaterial('darwin', '15.5.0'), 'vibrancy');
+  assert.equal(windowMaterial('win32', '10.0.22621'), 'mica');
+  assert.equal(windowMaterial('win32', '10.0.26100'), 'mica');
+  assert.equal(windowMaterial('win32', '10.0.22000'), 'none');
+  assert.equal(windowMaterial('win32', '10.0.19045'), 'none');
+  assert.equal(windowMaterial('linux', '6.8.0'), 'none');
+  assert.throws(() => windowMaterial('win32', 'unknown'), /Windows version/);
+});
+
+test('a window with a system material keeps a transparent background', () => {
+  const mac = mainWindowPlatformOptions('darwin', false, 'vibrancy');
+  assert.equal(mac.backgroundColor, '#00000000');
+  assert.equal(mac.vibrancy, 'sidebar');
+  assert.equal(mac.visualEffectState, 'followWindow');
+  const mica = mainWindowPlatformOptions('win32', true, 'mica');
+  assert.equal(mica.backgroundColor, '#00000000');
+  assert.equal(mica.backgroundMaterial, 'mica');
+  const win10 = mainWindowPlatformOptions('win32', true, 'none');
+  assert.equal(win10.backgroundColor, DARK_CHROME.backgroundColor);
+  assert.equal('backgroundMaterial' in win10, false);
+  assert.equal(LIGHT_CHROME.backgroundColor, '#ececf0');
+  assert.equal(DARK_CHROME.backgroundColor, '#141416');
+});
+
+test('theme sync never paints over a system material', () => {
+  const colors = [];
+  const win = { isDestroyed: () => false, setBackgroundColor: (c) => colors.push(c), setTitleBarOverlay: () => {} };
+  syncMainWindowChromeTheme(win, true, 'darwin', 'vibrancy');
+  syncMainWindowChromeTheme(win, true, 'win32', 'mica');
+  assert.deepEqual(colors, []);
+  syncMainWindowChromeTheme(win, true, 'win32', 'none');
+  assert.deepEqual(colors, [DARK_CHROME.backgroundColor]);
 });
 
 test('Windows renderer menu buttons open the matching native submenu at a clamped DIP point', async () => {

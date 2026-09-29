@@ -720,11 +720,14 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'saveImageAttachment',
     'selectUserAttachments',
     'subscribeSidecarEvents',
+    'windowMaterial',
   ]);
   // This sandbox has no `process`, which is the point: assembling the bridge
   // must never depend on a Node global. Without the launch flag the scheme
   // stays on the production default rather than throwing at preload eval.
   assert.equal(shellBridge.deepLinkScheme, 'abu');
+  // Without the launch flag there is no system material behind the page.
+  assert.equal(shellBridge.windowMaterial, 'none');
   assert.equal(
     await shellBridge.canonicalizePathForPolicy('/native/report.png'),
     '/canonical/native/report.png',

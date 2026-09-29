@@ -152,6 +152,12 @@
   --ds-material: var(--ds-raised);
 }
 
+/* No system material behind the window (Windows 10, Linux, a plain browser page):
+   desk would show nothing through it, so it becomes the opaque desk gray. */
+:root[data-window-material="none"] {
+  --ds-desk: var(--ds-desk-solid);
+}
+
 @theme inline {
   --color-desk: var(--ds-desk);
   --color-desk-solid: var(--ds-desk-solid);

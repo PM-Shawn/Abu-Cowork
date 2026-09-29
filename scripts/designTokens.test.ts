@@ -8,7 +8,7 @@ import { APPEARANCE_ATTRIBUTES } from '../src/styles/appearance';
 
 const TOKENS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/styles/tokens.css');
 
-type Block = 'root' | 'dark' | 'rootContrast' | 'darkContrast' | 'reducedTransparency';
+type Block = 'root' | 'dark' | 'rootContrast' | 'darkContrast' | 'reducedTransparency' | 'noMaterial';
 type Appearance = 'light' | 'dark' | 'light-contrast' | 'dark-contrast';
 
 const [CONTRAST_ATTR, CONTRAST_ON] = APPEARANCE_ATTRIBUTES.contrast;
@@ -21,6 +21,7 @@ const SELECTORS: Record<Block, string> = {
   rootContrast: `${CONTRAST}:not(.dark)`,
   darkContrast: `${CONTRAST}.dark`,
   reducedTransparency: `:root[${TRANSPARENCY_ATTR}="${TRANSPARENCY_ON}"]`,
+  noMaterial: ':root[data-window-material="none"]',
 };
 
 const css = readFileSync(TOKENS_PATH, 'utf8');
@@ -87,6 +88,10 @@ describe('design tokens — completeness', () => {
   it('makes desk and material opaque when transparency is reduced', () => {
     expect(blocks.reducedTransparency.get('--ds-desk')).toBe('var(--ds-desk-solid)');
     expect(blocks.reducedTransparency.get('--ds-material')).toBe('var(--ds-raised)');
+  });
+
+  it('makes desk opaque when the window has no system material', () => {
+    expect(blocks.noMaterial.get('--ds-desk')).toBe('var(--ds-desk-solid)');
   });
 
   it('keys accessibility appearances off <html> attributes, never media queries', () => {

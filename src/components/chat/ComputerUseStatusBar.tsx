@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
+import { Spinner } from '@/components/ds/spinner';
 import { subscribeCUStatus, getCUStatusSnapshot } from '@/core/agent/computerUseStatus';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n, format } from '@/i18n';
@@ -64,7 +65,10 @@ export default function ComputerUseStatusBar({ onStop }: { onStop?: (conversatio
   return (
     <div className="mx-4 mt-2 flex items-center justify-between gap-3 rounded-panel border border-separator bg-surface px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
-        <Icon icon={AppIcons.monitor} className="text-label-secondary" />
+        {/* Awaiting approval and blocked wait on the user, so nothing turns then. */}
+        {status.phase === 'awaiting-approval' || status.phase === 'blocked'
+          ? <Icon icon={AppIcons.monitor} className="text-label-secondary" />
+          : <Spinner labelHidden label={t.computerUse.controlling} />}
         <div className="min-w-0">
           <div className="text-ui font-medium text-label">
             <span>{t.computerUse.controlling}</span>

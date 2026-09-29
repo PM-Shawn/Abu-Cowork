@@ -135,6 +135,19 @@ describe('BrowserRunReportCard', () => {
     expect(container.innerHTML).not.toContain('--abu-');
   });
 
+  it.each([
+    ['completed-with-refusals', 'Completed with blocked actions'],
+    ['aborted-denials', 'Stopped after repeated refusals'],
+  ] as const)('marks a %s run with the warning shape', (outcome, label) => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+    }, outcome);
+
+    render(<BrowserRunReportCard message={messageFor({ ...report, outcome })} />);
+
+    expect(screen.getByText(label).querySelector('svg.lucide-triangle-alert')).toHaveClass('text-warning');
+  });
+
   it('marks a failed run with the danger shape', () => {
     const report = snapshotOf(() => {
       record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: false, durationMs: 12, errorClass: 'timeout', origin: 'https://intranet.example' });

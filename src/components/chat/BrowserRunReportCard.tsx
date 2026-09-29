@@ -103,16 +103,14 @@ function OutcomeIcon({ outcome }: { outcome: BrowserRunReportOutcome }) {
   switch (outcome) {
     case 'completed':
       return <StatusIcon tone="success" size="sm" />;
-    // Warning tone, not success green and not failure red: the run delivered,
-    // but something it tried to change was refused. Same visual weight as
-    // `incomplete`'s "possibly incomplete" flag; `block` because it is the icon
-    // the blocked-actions section below already uses for the same fact.
+    // Warning, not success and not failure: the run delivered but something it
+    // tried to change was refused, or refusals stopped it. The warning colour
+    // always comes with the warning shape; the blocked-actions section below
+    // names the refusals.
     case 'completed-with-refusals':
-      return <Icon icon={AppIcons.block} size="sm" className="text-warning" />;
     case 'incomplete':
-      return <StatusIcon tone="warning" size="sm" />;
     case 'aborted-denials':
-      return <Icon icon={AppIcons.shield} size="sm" className="text-warning" />;
+      return <StatusIcon tone="warning" size="sm" />;
     case 'aborted':
       return <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />;
     default:

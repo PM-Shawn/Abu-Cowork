@@ -10,6 +10,7 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon } from '@/components/ds/status-icon';
 
 const CHIP = 'inline-flex h-6 max-w-45 items-center gap-1 rounded-control border border-separator bg-surface px-2 text-caption text-label transition-colors duration-fast hover:bg-fill-hover';
@@ -57,8 +58,8 @@ const CollapseToggle = memo(function CollapseToggle({ collapsed, onToggle, expan
   );
 });
 
-// The bar's running marks stand still: the step block in the chat above holds
-// the one spinner for the hand-off that is running.
+// A running chip's mark stands still: the bar's one spinner turns outside the
+// chips, so it never joins a chip's accessible name.
 function RunningMark() {
   return <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />;
 }
@@ -84,7 +85,11 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
 
   if (!team) return null;
   const defOf = (name: string) => memberDefByName(team, name);
-  const anyRunning = members.some((member) => member.status === 'running');
+  const runningCount = members.filter((member) => member.status === 'running').length;
+  const anyRunning = runningCount > 0;
+  const barSpinner = anyRunning && (
+    <Spinner size="sm" labelHidden label={format(t.batch.batchStatusRunningCount, { n: runningCount })} />
+  );
   const unresolved = pluginRecordsReady ? (team.unresolvedMemberRoleIds?.length ?? 0) : 0;
   const toggle = (
     <CollapseToggle
@@ -105,6 +110,7 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   if (collapsed) {
     return (
       <div className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="team-member-bar" data-collapsed="true" aria-label={t.workspace.teamTitle}>
+        {barSpinner}
         {leaderChip}
         <Pressable className={CHIP} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
           <span className="truncate">{members.length === 1 ? t.workspace.teamMemberBarCollapsedOne : format(t.workspace.teamMemberBarCollapsed, { n: members.length })}</span>
@@ -118,6 +124,7 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
 
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="team-member-bar" aria-label={t.workspace.teamTitle}>
+      {barSpinner}
       {leaderChip}
       {members.map((member) => (
         <Pressable

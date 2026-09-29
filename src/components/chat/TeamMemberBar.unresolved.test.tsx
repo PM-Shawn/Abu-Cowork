@@ -152,7 +152,7 @@ describe('TeamMemberBar — member status marks', () => {
     teamRef.status = { a: 'running', b: 'running', c: 'completed', d: 'error' };
   });
 
-  it('gives running members a still loading icon, finished a check, failed a cross, and turns nothing', () => {
+  it('gives running members a still loading icon, finished a check, failed a cross', () => {
     const { container } = render(<TeamMemberBar conversationId="c1" />);
     const chip = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}`) });
     for (const name of ['a', 'b']) {
@@ -161,8 +161,30 @@ describe('TeamMemberBar — member status marks', () => {
     }
     expect(chip('c').querySelector('svg.lucide-circle-check')).toHaveClass('text-success');
     expect(chip('d').querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
-    expect(container.querySelector('[data-ds-spinner]')).toBeNull();
     expect(container.innerHTML).not.toContain('--abu-');
+  });
+
+  it('turns one spinner for the whole bar, outside every chip, named by how many run', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    const bar = screen.getByTestId('team-member-bar');
+    expect(bar.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(bar.querySelector('button [data-ds-spinner]')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('2 运行中');
+  });
+
+  it('keeps the one spinner outside the collapsed pill, whose name stays the member count', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: '收起成员条' }));
+    const bar = screen.getByTestId('team-member-bar');
+    expect(bar.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(bar.querySelector('button [data-ds-spinner]')).toBeNull();
+    expect(screen.getByRole('button', { name: '4 位专家' })).toBeInTheDocument();
+  });
+
+  it('turns nothing once no member runs', () => {
+    teamRef.status = { c: 'completed', d: 'error' };
+    render(<TeamMemberBar conversationId="c1" />);
+    expect(screen.getByTestId('team-member-bar').querySelector('[data-ds-spinner]')).toBeNull();
   });
 
   it('keeps a still loading icon on the collapsed pill while someone runs', () => {

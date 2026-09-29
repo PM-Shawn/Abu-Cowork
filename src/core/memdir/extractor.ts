@@ -244,7 +244,7 @@ export async function extractMemoriesFromConversation(
         baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         maxTokens: 1024,
-        contextWindow: contextWindowForModel(settings, getEffectiveModel(settings)),
+        contextWindow: await contextWindowForModel(settings, getEffectiveModel(settings)),
         accounting: {
           source: 'memory' as const,
           conversationId,

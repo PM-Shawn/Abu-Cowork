@@ -30,6 +30,7 @@ import { adaptComputerToolForTier } from '../tools/definitions/computerToolText'
 import { isWindows } from '../../utils/platform';
 import { resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
+import { rememberProbedContextWindow } from './modelContextWindow';
 import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor } from '../llm/adapterKind';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
@@ -641,9 +642,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     return new SubagentResult({ text: failureText[delegatedPreflight.diagnostic.reason], toolCallCount: 0, turnCount: 0, tokenUsage: { input: 0, output: 0 }, duration: 0, stopReason: 'error' });
   }
 
-  const probedContextWindow = startupProvider && startupDeclared?.maxInputTokens === undefined
-    ? await probeContextWindow(startupProvider, effectiveModelId)
-    : undefined;
+  // 与主循环相同：问到的值同时交给本进程里主循环之外的入口
+  let probedContextWindow: number | undefined;
+  if (startupProvider && startupDeclared?.maxInputTokens === undefined) {
+    probedContextWindow = await probeContextWindow(startupProvider, effectiveModelId);
+    rememberProbedContextWindow(startupProvider.id, effectiveModelId, probedContextWindow);
+  }
 
   // Lifecycle: subagentStart
   await emitHook({ type: 'subagentStart', timestamp: Date.now(), agentName: agent.name, task });
@@ -881,7 +885,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           : {}),
       };
       // Apply context management to prevent subagent context overflow
-      const contextWindowSize = resolveContextWindow({
+      const resolvedContextWindow = resolveContextWindow({
         modelId: effectiveModelId,
         userSetting: declared?.maxInputTokens,
         probed: probedContextWindow ?? provider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
@@ -889,11 +893,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         discoveredProbe: discovered?.contextWindowProbe,
         isLocal: localServerKind(provider) !== null,
         ceiling: settings.contextWindowSize,
-      }).size;
+      });
+      const contextWindowSize = resolvedContextWindow.size;
+      // 回答预留按模型自己的窗口算，全局上限只约束输入
+      const reserveWindowSize = resolvedContextWindow.uncappedSize;
       const reasoningParams = computeReasoningParams(
         subagentCaps,
         settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
-        contextWindowSize,
+        reserveWindowSize,
       );
       // True output ceiling (distinct from the conservative per-turn budget below):
       // max_tokens-recovery escalation may climb toward this, never above a known limit.
@@ -902,7 +909,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
       // Escalate the budget on a max_tokens recovery (mirrors agentLoop), clamped to
       // the model's true output ceiling so we never re-ask above a known limit.
-      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount);
+      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, reserveWindowSize);
       if (escalation.changed) {
         const escalated = Math.min(escalation.maxOutputTokens, effectiveModelCeiling);
         if (escalated > maxOutputTokens) {

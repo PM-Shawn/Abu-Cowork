@@ -42,14 +42,21 @@ vi.mock('@/stores/settingsStore', () => ({
 // The default in-process reader snapshots the (mocked, empty) settingsStore, so
 // pin a snapshot with a known global default model.
 
+const mockSnapshotProviders: unknown[] = [];
+
 vi.mock('@/core/agent/ports/settingsReader', () => ({
   getSettingsReader: () => ({
     getSnapshot: () => ({
       activeModel: { providerId: 'p', modelId: 'global-model' },
-      providers: [],
+      providers: mockSnapshotProviders,
+      contextWindowSize: 200000,
     }),
   }),
 }));
+
+// 本地服务商的窗口询问，不发真实请求
+const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
+vi.mock('@/core/llm/contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
 
 // ── Mock enterprise llm-resolver ──
 
@@ -133,6 +140,9 @@ beforeEach(() => {
   for (const key of Object.keys(mockConversationIndex)) {
     delete mockConversationIndex[key];
   }
+  mockSnapshotProviders.length = 0;
+  mockProbeContextWindow.mockReset();
+  mockProbeContextWindow.mockResolvedValue(undefined);
 });
 
 // ── Tests ──
@@ -243,6 +253,24 @@ describe('compactConversationManually', () => {
       expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
       const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
       expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'global-model' });
+    });
+
+    it('summarizes on Ollama with the window the service reported, the same the task used', async () => {
+      mockSnapshotProviders.push({
+        id: 'ollama', source: 'builtin', name: 'Ollama', enabled: true, apiFormat: 'openai-compatible',
+        baseUrl: 'http://127.0.0.1:11434', apiKey: '', models: [{ id: 'llama3.2', label: 'llama3.2' }],
+        status: 'verified', sortOrder: 0,
+      });
+      mockConversations[CONV_ID] = { messages: buildRounds(6), model: { providerId: 'ollama', modelId: 'llama3.2' } };
+      vi.mocked(settingsStore.getEffectiveModel).mockReturnValueOnce('llama3.2');
+      mockProbeContextWindow.mockResolvedValue(8192);
+      mockSummarize.mockResolvedValue('summary');
+
+      const result = await compactConversationManually(CONV_ID);
+
+      expect(result.compacted).toBe(true);
+      // 没问到时按名字估计是 32768，与任务请求的 num_ctx 不同，Ollama 会重新加载模型
+      expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({ model: 'llama3.2', contextWindow: 8192 });
     });
   });
 

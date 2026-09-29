@@ -29,35 +29,37 @@ describe('resolveContextWindow', () => {
 
   it('level 1: the value the user typed wins, even above the ceiling', () => {
     expect(resolveContextWindow({ ...base, userSetting: 300000, probed: 8192, discovered: 4096 }))
-      .toEqual({ size: 300000, source: 'user' });
+      .toEqual({ size: 300000, uncappedSize: 300000, source: 'user' });
   });
 
   it('level 2: the value the service reported', () => {
-    expect(resolveContextWindow({ ...base, probed: 8192 })).toEqual({ size: 8192, source: 'service' });
+    expect(resolveContextWindow({ ...base, probed: 8192 })).toEqual({ size: 8192, uncappedSize: 8192, source: 'service' });
   });
 
   it('level 3: the value learned from an overflow error', () => {
-    expect(resolveContextWindow({ ...base, discovered: 6000 })).toEqual({ size: 6000, source: 'service' });
+    expect(resolveContextWindow({ ...base, discovered: 6000 })).toEqual({ size: 6000, uncappedSize: 6000, source: 'service' });
   });
 
   it('levels 2 and 3 together: the smaller one', () => {
-    expect(resolveContextWindow({ ...base, probed: 8192, discovered: 2048 })).toEqual({ size: 2048, source: 'service' });
-    expect(resolveContextWindow({ ...base, probed: 4096, discovered: 8192 })).toEqual({ size: 4096, source: 'service' });
+    expect(resolveContextWindow({ ...base, probed: 8192, discovered: 2048 }))
+      .toEqual({ size: 2048, uncappedSize: 2048, source: 'service' });
+    expect(resolveContextWindow({ ...base, probed: 4096, discovered: 8192 }))
+      .toEqual({ size: 4096, uncappedSize: 4096, source: 'service' });
   });
 
   it('a learned value still holds while the service reports what it reported when it was learned', () => {
     expect(resolveContextWindow({ ...base, probed: 32768, discovered: 8192, discoveredProbe: 32768 }))
-      .toEqual({ size: 8192, source: 'service' });
+      .toEqual({ size: 8192, uncappedSize: 8192, source: 'service' });
   });
 
   it('a learned value is dropped once the service reports a different length (the user changed it there)', () => {
     expect(resolveContextWindow({ ...base, probed: 65536, discovered: 8192, discoveredProbe: 8192 }))
-      .toEqual({ size: 65536, source: 'service' });
+      .toEqual({ size: 65536, uncappedSize: 65536, source: 'service' });
   });
 
   it('level 4: the name-based estimate, capped for local servers', () => {
-    expect(resolveContextWindow(base)).toEqual({ size: 32768, source: 'estimate' });
-    expect(resolveContextWindow({ ...base, isLocal: false })).toEqual({ size: 131072, source: 'estimate' });
+    expect(resolveContextWindow(base)).toEqual({ size: 32768, uncappedSize: 32768, source: 'estimate' });
+    expect(resolveContextWindow({ ...base, isLocal: false })).toEqual({ size: 131072, uncappedSize: 131072, source: 'estimate' });
   });
 
   it('the global ceiling bounds levels 2 to 4', () => {
@@ -65,9 +67,16 @@ describe('resolveContextWindow', () => {
     expect(resolveContextWindow({ ...base, probed: 262144, ceiling: 200000 }).size).toBe(200000);
   });
 
+  it('also reports the model\'s own window before the global ceiling, for the answer reserve', () => {
+    expect(resolveContextWindow({ modelId: 'gpt-5.5', isLocal: false, ceiling: 200000 }))
+      .toEqual({ size: 200000, uncappedSize: 1050000, source: 'estimate' });
+    expect(resolveContextWindow({ ...base, probed: 262144, ceiling: 200000 }))
+      .toEqual({ size: 200000, uncappedSize: 262144, source: 'service' });
+  });
+
   it('ignores empty and invalid candidates', () => {
     expect(resolveContextWindow({ ...base, userSetting: 0, probed: -5, discovered: Number.NaN }))
-      .toEqual({ size: 32768, source: 'estimate' });
+      .toEqual({ size: 32768, uncappedSize: 32768, source: 'estimate' });
   });
 });
 

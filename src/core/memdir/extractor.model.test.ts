@@ -15,6 +15,8 @@ vi.mock('../session/conversationStorage', () => ({
   loadMessages: (...args: unknown[]) => mockLoadMessages(...args),
 }));
 vi.mock('./scan', () => ({ scanMemoryFiles: async () => [] }));
+const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
+vi.mock('../llm/contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
 
 function provider(id: string): ProviderInstance {
   return {
@@ -83,5 +85,27 @@ describe('memory extraction runs on the conversation\'s own provider', () => {
     await extractMemoriesFromConversation('c1', null);
 
     expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'default-model', apiKey: 'sk-default' });
+  });
+
+  it('sends Ollama the window the service reported, the same the task used', async () => {
+    mockProbeContextWindow.mockResolvedValue(8192);
+    useSettingsStore.setState({
+      // 记忆提取要求服务商有密钥，没有密钥时整个提取直接跳过
+      providers: [{
+        ...provider('ollama'), source: 'builtin', baseUrl: 'http://127.0.0.1:11434', apiKey: 'local-key',
+        models: [{ id: 'llama3.2', label: 'llama3.2' }],
+      }],
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+    });
+    setConversationReader({
+      getConversation: () => ({}) as never,
+      getIndexEntry: () => undefined,
+      getThinkingStartTime: () => null,
+    } as ConversationReader);
+
+    await extractMemoriesFromConversation('c1', null);
+
+    // 没问到时按名字估计是 32768，与任务请求的 num_ctx 不同，Ollama 会重新加载模型
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'llama3.2', contextWindow: 8192 });
   });
 });

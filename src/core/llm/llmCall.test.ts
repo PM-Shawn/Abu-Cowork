@@ -12,6 +12,11 @@ vi.mock('./openai-compatible', () => ({
 vi.mock('./claude', () => ({
   ClaudeAdapter: class { chat = (...args: unknown[]) => mockChat(...args); },
 }));
+vi.mock('./ollama-native', () => ({
+  OllamaNativeAdapter: class { chat = (...args: unknown[]) => mockChat(...args); },
+}));
+const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
+vi.mock('./contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
 
 function provider(id: string): ProviderInstance {
   return {
@@ -66,5 +71,21 @@ describe('llmCall', () => {
       apiKey: 'sk-own',
       baseUrl: 'https://own.example.net/v1',
     });
+  });
+
+  it('sends Ollama the window the service reported, the same the task used', async () => {
+    mockProbeContextWindow.mockResolvedValue(8192);
+    useSettingsStore.setState({
+      providers: [{
+        ...provider('ollama'), source: 'builtin', baseUrl: 'http://127.0.0.1:11434', apiKey: '',
+        models: [{ id: 'llama3.2', label: 'llama3.2' }],
+      }],
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+    });
+
+    await llmCall({ messages: [{ role: 'user', content: 'hi' }] });
+
+    // 没问到时按名字估计是 32768，与任务请求的 num_ctx 不同，Ollama 会重新加载模型
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'llama3.2', contextWindow: 8192 });
   });
 });

@@ -78,7 +78,7 @@ export function landCompactBoundaryMarker(
  * that interface) — matching llmCall.ts. Missing the `forceOpenAiCompatible`
  * term would pick the Claude adapter under an enforced gateway and fail the call.
  */
-function resolveSummarizeConfig(convId: string): CompressionConfig {
+async function resolveSummarizeConfig(convId: string): Promise<CompressionConfig> {
   const settings = getSettingsReader().getSnapshot();
   const chat = useChatStore.getState();
   const baseModel =
@@ -97,7 +97,7 @@ function resolveSummarizeConfig(convId: string): CompressionConfig {
     baseUrl: creds.baseUrl,
     conversationId: convId,
     providerInstanceId: provider?.id ?? 'unknown',
-    contextWindow: contextWindowForModel(scoped, model),
+    contextWindow: await contextWindowForModel(scoped, model),
   };
 }
 
@@ -132,7 +132,7 @@ export async function compactConversationManually(
   let summaryText: string;
   useChatStore.getState().setIsCompressing(convId, true);
   try {
-    summaryText = await summarizeConversation(plan.middleMessages, resolveSummarizeConfig(convId));
+    summaryText = await summarizeConversation(plan.middleMessages, await resolveSummarizeConfig(convId));
   } catch {
     return { compacted: false, reason: 'summarize-failed' };
   } finally {

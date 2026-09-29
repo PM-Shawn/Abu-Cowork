@@ -112,6 +112,7 @@ import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor } from '../llm/adapterKind';
 import { contextTooSmallMessage } from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
+import { rememberProbedContextWindow } from './modelContextWindow';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
@@ -1672,10 +1673,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
   const malformedToolCallGuard = createMalformedToolCallGuard();
   // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载）；
-  // 用户填了「上下文长度」就不问
-  const runProbedContextWindow = entryProvider && entryModelDeclared?.maxInputTokens === undefined
-    ? await probeContextWindow(entryProvider, effectiveModelId)
-    : undefined;
+  // 用户填了「上下文长度」就不问。问到的值同时交给本进程里主循环之外的入口
+  let runProbedContextWindow: number | undefined;
+  if (entryProvider && entryModelDeclared?.maxInputTokens === undefined) {
+    runProbedContextWindow = await probeContextWindow(entryProvider, effectiveModelId);
+    rememberProbedContextWindow(entryProvider.id, effectiveModelId, runProbedContextWindow);
+  }
 
   // Phase 2 relevant-memory injection — content of memories most relevant to
   // *this* user message, surfaced as a dynamic system-prompt section. The
@@ -1981,7 +1984,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           : {}),
       };
       // 窗口按四级优先级取值：用户填写 > 服务报告与超长报错学到的值取小 > 按名字估计
-      const contextWindowSize = resolveContextWindow({
+      const resolvedContextWindow = resolveContextWindow({
         modelId: effectiveModelId,
         userSetting: modelDeclared?.maxInputTokens,
         probed: runProbedContextWindow
@@ -1990,18 +1993,21 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         discoveredProbe: discoveredCaps?.contextWindowProbe,
         isLocal: localServerKind(activeProvider) !== null,
         ceiling: freshSettings.contextWindowSize,
-      }).size;
+      });
+      const contextWindowSize = resolvedContextWindow.size;
+      // 回答预留按模型自己的窗口算，全局上限只约束输入
+      const reserveWindowSize = resolvedContextWindow.uncappedSize;
       const requestedMaxOutputTokens = modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput;
       const reasoningParams = computeReasoningParams(
         effectiveCaps,
         requestedMaxOutputTokens,
-        contextWindowSize,
+        reserveWindowSize,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
 
       // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
       // clamped to the model's true output ceiling so we never re-ask above a known limit.
-      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount);
+      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, reserveWindowSize);
       if (escalation.changed) {
         const escalated = Math.min(escalation.maxOutputTokens, effectiveModelCeiling);
         if (escalated > maxOutputTokens) {
@@ -2612,18 +2618,27 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             error: retryErr,
             provider: activeProvider,
             modelId: effectiveModelId,
+            runProbe: runProbedContextWindow,
             probe: probeContextWindow,
           });
           let recoveryContextWindowSize = contextWindowSize;
+          let recoveryReserveWindowSize = reserveWindowSize;
           if (learnedWindow !== undefined) {
-            recoveryContextWindowSize = Math.min(contextWindowSize, learnedWindow);
+            recoveryContextWindowSize = Math.min(contextWindowSize, learnedWindow.size);
+            recoveryReserveWindowSize = Math.min(reserveWindowSize, learnedWindow.size);
+            // 再问一次得到的是服务此刻报告的值，本次运行之后的轮次与本进程的其他入口都按它取第 2 级
+            if (learnedWindow.probe !== runProbedContextWindow && learnedWindow.probe !== undefined) {
+              runProbedContextWindow = learnedWindow.probe;
+              if (activeProvider) rememberProbedContextWindow(activeProvider.id, effectiveModelId, learnedWindow.probe);
+            }
             if (activeProvider) {
-              // 带上运行开始时服务报告的值，用户之后在服务里调大长度时，读取端能认出这条记录已经过时
-              getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, learnedWindow, runProbedContextWindow);
+              // 带上学到上限那一刻服务报告的值，用户之后在服务里调大长度时，读取端能认出这条记录已经过时
+              getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, learnedWindow.size, learnedWindow.probe);
               logger.info('Persisted discovered context window', {
                 providerId: activeProvider.id,
                 modelId: effectiveModelId,
-                contextWindow: learnedWindow,
+                contextWindow: learnedWindow.size,
+                contextWindowProbe: learnedWindow.probe,
               });
             }
           }
@@ -2631,7 +2646,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const recoveryReasoningParams = computeReasoningParams(
             effectiveCaps,
             requestedMaxOutputTokens,
-            recoveryContextWindowSize,
+            recoveryReserveWindowSize,
           );
           const recoveryMaxOutputTokens = recoveryReasoningParams.maxTokens;
           // 水位环的分母换成刚学到的真实值

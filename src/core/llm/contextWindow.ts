@@ -43,16 +43,28 @@ export interface ContextWindowInputs {
 
 export type ContextWindowSource = 'user' | 'service' | 'estimate';
 
-export function resolveContextWindow(inputs: ContextWindowInputs): { size: number; source: ContextWindowSource } {
+export interface ResolvedContextWindow {
+  /** 输入可用的窗口，已按全局上限裁剪 */
+  size: number;
+  /** 模型自己的窗口，未经全局上限裁剪；回答预留按它计算，云端长窗口模型保持原有回答预算 */
+  uncappedSize: number;
+  source: ContextWindowSource;
+}
+
+export function resolveContextWindow(inputs: ContextWindowInputs): ResolvedContextWindow {
   const user = positiveInteger(inputs.userSetting);
-  if (user !== undefined) return { size: user, source: 'user' };
+  if (user !== undefined) return { size: user, uncappedSize: user, source: 'user' };
   const ceiling = positiveInteger(inputs.ceiling);
-  const bounded = (value: number): number => (ceiling === undefined ? value : Math.min(value, ceiling));
+  const bounded = (value: number, source: ContextWindowSource): ResolvedContextWindow => ({
+    size: ceiling === undefined ? value : Math.min(value, ceiling),
+    uncappedSize: value,
+    source,
+  });
   const probed = positiveInteger(inputs.probed);
   const discoveredProbe = positiveInteger(inputs.discoveredProbe);
   const discoveredStale = probed !== undefined && discoveredProbe !== undefined && probed !== discoveredProbe;
   const service = [probed, discoveredStale ? undefined : positiveInteger(inputs.discovered)]
     .filter((value): value is number => value !== undefined);
-  if (service.length > 0) return { size: bounded(Math.min(...service)), source: 'service' };
-  return { size: bounded(estimateContextWindow(inputs.modelId, inputs.isLocal)), source: 'estimate' };
+  if (service.length > 0) return bounded(Math.min(...service), 'service');
+  return bounded(estimateContextWindow(inputs.modelId, inputs.isLocal), 'estimate');
 }

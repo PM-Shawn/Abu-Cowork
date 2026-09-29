@@ -1235,6 +1235,114 @@ describe('运行开始询问本地服务的窗口', () => {
       }
     },
   );
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：运行开始问到的值交给同一进程里的记忆提取、技能辅助调用与压缩',
+    async (_name, run) => {
+      const { useChatStore, restore } = await setup();
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      const { contextWindowForModel } = await import('./modelContextWindow');
+      mockProbeContextWindow.mockResolvedValue(98304);
+      try {
+        await run(useChatStore);
+        expect(await contextWindowForModel(useSettingsStore.getState(), 'llama3.2')).toBe(98304);
+        // 读的是这次运行问到的值，没有再问一次
+        expect(mockProbeContextWindow).toHaveBeenCalledOnce();
+      } finally {
+        restore();
+      }
+    },
+  );
+});
+
+describe('回答预留按模型自己的窗口计算', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  async function setup(provider: Partial<import('../../types/provider').ProviderInstance>, modelId: string) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    const base = settings.providers.find((p) => p.id === provider.id) ?? {
+      ...settings.providers[0], source: 'custom' as const, name: 'Gateway', apiKey: 'k', userAdded: true,
+    };
+    useSettingsStore.setState({
+      activeModel: { providerId: provider.id!, modelId },
+      providers: [
+        ...settings.providers.filter((p) => p.id !== provider.id),
+        { ...base, ...provider, enabled: true, models: [{ id: modelId, label: modelId }] },
+      ],
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'ok' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const restore = () => {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, chat, restore };
+  }
+
+  async function runMain(useChatStore: Awaited<ReturnType<typeof setup>>['useChatStore']) {
+    const conversationId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(conversationId, 'hello');
+    expect(result.reason).toBe('completed');
+  }
+
+  async function runSub() {
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const agent = { name: 'helper', description: 'helps', systemPrompt: 'help', tools: [], filePath: '__preset__' };
+    const result = await runSubagentLoop({
+      agent, task: 'hello',
+      toolInvoker: { getAllTools: () => [], toolResultToString: String, executeAnyTool: vi.fn() },
+    });
+    expect(result.stopReason).toBe('completed');
+  }
+
+  it.each([['runAgentLoop', runMain], ['runSubagentLoop', runSub]] as const)(
+    '%s：云端长窗口模型保持自己的回答预算，不被全局上限压小',
+    async (_name, run) => {
+      const { useChatStore, chat, restore } = await setup(
+        { id: 'gw', apiFormat: 'openai-compatible', baseUrl: 'https://gw.example.net/v1' },
+        'gpt-5.5',
+      );
+      try {
+        await run(useChatStore);
+        // 模型表：gpt-5.5 窗口 1050000、输出上限 128000；全局上限 200000 只约束输入
+        expect((chat.mock.calls[0][1] as { maxTokens: number }).maxTokens).toBe(128000);
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  // 主循环的系统说明加工具定义约 12K，8K 窗口在发请求前就报「放不下」，所以主循环用 24K 窗口验证
+  it.each([
+    ['runAgentLoop', runMain, 'qwen3-8b', 24576, 6144],
+    ['runSubagentLoop', runSub, 'llama3.2', 8192, 2048],
+  ] as const)(
+    '%s：本地小窗口仍只给回答留四分之一',
+    async (_name, run, modelId, window, expectedMaxTokens) => {
+      const { useChatStore, chat, restore } = await setup({ id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, modelId);
+      mockProbeContextWindow.mockResolvedValue(window);
+      try {
+        await run(useChatStore);
+        const options = chat.mock.calls[0][1] as { maxTokens: number; contextWindow?: number };
+        expect(options.contextWindow).toBe(window);
+        expect(options.maxTokens).toBe(expectedMaxTokens);
+      } finally {
+        restore();
+      }
+    },
+  );
 });
 
 describe('服务说内容太长后按真实上限恢复', () => {
@@ -1329,10 +1437,41 @@ describe('服务说内容太长后按真实上限恢复', () => {
       expect(result.reason).toBe('completed');
       expect(mockProbeContextWindow).toHaveBeenCalledTimes(2);
       expect(mockProbeContextWindow).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'ollama' }), 'llama3.2');
-      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 12288, undefined);
+      // 再问一次得到的就是服务当时报告的值，随学到的上限一起记下
+      expect(recordContextWindow).toHaveBeenCalledWith('ollama', 'llama3.2', 12288, 12288);
       const retryOptions = chat.mock.calls[1][1] as { maxTokens: number };
       expect(retryOptions.maxTokens).toBeLessThanOrEqual(12288 / 4);
       expect(useChatStore.getState().conversations[conversationId].contextUsage?.tokensMax).toBe(12288);
+    } finally {
+      restore();
+    }
+  });
+
+  it('再问一次学到的上限，在用户之后调大服务端长度时作废', async () => {
+    const { useChatStore, LLMError, chat, restore } = await setup();
+    const { getCapsPort, setCapsPort } = await import('./ports/capsPort');
+    const learned = new Map<string, { contextWindow: number; contextWindowProbe?: number; source: 'error-derived'; updatedAt: number }>();
+    const fakeCapsPort = getCapsPort();
+    setCapsPort({
+      ...fakeCapsPort,
+      get: (providerId: string, modelId: string) => learned.get(`${providerId}:${modelId}`),
+      recordContextWindow: (providerId: string, modelId: string, contextWindow: number, contextWindowProbe?: number) => {
+        learned.set(`${providerId}:${modelId}`, { contextWindow, contextWindowProbe, source: 'error-derived', updatedAt: 0 });
+      },
+    });
+    // 第一次运行：开始时没问到，报错没说上限，再问一次得到 24576
+    mockProbeContextWindow.mockResolvedValueOnce(undefined).mockResolvedValueOnce(24576);
+    chat.mockRejectedValueOnce(new LLMError('too long', 'context_too_long', { statusCode: 400 }));
+    try {
+      const first = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(first, 'hello')).reason).toBe('completed');
+      expect(learned.get('ollama:llama3.2')).toMatchObject({ contextWindow: 24576, contextWindowProbe: 24576 });
+
+      // 第二次运行：用户在服务里把长度调到 32768，学到的 24576 已经过时
+      mockProbeContextWindow.mockResolvedValue(32768);
+      const second = useChatStore.getState().createConversation();
+      expect((await runAgentLoop(second, 'hello')).reason).toBe('completed');
+      expect((chat.mock.calls.at(-1)![1] as { contextWindow?: number }).contextWindow).toBe(32768);
     } finally {
       restore();
     }

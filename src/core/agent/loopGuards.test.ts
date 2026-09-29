@@ -219,6 +219,18 @@ describe('escalateMaxOutputTokens', () => {
     const result = escalateMaxOutputTokens(32768, 1000000, 2);
     expect(result).toEqual({ maxOutputTokens: 65536, changed: true });
   });
+
+  it('takes the quarter from the model\'s own window when the global ceiling made the input window smaller', () => {
+    // 输入窗口被全局上限压到 200000，模型自己的窗口 1050000：四分之一按后者算，翻倍后的 65536 不被压到 50000
+    expect(escalateMaxOutputTokens(32768, 200000, 1, 1050000)).toEqual({ maxOutputTokens: 65536, changed: true });
+    // 仍然给输入留 1000
+    expect(escalateMaxOutputTokens(150000, 200000, 1, 1050000)).toEqual({ maxOutputTokens: 199000, changed: true });
+  });
+
+  it('keeps a Claude model at a quarter of its own 200000 window, as before this change', () => {
+    // 模型表里 Claude 的窗口本身就是 200000，全局上限不改变它，四分之一仍是 50000
+    expect(escalateMaxOutputTokens(32768, 200000, 1, 200000)).toEqual({ maxOutputTokens: 50000, changed: true });
+  });
 });
 
 // Bug #4: a turn cut off by max_tokens AFTER emitting complete tool calls. The

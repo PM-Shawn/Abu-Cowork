@@ -170,7 +170,8 @@ export function resolveMaxTurns(params: {
  *
  * A fixed 2× that PERSISTS for every recovery (recoveryCount >= 1), so the budget
  * sequence is base → 2× → 2× → 2×, clamped to contextWindowSize - 1000 and to
- * OUTPUT_RESERVE_RATIO of the window (see reserveOutputTokens). Callers
+ * OUTPUT_RESERVE_RATIO of the model's own window before the global ceiling
+ * (`reserveWindowSize`, see reserveOutputTokens). Callers
  * recompute `currentMax` from base each turn, so the escalation must be a pure
  * function of `recoveryCount`. The old one-shot `alreadyEscalated` latch made the
  * budget fall back to base on later recoveries (base → 2× → base → base) — bug #5.
@@ -192,12 +193,14 @@ export function escalateMaxOutputTokens(
   currentMax: number,
   contextWindowSize: number,
   recoveryCount: number,
+  /** 模型自己的窗口（未经全局上限裁剪），四分之一的上限按它计算 */
+  reserveWindowSize: number = contextWindowSize,
 ): { maxOutputTokens: number; changed: boolean } {
   if (recoveryCount <= 0) {
     return { maxOutputTokens: currentMax, changed: false };
   }
   // 加大后的回答预留同样不超过窗口的四分之一，小窗口也留得出输入空间
-  const escalated = reserveOutputTokens(Math.min(currentMax * 2, contextWindowSize - 1000), contextWindowSize);
+  const escalated = reserveOutputTokens(Math.min(currentMax * 2, contextWindowSize - 1000), reserveWindowSize);
   if (escalated > currentMax) {
     return { maxOutputTokens: escalated, changed: true };
   }

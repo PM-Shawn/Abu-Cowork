@@ -101,7 +101,7 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
     systemPrompt: options.system,
     tools: options.tools,
     maxTokens: options.maxTokens ?? 4096,
-    contextWindow: contextWindowForModel(settings, getEffectiveModel(settings)),
+    contextWindow: await contextWindowForModel(settings, getEffectiveModel(settings)),
     signal: options.signal,
     // 这条路径是技能与内部工具的单轮调用（test_skill_trigger、
     // improve_skill_description 等），页面上归到「系统辅助」那一组。

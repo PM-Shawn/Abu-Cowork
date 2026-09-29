@@ -3310,11 +3310,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       );
       const isContextBudgetError = err instanceof ContextBudgetError;
       const contextTooSmall = contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(settingsForModel)));
+      // 窗口放不下说明（含超长恢复后仍放不下）时给用户的是一句普通说明，不加错误前缀
+      const showsContextTooSmall = !managedProviderUnreachable
+        && !(isContextBudgetError && err.code === 'INPUT_TOO_LARGE')
+        && (isContextBudgetError || errorCode === 'context_too_long');
       let displayError = managedProviderUnreachable
         ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
-        : isContextBudgetError || errorCode === 'context_too_long'
+        : showsContextTooSmall
         ? contextTooSmall
         : isLikelyVisionError
         ? getI18n().chat.visionUnsupported
@@ -3331,7 +3335,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       chatDelta.appendText(
         conversationId,
-        `\n\n**Error:** ${displayError}`,
+        showsContextTooSmall ? `\n\n${displayError}` : `\n\n**Error:** ${displayError}`,
         assistantMsgId
       );
       chatDelta.finishStreaming(conversationId, assistantMsgId);

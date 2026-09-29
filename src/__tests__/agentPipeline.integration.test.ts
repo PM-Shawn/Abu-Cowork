@@ -790,6 +790,8 @@ describe('Agent Pipeline Integration', () => {
       .map((message) => typeof message.content === 'string' ? message.content : '')
       .join('\n');
     expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.');
+    // 一句普通说明，前面不带错误前缀
+    expect(assistantText).not.toContain('Error:');
     expect(assistantText).not.toContain('raise the context length');
   });
 
@@ -808,6 +810,7 @@ describe('Agent Pipeline Integration', () => {
       .map((message) => typeof message.content === 'string' ? message.content : '')
       .join('\n');
     expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs.');
+    expect(assistantText).not.toContain('Error:');
     expect(assistantText).not.toContain('raw provider overflow text');
   });
 
@@ -906,6 +909,8 @@ describe('Agent Pipeline Integration', () => {
         .map((m) => String(m.content))
         .join('');
       expect(visible).toContain(getI18n().chat.malformedToolCall);
+      // 按普通说明显示，前面不带错误前缀
+      expect(visible).not.toContain('Error:');
       expect(visible).not.toContain('<invoke');
     });
 

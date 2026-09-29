@@ -169,3 +169,35 @@ describe('runAIServicesChecks — recent real-call failures', () => {
     expect(results[0].status).toBe('passed');
   });
 });
+
+describe('runAIServicesChecks — providers without a key', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+    getProviderCallHealthMock.mockReset().mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('probes a keyless custom provider on this machine', async () => {
+    useSettingsStore.setState({
+      providers: [makeProvider({ apiKey: '', baseUrl: 'http://localhost:8000/v1' })],
+      computerUseEnabled: false,
+    });
+
+    const results = await runAIServicesChecks();
+    expect(results[0].status).toBe('passed');
+  });
+
+  it('skips a keyless custom provider on another host', async () => {
+    useSettingsStore.setState({
+      providers: [makeProvider({ apiKey: '' })],
+      computerUseEnabled: false,
+    });
+
+    const results = await runAIServicesChecks();
+    expect(results[0].status).toBe('skipped');
+  });
+});

@@ -48,7 +48,7 @@ import {
 // Relocated to a pure module so the sidecar bundle (and anything else that
 // needs zero store-graph coupling) can import them directly — see
 // settingsSelectors.ts's module doc. Re-exported below unchanged.
-import { getActiveProvider, getActiveApiKey, resolveAgentModel, getEffectiveModel, providerRequiresApiKey } from '../utils/settingsSelectors';
+import { getActiveProvider, getActiveApiKey, resolveAgentModel, getEffectiveModel, providerRequiresApiKey, providerHasCredentials } from '../utils/settingsSelectors';
 export { getActiveProvider, getActiveApiKey, resolveAgentModel, getEffectiveModel, providerRequiresApiKey };
 // PROVIDER_CONFIGS is a plain static object literal (not store-derived) —
 // relocated to providerConfigs.ts for the same bundle-graph reason. See that
@@ -678,7 +678,7 @@ function userOwnedProviders(providers: ProviderInstance[]): ProviderInstance[] {
  *    later, so "missing" at that point only means "not registered yet".
  *    `markManagedProvidersReady()` runs this rule once registration has had
  *    its turn.
- * 2. Active provider disabled but has key (or is ollama) → silently re-enable.
+ * 2. Active provider disabled but has key (or needs none) → silently re-enable.
  * 3. Active provider disabled and unusable → switch to a usable fallback;
  *    only force-enable as a last resort so getActiveProvider() keeps resolving.
  */
@@ -693,7 +693,7 @@ export function reconcileActiveProvider(
     if (!options.managedProvidersReady) return;
     const fallback =
       state.providers.find(
-        p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
+        p => p.enabled && providerHasCredentials(p)
       ) ?? state.providers.find(p => p.enabled);
     if (fallback) {
       state.activeModel = {
@@ -705,8 +705,7 @@ export function reconcileActiveProvider(
   }
   if (activeProvider.enabled) return;
 
-  const isUsable =
-    activeProvider.apiKey.trim().length > 0 || activeProvider.id === 'ollama' || activeProvider.id === 'lmstudio';
+  const isUsable = providerHasCredentials(activeProvider);
   if (isUsable) {
     activeProvider.enabled = true;
     return;
@@ -716,7 +715,7 @@ export function reconcileActiveProvider(
     p =>
       p.id !== activeProvider.id &&
       p.enabled &&
-      (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
+      providerHasCredentials(p)
   );
   if (fallback) {
     state.activeModel = {
@@ -726,14 +725,10 @@ export function reconcileActiveProvider(
     // Leave activeProvider disabled — user's intent is preserved.
   } else {
     // No usable alternative. Only re-enable if the active provider itself is
-    // usable (has a key, or is keyless like ollama/lmstudio). If it has no key,
+    // usable (has a key, or needs none). If it has no key,
     // leave everything disabled so the first-run banner keeps showing and guides
     // the user to configure a provider.
-    if (
-      activeProvider.apiKey.trim().length > 0 ||
-      activeProvider.id === 'ollama' ||
-      activeProvider.id === 'lmstudio'
-    ) {
+    if (providerHasCredentials(activeProvider)) {
       activeProvider.enabled = true;
     }
   }

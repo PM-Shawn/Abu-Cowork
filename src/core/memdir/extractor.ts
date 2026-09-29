@@ -15,7 +15,7 @@
 // rather than the Zustand store module directly. `stores/**` is forbidden from
 // the sidecar bundle graph (`bundleGraphGuardPlugin` in build-sidecar.mjs), and
 // this is the same substitution `agentLoop.ts` already made for the same reason.
-import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../utils/settingsSelectors';
+import { getActiveApiKey, getActiveProvider, getEffectiveModel, providerRequiresApiKey } from '../../utils/settingsSelectors';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { settingsForConversation } from '../agent/conversationSettings';
 // P1-3d-2: route the LLM call through `selectChatAdapter` (already sidecar-ized,
@@ -193,7 +193,7 @@ export async function extractMemoriesFromConversation(
     // Create adapter on the conversation's own model and provider.
     const settings = settingsForConversation(conversationId, getSettingsReader().getSnapshot());
     const activeApiKey = getActiveApiKey(settings);
-    if (!activeApiKey) {
+    if (providerRequiresApiKey(settings) && !activeApiKey) {
       console.warn('[Memory] Auto-extraction skipped: no API key configured');
       return;
     }

@@ -994,6 +994,11 @@ export default function ChatView({
   // Optimistic feedback for the beat between submitting a question/plan answer
   // and the resumed loop producing anything (Bug 1: 点同意后无反应).
   const [resuming, setResuming] = useState(false);
+  const handleQuestionSubmitted = useCallback(() => {
+    setResuming(true);
+    // Fallback clear — normally hidden once the loop sets a status.
+    setTimeout(() => setResuming(false), 4000);
+  }, []);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).status);
   const retryInfo = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).retryInfo);
 
@@ -1726,11 +1731,7 @@ export default function ChatView({
                 messageId={owningMsg.id}
                 toolCallId={pending.id}
                 payload={pending.payload}
-                onSubmitted={() => {
-                  setResuming(true);
-                  // Fallback clear — normally hidden once the loop sets a status.
-                  setTimeout(() => setResuming(false), 4000);
-                }}
+                onSubmitted={handleQuestionSubmitted}
               />
             );
           })()}

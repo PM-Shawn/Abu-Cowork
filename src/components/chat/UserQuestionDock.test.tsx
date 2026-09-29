@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ComponentProps } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import UserQuestionDock from './UserQuestionDock';
 import * as bridge from '@/core/agent/permissionBridge';
@@ -84,6 +85,33 @@ const CONFIRM_PAYLOAD: UserQuestionPayload = {
   ],
 };
 
+const iconButtonRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the dock's floating-layer controls (the pager and close buttons' tooltips).
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
+      iconButtonRenders();
+      return actual.IconButton(props);
+    },
+  };
+});
+
+// Defined once, like ChatView's useCallback, so only `tick` changes between renders.
+const onSubmittedOnce = () => undefined;
+
+// Stands in for ChatView re-rendering on every streamed token: `tick` changes, the dock's props do not.
+function Host({ tick }: { tick: number }) {
+  return (
+    <DesignSystemProvider>
+      <span data-tick={tick} />
+      <UserQuestionDock conversationId="conv-a" messageId="msg-1" toolCallId="tc-host" payload={TWO_Q_PAYLOAD} onSubmitted={onSubmittedOnce} />
+    </DesignSystemProvider>
+  );
+}
+
 function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
   return render(
     <UserQuestionDock
@@ -132,6 +160,15 @@ describe('UserQuestionDock', () => {
     expect(option).not.toHaveClass('bg-fill-selected');
     await user.click(option);
     expect(option).toHaveClass('bg-fill-selected');
+  });
+
+  it('does not re-render its pager tooltips while the chat view streams', () => {
+    const { rerender } = render(<Host tick={0} />);
+    const initial = iconButtonRenders.mock.calls.length;
+    expect(initial).toBeGreaterThan(0);
+    rerender(<Host tick={1} />);
+    rerender(<Host tick={2} />);
+    expect(iconButtonRenders).toHaveBeenCalledTimes(initial);
   });
 
   it('shows the pager counter', () => {

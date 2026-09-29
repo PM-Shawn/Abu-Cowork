@@ -15,7 +15,7 @@
  * Settled (read-only) rendering lives in UserQuestionCard — not here.
  */
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { resolveUserQuestion } from '@/core/agent/permissionBridge';
@@ -55,7 +55,7 @@ function initQuestionStates(count: number): QuestionState[] {
   }));
 }
 
-export default function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted }: Props) {
+function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted }: Props) {
   const { t, format } = useI18n();
   const setAnswers = useChatStore((s) => s.setToolCallUserQuestionAnswers);
 
@@ -454,3 +454,6 @@ function ChoiceMark({ multiSelect, checked }: { multiSelect: boolean; checked: b
     </span>
   );
 }
+
+// ChatView re-renders on every streamed token; the dock's own props do not change then.
+export default memo(UserQuestionDock);

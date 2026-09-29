@@ -254,8 +254,8 @@ export default function RightPanel() {
         // Raised content card floating on the canvas (matches dev's panel redesign):
         // margins on 3 sides + rounded/border/shadow. No h-full — flex fills height
         // minus the margins.
-        'bg-[var(--abu-bg-base)] flex overflow-hidden relative',
-        'mt-2 mb-2 mr-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)]',
+        'bg-surface flex overflow-hidden relative',
+        'mt-2 mb-2 mr-2 rounded-panel shadow-panel',
         hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
       )}
       style={

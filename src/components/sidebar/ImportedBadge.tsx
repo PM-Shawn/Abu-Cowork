@@ -1,5 +1,5 @@
 /**
- * ImportedBadge — small download icon pinned before a conversation title
+ * ImportedBadge — small download tag pinned before a conversation title
  * in the sidebar, signaling that the conversation came from a `.abu.json`
  * share bundle someone else exported. The recipient can still continue
  * chatting; the badge only communicates provenance.
@@ -7,7 +7,10 @@
  * Rendered conditionally by the caller based on `ConversationMeta.importedFrom`.
  */
 
-import { Download } from 'lucide-react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Tag } from '@/components/ds/tag';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n, format } from '@/i18n';
 
 interface ImportedBadgeProps {
@@ -21,12 +24,12 @@ export default function ImportedBadge({ importedAt }: ImportedBadgeProps) {
     ? format(t.share.importedBadgeWithDate, { date: dateLabel })
     : t.share.importedBadge;
   return (
-    <span
-      className="shrink-0 h-4 w-4 flex items-center justify-center rounded text-[var(--abu-clay)]"
-      title={title}
-      aria-label={title}
-    >
-      <Download className="h-3 w-3" strokeWidth={1.75} />
-    </span>
+    <Tooltip content={title}>
+      <span className="inline-flex shrink-0">
+        <Tag>
+          <Icon icon={AppIcons.download} size="sm" label={title} />
+        </Tag>
+      </span>
+    </Tooltip>
   );
 }

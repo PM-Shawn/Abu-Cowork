@@ -2,10 +2,12 @@ import { ScrollArea as ScrollAreaPrimitive } from 'radix-ui';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
+// Radix wraps the content in a `display: table` box that grows to the widest line;
+// making it a block keeps the content at the viewport's width so text can truncate.
 export function ScrollArea({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <ScrollAreaPrimitive.Root className={cn('relative overflow-hidden', className)}>
-      <ScrollAreaPrimitive.Viewport className="h-full w-full">{children}</ScrollAreaPrimitive.Viewport>
+      <ScrollAreaPrimitive.Viewport className="h-full w-full [&>div]:!block">{children}</ScrollAreaPrimitive.Viewport>
       <ScrollAreaPrimitive.Scrollbar orientation="vertical" className="flex w-2 touch-none select-none">
         <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-fill-pressed" />
       </ScrollAreaPrimitive.Scrollbar>

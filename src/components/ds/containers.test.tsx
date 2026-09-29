@@ -59,6 +59,14 @@ describe('containers and navigation', () => {
     expect(screen.getByText('Long list')).toBeInTheDocument();
   });
 
+  it('ScrollArea keeps its content at the viewport width so long text can truncate', () => {
+    const { container } = render(<ScrollArea className="h-16"><p>Long list</p></ScrollArea>);
+    const viewport = container.querySelector('[data-radix-scroll-area-viewport]');
+    // Radix puts `display: table` on the content box; the class overrides it with block.
+    expect(viewport).toHaveClass('[&>div]:!block');
+    expect(viewport?.firstElementChild).toHaveStyle({ display: 'table' });
+  });
+
   it('Table has column headers and aligned cells', () => {
     render(
       <Table label="Usage">

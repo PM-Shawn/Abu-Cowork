@@ -181,6 +181,19 @@ describe('TeamMemberBar — member status marks', () => {
     expect(screen.getByRole('button', { name: '4 位专家' })).toBeInTheDocument();
   });
 
+  it('puts the spinner after the chips, so the leader chip stays first while someone runs', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    const bar = screen.getByTestId('team-member-bar');
+    expect(bar.lastElementChild).toHaveAttribute('role', 'status');
+    expect(bar.firstElementChild).toHaveTextContent('lead');
+  });
+
+  it('puts the spinner last in the collapsed bar as well', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: '收起成员条' }));
+    expect(screen.getByTestId('team-member-bar').lastElementChild).toHaveAttribute('role', 'status');
+  });
+
   it('turns nothing once no member runs', () => {
     teamRef.status = { c: 'completed', d: 'error' };
     render(<TeamMemberBar conversationId="c1" />);

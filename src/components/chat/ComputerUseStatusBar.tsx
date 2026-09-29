@@ -62,18 +62,25 @@ export default function ComputerUseStatusBar({ onStop }: { onStop?: (conversatio
     }[status.capabilityMode]
     : null;
 
+  const sentence = status.stepCount > 0
+    ? `${t.computerUse.controlling} ${format(t.computerUse.step, { step: status.stepCount })}`
+    : t.computerUse.controlling;
+
   return (
     <div className="mx-4 mt-2 flex items-center justify-between gap-3 rounded-panel border border-separator bg-surface px-3 py-2">
-      <div className="flex min-w-0 items-center gap-2">
-        {/* Awaiting approval and blocked wait on the user, so nothing turns then. */}
-        {status.phase === 'awaiting-approval' || status.phase === 'blocked'
-          ? <Icon icon={AppIcons.monitor} className="text-label-secondary" />
-          : <Spinner labelHidden label={t.computerUse.controlling} />}
-        <div className="min-w-0">
-          <div className="text-ui font-medium text-label">
-            <span>{t.computerUse.controlling}</span>
-            {status.stepCount > 0 && ` ${format(t.computerUse.step, { step: status.stepCount })}`}
+      <div className="min-w-0">
+        {/* The spinner's own label is the sentence, so it is read once. Awaiting
+            approval and blocked wait on the user, so nothing turns then. */}
+        {status.phase === 'awaiting-approval' || status.phase === 'blocked' ? (
+          <div className="flex items-center gap-2 text-ui text-label-secondary">
+            <Icon icon={AppIcons.monitor} />
+            <span>{sentence}</span>
           </div>
+        ) : (
+          <Spinner label={sentence} />
+        )}
+        {/* pl-6 = the 16px icon plus gap-2, so these lines start under the sentence. */}
+        <div className="min-w-0 pl-6">
           {!isSelf && (
             <div className="truncate text-ui-sm font-medium text-label" data-testid="cu-owner">
               {format(t.computerUse.fromConversation, {

@@ -110,7 +110,6 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   if (collapsed) {
     return (
       <div className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="team-member-bar" data-collapsed="true" aria-label={t.workspace.teamTitle}>
-        {barSpinner}
         {leaderChip}
         <Pressable className={CHIP} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
           <span className="truncate">{members.length === 1 ? t.workspace.teamMemberBarCollapsedOne : format(t.workspace.teamMemberBarCollapsed, { n: members.length })}</span>
@@ -118,13 +117,13 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
         </Pressable>
         <UnresolvedMembersPill t={t} unresolved={unresolved} onOpen={() => openTeam(conversationId)} />
         {toggle}
+        {barSpinner}
       </div>
     );
   }
 
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="team-member-bar" aria-label={t.workspace.teamTitle}>
-      {barSpinner}
       {leaderChip}
       {members.map((member) => (
         <Pressable
@@ -156,6 +155,7 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
         </Button>
       ))}
       {toggle}
+      {barSpinner}
     </div>
   );
 }

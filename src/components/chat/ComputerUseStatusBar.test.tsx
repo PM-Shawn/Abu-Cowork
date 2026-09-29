@@ -54,8 +54,7 @@ describe('ComputerUseStatusBar', () => {
   it('shows safe target, mode, and phase without typed content', () => {
     render(<ComputerUseStatusBar onStop={() => {}} />);
 
-    // The spinner repeats the words for screen readers; this checks the visible line.
-    expect(screen.getByText('Controlling computer', { ignore: '.sr-only' })).toBeInTheDocument();
+    expect(screen.getByText('Controlling computer · Step 2')).toBeInTheDocument();
     expect(screen.getByText('TextEdit · Structured mode · Verifying result')).toBeInTheDocument();
     expect(screen.queryByText(/private|password|typed/i)).not.toBeInTheDocument();
   });
@@ -101,7 +100,7 @@ describe('ComputerUseStatusBar', () => {
     const onStop = vi.fn();
     render(<ComputerUseStatusBar onStop={onStop} />);
 
-    expect(screen.getByText('Controlling computer', { ignore: '.sr-only' })).toBeInTheDocument();
+    expect(screen.getByText('Controlling computer · Step 2')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /stop/i })).not.toBeInTheDocument();
     expect(onStop).not.toHaveBeenCalled();
   });
@@ -113,11 +112,19 @@ describe('ComputerUseStatusBar', () => {
     expect(container.querySelector('svg.lucide-monitor')).toBeNull();
   });
 
+  it('shows the sentence as the spinner\'s own words, read once', () => {
+    setSnapshot({ phase: 'acting' });
+    const { container } = render(<ComputerUseStatusBar onStop={() => {}} />);
+    expect(screen.getByRole('status')).toHaveTextContent('Controlling computer · Step 2');
+    expect(container.querySelector('.sr-only')).toBeNull();
+  });
+
   it('shows the still screen icon, not a spinner, while it waits for the user', () => {
     setSnapshot({ phase: 'awaiting-approval' });
     const { container } = render(<ComputerUseStatusBar onStop={() => {}} />);
     expect(container.querySelector('[data-ds-spinner]')).toBeNull();
     expect(container.querySelector('svg.lucide-monitor')).not.toBeNull();
+    expect(screen.getByText('Controlling computer · Step 2')).toBeInTheDocument();
   });
 
   it('is a flat panel with a secondary Stop button', () => {

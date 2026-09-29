@@ -52,7 +52,7 @@ under `scripts/`). E2E (`e2e/*.spec.ts`) is handled by Playwright and runs as a 
 | Quarantined specs (`e2e/**/*.spec.ts`, `tests/e2e/**/*.spec.ts`) | 0 |
 | Web E2E (`e2e/*.spec.ts`, Playwright) | 8 |
 | Real-Electron E2E (`tests/e2e/*.spec.ts`) | 54 |
-| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 97 |
+| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 98 |
 <!-- test-inventory:end -->
 
 ---
@@ -209,10 +209,10 @@ npm run lint && npm run typecheck && vitest run --changed
 ### verify:full
 
 ```sh
-npm run lint && npm run typecheck && npm run gen:models:check && npm run check:browser-artifacts && npm run electron:host-ui-test && npm run test:inventory:check && npm run test:coverage
+npm run check:enterprise-leak && npm run lint && npm run typecheck && npm run gen:models:check && npm run gen:ledger-reader:check && npm run check:browser-artifacts && npm run electron:host-ui-test && npm run test:inventory:check && npm run test:coverage
 ```
 
-- Full quality gate: lint + type errors + model-data freshness check + Electron host UI tests + the full Vitest suite (file counts in §2 "Current inventory") + coverage threshold enforcement.
+- Full quality gate: enterprise leak guard + lint + type errors + model-data freshness check + Electron host UI tests + the full Vitest suite (file counts in §2 "Current inventory") + coverage threshold enforcement.
 - Two further freshness checks sit between `gen:models:check` and the suite: `check:browser-artifacts` verifies the built browser bundles (chrome-extension `dist/`, `electron/*-runtime/dist/`) are not older than their sources (the app loads the artifacts, not the sources), and `test:inventory:check` verifies the generated inventory block in §2 of this file matches the files on disk (regenerate with `npm run test:inventory`).
 - Use before marking a task complete and before opening a PR. It overlaps with the CI `check` job but is not the same set of steps — see §7.
 - Coverage below the committed thresholds causes non-zero exit and fails the gate.
@@ -224,12 +224,13 @@ CI does **not** call `verify:full` directly — the `check` job runs its own lis
 steps (Lint → Type check → Test with coverage → Test-infra scripts → Electron host UI tests →
 TESTING.md inventory check → Build frontend → Browser bundle sync and freshness check), each gated on
 `!cancelled() && steps.install.outcome == 'success'` so every stage reports independently (see §7).
-The two lists **overlap but are not identical**: both include lint, typecheck, host UI tests,
+The two lists **overlap but are not identical**: both include the enterprise leak guard (CI runs it
+as its own `leak-guard` job), lint, typecheck, host UI tests,
 coverage, inventory and browser artifact freshness. `gen:models:check` also runs inside the
 CI production build; `test:infra`, the production build and the tracked Chrome-extension
 sync comparison are CI-only (see §7, "Steps that are NOT part of verify").
 
-> **Local pre-commit hook (husky + lint-staged):** `.husky/pre-commit` must stay executable — check with `git ls-files -s .husky/pre-commit` (expect `100755`; fix with `git update-index --chmod=+x .husky/pre-commit`) — and `.husky/_/` must exist in every worktree (created by `npm install` / `npx husky`; without it git runs no hook and prints nothing — `npm run electron:dev:check` reports this).
+> **Local pre-commit hook (husky + lint-staged):** `.husky/pre-commit` first runs `npm run check:enterprise-leak` over the whole `src/` tree (tracked and untracked, non-ignored files; well under a second) and blocks the commit on any hit, then runs lint-staged (ESLint + `vitest related` on staged `src/**/*.{ts,tsx}`). `scripts/enterprise-leak-guard.test.mjs` proves the block with a real husky install in a throwaway repo. The hook must stay executable — check with `git ls-files -s .husky/pre-commit` (expect `100755`; fix with `git update-index --chmod=+x .husky/pre-commit`) — and `.husky/_/` must exist in every worktree (created by `npm install` / `npx husky`; without it git runs no hook and prints nothing — `npm run electron:dev:check` reports this).
 
 ---
 
@@ -359,7 +360,7 @@ freshness check (`npm run check:browser-artifacts`). Each is gated on
 `!cancelled() && steps.install.outcome == 'success'` (not `if: always()`): one red stage does not
 mask another — you see exactly which stages are red in one run — but nothing runs against an
 empty `node_modules` when the install step failed or the job was cancelled. `verify:full` is the
-closest local gate, but it is **not** the same set: it covers lint, type check, host UI tests,
+closest local gate, but it is **not** the same set: it covers the enterprise leak guard, lint, type check, host UI tests,
 coverage, inventory and freshness checks. It skips `test:infra`, the production build and the
 tracked extension sync comparison. CI builds both browser runtimes, compares the extension
 bundle with its tracked copy, and stamps that copy only after the comparison succeeds. Run it before
@@ -383,13 +384,16 @@ opening a PR.
 - `audit` — `npm audit --omit=dev --audit-level=high`; stays yellow until the 2 high baseline
   findings in transitive production deps are cleaned, then flip to blocking.
 
+**`leak-guard` job.** Runs `npm run check:enterprise-leak` (`scripts/enterprise-leak-guard.sh`)
+without installing dependencies, and its result independently gates the `check` facade. The same
+command runs in the local pre-commit hook and as the first stage of `verify:full`.
+
 Model-data freshness (`gen:models:check`) runs automatically before tests via the `pretest` npm hook
 and again inside `npm run build` — no separate CI step is needed.
 
 Steps that are NOT part of verify (and must be kept):
-- Enterprise leak guard (`scripts/enterprise-leak-guard.sh`) — runs **before** npm install.
-- Test-infra scripts (`npm run test:infra`) — `node:test` checks over the CI workflow and the
-  inventory generator; not wired into `verify:full`.
+- Test-infra scripts (`npm run test:infra`) — `node:test` checks over the CI workflow, the
+  inventory generator and the enterprise leak-guard wiring; not wired into `verify:full`.
 - Build frontend (`npm run build`) — separate from tests, validates production bundle.
 - Chrome extension bundle sync check — validates committed extension artifact is up to date.
 

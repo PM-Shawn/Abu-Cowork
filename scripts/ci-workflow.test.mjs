@@ -232,7 +232,7 @@ test('parallel gates preserve their commands, full installs, and blocking outcom
     assert.equal(job['continue-on-error'], undefined, `${name} must remain blocking`);
     if (name === 'leak-guard') {
       assert.equal(job.steps.find((step) => step.name === 'Enterprise leak guard (open-core)')?.run,
-        'bash scripts/enterprise-leak-guard.sh');
+        'npm run check:enterprise-leak');
       continue;
     }
     assert.equal(job.steps.find((step) => step.id === 'install')?.run.trim(),

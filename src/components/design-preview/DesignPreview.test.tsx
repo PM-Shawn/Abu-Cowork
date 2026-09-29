@@ -57,6 +57,9 @@ describe('DesignPreview', () => {
       for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft']) {
         expect(document.querySelector(`[data-token="${name}"]`), name).not.toBeNull();
       }
+      for (const name of ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property']) {
+        expect(document.querySelector(`[data-preview-syntax] [data-token="${name}"] [data-token-value]`), name).not.toBeNull();
+      }
       const focusValue = () => document.querySelector('[data-token="focus"] [data-token-value]')?.textContent;
       expect(focusValue()).toBe('#111111');
       root.style.setProperty('--ds-focus', '#222222');
@@ -71,7 +74,7 @@ describe('DesignPreview', () => {
     render(<DesignPreview />);
     const tokens = within(document.querySelector('[data-preview-section="tokens"]') as HTMLElement);
     const table = tokens.getByRole('table', { name: 'Scales' });
-    for (const name of ['z-sticky', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip', 'duration-fast', 'duration-base', 'duration-slow', 'ease-enter', 'ease-exit', 'rounded-window', 'rounded-panel', 'rounded-control', 'shadow-panel', 'shadow-float', 'shadow-dialog']) {
+    for (const name of ['z-sticky', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip', 'duration-fast', 'duration-base', 'duration-slow', 'ease-enter', 'ease-exit', 'rounded-window', 'rounded-panel', 'rounded-control', 'shadow-panel', 'shadow-float', 'shadow-dialog', 'shadow-composer']) {
       expect(within(table).getByText(name), name).toBeInTheDocument();
     }
   });

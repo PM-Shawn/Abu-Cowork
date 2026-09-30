@@ -13,6 +13,10 @@
         would otherwise trip library validation.
       - allow-dyld-environment-variables: embedded runtimes (python/node)
         are pointed at via DYLD_* by their launchers.
+      - device.audio-input: voice input. Without it the hardened runtime
+        makes TCC deny the microphone before any prompt is shown. Must reach
+        the Helper processes too (the renderer Helper opens the device),
+        which the shared entitlementsInherit guarantees.
     Used as both `entitlements` and `entitlementsInherit` (helpers inherit
     the same set) in electron-builder.yml.
   -->
@@ -23,6 +27,8 @@
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
   <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.device.audio-input</key>
   <true/>
 </dict>
 </plist>

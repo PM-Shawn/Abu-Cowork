@@ -686,7 +686,7 @@ const AttachmentStrip = memo(function AttachmentStrip({ images, files, reference
         <div key={f.id} className={chipClass}>
           <Icon icon={AppIcons.file} size="sm" className="text-label-secondary" />
           <span className="max-w-40 truncate">{f.name}</span>
-          <IconButton size="sm" icon={AppIcons.close} label={t.common.close} onClick={() => onRemoveFile(f.id)} />
+          <IconButton size="sm" icon={AppIcons.close} label={t.toolbox.menuRemove} onClick={() => onRemoveFile(f.id)} />
         </div>
       ))}
       {references.map((r) => (
@@ -706,7 +706,7 @@ const AttachmentStrip = memo(function AttachmentStrip({ images, files, reference
             {referenceChipLabel(r)}
             {r.comment && <span className="text-label-tertiary"> · {r.comment}</span>}
           </span>
-          <IconButton size="sm" icon={AppIcons.close} label={t.common.close} onClick={() => onRemoveReference(r.id)} />
+          <IconButton size="sm" icon={AppIcons.close} label={t.toolbox.menuRemove} onClick={() => onRemoveReference(r.id)} />
         </div>
       ))}
       {/* A real flex item keeps the trailing inset scrollable in Chromium;
@@ -1974,6 +1974,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (next === 'field') textareaRef.current?.focus();
     else setMenuPicker({ type: next, query: '' });
   }, [setMenuPicker]);
+  // Reopening + during its exit animation keeps the menu mounted, so the close handler
+  // never runs for the earlier choice. Drop it here, or the next Escape would open it.
+  const handlePlusMenuOpenChange = useCallback((open: boolean) => {
+    if (open) afterPlusMenuRef.current = null;
+    setShowPlusMenu(open);
+  }, [setShowPlusMenu]);
   const sendFromButton = useCallback(() => latestHandlersRef.current.send(), []);
   const clearTeamPin = useCallback(() => { pinTeam(undefined); textareaRef.current?.focus(); }, [pinTeam]);
 
@@ -2008,7 +2014,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const plusMenu = (
     <PlusMenu
       open={showPlusMenu}
-      onOpenChange={setShowPlusMenu}
+      onOpenChange={handlePlusMenuOpenChange}
       onCloseAutoFocus={handlePlusMenuCloseAutoFocus}
       onAddFile={pickAddFile}
       onTeamOrMember={pickTeamOrMember}

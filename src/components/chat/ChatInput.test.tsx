@@ -727,7 +727,7 @@ describe('ChatInput composer card, + menu and suggestion list', () => {
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
 
     expect(screen.getByRole('button', { name: getI18n().chat.removeImage })).not.toHaveAttribute('title');
-    fireEvent.click(screen.getByRole('button', { name: getI18n().common.close }));
+    fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.menuRemove }));
     expect(screen.queryByText('notes.md')).toBeNull();
   });
 });

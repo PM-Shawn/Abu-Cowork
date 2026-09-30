@@ -213,7 +213,12 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   return (
     <Menu
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        // Reopening during the exit animation keeps the menu mounted, so the close hook
+        // never runs for the earlier choice. Drop it, or the next Escape would run it.
+        if (next) afterMenuClose.current = null;
+        setOpen(next);
+      }}
       side="top"
       onCloseAutoFocus={(event) => {
         const action = afterMenuClose.current;

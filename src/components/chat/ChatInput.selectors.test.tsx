@@ -160,9 +160,9 @@ describe('composer selectors', () => {
       selectedAgent: { name: 'publisher', description: 'Draft posts' },
     });
     render(<ChatInput variant="chat" onSend={vi.fn()} />, { wrapper: DesignSystemProvider });
-    const { chat, common } = getI18n();
-    const ownTips = new Set<unknown>([chat.composerMenu.open, common.close, chat.removeImage, chat.sendTooltipEnterSends]);
-    expect(tooltipRenders.mock.calls.filter(([content]) => ownTips.has(content)).length).toBeGreaterThanOrEqual(4);
+    const { chat, common, toolbox } = getI18n();
+    const ownTips = new Set<unknown>([chat.composerMenu.open, common.close, toolbox.menuRemove, chat.removeImage, chat.sendTooltipEnterSends]);
+    expect(tooltipRenders.mock.calls.filter(([content]) => ownTips.has(content)).length).toBeGreaterThanOrEqual(5);
 
     const box = screen.getByRole('textbox');
     // The first character may enable send; the following ones change nothing around the field.

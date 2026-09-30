@@ -4188,6 +4188,71 @@ export interface TranslationDict {
   // These are UI-facing: rendered in ToolCallsGroup and also fed back to the
   // LLM, so they go through i18n (resolved at execution time by the current
   // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
+  voiceInput: {
+    title: string;
+    description: string;
+    enable: string;
+    enableDesc: string;
+    language: string;
+    languageDesc: string;
+    langAuto: string;
+    langZh: string;
+    langEn: string;
+    langYue: string;
+    langJa: string;
+    langKo: string;
+    modelTitle: string;
+    modelDesc: string;
+    modelChecking: string;
+    modelMissing: string;
+    modelReady: string;
+    modelDownloading: string;
+    modelProgress: string;
+    modelError: string;
+    download: string;
+    retry: string;
+    cancel: string;
+    deleteModel: string;
+    deleted: string;
+    source: string;
+    sourceAuto: string;
+    sourceMirror: string;
+    sourceHuggingface: string;
+    runtimeMissing: string;
+    unavailable: string;
+    errNetwork: string;
+    errHttp: string;
+    errIntegrity: string;
+    errStorage: string;
+    errUnknown: string;
+    micTitle: string;
+    micDesc: string;
+    micGranted: string;
+    micDenied: string;
+    micNotDetermined: string;
+    micUnknown: string;
+    openSystemSettings: string;
+    start: string;
+    stop: string;
+    cancelRecording: string;
+    recording: string;
+    transcribing: string;
+    setupTitle: string;
+    setupBody: string;
+    setupGoto: string;
+    setupDownloading: string;
+    later: string;
+    pendingHint: string;
+    insert: string;
+    discard: string;
+    errPermission: string;
+    errNoDevice: string;
+    errInterrupted: string;
+    errEmpty: string;
+    errNoSpeech: string;
+    errTranscribe: string;
+    errBusy: string;
+  };
   toolResult: {
     team: {
       invalidInput: string;

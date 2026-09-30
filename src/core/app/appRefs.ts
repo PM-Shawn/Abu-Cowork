@@ -40,6 +40,8 @@ export interface RefCatalog {
   findManagedAgent: (roleId: string) => SubagentDefinition | undefined;
   /** Names of the skills Abu can load. */
   skillNames: ReadonlySet<string>;
+  /** Names of the organization's skills among them: what an `enterprise:` skill reference may name. */
+  enterpriseSkillNames: ReadonlySet<string>;
 }
 
 /** What the catalog is built from: the plugin records, the teams, and the discovered experts and skills. */
@@ -72,6 +74,7 @@ export function refCatalogFrom(input: RefCatalogInput): RefCatalog {
     getAgent: (name) => (agentNames.has(name) ? agentRegistry.getAgent(name) : undefined),
     findManagedAgent: (roleId) => agentRegistry.findManagedAgent(roleId),
     skillNames: new Set(input.skills.map((skill) => skill.name)),
+    enterpriseSkillNames: new Set(input.skills.filter((skill) => skill.source === 'enterprise').map((skill) => skill.name)),
   };
 }
 
@@ -170,7 +173,8 @@ export function resolveTarget(app: AppDefinition, kind: RunTargetKind, value: st
     if (target.origin === 'mine' && !isUsersOwnAgent(agent)) return { status: 'unavailable', label: target.id };
     return { status: 'ok', kind, agent };
   }
-  return catalog.skillNames.has(target.id) ? { status: 'ok', kind, name: target.id } : { status: 'unavailable', label: target.id };
+  const names = target.origin === 'enterprise' ? catalog.enterpriseSkillNames : catalog.skillNames;
+  return names.has(target.id) ? { status: 'ok', kind, name: target.id } : { status: 'unavailable', label: target.id };
 }
 
 /** The name a user knows a target by: a team's or an expert's display name, never an id. */

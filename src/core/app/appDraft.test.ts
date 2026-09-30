@@ -63,6 +63,7 @@ function catalog(): RefCatalog {
     getAgent: (name) => agents.get(name),
     findManagedAgent: () => undefined,
     skillNames: new Set(),
+    enterpriseSkillNames: new Set(),
   };
 }
 

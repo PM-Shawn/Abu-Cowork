@@ -14,6 +14,7 @@ const catalog: RefCatalog = {
   getAgent: (name) => ({ 数据分析师: agent('数据分析师', { filePath: '__builtin__' }), 店铺客服顾问: agent('店铺客服顾问', { source: { kind: 'plugin', plugin: 'shop-assistant@market' } }), 周报助手: agent('周报助手') } as Record<string, SubagentDefinition>)[name],
   findManagedAgent: () => undefined,
   skillNames: new Set(['product-listing']),
+  enterpriseSkillNames: new Set(),
 };
 
 const app: AppDefinition = {

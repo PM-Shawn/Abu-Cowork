@@ -74,7 +74,7 @@ function disclosure(name: string, teams: string[]): InstallDisclosure {
   } as InstallDisclosure;
 }
 
-const emptyCatalog: RefCatalog = { plugins: [], teams: [], getAgent: () => undefined, findManagedAgent: () => undefined, skillNames: new Set() };
+const emptyCatalog: RefCatalog = { plugins: [], teams: [], getAgent: () => undefined, findManagedAgent: () => undefined, skillNames: new Set(), enterpriseSkillNames: new Set() };
 const marketRef = () => ({ name: 'lawyer-market', dir: market });
 const entry = (name: string) => ({ name, source: { kind: 'relative' as const, path: `./apps/${name}` } });
 

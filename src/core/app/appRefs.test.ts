@@ -28,7 +28,8 @@ function catalog(overrides: Partial<RefCatalog> = {}): RefCatalog {
     ],
     getAgent: (name) => agents.get(name),
     findManagedAgent: (roleId) => [orgReady, orgUnready].find((item) => item.roleId === roleId),
-    skillNames: new Set(['product-listing', 'clause-check']),
+    skillNames: new Set(['product-listing', 'clause-check', 'weekly-report']),
+    enterpriseSkillNames: new Set(['clause-check']),
     ...overrides,
   };
 }
@@ -89,6 +90,11 @@ describe('resolveRun', () => {
     expect(run({ team: 'enterprise-team:t-org-1' }, org).owner).toEqual({ status: 'needs-preparation', roleIds: ['enterprise-agent:a2'], label: 't-org-1' });
     expect(run({ expert: 'enterprise-agent:gone' }, org).owner).toEqual({ status: 'unavailable', label: 'gone' });
     expect(run({ skill: 'enterprise:clause-check' }, org).skill).toMatchObject({ status: 'ok', name: 'clause-check' });
+  });
+
+  it('finds an organization skill only among the organization\'s skills, never a same-named one of the user', () => {
+    const org = app({ kind: 'enterprise' });
+    expect(run({ skill: 'enterprise:weekly-report' }, org).skill).toEqual({ status: 'unavailable', label: 'weekly-report' });
   });
 });
 

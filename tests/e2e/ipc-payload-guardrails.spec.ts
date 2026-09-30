@@ -157,9 +157,9 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
     await input.fill(oversizeTurn);
     await input.press('Enter');
 
-    // The failure line sits next to its button inside one flex row under the
-    // user's message (MessageBubble.tsx), so the row is the text node's parent.
-    const failedRow = page.getByText('这段对话太长，无法继续。').locator('..');
+    // The failure line and its button share one alert under the user's message
+    // (the InlineMessage in MessageBubble.tsx).
+    const failedRow = page.getByRole('alert').filter({ hasText: '这段对话太长，无法继续。' });
     await expect(failedRow).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(failedRow.getByRole('button', { name: '新建对话' })).toBeVisible();
     await expect(failedRow.getByRole('button', { name: '重试' })).toHaveCount(0);

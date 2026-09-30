@@ -133,4 +133,16 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const code = component('<div className="text-[var(--abu-text-primary)]" />');
     expect(await messages(code, 'src/components/chat/ChatView.tsx')).not.toEqual([]);
   });
+
+  it.each([
+    'src/components/chat/chapters.ts',
+    'src/components/chat/FileAttachment.test.tsx',
+    'src/components/chat/SourcesSection.test.tsx',
+    'src/components/chat/IMInfoBar.test.tsx',
+    'src/components/common/FolderSelector.test.tsx',
+    'src/components/chat/ConvIdBadge.test.tsx',
+  ])('checks %s with the migrated rules', async (file) => {
+    const code = `export const style = 'text-[var(--abu-text-primary)]';\n`;
+    expect(await messages(code, file)).not.toEqual([]);
+  });
 });

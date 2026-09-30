@@ -17,8 +17,8 @@ const MODE_ICON: Record<PermissionMode, AppIconName> = {
   autonomous: 'warning',
 };
 
-// The Popover hands its props (open state, click, ref) to this component; spreading them
-// onto the button lets the Tooltip wrap it.
+// The Menu hands its trigger props (open state, click, ref) to this component; spreading
+// them onto the button lets the Tooltip wrap it.
 function ModeTrigger({ mode, label, hint, className, ...props }: ComponentProps<'button'> & {
   mode: PermissionMode;
   label: string;

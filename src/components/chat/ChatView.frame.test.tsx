@@ -16,6 +16,8 @@ interface MockVirtuosoProps {
   atBottomStateChange?: (atBottom: boolean) => void;
   data?: Message[][];
   itemContent?: (index: number, group: Message[]) => React.ReactNode;
+  components?: { Footer?: React.ComponentType<{ context?: unknown }> };
+  context?: unknown;
 }
 
 const harness = vi.hoisted(() => ({
@@ -293,5 +295,22 @@ describe('ChatView frame', () => {
 
     await waitFor(() => expect(harness.scrollToIndex).toHaveBeenCalledWith({ index: 1, align: 'start', behavior: 'auto' }));
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  // AgentStatusStrip above the composer says why the model is slow; the list keeps 「思考中」.
+  it('keeps the thinking words in the list while a retry runs', () => {
+    const t = getI18n();
+    const store = useChatStore.getState();
+    const conversationId = store.createConversation();
+    store.addMessage(conversationId, message('user-1', 'user', 'prompt 1', 'loop-1'));
+    store.setConversationStatus(conversationId, 'running');
+    store.setRetryInfo(conversationId, { attempt: 2, maxAttempts: 3, delayMs: 5000 });
+    render(<ChatView />);
+
+    const Footer = harness.props?.components?.Footer;
+    expect(Footer).toBeDefined();
+    const { container } = render(Footer ? <Footer context={harness.props?.context} /> : <div />);
+    expect(container).toHaveTextContent(t.status.thinking);
+    expect(container).not.toHaveTextContent(/retrying/i);
   });
 });

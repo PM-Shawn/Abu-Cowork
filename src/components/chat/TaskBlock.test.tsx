@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, it, expect } from 'vitest';
 import TaskBlock, { convertExecutionStep, generateSummary, type UnifiedStep } from './TaskBlock';
+import { ThinkingStatusLine } from './ThinkingStatusLine';
 import { getI18n, getLocale, format } from '@/i18n';
 import type { ExecutionStep } from '@/types/execution';
 
@@ -241,6 +242,17 @@ describe('TaskBlock — one spinner per block', () => {
     expect(header.className).not.toMatch(/(^|\s)pl-/);
     expect(header).toHaveClass('text-label-secondary');
     expect(header).toHaveClass('hover:text-label');
+  });
+
+  // The words start after the spinner icon plus the same gap-2, so equal icon widths
+  // mean the status line's 「思考中」 and the header's words start in the same column.
+  it('draws the same spinner width as the status line it follows', () => {
+    const { container: line } = render(<ThinkingStatusLine label="思考中" />);
+    const { container: block } = render(<TaskBlock executionSteps={[execCommandStep('s1', 'Step one')]} isActive />);
+    const lineIcon = line.querySelector('[data-ds-spinner] svg');
+    const headerIcon = block.querySelector('.task-block > button [data-ds-spinner] svg');
+    expect(headerIcon).not.toBeNull();
+    expect(lineIcon?.getAttribute('width')).toBe(headerIcon?.getAttribute('width'));
   });
 
   it('marks finished steps with a check and failed steps with a cross', () => {

@@ -27,6 +27,7 @@ function ConvIdBadge({ conversationId }: { conversationId: string }) {
         label={copied ? t.chat.copyConvIdCopied : t.chat.copyConvIdTooltip}
         onClick={handleCopy}
       />
+      {copied && <span className="text-caption text-label-tertiary">{t.chat.copyConvIdCopied}</span>}
     </span>
   );
 }

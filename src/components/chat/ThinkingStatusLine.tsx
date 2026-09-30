@@ -4,14 +4,16 @@ import { Spinner } from '@/components/ds/spinner';
 import abuAvatar from '@/assets/abu-avatar.png';
 
 // Single source of truth for the "thinking…" status typography shared by the
-// three rows that hand off to each other during a turn's lifecycle:
+// rows that hand off to each other during a turn's lifecycle:
 //   1. ChatView's VirtuosoTypingFooter (before the assistant group exists)
 //   2. MessageGroup's in-group placeholder (group exists, no content yet)
-//   3. TaskBlock's active header (first thinking/tool step has arrived)
-// Because each state swap REPLACES the previous row in the same visual spot,
-// the label must keep the exact same size and baseline across all three — any
-// divergence reads as the text hopping lines ("错行"). All three rows set their
-// words in text-ui next to the one Spinner of their area.
+//   3. MessageGroup's RunStatusDivider (「处理中」 / 「已处理 Ns」), which takes
+//      the placeholder's slot once the first thinking/tool step arrives
+//   4. TaskBlock's active header, one row below the divider
+// Rows 1–3 replace each other in the same visual spot, so they keep the exact
+// same size and baseline — any divergence reads as the text hopping lines
+// ("错行"). Every row sets its words in text-ui; the spinner rows use the sm
+// Spinner, like the TaskBlock header, so their words start in the same column.
 
 /** One status row: the area's Spinner with its words. No vertical padding of
  *  its own — callers that need the mb-2 of the successor rows pass it via
@@ -25,7 +27,7 @@ export function ThinkingStatusLine({
 }) {
   return (
     <div className={cn('flex items-center', className)}>
-      <Spinner label={label} />
+      <Spinner size="sm" label={label} />
     </div>
   );
 }

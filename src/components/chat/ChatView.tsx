@@ -1005,7 +1005,6 @@ export default function ChatView({
     setTimeout(() => setResuming(false), 4000);
   }, []);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).status);
-  const retryInfo = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).retryInfo);
 
   const handleSelectPrompt = useCallback((prompt: string) => {
     // Fill the prompt into the input via pendingInput
@@ -1645,9 +1644,10 @@ export default function ChatView({
               // This occurs both on a normal send and when a staged queue item
               // is consumed after earlier assistant turns already exist.
               showTypingIndicator: shouldShowTypingIndicator(activeConv?.status, visibleMessages),
-              retryingLabel: retryInfo
-                ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
-                : null,
+              // AgentStatusStrip above the composer (always mounted for the
+              // active conversation) says 「正在重试」; the list keeps 「思考中」 so
+              // the sentence shows once.
+              retryingLabel: null,
               // status.thinking ("思考中", no trailing ellipsis) — the same
               // string the in-group placeholder shows and the TaskBlock active
               // header reduces to (it strips the ellipsis). chat.thinking

@@ -1,12 +1,11 @@
-import { memo, useRef, useState, type ComponentProps, type KeyboardEvent, type MouseEvent } from 'react';
+import { memo, useState, type ComponentProps } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ds/button';
 import { AppIcons, type AppIconName } from '@/components/ds/icons';
-import { Popover } from '@/components/ds/popover';
-import { RadioGroup } from '@/components/ds/radio-group';
+import { Menu, MenuRadioGroup, MenuRadioItem } from '@/components/ds/menu';
 import { Tooltip } from '@/components/ds/tooltip';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
 
@@ -55,8 +54,6 @@ function ModeTrigger({ mode, label, hint, className, ...props }: ComponentProps<
 
 function PermissionModeChip({ conversationId }: { conversationId: string | null }) {
   const [open, setOpen] = useState(false);
-  // Arrow keys move the choice inside the list; only a click, Space or Enter closes it.
-  const movedByArrow = useRef(false);
   const { t } = useI18n();
 
   const convMode = useChatStore(
@@ -86,25 +83,9 @@ function PermissionModeChip({ conversationId }: { conversationId: string | null 
     }
   }
 
-  // Capture phase: the radio group moves focus and checks the next option while handling
-  // the same key, before a bubbling handler would see it.
-  function handleKeyDownCapture(e: KeyboardEvent<HTMLDivElement>) {
-    movedByArrow.current = e.key.startsWith('Arrow');
-  }
-
-  function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (e.key === 'Enter') setOpen(false);
-  }
-
-  // A click on an option (the current one included) or Space closes the list. A click on
-  // an option's words reaches here a second time as a click on its radio.
-  function handleClick(e: MouseEvent<HTMLDivElement>) {
-    if (movedByArrow.current) return;
-    if ((e.target as HTMLElement).closest('[role="radio"]')) setOpen(false);
-  }
-
+  // Arrow keys only move the highlight; a mode applies on click, Enter or Space.
   return (
-    <Popover
+    <Menu
       open={open}
       onOpenChange={setOpen}
       side="top"
@@ -117,28 +98,14 @@ function PermissionModeChip({ conversationId }: { conversationId: string | null 
         />
       )}
     >
-      <div
-        onKeyDownCapture={handleKeyDownCapture}
-        onKeyDown={handleKeyDown}
-        onPointerDown={() => { movedByArrow.current = false; }}
-        onClick={handleClick}
-      >
-        <RadioGroup
-          value={currentMode}
-          onValueChange={handleSelect}
-          label={t.settings.permissionMode}
-          options={MODES.map((mode) => ({
-            value: mode,
-            label: (
-              <span className="flex flex-col">
-                <span>{modeLabels[mode].label}</span>
-                <span className="text-ui-sm text-label-secondary">{modeLabels[mode].description}</span>
-              </span>
-            ),
-          }))}
-        />
-      </div>
-    </Popover>
+      <MenuRadioGroup value={currentMode} onValueChange={handleSelect}>
+        {MODES.map((mode) => (
+          <MenuRadioItem key={mode} value={mode} description={modeLabels[mode].description}>
+            {modeLabels[mode].label}
+          </MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
+    </Menu>
   );
 }
 

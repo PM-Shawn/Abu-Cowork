@@ -41,8 +41,6 @@ import {
 const PROVIDER = { permissionMode: 'standard', supportsTools: true } as const;
 const MODE_STANDARD = '请求批准';
 const MODE_AUTONOMOUS = '完全自主';
-/** A phrase only the 「完全自主」 row of the chip's list carries. */
-const AUTONOMOUS_ROW_TEXT = '系统红线始终禁止';
 const CONFIRM_DIALOG = /^(操作确认|Confirm Action)$/;
 const CANCEL_BUTTON = /^(取消|Cancel)$/;
 const STOP_BUTTON = /^(停止|Stop)$/;
@@ -175,17 +173,17 @@ async function launch(root: ElectronDataRoot, configure: boolean): Promise<Page>
 
 /**
  * The composer's permission chip. Its accessible name is exactly the mode's
- * label; the options of its open list are radios named by the label plus the
- * mode's description, so `exact` keeps the two apart.
+ * label; the options of its open menu carry the same name, so the chip is
+ * looked up inside the toolbar.
  */
 function permissionChip(page: Page, label: string) {
   return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
-/** Open the chip's list and pick the option whose description carries `rowText`. */
-async function pickPermissionMode(page: Page, currentLabel: string, rowText: string): Promise<void> {
+/** Open the chip's menu and pick the mode named `targetLabel`. */
+async function pickPermissionMode(page: Page, currentLabel: string, targetLabel: string): Promise<void> {
   await permissionChip(page, currentLabel).click();
-  await page.getByRole('radio', { name: rowText }).click();
+  await page.getByRole('menuitemradio', { name: targetLabel, exact: true }).click();
 }
 
 async function send(page: Page, text: string): Promise<void> {
@@ -277,7 +275,7 @@ test.describe.serial('#549 P2b per-conversation permission mode — real Electro
 
     // Pick 「完全自主」 in this conversation: the chip reads it and the
     // conversation's row of index.json carries it.
-    await pickPermissionMode(page, MODE_STANDARD, AUTONOMOUS_ROW_TEXT);
+    await pickPermissionMode(page, MODE_STANDARD, MODE_AUTONOMOUS);
     await expect(permissionChip(page, MODE_AUTONOMOUS)).toBeVisible();
     await expect.poll(
       () => indexEntry(dataRoot!, marker)?.permissionMode,

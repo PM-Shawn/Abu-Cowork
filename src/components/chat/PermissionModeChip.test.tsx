@@ -78,16 +78,16 @@ describe('PermissionModeChip', () => {
     expect(chip).not.toHaveClass('text-label-secondary');
   });
 
-  it('opens a list of the three modes, each with its description', async () => {
+  it('opens a menu of the three modes, each named by its mode and described by its line', async () => {
     const user = userEvent.setup();
     render(<PermissionModeChip conversationId={null} />);
     await user.click(screen.getByRole('button', { name: '标准' }));
 
-    const group = await screen.findByRole('radiogroup', { name: '权限模式' });
-    expect(group).toBeInTheDocument();
-    expect(screen.getAllByRole('radio')).toHaveLength(3);
-    expect(screen.getByRole('radio', { name: /智能审核/ })).toHaveAccessibleName(/可能误判/);
-    expect(screen.getByRole('radio', { name: /^标准/ })).toBeChecked();
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(3);
+    expect(screen.getByRole('menuitemradio', { name: '标准' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('menuitemradio', { name: '智能审核' })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('menuitemradio', { name: '智能审核' })).toHaveAccessibleDescription(/可能误判/);
   });
 
   it('updates conversation permissionMode when autonomous option selected, then closes', async () => {
@@ -96,10 +96,10 @@ describe('PermissionModeChip', () => {
     render(<PermissionModeChip conversationId={id} />);
     await user.click(screen.getByRole('button', { name: '标准' }));
 
-    await user.click(await screen.findByRole('radio', { name: /系统红线/ }));
+    await user.click(await screen.findByRole('menuitemradio', { name: '完全自主' }));
 
     expect(useChatStore.getState().conversations[id]?.permissionMode).toBe('autonomous');
-    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 
   it('closes after picking the mode that is already current', async () => {
@@ -107,9 +107,9 @@ describe('PermissionModeChip', () => {
     render(<PermissionModeChip conversationId={null} />);
     await user.click(screen.getByRole('button', { name: '标准' }));
 
-    await user.click(await screen.findByText(/工作区内自由读写/));
+    await user.click(await screen.findByRole('menuitemradio', { name: '标准' }));
 
-    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 
   it('updates pendingPermissionMode in chatStore (not global settingsStore) when conversationId is null', async () => {
@@ -117,7 +117,7 @@ describe('PermissionModeChip', () => {
     render(<PermissionModeChip conversationId={null} />);
     await user.click(screen.getByRole('button', { name: '标准' }));
 
-    await user.click(await screen.findByRole('radio', { name: /智能审核/ }));
+    await user.click(await screen.findByRole('menuitemradio', { name: '智能审核' }));
 
     // Global default must NOT change
     expect(useSettingsStore.getState().permissionMode).toBe('standard');
@@ -125,32 +125,77 @@ describe('PermissionModeChip', () => {
     expect(useChatStore.getState().pendingPermissionMode).toBe('smart');
   });
 
-  it('moves the choice with arrow keys while the list stays open, and Enter closes it back onto the chip', async () => {
-    // The radio group moves focus on the next timer tick.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
+  describe('from the keyboard', () => {
+    // Keys are held across a timer tick, as a real key press is: a list may move focus on
+    // the next tick and act on whatever the key does while it is still down.
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    async function openFromChip(user: ReturnType<typeof userEvent.setup>, chipName: string) {
+      screen.getByRole('button', { name: chipName }).focus();
+      await user.keyboard('{Enter}');
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    async function press(user: ReturnType<typeof userEvent.setup>, key: string) {
+      await user.keyboard(`{${key}>}`);
+      await vi.advanceTimersByTimeAsync(0);
+      await user.keyboard(`{/${key}}`);
+    }
+
+    it('ArrowDown only moves the highlight; the mode stays', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       render(<PermissionModeChip conversationId={null} />);
-      screen.getByRole('button', { name: '标准' }).focus();
-      await user.keyboard('{Enter}');
-      expect(await screen.findByRole('radio', { name: /^标准/ })).toHaveFocus();
+      await openFromChip(user, '标准');
 
-      // Held down across the tick, as a real key press is.
-      await user.keyboard('{ArrowDown>}');
-      await vi.advanceTimersByTimeAsync(0);
-      await user.keyboard('{/ArrowDown}');
+      await press(user, 'ArrowDown');
 
-      expect(screen.getByRole('radio', { name: /^智能审核/ })).toHaveFocus();
+      expect(useChatStore.getState().pendingPermissionMode).toBeUndefined();
+      expect(screen.getByRole('menuitemradio', { name: '智能审核' })).toHaveFocus();
+
+      await press(user, 'ArrowDown');
+
+      expect(useChatStore.getState().pendingPermissionMode).toBeUndefined();
+      expect(screen.getByRole('menuitemradio', { name: '完全自主' })).toHaveFocus();
+    });
+
+    it('ArrowUp from the first mode never reaches full autonomy', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<PermissionModeChip conversationId={null} />);
+      await openFromChip(user, '标准');
+
+      await press(user, 'ArrowUp');
+
+      expect(useChatStore.getState().pendingPermissionMode).toBeUndefined();
+      expect(screen.getByRole('menuitemradio', { name: '完全自主' })).not.toHaveFocus();
+    });
+
+    it('Enter applies the highlighted mode, closes the menu and puts focus on the chip', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<PermissionModeChip conversationId={null} />);
+      await openFromChip(user, '标准');
+      await press(user, 'ArrowDown');
+
+      await press(user, 'Enter');
+
       expect(useChatStore.getState().pendingPermissionMode).toBe('smart');
-      expect(screen.getByRole('radiogroup')).toBeInTheDocument();
-
-      await user.keyboard('{Enter}');
-
-      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: '智能审核' })).toHaveFocus();
-    } finally {
-      vi.useRealTimers();
-    }
+    });
+
+    it('Escape after arrow keys leaves the mode unchanged', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<PermissionModeChip conversationId={null} />);
+      await openFromChip(user, '标准');
+      await press(user, 'ArrowDown');
+      await press(user, 'ArrowDown');
+
+      await press(user, 'Escape');
+
+      expect(useChatStore.getState().pendingPermissionMode).toBeUndefined();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '标准' })).toHaveFocus();
+    });
   });
 
   it('closes on Escape and puts focus back on the chip', async () => {
@@ -158,11 +203,11 @@ describe('PermissionModeChip', () => {
     render(<PermissionModeChip conversationId={null} />);
     const chip = screen.getByRole('button', { name: '标准' });
     await user.click(chip);
-    expect(await screen.findByRole('radiogroup')).toBeInTheDocument();
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
 
-    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     expect(chip).toHaveFocus();
   });
 

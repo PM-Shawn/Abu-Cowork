@@ -28,14 +28,26 @@ vi.mock('@/utils/electronHost', () => ({
 
 const popoverRenders = vi.hoisted(() => vi.fn());
 
-// Counts renders of the toolbar's floating layers (the model picker and the permission list).
+// Counts renders of the toolbar's floating layers: the model picker's Popover and the
+// permission chip's Menu.
 vi.mock('@/components/ds/popover', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/components/ds/popover')>();
   return {
     ...actual,
     Popover: (props: ComponentProps<typeof actual.Popover>) => {
-      popoverRenders();
+      popoverRenders('popover');
       return actual.Popover(props);
+    },
+  };
+});
+
+vi.mock('@/components/ds/menu', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/menu')>();
+  return {
+    ...actual,
+    Menu: (props: ComponentProps<typeof actual.Menu>) => {
+      popoverRenders('menu');
+      return actual.Menu(props);
     },
   };
 });
@@ -89,7 +101,7 @@ describe('composer selectors', () => {
 
     await user.click(screen.getByRole('button', { name: getI18n().settings.permissionModeStandard }));
 
-    expect(await screen.findByRole('radiogroup')).toBeInTheDocument();
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: `${getI18n().common.search}...` })).not.toBeInTheDocument();
   });
 
@@ -97,7 +109,8 @@ describe('composer selectors', () => {
     const id = useChatStore.getState().createConversation();
     render(<ChatInput variant="chat" onSend={vi.fn()} />, { wrapper: DesignSystemProvider });
     const initial = popoverRenders.mock.calls.length;
-    expect(initial).toBeGreaterThan(0);
+    expect(popoverRenders).toHaveBeenCalledWith('popover');
+    expect(popoverRenders).toHaveBeenCalledWith('menu');
 
     // Two streamed tokens: the active conversation object changes, and the composer with it.
     for (const text of ['Hel', 'Hello']) {

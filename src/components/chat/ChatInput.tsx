@@ -2107,7 +2107,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               {/* Model picker — right-aligned, before Start button */}
               <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={null} />
-                <div className="flex min-w-0 max-w-[180px]">
+                <div className="flex min-w-0 max-w-45">
                   <ModelSelector open={showModelPicker} onOpenChange={setShowModelPicker} trigger={modelPickerTrigger} />
                 </div>
 
@@ -2163,7 +2163,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
-                <div className="flex min-w-0 max-w-[180px]">
+                <div className="flex min-w-0 max-w-45">
                   <ModelSelector open={showModelPicker} onOpenChange={setShowModelPicker} trigger={modelPickerTrigger} />
                 </div>
 

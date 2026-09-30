@@ -1,18 +1,19 @@
 import { useState, useCallback } from 'react';
 import { useI18n } from '@/i18n';
-import { SCENARIO_CATEGORIES, DEFAULT_PROMPT_KEYS } from '@/data/scenarioPrompts';
+import { SCENARIO_CATEGORIES, DEFAULT_PROMPT_KEYS, type ScenarioCategory } from '@/data/scenarioPrompts';
 import { cn } from '@/lib/utils';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
-import { FolderOpen, BarChart3, PenLine, Globe, Clock } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 
-const ICON_MAP: Record<string, LucideIcon> = {
-  FolderOpen,
-  BarChart3,
-  PenLine,
-  Globe,
-  Clock,
-};
+const ICON_MAP = {
+  FolderOpen: AppIcons.folderOpen,
+  BarChart3: AppIcons.chart,
+  PenLine: AppIcons.write,
+  Globe: AppIcons.webPage,
+  Clock: AppIcons.clock,
+} as const satisfies Record<ScenarioCategory['iconName'], unknown>;
 
 interface ScenarioGuideProps {
   onSelectPrompt: (prompt: string) => void;
@@ -54,36 +55,33 @@ export default function ScenarioGuide({ onSelectPrompt, onScenarioChange, visibl
   if (!visible) return null;
 
   return (
-    <div className="scenario-guide w-full mt-4">
+    <div className="mt-4 w-full">
       {/* Scenario Tags */}
-      <div className="flex items-center gap-2 flex-wrap justify-center mb-4">
+      <div className="mb-4 flex flex-wrap items-center justify-center gap-2">
         {SCENARIO_CATEGORIES.map((cat) => {
-          const Icon = ICON_MAP[cat.iconName];
           const isActive = activeScenario === cat.id;
           return (
-            <button
+            <Pressable
               key={cat.id}
+              aria-pressed={isActive}
               onClick={() => handleScenarioClick(cat.id)}
               className={cn(
-                'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-body font-medium transition-all',
-                'border cursor-pointer select-none',
-                isActive
-                  ? 'bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] border-[var(--abu-text-primary)]'
-                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] border-[var(--abu-border-subtle)] hover:border-[var(--abu-border-hover)] hover:text-[var(--abu-text-primary)]'
+                'inline-flex h-7 select-none items-center gap-1 rounded-control px-3 text-ui font-medium',
+                isActive ? 'bg-fill-selected text-label' : 'bg-fill text-label-secondary hover:bg-fill-hover hover:text-label',
               )}
             >
-              <Icon className="h-3.5 w-3.5" />
+              <Icon icon={ICON_MAP[cat.iconName]} size="sm" />
               <span>{scenarios[cat.labelKey] ?? cat.labelKey}</span>
-            </button>
+            </Pressable>
           );
         })}
       </div>
 
       {/* Divider */}
-      <div className="flex items-center gap-3 mb-3 px-1">
-        <div className="flex-1 h-px bg-[var(--abu-border-subtle)]" />
-        <span className="text-minor text-[var(--abu-text-muted)] shrink-0">{t.chat.trySaying}</span>
-        <div className="flex-1 h-px bg-[var(--abu-border-subtle)]" />
+      <div className="mb-3 flex items-center gap-3 px-1">
+        <div className="h-px flex-1 bg-separator" />
+        <span className="shrink-0 text-ui-sm text-label-tertiary">{t.chat.trySaying}</span>
+        <div className="h-px flex-1 bg-separator" />
       </div>
 
       {/* Example Prompts Grid */}
@@ -92,13 +90,13 @@ export default function ScenarioGuide({ onSelectPrompt, onScenarioChange, visibl
           const text = prompts[key];
           if (!text) return null;
           return (
-            <button
+            <Pressable
               key={key}
               onClick={() => handlePromptClick(key)}
               className={PROMPT_ITEM_CLASS}
             >
               "{text}"
-            </button>
+            </Pressable>
           );
         })}
       </div>

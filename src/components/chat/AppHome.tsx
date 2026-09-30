@@ -1,5 +1,4 @@
 import { useEffect, useMemo, type ReactNode } from 'react';
-import { Link2, ChevronDown } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import type { AppDefinition, AppMode, AppScene } from '@/types/app';
@@ -20,7 +19,10 @@ import { buildAppBinding, effectiveRun, pickMode, resolveText, runExpertName, ru
 import AppLogo from '@/components/app/AppLogo';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 
 /**
@@ -71,20 +73,20 @@ export default function AppHome({ app, onPlaceholderChange }: {
   return (
     <div data-testid="app-home" data-app-id={app.appId} className="w-full">
       <div className="text-center mb-6">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} size="xl" className="mx-auto mb-4 rounded-2xl" />
-        <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
-        {app.config.home.header?.slogan && <p className="text-body text-[var(--abu-text-tertiary)]">{resolveText(app.config.home.header.slogan)}</p>}
+        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} size="xl" className="mx-auto mb-4 rounded-window" />
+        <h1 className="mb-2 text-title-lg text-label" data-testid="app-home-title">{appHomeTitle(app, locale)}</h1>
+        {app.config.home.header?.slogan && <p className="text-ui text-label-secondary">{resolveText(app.config.home.header.slogan)}</p>}
       </div>
 
       {missingConnectors.length > 0 && !dismissed && (
-        <div data-testid="app-connector-hint" className="mb-5 flex items-center gap-3 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-3">
-          <Link2 className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" />
+        <div data-testid="app-connector-hint" className="mb-5 flex items-center gap-3 rounded-panel border border-separator bg-surface px-4 py-3">
+          <Icon icon={AppIcons.link} className="shrink-0 text-label-tertiary" />
           <div className="min-w-0 flex-1">
-            <p className="text-body text-[var(--abu-text-primary)]">{format(t.appHome.connectorHintTitle, { names: missingConnectors.join('、') })}</p>
-            <p className="text-caption text-[var(--abu-text-tertiary)]">{t.appHome.connectorHintBody}</p>
+            <p className="text-ui text-label">{format(t.appHome.connectorHintTitle, { names: missingConnectors.join('、') })}</p>
+            <p className="text-caption text-label-tertiary">{t.appHome.connectorHintBody}</p>
           </div>
-          <Button size="sm" variant="ghost" onClick={() => dismissConnectorHint(app.appId)}>{t.appHome.connectorHintLater}</Button>
-          <Button size="sm" onClick={() => openExtensions('mcp', 'mine')}>{t.appHome.connectorHintConnect}</Button>
+          <Button size="sm" variant="plain" onClick={() => dismissConnectorHint(app.appId)}>{t.appHome.connectorHintLater}</Button>
+          <Button size="sm" variant="primary" onClick={() => openExtensions('mcp', 'mine')}>{t.appHome.connectorHintConnect}</Button>
         </div>
       )}
     </div>
@@ -112,7 +114,7 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
       const agent = agentNames.has(name) ? agentRegistry.getAgent(name) : undefined;
       return { label: format(t.appHome.sceneRunExpert, { name: agent?.displayNames?.[locale] ?? name }), avatar: <AgentAvatar agent={agent ?? { name }} size="sm" /> };
     }
-    return { label: format(t.appHome.sceneRunSkill, { name: run.skill }), avatar: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-[var(--abu-bg-muted)] text-caption text-[var(--abu-text-muted)]">/</span> };
+    return { label: format(t.appHome.sceneRunSkill, { name: run.skill }), avatar: <span className="inline-flex h-4 w-4 items-center justify-center rounded-control bg-fill text-caption text-label-tertiary">/</span> };
   };
 
   const startFromTemplate = (scene: AppScene, prompt: string) => {
@@ -149,17 +151,16 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
       {app.config.home.modes.items.length > 1 && (
         <div className="mb-4 flex flex-wrap items-center justify-center gap-2" role="tablist" aria-label={t.appHome.modes} data-testid="app-home-modes">
           {app.config.home.modes.items.map((item) => (
-            <button
+            <Pressable
               key={item.modeId}
-              type="button"
               role="tab"
               aria-selected={item.modeId === mode.modeId}
               data-testid={`app-home-mode-${item.modeId}`}
               onClick={() => { selectMode(app.appId, item.modeId); setExpandedScene(app.appId, null); }}
-              className={cn('rounded-full px-3 py-1 text-minor transition-colors', item.modeId === mode.modeId ? 'bg-[var(--abu-clay)] text-white' : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]')}
+              className={cn('h-6 rounded-control px-3 text-ui-sm transition-colors duration-fast', item.modeId === mode.modeId ? 'bg-fill-selected text-label' : 'bg-fill text-label-secondary hover:bg-fill-hover')}
             >
               {resolveText(item.title)}
-            </button>
+            </Pressable>
           ))}
         </div>
       )}
@@ -168,38 +169,38 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
           const run = describeRun(scene);
           const expanded = scene.id === expandedScene?.id;
           return (
-            <button
+            <Pressable
               key={scene.id}
-              type="button"
               aria-expanded={expanded}
               data-testid={`app-home-scene-${scene.id}`}
               onClick={() => setExpandedScene(app.appId, expanded ? null : scene.id)}
-              className={cn('flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left transition-colors', expanded ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-subtle)]' : 'border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] hover:border-[var(--abu-clay-40)]')}
+              className={cn(PROMPT_ITEM_CLASS, 'flex items-center gap-2', expanded && 'border-control-border bg-fill-selected')}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-body font-medium text-[var(--abu-text-primary)]">{resolveText(scene.title)}</span>
-                <span className="mt-0.5 flex items-center gap-1 text-caption text-[var(--abu-text-tertiary)]">{run.avatar}<span className="truncate">{run.label}</span></span>
+                <span className="block truncate text-ui font-medium text-label">{resolveText(scene.title)}</span>
+                <span className="mt-1 flex items-center gap-1 text-caption text-label-tertiary">{run.avatar}<span className="truncate">{run.label}</span></span>
               </span>
-              <ChevronDown className={cn('h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)] transition-transform', expanded && 'rotate-180')} />
-            </button>
+              <span className={cn('inline-flex shrink-0 text-label-tertiary', expanded && 'rotate-180')}>
+                <Icon icon={AppIcons.expand} />
+              </span>
+            </Pressable>
           );
         })}
       </div>
       {expandedScene && (
         <div className="mt-4" data-testid="app-home-templates">
-          <p className="mb-2 text-center text-caption text-[var(--abu-text-tertiary)]">{t.appHome.templates}</p>
+          <p className="mb-2 text-center text-caption text-label-tertiary">{t.appHome.templates}</p>
           <div className={PROMPT_GRID_CLASS}>
             {expandedScene.templates.map((template) => (
-              <button
+              <Pressable
                 key={template.id}
-                type="button"
                 data-testid={`app-home-template-${template.id}`}
                 className={PROMPT_ITEM_CLASS}
                 title={resolveText(template.prompt)}
                 onClick={() => startFromTemplate(expandedScene, resolveText(template.prompt))}
               >
                 {resolveText(template.title)}
-              </button>
+              </Pressable>
             ))}
           </div>
         </div>

@@ -444,7 +444,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
       const grid = await screen.findByTestId('expert-prompts');
       expect(grid.className.split(' ')).toEqual(expect.arrayContaining(PROMPT_GRID_CLASS.split(' ')));
       for (const chip of within(grid).getAllByRole('button')) {
-        expect(chip.className).toBe(PROMPT_ITEM_CLASS);
+        for (const name of PROMPT_ITEM_CLASS.split(' ')) expect(chip).toHaveClass(name);
       }
     });
 

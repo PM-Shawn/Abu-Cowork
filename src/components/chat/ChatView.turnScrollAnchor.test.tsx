@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatView from './ChatView';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { useChatStore } from '@/stores/chatStore';
@@ -18,6 +20,9 @@ interface MockVirtuosoProps {
   itemContent?: (index: number, group: Message[]) => React.ReactNode;
   totalListHeightChanged?: (height: number) => void;
 }
+
+// The frame's footer row carries a ds tooltip, which needs the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const harness = vi.hoisted(() => ({
   props: null as MockVirtuosoProps | null,

@@ -1,9 +1,9 @@
 import {
-  Archive, ArrowLeft, ArrowUp, ArrowUpRight, AtSign, Ban, Brain, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp,
+  Archive, ArrowLeft, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, Brain, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp,
   CircleStop, CircleX, Clock, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FilePen, FilePlus,
-  FileSearch, FileText, FileType2, FileWarning, FileX, Folder, FolderInput, FolderOpen, Globe, Hand, Hash, ImageOff, Inbox, Info, LayoutGrid, Lightbulb, ListChecks, ListTree,
+  FileSearch, FileText, FileType2, FileWarning, FileX, Folder, FolderInput, FolderOpen, Globe, Hand, Hash, History, ImageOff, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
   LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Minimize2, Minus, Monitor, MonitorCog, Palette, PanelLeft, PanelRight,
-  Paperclip, Pencil, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Redo2, RefreshCw, RotateCcw, ScanEye, Search, Settings, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
+  Paperclip, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Redo2, RefreshCw, RotateCcw, ScanEye, Search, Settings, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
   Sparkles, Square, SquarePen, Star, Terminal, ThumbsDown, ThumbsUp, Trash2, TriangleAlert, Undo2, UserCheck, UserRound, UsersRound,
   Wand2, Workflow, Wrench, X, Zap, ZoomIn, ZoomOut,
   type LucideIcon,
@@ -134,6 +134,11 @@ export const AppIcons = {
   permissionReview: ScanEye,
   // Chat: composer
   send: ArrowUp,
+  // Chat: frame
+  history: History,
+  chart: BarChart3,
+  write: PenLine,
+  link: Link2,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

@@ -48,7 +48,6 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
-import { ChevronDown, Settings, Check } from 'lucide-react';
 import abuAvatar from '@/assets/abu-avatar.png';
 import WelcomeAvatar from '@/components/chat/WelcomeAvatar';
 import IMInfoBar from './IMInfoBar';
@@ -58,7 +57,13 @@ import ConvIdBadge from './ConvIdBadge';
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { windowDragRowProps } from '@/utils/windowDrag';
-import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
@@ -1331,29 +1336,11 @@ export default function ChatView({
     stickToBottom,
   ]);
 
-  // Conversation loading from disk (LRU cache miss) — show skeleton instead of welcome page
+  // Conversation loading from disk (LRU cache miss) — show a loading line instead of the welcome page
   if (activeConvId && !activeConv) {
     return (
-      <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
-        <div className="flex-1 overflow-hidden">
-          <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 space-y-5">
-            {/* User message skeleton */}
-            <div className="flex justify-end">
-              <div className="max-w-[70%] space-y-2">
-                <div className="h-4 w-48 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-              </div>
-            </div>
-            {/* Assistant message skeleton */}
-            <div className="flex gap-3">
-              <div className="w-7 h-7 rounded-full bg-[var(--abu-bg-muted)] animate-pulse shrink-0" />
-              <div className="flex-1 space-y-2.5">
-                <div className="h-4 w-full bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-                <div className="h-4 w-3/4 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-                <div className="h-4 w-1/2 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
-              </div>
-            </div>
-          </div>
-        </div>
+      <div className="flex h-full items-center justify-center">
+        <Spinner label={t.common.loading} />
       </div>
     );
   }
@@ -1366,12 +1353,12 @@ export default function ChatView({
   // activeConv.id when present, so no createConversation churn happens.
   if (!activeConv || activeConv.messages.length === 0) {
     return (
-      <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
+      <div className="flex flex-col h-full">
         {/* The welcome screen has no header row, so it gets the same 44px drag
             band the conversation view's title row provides. In flow, never
             overlaying, so it cannot cover the scroller underneath. */}
         <div {...windowDragRowProps()} className="shrink-0 h-11" />
-        <div className="flex-1 flex flex-col items-center justify-start overflow-y-auto px-8 pt-[12vh] pb-12">
+        <div className="flex-1 flex flex-col items-center justify-start overflow-y-auto px-8 pt-[12vh] pb-8">
           <div className="w-full max-w-2xl">
             {/* Title */}
             {appHome ? (
@@ -1383,19 +1370,19 @@ export default function ChatView({
                   {/* Agent avatar: a built-in icon reference, an emoji, or the default mark */}
                   <WelcomeAvatar avatar={pendingAgentDisplay.avatar} />
 
-                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
+                  <h1 className="mb-2 text-title-lg text-label">
                     {pendingAgentDisplay.name}
                   </h1>
-                  <p className="text-body text-[var(--abu-text-tertiary)] mb-3">
+                  <p className="mb-3 text-ui text-label-secondary">
                     {pendingAgentDisplay.description}
                   </p>
                 </>
               ) : welcomeTeam ? (
                 <div data-testid="team-welcome">
-                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="h-20 w-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-h-xl" />
-                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">{welcomeTeam.name}</h1>
-                  {welcomeTeam.description && <p className="text-body text-[var(--abu-text-tertiary)] mb-3">{welcomeTeam.description}</p>}
-                  <div data-testid="team-welcome-members" className="flex flex-wrap items-center justify-center gap-2 mt-3 text-minor text-[var(--abu-text-secondary)]">
+                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="h-20 w-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-title-lg" />
+                  <h1 className="mb-2 text-title-lg text-label">{welcomeTeam.name}</h1>
+                  {welcomeTeam.description && <p className="mb-3 text-ui text-label-secondary">{welcomeTeam.description}</p>}
+                  <div data-testid="team-welcome-members" className="mt-3 flex flex-wrap items-center justify-center gap-2 text-ui-sm text-label-secondary">
                     <span>{t.team.detailLeader}</span>
                     <span className="inline-flex items-center gap-1">
                       <AgentAvatar agent={welcomeRole(welcomeTeam.leaderRoleId) ?? { name: t.team.unknownMember }} size="sm" />
@@ -1423,10 +1410,10 @@ export default function ChatView({
                   </div>
 
                   {/* Slogan */}
-                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
+                  <h1 className="mb-2 text-title-lg text-label">
                     {t.chat.welcomeTitle}
                   </h1>
-                  <p className="text-body text-[var(--abu-text-tertiary)]">
+                  <p className="text-ui text-label-secondary">
                     {t.chat.welcomeSubtitle}
                   </p>
                 </>
@@ -1437,20 +1424,20 @@ export default function ChatView({
             {/* First-run setup prompt */}
             {needsSetup && (
               <div className="mb-6 mx-auto max-w-md">
-                <div className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)]/80 px-5 py-4 text-center">
-                  <p className="text-h-sm font-medium text-[var(--abu-text-primary)] mb-1">
+                <div className="rounded-panel border border-separator bg-surface px-5 py-4 text-center">
+                  <p className="mb-1 text-title text-label">
                     {t.chat.setupRequired}
                   </p>
-                  <p className="text-body text-[var(--abu-text-tertiary)] mb-3">
+                  <p className="mb-3 text-ui text-label-secondary">
                     {t.chat.setupRequiredDesc}
                   </p>
-                  <button
+                  <Button
+                    variant="primary"
+                    icon={AppIcons.settings}
                     onClick={() => useSettingsStore.getState().openSystemSettings('ai-services')}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#D97706] text-white text-body font-medium hover:bg-[#B45309] transition-colors"
                   >
-                    <Settings className="h-3.5 w-3.5" />
                     {t.chat.setupButton}
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
@@ -1470,7 +1457,7 @@ export default function ChatView({
               <AppHomeScenes app={appHome} visible={guideVisible} />
             ) : pendingAgent || welcomeTeam ? (
               !!expertPrompts?.length && guideVisible && <div className={cn(PROMPT_GRID_CLASS, 'mt-4')} data-testid="expert-prompts">
-                {expertPrompts.map((prompt, index) => <button key={index} type="button" className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</button>)}
+                {expertPrompts.map((prompt, index) => <Pressable key={index} className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</Pressable>)}
               </div>
             ) : <ScenarioGuide
               onSelectPrompt={handleSelectPrompt}
@@ -1484,13 +1471,13 @@ export default function ChatView({
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
+    <div className="flex flex-col h-full min-h-0 min-w-0">
       {/* Conversation title header — flush at card top (TRAE-style header row).
           The divider separates navigation context from the conversation body;
           platform overlays receive only the padding needed by existing controls. */}
       <div {...windowDragRowProps()} className={cn(
         'shrink-0 flex items-center h-11 px-4',
-        windowsWorkspaceHeader && 'border-b border-[var(--abu-border)]',
+        windowsWorkspaceHeader && 'border-b border-separator',
         // Collapsed platform controls float over the card's top-left; indent
         // the title to clear the controls present on that platform.
         sidebarCollapsed && isMacOS() && 'pl-48',
@@ -1498,7 +1485,7 @@ export default function ChatView({
         rightPanelToggleVisible && windowsWorkspaceHeader && 'pr-12',
       )}>
         {isRenamingTitle ? (
-          <Input
+          <TextField
             autoFocus
             value={titleDraft}
             onChange={(e) => setTitleDraft(e.target.value)}
@@ -1511,11 +1498,11 @@ export default function ChatView({
               if (e.key === 'Enter') e.currentTarget.blur();
               else if (e.key === 'Escape') { setTitleDraft(activeConv.title); setIsRenamingTitle(false); }
             }}
-            className="h-7 max-w-md text-body font-medium"
+            className="max-w-md"
           />
         ) : (
           <span
-            className="text-body font-medium text-[var(--abu-text-primary)] truncate cursor-default"
+            className="cursor-default truncate text-ui font-medium text-label"
             onDoubleClick={() => { setTitleDraft(activeConv.title); setIsRenamingTitle(true); }}
             title={activeConv.title}
           >
@@ -1526,11 +1513,13 @@ export default function ChatView({
         {titleTeamLeader && !isRenamingTitle && (
           <span
             data-testid="chat-title-team-badge"
-            className="ml-2 inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+            className="ml-2 inline-flex shrink-0"
             title={`${titleTeamLeader.leaderName} · ${titleTeamLeader.teamName}`}
           >
-            <TeamAvatar avatar={titleTeamLeader.teamAvatar} size="xs" round />
-            <span className="truncate max-w-[160px]">{titleTeamLeader.teamName}</span>
+            <Tag>
+              <TeamAvatar avatar={titleTeamLeader.teamAvatar} size="xs" round />
+              <span className="max-w-40 truncate">{titleTeamLeader.teamName}</span>
+            </Tag>
           </span>
         )}
         {/* Chapter navigation moves into the header exactly when the gutter can
@@ -1703,19 +1692,19 @@ export default function ChatView({
             bottom anyway, and Virtuoso's transient atBottom=false during
             mount/measure would otherwise flash the button on every switch. */}
         {!isAtBottom && !pinned && (
-          <button
-            onClick={() => scrollToLatest('smooth')}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--abu-bg-base)]/90 border border-[var(--abu-border)] text-body text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-base)] transition-all backdrop-blur-sm"
-          >
-            <ChevronDown className="h-3.5 w-3.5" />
-            <span>{t.chat.scrollToBottom}</span>
-          </button>
+          <div className="pointer-events-none sticky bottom-3 z-sticky flex justify-center">
+            <div className="pointer-events-auto rounded-control bg-raised shadow-float">
+              <Button variant="plain" size="sm" icon={AppIcons.expand} onClick={() => scrollToLatest('smooth')}>
+                {t.chat.scrollToBottom}
+              </Button>
+            </div>
+          </div>
         )}
       </div>
 
       {/* Bottom Input */}
-      <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5 bg-[var(--abu-bg-base)]">
-        <div className="max-w-4xl mx-auto flex flex-col gap-1.5">
+      <div className="shrink-0 px-6 md:px-10 pb-4 pt-2">
+        <div className="max-w-4xl mx-auto flex flex-col gap-2">
           {/* Docked ask_user_question card — sits flush above the composer,
               same width. Render the first pending question that belongs to the
               active conversation and whose owning message can be located. */}
@@ -1738,8 +1727,8 @@ export default function ChatView({
           {/* Optimistic "resuming" flash — only in the gap before the loop sets
               a real status, so it never stacks with AgentStatusStrip. */}
           {resuming && agentStatus === 'idle' && (
-            <div className="flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-tertiary)]">
-              <Check className="h-3.5 w-3.5 shrink-0 text-[var(--abu-success)]" />
+            <div className="flex items-center gap-2 px-3 py-2 text-ui-sm text-label-secondary">
+              <StatusIcon tone="success" size="sm" />
               <span className="truncate">{t.chat.resuming}</span>
             </div>
           )}
@@ -1753,12 +1742,12 @@ export default function ChatView({
           <QueuedMessagesStrip conversationId={activeConv.id} />
           {activeConv.appBinding && <ConversationAppNotice binding={activeConv.appBinding} />}
           <ChatInput variant="chat" onSend={handleSend} />
-          <div className="flex items-center justify-center gap-3 mt-1.5 whitespace-nowrap overflow-hidden">
+          <div className="mt-2 flex items-center justify-center gap-3 overflow-hidden whitespace-nowrap">
             <UsageChip conversationId={activeConv.id} />
-            <p className="text-caption text-[var(--abu-text-muted)] truncate">
+            <p className="truncate text-caption text-label-tertiary">
               {t.chat.disclaimer}
             </p>
-            <span className="text-[var(--abu-text-muted)] opacity-50">·</span>
+            <span className="text-caption text-label-tertiary">·</span>
             <ConvIdBadge conversationId={activeConv.id} />
           </div>
         </div>

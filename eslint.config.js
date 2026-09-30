@@ -131,6 +131,15 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/ContextIndicator*.{ts,tsx}',
   'src/components/common/FolderSelector.tsx',
   'src/components/chat/ChatInput*.{ts,tsx}',
+  'src/components/chat/ChatView*.{ts,tsx}',
+  'src/components/chat/ChapterMenu*.{ts,tsx}',
+  'src/components/chat/ChapterRail*.{ts,tsx}',
+  'src/components/chat/AppHome.tsx',
+  'src/components/chat/ScenarioGuide.tsx',
+  'src/components/chat/promptGrid.ts',
+  'src/components/chat/chatSpacing.ts',
+  'src/components/chat/UsageChip.tsx',
+  'src/components/chat/ConvIdBadge.tsx',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

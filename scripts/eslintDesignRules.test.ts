@@ -128,4 +128,9 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const jsx = '<div className="data-[state=open]:animate-in data-[state=closed]:animate-out" />';
     expect(await messages(component(jsx), MIGRATED)).toEqual([]);
   });
+
+  it('checks the chat files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/chat/ChatView.tsx')).not.toEqual([]);
+  });
 });

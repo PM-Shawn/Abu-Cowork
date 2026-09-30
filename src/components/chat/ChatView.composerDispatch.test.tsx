@@ -134,6 +134,31 @@ describe('ChatView welcome composer dispatch ownership', () => {
     }
   });
 
+  it('/goal <objective> sets an armed goal on the new conversation and sends only the objective', async () => {
+    configureApiKey();
+    dispatchMock.mockResolvedValueOnce({ reason: 'completed' });
+    render(<ChatView />);
+    await submitWelcome('/goal 把合同全部提取成表格');
+
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+    const [convId, text] = dispatchMock.mock.calls[0] as [string, string];
+    expect(text).toBe('把合同全部提取成表格');
+    const goal = useChatStore.getState().conversations[convId].goal;
+    expect(goal).toMatchObject({ objective: '把合同全部提取成表格', phase: 'active', roundsStarted: 0 });
+    const { isGoalArmed } = await import('@/core/goal/goalActivation');
+    expect(isGoalArmed(convId, goal?.id)).toBe(true);
+  });
+
+  it('/goal pause without a goal never dispatches and says so', async () => {
+    configureApiKey();
+    render(<ChatView />);
+    await submitWelcome('/goal pause');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.length).toBeGreaterThan(0));
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts[0].title).toBe(getI18n().chat.goal.noGoal);
+  });
+
   it('keeps the composer empty after a post-commit dispatch failure', async () => {
     configureApiKey();
     dispatchMock.mockResolvedValueOnce({

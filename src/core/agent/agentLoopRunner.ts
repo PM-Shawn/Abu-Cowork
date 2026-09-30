@@ -3294,6 +3294,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     content: userMessage,
     timestamp: runtimeStartedAt,
     loopId: runId,
+    // Goal mode: an automatic round opens with an internal row, rendered as a
+    // round marker rather than a user bubble (see AgentLoopOptions.goalRound).
+    ...(options?.goalRound ? { isSystem: true, goalRound: options.goalRound } : {}),
   });
   ownership.messageTaken = true;
   // The documented onMessageTaken contract ("invoked once the initial user
@@ -4081,6 +4084,35 @@ export async function runAgentLoopDispatched(
   }
 }
 
+/**
+ * Called once per dispatch, after the initial run AND every queued user
+ * follow-up it handed off to have finished — i.e. when the conversation has
+ * nothing left to run. `result` is the LAST run's result (what the
+ * conversation is left with). Goal mode's round driver hangs off this seam;
+ * registration keeps this module free of a static dependency on it.
+ */
+export type DispatchSettledListener = (conversationId: string, result: AgentLoopDispatchResult) => void;
+
+const dispatchSettledListeners = new Set<DispatchSettledListener>();
+
+export function onDispatchSettled(listener: DispatchSettledListener): () => void {
+  dispatchSettledListeners.add(listener);
+  return () => { dispatchSettledListeners.delete(listener); };
+}
+
+function notifyDispatchSettled(conversationId: string, result: AgentLoopDispatchResult): void {
+  for (const listener of dispatchSettledListeners) {
+    try {
+      listener(conversationId, result);
+    } catch (error) {
+      logger.warn('dispatch-settled listener failed', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 async function runDispatchedTurns(
   conversationId: string,
   userMessage: string,
@@ -4132,6 +4164,11 @@ async function runDispatchedTurns(
       pauseUserInputQueue(conversationId);
     }
   } catch (error) {
+    notifyDispatchSettled(conversationId, {
+      reason: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      messageTaken: error instanceof AgentLoopDispatchError ? error.messageTaken : initialMessageTaken,
+    });
     if (queuedInputInFlight) {
       if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInputInFlight);
@@ -4148,5 +4185,6 @@ async function runDispatchedTurns(
     throw wrapAgentLoopDispatchError(error, true);
   }
 
+  notifyDispatchSettled(conversationId, previousResult);
   return initialResult;
 }

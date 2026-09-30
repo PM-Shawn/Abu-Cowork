@@ -136,6 +136,12 @@ export function recordConversationGoalRound(
   return commit(conversationId, recordGoalRoundOutcome(getGoal(conversationId), ref, { ...outcome, now: Date.now() }));
 }
 
+/** True while the goal is working through automatic rounds (active and armed). */
+export function isGoalDrivingConversation(conversationId: string): boolean {
+  const goal = getGoal(conversationId);
+  return goal?.phase === 'active' && isGoalArmed(conversationId, goal.id);
+}
+
 /** Stop automatic rounds without changing the durable phase (DSH semantics for errors / user stop). */
 export function disarmConversationGoal(conversationId: string, reason: GoalDisarmReason): void {
   const current = getGoal(conversationId);

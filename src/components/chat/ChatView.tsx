@@ -22,6 +22,8 @@ import type { ExpertContact } from '@/types/expertContact';
 import CompactDivider from './CompactDivider';
 import BrowserRunReportCard from './BrowserRunReportCard';
 import MaxTurnsNoticeCard from './MaxTurnsNoticeCard';
+import GoalRoundMarker from './GoalRoundMarker';
+import GoalBar from './GoalBar';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
@@ -30,6 +32,7 @@ import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
+import { applyGoalCommand, checkGoalCreatable, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
 import { useToastStore } from '@/stores/toastStore';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
@@ -857,6 +860,23 @@ export default function ChatView({
       return;
     }
 
+    // Goal mode: /goal is handled here, before any dispatch — never sent to the
+    // model. Every form but `/goal <objective>` ends here; that one creates the
+    // goal below and sends the objective as the first message.
+    const goalCommand = parseGoalCommand(text);
+    if (goalCommand && goalCommand.kind !== 'create') {
+      const outcome = applyGoalCommand(activeConv?.id, goalCommand);
+      useToastStore.getState().addToast({ type: outcome.ok ? 'success' : 'error', title: outcome.message });
+      return outcome.ok ? undefined : false;
+    }
+    if (goalCommand) {
+      const precheck = checkGoalCreatable(activeConv?.id, goalCommand.objective);
+      if (!precheck.ok) {
+        useToastStore.getState().addToast({ type: 'error', title: precheck.message });
+        return false;
+      }
+    }
+
     // A typed `@<team> …` that the composer did not turn into the team chip
     // (sent before the exact-name detection, pasted, …) still pins the
     // conversation to that team; the mention itself is not sent to the model.
@@ -872,7 +892,9 @@ export default function ChatView({
       useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamMention.teamName }) });
       return false; // hand the text back to the composer
     }
-    const sendText = teamMention ? teamMention.rest : text;
+    const sendText = goalCommand?.kind === 'create'
+      ? goalCommand.objective.trim()
+      : teamMention ? teamMention.rest : text;
 
     // Capture the selected identity before any asynchronous identity setup.
     const pendingBeforeSend = useChatStore.getState();
@@ -913,6 +935,11 @@ export default function ChatView({
       setConversationTeamId(convId, teamMention.teamId);
     }
     if (contact) useChatStore.getState().stageExpertContact(convId, contact);
+    if (goalCommand?.kind === 'create') {
+      const created = createGoalFromCommand(convId, goalCommand.objective);
+      useToastStore.getState().addToast({ type: created.ok ? 'success' : 'error', title: created.message });
+      if (!created.ok) return false;
+    }
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
     }
@@ -1021,7 +1048,8 @@ export default function ChatView({
   // so the hooks that depend on it stay unconditional (rules-of-hooks).
   // Filter out internal system prompts while retaining explicit crash
   // recovery notices that explain an interrupted task to the user.
-  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice);
+  // Goal-round openers are internal rows too, but render as a round marker.
+  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice || m.goalRound);
   const messageGroups = groupMessagesByLoop(visibleMessages);
   useLayoutEffect(() => {
     if (!scrollParentEl || !activeConvId) return;
@@ -1672,6 +1700,23 @@ export default function ChatView({
                 // The configured first-contact greeting: a plain bubble with
                 // the expert's identity, never a model turn with run actions.
                 <MessageBubble message={group[0]} />
+              ) : group[0].goalRound ? (
+                // Goal mode: the round's opening row is the driver's prompt,
+                // not user input — a marker, then the run as usual.
+                <>
+                  <GoalRoundMarker
+                    message={group[0]}
+                    maxRounds={activeConv.goal?.id === group[0].goalRound.goalId ? activeConv.goal.maxRounds : undefined}
+                  />
+                  {group.length > 1 && (
+                    <MessageGroup
+                      conversationId={activeConv.id}
+                      messages={group.slice(1)}
+                      isLastGroup={index === messageGroups.length - 1}
+                      highlightMessageId={highlightedMessageId}
+                    />
+                  )}
+                </>
               ) : group.length === 1 && isBrowserRunReportMessage(group[0]) ? (
                 // U7 — the unattended run's report card. Its own group by
                 // construction: the marker carries no loopId, and
@@ -1747,6 +1792,8 @@ export default function ChatView({
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
+          {/* Goal mode: objective, round usage and controls */}
+          {activeConv.goal && <GoalBar conversationId={activeConv.id} />}
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}
           <QueuedMessagesStrip conversationId={activeConv.id} />

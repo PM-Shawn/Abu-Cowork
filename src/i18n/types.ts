@@ -688,6 +688,66 @@ export interface TranslationDict {
       tooFew: string;
       failed: string;
     };
+    /** Goal mode: /goal command feedback, goal bar, round marker, event cards. */
+    goal: {
+      /** Usage hint for /goal. */
+      commandUsage: string;
+      noGoal: string;
+      notAvailable: string;
+      emptyObjective: string;
+      /** {objective} */
+      alreadyExists: string;
+      /** {objective} {maxRounds} */
+      created: string;
+      edited: string;
+      paused: string;
+      resumed: string;
+      cleared: string;
+      /** {phase} */
+      cannotChange: string;
+      /** Resume was refused because the round budget is spent. {maxRounds} */
+      roundsExhausted: string;
+      staleRevision: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+      /** Goal bar */
+      barLabel: string;
+      /** {rounds} {maxRounds} */
+      barRounds: string;
+      barRunning: string;
+      stoppedRestart: string;
+      stoppedRunError: string;
+      stoppedUserStop: string;
+      blockedNoProgress: string;
+      blockedRoundLimit: string;
+      blockedTeamLimit: string;
+      blockedDispatchFailed: string;
+      /** {reason} */
+      blockedModel: string;
+      actionPause: string;
+      actionResume: string;
+      /** Resume after the round budget is spent: adds {extra} rounds. */
+      actionResumeMore: string;
+      actionEdit: string;
+      actionClear: string;
+      actionSave: string;
+      actionCancel: string;
+      editPlaceholder: string;
+      clearConfirmTitle: string;
+      clearConfirmBody: string;
+      /** Round marker in the transcript. {round} {maxRounds} */
+      roundMarker: string;
+      completedTitle: string;
+      evidenceLabel: string;
+      /** OS notification when the round driver stops a goal. {objective} */
+      notifyBlockedTitle: string;
+      /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
+      maxTurnsAutoContinue: string;
+    };
     /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
      * when the redone turn is not the conversation's last, so later turns
      * would otherwise be silently and permanently discarded. */

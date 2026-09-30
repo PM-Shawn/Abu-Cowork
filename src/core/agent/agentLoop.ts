@@ -656,6 +656,13 @@ export interface AgentLoopOptions {
    * the conversation snapshot instead of appending a duplicate.
    */
   prePersistedUserMessageId?: string;
+  /**
+   * Goal mode: this run is an automatic goal round started by goalDriver. Its
+   * opening user message is written as an internal (`isSystem`) row carrying
+   * this metadata, so the chat shows a round marker instead of a user bubble
+   * and the goal tool can tell it apart from a human-initiated run.
+   */
+  goalRound?: { goalId: string; revision: number; round: number };
   /** Process-local structured diagnostics hook. The shell and sidecar inject
    * their own sinks; it is deliberately omitted from the wire contract. */
   runtimeEvent?: (event: string, attributes: {
@@ -1273,6 +1280,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         name: route.delegateAgent.name,
         description: route.delegateAgent.description,
       } : undefined,
+      ...(options?.goalRound ? { isSystem: true, goalRound: options.goalRound } : {}),
     });
     options?.onMessageTaken?.(userMessageId);
   }

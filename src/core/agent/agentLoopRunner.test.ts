@@ -4417,6 +4417,32 @@ describe('agentLoopRunner', () => {
         .toBeLessThan(agentStartRequestMock.mock.invocationCallOrder[0]);
     });
 
+    it('writes a goal round\'s opening message as an internal row carrying the round', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      const goalRound = { goalId: 'g1', revision: 3, round: 2 };
+
+      await runAgentLoopDispatched('conv-1', '<goal_round/>', { requireNewRun: true, initiatedBy: 'user', goalRound });
+
+      expect(chatStoreAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({
+        role: 'user',
+        content: '<goal_round/>',
+        isSystem: true,
+        goalRound,
+      }));
+    });
+
+    it('keeps an ordinary user message visible (no goal-round metadata)', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const row = chatStoreAddMessageMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(row.isSystem).toBeUndefined();
+      expect(row.goalRound).toBeUndefined();
+    });
+
     it('persists the user message before the bounded start handshake', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       sidecarRequestMock.mockResolvedValue({ reason: 'completed' });

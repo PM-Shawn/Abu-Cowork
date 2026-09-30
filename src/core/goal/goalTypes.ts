@@ -71,6 +71,8 @@ export const GOAL_BLOCK_AFTER_ROUNDS = 3;
 export const GOAL_MAX_IDLE_ROUNDS = 2;
 /** Goal-wide cap on team member hand-offs (the per-run cap resets each round). */
 export const GOAL_TEAM_MAX_DISPATCHES = 200;
+/** Rounds added by the goal bar's "run more" once the budget is spent. */
+export const GOAL_RESUME_EXTRA_ROUNDS = 20;
 export const GOAL_COMPLETION_SUMMARY_MAX_CHARS = 4000;
 export const GOAL_COMPLETION_EVIDENCE_MAX_ITEMS = 20;
 export const GOAL_COMPLETION_EVIDENCE_MAX_CHARS = 500;

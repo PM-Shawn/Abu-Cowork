@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { render, screen, cleanup } from '@testing-library/react';
+import { render as renderBare, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactElement } from 'react';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 
 const mockResolveWindow = vi.hoisted(() => vi.fn((_modelId: string, _user?: number) => 2000));
 vi.mock('@/core/llm/modelCapabilities', async (orig) => ({
@@ -15,6 +17,8 @@ import ContextIndicator from './ContextIndicator';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { Conversation } from '../../types';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const baseConv: Conversation = {
   id: 'c1',
@@ -32,6 +36,12 @@ function setConv(patch: Partial<Conversation>) {
 }
 
 describe('ContextIndicator', () => {
+  beforeAll(() => {
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => undefined;
+    Element.prototype.scrollIntoView ??= () => undefined;
+  });
+
   beforeEach(() => {
     useChatStore.setState({ conversations: { c1: baseConv } });
   });
@@ -53,23 +63,34 @@ describe('ContextIndicator', () => {
     expect(circles.length).toBe(2); // track + progress
   });
 
-  it('applies critical color + animate-pulse class at >=85% usage', () => {
+  it('draws the danger color at >=85% usage, and holds still', () => {
     setConv({ contextUsage: { percent: 92, tokensUsed: 1840, tokensMax: 2000 } });
     render(<ContextIndicator conversationId="c1" />);
-    const progress = screen.getByTestId('context-indicator').querySelectorAll('circle')[1];
-    const className = progress.getAttribute('class') || '';
-    expect(className).toContain('text-[var(--abu-danger)]');
-    expect(className).toContain('animate-pulse');
+    const [track, progress] = screen.getByTestId('context-indicator').querySelectorAll('circle');
+    expect(track).toHaveClass('text-separator');
+    expect(progress).toHaveClass('text-danger');
+    expect(progress).not.toHaveClass('animate-pulse');
   });
 
-  it('shows spinner instead of ring while compressing', () => {
+  it('draws low usage in grey and rising usage as a warning', () => {
+    setConv({ contextUsage: { percent: 10, tokensUsed: 200, tokensMax: 2000 } });
+    const { unmount } = render(<ContextIndicator conversationId="c1" />);
+    expect(screen.getByTestId('context-indicator').querySelectorAll('circle')[1]).toHaveClass('text-label-secondary');
+    unmount();
+
+    setConv({ contextUsage: { percent: 73, tokensUsed: 1460, tokensMax: 2000 } });
+    render(<ContextIndicator conversationId="c1" />);
+    expect(screen.getByTestId('context-indicator').querySelectorAll('circle')[1]).toHaveClass('text-warning');
+  });
+
+  it('shows one spinner, named by the hover text, instead of the ring while compressing', () => {
     setConv({ isCompressing: true });
     render(<ContextIndicator conversationId="c1" />);
     const indicator = screen.getByTestId('context-indicator');
-    // No SVG circles when compressing (Loader2 renders differently)
     expect(indicator.querySelectorAll('circle').length).toBe(0);
-    // Spinner has animate-spin class
-    expect(indicator.querySelector('.animate-spin')).toBeTruthy();
+    const spinner = screen.getByRole('status');
+    expect(indicator).toContainElement(spinner);
+    expect(spinner).toHaveTextContent(indicator.getAttribute('aria-label') ?? '');
   });
 
   it('exposes tooltip text via aria-label for accessibility', () => {
@@ -263,14 +284,13 @@ describe('ContextIndicator', () => {
     expect(indicator.getAttributeNames().sort()).toEqual([
       'aria-label',
       'class',
-      'data-slot',
       'data-state',
       'data-testid',
       'style',
     ]);
     expect(indicator).toHaveAttribute(
       'class',
-      'inline-flex items-center justify-center select-none',
+      'inline-flex select-none items-center justify-center',
     );
     expect(indicator).toHaveStyle({ width: '22px', height: '22px' });
     expect(indicator.querySelectorAll('circle')).toHaveLength(2);
@@ -480,5 +500,50 @@ describe('ContextIndicator', () => {
 
     expect(screen.getByTestId('context-breakdown-tokens-systemPrompt')).toHaveTextContent('100');
     expect(screen.getByTestId('context-breakdown-tokens-conversation')).toHaveTextContent('104');
+  });
+
+  describe('breakdown panel', () => {
+    const withBreakdown = () => setConv({
+      contextUsage: {
+        percent: 5,
+        tokensUsed: 500,
+        tokensMax: 10_000,
+        breakdown: { version: 1, systemPrompt: 100, tools: 100, mcp: 100, skills: 100, conversation: 100 },
+      },
+    });
+
+    it('is a named group that marks its categories in neutral greys', async () => {
+      const user = userEvent.setup();
+      withBreakdown();
+      render(<ContextIndicator conversationId="c1" />);
+
+      await user.click(screen.getByTestId('context-indicator'));
+
+      const panel = screen.getByTestId('context-breakdown-popover');
+      expect(panel).toHaveAttribute('role', 'group');
+      expect(panel).toHaveAttribute('data-tokens-used', '500');
+      expect(screen.getByRole('group', { name: /./ })).toBe(panel);
+      const dot = (key: string) => screen.getByTestId(`context-breakdown-row-${key}`).querySelector('[aria-hidden="true"]');
+      expect(dot('systemPrompt')).toHaveClass('bg-label');
+      expect(dot('tools')).toHaveClass('bg-label-secondary');
+      expect(dot('mcp')).toHaveClass('bg-label-placeholder');
+      expect(dot('skills')).toHaveClass('bg-control-border');
+      expect(dot('conversation')).toHaveClass('bg-label-tertiary');
+    });
+
+    it('closes on Escape and puts focus back on the ring', async () => {
+      const user = userEvent.setup();
+      withBreakdown();
+      render(<ContextIndicator conversationId="c1" />);
+      const ring = screen.getByTestId('context-indicator');
+      await user.click(ring);
+      expect(screen.getByTestId('context-breakdown-popover')).toBeInTheDocument();
+
+      await user.keyboard('{Escape}');
+
+      expect(screen.queryByTestId('context-breakdown-popover')).not.toBeInTheDocument();
+      expect(ring).toHaveFocus();
+      expect(ring).toHaveAttribute('aria-expanded', 'false');
+    });
   });
 });

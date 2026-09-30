@@ -126,6 +126,10 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/ConversationAppBadge.tsx',
   'src/components/chat/PromoteToProjectHint.tsx',
   'src/components/chat/QueuedMessagesStrip*.{ts,tsx}',
+  'src/components/chat/ModelSelector*.{ts,tsx}',
+  'src/components/chat/PermissionModeChip*.{ts,tsx}',
+  'src/components/chat/ContextIndicator*.{ts,tsx}',
+  'src/components/common/FolderSelector.tsx',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

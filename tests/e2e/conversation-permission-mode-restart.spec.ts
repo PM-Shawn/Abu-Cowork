@@ -175,17 +175,17 @@ async function launch(root: ElectronDataRoot, configure: boolean): Promise<Page>
 
 /**
  * The composer's permission chip. Its accessible name is exactly the mode's
- * label; the rows of its open list carry the label plus the mode's description,
- * so `exact` keeps the two apart.
+ * label; the options of its open list are radios named by the label plus the
+ * mode's description, so `exact` keeps the two apart.
  */
 function permissionChip(page: Page, label: string) {
   return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
-/** Open the chip's list and pick the row whose description carries `rowText`. */
+/** Open the chip's list and pick the option whose description carries `rowText`. */
 async function pickPermissionMode(page: Page, currentLabel: string, rowText: string): Promise<void> {
   await permissionChip(page, currentLabel).click();
-  await page.locator('button').filter({ hasText: rowText }).click();
+  await page.getByRole('radio', { name: rowText }).click();
 }
 
 async function send(page: Page, text: string): Promise<void> {

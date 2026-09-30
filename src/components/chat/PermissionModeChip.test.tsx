@@ -1,7 +1,10 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { render as renderBare, screen, cleanup } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import PermissionModeChip from './PermissionModeChip';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -28,9 +31,17 @@ vi.mock('@/i18n', () => ({
     s.replace(/\{(\w+)\}/g, (_: string, k: string) => String(v[k] ?? `{${k}}`)),
 }));
 
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
 describe('PermissionModeChip', () => {
+  beforeAll(() => {
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => undefined;
+    Element.prototype.scrollIntoView ??= () => undefined;
+  });
+
   beforeEach(() => {
-    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null, pendingPermissionMode: undefined });
     useSettingsStore.setState({ permissionMode: 'standard' });
   });
 
@@ -54,53 +65,111 @@ describe('PermissionModeChip', () => {
     expect(screen.getByText('完全自主')).toBeInTheDocument();
   });
 
-  it('opens popover with all three options on click', () => {
-    render(<PermissionModeChip conversationId={null} />);
-    // Trigger button is the only button before popover opens
-    fireEvent.click(screen.getByRole('button'));
-    // After click, popover renders with 3 option buttons (plus the trigger = 4 total)
-    const buttons = screen.getAllByRole('button');
-    const labels = buttons.map((b: HTMLElement) => b.textContent ?? '');
-    expect(labels.some((l: string) => l.includes('智能审核'))).toBe(true);
-    expect(labels.some((l: string) => l.includes('完全自主'))).toBe(true);
+  it('shows full autonomy as a warning, the other modes in a quiet grey', () => {
+    const id = useChatStore.getState().createConversation();
+    const { unmount } = render(<PermissionModeChip conversationId={id} />);
+    expect(screen.getByRole('button', { name: '标准' })).toHaveClass('text-label-secondary');
+    unmount();
+
+    useChatStore.getState().setConversationPermissionMode(id, 'autonomous');
+    render(<PermissionModeChip conversationId={id} />);
+    const chip = screen.getByRole('button', { name: '完全自主' });
+    expect(chip).toHaveClass('text-warning');
+    expect(chip).not.toHaveClass('text-label-secondary');
   });
 
-  it('updates conversation permissionMode when autonomous option selected', () => {
+  it('opens a list of the three modes, each with its description', async () => {
+    const user = userEvent.setup();
+    render(<PermissionModeChip conversationId={null} />);
+    await user.click(screen.getByRole('button', { name: '标准' }));
+
+    const group = await screen.findByRole('radiogroup', { name: '权限模式' });
+    expect(group).toBeInTheDocument();
+    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    expect(screen.getByRole('radio', { name: /智能审核/ })).toHaveAccessibleName(/可能误判/);
+    expect(screen.getByRole('radio', { name: /^标准/ })).toBeChecked();
+  });
+
+  it('updates conversation permissionMode when autonomous option selected, then closes', async () => {
+    const user = userEvent.setup();
     const id = useChatStore.getState().createConversation();
     render(<PermissionModeChip conversationId={id} />);
-    fireEvent.click(screen.getByRole('button'));
-    const autonomousBtn = screen.getAllByRole('button').find(
-      (btn: HTMLElement) => btn.textContent?.includes('完全自主') && btn.textContent?.includes('系统红线')
-    );
-    expect(autonomousBtn).toBeDefined();
-    fireEvent.click(autonomousBtn!);
+    await user.click(screen.getByRole('button', { name: '标准' }));
+
+    await user.click(await screen.findByRole('radio', { name: /系统红线/ }));
+
     expect(useChatStore.getState().conversations[id]?.permissionMode).toBe('autonomous');
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
   });
 
-  it('closes popover after selection', () => {
+  it('closes after picking the mode that is already current', async () => {
+    const user = userEvent.setup();
     render(<PermissionModeChip conversationId={null} />);
-    fireEvent.click(screen.getByRole('button'));
-    // Find the 标准 option (includes description text) and click it
-    const standardOptionBtn = screen.getAllByRole('button').find(
-      (btn: HTMLElement) => btn.textContent?.includes('标准') && btn.textContent?.includes('工作区')
-    );
-    expect(standardOptionBtn).toBeDefined();
-    fireEvent.click(standardOptionBtn!);
-    // Popover closed — only trigger button remains
-    expect(screen.getAllByRole('button')).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: '标准' }));
+
+    await user.click(await screen.findByText(/工作区内自由读写/));
+
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
   });
 
-  it('updates pendingPermissionMode in chatStore (not global settingsStore) when conversationId is null', () => {
+  it('updates pendingPermissionMode in chatStore (not global settingsStore) when conversationId is null', async () => {
+    const user = userEvent.setup();
     render(<PermissionModeChip conversationId={null} />);
-    fireEvent.click(screen.getByRole('button'));
-    const smartBtn = screen.getAllByRole('button').find(
-      (btn: HTMLElement) => btn.textContent?.includes('智能审核')
-    );
-    expect(smartBtn).toBeDefined();
-    fireEvent.click(smartBtn!);
+    await user.click(screen.getByRole('button', { name: '标准' }));
+
+    await user.click(await screen.findByRole('radio', { name: /智能审核/ }));
+
     // Global default must NOT change
     expect(useSettingsStore.getState().permissionMode).toBe('standard');
     // Pending mode is set in chatStore for the next conversation
     expect(useChatStore.getState().pendingPermissionMode).toBe('smart');
+  });
+
+  it('moves the choice with arrow keys while the list stays open, and Enter closes it back onto the chip', async () => {
+    // The radio group moves focus on the next timer tick.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<PermissionModeChip conversationId={null} />);
+      screen.getByRole('button', { name: '标准' }).focus();
+      await user.keyboard('{Enter}');
+      expect(await screen.findByRole('radio', { name: /^标准/ })).toHaveFocus();
+
+      // Held down across the tick, as a real key press is.
+      await user.keyboard('{ArrowDown>}');
+      await vi.advanceTimersByTimeAsync(0);
+      await user.keyboard('{/ArrowDown}');
+
+      expect(screen.getByRole('radio', { name: /^智能审核/ })).toHaveFocus();
+      expect(useChatStore.getState().pendingPermissionMode).toBe('smart');
+      expect(screen.getByRole('radiogroup')).toBeInTheDocument();
+
+      await user.keyboard('{Enter}');
+
+      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '智能审核' })).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes on Escape and puts focus back on the chip', async () => {
+    const user = userEvent.setup();
+    render(<PermissionModeChip conversationId={null} />);
+    const chip = screen.getByRole('button', { name: '标准' });
+    await user.click(chip);
+    expect(await screen.findByRole('radiogroup')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(chip).toHaveFocus();
+  });
+
+  it('names the setting in the chip\'s hover text', async () => {
+    render(<PermissionModeChip conversationId={null} />);
+    screen.getByRole('button', { name: '标准' }).focus();
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('权限模式: 标准');
   });
 });

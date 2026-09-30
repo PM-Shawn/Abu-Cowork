@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
-import { Loader2 } from 'lucide-react';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useMemo, type ComponentProps, type ReactNode } from 'react';
+import { Popover } from '@/components/ds/popover';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore, getEffectiveModel } from '@/stores/settingsStore';
@@ -24,16 +25,14 @@ const CENTER = 11;
 
 type BreakdownKey = (typeof BUCKET_KEYS)[number];
 
-/* eslint-disable no-restricted-syntax -- five arbitrary context categories need
-   distinct hues; these are categorical markers, not semantic status colors. */
+// Categories, not states: neutral greys of different depth. Every row names its category.
 const BREAKDOWN_COLORS: Record<BreakdownKey, string> = {
-  systemPrompt: 'bg-blue-500',
-  tools: 'bg-amber-500',
-  mcp: 'bg-purple-500',
-  skills: 'bg-teal-500',
-  conversation: 'bg-[var(--abu-clay)]',
+  systemPrompt: 'bg-label',
+  tools: 'bg-label-secondary',
+  mcp: 'bg-label-placeholder',
+  skills: 'bg-control-border',
+  conversation: 'bg-label-tertiary',
 };
-/* eslint-enable no-restricted-syntax */
 
 // Fallback overhead for the only case with no published usage at all: a
 // conversation reopened from history that hasn't run a turn since app start.
@@ -46,13 +45,28 @@ function formatK(n: number): string {
   return String(n);
 }
 
+// High usage is a warning state; the number next to it in the hover text is its words.
 function levelColorClass(level: 0 | 1 | 2 | 3): string {
   switch (level) {
-    case 0: return 'text-[var(--abu-text-muted)]';
-    case 1: return 'text-[var(--abu-warning)]';
-    case 2: return 'text-[var(--abu-warning)]';
-    case 3: return 'text-[var(--abu-danger)] animate-pulse';
+    case 0: return 'text-label-secondary';
+    case 1: return 'text-warning';
+    case 2: return 'text-warning';
+    case 3: return 'text-danger';
   }
+}
+
+// The Popover hands its props (open state, click, ref) to this component; spreading them
+// onto the Pressable lets the Tooltip wrap it.
+function RingTrigger({ tooltip, className, ...props }: ComponentProps<'button'> & { tooltip: ReactNode }) {
+  return (
+    <Tooltip content={tooltip}>
+      <Pressable
+        className={cn('inline-flex select-none items-center justify-center rounded-full', className)}
+        style={{ width: RING_SIZE, height: RING_SIZE }}
+        {...props}
+      />
+    </Tooltip>
+  );
 }
 
 function isValidBreakdown(
@@ -191,7 +205,7 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
   const freeTokens = usage ? Math.max(0, usage.tokensMax - usage.tokensUsed) : 0;
 
   const indicatorGraphic = isCompressing ? (
-    <Loader2 className="text-purple-400 animate-spin" style={{ width: RING_SIZE, height: RING_SIZE }} />
+    <Spinner size="sm" labelHidden label={tooltipText} />
   ) : (
     <svg width={RING_SIZE} height={RING_SIZE} viewBox={VIEWBOX}>
       <circle
@@ -199,7 +213,7 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
         fill="none"
         stroke="currentColor"
         strokeWidth="2"
-        className="text-[var(--abu-text-muted)] opacity-30"
+        className="text-separator"
       />
       {usage && (
         <circle
@@ -211,131 +225,109 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
           strokeDasharray={RING_CIRCUMFERENCE}
           strokeDashoffset={dashOffset}
           transform={`rotate(-90 ${CENTER} ${CENTER})`}
-          className={cn('transition-[stroke-dashoffset,color] duration-300', levelColorClass(level))}
+          className={cn('transition-[stroke-dashoffset,color] duration-slow', levelColorClass(level))}
         />
       )}
     </svg>
   );
 
   const tooltipContent = (
-    <TooltipContent side="top" className="flex flex-col items-start gap-0.5">
+    <span className="flex flex-col items-start">
       {!isCompressing && (
-        <span className="text-caption opacity-60 leading-tight">
-          {t.chat.contextTooltipSubtitle}
-        </span>
+        <span className="text-caption text-label-secondary">{t.chat.contextTooltipSubtitle}</span>
       )}
-      <span className="leading-tight">{tooltipText}</span>
-    </TooltipContent>
+      <span>{tooltipText}</span>
+    </span>
   );
 
   if (!breakdown || !breakdownPercents || !usage) {
     return (
-      <TooltipProvider delayDuration={300}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              aria-label={tooltipText}
-              data-testid="context-indicator"
-              className="inline-flex items-center justify-center select-none"
-              style={{ width: RING_SIZE, height: RING_SIZE }}
-            >
-              {indicatorGraphic}
-            </span>
-          </TooltipTrigger>
-          {tooltipContent}
-        </Tooltip>
-      </TooltipProvider>
+      <Tooltip content={tooltipContent}>
+        <span
+          aria-label={tooltipText}
+          data-testid="context-indicator"
+          className="inline-flex select-none items-center justify-center"
+          style={{ width: RING_SIZE, height: RING_SIZE }}
+        >
+          {indicatorGraphic}
+        </span>
+      </Tooltip>
     );
   }
 
   return (
-    <TooltipProvider delayDuration={300}>
-      <Popover>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                aria-label={tooltipText}
-                data-testid="context-indicator"
-                className={cn(
-                  'inline-flex items-center justify-center select-none cursor-pointer rounded-full border-0 bg-transparent p-0',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay-ring)]',
-                )}
-                style={{ width: RING_SIZE, height: RING_SIZE }}
-              >
-                {indicatorGraphic}
-              </button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          {tooltipContent}
-        </Tooltip>
-
-        <PopoverContent
-          side="top"
-          align="end"
-          className="w-80 space-y-3"
-          aria-label={t.chat.contextBreakdown.title}
-          data-testid="context-breakdown-popover"
-          data-tokens-used={usage.tokensUsed}
-        >
-          <div className="space-y-0.5">
-            <h3 className="text-h-xs text-[var(--abu-text-primary)]">
-              {t.chat.contextBreakdown.title}
-            </h3>
-            <p
-              className="text-caption text-[var(--abu-text-muted)]"
-              data-testid="context-breakdown-header"
-            >
-              {usageSummaryText}
-            </p>
-          </div>
-
-          <div
-            role="img"
-            aria-label={`${t.chat.contextBreakdown.free}: ${formatK(freeTokens)} · ${freePercent}%`}
-            className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--abu-bg-pressed)]"
-            data-testid="context-breakdown-bar"
+    <Popover
+      side="top"
+      align="end"
+      trigger={(
+        <RingTrigger tooltip={tooltipContent} aria-label={tooltipText} data-testid="context-indicator">
+          {indicatorGraphic}
+        </RingTrigger>
+      )}
+    >
+      <div
+        role="group"
+        aria-label={t.chat.contextBreakdown.title}
+        data-testid="context-breakdown-popover"
+        data-tokens-used={usage.tokensUsed}
+        className="space-y-3"
+      >
+        <div className="space-y-1">
+          <h3 className="text-ui font-medium text-label">
+            {t.chat.contextBreakdown.title}
+          </h3>
+          <p
+            className="text-caption text-label-tertiary"
+            data-testid="context-breakdown-header"
           >
-            {breakdownRows.map((row) => (
-              <span
-                key={row.key}
-                aria-hidden="true"
-                className={cn('h-full shrink-0', BREAKDOWN_COLORS[row.key])}
-                style={{ width: `${row.percent}%` }}
-              />
-            ))}
-          </div>
+            {usageSummaryText}
+          </p>
+        </div>
 
-          <ul className="space-y-1.5">
-            {breakdownRows.map((row) => (
-              <li
-                key={row.key}
-                className="flex items-center justify-between gap-4 text-minor"
-                data-testid={`context-breakdown-row-${row.key}`}
-                data-tokens={row.tokens}
-              >
-                <span className="flex min-w-0 items-center gap-2 text-[var(--abu-text-secondary)]">
-                  <span
-                    aria-hidden="true"
-                    className={cn('size-2 shrink-0 rounded-full', BREAKDOWN_COLORS[row.key])}
-                  />
-                  <span className="truncate">{row.label}</span>
+        <div
+          role="img"
+          aria-label={`${t.chat.contextBreakdown.free}: ${formatK(freeTokens)} · ${freePercent}%`}
+          className="flex h-2 w-full overflow-hidden rounded-full bg-fill"
+          data-testid="context-breakdown-bar"
+        >
+          {breakdownRows.map((row) => (
+            <span
+              key={row.key}
+              aria-hidden="true"
+              className={cn('h-full shrink-0', BREAKDOWN_COLORS[row.key])}
+              style={{ width: `${row.percent}%` }}
+            />
+          ))}
+        </div>
+
+        <ul className="space-y-2">
+          {breakdownRows.map((row) => (
+            <li
+              key={row.key}
+              className="flex items-center justify-between gap-4 text-ui-sm"
+              data-testid={`context-breakdown-row-${row.key}`}
+              data-tokens={row.tokens}
+            >
+              <span className="flex min-w-0 items-center gap-2 text-label-secondary">
+                <span
+                  aria-hidden="true"
+                  className={cn('size-2 shrink-0 rounded-full', BREAKDOWN_COLORS[row.key])}
+                />
+                <span className="truncate">{row.label}</span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2 text-caption text-label-tertiary">
+                <span data-testid={`context-breakdown-tokens-${row.key}`}>
+                  {formatK(row.tokens)}
                 </span>
-                <span className="flex shrink-0 items-center gap-1.5 text-caption text-[var(--abu-text-muted)]">
-                  <span data-testid={`context-breakdown-tokens-${row.key}`}>
-                    {formatK(row.tokens)}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span data-testid={`context-breakdown-percent-${row.key}`}>
-                    {row.percent}%
-                  </span>
+                <span aria-hidden="true">·</span>
+                <span data-testid={`context-breakdown-percent-${row.key}`}>
+                  {row.percent}%
                 </span>
-              </li>
-            ))}
-          </ul>
-        </PopoverContent>
-      </Popover>
-    </TooltipProvider>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </Popover>
   );
 }

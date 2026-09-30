@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput, {
   mergeComposerAppend,
   referenceDedupeKey,
@@ -29,6 +31,8 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { clearInputQueue, getQueuedInputs } from '@/core/agent/userInputQueue';
 import { useToastStore } from '@/stores/toastStore';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const electronHostMocks = vi.hoisted(() => ({
   hasElectronCommandHost: vi.fn(() => false),

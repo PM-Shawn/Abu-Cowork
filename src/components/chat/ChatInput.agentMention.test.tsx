@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { navigateToChatWithInput } from '@/utils/navigation';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
@@ -12,6 +14,8 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useTeamStore } from '@/stores/teamStore';
 import type { ImageAttachment, Skill } from '@/types';
 import { clearInputQueue, getQueuedInputs } from '@/core/agent/userInputQueue';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const AGENTS = [
   { name: 'publisher', description: 'Draft and edit public posts' },

@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, ArrowUp, Square, X, ChevronDown, FileText, Paperclip, Users, Sparkles } from 'lucide-react';
+import { Plus, ArrowUp, Square, X, FileText, Paperclip, Users, Sparkles } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
@@ -49,6 +49,10 @@ import { getModelUnavailableReason, getModelDisplayLabel } from '@/utils/setting
 import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
 import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { Button } from '@/components/ui/button';
+import { Button as DsButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Tooltip } from '@/components/ds/tooltip';
 import { cn } from '@/lib/utils';
 import { fileReferenceForPath, InvalidAttachmentPathError } from '@/utils/fileReference';
 import type { ImageAttachment } from '@/types';
@@ -383,6 +387,23 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
   }
 }
 
+// The model picker's button. The Popover hands its props (open state, click, ref) to this
+// component; spreading them onto the button lets the Tooltip wrap it. The hover text is
+// the full name, since the button truncates it.
+function ModelPickerTrigger({ label, unavailable, className, ...props }: ComponentProps<'button'> & {
+  label: string | undefined;
+  unavailable: boolean;
+}) {
+  return (
+    <Tooltip content={label}>
+      <DsButton variant="plain" size="sm" className={cn('max-w-full', unavailable && 'text-link', className)} {...props}>
+        <span className="min-w-0 truncate">{label}</span>
+        <Icon icon={AppIcons.expand} size="sm" />
+      </DsButton>
+    </Tooltip>
+  );
+}
+
 /**
  * Composer suggestion popup — grouped like Codex's composer (user feedback
  * 2026-09-01): small section headers (团队 / 队员 / 技能), names only (no
@@ -673,7 +694,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       ? currentModel
       : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const modelPickerRef = useRef<HTMLDivElement>(null);
+  // Built once per name: the composer re-renders on every streamed token, the picker must not.
+  const modelPickerTrigger = useMemo(
+    () => <ModelPickerTrigger label={modelDisplay} unavailable={!hasActiveProvider} />,
+    [modelDisplay, hasActiveProvider],
+  );
   useManagedProviderLiveness(effProvider, isRunning);
   // A send guard elsewhere may ask for the picker (a model the organization withdrew).
   useEffect(() => subscribeModelPickerRequest(() => setShowModelPicker(true)), []);
@@ -701,18 +726,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return { ...draft, files: result.files };
     });
   }, []);
-
-  // Close model picker on click outside
-  useEffect(() => {
-    if (!showModelPicker) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
-        setShowModelPicker(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showModelPicker]);
 
   // Handle pasting from clipboard.
   //
@@ -2094,25 +2107,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               {/* Model picker — right-aligned, before Start button */}
               <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={null} />
-                <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
-                  <button
-                    onClick={() => setShowModelPicker(!showModelPicker)}
-                    title={modelDisplay}
-                    className={cn(
-                      'btn-ghost flex min-w-0 max-w-[180px] items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors',
-                      hasActiveProvider
-                        ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                        : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
-                    )}
-                  >
-                    <span className="min-w-0 truncate whitespace-nowrap">{modelDisplay}</span>
-                    <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
-                  </button>
-                  <ModelSelector
-                    open={showModelPicker}
-                    onClose={() => setShowModelPicker(false)}
-                    anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
-                  />
+                <div className="flex min-w-0 max-w-[180px]">
+                  <ModelSelector open={showModelPicker} onOpenChange={setShowModelPicker} trigger={modelPickerTrigger} />
                 </div>
 
                 <Button
@@ -2167,25 +2163,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
-                <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
-                  <button
-                    onClick={() => setShowModelPicker(!showModelPicker)}
-                    title={modelDisplay}
-                    className={cn(
-                      'btn-ghost flex min-w-0 max-w-[180px] items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors',
-                      hasActiveProvider
-                        ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                        : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
-                    )}
-                  >
-                    <span className="min-w-0 truncate whitespace-nowrap">{modelDisplay}</span>
-                    <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
-                  </button>
-                  <ModelSelector
-                    open={showModelPicker}
-                    onClose={() => setShowModelPicker(false)}
-                    anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
-                  />
+                <div className="flex min-w-0 max-w-[180px]">
+                  <ModelSelector open={showModelPicker} onOpenChange={setShowModelPicker} trigger={modelPickerTrigger} />
                 </div>
 
                 {/* Context usage ring — between model picker and send button.

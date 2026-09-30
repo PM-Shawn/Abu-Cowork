@@ -126,7 +126,7 @@ function composerInput(page: Page): Locator {
 }
 
 function composerModelButton(page: Page, label: string): Locator {
-  return page.getByTestId('composer-toolbar').locator(`button[title="${label}"]`);
+  return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
 /** Add provider B next to the configured provider A and reload. */

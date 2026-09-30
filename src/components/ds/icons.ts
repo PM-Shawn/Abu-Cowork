@@ -1,5 +1,5 @@
 import {
-  Archive, ArrowLeft, ArrowUpRight, AtSign, Ban, Brain, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp,
+  Archive, ArrowLeft, ArrowUp, ArrowUpRight, AtSign, Ban, Brain, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp,
   CircleStop, CircleX, Clock, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FilePen, FilePlus,
   FileSearch, FileText, FileType2, FileWarning, FileX, Folder, FolderInput, FolderOpen, Globe, Hand, Hash, ImageOff, Inbox, Info, LayoutGrid, Lightbulb, ListChecks, ListTree,
   LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Minimize2, Minus, Monitor, MonitorCog, Palette, PanelLeft, PanelRight,
@@ -132,6 +132,8 @@ export const AppIcons = {
   favorite: Star,
   permissionAsk: Hand,
   permissionReview: ScanEye,
+  // Chat: composer
+  send: ArrowUp,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

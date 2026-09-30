@@ -130,6 +130,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/PermissionModeChip*.{ts,tsx}',
   'src/components/chat/ContextIndicator*.{ts,tsx}',
   'src/components/common/FolderSelector.tsx',
+  'src/components/chat/ChatInput*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

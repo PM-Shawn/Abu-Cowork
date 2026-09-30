@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -9,6 +9,7 @@ import ChatInput from './ChatInput';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useTeamStore } from '@/stores/teamStore';
+import { clearAllComposerDrafts, getComposerDraftKey, writeComposerDraft } from '@/stores/composerDraftStore';
 import { getI18n } from '@/i18n';
 import type { ProviderInstance } from '@/types/provider';
 
@@ -52,6 +53,21 @@ vi.mock('@/components/ds/menu', async (importOriginal) => {
   };
 });
 
+const tooltipRenders = vi.hoisted(() => vi.fn());
+
+// Records the text of every hover tip that renders, to tell the composer's own tips apart
+// from the context ring's (which follows live usage by design).
+vi.mock('@/components/ds/tooltip', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/tooltip')>();
+  return {
+    ...actual,
+    Tooltip: (props: ComponentProps<typeof actual.Tooltip>) => {
+      tooltipRenders(props.content);
+      return actual.Tooltip(props);
+    },
+  };
+});
+
 const PROVIDER: ProviderInstance = {
   id: 'p1',
   source: 'custom',
@@ -82,8 +98,11 @@ describe('composer selectors', () => {
       recentModels: [],
       favoriteModels: [],
       permissionMode: 'standard',
+      composerEnterBehavior: 'enter',
     });
+    clearAllComposerDrafts();
     popoverRenders.mockClear();
+    tooltipRenders.mockClear();
   });
 
   afterEach(() => {
@@ -128,5 +147,33 @@ describe('composer selectors', () => {
     }
 
     expect(popoverRenders).toHaveBeenCalledTimes(initial);
+  });
+
+  it('keeps the + menu, chips, attachments and send button still while the user types', () => {
+    const id = useChatStore.getState().createConversation();
+    writeComposerDraft(getComposerDraftKey(id), {
+      text: '',
+      images: [{ id: 'img-1', data: 'aGVsbG8=', mediaType: 'image/png' }],
+      files: [{ id: 'file-1', path: '/work/notes.md', name: 'notes.md' }],
+      references: [],
+      selectedSkill: null,
+      selectedAgent: { name: 'publisher', description: 'Draft posts' },
+    });
+    render(<ChatInput variant="chat" onSend={vi.fn()} />, { wrapper: DesignSystemProvider });
+    const { chat, common } = getI18n();
+    const ownTips = new Set<unknown>([chat.composerMenu.open, common.close, chat.removeImage, chat.sendTooltipEnterSends]);
+    expect(tooltipRenders.mock.calls.filter(([content]) => ownTips.has(content)).length).toBeGreaterThanOrEqual(4);
+
+    const box = screen.getByRole('textbox');
+    // The first character may enable send; the following ones change nothing around the field.
+    act(() => { fireEvent.change(box, { target: { value: 'h' } }); });
+    const menusBefore = popoverRenders.mock.calls.length;
+    tooltipRenders.mockClear();
+    for (const value of ['he', 'hel', 'hell']) {
+      act(() => { fireEvent.change(box, { target: { value } }); });
+    }
+
+    expect(popoverRenders).toHaveBeenCalledTimes(menusBefore);
+    expect(tooltipRenders.mock.calls.filter(([content]) => ownTips.has(content))).toEqual([]);
   });
 });

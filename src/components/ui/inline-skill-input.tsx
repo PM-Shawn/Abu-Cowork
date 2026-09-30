@@ -216,7 +216,7 @@ export function InlineSkillInput({ ref, historyKey, imeActive, value, skill, onC
         button.dataset.inlineSkill = skill.name;
         button.setAttribute('aria-label', `/${skill.name}`);
         button.title = `${removeLabel} /${skill.name}`;
-        button.className = 'inline-block max-w-full align-baseline rounded-md bg-[var(--abu-bg-muted)] px-1.5 mx-0.5 text-body font-medium text-[var(--abu-text-primary)] cursor-pointer';
+        button.className = 'inline-block max-w-full cursor-pointer align-baseline rounded-control bg-fill px-1 mx-1 text-body font-medium text-label';
         button.textContent = `/${skill.name} ×`;
         // Editable caret stops keep Chromium from canonicalizing a caret on a
         // new line before a non-editable atom to the other side of that atom.

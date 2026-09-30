@@ -23,7 +23,13 @@ const harness = vi.hoisted(() => ({
   scrollToIndex: vi.fn(),
   tooltipRenders: vi.fn(),
   teamLeader: null as null | Record<string, unknown>,
+  macOS: false,
 }));
+
+vi.mock('@/utils/platform', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/platform')>();
+  return { ...actual, isMacOS: () => harness.macOS };
+});
 
 vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: vi.fn() }));
 
@@ -114,6 +120,7 @@ describe('ChatView frame', () => {
     harness.scrollToIndex.mockReset();
     harness.tooltipRenders.mockReset();
     harness.teamLeader = null;
+    harness.macOS = false;
     useChatStore.setState(useChatStore.getInitialState(), true);
     useSettingsStore.setState(useSettingsStore.getInitialState(), true);
     useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
@@ -183,6 +190,27 @@ describe('ChatView frame', () => {
     await user.type(screen.getByRole('textbox'), 'Quarterly review{Enter}');
     expect(useChatStore.getState().conversations[conversationId].title).toBe('Quarterly review');
     expect(screen.queryByRole('textbox')).toBeNull();
+  });
+
+  it('keeps the title row clear of the floating panel toggle on macOS', () => {
+    harness.macOS = true;
+    setupConversation();
+
+    render(<ChatView rightPanelToggleVisible />);
+
+    const header = document.querySelector<HTMLElement>('.overlay-scroll')!.parentElement!.firstElementChild!;
+    expect(header).toHaveClass('pr-12');
+    expect(header).toHaveClass('h-11');
+  });
+
+  it('leaves the macOS title row at its own padding while the panel toggle is hidden', () => {
+    harness.macOS = true;
+    setupConversation();
+
+    render(<ChatView />);
+
+    const header = document.querySelector<HTMLElement>('.overlay-scroll')!.parentElement!.firstElementChild!;
+    expect(header).not.toHaveClass('pr-12');
   });
 
   it('shows the team as a tag with the leader in its hover text', () => {

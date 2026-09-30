@@ -1482,7 +1482,9 @@ export default function ChatView({
         // the title to clear the controls present on that platform.
         sidebarCollapsed && isMacOS() && 'pl-48',
         sidebarCollapsed && windowsWorkspaceHeader && 'pl-20',
-        rightPanelToggleVisible && windowsWorkspaceHeader && 'pr-12',
+        // The panel toggle floats over the header's right end on macOS too;
+        // keep the chapter menu button out from under it.
+        rightPanelToggleVisible && (windowsWorkspaceHeader || isMacOS()) && 'pr-12',
       )}>
         {isRenamingTitle ? (
           <TextField

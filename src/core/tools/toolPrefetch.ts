@@ -96,6 +96,11 @@ const PREFETCH_RULES: ReadonlyArray<{
     tools: [TOOL_NAMES.MANAGE_SCHEDULED_TASK],
   },
   {
+    // Goal mode: "keep going until it is done" requests.
+    keywords: ['设个目标', '设定目标', '目标模式', '做完', '全部完成', '直到', '为止', '不要停', '/goal', 'until done', 'until it', 'keep going', 'finish all'],
+    tools: [TOOL_NAMES.MANAGE_GOAL],
+  },
+  {
     keywords: ['触发', '监听', '事件', '自动响应', 'trigger', 'webhook'],
     tools: [TOOL_NAMES.MANAGE_TRIGGER],
   },
@@ -187,6 +192,8 @@ export interface PrefetchContext {
   computerUseEnabled: boolean;
   activeSkills: Skill[];
   turnCount: number;
+  /** The conversation carries a goal (any phase) — keep manage_goal loaded. */
+  hasGoal?: boolean;
 }
 
 /**
@@ -231,6 +238,13 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
   }
   if (ctx.activeSkills.some((skill) => skill.name === 'Abu-Chrome-Bridge')) {
     additionalTools.push(TOOL_NAMES.MANAGE_MCP_SERVER, ...CHROME_BRIDGE_TOOLS);
+  }
+
+  // Goal mode: once a conversation has a goal the model must always be able
+  // to complete / block it, so the tool stays loaded (a stable roster also
+  // keeps the prompt cache warm across rounds).
+  if (ctx.hasGoal) {
+    additionalTools.push(TOOL_NAMES.MANAGE_GOAL);
   }
 
   // Early turns: load planning + system info tools (LLM may plan after initial research)

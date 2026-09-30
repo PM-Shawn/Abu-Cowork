@@ -61,6 +61,17 @@ describe('toolPrefetch', () => {
       expect(result).toContain('manage_scheduled_task');
     });
 
+    it('should load manage_goal for "until done" requests', () => {
+      expect(prefetchTools(makeCtx({ userInput: '把这些合同全部做完再停' }))).toContain('manage_goal');
+      expect(prefetchTools(makeCtx({ userInput: 'keep going until it passes' }))).toContain('manage_goal');
+      expect(prefetchTools(makeCtx({ userInput: '把目标文件夹里的图片压缩一下' }))).not.toContain('manage_goal');
+    });
+
+    it('should keep manage_goal loaded while the conversation has a goal', () => {
+      expect(prefetchTools(makeCtx({ userInput: '继续', turnCount: 9, hasGoal: true }))).toContain('manage_goal');
+      expect(prefetchTools(makeCtx({ userInput: '继续', turnCount: 9 }))).not.toContain('manage_goal');
+    });
+
     it('should match trigger keywords', () => {
       const result = prefetchTools(makeCtx({ userInput: '创建一个 webhook 触发器' }));
       expect(result).toContain('manage_trigger');

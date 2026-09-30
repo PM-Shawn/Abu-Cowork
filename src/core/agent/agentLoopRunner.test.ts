@@ -2182,7 +2182,7 @@ describe('agentLoopRunner', () => {
   });
 
   describe('convPatch push emitter (diffing)', () => {
-    it('pushes all 4 scalar fields the first time a conversation is observed', async () => {
+    it('pushes every diffed field the first time a conversation is observed (goal as null when absent)', async () => {
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
 
@@ -2194,7 +2194,7 @@ describe('agentLoopRunner', () => {
 
       expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', {
         runId: 'run-1',
-        patch: { workspacePath: '/a', title: 'T1', activeSkills: ['s1'], model: { providerId: 'p', modelId: 'm' } },
+        patch: { workspacePath: '/a', title: 'T1', activeSkills: ['s1'], model: { providerId: 'p', modelId: 'm' }, goal: null },
       });
     });
 
@@ -2220,6 +2220,33 @@ describe('agentLoopRunner', () => {
         runId: 'run-1',
         patch: { title: 'T2' },
       });
+    });
+
+    it('pushes the goal when its revision changes and null when it is cleared', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const goal = { id: 'g1', revision: 1, objective: 'o', phase: 'active', maxRounds: 10, roundsStarted: 0, consecutiveIdleRounds: 0, createdAt: 1, updatedAt: 1 };
+      const base = { workspacePath: '/a', title: 'T1', activeSkills: ['s1'] };
+      const index = { 'conv-1': { model: { providerId: 'p', modelId: 'm' } } };
+
+      chatState = { conversations: { 'conv-1': { ...base, goal } }, conversationIndex: index };
+      capturedChatCb?.();
+      notifySidecar.mockClear();
+
+      // Same revision → nothing to push.
+      chatState = { conversations: { 'conv-1': { ...base, goal: { ...goal } } }, conversationIndex: index };
+      capturedChatCb?.();
+      expect(notifySidecar).not.toHaveBeenCalled();
+
+      const completed = { ...goal, revision: 2, phase: 'complete' };
+      chatState = { conversations: { 'conv-1': { ...base, goal: completed } }, conversationIndex: index };
+      capturedChatCb?.();
+      expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', { runId: 'run-1', patch: { goal: completed } });
+      notifySidecar.mockClear();
+
+      chatState = { conversations: { 'conv-1': { ...base } }, conversationIndex: index };
+      capturedChatCb?.();
+      expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', { runId: 'run-1', patch: { goal: null } });
     });
 
     it('pushes nothing when nothing changed', async () => {
@@ -4956,7 +4983,7 @@ describe('agentLoopRunner', () => {
       const running = runAgentLoopDispatched('conv-1', 'read only');
       await waitForCall(sidecarRequestMock);
       const params = sidecarRequestMock.mock.calls[0][1] as { runId: string; options: Record<string, unknown> };
-      expect(getRunSession(params.runId)?.agentToolPolicy).toEqual({ tools: ['read_file'], disallowedTools: undefined, protocolTools: ['report_plan', 'delegate_to_agent', 'run_agent_batch'] });
+      expect(getRunSession(params.runId)?.agentToolPolicy).toEqual({ tools: ['read_file'], disallowedTools: undefined, protocolTools: ['report_plan', 'delegate_to_agent', 'run_agent_batch', 'manage_goal'] });
       expect(params.options).not.toHaveProperty('agentToolPolicy');
       await expect(handlerFor(onSidecarRequest, 'approval.check')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);
       await expect(handlerFor(onSidecarRequest, 'tool.invoke')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);

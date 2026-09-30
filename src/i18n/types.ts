@@ -4206,6 +4206,42 @@ export interface TranslationDict {
     statusPaused: string;
     /** Locale-appropriate separator for joining inline lists of items. */
     listSeparator: string;
+    // manage_goal (goal mode)
+    goal: {
+      noConversation: string;
+      invalidAction: string;
+      /** Only the main conversation (not a delegated expert) may manage the goal. */
+      deniedSubagent: string;
+      /** Scheduled / trigger / IM / read-only conversations. */
+      deniedAutomated: string;
+      /** create / edit / pause need a run started by the user's own message. */
+      deniedNeedsHuman: string;
+      /** {min} {rounds} */
+      deniedBlockTooEarly: string;
+      noGoal: string;
+      missingObjective: string;
+      missingEvidence: string;
+      missingReason: string;
+      /** A live goal already exists. {objective} */
+      alreadyExists: string;
+      /** {phase} */
+      invalidTransition: string;
+      staleRevision: string;
+      /** {objective} {maxRounds} */
+      created: string;
+      /** {objective} */
+      edited: string;
+      paused: string;
+      completed: string;
+      /** {reason} */
+      blocked: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+    };
     // report_plan / update_memory / todo_write / log_task_completion
     memory: {
       // reportPlanTool

@@ -16,6 +16,9 @@ const ALWAYS_BLOCKED_SUBAGENT_TOOLS = new Set<string>([
   TOOL_NAMES.RUN_AGENT_BATCH,
   TOOL_NAMES.UPDATE_SOUL,
   TOOL_NAMES.ASK_USER_QUESTION,
+  // Goal mode belongs to the conversation's own loop (the team leader in a
+  // team conversation); a member must not re-scope or settle the user's goal.
+  TOOL_NAMES.MANAGE_GOAL,
   // System configuration. Everything below writes durable state that outlives
   // the single hand-off a member was dispatched for — an expert, team, skill,
   // plugin, scheduled task, trigger, file watch or connector server the user

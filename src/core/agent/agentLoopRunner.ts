@@ -37,6 +37,7 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
 import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { GoalState } from '../goal/goalTypes';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -2129,12 +2130,14 @@ function pushSettingsNow(): void {
   });
 }
 
-/** The 4 scalar fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
+/** The fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
 interface ConvPatchSnapshot {
   workspacePath?: string | null;
   title?: string;
   activeSkills?: string[];
   model?: { providerId: string; modelId: string };
+  /** Goal mode: written shell-side by the goal tool / UI mid-run; `null` on the wire = cleared. */
+  goal?: GoalState | null;
 }
 
 let chatUnsub: (() => void) | undefined;
@@ -2150,6 +2153,7 @@ function snapshotConv(conversationId: string): ConvPatchSnapshot | undefined {
     title: conv.title,
     activeSkills: conv.activeSkills,
     model: state.conversationIndex[conversationId]?.model,
+    goal: conv.goal ?? null,
   };
 }
 
@@ -2177,6 +2181,11 @@ function diffConvSnapshot(prev: ConvPatchSnapshot | undefined, next: ConvPatchSn
   }
   if (!prev || prev.model?.providerId !== next.model?.providerId || prev.model?.modelId !== next.model?.modelId) {
     patch.model = next.model;
+    changed = true;
+  }
+  // Every goal write bumps `revision`, so id + revision identify its content.
+  if (!prev || prev.goal?.id !== next.goal?.id || prev.goal?.revision !== next.goal?.revision) {
+    patch.goal = next.goal ?? null;
     changed = true;
   }
   return changed ? patch : undefined;

@@ -103,6 +103,7 @@ import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
+import { formatGoalForPrompt } from '../goal/goalPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveAgentModelCapabilities, resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { resolveImagePolicy } from '../llm/imagePolicy';
@@ -354,7 +355,7 @@ export function resolveTools(
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
   blockedTools?: string[],
-  prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
+  prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number; hasGoal?: boolean },
   allowedTools?: string[],
   conversationId?: string,
   allowedToolsAreExactSnapshot = false,
@@ -501,6 +502,7 @@ function sanitizeTailBody(text: string): string {
 }
 
 export function buildVolatileContextTail(parts: {
+  goalState?: string;
   todoState?: string;
   relevantMemoriesSection?: string;
   compressionApplied?: boolean;
@@ -509,6 +511,7 @@ export function buildVolatileContextTail(parts: {
   if (parts.compressionApplied) {
     body.push('[The earlier conversation history has been compressed and older details summarized. If the user mentions early details you are unsure about, say so honestly and ask them to confirm — do not fabricate.]');
   }
+  if (parts.goalState) body.push(parts.goalState);
   if (parts.todoState) body.push(parts.todoState);
   if (parts.relevantMemoriesSection) body.push(parts.relevantMemoriesSection);
   if (body.length === 0) return undefined;
@@ -1857,6 +1860,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
         activeSkills: activeSkillObjects,
         turnCount,
+        hasGoal: conv?.goal !== undefined,
       };
 
       // What the roster was filtered by, carried to the execution boundary so
@@ -2003,6 +2007,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       //   context tail appended after the history instead (see
       //   buildVolatileContextTail below).
       const todoState = formatPlannedStepsForPrompt(conversationId);
+      const goalState = formatGoalForPrompt(conversationId, loopId);
       const dynamicSections: PromptSection[] = [];
       if (dynamicCapabilities) {
         dynamicSections.push({ name: 'mcp-capabilities', text: dynamicCapabilities, cacheable: true });
@@ -2123,6 +2128,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // append it AFTER placing the history cache breakpoint, so the stored
       // prefix stays fully cached and only this small tail is re-billed.
       const volatileContextTail = buildVolatileContextTail({
+        goalState,
         todoState,
         relevantMemoriesSection,
         compressionApplied,

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -265,6 +265,5 @@ describe('ChatView frame', () => {
 
     await waitFor(() => expect(harness.scrollToIndex).toHaveBeenCalledWith({ index: 1, align: 'start', behavior: 'auto' }));
     expect(screen.queryByRole('menu')).toBeNull();
-    fireEvent.keyDown(document.body, { key: 'Escape' });
   });
 });

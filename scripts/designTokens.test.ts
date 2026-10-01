@@ -70,6 +70,7 @@ const TEXT = ['label', 'label-secondary', 'label-tertiary', 'link', 'success', '
 const SURFACES = ['surface', 'raised', 'code', 'field', 'desk-solid'];
 const STATUS = ['success', 'warning', 'danger', 'info'];
 const SYNTAX = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property'];
+const SELECTION_BASES = ['surface', 'code'];
 
 describe('design tokens — completeness', () => {
   it('overrides every semantic light token in dark', () => {
@@ -162,18 +163,36 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
     expect(wcagContrast(color(values, text), over(values, 'fill', 'surface'))).toBeGreaterThanOrEqual(4.5);
   });
 
-  // Selected text in the terminal, the source editor and document previews.
-  it.each(['label', 'label-secondary'])('%s on selection over surface is at least 4.5:1', (text) => {
-    expect(wcagContrast(color(values, text), over(values, 'selection', 'surface'))).toBeGreaterThanOrEqual(4.5);
+  // Selected text in the terminal, the source editor and document previews sits on the panel
+  // surface or on a code block. Selection is a transient state: primary text keeps 4.5:1, and
+  // secondary text and code highlighting keep 3:1, the bar the spec sets for placeholder and focus.
+  it.each(SELECTION_BASES)('label on selection over %s is at least 4.5:1', (base) => {
+    expect(wcagContrast(color(values, 'label'), over(values, 'selection', base))).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('selection stands out from the surface it sits on', () => {
-    expect(wcagContrast(over(values, 'selection', 'surface'), color(values, 'surface'))).toBeGreaterThanOrEqual(1.3);
+  it.each(['label-secondary', ...SYNTAX].flatMap((text) => SELECTION_BASES.map((base) => [text, base] as const)))(
+    '%s on selection over %s is at least 3:1',
+    (text, base) => {
+      expect(wcagContrast(color(values, text), over(values, 'selection', base))).toBeGreaterThanOrEqual(3);
+    },
+  );
+
+  it.each(SELECTION_BASES)('selection stands out from the %s it sits on', (base) => {
+    expect(wcagContrast(over(values, 'selection', base), color(values, base))).toBeGreaterThanOrEqual(1.3);
   });
 
   // Web pages and Word pages bring their own dark text; their paper stays white.
   it('page canvas keeps default page text readable', () => {
     expect(wcagContrast(parse('#000000')!, color(values, 'page-canvas'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // White paper needs a dark selection in every appearance; the panel selection is light in dark.
+  it('page selection stands out from the page canvas', () => {
+    expect(wcagContrast(over(values, 'page-selection', 'page-canvas'), color(values, 'page-canvas'))).toBeGreaterThanOrEqual(1.3);
+  });
+
+  it('page selection keeps default page text readable', () => {
+    expect(wcagContrast(parse('#000000')!, over(values, 'page-selection', 'page-canvas'))).toBeGreaterThanOrEqual(4.5);
   });
 
   // The source editor paints highlight colors on the panel surface.

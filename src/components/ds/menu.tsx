@@ -71,11 +71,12 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
       <span id={descriptionId} aria-hidden="true" className="w-64 text-ui-sm text-label-secondary">{description}</span>
     </span>
   ) : <span className="min-w-0 flex-1 truncate">{children}</span>;
+  // With a second line the row aligns to the top; the nudge centers the icon and the shortcut on the first line.
   const body = (
     <>
-      {icon && <Icon icon={icon} size="sm" className={tone === 'danger' ? 'text-danger' : 'text-label-secondary'} />}
+      {icon && <Icon icon={icon} size="sm" className={cn(tone === 'danger' ? 'text-danger' : 'text-label-secondary', description && 'mt-0.5')} />}
       {label}
-      {shortcut && <span className="text-ui-sm text-label-tertiary">{shortcut}</span>}
+      {shortcut && <span className={cn('text-ui-sm text-label-tertiary', description && 'mt-0.5')}>{shortcut}</span>}
     </>
   );
   const describedBy = description ? descriptionId : undefined;

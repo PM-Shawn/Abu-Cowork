@@ -70,6 +70,8 @@
   --ds-selection: rgba(0, 0, 0, 0.12);
   /* Web pages and Word pages keep their own white paper, like an image. */
   --ds-page-canvas: #ffffff;
+  /* Selected text on that white paper; dark in every appearance, because the paper never turns dark. */
+  --ds-page-selection: rgba(0, 0, 0, 0.12);
 
   --ds-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.09), 0 2px 8px rgba(0, 0, 0, 0.05);
   --ds-shadow-float: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 18px 40px rgba(0, 0, 0, 0.22);
@@ -123,6 +125,7 @@
   --ds-diagram-canvas: #ffffff;
   --ds-selection: rgba(255, 255, 255, 0.12);
   --ds-page-canvas: #ffffff;
+  --ds-page-selection: rgba(0, 0, 0, 0.12);
 
   --ds-shadow-panel: 0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 2px 8px rgba(0, 0, 0, 0.30);
   --ds-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 18px 40px rgba(0, 0, 0, 0.45);
@@ -159,6 +162,7 @@
   --ds-diagram-canvas: #ffffff;
   --ds-selection: rgba(0, 0, 0, 0.18);
   --ds-page-canvas: #ffffff;
+  --ds-page-selection: rgba(0, 0, 0, 0.18);
 }
 :root[data-contrast="more"].dark {
   --ds-desk: #000000;
@@ -187,6 +191,7 @@
   --ds-diagram-canvas: #ffffff;
   --ds-selection: rgba(255, 255, 255, 0.18);
   --ds-page-canvas: #ffffff;
+  --ds-page-selection: rgba(0, 0, 0, 0.18);
 }
 
 /* Reduced transparency (data-transparency="reduced"): desk, the only translucent surface, is opaque. */

@@ -80,6 +80,7 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
           >
             <div
               ref={containerRef}
+              data-page-canvas
               className="docx-preview-container"
               style={{
                 background: 'white',

@@ -114,6 +114,13 @@
 [data-doc-selection-layer] ::selection {
   background-color: var(--ds-selection);
 }
+/* White paper (Word, PDF and slide pages) stays white in every appearance, so it takes the dark page selection. */
+[data-page-canvas] ::selection {
+  background-color: var(--ds-page-selection);
+}
+[data-page-canvas] ::highlight(abu-reference) {
+  background-color: var(--ds-page-selection);
+}
 
 /* Scrollbar - default subtle style */
 ::-webkit-scrollbar {

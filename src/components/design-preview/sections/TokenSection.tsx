@@ -85,14 +85,22 @@ function SyntaxSwatch({ name }: { name: string }) {
   );
 }
 
-// The selection color has no Tailwind class; it is painted over the surface it sits on.
-function SelectionSwatch() {
-  const value = useComputedValue(() => readRootVariable('--ds-selection'));
+// Selection colors have no Tailwind class; each is painted over the background it sits on.
+// The class names are complete literals so Tailwind can generate them.
+const SELECTION_TOKENS = [
+  { name: 'selection', baseClass: 'bg-surface' },
+  { name: 'page-selection', baseClass: 'bg-page-canvas' },
+];
+
+function SelectionSwatch({ name, baseClass }: { name: string; baseClass: string }) {
+  const value = useComputedValue(() => readRootVariable(`--ds-${name}`));
   return (
-    <div data-token="selection" className="overflow-hidden rounded-panel bg-surface shadow-panel">
-      <div className="h-12" style={{ backgroundColor: 'var(--ds-selection)' }} />
+    <div data-token={name} className="overflow-hidden rounded-panel bg-surface shadow-panel">
+      <div className={baseClass}>
+        <div className="h-12" style={{ backgroundColor: `var(--ds-${name})` }} />
+      </div>
       <div className="px-2 py-1">
-        <div className="font-code text-ui-sm text-label">selection</div>
+        <div className="font-code text-ui-sm text-label">{name}</div>
         <div data-token-value className="font-code text-caption text-label-secondary">{value}</div>
       </div>
     </div>
@@ -133,7 +141,7 @@ export function TokenSection() {
       <div data-preview-selection className="mt-4">
         <p className="text-ui-sm font-medium text-label-tertiary">Selection</p>
         <div className="mt-2 grid grid-cols-6 gap-3">
-          <SelectionSwatch />
+          {SELECTION_TOKENS.map((token) => <SelectionSwatch key={token.name} {...token} />)}
         </div>
       </div>
       <div className="mt-4">

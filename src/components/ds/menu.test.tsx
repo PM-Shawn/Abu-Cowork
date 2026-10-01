@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent, { PointerEventsCheckLevel } from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
@@ -133,20 +133,28 @@ describe('Menu', () => {
     const user = userEvent.setup();
     render(
       <Menu trigger={<Button>Versions</Button>}>
-        <MenuItem description="Before AI edit · 2.1 KB">10:24:31</MenuItem>
-        <MenuItem>Plain</MenuItem>
+        <MenuItem icon={AppIcons.history} shortcut="⌘Z" description="Before AI edit · 2.1 KB">10:24:31</MenuItem>
+        <MenuItem icon={AppIcons.copy} shortcut="⌘C">Plain</MenuItem>
       </Menu>,
       { wrapper: DesignSystemProvider },
     );
     await user.click(screen.getByRole('button', { name: 'Versions' }));
-    const item = screen.getByRole('menuitem', { name: '10:24:31' });
+    const item = screen.getByRole('menuitem', { name: /10:24:31/ });
+    expect(within(item).getByText('10:24:31')).toBeVisible();
+    expect(item).not.toHaveAccessibleName(/Before AI edit/);
     expect(item).toHaveAccessibleDescription('Before AI edit · 2.1 KB');
     expect(screen.getByText('Before AI edit · 2.1 KB')).toBeVisible();
     expect(item).toHaveClass('h-auto');
-    const plain = screen.getByRole('menuitem', { name: 'Plain' });
+    expect(item).not.toHaveClass('h-6');
+    // The icon and the shortcut sit level with the first line, not at the top edge of the row.
+    expect(item.querySelector('svg')).toHaveClass('mt-0.5');
+    expect(within(item).getByText('⌘Z')).toHaveClass('mt-0.5');
+    const plain = screen.getByRole('menuitem', { name: /Plain/ });
     expect(plain).not.toHaveAttribute('aria-describedby');
     expect(plain).not.toHaveClass('h-auto');
     expect(plain).toHaveClass('h-6');
+    expect(plain.querySelector('svg')).not.toHaveClass('mt-0.5');
+    expect(within(plain).getByText('⌘C')).not.toHaveClass('mt-0.5');
   });
 
   it('describes an item inside a ContextMenu too', async () => {

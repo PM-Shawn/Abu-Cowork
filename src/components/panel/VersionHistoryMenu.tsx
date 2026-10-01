@@ -125,32 +125,34 @@ export function VersionHistoryMenu({ filePath, open, onOpenChange, trigger, onRe
       ) : versions.length === 0 ? (
         <p className="px-2 py-3 text-center text-ui-sm text-label-tertiary">{t.panel.versionHistoryEmpty}</p>
       ) : (
-        // The menu limits its own height to the window and scrolls, so the rows sit directly in it.
-        versions.map((v) => {
-          const label = v.label === REVERT_LABEL ? t.panel.versionRevertPoint : v.label;
-          return (
-            <MenuItem
-              key={v.id}
-              icon={AppIcons.clock}
-              title={t.panel.versionHistoryRevert}
-              disabled={revertingId !== null}
-              description={(
-                // One line: a long label is cut short, the size always stays in view.
-                <span className="flex">
-                  {label && <span className="min-w-0 truncate">{label}</span>}
-                  <span className="shrink-0 whitespace-pre">{label ? ' · ' : ''}{formatBytes(v.byteSize)}</span>
+        // A file can hold 31 versions: the list keeps a compact height and scrolls under the title.
+        <div className="max-h-80 overflow-y-auto">
+          {versions.map((v) => {
+            const label = v.label === REVERT_LABEL ? t.panel.versionRevertPoint : v.label;
+            return (
+              <MenuItem
+                key={v.id}
+                icon={AppIcons.clock}
+                title={t.panel.versionHistoryRevert}
+                disabled={revertingId !== null}
+                description={(
+                  // One line: a long label is cut short, the size always stays in view.
+                  <span className="flex">
+                    {label && <span className="min-w-0 truncate">{label}</span>}
+                    <span className="shrink-0 whitespace-pre">{label ? ' · ' : ''}{formatBytes(v.byteSize)}</span>
+                  </span>
+                )}
+                onSelect={() => { void handleRevert(v.id); }}
+              >
+                {/* The tag's height on every row, so rows with and without it are equally tall. */}
+                <span className="flex h-5 items-center gap-2">
+                  <span className="tabular-nums">{formatVersionTime(v.ts)}</span>
+                  {v.source === 'ai' && <Tag tone="info">{t.panel.versionSourceAi}</Tag>}
                 </span>
-              )}
-              onSelect={() => { void handleRevert(v.id); }}
-            >
-              {/* The tag's height on every row, so rows with and without it are equally tall. */}
-              <span className="flex h-5 items-center gap-2">
-                <span className="tabular-nums">{formatVersionTime(v.ts)}</span>
-                {v.source === 'ai' && <Tag tone="info">{t.panel.versionSourceAi}</Tag>}
-              </span>
-            </MenuItem>
-          );
-        })
+              </MenuItem>
+            );
+          })}
+        </div>
       )}
     </Menu>
   );

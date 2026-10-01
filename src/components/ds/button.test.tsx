@@ -77,4 +77,19 @@ describe('IconButton', () => {
     expect(button).toHaveClass('aria-pressed:hover:bg-fill-selected');
     expect(button).toHaveClass('aria-pressed:active:bg-fill-pressed');
   });
+
+  // A mark that shows its state in the icon itself (a filled star) is still a toggle, without the fill.
+  it('lets a pressed toggle opt out of the pressed fill and keeps aria-pressed', () => {
+    render(<IconButton icon={AppIcons.favorite} label="Favorite" aria-pressed pressedFill={false} />, { wrapper: DesignSystemProvider });
+    const button = screen.getByRole('button', { name: 'Favorite' });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(button).not.toHaveAttribute('pressedfill');
+    expect(button).not.toHaveClass('aria-pressed:bg-fill-selected');
+    expect(button).not.toHaveClass('aria-pressed:text-label');
+    expect(button).not.toHaveClass('aria-pressed:hover:bg-fill-selected');
+    expect(button).not.toHaveClass('aria-pressed:active:bg-fill-pressed');
+    // It stays an ordinary plain button under the pointer.
+    expect(button).toHaveClass('hover:bg-fill-hover');
+    expect(button).toHaveClass('text-label-secondary');
+  });
 });

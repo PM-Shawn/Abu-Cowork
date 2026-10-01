@@ -58,11 +58,9 @@ function ModelRow({
         icon={AppIcons.favorite}
         label="Favorite"
         aria-pressed={isFavorite}
-        // A favorite is the user's own mark, shown by the filled star alone: it keeps the
-        // plain button look instead of the pressed-toggle fill.
-        className={cn(isFavorite
-          ? 'aria-pressed:bg-transparent aria-pressed:text-label-secondary aria-pressed:hover:bg-fill-hover aria-pressed:hover:text-label [&_svg]:fill-current'
-          : 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100')}
+        // A favorite is the user's own mark, shown by the filled star alone.
+        pressedFill={false}
+        className={cn(isFavorite ? '[&_svg]:fill-current' : 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100')}
         onClick={(e) => {
           e.stopPropagation();
           onToggleFavorite();

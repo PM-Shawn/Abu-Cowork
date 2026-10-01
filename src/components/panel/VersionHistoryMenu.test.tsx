@@ -107,8 +107,11 @@ describe('VersionHistoryMenu', () => {
     // Rows with and without the AI tag have the same first-line height (the tag's).
     expect(screen.getByText('AI 修改前').parentElement).toHaveClass('h-5');
     expect(within(items[1]).getByText(TIME).parentElement).toHaveClass('h-5');
-    // The menu's own height limit scrolls the list: the rows sit directly in the menu.
-    expect(items[0].parentElement).toBe(screen.getByRole('menu'));
+    // The list keeps its own compact height and scrolls inside the menu.
+    const list = items[0].parentElement;
+    expect(list).toHaveClass('max-h-80');
+    expect(list).toHaveClass('overflow-y-auto');
+    expect(list?.parentElement).toBe(screen.getByRole('menu'));
   });
 
   it('reverts only on Enter: the arrow keys move the highlight', async () => {

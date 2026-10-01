@@ -232,6 +232,9 @@ describe('ModelSelector as a floating layer', () => {
       expect(star).not.toHaveClass('aria-pressed:bg-fill-selected');
       expect(star).not.toHaveClass('aria-pressed:hover:bg-fill-selected');
       expect(star).not.toHaveClass('aria-pressed:text-label');
+      // The opt-out is the button's own prop: the row adds no pressed-state classes.
+      expect(star).not.toHaveClass('aria-pressed:bg-transparent');
+      expect(star).not.toHaveClass('aria-pressed:hover:bg-fill-hover');
     }
   });
 });

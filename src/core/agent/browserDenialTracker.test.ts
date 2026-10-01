@@ -1,8 +1,36 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   BROWSER_DENIAL_ABORT_THRESHOLD,
+  createBrowserDenialStreak,
   createBrowserDenialTracker,
 } from './browserDenialTracker';
+
+describe('a streak shared by the runs of one team task', () => {
+  it('counts refusals across two runs and aborts the run that reaches the threshold', () => {
+    const streak = createBrowserDenialStreak();
+    const firstRunAbort = vi.fn();
+    const secondRunAbort = vi.fn();
+    createBrowserDenialTracker(firstRunAbort, 2, streak).reportDenial('scripting');
+    createBrowserDenialTracker(secondRunAbort, 2, streak).reportDenial('other');
+    expect(firstRunAbort).not.toHaveBeenCalled();
+    expect(secondRunAbort).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dialog consent in a later run resets the shared streak', () => {
+    const streak = createBrowserDenialStreak();
+    createBrowserDenialTracker(vi.fn(), 2, streak).reportDenial('other');
+    createBrowserDenialTracker(vi.fn(), 2, streak).reportAllow('dialog');
+    expect(streak.consecutiveDenials).toBe(0);
+    expect(streak.streakHasScripting).toBe(false);
+  });
+
+  it('a tracker without a shared streak keeps its own count', () => {
+    const a = createBrowserDenialTracker(vi.fn());
+    const b = createBrowserDenialTracker(vi.fn());
+    a.reportDenial();
+    expect(b.consecutiveDenials).toBe(0);
+  });
+});
 
 describe('createBrowserDenialTracker', () => {
   it('ships with a threshold of two — "twice in a row" is the product rule', () => {

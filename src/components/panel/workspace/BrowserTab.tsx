@@ -665,7 +665,10 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
               setAddressInput(e.target.value);
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') commit(addressInput);
+              // An Enter inside a composition picks the input method's candidate.
+              // Windows input methods may report only keyCode 229.
+              const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+              if (e.key === 'Enter' && !composing) commit(addressInput);
               if (e.key === 'Escape') {
                 // Standard browser behavior — and the only way out of a held
                 // draft without committing it: show the page's real URL again.

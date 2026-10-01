@@ -3,7 +3,7 @@ import type { AppDefinition, AppRunRef } from '@/types/app';
 import type { SubagentDefinition } from '@/types';
 import type { Team } from '@/stores/teamStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
-import { resolveAppRefs, resolveRun, type RefCatalog } from './appRefs';
+import { resolveAppRefs, resolveRun, targetDisplayName, type RefCatalog } from './appRefs';
 
 const agent = (name: string, extra: Partial<SubagentDefinition> = {}): SubagentDefinition => ({
   name, description: name, filePath: `/home/u/.abu/agents/${name}/AGENT.md`, systemPrompt: 'x', ...extra,
@@ -86,10 +86,20 @@ describe('resolveRun', () => {
   it('asks to prepare organization experts that are not set up yet', () => {
     const org = app({ kind: 'enterprise' });
     expect(run({ expert: 'enterprise-agent:a1' }, org).owner).toMatchObject({ status: 'ok', agent: { name: '合同审阅员' } });
-    expect(run({ expert: 'enterprise-agent:a2' }, org).owner).toEqual({ status: 'needs-preparation', roleIds: ['enterprise-agent:a2'], label: '条款专家' });
+    expect(run({ expert: 'enterprise-agent:a2' }, org).owner).toEqual({ status: 'needs-preparation', roleIds: ['enterprise-agent:a2'], label: '条款专家', agent: orgUnready });
     expect(run({ team: 'enterprise-team:t-org-1' }, org).owner).toEqual({ status: 'needs-preparation', roleIds: ['enterprise-agent:a2'], label: 't-org-1' });
     expect(run({ expert: 'enterprise-agent:gone' }, org).owner).toEqual({ status: 'unavailable', label: 'gone' });
     expect(run({ skill: 'enterprise:clause-check' }, org).skill).toMatchObject({ status: 'ok', name: 'clause-check' });
+  });
+
+  it('names an organization expert awaiting preparation by its display name, never its identifier', () => {
+    const slugged = agent('capability-reviewer', {
+      roleId: 'enterprise-agent:a3', displayNames: { 'zh-CN': '联调审阅助手' },
+      managed: { source: 'enterprise', id: 'a3', version: '1', readOnly: true, ready: false },
+    } as Partial<SubagentDefinition>);
+    const owner = run({ expert: 'enterprise-agent:a3' }, app({ kind: 'enterprise' }), catalog({ findManagedAgent: () => slugged })).owner!;
+    expect(owner.status).toBe('needs-preparation');
+    expect(targetDisplayName(owner, 'zh-CN')).toBe('联调审阅助手');
   });
 
   it('finds an organization skill only among the organization\'s skills, never a same-named one of the user', () => {

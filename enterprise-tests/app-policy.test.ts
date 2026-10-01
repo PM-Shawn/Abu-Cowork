@@ -9,7 +9,8 @@ vi.mock('@enterprise-modules/components/EnterpriseAgentTab', () => ({}));
 vi.mock('@enterprise-modules/components/MeTransparencyView', () => ({}));
 vi.mock('@enterprise-modules/components/MigrationWizard', () => ({}));
 
-import { appPolicyOf, startDefaultAppLanding, stopDefaultAppLanding } from '@enterprise-modules/core/enterprise/app-policy';
+import { act, renderHook } from '@testing-library/react';
+import { appPolicyOf, startDefaultAppLanding, stopDefaultAppLanding, useEnterpriseAppPolicy } from '@enterprise-modules/core/enterprise/app-policy';
 import { useEnterpriseStore } from '@enterprise-modules/stores/enterpriseStore';
 import { useAppStore } from '@/stores/appStore';
 import type { EnterpriseBinding, EnterpriseConfigSnapshot } from '@/core/enterprise/types';
@@ -71,6 +72,23 @@ describe('enterprise app policy', () => {
   it('falls back to a free switcher before the first snapshot arrives', () => {
     expect(appPolicyOf({ kind: 'enterprise', binding, config: null }))
       .toEqual({ defaultAppId: null, allowExit: true });
+  });
+
+  it('gives a component the same policy until it changes, so the switcher renders once per change', () => {
+    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({
+      defaultAppId: 'enterprise-app:acme', allowExitDefaultApp: false,
+    }) } });
+    let renders = 0;
+    const { result, rerender } = renderHook(() => { renders += 1; return useEnterpriseAppPolicy(); });
+    const first = result.current;
+    expect(first).toEqual({ defaultAppId: 'enterprise-app:acme', allowExit: false });
+
+    rerender();
+    expect(result.current).toBe(first);
+    expect(renders).toBe(2);
+
+    act(() => { useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: config({ defaultAppId: 'enterprise-app:other' }) } }); });
+    expect(result.current).toEqual({ defaultAppId: 'enterprise-app:other', allowExit: true });
   });
 });
 

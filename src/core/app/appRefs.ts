@@ -94,7 +94,7 @@ export type ResolvedTarget =
   /** The plugin it comes from is not installed, or its installed version does not bring it. */
   | { status: 'needs-plugin'; plugin: string; reason: 'missing' | 'outdated' }
   /** An organization expert (or a team member) whose organization skills or connectors are not set up yet. */
-  | { status: 'needs-preparation'; roleIds: string[]; label: string }
+  | { status: 'needs-preparation'; roleIds: string[]; label: string; agent?: SubagentDefinition }
   /** Gone and not coming back by installing anything: deleted, or its plugin switched off. */
   | { status: 'unavailable'; label: string };
 
@@ -164,7 +164,7 @@ export function resolveTarget(app: AppDefinition, kind: RunTargetKind, value: st
     if (target.origin === 'enterprise') {
       const agent = catalog.findManagedAgent(value);
       if (!agent) return { status: 'unavailable', label: target.id };
-      if (agent.managed?.ready !== true) return { status: 'needs-preparation', roleIds: [value], label: agent.name };
+      if (agent.managed?.ready !== true) return { status: 'needs-preparation', roleIds: [value], label: agent.name, agent };
       return { status: 'ok', kind, agent };
     }
     const agent = catalog.getAgent(target.id);
@@ -185,6 +185,7 @@ export function targetDisplayName(target: ResolvedTarget, locale: AppLocale = ge
     return target.name;
   }
   if (target.status === 'needs-plugin') return target.plugin;
+  if (target.status === 'needs-preparation' && target.agent) return target.agent.displayNames?.[locale] ?? target.agent.name;
   return target.label;
 }
 

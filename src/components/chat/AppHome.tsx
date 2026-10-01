@@ -19,7 +19,7 @@ import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { expertIdentity, teamIdentity } from '@/core/team/expertContact';
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { buildAppBinding, effectiveRun, pickMode, resolveText } from '@/core/app/appBinding';
-import { liveRefCatalog, refCatalogFrom, resolveRun, runTargets, type ResolvedRun } from '@/core/app/appRefs';
+import { liveRefCatalog, refCatalogFrom, resolveRun, runTargets, targetDisplayName, type ResolvedRun } from '@/core/app/appRefs';
 import { describeSceneRun } from '@/components/app/runLabel';
 import AppLogo from '@/components/app/AppLogo';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -170,11 +170,12 @@ export function AppHomeScenes({ app, visible }: { app: AppDefinition; visible: b
     }
     const unprepared = targets.find((target) => target.status === 'needs-preparation');
     if (unprepared?.status === 'needs-preparation') {
-      setPreparation((current) => ({ ...current, [scene.id]: { state: 'busy', name: unprepared.label } }));
+      const name = targetDisplayName(unprepared, locale);
+      setPreparation((current) => ({ ...current, [scene.id]: { state: 'busy', name } }));
       try {
         for (const roleId of unprepared.roleIds) await agentRegistry.prepareManagedAgent(roleId);
       } catch (error) {
-        setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name: unprepared.label, reason: error instanceof Error ? error.message : String(error) } }));
+        setPreparation((current) => ({ ...current, [scene.id]: { state: 'failed', name, reason: error instanceof Error ? error.message : String(error) } }));
         return;
       }
       setPreparation((current) => {

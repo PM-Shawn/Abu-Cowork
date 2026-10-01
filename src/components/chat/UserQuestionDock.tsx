@@ -15,13 +15,16 @@
  * Settled (read-only) rendering lives in UserQuestionCard — not here.
  */
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { MessageSquare, Check, Pencil, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { resolveUserQuestion } from '@/core/agent/permissionBridge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
 import { cn } from '@/lib/utils';
 import type { UserQuestionPayload, UserQuestionResult, UserQuestionAnswerItem } from '@/types';
 
@@ -52,7 +55,7 @@ function initQuestionStates(count: number): QuestionState[] {
   }));
 }
 
-export default function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted }: Props) {
+function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted }: Props) {
   const { t, format } = useI18n();
   const setAnswers = useChatStore((s) => s.setToolCallUserQuestionAnswers);
 
@@ -286,146 +289,88 @@ export default function UserQuestionDock({ conversationId, messageId, toolCallId
       ref={containerRef}
       tabIndex={-1}
       onKeyDown={handleKeyDown}
-      className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-md overflow-hidden outline-none"
+      className="overflow-hidden rounded-panel border border-separator bg-surface outline-none"
     >
       {/* Header: question + pager */}
-      <div className="px-3 py-2 border-b border-[var(--abu-border-subtle)] flex items-start gap-2">
-        {!confirmMode && <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0 mt-0.5" />}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="inline-block px-1.5 py-0.5 rounded bg-[var(--abu-bg-base)] border border-[var(--abu-border-subtle)] text-caption text-[var(--abu-text-tertiary)] font-medium">
-              {q.header}
-            </span>
-            <span className="text-caption text-[var(--abu-text-muted)]">{hint}</span>
+      <div className="flex items-start gap-2 border-b border-separator px-3 py-2">
+        {!confirmMode && (
+          <span className="flex h-lh shrink-0 items-center text-ui">
+            <Icon icon={AppIcons.conversation} size="sm" className="text-label-secondary" />
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Tag>{q.header}</Tag>
+            <span className="text-caption text-label-tertiary">{hint}</span>
           </div>
-          <p className="mt-1 text-body text-[var(--abu-text-primary)] leading-snug">{q.question}</p>
+          <p className="mt-1 text-ui text-label">{q.question}</p>
         </div>
         {/* Pager controls */}
-        <div className="flex items-center gap-1 shrink-0">
-          <span className="text-caption text-[var(--abu-text-tertiary)] tabular-nums mr-0.5">
+        <div className="flex shrink-0 items-center gap-1">
+          <span className="mr-1 text-caption tabular-nums text-label-tertiary">
             {format(t.userQuestion.pager, { current: page + 1, total })}
           </span>
-          <button
-            type="button"
-            onClick={goPrev}
-            disabled={page === 0}
-            aria-label={t.userQuestion.prevQuestion}
-            className="btn-ghost p-1 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] disabled:opacity-30 disabled:pointer-events-none"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={goNext}
-            disabled={isLast}
-            aria-label={t.userQuestion.nextQuestion}
-            className="btn-ghost p-1 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] disabled:opacity-30 disabled:pointer-events-none"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={handleCancel}
-            aria-label={t.userQuestion.close}
-            className="btn-ghost p-1 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)]"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <IconButton size="sm" icon={AppIcons.previous} label={t.userQuestion.prevQuestion} onClick={goPrev} disabled={page === 0} />
+          <IconButton size="sm" icon={AppIcons.disclose} label={t.userQuestion.nextQuestion} onClick={goNext} disabled={isLast} />
+          <IconButton size="sm" icon={AppIcons.close} label={t.userQuestion.close} onClick={handleCancel} />
         </div>
       </div>
 
       {/* Options for the current question */}
-      <div className="px-3 py-2 space-y-1">
+      <div className="space-y-1 px-3 py-2">
         {q.options.map((opt, oIdx) => {
           const isChecked = !state.skipped && state.selected.has(opt.label);
-          const isHighlighted = highlight === oIdx;
           return (
-            <button
+            <Pressable
               key={oIdx}
-              type="button"
               onClick={() => {
                 if (q.multiSelect) toggleOption(opt.label, true);
                 else if (confirmMode) toggleOption(opt.label, false);
                 else selectAndAdvance(opt.label);
               }}
               onMouseEnter={() => setHighlight(oIdx)}
-              className={cn(
-                'w-full text-left px-2 py-1.5 rounded-lg text-body transition-colors flex items-start gap-2',
-                isChecked
-                  ? 'bg-[var(--abu-clay-bg)] border border-[var(--abu-clay-ring)] text-[var(--abu-text-primary)]'
-                  : cn(
-                      'border text-[var(--abu-text-secondary)]',
-                      isHighlighted
-                        ? 'bg-[var(--abu-bg-muted)] border-[var(--abu-border)]'
-                        : 'border-[var(--abu-border-subtle)]',
-                    ),
-              )}
+              className={optionRowClass(isChecked, highlight === oIdx)}
             >
-              <span className="mt-0.5 w-3.5 text-caption text-[var(--abu-text-muted)] tabular-nums shrink-0 text-center">
+              <span className="flex h-lh w-4 shrink-0 items-center justify-center text-caption tabular-nums text-label-tertiary">
                 {oIdx + 1}
               </span>
-              <span
-                className={cn(
-                  'mt-0.5 h-3.5 w-3.5 flex-shrink-0 border flex items-center justify-center',
-                  q.multiSelect ? 'rounded-sm' : 'rounded-full',
-                  isChecked ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)]' : 'border-[var(--abu-border)]',
-                )}
-              >
-                {isChecked && <Check className="h-2.5 w-2.5 text-white" />}
+              <span className="flex h-lh shrink-0 items-center">
+                <ChoiceMark multiSelect={q.multiSelect} checked={isChecked} />
               </span>
-              <span className="flex-1 min-w-0">
+              <span className="min-w-0 flex-1">
                 <span className="font-medium">{opt.label}</span>
                 {opt.description && (
-                  <span className="block text-caption text-[var(--abu-text-muted)] mt-0.5">
+                  <span className="block text-ui-sm text-label-tertiary">
                     {opt.description}
                   </span>
                 )}
               </span>
-            </button>
+            </Pressable>
           );
         })}
 
         {/* "Other…" row */}
         <div>
-          <button
-            type="button"
+          <Pressable
             onClick={() => toggleOther(q.multiSelect)}
             onMouseEnter={() => setHighlight(optionCount)}
-            className={cn(
-              'w-full text-left px-2 py-1.5 rounded-lg text-body transition-colors flex items-center gap-2',
-              state.otherChecked
-                ? 'bg-[var(--abu-clay-bg)] border border-[var(--abu-clay-ring)] text-[var(--abu-text-primary)]'
-                : cn(
-                    'border text-[var(--abu-text-tertiary)]',
-                    highlight === optionCount
-                      ? 'bg-[var(--abu-bg-muted)] border-[var(--abu-border)]'
-                      : 'border-[var(--abu-border-subtle)]',
-                  ),
-            )}
+            className={optionRowClass(state.otherChecked, highlight === optionCount)}
           >
-            <span className="w-3.5 shrink-0 flex items-center justify-center">
-              <Pencil className="h-3 w-3" />
+            <span className="flex h-lh w-4 shrink-0 items-center justify-center">
+              <Icon icon={AppIcons.customAnswer} size="sm" className="text-label-tertiary" />
             </span>
-            <span
-              className={cn(
-                'h-3.5 w-3.5 flex-shrink-0 border flex items-center justify-center',
-                q.multiSelect ? 'rounded-sm' : 'rounded-full',
-                state.otherChecked ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)]' : 'border-[var(--abu-border)]',
-              )}
-            >
-              {state.otherChecked && <Check className="h-2.5 w-2.5 text-white" />}
+            <span className="flex h-lh shrink-0 items-center">
+              <ChoiceMark multiSelect={q.multiSelect} checked={state.otherChecked} />
             </span>
             <span className="italic">{t.userQuestion.otherOptionLabel}</span>
-          </button>
+          </Pressable>
 
           {state.otherChecked && (
-            <div className="mt-1.5 pl-1">
-              <Input
-                type="text"
+            <div className="mt-1 pl-1">
+              <TextField
                 value={state.otherText}
                 onChange={(e) => setOtherText(e.target.value)}
                 placeholder={t.userQuestion.otherInputPlaceholder}
-                className="h-8 text-body"
                 autoFocus
               />
             </div>
@@ -433,48 +378,43 @@ export default function UserQuestionDock({ conversationId, messageId, toolCallId
         </div>
 
         {/* "Skip" row */}
-        <button
-          type="button"
+        <Pressable
           onClick={skipAndAdvance}
           onMouseEnter={() => setHighlight(optionCount + 1)}
           className={cn(
-            'w-full text-left px-2 py-1 rounded-lg text-minor transition-colors flex items-center gap-2',
+            'flex w-full items-center gap-2 rounded-control border px-2 py-1 text-left text-ui-sm transition-colors duration-fast',
             state.skipped
-              ? 'text-[var(--abu-text-secondary)] bg-[var(--abu-bg-muted)] border border-[var(--abu-border)]'
-              : cn(
-                  'border border-transparent text-[var(--abu-text-muted)]',
-                  highlight === optionCount + 1 && 'bg-[var(--abu-bg-muted)]',
-                ),
+              ? 'border-control-border bg-fill-selected text-label-secondary'
+              : cn('border-transparent text-label-tertiary', highlight === optionCount + 1 && 'bg-fill-hover'),
           )}
         >
-          <span className="w-3.5 shrink-0" />
-          <span className={cn('h-3.5 w-3.5 flex-shrink-0 flex items-center justify-center')}>
-            {state.skipped && <Check className="h-3 w-3 text-[var(--abu-text-secondary)]" />}
+          <span className="w-4 shrink-0" />
+          <span className="flex w-4 shrink-0 items-center justify-center">
+            {state.skipped && <Icon icon={AppIcons.done} size="sm" className="text-label-secondary" />}
           </span>
           <span>{t.userQuestion.skip}</span>
-        </button>
+        </Pressable>
       </div>
 
       {/* Footer: hint + next/submit */}
-      <div className="px-3 py-1.5 border-t border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] flex items-center justify-between gap-2">
-        <p className="text-caption text-[var(--abu-text-muted)] truncate">{t.userQuestion.navHint}</p>
+      <div className="flex items-center justify-between gap-2 border-t border-separator px-3 py-2">
+        <p className="truncate text-caption text-label-tertiary">{t.userQuestion.navHint}</p>
         {isLast ? (
           <Button
+            variant="primary"
             size="sm"
             onClick={handleSubmit}
             disabled={!canSubmit}
             title={!canSubmit ? t.userQuestion.submitDisabledHint : undefined}
-            className="text-minor shrink-0"
           >
             {confirmMode ? t.userQuestion.confirmButton : t.userQuestion.submitButton}
           </Button>
         ) : (
           <Button
-            size="sm"
             variant="secondary"
+            size="sm"
             onClick={goNext}
             disabled={!currentAnswered}
-            className="text-minor shrink-0"
           >
             {t.userQuestion.nextQuestion}
           </Button>
@@ -483,3 +423,37 @@ export default function UserQuestionDock({ conversationId, messageId, toolCallId
     </div>
   );
 }
+
+function optionRowClass(checked: boolean, highlighted: boolean): string {
+  return cn(
+    'flex w-full items-start gap-2 rounded-control border px-2 py-1 text-left text-ui transition-colors duration-fast',
+    checked
+      ? 'border-control-border bg-fill-selected text-label'
+      : cn('border-separator text-label-secondary', highlighted && 'bg-fill-hover'),
+  );
+}
+
+// The same marks as ds Checkbox (several answers) and RadioGroup (one answer).
+function ChoiceMark({ multiSelect, checked }: { multiSelect: boolean; checked: boolean }) {
+  if (multiSelect) {
+    return (
+      <span className={cn(
+        'flex h-4 w-4 items-center justify-center rounded-control border',
+        checked ? 'border-emphasis bg-emphasis text-on-emphasis' : 'border-control-border bg-field',
+      )}>
+        {checked && <Icon icon={AppIcons.done} size="sm" />}
+      </span>
+    );
+  }
+  return (
+    <span className={cn(
+      'flex h-4 w-4 items-center justify-center rounded-full border bg-field',
+      checked ? 'border-emphasis' : 'border-control-border',
+    )}>
+      {checked && <span className="h-2 w-2 rounded-full bg-emphasis" />}
+    </span>
+  );
+}
+
+// ChatView re-renders on every streamed token; the dock's own props do not change then.
+export default memo(UserQuestionDock);

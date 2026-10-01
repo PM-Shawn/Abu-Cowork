@@ -47,8 +47,8 @@ function formatVersionTime(ts: number): string {
 
 /**
  * Lightweight dropdown listing per-file version snapshots (see
- * `@/utils/canvasVersions`), with one-click revert. Mirrors the
- * open/close/outside-click/Escape conventions of `ModelSelector`.
+ * `@/utils/canvasVersions`), with one-click revert. It closes on a click
+ * outside the panel and its trigger (`anchorRef`) and on Escape.
  */
 export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRevert }: VersionHistoryMenuProps) {
   const { t } = useI18n();

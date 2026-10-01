@@ -409,10 +409,19 @@ radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `durat
 | Primary action | `bg-emphasis` + `text-on-emphasis` |
 | Status | `text-{success,warning,danger,info}` on `bg-{role}-soft` |
 | Lines / focus | `border-separator` `border-control-border` `ring-focus` |
-| Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono`; code font: `font-code` |
-| Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` |
+| Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono` `text-code-inline` (inline code inside message text); code font: `font-code` |
+| Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` `shadow-composer` (the composer card only) |
 | Layers / motion | `z-sticky` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
 | Identity (avatar, app icon only) | `bg-brand` `text-brand-ink` |
+
+**Chat area (batch 4)**: message text uses the content scale (`text-body`, `text-h1`..`text-h3`,
+`font-code text-mono`, `text-code-inline`); everything else in the chat area is UI text.
+Code highlighting takes its colors from `--ds-syntax-*` through `src/components/chat/syntaxTheme.ts`,
+so no component checks the appearance. `Pressable` (`@/components/ds/pressable`) is the button
+for targets whose look is their content; `IconButton variant="primary"` is the filled icon-only
+action (Send). Chat files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; the five files that
+still draw their own full-window overlay (`ImageLightbox`, `McpAppBlock`, `RenderableCodeBlock`,
+`ToolCallsGroup`, `DetailBlockView`) and the directory glob join in batch 8.
 
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one

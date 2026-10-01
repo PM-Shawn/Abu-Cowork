@@ -567,7 +567,8 @@
 
 @layer base {
   body {
-    @apply bg-background text-foreground;
+    /* The window material (bg-desk) must show through; bg-background is a legacy shadcn color. */
+    @apply bg-transparent text-foreground;
   }
 
   input::placeholder,

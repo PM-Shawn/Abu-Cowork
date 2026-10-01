@@ -1,13 +1,31 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import type { Conversation, SubagentDefinition } from '@/types';
 import TeamMemberBar from './TeamMemberBar';
+
+const iconButtonRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the only floating-layer control in the bar (its tooltip).
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
+      iconButtonRenders();
+      return actual.IconButton(props);
+    },
+  };
+});
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/core/team/roleIdentity', () => ({
   resolveRoleId: (roleId: string) => ({
@@ -46,5 +64,30 @@ describe('TeamMemberBar', () => {
     expect(bar).not.toHaveTextContent('zz取数员');
     fireEvent.click(screen.getByRole('button', { name: '展开成员条' }));
     expect(screen.getByTestId('team-member-bar')).toHaveTextContent('zz取数员');
+  });
+
+  it('names the collapse control once, through its tooltip, and says whether the bar is open', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    const toggle = screen.getByRole('button', { name: '收起成员条' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle).not.toHaveAttribute('title');
+    expect(toggle.querySelector('svg.lucide-chevron-up')).not.toBeNull();
+  });
+
+  it('does not re-render the collapse control while the conversation streams', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    const settled = iconButtonRenders.mock.calls.length;
+    for (const content of ['a', 'ab', 'abc']) {
+      act(() => {
+        const conversation = useChatStore.getState().conversations.c1;
+        useChatStore.setState({
+          conversations: {
+            c1: { ...conversation, messages: [{ id: 'm1', role: 'assistant', content, timestamp: 3 }] },
+          },
+        });
+      });
+    }
+    expect(screen.getByTestId('team-member-bar')).toHaveTextContent('zz取数员');
+    expect(iconButtonRenders.mock.calls.length).toBe(settled);
   });
 });

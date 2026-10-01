@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
+import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
 import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 import { initLanguage } from '@/i18n';
@@ -16,6 +18,27 @@ const runAgentLoopDispatched = vi.fn((..._args: unknown[]) => Promise.resolve({ 
 vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: (...args: unknown[]) => runAgentLoopDispatched(...args) }));
 const enqueueUserInput = vi.fn((..._args: unknown[]) => undefined);
 vi.mock('@/core/agent/userInputQueue', () => ({ enqueueUserInput: (...args: unknown[]) => enqueueUserInput(...args) }));
+
+const tooltipRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the strip's only floating-layer control (the run-rule button's tooltip).
+vi.mock('@/components/ds/tooltip', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/tooltip')>();
+  return {
+    ...actual,
+    Tooltip: (props: ComponentProps<typeof actual.Tooltip>) => {
+      tooltipRenders();
+      return actual.Tooltip(props);
+    },
+  };
+});
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
+// Stands in for ChatView re-rendering on every streamed token: `tick` changes, the strip's props do not.
+function Host({ tick, children }: { tick: number; children: ReactNode }) {
+  return <DesignSystemProvider><span data-tick={tick} />{children}</DesignSystemProvider>;
+}
 
 function conversation(status: Conversation['status']): Conversation {
   return { id: 'c1', title: 'x', teamId: 't1', createdAt: 1, updatedAt: 2, status, messages: [] };
@@ -83,6 +106,16 @@ describe('TeamConfirmationsStrip', () => {
     expect(useTeamConfirmationStore.getState().runRules).toEqual({});
     act(() => { useTeamConfirmationStore.getState().add({ conversationId: 'c1', kind: 'command', detail: 'legacy' }); });
     expect(screen.getByRole('button', { name: '仅本次补跑允许: legacy' })).toBeDisabled();
+  });
+
+  it('does not re-render its run-rule tooltip when only the chat view re-renders', () => {
+    useTeamConfirmationStore.getState().add({ identity, conversationId: 'c1', kind: 'command', detail: 'npm publish', member: 'A' });
+    const { rerender } = renderBare(<Host tick={0}><TeamConfirmationsStrip conversationId="c1" /></Host>);
+    const initial = tooltipRenders.mock.calls.length;
+    expect(initial).toBeGreaterThan(0);
+    rerender(<Host tick={1}><TeamConfirmationsStrip conversationId="c1" /></Host>);
+    rerender(<Host tick={2}><TeamConfirmationsStrip conversationId="c1" /></Host>);
+    expect(tooltipRenders).toHaveBeenCalledTimes(initial);
   });
 
 });
@@ -200,6 +233,24 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     expect(useTeamConfirmationStore.getState().retrySelections).toEqual({});
     setSite.mockRestore();
+  });
+
+  it('gives each row exactly one filled button: 仅本次补跑允许', () => {
+    useTeamConfirmationStore.getState().add({ identity, conversationId: 'c1', kind: 'command', detail: 'npm publish', member: 'zz发布员' });
+    renderWith(browserRequest());
+    const rows = screen.getAllByTestId('team-confirmation-item');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const approveButton = within(row).getByRole('button', { name: /^仅本次补跑允许: / });
+      expect(approveButton).toHaveClass('bg-emphasis');
+      expect(within(row).getByRole('button', { name: /^拒绝: / })).not.toHaveClass('bg-emphasis');
+      const filled = within(row).getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+      expect(filled).toEqual([approveButton]);
+    }
+    const commandRow = rows.find((row) => row.textContent?.includes('npm publish'))!;
+    expect(within(commandRow).getByRole('button', { name: '本次补跑运行内都允许此请求: npm publish' })).not.toHaveClass('bg-emphasis');
+    const browserRow = rows.find((row) => row.textContent?.includes('fill #q'))!;
+    expect(within(browserRow).getByRole('button', { name: '以后允许在此网站浏览' })).not.toHaveClass('bg-emphasis');
   });
 
   it('F: granting writes the resource once and retries only this call', async () => {

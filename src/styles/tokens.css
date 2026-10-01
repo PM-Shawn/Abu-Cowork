@@ -57,9 +57,21 @@
   --ds-brand: #78c98b;
   --ds-brand-ink: #0f3d1e;
 
+  /* Layer 3 — component tokens. Code highlighting (content, brief P1-1: ≥ 4.5:1 on `code`). */
+  --ds-syntax-comment: #5d6c79;
+  --ds-syntax-keyword: #9b2393;
+  --ds-syntax-string: #c41a16;
+  --ds-syntax-number: #1c00cf;
+  --ds-syntax-function: #326d74;
+  --ds-syntax-property: #6c36a9;
+  /* Diagrams keep their own light colors, like an image; the canvas does not follow the appearance. */
+  --ds-diagram-canvas: #ffffff;
+
   --ds-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.09), 0 2px 8px rgba(0, 0, 0, 0.05);
   --ds-shadow-float: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 18px 40px rgba(0, 0, 0, 0.22);
   --ds-shadow-dialog: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 30px 80px rgba(0, 0, 0, 0.30);
+  /* Layer 3 — the composer card (brief §6.1 names it as the example of a component token). */
+  --ds-shadow-composer: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06);
 
   --ds-font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --ds-font-mono: "SF Mono", ui-monospace, "Cascadia Mono", Consolas, Menlo, "PingFang SC", "Microsoft YaHei UI", monospace;
@@ -98,9 +110,18 @@
   --ds-brand: #78c98b;
   --ds-brand-ink: #0f3d1e;
 
+  --ds-syntax-comment: #8c99a4;
+  --ds-syntax-keyword: #ff7ab2;
+  --ds-syntax-string: #ff8170;
+  --ds-syntax-number: #d9c97c;
+  --ds-syntax-function: #67b7a4;
+  --ds-syntax-property: #c9a0ff;
+  --ds-diagram-canvas: #ffffff;
+
   --ds-shadow-panel: 0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 2px 8px rgba(0, 0, 0, 0.30);
   --ds-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 18px 40px rgba(0, 0, 0, 0.45);
   --ds-shadow-dialog: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 30px 80px rgba(0, 0, 0, 0.55);
+  --ds-shadow-composer: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 4px 16px rgba(0, 0, 0, 0.35);
 }
 
 /* Increased contrast (data-contrast="more", set by src/styles/appearance.ts).
@@ -123,6 +144,13 @@
   --ds-warning: #6b3b00;
   --ds-danger: #9e1a10;
   --ds-info: #0040a8;
+  --ds-syntax-comment: #3f4b56;
+  --ds-syntax-keyword: #7a1a74;
+  --ds-syntax-string: #9a130f;
+  --ds-syntax-number: #1500a0;
+  --ds-syntax-function: #1f4d52;
+  --ds-syntax-property: #522783;
+  --ds-diagram-canvas: #ffffff;
 }
 :root[data-contrast="more"].dark {
   --ds-desk: #000000;
@@ -142,6 +170,13 @@
   --ds-warning: #ffc56b;
   --ds-danger: #ff8f88;
   --ds-info: #7cc0ff;
+  --ds-syntax-comment: #b4bfc8;
+  --ds-syntax-keyword: #ffa3cb;
+  --ds-syntax-string: #ffaa9d;
+  --ds-syntax-number: #ece0a3;
+  --ds-syntax-function: #93d3c3;
+  --ds-syntax-property: #dcc2ff;
+  --ds-diagram-canvas: #ffffff;
 }
 
 /* Reduced transparency (data-transparency="reduced"): desk, the only translucent surface, is opaque. */
@@ -161,6 +196,7 @@
   --color-surface: var(--ds-surface);
   --color-raised: var(--ds-raised);
   --color-code: var(--ds-code);
+  --color-diagram-canvas: var(--ds-diagram-canvas);
   --color-field: var(--ds-field);
   --color-fill: var(--ds-fill);
   --color-fill-hover: var(--ds-fill-hover);
@@ -195,6 +231,7 @@
   --shadow-panel: var(--ds-shadow-panel);
   --shadow-float: var(--ds-shadow-float);
   --shadow-dialog: var(--ds-shadow-dialog);
+  --shadow-composer: var(--ds-shadow-composer);
 
   --ease-enter: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
@@ -228,6 +265,8 @@
   --text-mono: 13px;
   --text-mono--line-height: 20px;
   --text-mono--font-weight: 400;
+  /* Inline code inside 14px message text; the line height stays the paragraph's. */
+  --text-code-inline: 0.9em;
 }
 
 /* Tailwind v4 has no theme namespace for z-index or transition duration. */

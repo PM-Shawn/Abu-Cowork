@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, ChevronRight, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -28,6 +28,10 @@ import {
   type McpAppAuditEntry,
 } from '@/core/mcp/appBridgeHandlers';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { StatusIcon } from '@/components/ds/status-icon';
 import type { ConfirmationInfo } from '@/core/tools/registry';
 import type { RawCallToolResult } from '@/core/mcp/client';
 import { useChatStore } from '@/stores/chatStore';
@@ -282,23 +286,24 @@ function AuditRow({ entry, label, argsLabel, resultLabel, resultText }: {
   const [open, setOpen] = useState(false);
   return (
     <div data-testid="mcp-app-audit-row" className="px-1">
-      <button
-        type="button"
+      <Pressable
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1 text-left text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+        aria-expanded={open}
+        className="flex w-full items-center gap-1 rounded-control text-left text-caption text-label-tertiary transition-colors duration-fast hover:text-label"
       >
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span className={cn(entry.isError && 'text-[var(--abu-danger)]')}>{label}</span>
-      </button>
+        <Icon icon={open ? AppIcons.expand : AppIcons.disclose} size="sm" />
+        {entry.isError && <StatusIcon tone="danger" size="sm" />}
+        <span className={cn(entry.isError && 'text-danger')}>{label}</span>
+      </Pressable>
       {open && (
-        <div className="mt-1 space-y-1 pl-4 text-caption text-[var(--abu-text-muted)]">
+        <div className="mt-1 space-y-1 pl-4 text-caption text-label-tertiary">
           <div>
             <div className="font-medium">{argsLabel}</div>
-            <pre className="whitespace-pre-wrap break-all">{formatAuditArgs(entry.args)}</pre>
+            <pre className="whitespace-pre-wrap break-all font-code text-caption text-label-secondary">{formatAuditArgs(entry.args)}</pre>
           </div>
           <div>
             <div className="font-medium">{resultLabel}</div>
-            <pre className="whitespace-pre-wrap break-all">{resultText}</pre>
+            <pre className="whitespace-pre-wrap break-all font-code text-caption text-label-secondary">{resultText}</pre>
           </div>
         </div>
       )}
@@ -787,14 +792,13 @@ export default function McpAppBlock({
   if (!active && activated) {
     return (
       <div className="my-2" data-testid="mcp-app-block">
-        <button
-          type="button"
+        <Pressable
           onClick={activate}
           data-testid="mcp-app-placeholder"
-          className="btn-ghost w-full rounded-lg border border-dashed border-[var(--abu-border-subtle)] px-3 py-2 text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+          className="w-full rounded-panel border border-dashed border-separator px-3 py-2 text-ui text-label-secondary transition-colors duration-fast hover:bg-fill-hover hover:text-label"
         >
           {t.chat.mcpAppLoadPlaceholder}
-        </button>
+        </Pressable>
       </div>
     );
   }
@@ -802,7 +806,7 @@ export default function McpAppBlock({
   if (status === 'disconnected') {
     return (
       <div className="my-2" data-testid="mcp-app-block">
-        <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
+        <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-status">
           {format(t.chat.mcpAppNotConnected, { server })}
         </div>
       </div>
@@ -812,7 +816,7 @@ export default function McpAppBlock({
   if (status === 'failed') {
     return (
       <div className="my-2" data-testid="mcp-app-block">
-        <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
+        <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-status">
           {t.chat.mcpAppLoadFailed}
         </div>
       </div>
@@ -889,12 +893,12 @@ export default function McpAppBlock({
           </div>
         )}
         {disclosure && (
-          <div className="mb-1 px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-unsupported">
+          <div className="mb-1 px-1 text-caption text-label-tertiary" data-testid="mcp-app-unsupported">
             {disclosure}
           </div>
         )}
         {status === 'loading' || !srcdoc ? (
-          <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
+          <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-status">
             {t.chat.mcpAppLoading}
           </div>
         ) : (
@@ -907,9 +911,9 @@ export default function McpAppBlock({
             allow=""
             referrerPolicy="no-referrer"
             className={cn(
-              'block w-full rounded-lg',
+              'block w-full rounded-panel',
               fullscreen && 'min-h-0 flex-1 bg-[var(--abu-bg-primary)]',
-              meta?.prefersBorder && 'border border-[var(--abu-border-subtle)]',
+              meta?.prefersBorder && 'border border-separator',
             )}
             style={{
               height: fullscreen ? undefined : `${height}px`,
@@ -918,7 +922,7 @@ export default function McpAppBlock({
           />
         )}
         {rateLimited && (
-          <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-rate-limited">
+          <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-rate-limited">
             {t.chat.mcpAppRateLimited}
           </div>
         )}
@@ -940,16 +944,16 @@ export default function McpAppBlock({
             (`ui/update-model-context`) — visible on demand, spec §4.5. */}
         {shownModelContext && (
           <div className="px-1" data-testid="mcp-app-context">
-            <button
-              type="button"
+            <Pressable
               onClick={() => setContextOpen((v) => !v)}
-              className="flex w-full items-center gap-1 text-left text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+              aria-expanded={contextOpen}
+              className="flex w-full items-center gap-1 rounded-control text-left text-caption text-label-tertiary transition-colors duration-fast hover:text-label"
             >
-              {contextOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              <Icon icon={contextOpen ? AppIcons.expand : AppIcons.disclose} size="sm" />
               {t.chat.mcpAppModelContext}
-            </button>
+            </Pressable>
             {contextOpen && (
-              <pre className="mt-1 whitespace-pre-wrap break-all pl-4 text-caption text-[var(--abu-text-muted)]">
+              <pre className="mt-1 whitespace-pre-wrap break-all pl-4 font-code text-caption text-label-secondary">
                 {shownModelContext}
               </pre>
             )}

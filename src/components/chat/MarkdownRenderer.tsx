@@ -3,21 +3,24 @@ import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
 import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
 import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
 import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from 'react';
-import { Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { cn } from '@/lib/utils';
 import type { SearchResult } from '@/types';
+import { Button, IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Link } from '@/components/ds/link';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
 
 import { getCodeBlockRenderer } from './codeBlockRenderers';
 import { closeOpenFences } from './markdownUtils';
+import { SYNTAX_THEME } from './syntaxTheme';
 
 SyntaxHighlighter.registerLanguage('tsx', tsx);
 SyntaxHighlighter.registerLanguage('typescript', tsx);
@@ -43,13 +46,13 @@ function CitationBadge({ index, title, onClick }: {
     onClick?.(index);
   };
   return (
-    <span
+    <Pressable
       onClick={handleClick}
-      className="inline-flex items-center justify-center mx-[2px] px-[5px] py-[1px] text-caption text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] rounded cursor-pointer hover:bg-[var(--abu-clay-bg-15)] transition-colors leading-tight align-baseline"
-      title={title}
+      aria-label={title ? `[${index}] ${title}` : String(index)}
+      className="mx-1 inline-flex items-center justify-center rounded-control bg-fill px-1 align-baseline text-caption text-label-secondary transition-colors duration-fast hover:bg-fill-hover"
     >
       {index}
-    </span>
+    </Pressable>
   );
 }
 
@@ -156,12 +159,12 @@ const LANG_EXT_MAP: Record<string, string> = {
 
 const COLLAPSE_THRESHOLD = 15;
 
-export function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
+// Memoized: ReactMarkdown rebuilds its tree on every streamed token, and a finished block
+// (with its toolbar tooltips) should not re-render while the text after it grows.
+export const CollapsibleCodeBlock = memo(function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
-  const theme = useSettingsStore(s => s.theme);
-  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   const lineCount = codeString.split('\n').length;
   const shouldCollapse = lineCount > COLLAPSE_THRESHOLD;
@@ -198,7 +201,7 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
   }, [codeString, language]);
 
   return (
-    <div className="relative my-3 rounded-lg overflow-hidden max-w-full">
+    <div className="relative my-3 max-w-full overflow-hidden rounded-panel bg-code">
       {/* Code area */}
       <div className="relative">
         <div
@@ -209,18 +212,19 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
           }
         >
           <SyntaxHighlighter
-            style={isDark ? oneDark : oneLight}
+            style={SYNTAX_THEME}
             language={language || 'text'}
             PreTag="div"
             wrapLongLines={true}
             customStyle={{
               margin: 0,
               borderRadius: 0,
-              fontSize: 'var(--text-minor)', /* token-driven — aligns code blocks with the 12px content tier */
               padding: '12px 16px',
               overflowX: 'auto',
               maxWidth: '100%',
-              background: 'var(--abu-bg-muted)',
+              background: 'var(--ds-code)',
+              fontSize: 'var(--text-mono)',
+              lineHeight: 'var(--text-mono--line-height)',
             }}
             codeTagProps={{ style: { background: 'transparent' } }}
           >
@@ -229,52 +233,45 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
         </div>
         {/* Gradient overlay when collapsed */}
         {isCollapsed && (
-          <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-[var(--abu-bg-muted)] to-transparent flex items-end justify-center pb-2">
-            <button
-              onClick={() => setCollapsed(false)}
-              className="flex items-center gap-1 px-3 py-1 rounded-full bg-black/5 hover:bg-black/10 text-minor text-[var(--abu-text-secondary)] transition-colors"
-            >
-              <ChevronDown className="h-3.5 w-3.5" />
+          <div className="absolute bottom-0 left-0 right-0 flex h-20 items-end justify-center bg-gradient-to-t from-code to-transparent pb-2">
+            <Button variant="secondary" size="sm" icon={AppIcons.expand} onClick={() => setCollapsed(false)}>
               {format(t.chat.codeBlockExpand, { lines: String(lineCount) })}
-            </button>
+            </Button>
           </div>
         )}
       </div>
       {/* Bottom toolbar — always visible */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--abu-bg-active)] text-minor text-[var(--abu-text-tertiary)] border-t border-[var(--abu-border-subtle)]">
+      <div className="flex items-center justify-between border-t border-separator bg-code px-3 py-1 text-ui-sm text-label-secondary">
         <div className="flex items-center gap-2">
           {language && <span>{language}</span>}
           {shouldCollapse && !isCollapsed && (
-            <button
-              onClick={() => setCollapsed(true)}
-              className="flex items-center gap-0.5 hover:text-[var(--abu-text-primary)] transition-colors"
-            >
-              <ChevronUp className="h-3.5 w-3.5" />
+            <Button variant="plain" size="sm" icon={AppIcons.collapse} onClick={() => setCollapsed(true)}>
               {t.chat.codeBlockCollapse}
-            </button>
+            </Button>
           )}
         </div>
         <div className="flex items-center gap-1">
-          <button
+          <IconButton
+            size="sm"
+            icon={copied ? AppIcons.done : AppIcons.copy}
+            label={t.chat.copy}
             onClick={handleCopy}
-            className="p-1 rounded hover:bg-black/5 transition-colors"
-            title={copied ? '✓' : 'Copy'}
-          >
-            {copied ? (
-              <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" />
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
-          </button>
-          <button
-            onClick={handleSaveAs}
-            className="p-1 rounded hover:bg-black/5 transition-colors"
-            title={t.chat.codeBlockSaveAs}
-          >
-            <Download className="h-3.5 w-3.5" />
-          </button>
+            className={cn(copied && 'text-success hover:text-success')}
+          />
+          <IconButton size="sm" icon={AppIcons.download} label={t.chat.codeBlockSaveAs} onClick={handleSaveAs} />
         </div>
       </div>
+    </div>
+  );
+});
+
+// Placeholder while a diagram or widget renderer chunk loads. A component of its own
+// because the markdown `code` override is a plain function and cannot call hooks.
+function CodeRendererLoading() {
+  const { t } = useI18n();
+  return (
+    <div className="my-3 flex justify-center rounded-panel bg-code p-6">
+      <Spinner label={t.common.loading} />
     </div>
   );
 }
@@ -312,16 +309,10 @@ function buildMarkdownComponents(
         // Detect hex color codes and show a swatch
         const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(codeString.trim());
         return (
-          <code
-            className={isUser
-              ? 'px-1 py-0.5 rounded bg-[var(--abu-bg-pressed)] text-[var(--abu-text-primary)] text-[0.9em]'
-              : 'px-1 py-0.5 rounded bg-[var(--abu-bg-active)] text-[var(--abu-text-secondary)] text-[0.9em]'
-            }
-            {...props}
-          >
+          <code className="rounded-control bg-code px-1 font-code text-code-inline text-label" {...props}>
             {hexMatch && (
               <span
-                className="inline-block w-3 h-3 rounded-sm mr-1 align-middle border border-black/10"
+                className="mr-1 inline-block size-3 rounded-full border border-separator align-middle"
                 style={{ backgroundColor: hexMatch[0] }}
               />
             )}
@@ -334,7 +325,7 @@ function buildMarkdownComponents(
       if (renderer) {
         const BlockComponent = renderer.component;
         return (
-          <Suspense fallback={<div className="my-3 rounded-lg bg-[var(--abu-bg-muted)] p-6 text-center text-body text-[var(--abu-text-muted)]">…</div>}>
+          <Suspense fallback={<CodeRendererLoading />}>
             <BlockComponent code={codeString} />
           </Suspense>
         );
@@ -352,16 +343,16 @@ function buildMarkdownComponents(
       return null;
     },
     p({ children }: { children?: ReactNode }) {
-      return <p className={isUser ? 'my-1 leading-relaxed text-body' : 'my-2 leading-7 text-body text-[var(--abu-text-secondary)]'}>{processChildren(children, sr, onCitationClick)}</p>;
+      return <p className={isUser ? 'my-1 text-body text-label' : 'my-2 text-body text-label'}>{processChildren(children, sr, onCitationClick)}</p>;
     },
     h1({ children }: { children?: ReactNode }) {
-      return <h1 className="text-h-md font-semibold mt-5 mb-2 text-[var(--abu-text-primary)]">{children}</h1>;
+      return <h1 className="mt-5 mb-2 text-h1 text-label">{children}</h1>;
     },
     h2({ children }: { children?: ReactNode }) {
-      return <h2 className="text-h-sm font-semibold mt-4 mb-2 text-[var(--abu-text-primary)]">{children}</h2>;
+      return <h2 className="mt-4 mb-2 text-h2 text-label">{children}</h2>;
     },
     h3({ children }: { children?: ReactNode }) {
-      return <h3 className="text-h-xs font-semibold mt-3 mb-1 text-[var(--abu-text-primary)]">{children}</h3>;
+      return <h3 className="mt-3 mb-1 text-h3 text-label">{children}</h3>;
     },
     ul({ children }: { children?: ReactNode }) {
       return <ul className="my-2 pl-6 list-outside list-disc space-y-1">{children}</ul>;
@@ -370,45 +361,49 @@ function buildMarkdownComponents(
       return <ol className="my-2 pl-6 list-outside list-decimal space-y-1">{children}</ol>;
     },
     li({ children }: { children?: ReactNode }) {
-      return <li className={isUser ? 'leading-relaxed text-body' : 'leading-7 text-body text-[var(--abu-text-secondary)]'}>{processChildren(children, sr, onCitationClick)}</li>;
+      return <li className="text-body text-label">{processChildren(children, sr, onCitationClick)}</li>;
     },
     blockquote({ children }: { children?: ReactNode }) {
       return (
-        <blockquote className="my-3 pl-3 border-l-2 italic border-[var(--abu-clay)] text-[var(--abu-text-tertiary)]">
+        <blockquote className="my-3 border-l-2 border-control-border pl-3 text-label-secondary">
           {children}
         </blockquote>
       );
     },
     a({ href, children }: { href?: string; children?: ReactNode }) {
-      const isLocalPath = /^(\/|[A-Za-z]:[/\\]|~\/)/.test(href ?? '');
       const safeHref = SAFE_URL_PATTERN.test(href ?? '') ? href : undefined;
       return (
-        <a href={safeHref} target="_blank" rel="noopener noreferrer" className={isUser ? 'underline decoration-[var(--abu-text-tertiary)]' : isLocalPath ? 'text-[var(--abu-text-tertiary)] hover:underline hover:text-[var(--abu-text-secondary)]' : 'text-[var(--abu-text-tertiary)] hover:underline hover:text-[var(--abu-text-secondary)]'}>
+        <Link
+          href={safeHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={isUser ? 'text-label underline decoration-control-border' : undefined}
+        >
           {children}
-        </a>
+        </Link>
       );
     },
     strong({ children }: { children?: ReactNode }) {
-      return <strong className="font-semibold text-[var(--abu-text-primary)]">{children}</strong>;
+      return <strong className="font-semibold text-label">{children}</strong>;
     },
     table({ children }: { children?: ReactNode }) {
       return (
-        <div className="my-3 overflow-x-auto rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)]">
+        <div className="my-3 overflow-x-auto rounded-panel border border-separator">
           <table className="min-w-full text-body">{children}</table>
         </div>
       );
     },
     thead({ children }: { children?: ReactNode }) {
-      return <thead className="bg-[var(--abu-bg-muted)]">{children}</thead>;
+      return <thead className="bg-code">{children}</thead>;
     },
     th({ children }: { children?: ReactNode }) {
-      return <th className="px-3 py-2 min-w-[5rem] align-top text-left font-medium text-[var(--abu-text-secondary)]">{children}</th>;
+      return <th className="min-w-20 px-3 py-2 text-left align-top font-medium text-label">{children}</th>;
     },
     td({ children }: { children?: ReactNode }) {
-      return <td className="px-3 py-2 min-w-[5rem] align-top text-[var(--abu-text-secondary)]">{children}</td>;
+      return <td className="min-w-20 border-t border-separator px-3 py-2 align-top text-label">{children}</td>;
     },
     hr() {
-      return <hr className="my-4 border-[var(--abu-border)]" />;
+      return <hr className="my-4 border-separator" />;
     },
   };
 }

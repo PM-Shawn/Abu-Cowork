@@ -8,6 +8,7 @@ import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
 import Sidebar from '@/components/sidebar/Sidebar';
+import { SidebarColumn } from '@/components/sidebar/SidebarColumn';
 import ChatView from '@/components/chat/ChatView';
 import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
@@ -898,17 +899,9 @@ function App() {
           data-abu-app-layout
           className="flex min-h-0 w-full flex-1 overflow-hidden"
         >
-          {/* Sidebar - width changes are always instant (no slide animation). */}
-          <div
-            className="flex shrink-0 flex-col overflow-hidden"
-            style={{
-              width: sidebarCollapsed ? 0 : 260,
-            }}
-          >
-            <div className="min-h-0 flex-1">
-              <Sidebar windowsWorkspaceHeader={windowsWorkspaceHeader} />
-            </div>
-          </div>
+          <SidebarColumn collapsed={sidebarCollapsed}>
+            <Sidebar windowsWorkspaceHeader={windowsWorkspaceHeader} />
+          </SidebarColumn>
 
           <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             {/* Only the exposed canvas gutters are draggable. The raised cards

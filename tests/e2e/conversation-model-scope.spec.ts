@@ -238,9 +238,7 @@ async function shot(page: Page, name: string): Promise<void> {
 }
 
 function composerModelButton(page: Page) {
-  return page.getByTestId('composer-toolbar').locator('button[title]').filter({
-    hasText: /^Scope Model [XYZ]$/,
-  });
+  return page.getByTestId('composer-toolbar').getByRole('button', { name: /^Scope Model [XYZ]$/ });
 }
 
 async function expectComposerModel(page: Page, label: string): Promise<void> {

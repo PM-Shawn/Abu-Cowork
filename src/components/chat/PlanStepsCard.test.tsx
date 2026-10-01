@@ -74,6 +74,27 @@ describe('PlanStepsCard', () => {
     expect(screen.queryByText('等待你确认')).not.toBeInTheDocument();
   });
 
+  it('is a flat card whose header says whether the steps are open', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<PlanStepsCard toolCall={makePlanCall()} />);
+    const card = container.firstElementChild as HTMLElement;
+    expect(card).toHaveClass('rounded-panel');
+    expect(card).toHaveClass('border-separator');
+    expect(card).toHaveClass('bg-surface');
+    const header = screen.getByRole('button', { name: /执行计划/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    await user.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(header.querySelector('svg.lucide-list-checks')).toHaveClass('text-label-secondary');
+  });
+
+  it('shows the awaiting mark as a neutral tag', () => {
+    render(<PlanStepsCard toolCall={makePlanCall({ result: undefined })} />);
+    const tag = screen.getByText('等待你确认').closest('span');
+    expect(tag).toHaveClass('bg-fill');
+    expect(tag).toHaveClass('rounded-control');
+  });
+
   it('renders nothing for a plan call without steps', () => {
     const { container } = render(
       <PlanStepsCard toolCall={makePlanCall({ input: { steps: [] } })} />,

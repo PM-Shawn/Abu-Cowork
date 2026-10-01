@@ -1,12 +1,17 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import type { Conversation, Message, SubagentDefinition } from '@/types';
 import MessageGroup from './MessageGroup';
+
+// The action row's icon buttons carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/core/team/roleIdentity', () => ({
   resolveRoleId: (roleId: string) =>
@@ -37,6 +42,8 @@ describe('MessageGroup in a team-pinned conversation', () => {
     expect(screen.getByTestId('assistant-row-avatar-leader')).toHaveTextContent('📊');
     expect(screen.getByTestId('assistant-row-avatar-leader')).toHaveAttribute('aria-label', 'zz数据分析师');
     expect(screen.getByTestId('team-leader-caption')).toHaveTextContent('zz数据分析师 · zz数据小队');
+    expect(screen.getByTestId('team-leader-caption')).toHaveClass('text-ui');
+    expect(screen.getByTestId('team-leader-caption')).toHaveClass('text-label-secondary');
   });
 
   it('keeps Abu for an ordinary conversation', () => {

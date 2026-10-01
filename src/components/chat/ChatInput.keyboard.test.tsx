@@ -14,12 +14,16 @@
  * tests/e2e/chat-newline.spec.ts against the actual Electron shell.
  */
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { useChatStore } from '@/stores/chatStore';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const typeInto = (textarea: HTMLTextAreaElement, value: string) => {
   fireEvent.change(textarea, { target: { value } });

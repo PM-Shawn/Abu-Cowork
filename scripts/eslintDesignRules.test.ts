@@ -119,4 +119,30 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const code = `import { Command } from 'cmdk';\n${component('<Command />')}`;
     expect(await messages(code, MIGRATED)).not.toEqual([]);
   });
+
+  it('flags a bare animate-in class that the legacy global rule hijacks', async () => {
+    expect(await messages(component('<div className="animate-in fade-in-0" />'), MIGRATED)).not.toEqual([]);
+  });
+
+  it('accepts state-scoped animate-in forms', async () => {
+    const jsx = '<div className="data-[state=open]:animate-in data-[state=closed]:animate-out" />';
+    expect(await messages(component(jsx), MIGRATED)).toEqual([]);
+  });
+
+  it('checks the chat files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/chat/ChatView.tsx')).not.toEqual([]);
+  });
+
+  it.each([
+    'src/components/chat/chapters.ts',
+    'src/components/chat/FileAttachment.test.tsx',
+    'src/components/chat/SourcesSection.test.tsx',
+    'src/components/chat/IMInfoBar.test.tsx',
+    'src/components/common/FolderSelector.test.tsx',
+    'src/components/chat/ConvIdBadge.test.tsx',
+  ])('checks %s with the migrated rules', async (file) => {
+    const code = `export const style = 'text-[var(--abu-text-primary)]';\n`;
+    expect(await messages(code, file)).not.toEqual([]);
+  });
 });

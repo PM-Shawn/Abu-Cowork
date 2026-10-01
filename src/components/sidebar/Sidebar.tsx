@@ -236,6 +236,11 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     event.preventDefault();
     setEditingId(convId);
   };
+  // Reopening a row menu during its exit animation keeps it mounted, so the close hook
+  // never runs for the earlier 重命名. Drop it on open, or the next Escape would start it.
+  const dropRenameOnOpen = (open: boolean) => {
+    if (open) renameAfterClose.current = null;
+  };
 
   // One menu for a row, shown both by right-click and by the "⋯" button.
   const conversationMenuItems = (convId: string) => {
@@ -489,6 +494,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               <ContextMenu
                 key={conv.id}
                 content={conversationMenuItems(conv.id)}
+                onOpenChange={dropRenameOnOpen}
                 onCloseAutoFocus={startRenameAfterClose(conv.id)}
               >
               <div
@@ -566,7 +572,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 {!editing && (
                   <Menu
                     open={menuOpen}
-                    onOpenChange={(open) => setMenuConvId(open ? conv.id : null)}
+                    onOpenChange={(open) => { dropRenameOnOpen(open); setMenuConvId(open ? conv.id : null); }}
                     onCloseAutoFocus={startRenameAfterClose(conv.id)}
                     trigger={
                       <IconButton

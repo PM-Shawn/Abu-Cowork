@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { memo, useState, useCallback, useEffect } from 'react';
 import { useI18n, getI18n } from '@/i18n';
 import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableCodeBlock';
 import {
@@ -621,7 +621,8 @@ body { overflow: auto; min-height: 100vh; margin: 0; display: flex; box-sizing: 
 // Component
 // ---------------------------------------------------------------------------
 
-export default function HtmlWidgetBlock({ code, title }: { code: string; title?: string }) {
+// Memoized so a finished widget does not re-render while the reply around it streams.
+export default memo(function HtmlWidgetBlock({ code, title }: { code: string; title?: string }) {
   const { t } = useI18n();
   // P3 — structured crash reporting: the widget:error message reaches us via
   // errorHandlerMap (module-level, keyed by RenderableCodeBlock's container
@@ -678,7 +679,7 @@ export default function HtmlWidgetBlock({ code, title }: { code: string; title?:
       <RenderableCodeBlock code={code} config={config} />
       {lastError && (
         <div
-          className="-mt-2 mb-3 px-1 text-caption text-[var(--abu-text-muted)]"
+          className="-mt-2 mb-3 px-1 text-caption text-label-tertiary"
           title={lastError}
         >
           {t.chat.htmlWidgetErrorRow}
@@ -686,4 +687,4 @@ export default function HtmlWidgetBlock({ code, title }: { code: string; title?:
       )}
     </>
   );
-}
+});

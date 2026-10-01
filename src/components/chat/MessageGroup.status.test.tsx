@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
@@ -12,6 +14,9 @@ import type { Conversation, Message } from '@/types';
 import MessageGroup from './MessageGroup';
 import { usePreviewStore } from '@/stores/previewStore';
 import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
+
+// The action row's icon buttons carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/core/session/outputSnapshots', async importOriginal => ({
   ...await importOriginal<typeof import('@/core/session/outputSnapshots')>(),
@@ -72,6 +77,8 @@ describe('MessageGroup stopped terminal', () => {
     render(<MessageGroup conversationId={conversation.id} messages={[userMessage]} isLastGroup />);
 
     expect(screen.getByText('You stopped after 2s')).toBeInTheDocument();
+    expect(screen.getByText('You stopped after 2s')).toHaveClass('text-ui');
+    expect(screen.getByText('You stopped after 2s')).toHaveClass('text-label-secondary');
   });
 
   it('#549: a pre-accept failure inside a group shows its reason and the oversize escape', () => {
@@ -552,6 +559,8 @@ describe('MessageGroup stopped terminal', () => {
     // collapsed state: only the batch card itself hides.
     const foldHeader = screen.getByRole('button', { name: /1 experts: 1 succeeded/ });
     expect(foldHeader).toHaveAttribute('aria-expanded', 'false');
+    expect(foldHeader).toHaveClass('text-ui');
+    expect(foldHeader).toHaveClass('text-label-secondary');
     expect(screen.getByText('Preparing the batch.')).toBeInTheDocument();
     expect(screen.getByText('Batch finished.')).toBeInTheDocument();
     expect(screen.queryByText('✓ 1 sub-tasks completed')).toBeNull();
@@ -651,17 +660,17 @@ describe('MessageGroup stopped terminal', () => {
     };
     setConversationState(conversation);
 
-    // Phase 1 — fresh placeholder: typing dots only, no divider and no fold
-    // header row yet.
+    // Phase 1 — fresh placeholder: the thinking status line only, no divider
+    // and no fold header row yet.
     const view = render(
       <MessageGroup conversationId={conversation.id} messages={[userMessage, placeholder]} isLastGroup />,
     );
-    expect(document.querySelector('.typing-dot')).not.toBeNull();
+    expect(document.querySelector('[data-ds-spinner]')).not.toBeNull();
     expect(screen.queryByText(/Worked for/)).toBeNull();
     expect(screen.queryByText(/Working/)).toBeNull();
 
     // Phase 2 — first process content arrives: the ticking in-run divider
-    // takes the dots' slot (progressive wording, not a button), and the
+    // takes the status line's slot (progressive wording, not a button), and the
     // settled "Worked for" header still does not exist.
     const batchMessage: Message = {
       ...placeholder,

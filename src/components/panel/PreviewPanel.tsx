@@ -150,8 +150,7 @@ export default function PreviewPanel({
   // and are always shown via the editable source view regardless of this.
   const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
   // Version history (P4) dropdown — trigger button + panel share this ref
-  // for outside-click detection (see ModelSelector's modelPickerRef for the
-  // same pattern).
+  // for outside-click detection.
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const versionHistoryRef = useRef<HTMLDivElement>(null);
   // App-fullscreen toggle (Task 6) — expands the panel to a fixed overlay

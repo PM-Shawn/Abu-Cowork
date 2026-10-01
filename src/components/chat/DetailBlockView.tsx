@@ -1,6 +1,12 @@
 import { useState, useMemo, useEffect, useRef, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink, ImageOff, Maximize2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Link } from '@/components/ds/link';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
 import { useI18n, format } from '@/i18n';
 import { getDetailBlockLabel } from '@/utils/toolLabels';
 import type { DetailBlock } from '@/types/execution';
@@ -120,54 +126,6 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
   }, []);
 
-  // Style based on block type
-  const styles = useMemo(() => {
-    switch (block.type) {
-      case 'error':
-        return {
-          labelBg: 'bg-[var(--abu-danger-bg)]',
-          labelText: 'text-[var(--abu-danger)]',
-          contentBg: 'bg-[var(--abu-danger-bg)]',
-          borderColor: 'border-[var(--abu-danger)]',
-        };
-      case 'script':
-        return {
-          labelBg: 'bg-[var(--abu-bg-hover)]',
-          labelText: 'text-[var(--abu-text-tertiary)]',
-          contentBg: 'bg-[var(--abu-bg-muted)]',
-          borderColor: 'border-[var(--abu-bg-hover)]',
-        };
-      case 'list':
-        return {
-          labelBg: 'bg-[var(--abu-info-bg)]',
-          labelText: 'text-[var(--abu-info)]',
-          contentBg: 'bg-[var(--abu-info-bg)]',
-          borderColor: 'border-[var(--abu-info)]',
-        };
-      case 'json':
-        return {
-          labelBg: 'bg-purple-50',
-          labelText: 'text-purple-600',
-          contentBg: 'bg-purple-50/50',
-          borderColor: 'border-purple-100',
-        };
-      case 'image':
-        return {
-          labelBg: 'bg-[var(--abu-success-bg)]',
-          labelText: 'text-[var(--abu-success)]',
-          contentBg: 'bg-[var(--abu-bg-base)]',
-          borderColor: 'border-[var(--abu-success)]',
-        };
-      default:
-        return {
-          labelBg: 'bg-[var(--abu-bg-hover)]',
-          labelText: 'text-[var(--abu-text-muted)]',
-          contentBg: 'bg-[var(--abu-bg-muted)]',
-          borderColor: 'border-[var(--abu-bg-hover)]',
-        };
-    }
-  }, [block.type]);
-
   // Render content based on type
   const renderContent = () => {
     switch (block.type) {
@@ -189,28 +147,25 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     <>
       {/* Language tag */}
       {block.language && (
-        <div className="px-3 py-1.5 text-caption text-[var(--abu-text-muted)] bg-[var(--abu-bg-hover)] border-b border-[var(--abu-bg-hover)]">
+        <div className="border-b border-separator px-3 py-1 text-caption text-label-tertiary">
           {block.language}
         </div>
       )}
 
       {/* Content area */}
       <pre className={cn(
-        'px-3 py-2 text-minor font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
-        block.type === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-tertiary)]'
+        'px-3 py-2 font-code text-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
+        block.type === 'error' ? 'text-danger' : 'text-label'
       )}>
         {block.content}
       </pre>
 
       {/* Load more button */}
       {block.isTruncated && onLoadMore && (
-        <div className="px-3 py-2 border-t border-[var(--abu-bg-hover)]">
-          <button
-            onClick={onLoadMore}
-            className="text-caption text-[var(--abu-clay)] hover:underline"
-          >
+        <div className="border-t border-separator px-3 py-2">
+          <Button variant="plain" size="sm" onClick={onLoadMore}>
             {t.chat.viewMore} ({(block.fullContentLength || 0) - block.content.length} {t.chat.characters})
-          </button>
+          </Button>
         </div>
       )}
     </>
@@ -222,49 +177,48 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     const size = formatImageSize(outputRef?.sizeBytes);
     const metadata = size ? `${filename} · ${size}` : filename;
 
+    const frameClass = 'relative group flex h-[200px] w-[320px] items-center justify-center overflow-hidden rounded-control border border-separator bg-fill';
     const renderImageFrame = (children: ReactNode, interactive: boolean) => (
       <div className="p-2">
-        <div
-          className={cn(
-            'relative group w-[320px] h-[200px] rounded border border-[var(--abu-bg-hover)] overflow-hidden bg-[var(--abu-bg-muted)] flex items-center justify-center',
-            interactive && 'cursor-pointer',
-          )}
-          onClick={interactive ? () => setImageFullscreen(true) : undefined}
-        >
-          {children}
-          {interactive && (
-            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
-              <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
-            </div>
-          )}
-        </div>
-        <div className="mt-1 text-caption text-[var(--abu-text-muted)] truncate max-w-[320px]">{metadata}</div>
+        {interactive ? (
+          <Pressable className={cn(frameClass, 'cursor-pointer')} onClick={() => setImageFullscreen(true)}>
+            {children}
+            <span className="absolute inset-0 flex items-center justify-center transition-colors group-hover:bg-scrim group-focus-visible:bg-scrim">
+              <span className="rounded-control bg-raised p-1 text-label opacity-0 shadow-float transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                <Icon icon={AppIcons.enlarge} size="md" />
+              </span>
+            </span>
+          </Pressable>
+        ) : (
+          <div className={frameClass}>{children}</div>
+        )}
+        <div className="mt-1 max-w-[320px] truncate text-caption text-label-tertiary">{metadata}</div>
       </div>
     );
 
     if (!imageSrc) {
       if (outputRef?.relPath && outputRefState === 'loading') {
         return renderImageFrame(
-          <div className="text-caption text-[var(--abu-text-muted)]">{t.chat.imageLoading}</div>,
+          <Spinner size="sm" labelHidden label={t.chat.imageLoading} />,
           false,
         );
       }
       return renderImageFrame(
         <div className="flex flex-col items-center gap-2 px-4 text-center">
-          <ImageOff className="h-6 w-6 text-[var(--abu-text-muted)]" />
-          <div className="text-caption text-[var(--abu-text-muted)]">{t.chat.imageUnavailable}</div>
+          <Icon icon={AppIcons.imageMissing} size="lg" className="text-label-tertiary" />
+          <div className="text-caption text-label-tertiary">{t.chat.imageUnavailable}</div>
           {outputRef?.relPath && (
-            <button
-              type="button"
+            <Button
+              variant="plain"
+              size="sm"
+              icon={AppIcons.retry}
               onClick={(e) => {
                 e.stopPropagation();
                 setRetryNonce((value) => value + 1);
               }}
-              className="inline-flex items-center gap-1 text-caption text-[var(--abu-link)] hover:text-[var(--abu-link-hover)]"
             >
-              <RefreshCw className="h-3 w-3" />
               {t.chat.imageRetry}
-            </button>
+            </Button>
           )}
         </div>,
         false,
@@ -305,27 +259,27 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
 
     return (
-      <div className="divide-y divide-[var(--abu-bg-hover)]">
+      <div className="divide-y divide-separator">
         {block.parsedItems.slice(0, 5).map((item, index) => (
-          <div key={index} className="px-3 py-2 hover:bg-[var(--abu-bg-hover)] transition-colors">
+          <div key={index} className="px-3 py-2 transition-colors hover:bg-fill-hover">
             <div className="flex items-start gap-2">
-              {item.icon && <span className="text-minor">{item.icon}</span>}
+              {item.icon && <span className="text-ui-sm">{item.icon}</span>}
               <div className="flex-1 min-w-0">
                 {item.url ? (
-                  <a
+                  <Link
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-minor text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] font-medium flex items-center gap-1"
+                    className="inline-flex items-center gap-1 text-ui-sm font-medium"
                   >
                     {item.title}
-                    <ExternalLink className="h-3 w-3 opacity-50" />
-                  </a>
+                    <Icon icon={AppIcons.openExternal} size="sm" />
+                  </Link>
                 ) : (
-                  <div className="text-minor text-[var(--abu-text-tertiary)] font-medium">{item.title}</div>
+                  <div className="text-ui-sm font-medium text-label">{item.title}</div>
                 )}
                 {item.description && (
-                  <div className="text-caption text-[var(--abu-text-muted)] mt-0.5 line-clamp-2">
+                  <div className="mt-1 line-clamp-2 text-caption text-label-tertiary">
                     {item.description}
                   </div>
                 )}
@@ -334,7 +288,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </div>
         ))}
         {block.parsedItems.length > 5 && (
-          <div className="px-3 py-2 text-caption text-[var(--abu-text-muted)]">
+          <div className="px-3 py-2 text-caption text-label-tertiary">
             {format(t.chat.moreItems, { count: block.parsedItems.length - 5 })}
           </div>
         )}
@@ -353,7 +307,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
 
     return (
-      <pre className="px-3 py-2 text-minor text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
+      <pre className="px-3 py-2 font-code text-mono text-label whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
         {formattedJson}
       </pre>
     );
@@ -369,11 +323,11 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
 
     return (
       <div className="overflow-x-auto">
-        <table className="w-full text-minor">
+        <table className="w-full text-ui-sm">
           <thead>
-            <tr className="bg-[var(--abu-bg-hover)]">
+            <tr className="bg-fill">
               {headers.map((header, i) => (
-                <th key={i} className="px-3 py-1.5 text-left text-[var(--abu-text-tertiary)] font-medium border-b border-[var(--abu-bg-hover)]">
+                <th key={i} className="border-b border-separator px-3 py-1 text-left font-medium text-label">
                   {header}
                 </th>
               ))}
@@ -381,9 +335,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </thead>
           <tbody>
             {rows.slice(0, 10).map((row, i) => (
-              <tr key={i} className="hover:bg-[var(--abu-bg-muted)]">
+              <tr key={i} className="hover:bg-fill-hover">
                 {row.map((cell, j) => (
-                  <td key={j} className="px-3 py-1.5 text-[var(--abu-text-tertiary)] border-b border-[var(--abu-bg-hover)]">
+                  <td key={j} className="border-b border-separator px-3 py-1 text-label">
                     {cell}
                   </td>
                 ))}
@@ -392,7 +346,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </tbody>
         </table>
         {rows.length > 10 && (
-          <div className="px-3 py-2 text-caption text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-hover)]">
+          <div className="border-t border-separator px-3 py-2 text-caption text-label-tertiary">
             {format(t.chat.moreRows, { count: rows.length - 10 })}
           </div>
         )}
@@ -403,41 +357,29 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   return (
     <div className="mt-1">
       {/* Label button */}
-      <button
+      <Pressable
         onClick={handleToggle}
-        className={cn(
-          'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-caption',
-          'transition-colors',
-          styles.labelBg,
-          styles.labelText,
-          'hover:opacity-80'
-        )}
+        aria-expanded={localExpanded}
+        className="inline-flex h-5 items-center gap-1 rounded-control bg-fill px-2 text-caption text-label-secondary transition-colors hover:bg-fill-hover"
       >
-        {localExpanded ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
+        <Icon icon={localExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
+        {block.type === 'error' && <StatusIcon tone="danger" size="sm" />}
         {headerLabel}
         {block.isTruncated && !localExpanded && (
-          <span className="text-caption opacity-70">
+          <span className="text-label-tertiary">
             ({block.fullContentLength} {t.chat.characters})
           </span>
         )}
         {block.type === 'list' && block.parsedItems && (
-          <span className="text-caption opacity-70">
+          <span className="text-label-tertiary">
             ({block.parsedItems.length})
           </span>
         )}
-      </button>
+      </Pressable>
 
       {/* Expanded content */}
       {localExpanded && (
-        <div className={cn(
-          'mt-2 rounded-lg overflow-hidden border',
-          styles.contentBg,
-          styles.borderColor
-        )}>
+        <div className="mt-2 overflow-hidden rounded-panel bg-code">
           {renderContent()}
         </div>
       )}

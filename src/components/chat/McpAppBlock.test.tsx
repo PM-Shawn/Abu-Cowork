@@ -159,6 +159,15 @@ describe('McpAppBlock', () => {
       expect(screen.queryByTestId('mcp-app-status')).toBeNull();
     });
 
+    it('draws the status line and the inline frame with design-system classes', async () => {
+      renderBlock();
+      const status = screen.getByTestId('mcp-app-status');
+      expect(status).toHaveClass('text-caption');
+      expect(status).toHaveClass('text-label-tertiary');
+      await settle();
+      expect(screen.getByTestId('mcp-app-frame')).toHaveClass('rounded-panel');
+    });
+
     it('locks the iframe down: allow-scripts only, no allow, no referrer', async () => {
       renderBlock();
       await settle();
@@ -773,6 +782,43 @@ describe('McpAppBlock', () => {
       expect(row).toHaveTextContent('two results');
     });
 
+    it('opens an audit row from a disclosure button and prints its details in the code font', async () => {
+      const sink: SessionSink = {};
+      renderBlock({ deps: { findTool: () => searchTool, checkApproval: async () => ({ decision: 'allow' as const }), callTool: async () => 'two results' } }, sink);
+      await settle();
+      await act(async () => {
+        await sink.handlers?.oncalltool?.({ name: 'search', arguments: { q: 'abu' } } as never);
+      });
+
+      const button = screen.getByTestId('mcp-app-audit-row').querySelector('button')!;
+      expect(button).toHaveAttribute('aria-expanded', 'false');
+      expect(button).toHaveClass('text-label-tertiary');
+      await act(async () => { fireEvent.click(button); });
+      expect(button).toHaveAttribute('aria-expanded', 'true');
+      for (const pre of screen.getByTestId('mcp-app-audit-row').querySelectorAll('pre')) {
+        expect(pre).toHaveClass('font-code');
+        expect(pre).toHaveClass('text-caption');
+        expect(pre).toHaveClass('text-label-secondary');
+      }
+    });
+
+    it('marks a refused call with the danger shape', async () => {
+      const sink: SessionSink = {};
+      renderBlock({
+        deps: {
+          findTool: () => searchTool,
+          checkApproval: async () => ({ decision: 'deny' as const, reason: 'Error: 用户已取消' }),
+          callTool: async () => 'never',
+        },
+      }, sink);
+      await settle();
+      await expect(
+        sink.handlers!.oncalltool!({ name: 'search', arguments: { q: 'abu' } } as never),
+      ).rejects.toThrow('用户已取消');
+      await act(async () => {});
+      expect(screen.getByTestId('mcp-app-audit-row').querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
+    });
+
     it('surfaces a denial as an audit row and never executes', async () => {
       const sink: SessionSink = {};
       const callTool = vi.fn(async () => 'never');
@@ -932,6 +978,18 @@ describe('McpAppBlock', () => {
       const expander = screen.getByTestId('mcp-app-context');
       await act(async () => { fireEvent.click(expander.querySelector('button')!); });
       expect(expander).toHaveTextContent('来自上一次会话');
+    });
+
+    it('says whether the model context is open and prints it in the code font', async () => {
+      renderBlock({ modelContext: '来自上一次会话' });
+      await settle();
+      const button = screen.getByTestId('mcp-app-context').querySelector('button')!;
+      expect(button).toHaveAttribute('aria-expanded', 'false');
+      await act(async () => { fireEvent.click(button); });
+      expect(button).toHaveAttribute('aria-expanded', 'true');
+      const pre = screen.getByTestId('mcp-app-context').querySelector('pre')!;
+      expect(pre).toHaveClass('font-code');
+      expect(pre).toHaveClass('text-label-secondary');
     });
   });
 

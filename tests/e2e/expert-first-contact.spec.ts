@@ -64,7 +64,7 @@ for (const team of [false, true]) {
           await page.evaluate((enabled) => document.documentElement.classList.toggle('dark', enabled), dark);
           await expect.poll(() => prompts.first().evaluate((el) => {
             const probe = document.createElement('span');
-            probe.style.color = 'var(--abu-border-subtle)';
+            probe.style.color = 'var(--ds-separator)';
             el.append(probe);
             const expected = getComputedStyle(probe).color;
             probe.remove();

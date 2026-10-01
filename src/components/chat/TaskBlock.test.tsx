@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, it, expect } from 'vitest';
 import TaskBlock, { convertExecutionStep, generateSummary, type UnifiedStep } from './TaskBlock';
+import { ThinkingStatusLine } from './ThinkingStatusLine';
 import { getI18n, getLocale, format } from '@/i18n';
 import type { ExecutionStep } from '@/types/execution';
 
@@ -191,6 +192,85 @@ describe('TaskBlock — thinking pane running → completed', () => {
     expect(container.querySelector('pre')?.textContent).toContain(
       'reasoning tokens streaming in',
     );
+  });
+});
+
+function execCommandStep(id: string, label: string, overrides: Partial<ExecutionStep> = {}): ExecutionStep {
+  return {
+    id,
+    executionId: 'exec-1',
+    type: 'command',
+    label,
+    status: 'running',
+    toolName: '',
+    toolInput: {},
+    source: 'agent',
+    detailBlocks: [],
+    ...overrides,
+  };
+}
+
+// One spinner per place: the block's header carries the only moving indicator;
+// every step running inside it shows the same loading glyph standing still.
+describe('TaskBlock — one spinner per block', () => {
+  afterEach(() => cleanup());
+
+  const stepRow = (label: string) => screen.getByText(label).closest('.flex.items-start') as HTMLElement;
+
+  it('shows a single status spinner in the header while two steps run', () => {
+    render(
+      <TaskBlock
+        executionSteps={[execCommandStep('s1', 'Step one'), execCommandStep('s2', 'Step two')]}
+        isActive
+      />,
+    );
+    const statuses = screen.getAllByRole('status');
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0].querySelector('[data-ds-spinner]')).not.toBeNull();
+    expect(statuses[0].closest('button')).not.toBeNull();
+    for (const label of ['Step one', 'Step two']) {
+      const row = stepRow(label);
+      expect(row.querySelector('svg.lucide-loader-circle')).not.toBeNull();
+      expect(row.querySelector('[data-ds-spinner]')).toBeNull();
+    }
+  });
+
+  it('starts its header text in the same column as the rows it replaces', () => {
+    render(<TaskBlock executionSteps={[execCommandStep('s1', 'Step one')]} isActive />);
+    const header = screen.getAllByRole('button')[0];
+    expect(header.className).not.toMatch(/(^|\s)px-/);
+    expect(header.className).not.toMatch(/(^|\s)pl-/);
+    expect(header).toHaveClass('text-label-secondary');
+    expect(header).toHaveClass('hover:text-label');
+  });
+
+  // The words start after the spinner icon plus the same gap-2, so equal icon widths
+  // mean the status line's 「思考中」 and the header's words start in the same column.
+  it('draws the same spinner width as the status line it follows', () => {
+    const { container: line } = render(<ThinkingStatusLine label="思考中" />);
+    const { container: block } = render(<TaskBlock executionSteps={[execCommandStep('s1', 'Step one')]} isActive />);
+    const lineIcon = line.querySelector('[data-ds-spinner] svg');
+    const headerIcon = block.querySelector('.task-block > button [data-ds-spinner] svg');
+    expect(headerIcon).not.toBeNull();
+    expect(lineIcon?.getAttribute('width')).toBe(headerIcon?.getAttribute('width'));
+  });
+
+  it('marks finished steps with a check and failed steps with a cross', () => {
+    render(
+      <TaskBlock
+        executionSteps={[
+          execCommandStep('s1', 'Step done', { status: 'completed' }),
+          execCommandStep('s2', 'Step failed', { status: 'error' }),
+        ]}
+        isActive={false}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    expect(stepRow('Step done').querySelector('svg.lucide-circle-check')).not.toBeNull();
+    expect(stepRow('Step done').querySelector('svg.text-success')).not.toBeNull();
+    expect(stepRow('Step failed').querySelector('svg.lucide-circle-x')).not.toBeNull();
+    expect(stepRow('Step failed').querySelector('svg.text-danger')).not.toBeNull();
+    expect(document.querySelector('[data-ds-spinner]')).toBeNull();
   });
 });
 

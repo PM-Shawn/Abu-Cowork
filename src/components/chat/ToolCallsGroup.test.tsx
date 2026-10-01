@@ -11,12 +11,27 @@
  * at index 0 of the tool result — the card has to find it wherever it is.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { initLanguage } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
-import type { ToolCall } from '@/types';
-import ToolCallsGroup from './ToolCallsGroup';
+import type { ToolCall, ToolResultContent } from '@/types';
+import ToolCallsGroup, { ToolResultImagePreview } from './ToolCallsGroup';
+
+const mockResolveOutputRefSource = vi.hoisted(() => vi.fn());
+const mockLoadLocalImage = vi.hoisted(() => vi.fn());
+
+vi.mock('@/core/session/outputSnapshots', () => ({
+  resolveOutputRefSource: (...args: unknown[]) => mockResolveOutputRefSource(...args),
+}));
+
+vi.mock('@/utils/pathUtils', async () => {
+  const actual = await vi.importActual<typeof import('@/utils/pathUtils')>('@/utils/pathUtils');
+  return {
+    ...actual,
+    loadLocalImage: (...args: unknown[]) => mockLoadLocalImage(...args),
+  };
+});
 
 const BLOCKED_REASON = 'command execution blocked by sandbox policy (exec)';
 
@@ -109,5 +124,147 @@ describe('ToolCallsGroup sandbox-blocked output', () => {
 
     expect(screen.queryByTestId('sandbox-blocked-reason')).toBeNull();
     expect(screen.getByText(/root 1 launchd/)).toBeInTheDocument();
+  });
+
+  it('marks the blocked reason with the danger status icon', () => {
+    renderExpanded(commandCall(BLOCKED_RESULT));
+
+    const box = screen.getByTestId('sandbox-blocked-reason').parentElement!;
+    expect(box.querySelector('svg.lucide-circle-x')).not.toBeNull();
+    expect(screen.getByTestId('sandbox-blocked-reason')).toHaveClass('text-danger');
+    expect(screen.getByTestId('sandbox-blocked-reason')).toHaveClass('font-code');
+  });
+});
+
+// One spinner per place: a tool group's header holds the only moving
+// indicator; each running row shows the same loading glyph standing still.
+describe('ToolCallsGroup status icons', () => {
+  beforeEach(() => {
+    initLanguage('en-US');
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  const call = (id: string, name: string, extra: Partial<ToolCall> = {}): ToolCall => ({
+    id,
+    name,
+    input: {},
+    ...extra,
+  });
+  it('spins once in the header while two tools run', () => {
+    render(
+      <ToolCallsGroup
+        toolCalls={[
+          call('a', 'read_file', { isExecuting: true }),
+          call('b', 'list_directory', { isExecuting: true }),
+        ]}
+      />,
+    );
+    const header = screen.getAllByRole('button')[0];
+    fireEvent.click(header);
+
+    const statuses = screen.getAllByRole('status');
+    expect(statuses).toHaveLength(1);
+    expect(header.contains(statuses[0])).toBe(true);
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    const rows = screen.getAllByRole('button').slice(1);
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.querySelector('svg.lucide-loader-circle')).not.toBeNull();
+      expect(r.querySelector('[data-ds-spinner]')).toBeNull();
+    }
+  });
+
+  it('shows a check for finished tools and a cross for failed ones, with no spinner', () => {
+    render(
+      <ToolCallsGroup
+        toolCalls={[
+          call('a', 'read_file', { result: 'ok' }),
+          call('b', 'run_command', { result: 'boom', isError: true }),
+        ]}
+      />,
+    );
+    const header = screen.getAllByRole('button')[0];
+    expect(header.querySelector('svg.lucide-circle-x')).not.toBeNull();
+    fireEvent.click(header);
+
+    const [okRow, failedRow] = screen.getAllByRole('button').slice(1);
+    expect(okRow.querySelector('svg.lucide-circle-check')).not.toBeNull();
+    expect(failedRow.querySelector('svg.lucide-circle-x')).not.toBeNull();
+    expect(document.querySelector('[data-ds-spinner]')).toBeNull();
+  });
+
+  it('shows the success check on the header when every tool finished', () => {
+    render(<ToolCallsGroup toolCalls={[call('a', 'read_file', { result: 'ok' })]} />);
+    const header = screen.getAllByRole('button')[0];
+    expect(header.querySelector('svg.lucide-circle-check')).not.toBeNull();
+    expect(header.querySelector('svg.text-success')).not.toBeNull();
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('prints tool output on the code surface', () => {
+    renderExpanded(commandCall('stdout:\nroot 1 launchd\n\nexit code: 0'));
+    const output = screen.getByText(/root 1 launchd/);
+    expect(output).toHaveClass('font-code');
+    expect(output).toHaveClass('text-mono');
+    expect(output.closest('.bg-code')).not.toBeNull();
+  });
+});
+
+type ImageBlock = Extract<ToolResultContent, { type: 'image' }>;
+
+describe('ToolResultImagePreview', () => {
+  beforeEach(() => {
+    initLanguage('en-US');
+    mockResolveOutputRefSource.mockReset();
+    mockLoadLocalImage.mockReset();
+    Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), configurable: true });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  const refBlock: ImageBlock = {
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/png', data: '' },
+    outputRef: { relPath: 'files/hash/shot.png', basename: 'shot.png' },
+  };
+  const inlineBlock: ImageBlock = {
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' },
+  };
+  const renderPreview = (block: ImageBlock) => render(
+    <ToolResultImagePreview block={block} conversationId="conv-1" alt="Screenshot" frameClassName="frame" thumbnailClassName="thumb" />,
+  );
+
+  it('names its loading spinner while the saved image is read', () => {
+    mockResolveOutputRefSource.mockReturnValue(new Promise(() => {}));
+    renderPreview(refBlock);
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Loading image...');
+    expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
+  });
+
+  it('offers a retry button when the saved image cannot be read', async () => {
+    mockResolveOutputRefSource.mockResolvedValue({ status: 'missing', basename: 'shot.png', originalPath: 'files/hash/shot.png' });
+    renderPreview(refBlock);
+
+    expect(await screen.findByText('Image unavailable')).toBeInTheDocument();
+    expect(document.querySelector('svg.lucide-image-off')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mockResolveOutputRefSource).toHaveBeenCalledTimes(2));
+  });
+
+  it('opens the enlarged view from a thumbnail button', () => {
+    renderPreview(inlineBlock);
+
+    const thumbnail = screen.getByRole('button', { name: 'Screenshot' });
+    expect(thumbnail.querySelector('svg.lucide-maximize2, svg.lucide-maximize-2')).not.toBeNull();
+    fireEvent.click(thumbnail);
+    expect(screen.getByRole('img', { name: 'Screenshot (full)' })).toBeInTheDocument();
   });
 });

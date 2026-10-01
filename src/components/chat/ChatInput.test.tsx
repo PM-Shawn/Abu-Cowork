@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput, {
   mergeComposerAppend,
   referenceDedupeKey,
@@ -29,6 +31,8 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { clearInputQueue, getQueuedInputs } from '@/core/agent/userInputQueue';
 import { useToastStore } from '@/stores/toastStore';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const electronHostMocks = vi.hoisted(() => ({
   hasElectronCommandHost: vi.fn(() => false),
@@ -66,9 +70,14 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** The `+` button opens a ds Menu, which Radix opens on pointerdown. */
+function openPlusMenu(): void {
+  fireEvent.pointerDown(screen.getByTestId('composer-plus'), { button: 0 });
+}
+
 /** The `+` button is a menu now; 添加文件 lives inside it. */
 async function clickAddFileMenuItem(): Promise<void> {
-  fireEvent.click(screen.getByTestId('composer-plus'));
+  openPlusMenu();
   fireEvent.click(await screen.findByTestId('composer-menu-add-file'));
 }
 
@@ -520,9 +529,206 @@ describe('ChatInput attachment image preview', () => {
     expect(openPreview).not.toHaveBeenCalled();
 
     useImageLightboxStore.getState().close();
-    fireEvent.click(screen.getAllByTitle(getI18n().chat.removeImage)[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: getI18n().chat.removeImage })[0]);
     expect(useImageLightboxStore.getState().isOpen).toBe(false);
     expect(screen.getAllByTitle(getI18n().chat.clickToViewFull)).toHaveLength(1);
+  });
+});
+
+describe('ChatInput send and stop buttons', () => {
+  beforeEach(() => {
+    clearAllComposerDrafts();
+    useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+    useChatStore.setState({
+      conversations: {},
+      conversationIndex: {},
+      activeConversationId: null,
+      pendingInput: null,
+      pendingInputAppend: null,
+      pendingReferences: [],
+      pendingAttachmentRequests: [],
+    });
+    useSettingsStore.setState({ composerEnterBehavior: 'enter' });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('makes send the one filled button of the composer', () => {
+    useChatStore.getState().createConversation();
+    const { container } = render(<ChatInput variant="chat" onSend={vi.fn()} />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hello' } });
+
+    const send = screen.getByRole('button', { name: getI18n().chat.sendTooltipEnterSends });
+    expect(send).toHaveClass('bg-emphasis');
+    expect(send).toBeEnabled();
+    const filled = [...container.ownerDocument.body.querySelectorAll('.bg-emphasis')];
+    expect(filled).toEqual([send]);
+  });
+
+  it('shows stop as a quiet button while a reply streams', () => {
+    const id = useChatStore.getState().createConversation();
+    useChatStore.getState().setConversationStatus(id, 'running');
+    render(<ChatInput variant="chat" onSend={vi.fn()} />);
+
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(stop).not.toHaveClass('bg-emphasis');
+    expect(stop).toHaveClass('bg-fill');
+    expect(screen.queryByRole('button', { name: getI18n().chat.sendTooltipEnterSends })).toBeNull();
+  });
+});
+
+describe('ChatInput composer card, + menu and suggestion list', () => {
+  beforeAll(() => {
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => undefined;
+    Element.prototype.scrollIntoView ??= () => undefined;
+  });
+
+  beforeEach(() => {
+    clearAllComposerDrafts();
+    useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+    useChatStore.setState({
+      conversations: {},
+      conversationIndex: {},
+      activeConversationId: null,
+      pendingInput: null,
+      pendingInputAppend: null,
+      pendingReferences: [],
+      pendingAttachmentRequests: [],
+    });
+    useSettingsStore.setState({ composerEnterBehavior: 'enter', disabledSkills: [] });
+    useDiscoveryStore.setState({
+      skills: [{ name: 'brief', description: 'Create a brief' }],
+      agents: [{ name: 'publisher', description: 'Draft posts' }, { name: 'planner', description: 'Plan work' }],
+      isLoading: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    cleanup();
+    vi.restoreAllMocks();
+    useDiscoveryStore.setState({ skills: [], agents: [], isLoading: false });
+  });
+
+  it('draws the card with the composer elevation and a darker border while focused', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const card = screen.getByTestId('composer-toolbar').parentElement!;
+    expect(card).toHaveClass('rounded-panel');
+    expect(card).toHaveClass('bg-field');
+    expect(card).toHaveClass('border-separator');
+    expect(card).toHaveClass('shadow-composer');
+    expect(card).toHaveClass('focus-within:border-control-border');
+  });
+
+  it('types in the reading size', () => {
+    render(<ChatInput variant="chat" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox');
+    expect(box).toHaveClass('text-body');
+    expect(box).toHaveClass('text-label');
+    expect(box).not.toHaveClass('leading-relaxed');
+  });
+
+  it('opens + as a menu of three items named by the trigger', async () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const plus = screen.getByTestId('composer-plus');
+    const { composerMenu } = getI18n().chat;
+    expect(plus).toHaveAccessibleName(composerMenu.open);
+    expect(plus).toHaveAttribute('aria-haspopup', 'menu');
+
+    openPlusMenu();
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
+      .toEqual([composerMenu.addFile, composerMenu.teamOrMember, composerMenu.skill]);
+  });
+
+  it('hands focus to the search field after picking 技能 from +', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    openPlusMenu();
+    fireEvent.click(await screen.findByTestId('composer-menu-skill'));
+    act(() => { vi.advanceTimersByTime(50); });
+
+    const search = screen.getByRole('textbox', { name: getI18n().common.search });
+    expect(search).toHaveFocus();
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('returns focus to the text field, not +, after 添加文件', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    openPlusMenu();
+    fireEvent.click(await screen.findByTestId('composer-menu-add-file'));
+    act(() => { vi.advanceTimersByTime(50); });
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('textbox')).toHaveFocus();
+    expect(screen.getByTestId('composer-plus')).not.toHaveFocus();
+  });
+
+  it('moves only the highlight on arrow keys in the + menu; Enter applies', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const plus = screen.getByTestId('composer-plus');
+    fireEvent.keyDown(plus, { key: 'Enter' });
+    const menu = await screen.findByRole('menu');
+    act(() => { vi.advanceTimersByTime(50); });
+
+    const items = within(menu).getAllByRole('menuitem');
+    expect(items[0]).toHaveFocus();
+    // Radix moves the roving focus on the next tick.
+    for (let step = 0; step < 2; step += 1) {
+      fireEvent.keyDown(document.activeElement ?? menu, { key: 'ArrowDown' });
+      act(() => { vi.advanceTimersByTime(50); });
+    }
+    expect(items[2]).toHaveFocus();
+    expect(screen.queryByRole('listbox')).toBeNull();
+
+    fireEvent.keyDown(items[2], { key: 'Enter' });
+    act(() => { vi.advanceTimersByTime(50); });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('option', { name: /brief/ })).toBeInTheDocument();
+  });
+
+  it('lists suggestions as options that never take focus, the current one filled', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: '@' } });
+    box.setSelectionRange(1, 1);
+    fireEvent.select(box);
+
+    const [first, second] = screen.getAllByRole('option');
+    expect(first.tagName).toBe('DIV');
+    expect(first).toHaveClass('bg-fill-selected');
+    expect(second).not.toHaveClass('bg-fill-selected');
+    expect(box).toHaveAttribute('aria-activedescendant', first.id);
+    const popup = document.querySelector('[data-composer-suggestions]')!;
+    expect(popup).toHaveClass('bg-raised');
+    expect(popup).toHaveClass('z-popover');
+
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    expect(second).toHaveClass('bg-fill-selected');
+    expect(box).toHaveAttribute('aria-activedescendant', second.id);
+    expect(screen.queryByRole('button', { name: '@planner' })).toBeNull();
+  });
+
+  it('names every remove button in the attachment strip', () => {
+    writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, {
+      text: '',
+      images: [{ id: 'img-1', data: 'aGVsbG8=', mediaType: 'image/png' }],
+      files: [{ id: 'file-1', path: '/work/notes.md', name: 'notes.md' }],
+      references: [],
+      selectedSkill: null,
+      selectedAgent: null,
+    });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: getI18n().chat.removeImage })).not.toHaveAttribute('title');
+    fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.menuRemove }));
+    expect(screen.queryByText('notes.md')).toBeNull();
   });
 });
 
@@ -1102,9 +1308,9 @@ describe('ChatInput inline agent selection', () => {
         const box = screen.getByRole('textbox') as HTMLTextAreaElement;
         if (entry === 'menu') {
           fireEvent.change(box, { target: { value: 'Keep this body' } });
-          fireEvent.click(screen.getByTestId('composer-plus'));
+          openPlusMenu();
           fireEvent.click(await screen.findByTestId('composer-menu-team'));
-          fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+          fireEvent.click(await screen.findByRole('option', { name: /publisher/ }));
         } else if (entry === 'automatic') {
           fireEvent.change(box, { target: { value: '@publisher Keep this body' } });
         } else {
@@ -1142,7 +1348,7 @@ describe('ChatInput inline agent selection', () => {
       const useTeamStore = await seedTeam();
       try {
         render(<ChatInput variant="welcome" onSend={vi.fn()} />);
-        fireEvent.click(screen.getByTestId('composer-plus'));
+        openPlusMenu();
         const menu = await screen.findByRole('menu');
         expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Add files', 'Expert · Expert Team', 'Skill']);
 
@@ -1163,7 +1369,7 @@ describe('ChatInput inline agent selection', () => {
         isLoading: false,
       });
       render(<ChatInput variant="welcome" onSend={vi.fn()} />);
-      fireEvent.click(screen.getByTestId('composer-plus'));
+      openPlusMenu();
       fireEvent.click(await screen.findByTestId('composer-menu-skill'));
       const textarea = screen.getByRole('textbox', { name: '' }) as HTMLTextAreaElement;
       await waitFor(() => expect(textarea.value).toBe(''));

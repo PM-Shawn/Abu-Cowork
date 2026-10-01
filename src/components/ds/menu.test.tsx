@@ -394,6 +394,25 @@ describe('MenuRadioGroup', () => {
     expect(onValueChange).toHaveBeenCalledWith('light');
   });
 
+  it('shows a description under a choice and reads it as the description, not the name', async () => {
+    const user = userEvent.setup();
+    render(
+      <Menu trigger={<Button>Mode</Button>}>
+        <MenuRadioGroup value="ask" onValueChange={vi.fn()}>
+          <MenuRadioItem value="ask" description="Asks before anything outside the folder">Ask</MenuRadioItem>
+          <MenuRadioItem value="plain">Plain</MenuRadioItem>
+        </MenuRadioGroup>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Mode' }));
+    const ask = screen.getByRole('menuitemradio', { name: 'Ask' });
+    expect(ask).toHaveAccessibleName('Ask');
+    expect(ask).toHaveAccessibleDescription('Asks before anything outside the folder');
+    expect(screen.getByText('Asks before anything outside the folder')).toBeVisible();
+    expect(screen.getByRole('menuitemradio', { name: 'Plain' })).not.toHaveAttribute('aria-describedby');
+  });
+
   it('works inside a ContextMenu too', async () => {
     const user = userEvent.setup();
     const onValueChange = vi.fn();

@@ -78,6 +78,14 @@ describe('cn() — design-system tokens', () => {
     expect(cn('duration-fast', 'duration-slow')).toBe('duration-slow');
     expect(cn('ease-enter', 'ease-exit')).toBe('ease-exit');
   });
+
+  it('keeps the inline-code size next to a text color token', () => {
+    expect(cn('text-code-inline', 'text-label')).toBe('text-code-inline text-label');
+  });
+
+  it('lets the composer shadow replace another design-system shadow', () => {
+    expect(cn('shadow-panel', 'shadow-composer')).toBe('shadow-composer');
+  });
 });
 
 describe('cn() — design-system font family', () => {

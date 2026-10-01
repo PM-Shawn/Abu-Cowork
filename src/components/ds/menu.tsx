@@ -1,6 +1,6 @@
 import { ContextMenu as ContextMenuPrimitive, DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
@@ -133,20 +133,34 @@ export function MenuRadioGroup({ value, onValueChange, children }: {
     : <ContextMenuPrimitive.RadioGroup value={value} onValueChange={onValueChange}>{children}</ContextMenuPrimitive.RadioGroup>;
 }
 
-export function MenuRadioItem({ value, children, disabled }: { value: string; children: ReactNode; disabled?: boolean }) {
+export function MenuRadioItem({ value, children, description, disabled }: {
+  value: string;
+  children: ReactNode;
+  // A second line under the name (what the choice means). The name alone stays the item's name.
+  description?: ReactNode;
+  disabled?: boolean;
+}) {
   const kind = useMenuKind();
-  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6');
+  const descriptionId = useId();
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6', description && 'h-auto items-start py-1');
   const check = <Icon icon={AppIcons.done} size="sm" />;
-  const body = <span className="min-w-0 flex-1 truncate">{children}</span>;
+  // aria-hidden keeps the description out of the name; aria-describedby still reads it.
+  const body = description ? (
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="truncate">{children}</span>
+      <span id={descriptionId} aria-hidden="true" className="w-64 text-ui-sm text-label-secondary">{description}</span>
+    </span>
+  ) : <span className="min-w-0 flex-1 truncate">{children}</span>;
+  const describedBy = description ? descriptionId : undefined;
   return kind === 'dropdown'
     ? (
-      <DropdownMenuPrimitive.RadioItem value={value} disabled={disabled} className={className}>
+      <DropdownMenuPrimitive.RadioItem value={value} disabled={disabled} aria-describedby={describedBy} className={className}>
         {body}
         <DropdownMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</DropdownMenuPrimitive.ItemIndicator>
       </DropdownMenuPrimitive.RadioItem>
     )
     : (
-      <ContextMenuPrimitive.RadioItem value={value} disabled={disabled} className={className}>
+      <ContextMenuPrimitive.RadioItem value={value} disabled={disabled} aria-describedby={describedBy} className={className}>
         {body}
         <ContextMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</ContextMenuPrimitive.ItemIndicator>
       </ContextMenuPrimitive.RadioItem>

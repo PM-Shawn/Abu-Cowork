@@ -36,7 +36,7 @@ describe('design-system motion classes', () => {
     expect(files.some((file) => file.endsWith('MotionSection.tsx'))).toBe(true);
   });
 
-  it('never uses the bare animate-in class that the legacy rule hijacks', () => {
+  it('never uses an unscoped enter-animation class that the legacy rule hijacks', () => {
     const offenders: string[] = [];
     for (const file of files) {
       fs.readFileSync(file, 'utf8').split('\n').forEach((line, index) => {

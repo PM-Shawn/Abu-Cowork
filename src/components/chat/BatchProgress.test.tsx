@@ -64,6 +64,41 @@ describe('BatchProgress', () => {
     expect(screen.getByText('00:01')).toBeInTheDocument();
   });
 
+  it('turns one spinner in the header while rows run; running rows hold a still icon', () => {
+    const store = useBatchProgressStore.getState();
+    store.initBatch(identity, ['Inspect page', 'Write summary', 'Check links']);
+    store.setTaskRunning(identity, 0);
+    store.setTaskRunning(identity, 1);
+
+    const { container } = render(<BatchProgress identity={identity} toolCall={toolCall()} />);
+
+    expect(container.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(container.querySelector('header [data-ds-spinner]')).not.toBeNull();
+    for (const name of [/Open Inspect page/, /Open Write summary/]) {
+      const row = screen.getByRole('button', { name });
+      expect(row.querySelector('svg.lucide-loader-circle')).toHaveClass('text-label-tertiary');
+      expect(row.querySelector('svg.lucide-loader-circle')).not.toHaveClass('motion-safe:animate-spin');
+      expect(row.querySelector('[data-ds-spinner]')).toBeNull();
+    }
+  });
+
+  it('marks finished rows with a check and failed rows with a cross, and turns nothing', () => {
+    const store = useBatchProgressStore.getState();
+    store.initBatch(identity, ['Inspect page', 'Write summary']);
+    store.setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+    store.setTaskTerminal(identity, 1, { status: 'failed', reason: 'error' });
+
+    const { container } = render(<BatchProgress identity={identity} toolCall={toolCall()} />);
+
+    expect(screen.getByRole('button', { name: /Open Inspect page/ }).querySelector('svg.lucide-circle-check')).toHaveClass('text-success');
+    expect(screen.getByRole('button', { name: /Open Write summary/ }).querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
+    expect(container.querySelector('[data-ds-spinner]')).toBeNull();
+    const card = container.firstElementChild as HTMLElement;
+    expect(card).toHaveClass('rounded-panel');
+    expect(card).toHaveClass('border-separator');
+    expect(card).toHaveClass('bg-surface');
+  });
+
   it('opens the matching subagent tab without cancelling work', () => {
     const cancelSpy = vi.spyOn(useChatStore.getState(), 'cancelStreaming');
     useBatchProgressStore.getState().initBatch(identity, ['Inspect page']);

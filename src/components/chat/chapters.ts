@@ -126,6 +126,25 @@ export function deriveChapters(groups: Message[][], fallbackTitle: string): Chap
   return chapters;
 }
 
+/**
+ * Whether two chapter lists show the same thing. `deriveChapters` builds a new
+ * array on every streamed token; the rail and the chapter menu compare with
+ * this so they only re-render when a chapter actually changed. The menu shows
+ * no summary, so it passes `{ summary: false }`: a streaming reply grows the
+ * newest chapter's summary on every token.
+ */
+export function sameChapters(a: Chapter[], b: Chapter[], { summary = true }: { summary?: boolean } = {}): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((chapter, index) => {
+    const other = b[index];
+    return chapter.groupIndex === other.groupIndex
+      && chapter.messageId === other.messageId
+      && chapter.title === other.title
+      && (!summary || chapter.summary === other.summary);
+  });
+}
+
 /** One rendered message row, reduced to what the scroll-spy needs. */
 export interface RowPosition {
   /** Virtuoso's `data-index` for the row — its index in the group array. */

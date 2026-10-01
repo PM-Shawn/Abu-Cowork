@@ -220,6 +220,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           {/* One right-click menu and one "⋯" menu for all the task rows. */}
           <RowMenus
             items={conversationMenuItems}
+            moreLabel={t.sidebar.moreActions}
             onOpenChange={dropActionOnOpen}
             onCloseAutoFocus={runAfterMenuClose}
             className="space-y-1"

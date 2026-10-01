@@ -39,8 +39,10 @@ const NO_ANCHOR: AnchorBox = { top: 0, left: 0, width: 0, height: 0 };
 // Every mounted menu listens for each key press on the document, so a list of rows
 // shares two menus: one right-click menu around the list, and one "more actions" menu
 // that opens at the button of the row it is asked for. Both show the items of that row.
-export function RowMenus({ items, onOpenChange, onCloseAutoFocus, className, children }: {
+export function RowMenus({ items, moreLabel, onOpenChange, onCloseAutoFocus, className, children }: {
   items: (rowId: string) => ReactNode;
+  // The name of the rows' "more actions" buttons; the menu they open carries it too.
+  moreLabel: string;
   // Either menu opened or closed.
   onOpenChange?: (open: boolean) => void;
   // Either menu has gone; preventDefault() keeps the focus for what the caller opens.
@@ -120,12 +122,23 @@ export function RowMenus({ items, onOpenChange, onCloseAutoFocus, className, chi
         onOpenChange={handleMoreOpenChange}
         onCloseAutoFocus={onCloseAutoFocus}
         trigger={(
-          // Stands where the row's button is, so the menu opens there. The menu gives the
-          // focus back to its trigger when it closes; this one hands it on to that button.
+          // Stands where the row's button is, so the menu opens there, and names the menu
+          // (a menu takes its name from its trigger). The menu gives the focus back to its
+          // trigger when it closes; this one hands it on to that button, or to the first
+          // row left when the button's row has gone in the meantime.
           <span
             aria-hidden="true"
+            aria-label={moreLabel}
             tabIndex={-1}
-            onFocus={() => more?.button.focus()}
+            onFocus={(event) => {
+              if (more?.button.isConnected) {
+                more.button.focus();
+                return;
+              }
+              const firstRow = event.currentTarget.closest('[data-row-menus]')?.querySelector<HTMLElement>('[tabindex="0"]');
+              if (firstRow) firstRow.focus();
+              else event.currentTarget.blur();
+            }}
             className="pointer-events-none absolute"
             style={more?.anchor ?? NO_ANCHOR}
           />

@@ -46,6 +46,7 @@ function List({ rows }: { rows: string[] }) {
   return (
     <RowMenus
       className="space-y-1"
+      moreLabel="More actions"
       onOpenChange={onOpenChange}
       onCloseAutoFocus={onCloseAutoFocus}
       items={(rowId) => (
@@ -191,6 +192,46 @@ describe('RowMenus', () => {
 
       expect(screen.queryByRole('menu')).toBeNull();
       expect(moreButton('b')).toHaveFocus();
+    });
+
+    it('names its menu for a screen reader', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderList();
+
+      await user.click(moreButton('b'));
+
+      expect(screen.getByRole('menu')).toHaveAccessibleName('More actions');
+    });
+
+    // An agent or the menu itself can remove the row while its menu is open.
+    it('hands the focus to the first row left when its own row has gone by the time the menu closes', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const view = renderList();
+      act(() => moreButton('b').focus());
+      await user.keyboard('{Enter}');
+      await act(() => vi.runOnlyPendingTimersAsync());
+      view.rerender(<List rows={['a', 'c']} />);
+
+      await user.keyboard('{Escape}');
+      await act(() => vi.runOnlyPendingTimersAsync());
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(screen.getByTestId('a')).toHaveFocus();
+    });
+
+    it('does not leave the focus on a hidden element when no row is left', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const view = renderList(['a']);
+      act(() => moreButton('a').focus());
+      await user.keyboard('{Enter}');
+      await act(() => vi.runOnlyPendingTimersAsync());
+      view.rerender(<List rows={[]} />);
+
+      await user.keyboard('{Escape}');
+      await act(() => vi.runOnlyPendingTimersAsync());
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(document.activeElement?.closest('[aria-hidden="true"]') ?? null).toBeNull();
     });
 
     it('leaves the focus to a caller that takes it in the close hook', async () => {

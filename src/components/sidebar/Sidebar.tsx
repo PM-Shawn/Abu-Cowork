@@ -485,6 +485,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           // One right-click menu and one "⋯" menu for all the rows.
           <RowMenus
             items={conversationMenuItems}
+            moreLabel={t.sidebar.moreActions}
             onOpenChange={dropRenameOnOpen}
             onCloseAutoFocus={startRenameAfterClose}
             className="space-y-1"

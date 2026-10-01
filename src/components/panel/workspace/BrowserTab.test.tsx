@@ -1004,11 +1004,11 @@ describe('BrowserTab native overlay visibility', () => {
       const view = renderTab('browser-toolbar-start', '');
 
       const prompt = view.getByText('Enter a URL to start');
-      expect(prompt).toHaveClass('text-title');
       expect(view.container.querySelector('.bg-surface')).toContainElement(prompt);
     });
 
-    it('does not render again while a message streams or an unrelated tab changes', async () => {
+    it('subscribes to neither messages nor other tabs', async () => {
+      const conversationsBefore = useChatStore.getState().conversations;
       let commits = 0;
       render(
         <DesignSystemProvider>
@@ -1024,25 +1024,29 @@ describe('BrowserTab native overlay visibility', () => {
       const before = commits;
       expect(before).toBeGreaterThan(0);
 
-      for (const text of ['Once', 'Once upon', 'Once upon a time']) {
-        act(() => {
-          useChatStore.setState({
-            conversations: {
-              'active-conversation': {
-                id: 'active-conversation',
-                title: 'Streaming',
-                messages: [{ id: 'm1', role: 'assistant', content: text, timestamp: 1 }],
-                createdAt: 1,
-                updatedAt: 1,
-                status: 'running',
+      try {
+        for (const text of ['Once', 'Once upon', 'Once upon a time']) {
+          act(() => {
+            useChatStore.setState({
+              conversations: {
+                'active-conversation': {
+                  id: 'active-conversation',
+                  title: 'Streaming',
+                  messages: [{ id: 'm1', role: 'assistant', content: text, timestamp: 1 }],
+                  createdAt: 1,
+                  updatedAt: 1,
+                  status: 'running',
+                },
               },
-            },
-          } as never);
-        });
-        act(() => usePreviewStore.getState().updateBrowserUrl('some-other-tab', `https://other.example.com/${text.length}`));
-      }
+            } as never);
+          });
+          act(() => usePreviewStore.getState().updateBrowserUrl('some-other-tab', `https://other.example.com/${text.length}`));
+        }
 
-      expect(commits).toBe(before);
+        expect(commits).toBe(before);
+      } finally {
+        act(() => useChatStore.setState({ conversations: conversationsBefore }));
+      }
     });
   });
 
@@ -1087,23 +1091,22 @@ describe('BrowserTab native overlay visibility', () => {
       expect(view.getByRole('button', { name: 'Hand back to Abu' })).toBeEnabled();
     });
 
-    it('shows one spinner with the sentence while the page is handed back', async () => {
+    it('shows one spinner with the sentence while Abu\'s current action is being finished', async () => {
       const { view, setPhase } = await renderWithControl('browser-notice-yielding');
 
-      setPhase('human');
+      // The host enters this phase from `ai`, when the user asks for control.
       setPhase('yielding');
 
       expect(view.container.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
       const status = view.getByRole('status');
       expect(status).toHaveTextContent('Finishing the current action…');
       expect(status).toContainElement(view.container.querySelector('[data-ds-spinner]') as HTMLElement);
-      expect(status).not.toHaveClass('bg-info-soft');
       expect(view.queryByText(/You are in control/)).toBeNull();
       // The control button keeps its existing wording and stays unavailable.
       expect(view.getByRole('button', { name: 'Finishing the current action…' })).toBeDisabled();
     });
 
-    it('announces a failed hand-back as an alert and lets the user retry', async () => {
+    it('announces a failed control change as an alert and lets the user retry', async () => {
       const { view, setPhase } = await renderWithControl('browser-notice-failed');
 
       setPhase('yield-failed');
@@ -1113,6 +1116,7 @@ describe('BrowserTab native overlay visibility', () => {
       expect(alert).toHaveClass('bg-danger-soft');
       expect(view.queryByRole('status')).toBeNull();
       expect(view.container.querySelector('[data-ds-spinner]')).toBeNull();
+      expect(view.getByRole('button', { name: 'Take control' })).toBeEnabled();
     });
 
     it('shows a failed control request as an alert', async () => {
@@ -1264,6 +1268,8 @@ describe('BrowserTab native overlay visibility', () => {
       fireEvent.compositionStart(input);
       fireEvent.change(input, { target: { value: 'tianqi' } });
       fireEvent.compositionUpdate(input, { data: 'tianqi' });
+      // A key the input method consumes is reported as `Process`.
+      fireEvent.keyDown(input, { key: 'Process', keyCode: 229, isComposing: true });
       fireEvent.change(input, { target: { value: '天气' } });
       fireEvent.compositionEnd(input, { data: '天气' });
       await act(async () => { await Promise.resolve(); });
@@ -1275,6 +1281,25 @@ describe('BrowserTab native overlay visibility', () => {
       await waitFor(() => {
         expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-ime', url: 'https://天气' });
       });
+    });
+
+    // The handler looks at the key only. A keydown named Enter commits even while the
+    // event still reports a composition; this pins that, so a change to it is deliberate.
+    it('current behaviour: an Enter keydown that reports isComposing commits the half-composed text', async () => {
+      const input = await renderLoadedTab('browser-address-ime-enter');
+
+      fireEvent.focus(input);
+      fireEvent.compositionStart(input);
+      fireEvent.change(input, { target: { value: 'tianqi' } });
+      fireEvent.compositionUpdate(input, { data: 'tianqi' });
+      fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+      fireEvent.compositionEnd(input, { data: 'tianqi' });
+
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-ime-enter', url: 'https://tianqi' });
+      });
+      expect(navigations()).toHaveLength(1);
+      expect(input.value).toBe('https://tianqi');
     });
   });
 

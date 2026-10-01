@@ -189,8 +189,26 @@ describe('persistent confirmation scope', () => {
     expect(JSON.stringify(config)).toBe(before);
   });
 
-  it('refuses scripting, invalid configurations and unresolved scopes', () => {
-    expect(grantBrowserPermissionTargets(createBrowserPermissionConfig(), 'script', [{ origin: top }])).toBeNull();
+  it('grants scripts on a site the same way as browsing and uploading', () => {
+    const next = grantBrowserPermissionTargets(createBrowserPermissionConfig(), 'script', [{ origin: top }]);
+    expect(next?.sites[top]).toMatchObject({ script: 'allow' });
+    expect(resolveBrowserPermissionConfig(next, 'script', [{ origin: top }]).decision).toBe('allow');
+  });
+
+  it('refuses a script grant for an embedded region, which would open scripts on the whole host site', () => {
+    const config = createBrowserPermissionConfig();
+    const before = JSON.stringify(config);
+    expect(grantBrowserPermissionTargets(config, 'script', [{ origin: frame, embeddedIn: top }, { origin: top }])).toBeNull();
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
+  it('refuses a script grant on a site whose scripts are blocked', () => {
+    const config = createBrowserPermissionConfig();
+    config.sites[top] = { ...emptyBrowserSiteRule(), script: 'deny' };
+    expect(grantBrowserPermissionTargets(config, 'script', [{ origin: top }])).toBeNull();
+  });
+
+  it('refuses invalid configurations and unresolved scopes', () => {
     expect(grantBrowserPermissionTargets(null, 'upload', [{ origin: top }])).toBeNull();
     expect(grantBrowserPermissionTargets(createBrowserPermissionConfig(), 'upload', [])).toBeNull();
     expect(grantBrowserPermissionTargets(createBrowserPermissionConfig(), 'upload', [{ origin: null }])).toBeNull();

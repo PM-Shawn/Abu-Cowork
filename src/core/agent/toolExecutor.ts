@@ -26,6 +26,7 @@ import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtin
 import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSessionWindowHidden, setSessionWindowHidden, pauseComputerUseStatus } from './computerUseStatus';
 import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
+import { withOfferedToolsHint } from '../tools/offeredToolsHint';
 import { isReadOnlyCommand } from '../tools/readOnlyDetector';
 import { invoke } from '@tauri-apps/api/core';
 import { getChatDelta } from './ports/chatDelta';
@@ -215,7 +216,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   let completedCount = 0;
   const totalCount = collectedToolCalls.length;
 
-  const checkToolBoundary = (name: string, input: Record<string, unknown>): string | null => {
+  const boundaryRefusal = (name: string, input: Record<string, unknown>): string | null => {
     const roleError = params.agentToolPolicy && checkAgentToolCall(params.agentToolPolicy, name, input);
     if (roleError) return roleError;
     if (allowedTools.length > 0 && !allowedTools.some((pattern) => matchesToolPattern(name, pattern, input))) {
@@ -225,6 +226,10 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       return `Error: tool "${name}" is blocked for this agent run`;
     }
     return null;
+  };
+  const checkToolBoundary = (name: string, input: Record<string, unknown>): string | null => {
+    const refusal = boundaryRefusal(name, input);
+    return refusal && withOfferedToolsHint(refusal, name, toolContext.offeredToolNames);
   };
 
   const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {

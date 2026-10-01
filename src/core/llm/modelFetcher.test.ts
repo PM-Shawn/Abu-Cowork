@@ -206,3 +206,16 @@ describe('modelFetcher', () => {
     });
   });
 });
+
+describe('fetchProviderModels — context window reported by llama.cpp', () => {
+  beforeEach(() => {
+    vi.mocked(getTauriFetch).mockReset();
+  });
+
+  it('keeps data[].meta.n_ctx as ModelInfo.contextWindow', async () => {
+    stubFetch(() => jsonResponse({ data: [{ id: 'qwen3-8b-q4', meta: { n_ctx: 8192 } }, { id: 'plain-model' }] }));
+    const result = await fetchProviderModels('http://127.0.0.1:8080/v1', '', 'openai-compatible');
+    expect(result.models.find((m) => m.id === 'qwen3-8b-q4')?.contextWindow).toBe(8192);
+    expect(result.models.find((m) => m.id === 'plain-model')?.contextWindow).toBeUndefined();
+  });
+});

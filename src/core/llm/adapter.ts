@@ -72,6 +72,18 @@ export interface ChatOptions {
   volatileContextTail?: string;
   tools?: ToolDefinition[];
   maxTokens?: number;
+  /**
+   * 用户在模型「上下文长度」里填写的值。只有 Ollama 原生适配器读它：填了才发
+   * options.num_ctx，没填时请求不带 num_ctx，Ollama 按它自己的设置运行。阿布估计或
+   * 向服务问到的窗口不会经这里发出。随 llm.chat 序列化进 sidecar。
+   */
+  requestedContextLength?: number;
+  /**
+   * 服务商是本地服务（Ollama、LM Studio、地址在本机的自定义服务商，见 localServerKind）。
+   * 本地服务首次回答前最多等 LOCAL_FIRST_RESPONSE_TIMEOUT_MS，超时按 local_server_timeout
+   * 结束、不重试；云端服务商保持 180 秒。随 llm.chat 序列化进 sidecar。
+   */
+  localServer?: boolean;
   // New parameters for enhanced control
   toolChoice?: ToolChoice;
   temperature?: number;        // 0-1, controls randomness
@@ -127,7 +139,7 @@ export interface LLMAdapter {
  * agree on the JSON-RPC `llm.chat` params' `adapterKind` field without
  * duplicating the union.
  */
-export type AdapterKind = 'claude' | 'openai-compatible';
+export type AdapterKind = 'claude' | 'openai-compatible' | 'ollama';
 
 // --- Error Classification ---
 
@@ -144,6 +156,7 @@ export type LLMErrorCode =
   | 'network_error'        // fetch/connection failures
   | 'network_blocked'      // WAF / proxy intercepted the request and returned HTML
   | 'payload_too_large'    // shell↔sidecar IPC payload exceeded its limit (#549)
+  | 'local_server_timeout' // 本地服务在等待上限内没有开始回答；不重试，也不走其他恢复路径
   | 'cancelled'            // user abort
   | 'unknown';
 
@@ -160,6 +173,7 @@ const LLM_ERROR_CODES: ReadonlySet<string> = new Set<LLMErrorCode>([
   'network_error',
   'network_blocked',
   'payload_too_large',
+  'local_server_timeout',
   'cancelled',
   'unknown',
 ]);
@@ -175,6 +189,8 @@ export class LLMError extends Error {
   statusCode?: number;
   rawBody?: string;
   upstream?: UpstreamErrorDetails;
+  /** 服务在超长报错里说出的真实上限，只在 context_too_long 时出现 */
+  contextLimit?: number;
 
   constructor(
     message: string,
@@ -185,6 +201,7 @@ export class LLMError extends Error {
       statusCode?: number;
       rawBody?: string;
       upstream?: UpstreamErrorDetails;
+      contextLimit?: number;
     }
   ) {
     super(message);
@@ -195,6 +212,7 @@ export class LLMError extends Error {
     this.statusCode = options?.statusCode;
     this.rawBody = options?.rawBody;
     this.upstream = normalizeUpstreamErrorDetails(options?.upstream);
+    this.contextLimit = options?.contextLimit;
   }
 }
 
@@ -340,7 +358,7 @@ export function extractUpstreamErrorDetails(
   const records = providerErrorRecords(rawBody);
   const errorType = firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
   const traceId = firstBoundedString(records, ['traceId', 'trace_id'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
-  const structuredSummary = firstBoundedString(records, ['message', 'detail'], UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+  const structuredSummary = firstBoundedString(records, ['message', 'detail', 'error'], UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
   // For a parsed JSON body with no human-readable message/detail, omit the
   // summary instead of copying the whole JSON object into the UI card. Plain
   // text provider bodies still use the bounded fallback.
@@ -421,10 +439,14 @@ export function extractApiErrorMessage(rawBody: string): string {
   const stripped = stripProviderStatusPrefix(rawBody);
   try {
     const parsed = JSON.parse(stripped) as {
-      error?: { message?: string };
+      error?: { message?: string } | string;
       message?: string;
     };
-    if (typeof parsed.error?.message === 'string' && parsed.error.message) {
+    // Ollama 原生接口的错误体是 {"error": "..."}
+    if (typeof parsed.error === 'string' && parsed.error) {
+      return parsed.error;
+    }
+    if (typeof parsed.error === 'object' && typeof parsed.error?.message === 'string' && parsed.error.message) {
       return parsed.error.message;
     }
     if (typeof parsed.message === 'string' && parsed.message) {
@@ -464,6 +486,35 @@ function isHtmlBody(body: string): boolean {
   }
 
   return /^(?:<!doctype\b|<html\b|<head\b|<body\b)/i.test(candidate);
+}
+
+const CONTEXT_OVERFLOW_PATTERN =
+  /prompt.is.too.long|token.*exceed|too.many.tokens|max.tokens.exceeded|context.window|context.length|larger than the max context size/i;
+
+/** 这段错误文字是否表示「内容超过上限」。流式中途的错误没有状态码，也用它判断。 */
+export function isContextOverflowMessage(message: string): boolean {
+  return CONTEXT_OVERFLOW_PATTERN.test(message);
+}
+
+const CONTEXT_LIMIT_TEXT_PATTERNS: readonly RegExp[] = [
+  /maximum context length is (\d+) tokens/i, // OpenAI
+  /context size \((\d+) tokens\)/i, // llama.cpp 两种句式
+  /context length(?: is|:)?\s*(\d+)/i, // Ollama
+];
+
+/** 从超长报错里读出服务真实的上限：先读结构化字段 n_ctx，再读文字。 */
+export function extractContextLimit(rawBody: string, message: string): number | undefined {
+  for (const record of providerErrorRecords(rawBody)) {
+    const structured = record.n_ctx;
+    if (typeof structured === 'number' && Number.isSafeInteger(structured) && structured > 0) return structured;
+  }
+  for (const pattern of CONTEXT_LIMIT_TEXT_PATTERNS) {
+    const match = pattern.exec(message);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  }
+  return undefined;
 }
 
 /**
@@ -547,10 +598,10 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
 
   // Bad request — check for context length
   if (statusCode === 400) {
-    const isContextTooLong = /prompt.is.too.long|token.*exceed|too.many.tokens|max.tokens.exceeded|context.window|context.length/i.test(message);
-    if (isContextTooLong) {
+    if (isContextOverflowMessage(message)) {
       return new LLMError(message, 'context_too_long', {
         retryable: false, statusCode, rawBody: stored, upstream,
+        contextLimit: extractContextLimit(rawBody, message),
       });
     }
     return new LLMError(message, 'invalid_request', {

@@ -159,6 +159,8 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/panel/previewFileActions*.ts',
   'src/features/reference/**/*.{ts,tsx}',
   'src/components/preview/**/*.{ts,tsx}',
+  'src/components/panel/workspace/TerminalTab*.{ts,tsx}',
+  'src/hooks/useTokenRevision*.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

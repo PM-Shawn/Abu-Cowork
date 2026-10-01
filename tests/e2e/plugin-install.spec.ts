@@ -453,9 +453,20 @@ test('recovers an interrupted same-version replacement before plugin activation 
     // The interruption below has to land on a settled install, and the switch
     // on 「我的」 is what says the plugin is live.
     await page.getByTestId('extensions-source-mine').click();
-    const liveRow = page.getByTestId('plugin-mine-row').filter({ hasText: 'e2e-weather' }).first();
-    await expect(liveRow.getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
-    await page.getByTestId('extensions-source-market').click();
+    const liveRow = () => page.getByTestId('plugin-mine-row').filter({ hasText: 'e2e-weather' }).first();
+    await expect(liveRow().getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
+    // Settled also means on disk. Chromium commits localStorage on a delay and
+    // the kill below skips that commit, so an install made seconds earlier can
+    // come back without its connector, which recovery then rightly refuses to
+    // overwrite. Quit normally and reopen, so the interruption lands on an
+    // install from an earlier session.
+    await closeAbuElectron(launched.app);
+    launched = await launchAbuElectron(launched);
+    page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await openPluginsTab(page);
+    await page.getByTestId('extensions-source-mine').click();
+    await expect(liveRow().getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
     const registry = path.join(installRoot(launched), 'installed.json');
     const previous = JSON.parse(fs.readFileSync(registry, 'utf8'))[0];
     const installedSkill = path.join(installRoot(launched), 'e2e-market/e2e-weather/1.0.0/skills/today/SKILL.md');
@@ -483,15 +494,11 @@ test('recovers an interrupted same-version replacement before plugin activation 
     launched = await launchAbuElectron(launched);
     page = await launched.app.firstWindow();
     await waitForWelcomeScreen(page);
-    // The kill took the window down before it could persist the dismissal, so
-    // this launch opens on the guide again.
-    await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await expect.poll(() => fs.existsSync(installedSkill) ? fs.readFileSync(installedSkill, 'utf8') : null, { timeout: READY_TIMEOUT }).toBe(originalBody);
     expect(JSON.parse(fs.readFileSync(registry, 'utf8'))).toEqual([previous]);
     expect(fs.readFileSync(installedAgent, 'utf8')).toBe(originalAgent);
-    // The shelf is a persisted choice, and the kill may have dropped the last
-    // switch back to 市场 before it reached disk — pick it explicitly.
+    // The first session quit on 「我的」, so the plugins tab reopens there.
     await page.getByTestId('extensions-source-market').click();
     const recovered = page.getByTestId('plugin-marketplace-entry').filter({ hasText: 'e2e-weather' }).first();
     await expect(recovered.getByTestId('plugin-installed-badge')).toBeVisible({ timeout: READY_TIMEOUT });
@@ -504,6 +511,79 @@ test('recovers an interrupted same-version replacement before plugin activation 
     await expect(recoveredRow.getByRole('switch')).toBeEnabled();
     const mcp = await page.evaluate(() => JSON.parse(localStorage.getItem('abu-mcp-store') ?? '{}'));
     expect(mcp.state.servers.forecast.config.enabled).toBe(true);
+  } finally {
+    if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
+    fs.rmSync(marketDir, { recursive: true, force: true });
+  }
+});
+
+// The state after a crash that lost the renderer's latest writes, built
+// directly: the install is saved by a normal quit, and the next session begins
+// the update with an edited connector and a marker that it never writes to
+// localStorage, the way a process that died before Chromium's commit leaves
+// them. Storage then holds the installed connector and no marker, whatever
+// Chromium's commit timing. The begin request is otherwise built the way the
+// renderer builds it.
+test('recovers an interrupted update whose connector configuration had not reached disk', async () => {
+  const marketDir = seedMarketplace();
+  let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
+  try {
+    launched = await launchAbuElectron();
+    let page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await dismissFirstRunOverlays(page);
+    await openPluginsTab(page);
+    await openAddMarketplace(page);
+    await page.getByTestId('plugin-marketplace-dir-input').fill(marketDir);
+    await page.getByTestId('plugin-marketplace-submit').click();
+    const entry = page.getByTestId('plugin-marketplace-entry').filter({ hasText: 'e2e-weather' }).first();
+    await entry.getByRole('button', { name: /^(安装|Install): e2e-weather$/ }).click();
+    await page.getByTestId('plugin-install-confirm').click();
+    await expect(entry.getByTestId('plugin-installed-badge')).toBeVisible({ timeout: READY_TIMEOUT });
+    // app.quit() commits localStorage, so the install is on disk from here.
+    await closeAbuElectron(launched.app);
+    launched = await launchAbuElectron(launched);
+    page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    const registry = path.join(installRoot(launched), 'installed.json');
+    const previous = JSON.parse(fs.readFileSync(registry, 'utf8'))[0];
+    const installedSkill = path.join(installRoot(launched), 'e2e-market/e2e-weather/1.0.0/skills/today/SKILL.md');
+    const originalBody = fs.readFileSync(installedSkill, 'utf8');
+    fs.writeFileSync(path.join(marketDir, 'plugins/e2e-weather/skills/today/SKILL.md'), originalBody + '\nNew revision.\n');
+    const { installed, forecast } = await page.evaluate(async ({ marketDir, previous }) => {
+      const shell = (window as unknown as { __ABU_SHELL__: {
+        pluginSnapshot: (action: string, request: object) => Promise<{ token: string; checksum: string }>;
+        pluginOperation: (action: string, request: object) => Promise<unknown>;
+      } }).__ABU_SHELL__;
+      const snapshot = await shell.pluginSnapshot('prepare', { marketplaceDir: marketDir, marketplaceName: 'e2e-market', entryName: 'e2e-weather' });
+      const installed = JSON.parse(localStorage.getItem('abu-mcp-store') ?? '{}').state.servers.forecast.config;
+      const config = { ...installed, args: [...(installed.args ?? []), '--e2e-edited'] };
+      const runtime = { enabled: true, servers: { forecast: config }, disabledSkills: { today: false }, disabledAgents: {} };
+      const marker = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+      await shell.pluginOperation('begin', { kind: 'update', key: previous.key, expected: previous,
+        record: { ...previous, checksum: snapshot.checksum }, token: snapshot.token, runtime, marker });
+      await shell.pluginSnapshot('materialize', { token: snapshot.token });
+      return { installed, forecast: config };
+    }, { marketDir, previous });
+    expect(forecast).not.toEqual(installed);
+    expect(fs.readFileSync(installedSkill, 'utf8')).toContain('New revision.');
+    await terminateAbuElectron(launched.app);
+    launched = await launchAbuElectron(launched);
+    page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await openPluginsTab(page);
+    const journal = path.join(launched.appDataDir, 'Home/.abu/plugin-operations/active.enc');
+    await expect.poll(() => fs.existsSync(journal), { timeout: READY_TIMEOUT }).toBe(false);
+    await expect(page.getByText(/插件恢复尚未完成|Plugin recovery/)).toHaveCount(0);
+    expect(fs.readFileSync(installedSkill, 'utf8')).toBe(originalBody);
+    expect(JSON.parse(fs.readFileSync(registry, 'utf8'))).toEqual([previous]);
+    // Usable again, not just listed: the switch on 「我的」 is on and takes input.
+    await page.getByTestId('extensions-source-mine').click();
+    const row = page.getByTestId('plugin-mine-row').filter({ hasText: 'e2e-weather' }).first();
+    await expect(row.getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
+    await expect(row.getByRole('switch')).toBeEnabled();
+    const mcp = await page.evaluate(() => JSON.parse(localStorage.getItem('abu-mcp-store') ?? '{}'));
+    expect(mcp.state.servers.forecast.config).toEqual(forecast);
   } finally {
     if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
     fs.rmSync(marketDir, { recursive: true, force: true });
@@ -552,7 +632,11 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await page.getByRole('button', { name: /^(校验并预览|Validate and preview)$/ }).click();
     await page.getByTestId('plugin-install-confirm').click();
     await expect(page.getByTestId('plugin-install-disclosure')).toBeHidden({ timeout: READY_TIMEOUT });
+    // Installation replaces the disclosure with the installed detail. Wait for
+    // that transition before sending Escape to the new modal.
+    await expect(page.getByTestId('plugin-manage-dialog')).toBeVisible();
     await page.keyboard.press('Escape');
+    await expect(page.getByTestId('plugin-manage-dialog')).toBeHidden();
     const row = page.getByTestId('plugin-mine-row');
     await expect(row.getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: READY_TIMEOUT });
     const registryPath = path.join(installRoot(launched), 'installed.json');

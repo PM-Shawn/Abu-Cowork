@@ -627,6 +627,41 @@ describe('agentLoopHost', () => {
     });
   });
 
+  describe('run-scoped capsPort', () => {
+    it('serves the learned window together with the service value it was learned against', async () => {
+      let seen: unknown;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        seen = getCurrentAgentRunContext().capsPort.get('p', 'm');
+        return { reason: 'completed' };
+      });
+      await handleStartedAgentRun({
+        capsSnapshot: { providerId: 'p', modelId: 'm', contextWindow: 6000, contextWindowProbe: 8192 },
+      });
+      expect(seen).toMatchObject({ contextWindow: 6000, contextWindowProbe: 8192 });
+    });
+
+    it('forwards the service value with a learned window and mirrors it for the next read', async () => {
+      const reads: unknown[] = [];
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const port = getCurrentAgentRunContext().capsPort;
+        port.recordContextWindow('p', 'm', 6000, 8192);
+        reads.push(port.get('p', 'm'));
+        port.recordContextWindow('p', 'm', 5000);
+        reads.push(port.get('p', 'm'));
+        return { reason: 'completed' };
+      });
+      await handleStartedAgentRun();
+      expect(sendNotificationMock).toHaveBeenCalledWith('caps.record', {
+        providerId: 'p', modelId: 'm', field: 'contextWindow', value: 6000, probe: 8192,
+      });
+      expect(sendNotificationMock).toHaveBeenCalledWith('caps.record', {
+        providerId: 'p', modelId: 'm', field: 'contextWindow', value: 5000, probe: undefined,
+      });
+      expect(reads[0]).toMatchObject({ contextWindow: 6000, contextWindowProbe: 8192 });
+      expect(reads[1]).toMatchObject({ contextWindow: 5000, contextWindowProbe: undefined });
+    });
+  });
+
   describe('handleAgentAbort', () => {
     it('is idempotent and silent for an unknown runId', async () => {
       await expect(handleAgentAbort({ runId: 'never-existed' })).resolves.toEqual({ accepted: false, state: 'not_found' });
@@ -1153,6 +1188,35 @@ describe('agentLoopHost', () => {
           context: {
             conversationId: 'conv-wire',
             deferredToolNames: ['rare_clipboard'],
+          },
+        }),
+      );
+    });
+
+    it('sends the offered tool names over the wire as a plain string array', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+
+      await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'reed_file',
+          { path: '/tmp/x' },
+          undefined,
+          undefined,
+          {
+            conversationId: 'conv-wire',
+            offeredToolNames: ['read_file', 'rare_clipboard'],
+            abortSignal: new AbortController().signal,
+          },
+        ),
+      );
+
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({
+          toolName: 'reed_file',
+          context: {
+            conversationId: 'conv-wire',
+            offeredToolNames: ['read_file', 'rare_clipboard'],
           },
         }),
       );

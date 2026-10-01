@@ -1,0 +1,71 @@
+// @vitest-environment happy-dom
+/// <reference types="@testing-library/jest-dom" />
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import { Avatar } from './avatar';
+import { Kbd } from './kbd';
+import { Link } from './link';
+import { Separator } from './separator';
+import { Spinner } from './spinner';
+import { StatusIcon } from './status-icon';
+import { Tag } from './tag';
+
+describe('basic components', () => {
+  it('Link is an anchor in the link color', () => {
+    render(<Link href="https://example.com">Docs</Link>);
+    const link = screen.getByRole('link', { name: 'Docs' });
+    expect(link).toHaveAttribute('href', 'https://example.com');
+    expect(link).toHaveClass('text-link');
+  });
+
+  it('Kbd renders a keyboard key in the code font', () => {
+    render(<Kbd>⌘K</Kbd>);
+    const key = screen.getByText('⌘K');
+    expect(key.tagName).toBe('KBD');
+    expect(key).toHaveClass('font-code');
+  });
+
+  it('Spinner says what is happening and marks the part that stops under reduced motion', () => {
+    const { container } = render(<Spinner label="Reading 9 files" />);
+    expect(screen.getByRole('status')).toHaveTextContent('Reading 9 files');
+    expect(container.querySelector('[data-ds-spinner]')).toHaveClass('animate-spin');
+  });
+
+  it('Spinner can keep its text for screen readers only', () => {
+    render(<Spinner label="Loading" labelHidden />);
+    expect(screen.getByText('Loading')).toHaveClass('sr-only');
+  });
+
+  it.each([
+    ['success', 'text-success'],
+    ['warning', 'text-warning'],
+    ['danger', 'text-danger'],
+    ['info', 'text-info'],
+  ] as const)('StatusIcon %s pairs its color with a shape', (tone, color) => {
+    render(<StatusIcon tone={tone} label={tone} />);
+    expect(screen.getByRole('img', { name: tone })).toHaveClass(color);
+  });
+
+  it('Tag shows a status icon for status tones and none for neutral', () => {
+    const { container } = render(<><Tag tone="warning">Expiring</Tag><Tag>Draft</Tag></>);
+    const [warning, neutral] = container.querySelectorAll('span.inline-flex');
+    expect(warning).toHaveClass('bg-warning-soft');
+    expect(warning.querySelector('svg')).not.toBeNull();
+    expect(neutral).toHaveClass('bg-fill');
+    expect(neutral.querySelector('svg')).toBeNull();
+  });
+
+  it('Avatar falls back to the first character of the name on the brand color', () => {
+    render(<Avatar name="shawn" />);
+    const fallback = screen.getByRole('img', { name: 'shawn' });
+    expect(fallback).toHaveTextContent('S');
+    expect(fallback.parentElement).toHaveClass('bg-brand');
+  });
+
+  it('Separator is announced only when it is not decorative', () => {
+    render(<><Separator /><Separator decorative={false} orientation="vertical" /></>);
+    const separators = screen.getAllByRole('separator');
+    expect(separators).toHaveLength(1);
+    expect(separators[0]).toHaveAttribute('aria-orientation', 'vertical');
+  });
+});

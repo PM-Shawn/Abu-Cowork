@@ -29,6 +29,12 @@ describe('createInProcessCapsPort', () => {
     expect(port.get('anthropic', 'claude-x')?.contextWindow).toBe(128000);
   });
 
+  it('recordContextWindow() passes the service value through to the store', () => {
+    const port = createInProcessCapsPort();
+    port.recordContextWindow('lmstudio', 'qwen3-8b', 6000, 8192);
+    expect(port.get('lmstudio', 'qwen3-8b')).toMatchObject({ contextWindow: 6000, contextWindowProbe: 8192 });
+  });
+
   it('recordReasoningObserved() then get() reflects the write', () => {
     const port = createInProcessCapsPort();
     port.recordReasoningObserved('deepseek', 'deepseek-r1');

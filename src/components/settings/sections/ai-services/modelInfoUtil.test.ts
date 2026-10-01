@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toModelInfo } from './modelInfoUtil';
+import { toModelInfo, withContextWindows } from './modelInfoUtil';
 
 describe('toModelInfo', () => {
   it('attaches derived UI capability tags (vision for gpt-4o)', () => {
@@ -24,5 +24,19 @@ describe('toModelInfo', () => {
     expect(withCaps.declaredCapabilities?.supportsImages).toBe(true);
     const withoutCaps = toModelInfo('m');
     expect(withoutCaps.declaredCapabilities).toBeUndefined();
+  });
+});
+
+describe('withContextWindows', () => {
+  it('attaches the reported window to matching models and leaves the rest untouched', () => {
+    const models = [{ id: 'a', label: 'a' }, { id: 'b', label: 'b', contextWindow: 4096 }];
+    expect(withContextWindows(models, new Map([['a', 8192]]))).toEqual([
+      { id: 'a', label: 'a', contextWindow: 8192 },
+      { id: 'b', label: 'b', contextWindow: 4096 },
+    ]);
+  });
+
+  it('toModelInfo carries a detected window', () => {
+    expect(toModelInfo('m', { contextWindow: 8192 }).contextWindow).toBe(8192);
   });
 });

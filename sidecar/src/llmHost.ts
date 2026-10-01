@@ -16,8 +16,7 @@
 import type { Message, StreamEvent, UpstreamErrorDetails } from '@/types';
 import type { ChatOptions, LLMAdapter, AdapterKind } from '@/core/llm/adapter';
 import { formatLlmTerminalError, LLMError, normalizeUpstreamErrorDetails } from '@/core/llm/adapter';
-import { ClaudeAdapter } from '@/core/llm/claude';
-import { OpenAICompatibleAdapter } from '@/core/llm/openai-compatible';
+import { createAdapterForKind } from '@/core/llm/createAdapter';
 import { createEventCoalescer } from './eventCoalescer';
 import { RpcError } from './protocol';
 import { createLogger } from './shims/logger';
@@ -70,8 +69,8 @@ function parseChatParams(params: unknown): LlmChatParams {
   if (typeof callId !== 'string' || !callId) {
     throw new RpcError(-32602, 'Invalid params: callId must be a non-empty string');
   }
-  if (adapterKind !== 'claude' && adapterKind !== 'openai-compatible') {
-    throw new RpcError(-32602, 'Invalid params: adapterKind must be "claude" or "openai-compatible"');
+  if (adapterKind !== 'claude' && adapterKind !== 'openai-compatible' && adapterKind !== 'ollama') {
+    throw new RpcError(-32602, 'Invalid params: adapterKind must be "claude", "openai-compatible" or "ollama"');
   }
   if (!Array.isArray(messages)) {
     throw new RpcError(-32602, 'Invalid params: messages must be an array');
@@ -95,7 +94,7 @@ function parseAbortParams(params: unknown): LlmAbortParams {
 }
 
 function createAdapter(kind: AdapterKind): LLMAdapter {
-  return kind === 'claude' ? new ClaudeAdapter() : new OpenAICompatibleAdapter();
+  return createAdapterForKind(kind);
 }
 
 /** Reconstruct the `data` payload the shell's SidecarLLMAdapter uses to rebuild a faithful LLMError. */
@@ -106,6 +105,7 @@ function errorDataFor(err: unknown): {
   retryAfterMs?: number;
   statusCode?: number;
   upstream?: UpstreamErrorDetails;
+  contextLimit?: number;
   message: string;
 } {
   if (err instanceof LLMError) {
@@ -117,6 +117,7 @@ function errorDataFor(err: unknown): {
       retryAfterMs: err.retryAfterMs,
       statusCode: err.statusCode,
       upstream,
+      contextLimit: err.contextLimit,
       message: formatLlmTerminalError(err),
     };
   }

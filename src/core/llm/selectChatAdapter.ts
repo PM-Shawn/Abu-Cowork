@@ -13,8 +13,7 @@
  */
 
 import type { LLMAdapter, ChatOptions, AdapterKind } from './adapter';
-import { ClaudeAdapter } from './claude';
-import { OpenAICompatibleAdapter } from './openai-compatible';
+import { createAdapterForKind } from './createAdapter';
 import { SidecarLLMAdapter } from './sidecarAdapter';
 import { getSidecarStatus } from '../sidecar/sidecarManager';
 import { createLogger } from '../logging/logger';
@@ -25,7 +24,7 @@ const logger = createLogger('llm-transport');
 export type { AdapterKind } from './adapter';
 
 function createLocalAdapter(kind: AdapterKind): LLMAdapter {
-  return kind === 'claude' ? new ClaudeAdapter() : new OpenAICompatibleAdapter();
+  return createAdapterForKind(kind);
 }
 
 /**

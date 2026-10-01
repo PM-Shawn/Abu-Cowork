@@ -1,11 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import {
+  createHeartbeat,
+  anySignal,
+  DEFAULT_STREAM_HANG_TIMEOUT_MS,
+  LOCAL_FIRST_RESPONSE_TIMEOUT_MS,
+  localFirstResponseTimeoutError,
+} from './heartbeat';
 
 describe('stream hang timeout constant', () => {
   it('is 180s — patient enough for slow reasoning models, not the old 90s ceiling', () => {
     // Raised from 90s: slow reasoning models can think for minutes before/between
     // tokens, and 90s falsely killed them and triggered wasteful retries.
     expect(DEFAULT_STREAM_HANG_TIMEOUT_MS).toBe(180_000);
+  });
+
+  it('gives a local server 10 minutes before its first output', () => {
+    expect(LOCAL_FIRST_RESPONSE_TIMEOUT_MS).toBe(600_000);
+  });
+
+  it('describes a local first-response timeout as an error nothing retries', () => {
+    const error = localFirstResponseTimeoutError();
+    expect(error).toMatchObject({ code: 'local_server_timeout', retryable: false });
+    expect(error.retryAfterMs).toBeUndefined();
+    expect(error.message).toContain('600');
   });
 });
 

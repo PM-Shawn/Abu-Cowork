@@ -328,7 +328,7 @@ test.describe('stale provider pin', () => {
       const tasksOnA = taskCount(a);
       await composerModelButton(page, 'model-a（不可用）').click();
       // Picker rows are role=button divs; the provider list is the last section.
-      const row = page.locator('div[role="button"]').filter({ hasText: /^Model B$/ }).last();
+      const row = page.locator('div[role="button"]').filter({ has: page.getByText('Model B', { exact: true }) }).last();
       await expect(row).toBeVisible();
       await row.click();
       await expect(composerModelButton(page, 'Model B')).toBeVisible();

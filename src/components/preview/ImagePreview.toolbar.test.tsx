@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -97,6 +97,54 @@ describe('ImagePreview toolbar', () => {
     expect(image.style.transform).toBe('translate(0px, 0px) scale(1.25) rotate(270deg)');
     fireEvent.click(toolbarButton(t.imageResetView));
     expect(image.style.transform).toBe('translate(0px, 0px) scale(1) rotate(0deg)');
+  });
+
+  it('resets on a double click on the image stage and not on two quick clicks on a button', () => {
+    render(<ImagePreview src={SRC} alt="photo" />);
+    const t = getI18n().panel;
+    const image = screen.getByRole('img', { name: 'photo' });
+    fireEvent.click(toolbarButton(t.imageZoomIn));
+    fireEvent.doubleClick(toolbarButton(t.imageZoomIn));
+    expect(image.style.transform).toBe('translate(0px, 0px) scale(1.25) rotate(0deg)');
+    fireEvent.doubleClick(image.parentElement as HTMLElement);
+    expect(image.style.transform).toBe('translate(0px, 0px) scale(1) rotate(0deg)');
+  });
+
+  it('keeps the success color on the copy button while the pointer stays on it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('ClipboardItem', class {
+      readonly items: Record<string, Blob>;
+      constructor(items: Record<string, Blob>) {
+        this.items = items;
+      }
+    });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } });
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: () => {} } as unknown as CanvasRenderingContext2D);
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((done) => done(new Blob(['png'], { type: 'image/png' })));
+    try {
+      render(<ImagePreview src={SRC} alt="photo" />);
+      const t = getI18n().panel;
+      const image = screen.getByRole('img', { name: 'photo' });
+      Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 64 });
+      Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 64 });
+
+      const copy = toolbarButton(t.imageCopy);
+      expect(copy).not.toHaveClass('text-success');
+      fireEvent.click(copy);
+      await waitFor(() => expect(copy).toHaveClass('text-success'));
+      expect(write).toHaveBeenCalledTimes(1);
+      // The button's own hover color would otherwise win under the pointer.
+      expect(copy).toHaveClass('hover:text-success');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(copy).not.toHaveClass('text-success');
+    } finally {
+      getContext.mockRestore();
+      toBlob.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it('does not re-render the toolbar for each frame of panning a zoomed image', () => {

@@ -16,4 +16,11 @@ describe('DocxPreview', () => {
     expect(page).not.toBeNull();
     expect(page).toHaveAttribute('data-page-canvas');
   });
+
+  it('takes the page background from the page canvas token', async () => {
+    render(<DocxPreview filePath="/work/token.docx" />);
+    await waitFor(() => expect(renderAsync).toHaveBeenCalled());
+    const page = document.querySelector('.docx-preview-container') as HTMLElement;
+    expect(page.style.background).toContain('--ds-page-canvas');
+  });
 });

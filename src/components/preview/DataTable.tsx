@@ -37,37 +37,39 @@ export default function DataTable({ headers, rows, totalRows }: {
           {format(t.panel.xlsxRowsShowing, { shown: String(rows.length), total: String(totalRows) })}
         </div>
       )}
+      {/* The table is the scroll area's direct content: the pinned header row sticks to the
+          nearest scroller, and the scroll area scrolls both ways. Separate borders keep the
+          header's bottom line on the pinned cells. The space after the table lets the last row
+          scroll clear of the sideways scrollbar, which lies over the bottom edge. */}
       <ScrollArea className="min-h-0 flex-1">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-ui-sm">
-            <thead>
-              <tr className="sticky top-0 z-sticky bg-code">
-                {headers.map((h, i) => (
-                  <th
-                    key={i}
-                    className="whitespace-nowrap border-b border-r border-separator px-3 py-2 text-left font-medium text-label"
+        <table className="mb-2 w-full border-separate border-spacing-0 text-ui-sm">
+          <thead>
+            <tr className="sticky top-0 z-sticky bg-code">
+              {headers.map((h, i) => (
+                <th
+                  key={i}
+                  className="whitespace-nowrap border-b border-r border-separator px-3 py-2 text-left font-medium text-label"
+                >
+                  {h || columnLabel(i)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={ri} className="odd:bg-surface even:bg-code">
+                {headers.map((_, ci) => (
+                  <td
+                    key={ci}
+                    className="h-7 max-w-75 truncate whitespace-nowrap border-b border-r border-separator px-3 text-label"
                   >
-                    {h || columnLabel(i)}
-                  </th>
+                    {row[ci] ?? ''}
+                  </td>
                 ))}
               </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, ri) => (
-                <tr key={ri} className="odd:bg-surface even:bg-code">
-                  {headers.map((_, ci) => (
-                    <td
-                      key={ci}
-                      className="max-w-75 truncate whitespace-nowrap border-b border-r border-separator px-3 py-1 text-label"
-                    >
-                      {row[ci] ?? ''}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </ScrollArea>
     </div>
   );

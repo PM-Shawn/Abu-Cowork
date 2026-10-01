@@ -33,7 +33,8 @@ const ImageToolbar = memo(function ImageToolbar({ zoom, copied, onZoom, onRotate
         size="sm"
         icon={copied ? AppIcons.done : AppIcons.copy}
         label={t.panel.imageCopy}
-        className={copied ? 'text-success' : undefined}
+        // The button's own hover color would replace the success color under the pointer.
+        className={copied ? 'text-success hover:text-success' : undefined}
         onClick={onCopy}
       />
     </div>
@@ -105,7 +106,6 @@ export default function ImagePreview({ src, alt }: { src: string; alt: string })
   return (
     <div
       className="relative flex h-full min-h-0 items-center justify-center overflow-hidden bg-code outline-none"
-      onDoubleClick={resetView}
       onWheel={(event) => {
         if (!event.metaKey && !event.ctrlKey) return;
         event.preventDefault();
@@ -117,13 +117,15 @@ export default function ImagePreview({ src, alt }: { src: string; alt: string })
         style={{ backgroundImage: 'radial-gradient(circle, var(--ds-control-border) 0.7px, transparent 0.8px)', backgroundSize: '16px 16px' }}
       />
 
-      {/* The hint sits on the stage, a sibling of the toolbar, so it never shows over a button's own tooltip. */}
+      {/* The hint and the double-click reset sit on the stage, a sibling of the toolbar: the hint
+          never shows over a button's own tooltip, and two quick clicks on a button do not reset. */}
       <div
         className={cn(
           'relative flex h-full w-full items-center justify-center p-8',
           zoom > 1 ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default',
         )}
         title={t.panel.imageDoubleClickReset}
+        onDoubleClick={resetView}
         onPointerDown={(event) => {
           if (zoom <= 1) return;
           event.currentTarget.setPointerCapture(event.pointerId);

@@ -23,6 +23,29 @@ describe('DataTable', () => {
     expect(headerRow).toHaveClass('bg-code');
   });
 
+  // The header sticks to its nearest scroller. Any scrolling wrapper between the scroll
+  // area and the table would become that scroller and let the header leave with the rows.
+  it('puts the table directly in the scroll area so the header stays in view', () => {
+    render(<DataTable headers={['Name']} rows={[['Ada']]} />);
+    const table = screen.getByRole('table');
+    expect(table.parentElement?.parentElement).toHaveAttribute('data-radix-scroll-area-viewport');
+    // Separate borders travel with the pinned header cells; collapsed ones stay with the table.
+    expect(table).toHaveClass('border-separate');
+    expect(table).toHaveClass('border-spacing-0');
+  });
+
+  // The sideways scrollbar lies over the bottom edge of the scroll area; the space after
+  // the table lets the last row scroll clear of it.
+  it('leaves room after the last row for the sideways scrollbar', () => {
+    render(<DataTable headers={['Name']} rows={[['Ada']]} />);
+    expect(screen.getByRole('table')).toHaveClass('mb-2');
+  });
+
+  it('gives data rows the compact row height', () => {
+    render(<DataTable headers={['Name']} rows={[['Ada']]} />);
+    expect(screen.getByRole('cell', { name: 'Ada' })).toHaveClass('h-7');
+  });
+
   it('names a column without a header by its spreadsheet letter', () => {
     render(<DataTable headers={['', '']} rows={[['1', '2']]} />);
     expect(screen.getByRole('columnheader', { name: 'A' })).toBeInTheDocument();

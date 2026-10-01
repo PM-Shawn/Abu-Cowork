@@ -28,6 +28,12 @@ vi.mock('@/core/memdir/scan', () => ({
 }));
 
 const layerRenders = vi.hoisted(() => ({ iconButton: vi.fn(), menu: vi.fn() }));
+// The latest props of the folder menu, to drive it the way Radix does when it is
+// reopened during its exit animation (happy-dom has no animations).
+const menuProps = vi.hoisted(() => ({
+  onOpenChange: undefined as ((open: boolean) => void) | undefined,
+  onValueChange: undefined as ((value: string) => void) | undefined,
+}));
 
 // Counts renders of the section's floating-layer controls (the reveal button's tooltip, the folder menu).
 vi.mock('@/components/ds/button', async (importOriginal) => {
@@ -47,7 +53,12 @@ vi.mock('@/components/ds/menu', async (importOriginal) => {
     ...actual,
     Menu: (props: ComponentProps<typeof actual.Menu>) => {
       layerRenders.menu();
+      menuProps.onOpenChange = props.onOpenChange;
       return actual.Menu(props);
+    },
+    MenuRadioGroup: (props: ComponentProps<typeof actual.MenuRadioGroup>) => {
+      menuProps.onValueChange = props.onValueChange;
+      return actual.MenuRadioGroup(props);
     },
   };
 });
@@ -187,6 +198,24 @@ describe('WorkspaceSection', () => {
 
     await waitFor(() => expect(useWorkspaceStore.getState().currentPath).toBe(BETA));
     expect(menuOpenWhenPickerOpened).toBe(false);
+  });
+
+  // A menu reopened during its exit animation stays mounted: the close hook never ran
+  // for the choice made before, and opening again must forget it.
+  it('forgets a choice whose close hook never ran when the menu opens again', async () => {
+    const user = userEvent.setup();
+    renderSection();
+    await settle();
+
+    await user.click(folderCard());
+    act(() => menuProps.onValueChange?.(GAMMA));
+    act(() => menuProps.onOpenChange?.(true));
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(screen.queryByText(PERMISSION_TITLE)).not.toBeInTheDocument();
+    expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
+    expect(folderCard()).toHaveFocus();
   });
 
   it('keeps the reveal button apart from the title button', async () => {

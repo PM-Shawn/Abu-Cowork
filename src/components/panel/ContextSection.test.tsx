@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -12,6 +13,20 @@ import ContextSection from './ContextSection';
 vi.mock('@/stores/mcpStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/stores/mcpStore')>();
   return { ...actual, initMCPStoreSync: vi.fn() };
+});
+
+const pressableRenders = vi.hoisted(() => vi.fn());
+
+// Every render of the section renders its title button: this counts the section's renders.
+vi.mock('@/components/ds/pressable', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/pressable')>();
+  return {
+    ...actual,
+    Pressable: (props: ComponentProps<typeof actual.Pressable>) => {
+      pressableRenders();
+      return actual.Pressable(props);
+    },
+  };
 });
 
 const CONV = 'conv-context';
@@ -140,5 +155,36 @@ describe('ContextSection', () => {
     expect(tag).toHaveClass('bg-fill');
     expect(tag).toHaveTextContent('Readx1');
     expect(screen.getByText('5 ops')).toBeInTheDocument();
+  });
+
+  // Streamed text leaves every message's tool calls as they are, so the section does
+  // not render again; a new tool call does, and the count follows.
+  it('renders again for a new tool call, not for streamed text', () => {
+    seed({ loading: false });
+    openContext();
+    const before = pressableRenders.mock.calls.length;
+    expect(before).toBeGreaterThan(0);
+
+    const rewriteLastMessage = (change: (message: Conversation['messages'][number]) => Conversation['messages'][number]) => {
+      act(() => {
+        useChatStore.setState((state) => {
+          const conversation = state.conversations[CONV];
+          const messages = conversation.messages.slice();
+          messages[messages.length - 1] = change(messages[messages.length - 1]);
+          return { conversations: { ...state.conversations, [CONV]: { ...conversation, messages } } };
+        });
+      });
+    };
+    for (const content of ['a', 'ab', 'abc']) rewriteLastMessage((message) => ({ ...message, content }));
+
+    expect(pressableRenders.mock.calls.length).toBe(before);
+
+    rewriteLastMessage((message) => ({
+      ...message,
+      toolCalls: [...(message.toolCalls ?? []), { id: 't6', name: 'read_file', input: { path: '/work/extra.md' }, result: 'more' }],
+    }));
+
+    expect(screen.getByText('6 ops')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'extra.md' })).toBeInTheDocument();
   });
 });

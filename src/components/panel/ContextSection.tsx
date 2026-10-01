@@ -6,7 +6,7 @@ import { Spinner } from '@/components/ds/spinner';
 import { Tag } from '@/components/ds/tag';
 import { cn } from '@/lib/utils';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
-import { useActiveConversation } from '@/stores/chatStore';
+import { useActiveToolCallLists } from './useActiveToolCallLists';
 import { useMCPStore, initMCPStoreSync, type MCPServerEntry } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { useShallow } from 'zustand/react/shallow';
@@ -24,7 +24,9 @@ export default function ContextSection() {
   const [expanded, setExpanded] = useState(false);
   const [connectorsExpanded, setConnectorsExpanded] = useState(true);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
-  const conversation = useActiveConversation();
+  // Only the tool calls: text streaming into a message leaves them as they are, so
+  // the section stays as it is for every streamed character.
+  const toolCallLists = useActiveToolCallLists();
   const mcpServers = useMCPStore(useShallow((s) => Object.values(s.servers)));
   const isLoadingMCP = useMCPStore((s) => s.isLoading);
   const { t } = useI18n();
@@ -36,19 +38,15 @@ export default function ContextSection() {
 
   // Extract context data from messages, including file content from read_file results
   const contextData = useMemo(() => {
-    if (!conversation) {
-      return { accessedFiles: [], toolStats: {}, totalToolCalls: 0, usedMCPServers: new Set<string>() };
-    }
-
     const accessedFiles: AccessedFile[] = [];
     const toolStats: Record<string, number> = {};
     const seenFiles = new Set<string>();
     const fileContents: Record<string, string> = {};
     const usedMCPServers = new Set<string>();
 
-    for (const message of conversation.messages) {
-      if (message.toolCalls) {
-        for (const tc of message.toolCalls) {
+    for (const toolCalls of toolCallLists) {
+      if (toolCalls) {
+        for (const tc of toolCalls) {
           // Count tool usage
           toolStats[tc.name] = (toolStats[tc.name] || 0) + 1;
 
@@ -95,7 +93,7 @@ export default function ContextSection() {
     const totalToolCalls = Object.values(toolStats).reduce((a, b) => a + b, 0);
 
     return { accessedFiles, toolStats, totalToolCalls, usedMCPServers };
-  }, [conversation]);
+  }, [toolCallLists]);
 
   // Toggle file expansion
   const toggleFileExpand = (path: string) => {

@@ -23,6 +23,20 @@ vi.mock('@/core/session/outputSnapshots', () => ({
   resolveFileSource: vi.fn(),
 }));
 
+const extractions = vi.hoisted(() => vi.fn());
+
+// Counts how often the section rebuilds its file list.
+vi.mock('@/utils/workflowExtractor', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/workflowExtractor')>();
+  return {
+    ...actual,
+    extractFileOutputs: (...args: Parameters<typeof actual.extractFileOutputs>) => {
+      extractions();
+      return actual.extractFileOutputs(...args);
+    },
+  };
+});
+
 const iconButtonRenders = vi.hoisted(() => vi.fn());
 
 // Counts renders of each row's only floating-layer control (the reveal button's tooltip).
@@ -97,6 +111,7 @@ describe('FilesSection', () => {
     ));
     vi.mocked(revealItemInDir).mockClear();
     iconButtonRenders.mockClear();
+    extractions.mockClear();
     openPreview.mockClear();
     usePreviewStore.setState({ openPreview });
   });
@@ -167,9 +182,9 @@ describe('FilesSection', () => {
     expect(screen.getByRole('button', { name: 'Collapse' })).toBeInTheDocument();
   });
 
-  // The section reads the whole conversation, so it renders again for every streamed
-  // character. Each row is memoized on plain strings: its tooltip button must not.
-  it('does not re-render the rows while a reply streams', async () => {
+  // Each row is memoized on plain strings: streamed text renders no tooltip button,
+  // and a file that joins the list renders only its own.
+  it('does not re-render the rows that are already there', async () => {
     seedConversation(THREE_FILES);
     renderSection();
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Show in File Manager' })).toHaveLength(3));
@@ -181,5 +196,47 @@ describe('FilesSection', () => {
     streamIntoLastMessage('abc');
 
     expect(iconButtonRenders.mock.calls.length).toBe(before);
+
+    act(() => {
+      useChatStore.setState((state) => {
+        const conversation = state.conversations[CONV];
+        const messages = conversation.messages.slice();
+        messages[messages.length - 1] = { ...messages[messages.length - 1], toolCalls: [toolCall('t9', 'write_file', '/work/extra.md')] };
+        return { conversations: { ...state.conversations, [CONV]: { ...conversation, messages } } };
+      });
+    });
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Show in File Manager' })).toHaveLength(4));
+    await act(async () => {});
+
+    // The new row renders its button when it mounts and once more when its file resolves.
+    expect(iconButtonRenders.mock.calls.length).toBe(before + 2);
+  });
+
+  // Streamed text leaves every message's tool calls as they are, so the file list
+  // is not rebuilt; a tool call that finishes rebuilds it once and shows its file.
+  it('rebuilds the file list for a finished tool call, not for streamed text', async () => {
+    seedConversation([toolCall('t1', 'read_file', READ_PATH)]);
+    renderSection();
+    await screen.findByRole('button', { name: 'Show in File Manager' });
+    const before = extractions.mock.calls.length;
+    expect(before).toBeGreaterThan(0);
+
+    streamIntoLastMessage('a');
+    streamIntoLastMessage('ab');
+    streamIntoLastMessage('abc');
+
+    expect(extractions.mock.calls.length).toBe(before);
+
+    act(() => {
+      useChatStore.setState((state) => {
+        const conversation = state.conversations[CONV];
+        const messages = conversation.messages.slice();
+        messages[messages.length - 1] = { ...messages[messages.length - 1], toolCalls: [toolCall('t9', 'write_file', WRITE_PATH)] };
+        return { conversations: { ...state.conversations, [CONV]: { ...conversation, messages } } };
+      });
+    });
+
+    expect(await screen.findByRole('button', { name: /main\.ts/ })).toBeInTheDocument();
+    expect(extractions.mock.calls.length).toBe(before + 1);
   });
 });

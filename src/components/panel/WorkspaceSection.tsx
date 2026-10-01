@@ -105,6 +105,8 @@ export default function WorkspaceSection() {
     }
   };
 
+  // Reopening the menu during its exit animation keeps it mounted, so the close hook
+  // never runs for the earlier choice. Drop it here, or the next Escape would carry it out.
   const handleFolderMenuOpenChange = (open: boolean) => {
     if (open) pendingActionRef.current = null;
   };
@@ -198,9 +200,7 @@ export default function WorkspaceSection() {
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
             <Icon icon={AppIcons.folderOpen} className="text-label-secondary" />
-            <h3 className="text-ui font-medium text-label">
-              {t.panel.workspace}
-            </h3>
+            <span className="text-ui font-medium text-label">{t.panel.workspace}</span>
             {activeProject && (
               <Tag>
                 <span className="block max-w-28 truncate">{activeProject.name}</span>

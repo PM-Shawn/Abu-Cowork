@@ -1,4 +1,5 @@
-import { useActiveConversation } from '@/stores/chatStore';
+import { useChatStore } from '@/stores/chatStore';
+import { useActiveToolCallLists } from './useActiveToolCallLists';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format as i18nFormat } from '@/i18n';
 import { Button, IconButton } from '@/components/ds/button';
@@ -52,9 +53,8 @@ interface FileCardProps {
   fileMissingTitle: string;
 }
 
-// FilesSection renders again for every streamed character (it reads the whole
-// conversation). The row holds a tooltip button, so it is memoized and takes
-// plain strings only.
+// The row holds a tooltip button, so it is memoized and takes plain strings only:
+// a render of FilesSection (one more file, a new label) leaves the other rows alone.
 const FileCard = memo(function FileCard({ path, operation, conversationId, operationLabel, previewTitle, finderTitle, fileMissingTitle }: FileCardProps) {
   const fileName = getFileName(path);
   const openPreview = usePreviewStore((s) => s.openPreview);
@@ -129,7 +129,10 @@ function sortFiles(files: TrackedFile[]): TrackedFile[] {
 }
 
 export default function FilesSection() {
-  const conversation = useActiveConversation();
+  // Only the id and the tool calls: text streaming into a message changes neither,
+  // so the section and its file list stay as they are for every streamed character.
+  const conversationId = useChatStore((s) => s.activeConversationId ?? undefined);
+  const toolCallLists = useActiveToolCallLists();
   const { t } = useI18n();
 
   const operationLabels: Record<string, string> = {
@@ -143,9 +146,7 @@ export default function FilesSection() {
   // (file-ops mode) skips DOCUMENT_EXTENSIONS whitelist, includes reads, keeps
   // executed scripts, and only filters obvious noise (NOISE_EXTENSIONS).
   const trackedFiles = useMemo(() => {
-    if (!conversation) return [];
-
-    const allToolCalls = conversation.messages.flatMap((msg) => msg.toolCalls || []);
+    const allToolCalls = toolCallLists.flatMap((toolCalls) => toolCalls || []);
     const fileOutputs = extractFileOutputs(allToolCalls, { mode: 'file-ops' });
 
     // extractFileOutputs already dedupes by path (and upgrades read→write
@@ -159,7 +160,7 @@ export default function FilesSection() {
     });
 
     return sortFiles(Array.from(fileMap.values()));
-  }, [conversation]);
+  }, [toolCallLists]);
 
   const MAX_VISIBLE = 7;
   const [expanded, setExpanded] = useState(false);
@@ -186,7 +187,7 @@ export default function FilesSection() {
             key={file.path}
             path={file.path}
             operation={file.operation}
-            conversationId={conversation?.id}
+            conversationId={conversationId}
             operationLabel={operationLabels[file.operation]}
             previewTitle={t.panel.clickToPreview}
             finderTitle={t.panel.showInFinderButton}

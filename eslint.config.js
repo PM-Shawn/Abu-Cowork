@@ -141,6 +141,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/chatSpacing.ts',
   'src/components/chat/UsageChip.tsx',
   'src/components/chat/ConvIdBadge*.{ts,tsx}',
+  // Right panel, file by file (batch 5). PreviewPanel and the panel directory glob join in batch 8 with the in-place fullscreen.
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

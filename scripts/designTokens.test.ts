@@ -161,4 +161,23 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
   it.each(['label', 'label-secondary'])('%s on fill over surface is at least 4.5:1', (text) => {
     expect(wcagContrast(color(values, text), over(values, 'fill', 'surface'))).toBeGreaterThanOrEqual(4.5);
   });
+
+  // Selected text in the terminal, the source editor and document previews.
+  it.each(['label', 'label-secondary'])('%s on selection over surface is at least 4.5:1', (text) => {
+    expect(wcagContrast(color(values, text), over(values, 'selection', 'surface'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('selection stands out from the surface it sits on', () => {
+    expect(wcagContrast(over(values, 'selection', 'surface'), color(values, 'surface'))).toBeGreaterThanOrEqual(1.3);
+  });
+
+  // Web pages and Word pages bring their own dark text; their paper stays white.
+  it('page canvas keeps default page text readable', () => {
+    expect(wcagContrast(parse('#000000')!, color(values, 'page-canvas'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // The source editor paints highlight colors on the panel surface.
+  it.each(SYNTAX)('%s on surface is at least 4.5:1', (token) => {
+    expect(wcagContrast(color(values, token), color(values, 'surface'))).toBeGreaterThanOrEqual(4.5);
+  });
 });

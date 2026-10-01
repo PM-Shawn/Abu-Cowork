@@ -51,26 +51,37 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
 
 // onSelect receives Radix's select event; event.preventDefault() keeps the menu open
 // (an item whose result shows in the item itself, like checking for updates).
-export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect }: {
+export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect, description }: {
   children: ReactNode;
   icon?: LucideIcon;
   shortcut?: string;
   tone?: 'default' | 'danger';
   disabled?: boolean;
   onSelect?: (event: Event) => void;
+  // A second line under the name. The name alone stays the item's name.
+  description?: ReactNode;
 }) {
   const kind = useMenuKind();
-  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger');
+  const descriptionId = useId();
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger', description && 'h-auto items-start py-1');
+  // aria-hidden keeps the description out of the name; aria-describedby still reads it.
+  const label = description ? (
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="truncate">{children}</span>
+      <span id={descriptionId} aria-hidden="true" className="w-64 text-ui-sm text-label-secondary">{description}</span>
+    </span>
+  ) : <span className="min-w-0 flex-1 truncate">{children}</span>;
   const body = (
     <>
       {icon && <Icon icon={icon} size="sm" className={tone === 'danger' ? 'text-danger' : 'text-label-secondary'} />}
-      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {label}
       {shortcut && <span className="text-ui-sm text-label-tertiary">{shortcut}</span>}
     </>
   );
+  const describedBy = description ? descriptionId : undefined;
   return kind === 'dropdown'
-    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</DropdownMenuPrimitive.Item>
-    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</ContextMenuPrimitive.Item>;
+    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} className={className}>{body}</DropdownMenuPrimitive.Item>
+    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} className={className}>{body}</ContextMenuPrimitive.Item>;
 }
 
 // A nested list inside a Menu or ContextMenu. It belongs to the parent menu's layer:

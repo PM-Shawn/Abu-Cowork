@@ -46,6 +46,7 @@ export function OverlaySection() {
           <MenuLabel>Task</MenuLabel>
           <MenuItem icon={AppIcons.rename} shortcut="⌘R">Rename</MenuItem>
           <MenuItem icon={AppIcons.copy}>Copy link</MenuItem>
+          <MenuItem icon={AppIcons.history} description="Before AI edit · 2.1 KB">Restore 10:24:31</MenuItem>
           <MenuItem icon={AppIcons.share} disabled>Share (not available)</MenuItem>
           <MenuSub icon={AppIcons.folder} label="Move to">
             <MenuItem icon={AppIcons.folder}>Launch plan</MenuItem>

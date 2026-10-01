@@ -106,14 +106,13 @@
   -webkit-user-select: text !important;
 }
 
-/* Doc reference留痕 + native selection share the same soft clay fill so
-   dragging-to-select and the committed reference look identical. */
+/* A committed doc reference and a live selection share the neutral selection color, so dragging-to-select and the added reference look identical. */
 ::highlight(abu-reference) {
-  background-color: rgba(217, 119, 87, 0.13);
+  background-color: var(--ds-selection);
   border-radius: 2px;
 }
 [data-doc-selection-layer] ::selection {
-  background-color: rgba(217, 119, 87, 0.13);
+  background-color: var(--ds-selection);
 }
 
 /* Scrollbar - default subtle style */

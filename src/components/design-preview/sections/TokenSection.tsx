@@ -19,7 +19,7 @@ const SYNTAX_TOKENS = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syn
 // Tailwind can generate them.
 const COLOR_CLASS: Record<string, string> = {
   desk: 'bg-desk', 'desk-solid': 'bg-desk-solid', surface: 'bg-surface', raised: 'bg-raised',
-  code: 'bg-code', 'diagram-canvas': 'bg-diagram-canvas', field: 'bg-field', fill: 'bg-fill', 'fill-hover': 'bg-fill-hover', 'fill-selected': 'bg-fill-selected',
+  code: 'bg-code', 'diagram-canvas': 'bg-diagram-canvas', 'page-canvas': 'bg-page-canvas', field: 'bg-field', fill: 'bg-fill', 'fill-hover': 'bg-fill-hover', 'fill-selected': 'bg-fill-selected',
   'fill-pressed': 'bg-fill-pressed', emphasis: 'bg-emphasis', 'on-emphasis': 'bg-on-emphasis', scrim: 'bg-scrim',
   brand: 'bg-brand', 'brand-ink': 'bg-brand-ink',
   label: 'bg-label', 'label-secondary': 'bg-label-secondary', 'label-tertiary': 'bg-label-tertiary',
@@ -85,6 +85,20 @@ function SyntaxSwatch({ name }: { name: string }) {
   );
 }
 
+// The selection color has no Tailwind class; it is painted over the surface it sits on.
+function SelectionSwatch() {
+  const value = useComputedValue(() => readRootVariable('--ds-selection'));
+  return (
+    <div data-token="selection" className="overflow-hidden rounded-panel bg-surface shadow-panel">
+      <div className="h-12" style={{ backgroundColor: 'var(--ds-selection)' }} />
+      <div className="px-2 py-1">
+        <div className="font-code text-ui-sm text-label">selection</div>
+        <div data-token-value className="font-code text-caption text-label-secondary">{value}</div>
+      </div>
+    </div>
+  );
+}
+
 function ScaleRow({ name, className, property }: { name: string; className: string; property: string }) {
   const value = useComputedValue(() => {
     const sample = document.querySelector(`[data-scale-sample="${name}"]`);
@@ -114,6 +128,12 @@ export function TokenSection() {
         <p className="text-ui-sm font-medium text-label-tertiary">Code syntax</p>
         <div className="mt-2 grid grid-cols-6 gap-3">
           {SYNTAX_TOKENS.map((name) => <SyntaxSwatch key={name} name={name} />)}
+        </div>
+      </div>
+      <div data-preview-selection className="mt-4">
+        <p className="text-ui-sm font-medium text-label-tertiary">Selection</p>
+        <div className="mt-2 grid grid-cols-6 gap-3">
+          <SelectionSwatch />
         </div>
       </div>
       <div className="mt-4">

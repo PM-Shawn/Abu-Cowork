@@ -129,6 +129,38 @@ describe('Menu', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument();
   });
 
+  it('names a described menu item by its first line and describes it with the second', async () => {
+    const user = userEvent.setup();
+    render(
+      <Menu trigger={<Button>Versions</Button>}>
+        <MenuItem description="Before AI edit · 2.1 KB">10:24:31</MenuItem>
+        <MenuItem>Plain</MenuItem>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Versions' }));
+    const item = screen.getByRole('menuitem', { name: '10:24:31' });
+    expect(item).toHaveAccessibleDescription('Before AI edit · 2.1 KB');
+    expect(screen.getByText('Before AI edit · 2.1 KB')).toBeVisible();
+    expect(item).toHaveClass('h-auto');
+    const plain = screen.getByRole('menuitem', { name: 'Plain' });
+    expect(plain).not.toHaveAttribute('aria-describedby');
+    expect(plain).not.toHaveClass('h-auto');
+    expect(plain).toHaveClass('h-6');
+  });
+
+  it('describes an item inside a ContextMenu too', async () => {
+    render(
+      <ContextMenu content={<MenuItem icon={AppIcons.history} description="Before AI edit · 2.1 KB">10:24:31</MenuItem>}>
+        <div>Message body</div>
+      </ContextMenu>,
+      { wrapper: DesignSystemProvider },
+    );
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    const item = await screen.findByRole('menuitem', { name: '10:24:31' });
+    expect(item).toHaveAccessibleDescription('Before AI edit · 2.1 KB');
+  });
+
   it('colors a destructive item and its icon', async () => {
     const user = userEvent.setup();
     render(<TaskMenu onRename={() => undefined} />, { wrapper: DesignSystemProvider });

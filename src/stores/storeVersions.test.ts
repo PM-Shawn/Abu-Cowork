@@ -17,7 +17,7 @@ const PERSISTED_STORES = [
   { key: 'abu-project-hint', minVersion: 1 },
   { key: 'abu-diagnostic-store', minVersion: 2 },
   { key: 'abu-usage-stats', minVersion: 2 },
-  { key: 'abu-discovered-caps', minVersion: 1 },
+  { key: 'abu-discovered-caps', minVersion: 2 },
   { key: 'abu-todos', minVersion: 1 },
   { key: 'abu-inbox', minVersion: 2 },
   { key: 'abu-composer-drafts', minVersion: 2 },

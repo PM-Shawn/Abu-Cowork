@@ -19,6 +19,7 @@ import {
   type AuthorizationScopeId,
 } from './pathSafety';
 import { getI18n, format } from '../../i18n';
+import { offeredToolsHint } from './offeredToolsHint';
 import { useMCPStore } from '@/stores/mcpStore';
 import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidate, type InventoryReason } from './toolInventory';
 import { truncateToolResult } from '../context/truncation';
@@ -2485,6 +2486,13 @@ export function filterTabsBySitePermissions(
   return JSON.stringify(sanitized, null, 2);
 }
 
+/** 工具名不存在：附上本轮给过模型的工具名，让它重选。 */
+function unknownToolResult(name: string, context: ToolExecutionContext | undefined): string {
+  const base = `Error: Unknown tool "${name}"`;
+  const hint = offeredToolsHint(context?.offeredToolNames);
+  return hint ? `${base}. ${hint}` : base;
+}
+
 /**
  * Execute a tool by name, checking both builtin and MCP tools
  * With optional dangerous command confirmation and file permission callbacks.
@@ -2642,7 +2650,7 @@ export async function executeAnyTool(
     }
   }
 
-  return `Error: Unknown tool "${name}"`;
+  return unknownToolResult(name, toolContext);
 }
 
 // ── OS Permission Error Detection ──

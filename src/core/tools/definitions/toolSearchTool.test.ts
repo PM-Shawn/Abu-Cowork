@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolDefinition } from '../../../types';
 
-const { getAllToolsMock } = vi.hoisted(() => ({ getAllToolsMock: vi.fn() }));
+const { getAllToolsMock, isWindowsMock } = vi.hoisted(() => ({ getAllToolsMock: vi.fn(), isWindowsMock: vi.fn(() => false) }));
 vi.mock('../registry', () => ({ getAllTools: () => getAllToolsMock() }));
+vi.mock('../../../utils/platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../utils/platform')>()),
+  isWindows: () => isWindowsMock(),
+}));
 
 import { toolSearchTool } from './toolSearchTool';
+import { computerTool } from './computerTools';
+import { structuredComputerDescription } from './computerToolText';
 
 function makeTool(name: string, description = `${name} description`): ToolDefinition {
   return {
@@ -70,5 +76,35 @@ describe('toolSearchTool deferred-only exposure', () => {
     );
 
     expect(result).not.toContain('### computer');
+  });
+});
+
+describe('toolSearchTool returns the computer tool for the model tier', () => {
+  beforeEach(() => {
+    getAllToolsMock.mockReset();
+    getAllToolsMock.mockReturnValue([computerTool]);
+    isWindowsMock.mockReturnValue(false);
+  });
+
+  it.each([true, false])('gives a model that cannot see images the text-only schema (windows=%s)', async (windows) => {
+    isWindowsMock.mockReturnValue(windows);
+    const result = await toolSearchTool.execute(
+      { query: 'computer' },
+      { conversationId: 'conv-1', deferredToolNames: ['computer'], computerUseTier: 'structured' },
+    );
+
+    expect(result).toContain('### computer');
+    expect(result).toContain(structuredComputerDescription(windows));
+    expect(String(result).toLowerCase()).not.toContain('screenshot');
+  });
+
+  it('keeps the screenshot schema for a model that can see images', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'computer' },
+      { conversationId: 'conv-1', deferredToolNames: ['computer'], computerUseTier: 'full' },
+    );
+
+    expect(result).toContain(computerTool.description);
+    expect(result).toContain('"screenshot_id"');
   });
 });

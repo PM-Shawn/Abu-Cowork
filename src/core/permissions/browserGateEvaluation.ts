@@ -386,8 +386,10 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
       channel: 'dialog',
       // No 「以后都允许该网站」 for a bank or a checkout page, none under
       // 「每次询问」 (the grant it would mint is one this row now ignores),
-      // none for a script, and none without an origin to key it to.
-      offersPersistentGrant: !scripting && !highRisk && !asksEveryTime && originKnown,
+      // and none without an origin to key it to. A script gets one like any
+      // other operation: the user opts in per site, and it covers scripts
+      // on that site only.
+      offersPersistentGrant: !highRisk && !asksEveryTime && originKnown,
       refusedReason: 'user-cancelled',
     });
   }

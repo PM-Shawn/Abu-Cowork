@@ -158,6 +158,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/panel/previewToolbarConfig*.ts',
   'src/components/panel/previewFileActions*.ts',
   'src/features/reference/**/*.{ts,tsx}',
+  'src/components/preview/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

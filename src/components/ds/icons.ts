@@ -3,7 +3,7 @@ import {
   CircleStop, CircleX, Clock, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FilePen, FilePlus,
   FileSearch, FileText, FileType2, FileWarning, FileX, Folder, FolderInput, FolderOpen, Globe, Hand, Hash, History, ImageOff, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
   LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Minimize2, Minus, Monitor, MonitorCog, Palette, PanelLeft, PanelRight,
-  Paperclip, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Redo2, RefreshCw, RotateCcw, RotateCw, Save, ScanEye, Search, Settings, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
+  Paperclip, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scan, ScanEye, ScanLine, Search, Settings, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
   Sparkles, Square, SquareDashedMousePointer, SquarePen, Star, Terminal, ThumbsDown, ThumbsUp, Trash2, TriangleAlert, Undo2, UserCheck, UserRound, UsersRound,
   Wand2, Workflow, Wrench, X, Zap, ZoomIn, ZoomOut,
   type LucideIcon,
@@ -148,6 +148,12 @@ export const AppIcons = {
   saveAs: Save,
   commentToChat: MessageSquarePlus,
   quoteToChat: MessageSquare,
+  // Right panel: file renderers
+  rotateLeft: RotateCcw,
+  rotateRight: RotateCw,
+  fitView: Scan,
+  fitWidth: ScanLine,
+  next: ChevronRight,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

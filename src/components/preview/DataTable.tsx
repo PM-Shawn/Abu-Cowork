@@ -1,6 +1,6 @@
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { ScrollArea } from '@/components/ds/scroll-area';
 
 /** Generate Excel-style column labels: A, B, ..., Z, AA, AB, ... */
 function columnLabel(index: number): string {
@@ -22,7 +22,7 @@ export default function DataTable({ headers, rows, totalRows }: {
 
   if (headers.length === 0 && rows.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-body text-[var(--abu-text-tertiary)]">
+      <div className="flex h-full items-center justify-center text-ui text-label-tertiary">
         {t.panel.csvNoData}
       </div>
     );
@@ -31,21 +31,21 @@ export default function DataTable({ headers, rows, totalRows }: {
   const showingIndicator = totalRows !== undefined && totalRows > rows.length;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       {showingIndicator && (
-        <div className="shrink-0 px-3 py-1.5 text-caption text-[var(--abu-text-tertiary)] bg-[var(--abu-bg-muted)] border-b border-[var(--abu-bg-pressed)]">
+        <div className="shrink-0 border-b border-separator px-3 py-1 text-caption text-label-tertiary">
           {format(t.panel.xlsxRowsShowing, { shown: String(rows.length), total: String(totalRows) })}
         </div>
       )}
-      <ScrollArea className="flex-1 min-h-0">
+      <ScrollArea className="min-h-0 flex-1">
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-minor">
+          <table className="w-full border-collapse text-ui-sm">
             <thead>
-              <tr className="sticky top-0 z-10 bg-[var(--abu-bg-muted)]">
+              <tr className="sticky top-0 z-sticky bg-code">
                 {headers.map((h, i) => (
                   <th
                     key={i}
-                    className="px-3 py-2 text-left font-semibold text-[var(--abu-text-primary)] border-b border-r border-[var(--abu-bg-pressed)] whitespace-nowrap"
+                    className="whitespace-nowrap border-b border-r border-separator px-3 py-2 text-left font-medium text-label"
                   >
                     {h || columnLabel(i)}
                   </th>
@@ -54,11 +54,11 @@ export default function DataTable({ headers, rows, totalRows }: {
             </thead>
             <tbody>
               {rows.map((row, ri) => (
-                <tr key={ri} className={ri % 2 === 0 ? 'bg-[var(--abu-bg-base)]' : 'bg-[var(--abu-bg-muted)]'}>
+                <tr key={ri} className="odd:bg-surface even:bg-code">
                   {headers.map((_, ci) => (
                     <td
                       key={ci}
-                      className="px-3 py-1.5 text-[var(--abu-text-primary)] border-b border-r border-[var(--abu-bg-pressed)] whitespace-nowrap max-w-[300px] truncate"
+                      className="max-w-75 truncate whitespace-nowrap border-b border-r border-separator px-3 py-1 text-label"
                     >
                       {row[ci] ?? ''}
                     </td>

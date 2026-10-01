@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
-import { Loader2, Presentation, FolderOpen } from 'lucide-react';
 import { useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { Button } from '@/components/ds/button';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { Spinner } from '@/components/ds/spinner';
 import { getBaseName } from '@/utils/pathUtils';
 import { useFitToWidth } from '@/hooks/useFitToWidth';
+import { cn } from '@/lib/utils';
 
 const RENDER_WIDTH = 960;
 const RENDER_HEIGHT = 540;
@@ -146,41 +149,34 @@ export default function PptxPreview({ filePath }: { filePath: string }) {
     };
 
     return (
-      <div className="flex flex-col items-center justify-center h-full p-6 text-center gap-3">
-        <div className="w-14 h-14 rounded-xl flex items-center justify-center bg-[var(--abu-bg-hover)]">
-          <Presentation className="w-7 h-7 text-[var(--abu-text-tertiary)]" />
-        </div>
-        <div className="flex flex-col gap-1 max-w-[280px]">
-          <p className="text-body font-medium text-[var(--abu-text-primary)] truncate">
-            {getBaseName(filePath)}
-          </p>
-          <p className="text-minor text-[var(--abu-text-tertiary)]">
-            {t.panel.pptxPreviewUnavailable}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 mt-1">
-          <Button variant="outline" size="sm" onClick={handleOpenWithDefaultApp}>
-            <Presentation className="w-3.5 h-3.5 mr-1.5" />
-            {t.panel.openWithPowerPoint}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleShowInFinder}>
-            <FolderOpen className="w-3.5 h-3.5 mr-1.5" />
-            {t.panel.showInFinder}
-          </Button>
-        </div>
+      <div className="flex h-full items-center justify-center">
+        <EmptyState
+          icon={AppIcons.fileSlides}
+          title={<span className="block max-w-70 truncate">{getBaseName(filePath)}</span>}
+          description={t.panel.pptxPreviewUnavailable}
+          action={(
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" icon={AppIcons.fileSlides} onClick={handleOpenWithDefaultApp}>
+                {t.panel.openWithPowerPoint}
+              </Button>
+              <Button variant="plain" icon={AppIcons.folderOpen} onClick={handleShowInFinder}>
+                {t.panel.showInFinder}
+              </Button>
+            </div>
+          )}
+        />
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full bg-[var(--abu-bg-hover)]">
+    <div className="flex h-full flex-col bg-code">
       {loading && (
-        <div className="flex items-center justify-center h-full">
-          <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
-          <span className="ml-2 text-body text-[var(--abu-text-tertiary)]">{t.panel.loadingDocument}</span>
+        <div className="flex h-full items-center justify-center">
+          <Spinner label={t.panel.loadingDocument} />
         </div>
       )}
-      <ScrollArea className={`flex-1 min-h-0 ${loading ? 'hidden' : ''}`}>
+      <ScrollArea className={cn('min-h-0 flex-1', loading && 'hidden')}>
         <div ref={wrapperRef} className="p-4">
           <div
             style={{
@@ -190,8 +186,10 @@ export default function PptxPreview({ filePath }: { filePath: string }) {
               overflow: 'hidden',
             }}
           >
+            {/* Slides are white paper in every appearance; the marker gives their text the page selection color. */}
             <div
               ref={containerRef}
+              data-page-canvas
               className="pptx-preview-container"
               style={{
                 transform: `scale(${scale})`,

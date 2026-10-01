@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { useI18n } from '@/i18n';
-import { Loader2 } from 'lucide-react';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { Spinner } from '@/components/ds/spinner';
 import { useFitToWidth } from '@/hooks/useFitToWidth';
+import { cn } from '@/lib/utils';
 
 export default function DocxPreview({ filePath }: { filePath: string }) {
   const { t } = useI18n();
@@ -54,21 +56,20 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full p-4">
-        <p className="text-body text-[var(--abu-danger)]">{error}</p>
+      <div className="flex h-full items-center justify-center p-4">
+        <InlineMessage tone="danger">{error}</InlineMessage>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full bg-[var(--abu-bg-hover)]">
+    <div className="flex h-full flex-col bg-code">
       {loading && (
-        <div className="flex items-center justify-center h-full">
-          <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
-          <span className="ml-2 text-body text-[var(--abu-text-tertiary)]">{t.panel.loadingDocument}</span>
+        <div className="flex h-full items-center justify-center">
+          <Spinner label={t.panel.loadingDocument} />
         </div>
       )}
-      <ScrollArea className={`flex-1 min-h-0 ${loading ? 'hidden' : ''}`}>
+      <ScrollArea className={cn('min-h-0 flex-1', loading && 'hidden')}>
         <div ref={wrapperRef} className="p-4">
           <div
             style={{
@@ -83,7 +84,7 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
               data-page-canvas
               className="docx-preview-container"
               style={{
-                background: 'white',
+                background: 'var(--ds-page-canvas)',
                 transform: `scale(${scale})`,
                 transformOrigin: 'top left',
                 width: 'max-content',

@@ -156,6 +156,8 @@ export const AppIcons = {
   next: ChevronRight,
   // Right panel: browser
   forward: ArrowRight,
+  // Right panel: experts
+  appendInstruction: MessageSquarePlus,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

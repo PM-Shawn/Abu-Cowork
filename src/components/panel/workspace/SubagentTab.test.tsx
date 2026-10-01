@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
+import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
   BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES,
@@ -13,7 +14,26 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import SubagentTab from './SubagentTab';
 
+vi.mock('@/core/agent/dispatchCancel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/agent/dispatchCancel')>()),
+  requestDispatchCancel: vi.fn(),
+}));
+
 const identity: BatchIdentity = { conversationId: 'conv-subagent-tab', batchToolCallId: 'batch-1' };
+
+/** The header card of the tab: title, status and counters. */
+function headerOf(container: HTMLElement): HTMLElement {
+  const header = container.querySelector('header');
+  if (!header) throw new Error('The tab has no header card');
+  return header;
+}
+
+/** The hidden announcement for screen readers (the spinner is a second status region). */
+function announcementOf(container: HTMLElement): HTMLElement {
+  const region = container.querySelector<HTMLElement>('[role="status"][aria-live="polite"]');
+  if (!region) throw new Error('The tab has no announcement region');
+  return region;
+}
 
 function resetBatchStore() {
   useBatchProgressStore.setState({
@@ -56,6 +76,7 @@ describe('SubagentTab', () => {
     resetBatchStore();
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_000);
+    vi.mocked(requestDispatchCancel).mockClear();
   });
 
   afterEach(() => {
@@ -71,13 +92,15 @@ describe('SubagentTab', () => {
   it('renders live status, tool detail, token usage, and retained screenshot rich content', () => {
     seedRichStep();
 
-    render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+    const view = render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
     expect(screen.getByText('Worker A')).toBeInTheDocument();
     expect(screen.getByText('Running')).toBeInTheDocument();
     expect(screen.getByText('1 tool calls')).toBeInTheDocument();
     expect(screen.getByText('15 tokens')).toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent('Running · 1 tool calls · 15 tokens');
+    const announcement = announcementOf(view.container);
+    expect(announcement).toHaveTextContent('Running · 1 tool calls · 15 tokens');
+    expect(announcement).toHaveClass('sr-only');
     expect(screen.getByRole('img', { name: /Screenshot captured/ })).toHaveAttribute(
       'src',
       'data:image/png;base64,aW1hZ2U=',
@@ -201,6 +224,74 @@ describe('SubagentTab', () => {
 
     expect(screen.getByText('Queued')).toBeInTheDocument();
     expect(view.container.querySelector('.animate-spin')).toBeNull();
+    expect(screen.getByText('Queued')).toHaveClass('bg-fill');
+    expect(screen.getByText('Queued').querySelector('svg.lucide-clock')).not.toBeNull();
+  });
+
+  it('shows one spinner in the header while the expert runs and a status tag once it finishes', () => {
+    seedRichStep();
+
+    const view = render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+    const header = headerOf(view.container);
+
+    expect(header.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(view.container.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(within(header).getByText('Running')).not.toHaveClass('sr-only');
+    // The spinner is inset so its word starts in the column of the tag that replaces it.
+    expect(header.querySelector('[data-ds-spinner]')?.closest('[role="status"]')?.parentElement).toHaveClass('pl-1');
+
+    act(() => {
+      useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+    });
+
+    expect(headerOf(view.container).querySelector('[data-ds-spinner]')).toBeNull();
+    const tag = within(headerOf(view.container)).getByText('Succeeded');
+    expect(tag).toHaveClass('bg-success-soft');
+    expect(tag).toHaveClass('text-success');
+    expect(tag.querySelector('svg.text-success')).not.toBeNull();
+  });
+
+  it.each([
+    { status: 'failed', reason: 'error', label: 'Failed', soft: 'bg-danger-soft', mark: 'svg.text-danger' },
+    { status: 'incomplete', reason: 'max_turns', label: 'Incomplete', soft: 'bg-warning-soft', mark: 'svg.text-warning' },
+    { status: 'stopped', reason: 'aborted', label: 'Stopped', soft: 'bg-fill', mark: 'svg.lucide-circle-stop' },
+  ] as const)('marks a $status expert with a still tag whose colour comes with a shape', ({ status, reason, label, soft, mark }) => {
+    const store = useBatchProgressStore.getState();
+    store.initBatch(identity, ['Worker']);
+    store.setTaskRunning(identity, 0);
+    store.setTaskTerminal(identity, 0, { status, reason });
+
+    const view = render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+    const header = headerOf(view.container);
+
+    const tag = within(header).getByText(label);
+    expect(tag).toHaveClass(soft);
+    expect(tag.querySelector(mark)).not.toBeNull();
+    expect(header.querySelector('[data-ds-spinner]')).toBeNull();
+  });
+
+  it('stops a hand-off that is still being recorded from the tab, with one spinner in the header', () => {
+    const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
+    const exec = useTaskExecutionStore.getState().createExecutionWithId(convId, 'loop-stop', 'exec-stop');
+    useTaskExecutionStore.getState().addStep(exec.id, {
+      id: 'delegate-running', executionId: exec.id, toolCallId: 'delegate-stop', type: 'delegate', label: 'delegate', status: 'running',
+      toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [], detailBlocks: [], source: 'agent', toolInput: {},
+    });
+
+    const view = render(<SubagentTab identity={{ conversationId: convId, batchToolCallId: 'delegate-stop' }} taskIndex={0} title="writer" />);
+    const header = headerOf(view.container);
+
+    expect(header.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(within(header).getByText('Running')).not.toHaveClass('sr-only');
+    expect(within(header).getByText('In progress')).toBeInTheDocument();
+
+    const stop = within(header).getByRole('button', { name: 'Stop this hand-off to writer' });
+    expect(stop).toHaveTextContent('Stop');
+    expect(stop.querySelector('[data-ds-spinner]')).toBeNull();
+    expect(requestDispatchCancel).not.toHaveBeenCalled();
+    fireEvent.click(stop);
+    expect(requestDispatchCancel).toHaveBeenCalledTimes(1);
+    expect(requestDispatchCancel).toHaveBeenCalledWith('delegate-stop:0');
   });
 
   it('shows live activity and an explicit empty state before the first tool call', () => {
@@ -209,9 +300,9 @@ describe('SubagentTab', () => {
     store.setTaskRunning(identity, 0);
     store.setTaskActivity(identity, 0, 'Planning the task', 1);
 
-    render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+    const view = render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
-    expect(screen.getByRole('status')).toHaveTextContent('Planning the task');
+    expect(announcementOf(view.container)).toHaveTextContent('Planning the task');
     expect(screen.getByText('Planning the task', { selector: 'span' })).toBeInTheDocument();
     expect(screen.getByText('No tool calls have been retained yet.')).toBeInTheDocument();
   });

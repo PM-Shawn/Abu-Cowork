@@ -145,4 +145,10 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const code = `export const style = 'text-[var(--abu-text-primary)]';\n`;
     expect(await messages(code, file)).not.toEqual([]);
   });
+
+  it('checks the right panel files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/panel/workspace/TabStrip.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/preview/ImagePreview.tsx')).not.toEqual([]);
+  });
 });

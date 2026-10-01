@@ -317,7 +317,6 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
             label={t.chat.feedbackPositive}
             size="sm"
             aria-pressed={feedbackRating === 'positive'}
-            className={cn(feedbackRating === 'positive' && 'bg-fill-selected text-label')}
             onClick={() => {
               const next = feedbackRating === 'positive' ? null : 'positive';
               setFeedbackRating(next);
@@ -329,7 +328,6 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
             label={t.chat.feedbackNegative}
             size="sm"
             aria-pressed={feedbackRating === 'negative'}
-            className={cn(feedbackRating === 'negative' && 'bg-fill-selected text-label')}
             onClick={() => {
               const next = feedbackRating === 'negative' ? null : 'negative';
               setFeedbackRating(next);

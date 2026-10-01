@@ -225,5 +225,13 @@ describe('ModelSelector as a floating layer', () => {
 
     expect(useSettingsStore.getState().favoriteModels).toEqual([{ providerId: 'deepseek', modelId: 'deepseek-chat' }]);
     expect(screen.getByText('Favorites')).toBeInTheDocument();
+    // A favorite shows as a filled star, not as a pressed toggle with the selected fill.
+    const stars = screen.getAllByRole('button', { name: 'Favorite', pressed: true });
+    expect(stars.length).toBeGreaterThan(0);
+    for (const star of stars) {
+      expect(star).not.toHaveClass('aria-pressed:bg-fill-selected');
+      expect(star).not.toHaveClass('aria-pressed:hover:bg-fill-selected');
+      expect(star).not.toHaveClass('aria-pressed:text-label');
+    }
   });
 });

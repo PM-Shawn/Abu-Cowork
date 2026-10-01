@@ -26,7 +26,8 @@ export const iconButtonVariants = cva(
   {
     variants: {
       variant: {
-        plain: 'hover:bg-fill-hover active:bg-fill-pressed',
+        // A toggle sets aria-pressed; the pressed fill stays under the pointer and still darkens on press-down.
+        plain: 'hover:bg-fill-hover active:bg-fill-pressed aria-pressed:bg-fill-selected aria-pressed:text-label aria-pressed:hover:bg-fill-selected aria-pressed:active:bg-fill-pressed',
         secondary: 'bg-fill hover:bg-fill-selected active:bg-fill-pressed',
         // The one filled button of an area when it has no words (Send).
         primary: 'bg-emphasis text-on-emphasis hover:text-on-emphasis hover:opacity-90 active:opacity-80',

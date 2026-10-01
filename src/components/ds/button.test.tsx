@@ -66,4 +66,15 @@ describe('IconButton', () => {
     expect(button).not.toHaveClass('text-label-secondary');
     expect(button).not.toHaveClass('hover:text-label');
   });
+
+  // A pressed toggle keeps its selected fill while the pointer rests on it; callers only set aria-pressed.
+  it('gives a pressed toggle its own fill, text color, hover and press-down classes', () => {
+    render(<IconButton icon={AppIcons.preview} label="Preview" aria-pressed />, { wrapper: DesignSystemProvider });
+    const button = screen.getByRole('button', { name: 'Preview' });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(button).toHaveClass('aria-pressed:bg-fill-selected');
+    expect(button).toHaveClass('aria-pressed:text-label');
+    expect(button).toHaveClass('aria-pressed:hover:bg-fill-selected');
+    expect(button).toHaveClass('aria-pressed:active:bg-fill-pressed');
+  });
 });

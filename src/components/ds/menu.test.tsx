@@ -233,6 +233,38 @@ describe('Menu', () => {
     expect(screen.getByRole('menu')).toHaveClass('origin-(--radix-dropdown-menu-content-transform-origin)');
   });
 
+  // A long list must not run past the window edge: the panel takes the room Radix measures and scrolls.
+  it('never grows taller than the room the window leaves, and scrolls instead', async () => {
+    const user = userEvent.setup();
+    render(<TaskMenu onRename={() => undefined} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const menu = screen.getByRole('menu');
+    expect(menu).toHaveClass('max-h-(--radix-dropdown-menu-content-available-height)');
+    expect(menu).toHaveClass('overflow-y-auto');
+  });
+
+  it('shows a native hint on an item that carries a title, in both kinds of menu', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <Menu trigger={<Button>Versions</Button>}>
+          <MenuItem title="Revert to this version">10:00:00</MenuItem>
+          <MenuItem>10:00:01</MenuItem>
+        </Menu>
+        <ContextMenu content={<MenuItem title="Copy the text">Copy</MenuItem>}>
+          <div>Message body</div>
+        </ContextMenu>
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Versions' }));
+    expect(screen.getByRole('menuitem', { name: '10:00:00' })).toHaveAttribute('title', 'Revert to this version');
+    expect(screen.getByRole('menuitem', { name: '10:00:01' })).not.toHaveAttribute('title');
+    await user.keyboard('{Escape}');
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(screen.getByRole('menuitem', { name: 'Copy' })).toHaveAttribute('title', 'Copy the text');
+  });
+
   it('refuses items outside a menu', () => {
     expect(() => render(<MenuItem>Orphan</MenuItem>)).toThrow(/inside <Menu> or <ContextMenu>/);
   });
@@ -260,6 +292,8 @@ describe('ContextMenu', () => {
     expect(menu).toHaveTextContent('Message');
     expect(menu.querySelector('[role="separator"]')).not.toBeNull();
     expect(menu).toHaveClass('origin-(--radix-context-menu-content-transform-origin)');
+    expect(menu).toHaveClass('max-h-(--radix-context-menu-content-available-height)');
+    expect(menu).toHaveClass('overflow-y-auto');
   });
 
   it('closes when another popover opens, and opens again on the next right-click', () => {

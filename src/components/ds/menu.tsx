@@ -9,7 +9,8 @@ import { useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
 import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
 
-const MENU_PANEL = 'z-popover min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) p-1';
+// The panel never grows past the room Radix measures between the trigger and the window edge; a longer list scrolls.
+const MENU_PANEL = 'z-popover max-h-(--radix-dropdown-menu-content-available-height) min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto p-1';
 
 // onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
 // event.preventDefault() there to keep focus off the trigger (e.g. to focus a field).
@@ -51,7 +52,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
 
 // onSelect receives Radix's select event; event.preventDefault() keeps the menu open
 // (an item whose result shows in the item itself, like checking for updates).
-export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect, description }: {
+export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect, description, title }: {
   children: ReactNode;
   icon?: LucideIcon;
   shortcut?: string;
@@ -60,6 +61,8 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
   onSelect?: (event: Event) => void;
   // A second line under the name. The name alone stays the item's name.
   description?: ReactNode;
+  // Native hint for an item whose name does not say what choosing it does (a version's time).
+  title?: string;
 }) {
   const kind = useMenuKind();
   const descriptionId = useId();
@@ -81,8 +84,8 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
   );
   const describedBy = description ? descriptionId : undefined;
   return kind === 'dropdown'
-    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} className={className}>{body}</DropdownMenuPrimitive.Item>
-    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} className={className}>{body}</ContextMenuPrimitive.Item>;
+    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} className={className}>{body}</DropdownMenuPrimitive.Item>
+    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} className={className}>{body}</ContextMenuPrimitive.Item>;
 }
 
 // A nested list inside a Menu or ContextMenu. It belongs to the parent menu's layer:

@@ -39,7 +39,8 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
             data-ds-motion
             data-electron-no-drag
             onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
-            className={cn('z-popover min-w-40 origin-(--radix-context-menu-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
+            // Like Menu: no taller than the room the window leaves; a longer list scrolls.
+            className={cn('z-popover max-h-(--radix-context-menu-content-available-height) min-w-40 origin-(--radix-context-menu-content-transform-origin) overflow-y-auto p-1', FLOAT_SURFACE, FLOAT_MOTION)}
           >
             <LayerScope id={id}>
               <MenuKindContext.Provider value="context">{content}</MenuKindContext.Provider>

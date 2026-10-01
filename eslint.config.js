@@ -151,6 +151,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/panel/WorkspaceSection*.{ts,tsx}',
   'src/components/panel/FilesSection*.{ts,tsx}',
   'src/components/panel/ContextSection*.{ts,tsx}',
+  'src/components/panel/useActiveToolCallLists*.ts',
   'src/components/panel/PreviewActionsMenu*.{ts,tsx}',
   'src/components/panel/VersionHistoryMenu*.{ts,tsx}',
   'src/components/panel/CodeMirrorEditor.tsx',

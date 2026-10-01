@@ -218,12 +218,14 @@ const PreviewToolbar = memo(function PreviewToolbar({
         )}
       </div>
 
+      {/* The tab strip sits right above this row, so these tooltips open below their buttons. */}
       <div className="flex shrink-0 items-center gap-1">
-        <IconButton size="sm" icon={AppIcons.reload} label={t.panel.reloadPreview} onClick={onReload} />
+        <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.reload} label={t.panel.reloadPreview} onClick={onReload} />
         {toolbarButtons.viewToggle && (
           <div className="mx-1 flex items-center gap-1 rounded-control bg-fill p-0.5">
             <IconButton
               size="sm"
+              tooltipSide="bottom"
               icon={AppIcons.viewSource}
               label={t.panel.sourceMode}
               aria-pressed={viewMode === 'source'}
@@ -231,6 +233,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
             />
             <IconButton
               size="sm"
+              tooltipSide="bottom"
               icon={AppIcons.preview}
               label={t.panel.previewMode}
               aria-pressed={viewMode === 'preview'}
@@ -243,12 +246,12 @@ const PreviewToolbar = memo(function PreviewToolbar({
             filePath={filePath}
             open={showVersionHistory}
             onOpenChange={onShowVersionHistoryChange}
-            trigger={<IconButton size="sm" icon={AppIcons.history} label={t.panel.versionHistory} />}
+            trigger={<IconButton size="sm" tooltipSide="bottom" icon={AppIcons.history} label={t.panel.versionHistory} />}
             onRevert={onRevertVersion}
           />
         )}
         {toolbarButtons.openInApp && (
-          <IconButton size="sm" icon={AppIcons.openIn} label={t.panel.openInApp} onClick={onOpenInApp} />
+          <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.openIn} label={t.panel.openInApp} onClick={onOpenInApp} />
         )}
         {!dataUrl && (
           <PreviewActionsMenu
@@ -264,13 +267,14 @@ const PreviewToolbar = memo(function PreviewToolbar({
         {toolbarButtons.fullscreen && (
           <IconButton
             size="sm"
+            tooltipSide="bottom"
             icon={isFullscreen ? AppIcons.exitFullscreen : AppIcons.enlarge}
             label={isFullscreen ? t.panel.exitFullscreen : t.panel.fullscreen}
             onClick={onToggleFullscreen}
           />
         )}
         {showClose && (
-          <IconButton size="sm" icon={AppIcons.close} label={t.panel.closePreview} onClick={onClose} />
+          <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.close} label={t.panel.closePreview} onClick={onClose} />
         )}
       </div>
     </div>

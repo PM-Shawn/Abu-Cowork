@@ -28,7 +28,8 @@ export default function PreviewActionsMenu({
   onSaveAs,
 }: PreviewActionsMenuProps) {
   return (
-    <Menu align="end" trigger={<IconButton size="sm" icon={AppIcons.more} label={label} />}>
+    // Like the rest of the preview toolbar: the tab strip is right above, so the tooltip opens below.
+    <Menu align="end" trigger={<IconButton size="sm" tooltipSide="bottom" icon={AppIcons.more} label={label} />}>
       <MenuItem icon={AppIcons.folderOpen} onSelect={onReveal}>{revealLabel}</MenuItem>
       <MenuItem icon={AppIcons.copy} onSelect={onCopyPath}>{copyPathLabel}</MenuItem>
       <MenuSeparator />

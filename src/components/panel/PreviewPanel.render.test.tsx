@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, readTextFile } from '@tauri-apps/plugin-fs';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { useToastStore } from '@/stores/toastStore';
+import { atomicWrite } from '@/utils/atomicFs';
 import PreviewPanel from './PreviewPanel';
 
 const layerRenders = vi.hoisted(() => ({ iconButton: vi.fn(), menu: vi.fn() }));
@@ -15,7 +17,7 @@ vi.mock('@/components/ds/button', async (importOriginal) => {
   return {
     ...actual,
     IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
-      layerRenders.iconButton();
+      layerRenders.iconButton(props);
       return actual.IconButton(props);
     },
   };
@@ -53,6 +55,7 @@ describe('PreviewPanel toolbar', () => {
     vi.mocked(readTextFile).mockResolvedValue('const a = 1;\n');
     layerRenders.iconButton.mockClear();
     layerRenders.menu.mockClear();
+    useToastStore.setState({ toasts: [] });
   });
 
   afterEach(() => {
@@ -85,5 +88,48 @@ describe('PreviewPanel toolbar', () => {
     expect(editor).toHaveValue('const a = 1;\nxyz12');
     expect(layerRenders.iconButton.mock.calls.length).toBe(iconButtons);
     expect(layerRenders.menu.mock.calls.length).toBe(menus);
+  });
+
+  // The tab strip sits right above the toolbar: a tooltip that opened upward would cover the tab titles.
+  it('opens the tooltip of every toolbar button below the button', async () => {
+    render(
+      <DesignSystemProvider>
+        <PreviewPanel filePath="/w/notes.md" tabId="t1" embedded />
+      </DesignSystemProvider>,
+    );
+    await screen.findByRole('button', { name: 'Version history' });
+
+    const sides = new Map(layerRenders.iconButton.mock.calls.map(([props]) => [props.label, props.tooltipSide]));
+    expect([...sides.keys()].sort()).toEqual(['Fullscreen', 'More actions', 'Open in default app', 'Preview', 'Reload', 'Source', 'Version history'].sort());
+    expect([...new Set(sides.values())]).toEqual(['bottom']);
+  });
+
+  it('says so in the toolbar when a save fails, with the failure mark', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(atomicWrite).mockRejectedValueOnce(new Error('disk is full'));
+    try {
+      render(
+        <DesignSystemProvider>
+          <PreviewPanel filePath="/w/main.ts" tabId="t1" embedded />
+        </DesignSystemProvider>,
+      );
+      const editor = await screen.findByRole('textbox', { name: 'source' });
+      const saved = screen.getByText('Saved');
+      expect(saved).toHaveClass('text-label-secondary');
+
+      fireEvent.change(editor, { target: { value: 'const a = 2;\n' } });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Saving…'));
+      await act(() => vi.advanceTimersByTimeAsync(1100));
+
+      const failed = await screen.findByText('Save failed', { selector: 'span' });
+      expect(failed).toHaveClass('text-danger');
+      expect(failed.querySelector('svg')).toHaveClass('text-danger');
+      expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      expect(useToastStore.getState().toasts.map(({ type, title, message }) => ({ type, title, message })))
+        .toEqual([{ type: 'error', title: 'Save failed', message: 'disk is full' }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

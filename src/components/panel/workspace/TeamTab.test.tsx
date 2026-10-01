@@ -130,6 +130,8 @@ describe('TeamTab', () => {
     const leading = within(leaderCard).getByRole('status');
     expect(leading).toHaveTextContent('运行中');
     expect(within(leading).getByText('运行中')).not.toHaveClass('sr-only');
+    expect(leading).toHaveClass('text-ui');
+    expect(leading).toHaveClass('text-label-secondary');
     expect(leaderCard).not.toHaveTextContent('等待指令');
   });
 
@@ -142,6 +144,12 @@ describe('TeamTab', () => {
     expect(tab.querySelector('svg.lucide-loader-circle')).toBeNull();
     expect(within(memberHeading).queryByRole('status')).toBeNull();
     expect(leaderCard).toHaveTextContent('等待指令');
+    // Same size and tone as the running sentence, so the line stays steady when the state changes.
+    const waiting = within(leaderCard).getByText('等待指令');
+    expect(waiting).toHaveClass('text-ui');
+    expect(waiting).toHaveClass('text-label-secondary');
+    expect(waiting).not.toHaveClass('text-caption');
+    expect(waiting).not.toHaveClass('text-label-tertiary');
     expect(within(leaderCard).getByText('队长')).toHaveClass('bg-fill');
 
     const [fetcher, writer] = screen.getAllByTestId('team-member-row');

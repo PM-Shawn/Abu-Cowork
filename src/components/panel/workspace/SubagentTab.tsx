@@ -55,10 +55,14 @@ function statusLabel(status: BatchTaskProgress['status'], t: TranslationDict): s
 // hands over to a tag and when the button leaves.
 const META_ROW = 'mt-2 flex min-h-6 flex-wrap items-center gap-2 text-caption text-label-tertiary';
 
-/** The header's status: the one spinner of the tab while the expert runs, a still tag otherwise. */
-function TaskStatusTag({ status, label }: { status: BatchTaskProgress['status']; label: string }) {
+/**
+ * The header's status: the one spinner of the tab while the expert runs, a still tag otherwise.
+ * `announcedAbove`: the caller already announces the status in its own live region, so the
+ * spinner's word is shown and kept out of the accessibility tree.
+ */
+function TaskStatusTag({ status, label, announcedAbove = false }: { status: BatchTaskProgress['status']; label: string; announcedAbove?: boolean }) {
   // Inset by a tag's padding less the wider gap, so the word starts where a tag's word starts.
-  if (status === 'running') return <span className="flex pl-1"><Spinner size="sm" label={label} /></span>;
+  if (status === 'running') return <span className="flex pl-1" aria-hidden={announcedAbove || undefined}><Spinner size="sm" label={label} /></span>;
   if (status === 'queued') {
     return <Tag><Icon icon={AppIcons.clock} size="sm" />{label}</Tag>;
   }
@@ -291,7 +295,7 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
             {statusAnnouncement}
           </div>
           <div className={META_ROW}>
-            <TaskStatusTag status={task.status} label={statusLabel(task.status, t)} />
+            <TaskStatusTag status={task.status} label={statusLabel(task.status, t)} announcedAbove />
             <span>{format(t.workspace.agentTools, { count: task.toolCallCount })}</span>
             {tokens !== null && <span>{format(t.workspace.agentTokens, { count: tokens })}</span>}
             {elapsed !== null && <span>{formatElapsed(elapsed)}</span>}

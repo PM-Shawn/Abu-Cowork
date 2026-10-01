@@ -30,7 +30,7 @@ function DispatchMark({ status }: { status: DispatchStatus | 'idle' }) {
   if (status === 'completed') return <StatusIcon tone="success" size="sm" />;
   if (status === 'error') return <StatusIcon tone="danger" size="sm" />;
   return (
-    <span aria-hidden="true" className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+    <span aria-hidden="true" className="flex size-3.5 shrink-0 items-center justify-center">
       <span className="h-2 w-2 rounded-full border border-control-border" />
     </span>
   );
@@ -111,12 +111,12 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
                 <span className="truncate">{team.leader.name}</span>
                 <Tag>{t.workspace.teamLeaderBadge}</Tag>
               </div>
-              {/* One height for both states, so the card does not grow when the leader starts. */}
+              {/* One height, size and tone for both states, so the line stays steady when the leader starts. */}
               <div className="flex h-5 items-center">
                 {leaderRunning ? (
                   <Spinner size="sm" label={t.workspace.agentStatusRunning} />
                 ) : (
-                  <span className="inline-flex items-center gap-2 text-caption text-label-tertiary">
+                  <span className="inline-flex items-center gap-2 text-ui text-label-secondary">
                     <DispatchMark status="idle" />
                     {t.workspace.teamLeaderIdle}
                   </span>

@@ -28,13 +28,6 @@ function headerOf(container: HTMLElement): HTMLElement {
   return header;
 }
 
-/** The hidden announcement for screen readers (the spinner is a second status region). */
-function announcementOf(container: HTMLElement): HTMLElement {
-  const region = container.querySelector<HTMLElement>('[role="status"][aria-live="polite"]');
-  if (!region) throw new Error('The tab has no announcement region');
-  return region;
-}
-
 function resetBatchStore() {
   useBatchProgressStore.setState({
     batches: {},
@@ -92,15 +85,14 @@ describe('SubagentTab', () => {
   it('renders live status, tool detail, token usage, and retained screenshot rich content', () => {
     seedRichStep();
 
-    const view = render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+    render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
     expect(screen.getByText('Worker A')).toBeInTheDocument();
     expect(screen.getByText('Running')).toBeInTheDocument();
     expect(screen.getByText('1 tool calls')).toBeInTheDocument();
     expect(screen.getByText('15 tokens')).toBeInTheDocument();
-    const announcement = announcementOf(view.container);
-    expect(announcement).toHaveTextContent('Running · 1 tool calls · 15 tokens');
-    expect(announcement).toHaveClass('sr-only');
+    expect(screen.getByRole('status')).toHaveTextContent('Running · 1 tool calls · 15 tokens');
+    expect(screen.getByRole('status')).toHaveClass('sr-only');
     expect(screen.getByRole('img', { name: /Screenshot captured/ })).toHaveAttribute(
       'src',
       'data:image/png;base64,aW1hZ2U=',
@@ -251,6 +243,22 @@ describe('SubagentTab', () => {
     expect(tag.querySelector('svg.text-success')).not.toBeNull();
   });
 
+  it('exposes exactly one status region in the live header: the hidden announcement', () => {
+    seedRichStep();
+
+    const view = render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+    const header = headerOf(view.container);
+
+    const regions = within(header).getAllByRole('status');
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toHaveAttribute('aria-live', 'polite');
+    expect(regions[0]).toHaveTextContent('Running · 1 tool calls · 15 tokens');
+    // The spinner's word stays in view; assistive technology hears it from the announcement.
+    const word = within(header).getByText('Running');
+    expect(word).toBeVisible();
+    expect(word.closest('[aria-hidden="true"]')).toContainElement(header.querySelector<HTMLElement>('[data-ds-spinner]'));
+  });
+
   it.each([
     { status: 'failed', reason: 'error', label: 'Failed', soft: 'bg-danger-soft', mark: 'svg.text-danger' },
     { status: 'incomplete', reason: 'max_turns', label: 'Incomplete', soft: 'bg-warning-soft', mark: 'svg.text-warning' },
@@ -284,6 +292,8 @@ describe('SubagentTab', () => {
     expect(header.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
     expect(within(header).getByText('Running')).not.toHaveClass('sr-only');
     expect(within(header).getByText('In progress')).toBeInTheDocument();
+    // The recorded view has no hidden announcement, so the spinner is its one status.
+    expect(within(header).getByRole('status')).toHaveTextContent('Running');
 
     const stop = within(header).getByRole('button', { name: 'Stop this hand-off to writer' });
     expect(stop).toHaveTextContent('Stop');
@@ -300,9 +310,9 @@ describe('SubagentTab', () => {
     store.setTaskRunning(identity, 0);
     store.setTaskActivity(identity, 0, 'Planning the task', 1);
 
-    const view = render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+    render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
-    expect(announcementOf(view.container)).toHaveTextContent('Planning the task');
+    expect(screen.getByRole('status')).toHaveTextContent('Planning the task');
     expect(screen.getByText('Planning the task', { selector: 'span' })).toBeInTheDocument();
     expect(screen.getByText('No tool calls have been retained yet.')).toBeInTheDocument();
   });

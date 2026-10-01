@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight, Bot, Users } from 'lucide-react';
+import { IconButton } from '@/components/ds/button';
+import { ContextMenu } from '@/components/ds/context-menu';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem } from '@/components/ds/menu';
+import { Pressable } from '@/components/ds/pressable';
 import {
   usePreviewStore,
   useVisibleTabs,
@@ -11,21 +15,24 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { getBaseName } from '@/utils/pathUtils';
 import { useI18n, format } from '@/i18n';
-import { Button } from '@/components/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { isWindows } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
 
-const MENU_WIDTH = 150; // px — used to right-align / clamp popover menus
+// The key of the new-tab menu in the set of open menus; a tab's context menu uses the tab id.
+const NEW_TAB_MENU = 'new-tab';
+
+function tabMenuKey(tabId: string): string {
+  return `tab:${tabId}`;
+}
 
 function tabIcon(tab: WorkspaceTab) {
-  if (tab.kind === 'summary') return ListChecks;
-  if (tab.kind === 'preview') return FileText;
-  if (tab.kind === 'browser') return AppWindow;
-  if (tab.kind === 'subagent') return Bot;
-  if (tab.kind === 'team') return Users;
-  return SquareTerminal;
+  if (tab.kind === 'summary') return AppIcons.plan;
+  if (tab.kind === 'preview') return AppIcons.file;
+  if (tab.kind === 'browser') return AppIcons.webPage;
+  if (tab.kind === 'subagent') return AppIcons.agent;
+  if (tab.kind === 'team') return AppIcons.team;
+  return AppIcons.terminal;
 }
 
 function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string {
@@ -53,11 +60,9 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
  * close, and lightweight pointer-based drag-to-reorder (no dnd-kit — mirrors
  * TRAE's `swapOpenedTab(i, j)`). See docs/2026-07-17-workspace-tabs-design.md.
  *
- * The two popover menus (new-tab `+` and per-tab right-click) are rendered via
- * a portal to `document.body`: the strip itself is `overflow-x-auto` (so many
- * tabs scroll horizontally), and CSS forces `overflow-y` to `auto` too, which
- * would clip any dropdown rendered below the strip. Portaling + fixed
- * positioning escapes that clip.
+ * The new-tab `+` menu and each tab's right-click menu are design-system menus.
+ * A native browser view paints over the page, so the strip tells the store while
+ * any of them is open.
  */
 export default function TabStrip() {
   const { t } = useI18n();
@@ -80,10 +85,14 @@ export default function TabStrip() {
   const setMenuOpen = usePreviewStore((s) => s.setMenuOpen);
   const setRightPanelCollapsed = useSettingsStore((s) => s.setRightPanelCollapsed);
 
-  // Popover state holds a viewport-fixed position (or null when closed).
-  const [newTabMenuPos, setNewTabMenuPos] = useState<{ top: number; left: number } | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ tabId: string; top: number; left: number } | null>(null);
-  const plusBtnRef = useRef<HTMLButtonElement>(null);
+  // Every menu of the strip that is open right now. The layer registry closes the
+  // previous menu when another one opens, and the new menu reports "open" before the
+  // old one reports "closed", so a single boolean would uncover the native view in between.
+  const openMenus = useRef(new Set<string>());
+  // The pending "every menu has closed" report (see syncMenuOpen).
+  const releaseFrame = useRef<number | null>(null);
+  // What the new-tab menu will open once it has closed (see handleNewTabCloseAutoFocus).
+  const pendingNewTab = useRef<(() => void) | null>(null);
   // Drag-to-reorder: `draggingId` = the tab being dragged, `dragDx` = how far it
   // has followed the cursor (px), `dragOverId` = the tab it will drop onto.
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -93,28 +102,44 @@ export default function TabStrip() {
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const tabButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
-  const closeMenus = () => {
-    setNewTabMenuPos(null);
-    setContextMenu(null);
-  };
-
-  const toggleNewTabMenu = () => {
-    setContextMenu(null);
-    setNewTabMenuPos((cur) => {
-      if (cur) return null;
-      const r = plusBtnRef.current?.getBoundingClientRect();
-      if (!r) return null;
-      // Right-align the menu to the button (the `+` sits at the panel's right
-      // edge), clamped into the viewport.
-      const left = Math.max(8, Math.min(r.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
-      return { top: r.bottom + 4, left };
+  const syncMenuOpen = () => {
+    if (releaseFrame.current !== null) {
+      window.cancelAnimationFrame(releaseFrame.current);
+      releaseFrame.current = null;
+    }
+    if (openMenus.current.size > 0) {
+      setMenuOpen(true);
+      return;
+    }
+    // Right-clicking a tab while a menu is open closes that menu on the press and opens
+    // the tab's menu on the context-menu event that follows. Waiting one frame before
+    // reporting "all closed" keeps the native view hidden across that hand-over.
+    releaseFrame.current = window.requestAnimationFrame(() => {
+      releaseFrame.current = null;
+      if (openMenus.current.size === 0) setMenuOpen(false);
     });
   };
 
-  const openContextMenu = (tabId: string, x: number, y: number) => {
-    setNewTabMenuPos(null);
-    const left = Math.max(8, Math.min(x, window.innerWidth - MENU_WIDTH - 8));
-    setContextMenu({ tabId, top: y, left });
+  const trackMenu = (key: string) => (open: boolean) => {
+    if (open) openMenus.current.add(key);
+    else openMenus.current.delete(key);
+    syncMenuOpen();
+  };
+
+  const handleNewTabMenuOpenChange = (open: boolean) => {
+    if (open) pendingNewTab.current = null;
+    trackMenu(NEW_TAB_MENU)(open);
+  };
+
+  // A new browser tab focuses its address field and a terminal takes the keyboard.
+  // Opening them only after the menu has gone, with the focus return cancelled, keeps
+  // the menu from pulling focus back to the `+` button.
+  const handleNewTabCloseAutoFocus = (event: Event) => {
+    const open = pendingNewTab.current;
+    pendingNewTab.current = null;
+    if (!open) return;
+    event.preventDefault();
+    open();
   };
 
   const handleTabPointerDown = (id: string) => (e: React.PointerEvent) => {
@@ -229,208 +254,144 @@ export default function TabStrip() {
     consumeFocusTabRequest(focusTabId);
   }, [focusTabId, consumeFocusTabRequest, tabs]);
 
-  // Tell the store when a popover is open so a native browser webview (which
-  // paints over React) hides instead of occluding the menu.
+  // A tab can go away while its context menu is open (an agent closes it, its file is
+  // deleted). Its menu unmounts without reporting "closed", so drop it from the set here.
   useEffect(() => {
-    setMenuOpen(!!(newTabMenuPos || contextMenu));
-  }, [newTabMenuPos, contextMenu, setMenuOpen]);
+    const menus = openMenus.current;
+    let dropped = false;
+    for (const key of menus) {
+      if (key === NEW_TAB_MENU || tabs.some((tab) => tabMenuKey(tab.id) === key)) continue;
+      menus.delete(key);
+      dropped = true;
+    }
+    if (dropped) setMenuOpen(menus.size > 0);
+  }, [tabs, setMenuOpen]);
 
-  // Close popovers on Escape, and on scroll/resize (their fixed position would
-  // otherwise drift away from the anchor).
+  // The strip remounts per conversation; a menu open at that moment never reports
+  // "closed", and a pending report would never run.
   useEffect(() => {
-    if (!newTabMenuPos && !contextMenu) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeMenus();
-    };
-    const onScrollResize = () => closeMenus();
-    window.addEventListener('keydown', onKey);
-    window.addEventListener('resize', onScrollResize);
-    window.addEventListener('scroll', onScrollResize, true);
+    const menus = openMenus.current;
     return () => {
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('resize', onScrollResize);
-      window.removeEventListener('scroll', onScrollResize, true);
+      const pending = releaseFrame.current;
+      if (pending !== null) window.cancelAnimationFrame(pending);
+      releaseFrame.current = null;
+      if (menus.size === 0 && pending === null) return;
+      menus.clear();
+      setMenuOpen(false);
     };
-  }, [newTabMenuPos, contextMenu]);
-
-  const menuItemCls =
-    'flex items-center gap-2 w-full text-left px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]';
+  }, [setMenuOpen]);
 
   return (
     <div
       data-abu-workspace-tabs
       className={cn(
-        'relative shrink-0 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1',
+        'relative flex h-8 shrink-0 items-center gap-1 border-b border-separator px-1',
         windowsWorkspaceHeader && 'h-11',
       )}
     >
-      <div role="tablist" aria-label={t.workspace.tabListLabel} className="flex min-w-0 flex-1 overflow-x-auto">
+      <div role="tablist" aria-label={t.workspace.tabListLabel} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {tabs.map((tab) => {
-          const Icon = tabIcon(tab);
           const active = tab.id === activeTabId;
           const title = tabTitle(tab, t);
           return (
-            <div
+            <ContextMenu
               key={tab.id}
-              role="presentation"
-              data-tab-id={tab.id}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                openContextMenu(tab.id, e.clientX, e.clientY);
-              }}
-              className={cn(
-                'group flex items-center max-w-[160px] shrink-0 select-none',
-                windowsWorkspaceHeader ? 'h-full' : 'h-8',
-                'border-r border-[var(--abu-bg-pressed)] text-minor transition-shadow',
-                draggingId === tab.id && 'cursor-grabbing',
-                active
-                  ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
-                  : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]',
-                // The dragged tab lifts off the strip; a drop target gets highlighted.
-                // pointer-events-none lets elementFromPoint "see through" it to the
-                // tab underneath (the drop target) instead of hitting itself.
-                draggingId === tab.id && 'relative z-20 shadow-lg opacity-90 rounded-md bg-[var(--abu-bg-base)] pointer-events-none',
-                // Drop target: a neutral vertical insertion line on the left edge
-                // (an "insert here" caret) — NOT a filled accent/red fill, which
-                // reads as a "can't drop" state.
-                dragOverId === tab.id && 'shadow-[inset_2px_0_0_0_var(--abu-text-primary)]',
+              onOpenChange={trackMenu(tabMenuKey(tab.id))}
+              content={(
+                <>
+                  <MenuItem onSelect={() => closeOtherTabs(tab.id)}>{t.workspace.closeOtherTabs}</MenuItem>
+                  <MenuItem onSelect={() => closeAllTabs()}>{t.workspace.closeAllTabs}</MenuItem>
+                </>
               )}
-              style={draggingId === tab.id ? { transform: `translateX(${dragDx}px)` } : undefined}
             >
-              <button
-                id={workspaceTabButtonId(tab.id)}
-                ref={(node) => {
-                  if (node) tabButtonRefs.current.set(tab.id, node);
-                  else tabButtonRefs.current.delete(tab.id);
-                }}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                aria-controls={workspaceTabPanelId(tab.id)}
-                tabIndex={active ? 0 : -1}
-                onPointerDown={handleTabPointerDown(tab.id)}
-                onClick={() => {
-                  // Suppress the click that follows an actual drag (would re-activate).
-                  if (dragMovedRef.current) return;
-                  activateTab(tab.id);
-                }}
-                onAuxClick={(e) => {
-                  // Middle-click closes the tab.
-                  if (e.button === 1) closeTab(tab.id);
-                }}
-                onKeyDown={handleTabKeyDown(tab.id)}
+              <div
+                role="presentation"
+                data-tab-id={tab.id}
                 className={cn(
-                  'flex min-w-0 flex-1 items-center gap-1.5 px-2.5 h-full text-left',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)] focus-visible:ring-inset',
+                  'group flex h-7 max-w-40 shrink-0 select-none items-center rounded-control text-ui',
+                  draggingId === tab.id && 'cursor-grabbing',
+                  active
+                    ? 'bg-fill-selected text-label'
+                    : 'text-label-secondary hover:bg-fill-hover',
+                  // The dragged tab lifts off the strip; a drop target gets highlighted.
+                  // pointer-events-none lets elementFromPoint "see through" it to the
+                  // tab underneath (the drop target) instead of hitting itself.
+                  draggingId === tab.id && 'relative z-sticky rounded-control bg-raised opacity-90 shadow-float pointer-events-none',
+                  // Drop target: a neutral vertical insertion line on the left edge
+                  // (an "insert here" caret) — NOT a filled accent/red fill, which
+                  // reads as a "can't drop" state.
+                  dragOverId === tab.id && 'relative before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-label',
                 )}
+                style={draggingId === tab.id ? { transform: `translateX(${dragDx}px)` } : undefined}
               >
-                <Icon aria-hidden="true" className="w-3.5 h-3.5 shrink-0" strokeWidth={1.5} />
-                <span className="truncate flex-1">{title}</span>
-              </button>
-              <button
-                type="button"
-                tabIndex={-1}
-                // Don't let pressing × start a tab drag (which would flip the tab to
-                // pointer-events-none and swallow this click).
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.id, { focusAfterClose: true });
-                }}
-                className="mr-1 shrink-0 rounded p-0.5 hover:bg-[var(--abu-bg-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
-                aria-label={format(t.workspace.closeTabLabel, { title })}
-                title={t.workspace.closeTab}
-              >
-                <X aria-hidden="true" className="w-3 h-3" strokeWidth={1.5} />
-              </button>
-            </div>
+                <Pressable
+                  id={workspaceTabButtonId(tab.id)}
+                  ref={(node) => {
+                    if (node) tabButtonRefs.current.set(tab.id, node);
+                    else tabButtonRefs.current.delete(tab.id);
+                  }}
+                  role="tab"
+                  aria-selected={active}
+                  aria-controls={workspaceTabPanelId(tab.id)}
+                  tabIndex={active ? 0 : -1}
+                  onPointerDown={handleTabPointerDown(tab.id)}
+                  onClick={() => {
+                    // Suppress the click that follows an actual drag (would re-activate).
+                    if (dragMovedRef.current) return;
+                    activateTab(tab.id);
+                  }}
+                  onAuxClick={(e) => {
+                    // Middle-click closes the tab.
+                    if (e.button === 1) closeTab(tab.id);
+                  }}
+                  onKeyDown={handleTabKeyDown(tab.id)}
+                  // The strip scrolls sideways and would clip a ring drawn outside the tab.
+                  className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left focus-visible:ring-inset"
+                >
+                  <Icon icon={tabIcon(tab)} size="sm" />
+                  <span className="flex-1 truncate">{title}</span>
+                </Pressable>
+                <IconButton
+                  size="sm"
+                  icon={AppIcons.close}
+                  label={format(t.workspace.closeTabLabel, { title })}
+                  tabIndex={-1}
+                  // Don't let pressing × start a tab drag (which would flip the tab to
+                  // pointer-events-none and swallow this click).
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(tab.id, { focusAfterClose: true });
+                  }}
+                />
+              </div>
+            </ContextMenu>
           );
         })}
       </div>
 
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            ref={plusBtnRef}
-            variant="ghost"
-            size="icon-xs"
-            onClick={toggleNewTabMenu}
-            aria-label={t.workspace.newTab}
-            className="ml-0.5 shrink-0 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
-          >
-            <Plus aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{t.workspace.newTab}</TooltipContent>
-      </Tooltip>
+      <Menu
+        align="end"
+        onOpenChange={handleNewTabMenuOpenChange}
+        onCloseAutoFocus={handleNewTabCloseAutoFocus}
+        trigger={<IconButton size="sm" icon={AppIcons.add} label={t.workspace.newTab} />}
+      >
+        <MenuItem icon={AppIcons.plan} onSelect={() => openSummary()}>{t.workspace.summaryTitle}</MenuItem>
+        <MenuItem icon={AppIcons.webPage} onSelect={() => { pendingNewTab.current = () => openBrowser(); }}>
+          {t.workspace.newBrowserTab}
+        </MenuItem>
+        <MenuItem icon={AppIcons.terminal} onSelect={() => { pendingNewTab.current = () => openTerminal(); }}>
+          {t.workspace.newTerminalTab}
+        </MenuItem>
+      </Menu>
 
       {/* Collapse the whole right panel — pinned to the far right. (dev's
           RightPanelTabBar carried this button; our TabStrip replaced it, so the
           affordance moved here. The app top-bar toggle only *reopens* a
           collapsed panel.) */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setRightPanelCollapsed(true)}
-            aria-label={t.panel.hidePanel}
-            className="ml-auto shrink-0 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
-          >
-            <PanelRight aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{t.panel.hidePanel}</TooltipContent>
-      </Tooltip>
-
-      {/* Portaled popovers — escape the strip's overflow clip. */}
-      {(newTabMenuPos || contextMenu) &&
-        createPortal(
-          <>
-            <div data-electron-no-drag className="fixed inset-0 z-[55]" onClick={closeMenus} onContextMenu={(e) => { e.preventDefault(); closeMenus(); }} />
-            {newTabMenuPos && (
-              <div
-                className="fixed z-[60] min-w-[150px] rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-md py-1"
-                style={{ top: newTabMenuPos.top, left: newTabMenuPos.left }}
-              >
-                <button type="button" className={menuItemCls} onClick={() => { openSummary(); closeMenus(); }}>
-                  <ListChecks aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  {t.workspace.summaryTitle}
-                </button>
-                <button type="button" className={menuItemCls} onClick={() => { openBrowser(); closeMenus(); }}>
-                  <AppWindow aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  {t.workspace.newBrowserTab}
-                </button>
-                <button type="button" className={menuItemCls} onClick={() => { openTerminal(); closeMenus(); }}>
-                  <SquareTerminal aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  {t.workspace.newTerminalTab}
-                </button>
-              </div>
-            )}
-            {contextMenu && (
-              <div
-                className="fixed z-[60] min-w-[150px] rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-md py-1"
-                style={{ top: contextMenu.top, left: contextMenu.left }}
-              >
-                <button
-                  type="button"
-                  className="w-full text-left px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-                  onClick={() => { closeOtherTabs(contextMenu.tabId); closeMenus(); }}
-                >
-                  {t.workspace.closeOtherTabs}
-                </button>
-                <button
-                  type="button"
-                  className="w-full text-left px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-                  onClick={() => { closeAllTabs(); closeMenus(); }}
-                >
-                  {t.workspace.closeAllTabs}
-                </button>
-              </div>
-            )}
-          </>,
-          document.body,
-        )}
+      <span className="ml-auto flex">
+        <IconButton size="sm" icon={AppIcons.rightPanel} label={t.panel.hidePanel} onClick={() => setRightPanelCollapsed(true)} />
+      </span>
     </div>
   );
 }

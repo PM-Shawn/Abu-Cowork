@@ -1,5 +1,5 @@
 import {
-  Archive, ArrowLeft, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, Brain, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp,
+  Archive, ArrowLeft, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, Bot, Brain, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, CircleCheck, CircleHelp,
   CircleStop, CircleX, Clock, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FilePen, FilePlus,
   FileSearch, FileText, FileType2, FileWarning, FileX, Folder, FolderInput, FolderOpen, Globe, Hand, Hash, History, ImageOff, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
   LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Minimize2, Minus, Monitor, MonitorCog, Palette, PanelLeft, PanelRight,
@@ -139,6 +139,8 @@ export const AppIcons = {
   chart: BarChart3,
   write: PenLine,
   link: Link2,
+  // Right panel: tabs
+  agent: Bot,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

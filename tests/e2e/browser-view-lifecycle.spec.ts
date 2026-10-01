@@ -1207,7 +1207,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
       };
     });
     await page.getByRole('button', { name: /^(新建标签页|New tab)$/ }).click();
-    await page.getByRole('button', { name: /^(新建终端|New Terminal)$/ }).click();
+    await page.getByRole('menuitem', { name: /^(新建终端|New Terminal)$/ }).click();
     const terminalTab = page.getByRole('tab', { name: /^(终端|Terminal)$/ });
     await expect(terminalTab).toHaveAttribute('aria-selected', 'true');
     const terminalId = await terminalTab.locator('..').getAttribute('data-tab-id');

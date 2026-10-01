@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "./tokens.css";
+
+/* Test fixtures and docs are not UI: keep their class-name examples out of the build. */
+@source not "../../**/*.test.{ts,tsx,mjs,cjs}";
+@source not "../../**/*.md";
+@source not "../../tests";
+@source not "../../scripts";
+@source not "../../eslint.config.js";
 
 @custom-variant dark (&:is(.dark *));
 

@@ -749,6 +749,12 @@ export interface ToolExecutionContext {
    */
   deferredToolNames?: string[];
   /**
+   * Names of every tool this turn offered the model (active + deferred). Set by
+   * the trusted agent runtime only; wire-safe. Used to answer a hallucinated
+   * tool name with the real choices.
+   */
+  offeredToolNames?: string[];
+  /**
    * In-conversation team mode: exact agent names the leader may delegate to.
    * Set by the trusted runtime from the pinned team's roster (never from model
    * input); delegate_to_agent / run_agent_batch refuse any other agent or
@@ -883,6 +889,8 @@ export type StreamEvent =
   | { type: 'tool_result'; toolUseId: string; result: string }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; stopReason: string; usage?: TokenUsage }
+  /** 正文里出现了操作的开头却识别不出（没闭合、JSON 写坏）。原文不显示给用户。 */
+  | { type: 'malformed_tool_call'; raw: string }
   | { type: 'error'; error: string };
 
 // --- Skill ---

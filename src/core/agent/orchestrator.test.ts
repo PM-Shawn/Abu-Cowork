@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const browserMocks = vi.hoisted(() => ({
   isConnected: vi.fn(),
@@ -803,5 +803,43 @@ describe('audit: routing preserves user body', () => {
   it('keeps the default skill instruction when its body contains only whitespace', () => {
     vi.mocked(skillLoader.getSkill).mockReturnValueOnce({ name: 'brief', description: 'Brief', content: '', filePath: '/skills/brief/SKILL.md', skillDir: '/skills/brief' });
     expect(routeInput('/brief  \n ').cleanInput).toBe('Execute the brief skill');
+  });
+});
+
+describe('computer-use guidance by model tier', () => {
+  const baseSettings = {
+    computerUseEnabled: true,
+    disabledSkills: [],
+    disabledAgents: [],
+    contextWindowSize: 200000,
+    allowSkillCommands: false,
+  };
+
+  beforeEach(() => {
+    vi.mocked(useSettingsStore.getState).mockReturnValue(baseSettings as never);
+  });
+
+  afterEach(() => {
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...baseSettings, computerUseEnabled: false } as never);
+  });
+
+  async function guidance(computerUseTier?: 'full' | 'structured'): Promise<string> {
+    const sections = await buildSystemPromptSections(
+      routeInput('打开记事本'), '', 'test-conv', undefined, 0,
+      computerUseTier ? { computerUseTier } : undefined,
+    );
+    return sections.find((section) => section.name === 'computer-use')?.text ?? '';
+  }
+
+  it('keeps the screenshot guidance for a model that can see images', async () => {
+    const text = await guidance('full');
+    expect(text).toContain('To view the screen you must use computer(action="screenshot")');
+    expect(text).toContain('### Core principle: commands first, GUI as fallback');
+  });
+
+  it('gives a model that cannot see images the text-only guidance', async () => {
+    const text = await guidance('structured');
+    expect(text).toContain('The current model cannot see images');
+    expect(text).not.toMatch(/screenshot/i);
   });
 });

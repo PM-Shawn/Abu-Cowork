@@ -12,6 +12,11 @@ vi.mock('./openai-compatible', () => ({
 vi.mock('./claude', () => ({
   ClaudeAdapter: class { chat = (...args: unknown[]) => mockChat(...args); },
 }));
+vi.mock('./ollama-native', () => ({
+  OllamaNativeAdapter: class { chat = (...args: unknown[]) => mockChat(...args); },
+}));
+const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
+vi.mock('./contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
 
 function provider(id: string): ProviderInstance {
   return {
@@ -66,5 +71,47 @@ describe('llmCall', () => {
       apiKey: 'sk-own',
       baseUrl: 'https://own.example.net/v1',
     });
+  });
+
+  it('marks Ollama as a local server and asks it nothing when the user left the context length blank', async () => {
+    mockProbeContextWindow.mockClear();
+    useSettingsStore.setState({
+      providers: [{
+        ...provider('ollama'), source: 'builtin', baseUrl: 'http://127.0.0.1:11434', apiKey: '',
+        models: [{ id: 'llama3.2', label: 'llama3.2' }],
+      }],
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+    });
+
+    await llmCall({ messages: [{ role: 'user', content: 'hi' }] });
+
+    // 用户没填「上下文长度」，Ollama 不会收到 num_ctx；这条路径不再问 /api/ps
+    const options = mockChat.mock.calls[0][1] as { requestedContextLength?: number };
+    expect(options).toMatchObject({ model: 'llama3.2', localServer: true });
+    expect(options.requestedContextLength).toBeUndefined();
+    expect(mockProbeContextWindow).not.toHaveBeenCalled();
+  });
+
+  it('passes on only the context length the user filled in for Ollama', async () => {
+    mockProbeContextWindow.mockClear();
+    useSettingsStore.setState({
+      providers: [{
+        ...provider('ollama'), source: 'builtin', baseUrl: 'http://127.0.0.1:11434', apiKey: '',
+        models: [{ id: 'llama3.2', label: 'llama3.2', declaredCapabilities: { maxInputTokens: 24576 } }],
+      }],
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+    });
+
+    await llmCall({ messages: [{ role: 'user', content: 'hi' }] });
+
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'llama3.2', requestedContextLength: 24576, localServer: true });
+    expect(mockProbeContextWindow).not.toHaveBeenCalled();
+  });
+
+  it('does not mark a cloud provider as a local server', async () => {
+    await llmCall({ messages: [{ role: 'user', content: 'hi' }] });
+    const options = mockChat.mock.calls[0][1] as { localServer?: boolean; requestedContextLength?: number };
+    expect(options.localServer).toBe(false);
+    expect(options.requestedContextLength).toBeUndefined();
   });
 });

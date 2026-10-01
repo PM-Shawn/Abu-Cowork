@@ -292,15 +292,6 @@ vi.mock('../core/llm/modelCapabilities', () => ({
     maxTokens: 8192,
     enableThinking: false,
   }),
-  resolveEffectiveContextWindow: vi.fn().mockImplementation(
-    (_modelId: string, userSetting?: number, discovered?: number) => {
-      // Mirror the real implementation: min of model cap (200000 here) + user + discovered
-      const candidates = [200000];
-      if (typeof userSetting === 'number' && userSetting > 0) candidates.push(userSetting);
-      if (typeof discovered === 'number' && discovered > 0) candidates.push(discovered);
-      return Math.min(...candidates);
-    },
-  ),
   deriveUiCaps: vi.fn().mockReturnValue([]),
   // subagentLoop's per-turn starvation check — reached as soon as a delegate
   // run takes a tool_use turn, so the factory has to provide it. Mirror the
@@ -309,6 +300,8 @@ vi.mock('../core/llm/modelCapabilities', () => ({
     (stopReason: string, contentLength: number, toolCallCount: number) =>
       (stopReason === 'max_tokens' || stopReason === 'length') && contentLength === 0 && toolCallCount === 0,
   ),
+  reserveOutputTokens: (requested: number, contextWindow: number) =>
+    Math.max(1, Math.min(requested, Math.floor(contextWindow * 0.25))),
 }));
 
 vi.mock('../core/tools/toolNames', () => ({
@@ -409,7 +402,7 @@ import { LLMError } from '../core/llm/adapter';
 import * as delegatedMediaStore from '../core/subagent/delegatedMediaStore';
 import { executeToolBatch } from '../core/agent/toolExecutor';
 import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
-import { getLanguageSetting, setLanguage } from '../i18n';
+import { getI18n, getLanguageSetting, setLanguage } from '../i18n';
 import * as notifications from '../utils/notifications';
 import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
@@ -783,6 +776,44 @@ describe('Agent Pipeline Integration', () => {
     expect(assistantText).toMatch(/上下文容量|too large/i);
   });
 
+  it('explains a model whose window cannot hold the instructions in plain words', async () => {
+    vi.mocked(contextManagerModule.enforceContextBudget).mockImplementationOnce(() => {
+      throw new contextManagerModule.ContextBudgetError('FIXED_CONTEXT_TOO_LARGE', 20_000, 10_000);
+    });
+
+    const convId = useChatStore.getState().createConversation();
+    await runAgentLoop(convId, 'hello');
+
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    const assistantText = useChatStore.getState().conversations[convId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.');
+    // 一句普通说明，前面不带错误前缀
+    expect(assistantText).not.toContain('Error:');
+    expect(assistantText).not.toContain('raise the context length');
+  });
+
+  it('replaces the raw provider text when the request stays too long after recovery', async () => {
+    const overflow = new LLMError('raw provider overflow text', 'context_too_long', { retryable: false, statusCode: 400 });
+    // 第一次是正常请求，第二次是整理内容后的重试
+    mockClaudeChat.mockRejectedValueOnce(overflow).mockRejectedValueOnce(overflow);
+
+    const convId = useChatStore.getState().createConversation();
+    const result = await runAgentLoop(convId, 'hello');
+
+    expect(result.reason).toBe('error');
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    const assistantText = useChatStore.getState().conversations[convId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs.');
+    expect(assistantText).not.toContain('Error:');
+    expect(assistantText).not.toContain('raw provider overflow text');
+  });
+
   it('escalateMaxOutputTokens pure function works correctly', () => {
     // Already tested in agentLoop.test.ts, but verify integration
     const result = escalateMaxOutputTokens(8192, 200000, 1);
@@ -818,6 +849,225 @@ describe('Agent Pipeline Integration', () => {
 
       expect(result.reason).toBe('no_progress');
       expect(calls).toBe(3); // two tolerated retries, abort on the third
+    });
+
+    it('quietly asks the model to rewrite a malformed operation once, then carries on', async () => {
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls === 1) {
+            onEvent({ type: 'malformed_tool_call', raw: '<tool_call>{"name":' });
+          } else {
+            onEvent({ type: 'text', text: 'rewritten properly' });
+          }
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      expect(result.reason).toBe('completed');
+      expect(calls).toBe(2);
+      expect(JSON.stringify(sent[1])).toContain('could not be parsed');
+      const messages = useChatStore.getState().conversations[convId].messages;
+      const visible = messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain('<tool_call>');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      expect(visible).toContain('rewritten properly');
+      // 给模型的纠错消息只进模型的上下文，聊天界面不显示
+      const nudge = messages.find((m) => String(m.content).includes('could not be parsed'));
+      expect(nudge?.isSystem).toBe(true);
+      expect(messages.filter((m) => !m.isSystem).map((m) => String(m.content)).join(''))
+        .not.toContain('could not be parsed');
+    });
+
+    it('tells the user in one sentence when the rewrite is malformed too', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      expect(calls).toBe(2);
+      // 操作没有做成，按未完成结束，定时任务等后台调用方不会当成成功
+      expect(result.reason).toBe('no_progress');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain(getI18n().chat.malformedToolCall);
+      // 按普通说明显示，前面不带错误前缀
+      expect(visible).not.toContain('Error:');
+      expect(visible).not.toContain('<invoke');
+    });
+
+    it('ends as no_progress after giving up even when a system wake-up is waiting', async () => {
+      const { hasSystemQueuedInputs } = await import('../core/agent/userInputQueue');
+      // 等待中的系统唤醒只有一条：取走之后就没有了
+      let pendingWakeUps = 1;
+      vi.mocked(hasSystemQueuedInputs).mockImplementation(() => pendingWakeUps-- > 0);
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      try {
+        const convId = useChatStore.getState().createConversation();
+        const result = await runAgentLoop(convId, 'do the thing');
+
+        // 放弃之后本次运行结束，系统唤醒留给下一次运行开始时取走
+        expect(result.reason).toBe('no_progress');
+        expect(calls).toBe(2);
+        const visible = useChatStore.getState().conversations[convId].messages
+          .filter((m) => m.role === 'assistant')
+          .map((m) => String(m.content))
+          .join('');
+        expect(visible.split(getI18n().chat.malformedToolCall).length - 1).toBe(1);
+      } finally {
+        vi.mocked(hasSystemQueuedInputs).mockImplementation(() => false);
+      }
+    });
+
+    it('does not let an unparseable native call restore the rewrite chance', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          if (calls === 2) {
+            onEvent({ type: 'tool_use', id: 'bad-native', name: 'read_file', input: { _parse_error: 'bad json' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+            return;
+          }
+          onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      // 写坏 → 无法解析的原生调用 → 再写坏：第二次写坏直接放弃
+      expect(calls).toBe(3);
+      expect(result.reason).toBe('no_progress');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain(getI18n().chat.malformedToolCall);
+    });
+
+    it('rewrites quietly again after a proper operation came in between', async () => {
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls === 2) {
+            onEvent({ type: 'tool_use', id: 'good-native', name: 'read_file', input: { path: '/x' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+          } else if (calls === 4) {
+            onEvent({ type: 'text', text: 'all done' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          } else {
+            onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          }
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      // 写坏 → 正常操作 → 再写坏：第二次写坏仍然悄悄重写一次
+      expect(calls).toBe(4);
+      expect(result.reason).toBe('completed');
+      expect(JSON.stringify(sent[3]).split('could not be parsed').length - 1).toBe(2);
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      expect(visible).toContain('all done');
+    });
+
+    it('treats an operation cut off by the output limit as a truncation and keeps the rewrite for later', async () => {
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls === 1) {
+            onEvent({ type: 'malformed_tool_call', raw: '<tool_call>{"name":"read_file","arguments":{"path"' });
+            onEvent({ type: 'done', stopReason: 'max_tokens' });
+          } else if (calls === 2) {
+            onEvent({ type: 'malformed_tool_call', raw: '<invoke name="read_file">' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          } else {
+            onEvent({ type: 'text', text: 'done at last' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          }
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      expect(result.reason).toBe('completed');
+      expect(calls).toBe(3);
+      // 被截断的那一次只走截断续写，不消耗写坏重写的机会
+      expect(JSON.stringify(sent[1])).toContain('Output token limit reached');
+      expect(JSON.stringify(sent[1])).not.toContain('could not be parsed');
+      expect(JSON.stringify(sent[2])).toContain('could not be parsed');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      expect(visible).toContain('done at last');
+    });
+
+    it('stops at the truncation limit when every reply is an operation cut off by the output limit', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'malformed_tool_call', raw: '<tool_call>{"name":"write_file","arguments":{"content":"' });
+          onEvent({ type: 'done', stopReason: 'max_tokens' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      // 第一次加三次截断续写，写坏重写一次也没有发生
+      expect(calls).toBe(4);
+      expect(result.reason).toBe('error');
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).not.toContain(getI18n().chat.malformedToolCall);
+      const conversationText = JSON.stringify(useChatStore.getState().conversations[convId].messages);
+      expect(conversationText).not.toContain('could not be parsed');
     });
 
     it('stops a well-formed repeated tool loop after three unchanged observations', async () => {

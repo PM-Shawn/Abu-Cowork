@@ -6,17 +6,21 @@ export function Checkbox({
   onChange,
   disabled,
   className,
+  label,
 }: {
   checked: boolean;
   onChange: () => void;
   disabled?: boolean;
   className?: string;
+  /** 旁边文字只是视觉上的说明时，用它给勾选框一个读屏可读的名字 */
+  label?: string;
 }) {
   return (
     <button
       type="button"
       role="checkbox"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       onClick={(e) => {
         // Stop the click from reaching a surrounding clickable row/label.

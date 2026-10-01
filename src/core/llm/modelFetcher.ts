@@ -3,6 +3,7 @@ import type { ApiFormat } from '@/types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeBaseUrl, resolveOpenAIBaseUrl } from './urlUtils';
 import { deriveUiCaps } from './modelCapabilities';
+import { positiveInteger } from './contextWindow';
 
 /**
  * Why a fetch failed, in terms the UI can translate. Kept as a code rather
@@ -82,10 +83,15 @@ function failureForStatus(status: number): FetchModelsResult {
   return { success: false, models: [], error: `HTTP ${status}`, errorCode, status };
 }
 
-function toModelInfos(ids: { id: string; label?: string }[]): ModelInfo[] {
+function toModelInfos(ids: { id: string; label?: string; contextWindow?: number }[]): ModelInfo[] {
   return ids
     .filter((m) => isChatModelId(m.id))
-    .map((m) => ({ id: m.id, label: m.label || m.id, capabilities: deriveUiCaps(m.id) }));
+    .map((m) => ({
+      id: m.id,
+      label: m.label || m.id,
+      capabilities: deriveUiCaps(m.id),
+      ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+    }));
 }
 
 /**
@@ -136,8 +142,9 @@ const openAICompatibleFetcher: ModelFetcher = {
     const resp = await fetchFn(`${resolvedBase}/models`, { method: 'GET', headers });
     if (!resp.ok) return failureForStatus(resp.status);
 
-    const data = await resp.json() as { data?: { id: string }[] };
-    const models = toModelInfos(data.data ?? []);
+    const data = await resp.json() as { data?: { id: string; meta?: { n_ctx?: unknown } }[] };
+    // llama.cpp 在 meta.n_ctx 里报告当前加载的窗口
+    const models = toModelInfos((data.data ?? []).map((m) => ({ id: m.id, contextWindow: positiveInteger(m.meta?.n_ctx) })));
     return { success: true, models };
   },
 };

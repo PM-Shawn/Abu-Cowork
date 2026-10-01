@@ -33,6 +33,14 @@ export interface TranslationDict {
     retry: string;
   };
 
+  designSystem: {
+    discardTitle: string;
+    discardMessage: string;
+    discard: string;
+    keepEditing: string;
+    notifications: string;
+  };
+
   // Error Boundary
   errorBoundary: {
     renderError: string;
@@ -409,6 +417,10 @@ export interface TranslationDict {
     // Model selector — managed provider group
     /** Header above the user's own providers, shown when a managed provider is listed. */
     myModels: string;
+    /** Tag next to a model that can see images. */
+    modelCanSeeImages: string;
+    /** Accessible name of a picker row that carries the tag. {model} */
+    modelRowCanSeeImages: string;
     managedModelsSyncing: string;
     /** `{org}` = the managed provider's name. */
     managedProviderUnreachable: string;
@@ -571,12 +583,18 @@ export interface TranslationDict {
     ollamaForbidden: string;
     /** Provider account balance/resource-package exhausted. */
     insufficientBalance: string;
-    /** Streamed-inline notice while compacting an oversized context (includes markdown). */
+    /** Streamed-inline notice while compacting an oversized context (includes markdown; ends with a paragraph break so the retried reply starts its own paragraph). */
     compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;
-    /** System prompt and tool definitions leave no safe room for user input. */
+    /** System prompt and tool definitions leave no safe room for user input; also used when the request is still too long after the conversation was condensed. */
     contextFixedTooLarge: string;
+    /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
+    contextFixedTooLargeLocal: string;
+    /** The model failed to send an operation even after one quiet rewrite. */
+    malformedToolCall: string;
+    /** A local model server gave no first output within its 10-minute wait; nothing retries it. */
+    localServerNoFirstResponse: string;
     /** Conversation-title fallback used in task notifications. */
     notificationTaskFallback: string;
     /** Error after repeated output-token-limit hits (multi-line). {limit} */
@@ -1733,6 +1751,7 @@ export interface TranslationDict {
     advancedConfig: string;
     capTools: string;
     capImages: string;
+    capImagesHint: string;
     capReasoning: string;
     capRawUrl: string;
     capRawUrlHint: string;
@@ -1740,7 +1759,12 @@ export interface TranslationDict {
     effortLow: string;
     effortMedium: string;
     effortHigh: string;
-    capMaxInput: string;
+    capContextLength: string;
+    capContextLengthHint: string;
+    /** Placeholder when the service reported the length. {size} */
+    capContextLengthDetected: string;
+    /** Placeholder when nothing was reported. {size} */
+    capContextLengthEstimated: string;
     capMaxOutput: string;
     capTokenDefault: string;
     capPerModelHint: string;
@@ -4604,6 +4628,8 @@ export interface TranslationDict {
     };
     // manage_mcp_server
     system: {
+      /** Appended to an unknown-tool error. {names} */
+      unknownToolAvailable: string;
       /** Error: action=search requires query. */
       errSearchNeedsQuery: string;
       /** No MCP server matched the query. {query} */
@@ -5163,6 +5189,8 @@ export interface TranslationDict {
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */
       errNoVision: string;
+      /** scroll on Windows: needs a screenshot the model cannot use; scroll through focus + PageDown instead. */
+      errNoVisionScrollWindows: string;
       /** activate_app: missing app parameter. */
       errActivateNeedsApp: string;
       /** activate_app success. {name} */

@@ -39,7 +39,7 @@ export interface CapsPort {
   /** Mirrors discoveredCapabilitiesStore's `recordMaxOutputTokens`. */
   recordMaxOutputTokens(providerId: string, modelId: string, limit: number): void;
   /** Mirrors discoveredCapabilitiesStore's `recordContextWindow`. */
-  recordContextWindow(providerId: string, modelId: string, window: number): void;
+  recordContextWindow(providerId: string, modelId: string, window: number, probe?: number): void;
   /** Mirrors discoveredCapabilitiesStore's `recordReasoningObserved`. */
   recordReasoningObserved(providerId: string, modelId: string): void;
 }
@@ -53,8 +53,8 @@ export function createInProcessCapsPort(): CapsPort {
     get: (providerId, modelId) => useDiscoveredCapsStore.getState().get(providerId, modelId),
     recordMaxOutputTokens: (providerId, modelId, limit) =>
       useDiscoveredCapsStore.getState().recordMaxOutputTokens(providerId, modelId, limit),
-    recordContextWindow: (providerId, modelId, window) =>
-      useDiscoveredCapsStore.getState().recordContextWindow(providerId, modelId, window),
+    recordContextWindow: (providerId, modelId, window, probe) =>
+      useDiscoveredCapsStore.getState().recordContextWindow(providerId, modelId, window, probe),
     recordReasoningObserved: (providerId, modelId) =>
       useDiscoveredCapsStore.getState().recordReasoningObserved(providerId, modelId),
   };

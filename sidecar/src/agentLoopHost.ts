@@ -109,6 +109,7 @@ interface CapsSnapshotEntry {
   modelId: string;
   maxOutputTokens?: number;
   contextWindow?: number;
+  contextWindowProbe?: number;
   isReasoningModel?: boolean;
 }
 
@@ -1157,17 +1158,17 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       // the "no discovered override yet" fallback — documented, not a
       // silent wrong-answer risk.
       if (!matchesSnapshot(providerId, modelId)) return undefined;
-      const { maxOutputTokens, contextWindow, isReasoningModel } = capsSnapshot!;
+      const { maxOutputTokens, contextWindow, contextWindowProbe, isReasoningModel } = capsSnapshot!;
       if (maxOutputTokens === undefined && contextWindow === undefined && isReasoningModel === undefined) return undefined;
-      return { maxOutputTokens, contextWindow, isReasoningModel, source: 'error-derived' as const, updatedAt: Date.now() };
+      return { maxOutputTokens, contextWindow, contextWindowProbe, isReasoningModel, source: 'error-derived' as const, updatedAt: Date.now() };
     },
     recordMaxOutputTokens: (providerId, modelId, limit) => {
       sendNotification('caps.record', { providerId, modelId, field: 'maxOutputTokens', value: limit });
       capsSnapshot = { providerId, modelId, ...capsSnapshot, maxOutputTokens: limit };
     },
-    recordContextWindow: (providerId, modelId, window) => {
-      sendNotification('caps.record', { providerId, modelId, field: 'contextWindow', value: window });
-      capsSnapshot = { providerId, modelId, ...capsSnapshot, contextWindow: window };
+    recordContextWindow: (providerId, modelId, window, probe) => {
+      sendNotification('caps.record', { providerId, modelId, field: 'contextWindow', value: window, probe });
+      capsSnapshot = { providerId, modelId, ...capsSnapshot, contextWindow: window, contextWindowProbe: probe };
     },
     recordReasoningObserved: (providerId, modelId) => {
       sendNotification('caps.record', { providerId, modelId, field: 'reasoningObserved', value: true });

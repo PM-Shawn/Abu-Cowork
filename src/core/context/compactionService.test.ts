@@ -33,7 +33,7 @@ vi.mock('@/stores/chatStore', () => ({
 vi.mock('@/stores/settingsStore', () => ({
   readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: { getState: () => ({}) },
-  getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined }),
+  getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined, models: [] }),
   getActiveApiKey: vi.fn().mockReturnValue('test-api-key'),
   getEffectiveModel: vi.fn().mockReturnValue('claude-haiku-4-5'),
 }));
@@ -42,14 +42,21 @@ vi.mock('@/stores/settingsStore', () => ({
 // The default in-process reader snapshots the (mocked, empty) settingsStore, so
 // pin a snapshot with a known global default model.
 
+const mockSnapshotProviders: unknown[] = [];
+
 vi.mock('@/core/agent/ports/settingsReader', () => ({
   getSettingsReader: () => ({
     getSnapshot: () => ({
       activeModel: { providerId: 'p', modelId: 'global-model' },
-      providers: [],
+      providers: mockSnapshotProviders,
+      contextWindowSize: 200000,
     }),
   }),
 }));
+
+// 本地服务商的窗口询问，不发真实请求
+const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
+vi.mock('@/core/llm/contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
 
 // ── Mock enterprise llm-resolver ──
 
@@ -133,6 +140,9 @@ beforeEach(() => {
   for (const key of Object.keys(mockConversationIndex)) {
     delete mockConversationIndex[key];
   }
+  mockSnapshotProviders.length = 0;
+  mockProbeContextWindow.mockReset();
+  mockProbeContextWindow.mockResolvedValue(undefined);
 });
 
 // ── Tests ──
@@ -243,6 +253,43 @@ describe('compactConversationManually', () => {
       expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
       const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
       expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'global-model' });
+    });
+
+    /** 快照与 settingsStore 的 getActiveProvider 给出同一个 Ollama 服务商。 */
+    function useOllamaProvider(models: Array<{ id: string; label: string; declaredCapabilities?: { maxInputTokens: number } }>) {
+      const ollama = {
+        id: 'ollama', source: 'builtin', name: 'Ollama', enabled: true, apiFormat: 'openai-compatible',
+        baseUrl: 'http://127.0.0.1:11434', apiKey: '', models, status: 'verified', sortOrder: 0,
+      };
+      mockSnapshotProviders.push(ollama);
+      vi.mocked(settingsStore.getActiveProvider).mockReturnValueOnce(ollama as never);
+      mockConversations[CONV_ID] = { messages: buildRounds(6), model: { providerId: 'ollama', modelId: 'llama3.2' } };
+      vi.mocked(settingsStore.getEffectiveModel).mockReturnValueOnce('llama3.2');
+    }
+
+    it('marks Ollama as a local server and asks it nothing when the user left the context length blank', async () => {
+      useOllamaProvider([{ id: 'llama3.2', label: 'llama3.2' }]);
+      mockSummarize.mockResolvedValue('summary');
+
+      const result = await compactConversationManually(CONV_ID);
+
+      expect(result.compacted).toBe(true);
+      // 用户没填「上下文长度」，Ollama 不会收到 num_ctx；手动整理不再问 /api/ps
+      const config = mockSummarize.mock.calls.at(-1)?.[1] as { requestedContextLength?: number };
+      expect(config).toMatchObject({ model: 'llama3.2', localServer: true });
+      expect(config.requestedContextLength).toBeUndefined();
+      expect(mockProbeContextWindow).not.toHaveBeenCalled();
+    });
+
+    it('passes on only the context length the user filled in for Ollama', async () => {
+      useOllamaProvider([{ id: 'llama3.2', label: 'llama3.2', declaredCapabilities: { maxInputTokens: 24576 } }]);
+      mockSummarize.mockResolvedValue('summary');
+
+      const result = await compactConversationManually(CONV_ID);
+
+      expect(result.compacted).toBe(true);
+      expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({ model: 'llama3.2', requestedContextLength: 24576, localServer: true });
+      expect(mockProbeContextWindow).not.toHaveBeenCalled();
     });
   });
 

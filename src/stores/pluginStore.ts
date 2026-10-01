@@ -59,7 +59,7 @@ import { readInstalledResult, upsertInstalled, type InstalledPlugin } from '@/co
 import { BUILTIN_MARKET_NAME } from '@/core/plugin/builtinMarket';
 import { registerPluginServers, deregisterPluginServers, type McpStoreOps } from '@/core/plugin/pluginMcpBridge';
 import { useMCPStore } from '@/stores/mcpStore';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore, afterQueuedSettingsWrites, storedSettingsList } from '@/stores/settingsStore';
 import { publishPluginActivation, reconcilePluginActivation, sanitizePluginActivations, pluginOwnerForMcp, type PluginActivations } from '@/core/plugin/activationPolicy';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
@@ -72,7 +72,9 @@ import { ENTERPRISE_MARKET_NAME } from '@/core/plugin/enterpriseMarket';
 import { parsePluginKey } from '@/core/plugin/paths';
 import type { MarketplaceEntry } from '@/core/plugin/marketplace';
 import { hasPluginOperationHost, beginPluginOperation, commitPluginOperation, recoverPluginOperation, pluginOperationStatus,
-  acknowledgePluginOperation, runPluginOperation, type PluginOperationResult, type PluginRuntimeSnapshot } from '@/core/plugin/operationBridge';
+  acknowledgePluginOperation, recordPluginOperationCheckpoint, runPluginOperation, type PluginOperationResult, type PluginRuntimeSnapshot } from '@/core/plugin/operationBridge';
+import { forgetPluginOperationMarker, pluginOperationMarkerStored, pluginOperationProgress, writePluginOperationMarker,
+  writePluginOperationProgress } from '@/core/plugin/operationMarker';
 import { runtimeAfterInstall } from '@/core/plugin/runtimeTransition';
 import { acquirePluginChange } from '@/core/plugin/runtimeLease';
 
@@ -655,7 +657,7 @@ export async function bootstrapPluginUpdates(discoveryReady?: Promise<void>): Pr
       }
       throw error;
     });
-    if (recovery) { await applyPluginRuntime(recovery, home); await acknowledgePluginOperation(recovery.id); }
+    if (recovery) await acknowledgeResolution(await applyPluginRuntime(recovery, home));
   }
   if (!discoveryReady || hasPluginOperationHost()) await useDiscoveryStore.getState().refresh();
   await usePluginStore.getState().refreshInstalled(home, { skipDiscovery: true });
@@ -687,12 +689,80 @@ function capturePluginRuntime(record: InstalledPlugin | undefined, next?: Instal
   };
 }
 
-async function applyPluginRuntime(resolution: PluginOperationResult, home: string): Promise<void> {
+/** The live values of the names a resolution owns, in the shape of its runtime. */
+function observedRuntime(runtime: PluginRuntimeSnapshot): PluginRuntimeSnapshot {
+  const servers = useMCPStore.getState().servers;
+  const settings = useSettingsStore.getState();
+  return {
+    enabled: runtime.enabled,
+    servers: Object.fromEntries(Object.keys(runtime.servers).map(name => [name, servers[name] ? structuredClone(servers[name].config) : null])),
+    disabledSkills: Object.fromEntries(Object.keys(runtime.disabledSkills).map(name => [name, settings.disabledSkills.includes(name)])),
+    disabledAgents: Object.fromEntries(Object.keys(runtime.disabledAgents).map(name => [name, settings.disabledAgents.includes(name)])),
+  };
+}
+
+interface RecoveryCheckpoint {
+  /** The resolution with the host's recorded baseline and progress key. */
+  resolution: PluginOperationResult;
+  /** Per owned name, the value besides the resolution's that the live one may hold. */
+  expected: PluginRuntimeSnapshot | undefined;
+  /** Note entries as applied; call after the changes they name are written. */
+  record: (entries: string[]) => void;
+}
+
+/**
+ * The values recovery must not override: the ones the user last chose.
+ *
+ * When committed storage lacks the operation's marker it was saved before the
+ * snapshot, so it holds no change made during the operation and is older than
+ * the snapshot: the values it loaded are the baseline. The first such baseline
+ * goes into the journal, so a retry, a reload or another restart compares
+ * against it rather than against edits made since. Otherwise the snapshot is
+ * the baseline, and a value matching neither it nor the resolution is a change
+ * the user made during the operation.
+ *
+ * An entry recovery already applied no longer has a baseline to fall back to:
+ * the resolution's value is what the user was last given, so the live value
+ * must still equal it. Applied entries are listed under the progress key, each
+ * written after its change, so a committed entry proves a committed change.
+ */
+async function recoveryCheckpoint(resolution: PluginOperationResult, runtime: PluginRuntimeSnapshot): Promise<RecoveryCheckpoint> {
+  if (resolution.marker === undefined) return { resolution, expected: resolution.expectedRuntime, record: () => {} };
+  const stale = !pluginOperationMarkerStored(resolution.marker);
+  const recorded = (stale && !resolution.baseline) || !resolution.progress
+    ? await recordPluginOperationCheckpoint(resolution.id, stale && !resolution.baseline ? observedRuntime(runtime) : undefined)
+    : resolution;
+  const baseline = stale ? recorded.baseline : resolution.expectedRuntime;
+  const progress = recorded.progress;
+  if (!baseline || !progress) throw new Error('Plugin recovery checkpoint was not recorded');
+  const applied = new Set(pluginOperationProgress(progress));
+  const pick = <T,>(field: 'servers' | 'disabledSkills' | 'disabledAgents', values: Record<string, T>) => ({ ...(baseline[field] as Record<string, T>),
+    ...Object.fromEntries(Object.entries(values).filter(([name]) => applied.has(`${field}:${name}`))) });
+  return {
+    resolution: { ...resolution, baseline: recorded.baseline, progress },
+    expected: { ...baseline, servers: pick('servers', runtime.servers), disabledSkills: pick('disabledSkills', runtime.disabledSkills), disabledAgents: pick('disabledAgents', runtime.disabledAgents) },
+    record: entries => {
+      for (const entry of entries) applied.add(entry);
+      writePluginOperationProgress(progress, [...applied]);
+    },
+  };
+}
+
+/** Recovery keys may go only after their journal is gone; see `operationMarker`. */
+async function acknowledgeResolution(resolution: PluginOperationResult): Promise<void> {
+  await acknowledgePluginOperation(resolution.id);
+  if (resolution.marker) forgetPluginOperationMarker(resolution.marker);
+  if (resolution.progress) forgetPluginOperationMarker(resolution.progress);
+}
+
+/** Returns the resolution with the checkpoint the host recorded for it. */
+async function applyPluginRuntime(resolution: PluginOperationResult, home: string): Promise<PluginOperationResult> {
   const runtime = resolution.runtime;
   if (!runtime || typeof runtime.enabled !== 'boolean' || !runtime.servers || !runtime.disabledSkills || !runtime.disabledAgents) {
     throw new Error('Plugin recovery state is invalid');
   }
-  const expected = resolution.expectedRuntime;
+  const checkpoint = await recoveryCheckpoint(resolution, runtime);
+  const expected = checkpoint.expected;
   const assertCurrentRuntime = () => {
     if (!expected) return;
     const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) =>
@@ -727,6 +797,7 @@ async function applyPluginRuntime(resolution: PluginOperationResult, home: strin
       if (mcp.servers[name]) mcp.removeServer(name);
       mcp.addServer(config);
     }
+    checkpoint.record([`servers:${name}`]);
   }
   useSettingsStore.setState(state => {
     assertCurrentRuntime();
@@ -736,6 +807,12 @@ async function applyPluginRuntime(resolution: PluginOperationResult, home: strin
     disabledAgents: [...state.disabledAgents.filter(name => !Object.hasOwn(runtime.disabledAgents, name)),
       ...Object.keys(runtime.disabledAgents).filter(name => runtime.disabledAgents[name])],
   }; });
+  // The settings blob reaches localStorage under its lock, after this call, and
+  // its storage can refuse the write: only what the stored blob holds counts.
+  await afterQueuedSettingsWrites(() => checkpoint.record((['disabledSkills', 'disabledAgents'] as const).flatMap(field => {
+    const stored = storedSettingsList(field);
+    return Object.keys(runtime[field]).filter(name => stored !== null && stored.includes(name) === runtime[field][name]).map(name => `${field}:${name}`);
+  })));
   applyingPluginRuntime = true;
   try { await usePluginStore.getState().refreshInstalled(home, { strict: true }); }
   finally { applyingPluginRuntime = false; }
@@ -749,6 +826,7 @@ async function applyPluginRuntime(resolution: PluginOperationResult, home: strin
     usePluginStore.setState(state => ({ activationByKey: { ...state.activationByKey,
       [resolution.key]: { ...activation, enabled: runtime.enabled } } }));
   }
+  return checkpoint.resolution;
 }
 
 async function managedPluginChange(kind: 'install' | 'update', request: InstallRequest & { key?: string }): Promise<InstalledPlugin>;
@@ -762,6 +840,7 @@ async function managedPluginChange(kind: 'install' | 'update' | 'uninstall', req
   const previous = usePluginStore.getState().installed.find(plugin => plugin.key === key);
   const wasEnabled = usePluginStore.getState().activationByKey[key]?.enabled === true;
   usePluginStore.setState({ loading: true, error: null, activationReady: false });
+  let marker: string | undefined;
   try {
     const options = req ? { ...req, requireAllContributions: true, copyDir: async (from: string, to: string) => { await copyPluginDir(from, to); }, fetchRemote: fetchRemotePluginSource } : undefined;
     const candidate = options ? await prepareInstallRecord(options) : undefined;
@@ -770,7 +849,6 @@ async function managedPluginChange(kind: 'install' | 'update' | 'uninstall', req
         const skill = skillLoader.getSkill(name, { includeDisabledPlugins: true });
         return skill && pluginOwnerForSkill(skill.skillDir) === key;
       }))) throw new Error(getI18n().toolbox.pluginsBusy);
-    const runtime = capturePluginRuntime(previous, candidate);
     // Deny new use without changing the persisted activation intent. If the
     // app exits before begin, no journal is needed to recover that intent.
     if (previous) {
@@ -782,8 +860,15 @@ async function managedPluginChange(kind: 'install' | 'update' | 'uninstall', req
     }
     // Keep all discovery-triggered reconciliations denied during replacement.
 
+    // The marker follows every localStorage write the snapshot reflects: the
+    // MCP and plugin stores write synchronously, and the settings writes still
+    // waiting for their lock run before this task.
+    const captured = await afterQueuedSettingsWrites(() => ({ runtime: capturePluginRuntime(previous, candidate), marker: writePluginOperationMarker() }));
+    const runtime = captured.runtime;
+    marker = captured.marker;
+    let resolved: PluginOperationResult | undefined;
     const record = await runPluginOperation({
-      begin: () => beginPluginOperation({ kind, key, record: candidate, token: req?.preparedToken, expected: previous ?? null, runtime }),
+      begin: () => beginPluginOperation({ kind, key, record: candidate, token: req?.preparedToken, expected: previous ?? null, runtime, marker: captured.marker }),
       stage: async () => {
         if (!options) return { record: null, runtime: { ...runtime, enabled: false,
           servers: Object.fromEntries(Object.keys(runtime.servers).map(name => [name, null])) } };
@@ -795,7 +880,11 @@ async function managedPluginChange(kind: 'install' | 'update' | 'uninstall', req
       commit: (id, outcome) => commitPluginOperation(id, outcome.record, outcome.runtime),
       recover: () => recoverPluginOperation(key),
       apply: async resolution => {
-        await applyPluginRuntime(resolution, request.home);
+        resolved = await applyPluginRuntime(resolution, request.home);
+      },
+      acknowledge: async id => {
+        if (resolved?.id !== id) throw new Error('Plugin operation acknowledged without its resolution');
+        await acknowledgeResolution(resolved);
       },
       unchanged: async () => {
         managedChanges.delete(key);
@@ -812,6 +901,7 @@ async function managedPluginChange(kind: 'install' | 'update' | 'uninstall', req
     // recovery keeps the gate closed and its backups available for retry.
     try {
       if (await pluginOperationStatus() === null) {
+        if (marker) forgetPluginOperationMarker(marker);
         managedChanges.delete(key);
         await usePluginStore.getState().refreshInstalled(request.home);
         if (previous) await usePluginStore.getState().setPluginEnabled(key, wasEnabled);

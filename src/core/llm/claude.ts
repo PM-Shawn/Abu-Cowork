@@ -5,7 +5,13 @@ import type { Message, StreamEvent, TokenUsage, ToolDefinition } from '../../typ
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedToolCall } from './messageNormalizer';
-import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import {
+  createHeartbeat,
+  anySignal,
+  localFirstResponseTimeoutError,
+  DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS,
+  LOCAL_FIRST_RESPONSE_TIMEOUT_MS,
+} from './heartbeat';
 import { createLogger } from '../logging/logger';
 import { createDefaultUsageRecorder } from './usageRecorder';
 
@@ -179,7 +185,7 @@ export class ClaudeAdapter implements LLMAdapter {
     options: ChatOptions,
     onEvent: (event: StreamEvent) => void
   ): Promise<void> {
-    const fetchFn = await getTauriFetch();
+    const fetchFn = await getTauriFetch({ localServer: options.localServer === true });
     // 用量采集在 provider 边界，尝试身份在 fetch 层铸造：SDK 自己的重试会再走一次
     // fetch，它在账本里单独占一条尝试（任务书 U02）。
     const recorder = createDefaultUsageRecorder({
@@ -345,17 +351,29 @@ export class ClaudeAdapter implements LLMAdapter {
     // Connect/header-phase timeout: the heartbeat is only reset once create()
     // resolves, so a server that never returns headers would hang create()
     // unbounded. Abort once the ceiling is hit.
+    // 本地服务（地址在本机、按 Anthropic 格式的自定义服务商）：从发出请求到第一个事件
+    // 算一个整体，最多等 10 分钟，超时不重试；云端保持 create() 返回前 180 秒。
+    const localServer = options.localServer === true;
+    let firstResponseTimedOut = false;
     const connectTimer = setTimeout(() => {
-      hangTimedOut = true;
+      if (localServer) firstResponseTimedOut = true;
+      else hangTimedOut = true;
       streamAbort.abort();
-    }, STREAM_HANG_TIMEOUT_MS);
+    }, localServer ? LOCAL_FIRST_RESPONSE_TIMEOUT_MS : STREAM_HANG_TIMEOUT_MS);
 
     try {
       const stream = await client.messages.create(params, streamOptions);
-      clearTimeout(connectTimer);
-      heartbeat.reset();
+      if (!localServer) {
+        clearTimeout(connectTimer);
+        heartbeat.reset();
+      }
 
+      let eventSeen = false;
       for await (const event of stream as AsyncIterable<Anthropic.MessageStreamEvent>) {
+        if (!eventSeen) {
+          eventSeen = true;
+          clearTimeout(connectTimer);
+        }
         heartbeat.reset();
 
         // Check for cancellation
@@ -477,6 +495,10 @@ export class ClaudeAdapter implements LLMAdapter {
     } catch (err) {
       heartbeat.clear();
       clearTimeout(connectTimer);
+      if (firstResponseTimedOut) {
+        recorder.settle('interrupted');
+        throw localFirstResponseTimeoutError();
+      }
       // Hang-timeout abort surfaces as an AbortError too, but must be retryable —
       // distinguish it from a genuine user cancel (which leaves options.signal aborted).
       if (hangTimedOut) {
@@ -502,6 +524,8 @@ export class ClaudeAdapter implements LLMAdapter {
       }
       throw err;
     } finally {
+      // 本地服务的首次回答计时持续到第一个事件；流没有事件就结束时在这里收掉
+      clearTimeout(connectTimer);
       // 兜底：走到这里还没结清，说明是上面几支没覆盖到的退出路径。
       // 结清是幂等的，已经有结果的尝试不会被改写。
       recorder.settle('interrupted');

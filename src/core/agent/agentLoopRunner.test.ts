@@ -1412,7 +1412,15 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarNotification, 'caps.record');
       handler({ providerId: 'p1', modelId: 'm1', field: 'contextWindow', value: 128000 });
-      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 128000);
+      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 128000, undefined);
+    });
+
+    it('contextWindow field with probe → recordContextWindow carries the service value', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'caps.record');
+      handler({ providerId: 'p1', modelId: 'm1', field: 'contextWindow', value: 6000, probe: 8192 });
+      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 6000, 8192);
     });
 
     it('reasoningObserved field → recordReasoningObserved', async () => {
@@ -2012,6 +2020,79 @@ describe('agentLoopRunner', () => {
         conversationId: 'conv-1',
         agentRunId: undefined,
       }));
+    });
+
+    // 本轮给模型的工具名由 sidecar 里的运行时写入，以字符串数组跨过线路
+    it('tool.invoke carries the offered tool names from the sidecar run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'reed_file',
+        input: {},
+        context: { offeredToolNames: ['read_file', 'write_file'] },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        offeredToolNames: ['read_file', 'write_file'],
+      }));
+    });
+
+    it.each([
+      ['a string', 'read_file'],
+      ['a non-string entry', ['read_file', 7]],
+      ['an object', { read_file: true }],
+    ])('tool.invoke and approval.check refuse offered tool names given as %s', async (_label, offeredToolNames) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const params = { runId: 'run-1', toolName: 'read_file', input: {}, context: { offeredToolNames } };
+
+      await expect(handlerFor(onSidecarRequest, 'tool.invoke')(params))
+        .rejects.toThrow(/offeredToolNames must be an array of strings/);
+      await expect(handlerFor(onSidecarRequest, 'approval.check')(params))
+        .rejects.toThrow(/offeredToolNames must be an array of strings/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
+    // 模型能不能看图、电脑操控档位由 sidecar 里的运行时写入，工具说明与电脑操控都按它们取舍
+    it('tool.invoke carries the model tier and vision from the sidecar run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'tool_search',
+        input: { query: 'computer' },
+        context: { computerUseTier: 'structured', supportsVision: false },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        computerUseTier: 'structured',
+        supportsVision: false,
+      }));
+    });
+
+    it.each([
+      ['an unknown tier', { computerUseTier: 'vision' }, /computerUseTier must be one of/],
+      ['a non-string tier', { computerUseTier: 1 }, /computerUseTier must be one of/],
+      ['a non-boolean vision flag', { supportsVision: 'no' }, /supportsVision must be a boolean/],
+    ])('tool.invoke and approval.check refuse %s', async (_label, context, message) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const params = { runId: 'run-1', toolName: 'read_file', input: {}, context };
+
+      await expect(handlerFor(onSidecarRequest, 'tool.invoke')(params)).rejects.toThrow(message);
+      await expect(handlerFor(onSidecarRequest, 'approval.check')(params)).rejects.toThrow(message);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
 
     it('tool.invoke overwrites a forged IM reply target with the shell session target', async () => {
@@ -5104,6 +5185,32 @@ describe('agentLoopRunner', () => {
         settingsReader?: { getSnapshot: () => { activeModel: unknown } };
       };
       expect(installedContext.settingsReader?.getSnapshot().activeModel).toEqual(p1Model);
+    });
+
+    it('hands the sidecar the learned window together with the service value it was learned against', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      getSettingsSnapshotMock.mockReturnValue({
+        agentMaxTurns: 200,
+        activeModel: { providerId: 'p1', modelId: 'model-a' },
+        providers: [
+          { id: 'p1', name: 'P1', apiFormat: 'openai-compatible', enabled: true, apiKey: 'p1-key', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'model-a', name: 'Model A' }] },
+        ],
+      });
+      getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'idle' });
+      capsGetMock.mockReturnValue({ contextWindow: 6000, contextWindowProbe: 8192, source: 'error-derived', updatedAt: 0 });
+      resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({
+        apiKey,
+        baseUrl,
+        forceOpenAiCompatible: false,
+      }));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const params = sidecarRequestMock.mock.calls[0][1] as { capsSnapshot?: unknown };
+      expect(params.capsSnapshot).toMatchObject({
+        providerId: 'p1', modelId: 'model-a', contextWindow: 6000, contextWindowProbe: 8192,
+      });
     });
 
     it('creates the task controller before prompt preprocessing and stops without dispatching when it is aborted there', async () => {

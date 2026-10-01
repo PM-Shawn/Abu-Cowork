@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useDiscoveredCapsStore } from './discoveredCapabilitiesStore';
 
@@ -47,6 +48,42 @@ describe('discoveredCapabilitiesStore', () => {
       const got = get('openai', 'gpt-3.5-turbo');
       expect(got?.maxOutputTokens).toBe(4096);
       expect(got?.contextWindow).toBe(16385);
+    });
+
+    it('records what the service reported when the window was learned', () => {
+      const { recordContextWindow, get } = useDiscoveredCapsStore.getState();
+      recordContextWindow('lmstudio', 'qwen3-8b', 6000, 8192);
+      const got = get('lmstudio', 'qwen3-8b');
+      expect(got?.contextWindow).toBe(6000);
+      expect(got?.contextWindowProbe).toBe(8192);
+    });
+
+    it('a write without a service value clears the previous one', () => {
+      const { recordContextWindow, get } = useDiscoveredCapsStore.getState();
+      recordContextWindow('lmstudio', 'qwen3-8b', 6000, 8192);
+      recordContextWindow('lmstudio', 'qwen3-8b', 5000);
+      const got = get('lmstudio', 'qwen3-8b');
+      expect(got?.contextWindow).toBe(5000);
+      expect(got).not.toHaveProperty('contextWindowProbe');
+    });
+
+    it('the same window with a new service value still updates the service value', () => {
+      const { recordContextWindow, get } = useDiscoveredCapsStore.getState();
+      recordContextWindow('lmstudio', 'qwen3-8b', 6000, 8192);
+      recordContextWindow('lmstudio', 'qwen3-8b', 6000, 16384);
+      expect(get('lmstudio', 'qwen3-8b')?.contextWindowProbe).toBe(16384);
+    });
+  });
+
+  describe('persist migration', () => {
+    it('keeps version 1 data as it was', () => {
+      const migrate = useDiscoveredCapsStore.persist.getOptions().migrate!;
+      const v1 = {
+        capabilities: {
+          'openai:gpt-4': { contextWindow: 8192, maxOutputTokens: 4096, source: 'error-derived', updatedAt: 1 },
+        },
+      };
+      expect(migrate(structuredClone(v1), 1)).toEqual(v1);
     });
   });
 

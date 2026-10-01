@@ -103,6 +103,12 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     return value;
   }
   /**
+   * The renderer's localStorage marker for this operation, written right after
+   * it took `previousRuntime`. Recovery checks whether committed storage holds
+   * it; the host only carries it. Journals from older builds have none.
+   */
+  const validMarker = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
+  /**
    * A journal entry's frozen `(dev, ino)` pair.
    *
    * `identityText` also reads back the plain numbers a journal written by an
@@ -130,11 +136,29 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
       if (move.kind === 'package' && (![value.previous?.version, value.next?.version].includes(move.name) || (move.packageName !== undefined && ![value.previous?.name, value.next?.name].includes(move.packageName)))) fail('invalid package backup');
       if (move.kind === 'agent' && ![...(value.previous?.contributed.agents ?? []), ...(value.next?.contributed.agents ?? [])].includes(move.name)) fail('invalid agent backup');
     }
+    if (value.marker !== undefined && !validMarker(value.marker)) fail('invalid storage marker');
     if (value.preservedServers !== undefined && (!Array.isArray(value.preservedServers)
       || value.preservedServers.some(name => ![...(value.previous?.contributed.mcpServers ?? []), ...(value.next?.contributed.mcpServers ?? [])].includes(name)))) fail('invalid preserved servers');
     validateRuntime(value.previousRuntime, value);
     if (value.phase === 'committed') validateRuntime(value.nextRuntime, value, true);
+    if ((value.baseline !== undefined || value.progress !== undefined) && (value.marker === undefined || value.phase === 'prepared')) fail('invalid recovery checkpoint');
+    if (value.baseline !== undefined) validateBaseline(value.baseline, value);
+    if (value.progress !== undefined && !validMarker(value.progress)) fail('invalid recovery checkpoint');
     return value;
+  }
+  /**
+   * Recovery's own evidence, recorded once per operation by `checkpoint`:
+   * `baseline` holds the values a restarted renderer loaded when committed
+   * storage lacked the marker, so a retry, a reload or another restart
+   * compares against the same values rather than against edits made since;
+   * `progress` names the localStorage key where the renderer lists what it has
+   * applied, each entry written after the change it names.
+   */
+  function validateBaseline(runtime, op) {
+    validateRuntime(runtime, op);
+    const target = op.phase === 'committed' ? op.nextRuntime : op.previousRuntime;
+    const names = value => JSON.stringify(['servers', 'disabledSkills', 'disabledAgents'].map(field => Object.keys(value[field]).sort()));
+    if (names(runtime) !== names(target)) fail('recovery baseline does not match the operation');
   }
   async function backupPaths() {
     const paths = [];
@@ -197,7 +221,9 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     const raw = await registry.dispatch('read', { home, forWrite: true });
     return raw === null ? [] : JSON.parse(raw);
   }
-  const result = op => ({ id: op.id, key: op.phase === 'committed' ? (op.next?.key ?? op.key) : op.key, phase: op.phase, installed: op.phase === 'committed' ? Boolean(op.next) : Boolean(op.previous), expectedRuntime: op.previousRuntime, runtime: op.phase === 'committed' ? op.nextRuntime : op.previousRuntime });
+  const result = op => ({ id: op.id, key: op.phase === 'committed' ? (op.next?.key ?? op.key) : op.key, phase: op.phase, installed: op.phase === 'committed' ? Boolean(op.next) : Boolean(op.previous), expectedRuntime: op.previousRuntime, runtime: op.phase === 'committed' ? op.nextRuntime : op.previousRuntime,
+    ...(op.marker !== undefined ? { marker: op.marker } : {}), ...(op.baseline !== undefined ? { baseline: op.baseline } : {}),
+    ...(op.progress !== undefined ? { progress: op.progress } : {}) });
 
   function validateRuntime(runtime, op, committed = false) {
     if (!plain(runtime) || typeof runtime.enabled !== 'boolean' || !plain(runtime.servers)
@@ -256,8 +282,9 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
 
   async function begin(sender, request) {
     if (await load()) fail('another operation needs completion or recovery');
-    if (!plain(request) || Object.keys(request).some(k => !['kind', 'key', 'record', 'token', 'runtime', 'expected'].includes(k))
-      || !['install', 'update', 'uninstall'].includes(request.kind)) fail('invalid begin request');
+    if (!plain(request) || Object.keys(request).some(k => !['kind', 'key', 'record', 'token', 'runtime', 'expected', 'marker'].includes(k))
+      || !['install', 'update', 'uninstall'].includes(request.kind)
+      || (request.marker !== undefined && !validMarker(request.marker))) fail('invalid begin request');
     const installed = await records();
     const previous = installed.find(record => record.key === request.key) ?? null;
     const canonical = value => JSON.stringify(value, (_key, item) => plain(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
@@ -276,6 +303,7 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     } else if (request.kind !== 'uninstall') fail('install record missing');
     const op = { schema: 1, id: id(), key: request.key, kind: request.kind, phase: 'prepared',
       token: request.token, previous, next, previousRuntime: request.runtime, nextRuntime: null, moves: [],
+      ...(request.marker !== undefined ? { marker: request.marker } : {}),
       preservedServers: [...new Set(installed.filter(record => record.key !== request.key).flatMap(record => record.contributed.mcpServers))]
         .filter(name => [...(previous?.contributed.mcpServers ?? []), ...(next?.contributed.mcpServers ?? [])].includes(name)) };
     validateRuntime(request.runtime, op);
@@ -374,6 +402,21 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     }
     if (!op || owner !== sender || request?.id !== op.id) fail('operation unavailable or owned by another window');
     if (action === 'rollback') return rollback(op);
+    if (action === 'checkpoint') {
+      if (op.phase === 'prepared') fail('operation has not resolved');
+      if (op.marker === undefined) fail('operation has no storage marker');
+      if (Object.keys(request).some(key => !['id', 'baseline'].includes(key))) fail('invalid checkpoint request');
+      // Both are recorded once; later requests only read them back.
+      let changed = false;
+      if (request.baseline !== undefined && op.baseline === undefined) {
+        validateBaseline(request.baseline, op);
+        op.baseline = request.baseline;
+        changed = true;
+      }
+      if (op.progress === undefined) { op.progress = id(); changed = true; }
+      if (changed) await save(op);
+      return result(op);
+    }
     if (action === 'commit') {
       if (op.phase !== 'prepared') fail('operation already resolved');
       const record = request.record ?? null;

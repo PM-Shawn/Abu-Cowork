@@ -37,6 +37,7 @@ import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationSt
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
 import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -1284,22 +1285,23 @@ function handlePlanClear(rawParams: unknown): void {
 }
 
 /** The three CapsPort record* methods, addressable by `caps.record`'s `field`. */
-const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown) => void> = {
+const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown, probe: unknown) => void> = {
   maxOutputTokens: (providerId, modelId, value) => getCapsPort().recordMaxOutputTokens(providerId, modelId, value as number),
-  contextWindow: (providerId, modelId, value) => getCapsPort().recordContextWindow(providerId, modelId, value as number),
+  contextWindow: (providerId, modelId, value, probe) =>
+    getCapsPort().recordContextWindow(providerId, modelId, value as number, probe as number | undefined),
   reasoningObserved: (providerId, modelId) => getCapsPort().recordReasoningObserved(providerId, modelId),
 };
 
-/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value} → getCapsPort().record*. Unknown field → warn + drop. */
+/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value, probe?} → getCapsPort().record*. Unknown field → warn + drop. */
 function handleCapsRecord(rawParams: unknown): void {
-  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown } | null;
+  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown; probe?: unknown } | null;
   if (!params || typeof params.providerId !== 'string' || typeof params.modelId !== 'string' || typeof params.field !== 'string') return;
   const record = CAPS_RECORD_BY_FIELD[params.field];
   if (!record) {
     logger.warn('caps.record: unknown field, dropping', { field: params.field });
     return;
   }
-  record(params.providerId, params.modelId, params.value);
+  record(params.providerId, params.modelId, params.value, params.probe);
 }
 
 /** `shell.notifyTask` (NOTIFICATION) → {kind, title, conversationId} → notifyTaskCompleted/notifyTaskError. Unknown kind → warn + drop. */
@@ -1532,10 +1534,41 @@ function abortedResultForSession(session: RunSession): AgentLoopDispatchResult {
   };
 }
 
+/**
+ * 本轮给模型的工具名只由 sidecar 里的运行时写入，线路上是字符串数组。
+ * 类型不对说明两端不一致，就地报错。
+ */
+function assertWireOfferedToolNames(incoming: ToolExecutionContext | undefined): void {
+  const names: unknown = incoming?.offeredToolNames;
+  if (names === undefined) return;
+  if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: offeredToolNames must be an array of strings');
+  }
+}
+
+const COMPUTER_USE_TIERS: ReadonlySet<unknown> = new Set<ComputerUseModelTier>(['full', 'structured', 'unsupported', 'unknown']);
+
+/**
+ * 电脑操控档位与能否看图同样只由 sidecar 里的运行时写入（agentLoop 按入口模型算出）。
+ * 工具说明、截图与坐标动作都按它们取舍，值不在约定范围内说明两端不一致，就地报错。
+ */
+function assertWireModelCapabilities(incoming: ToolExecutionContext | undefined): void {
+  const tier: unknown = incoming?.computerUseTier;
+  if (tier !== undefined && !COMPUTER_USE_TIERS.has(tier)) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: computerUseTier must be one of full, structured, unsupported, unknown');
+  }
+  const vision: unknown = incoming?.supportsVision;
+  if (vision !== undefined && typeof vision !== 'boolean') {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: supportsVision must be a boolean');
+  }
+}
+
 function contextForSession(
   session: RunSession,
   incoming: ToolExecutionContext | undefined,
 ): ToolExecutionContext {
+  assertWireOfferedToolNames(incoming);
+  assertWireModelCapabilities(incoming);
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,
@@ -2547,7 +2580,7 @@ interface AgentRunParams {
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
   settingsSnapshot: SettingsState;
-  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; isReasoningModel?: boolean };
+  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; contextWindowProbe?: number; isReasoningModel?: boolean };
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
   toolList: ReturnType<typeof toSerializableTool>[];
   planMode?: 'off' | 'planning' | 'approved';
@@ -2999,6 +3032,7 @@ async function buildAgentRunParams(
         modelId: effectiveModelId,
         maxOutputTokens: discovered.maxOutputTokens,
         contextWindow: discovered.contextWindow,
+        contextWindowProbe: discovered.contextWindowProbe,
         isReasoningModel: discovered.isReasoningModel,
       };
     }

@@ -73,6 +73,7 @@ import type { PromptSection } from '../llm/promptSections';
 import { skillLoader } from '../skill/loader';
 import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { resolveEntryModel } from './resolveEntryModel';
+import { resolveAgentModelCapabilities } from '../llm/modelCapabilities';
 import { getCapabilityPrompt } from './prompts/capabilityPrompt';
 import type { SettingsState } from '@/stores/settingsStore';
 
@@ -137,7 +138,13 @@ export async function precomputeOrchestration(
   // formula itself — only the `setActiveModel` side effect stays
   // uniquely in the loop), and the shell dispatcher's `buildAgentRunParams`
   // is a third caller of the same helper — see resolveEntryModel.ts's doc.
-  const { entryModelDeclared } = resolveEntryModel(route, entry.settingsForModel);
+  const { effectiveModelId, provider, entryModelDeclared } = resolveEntryModel(route, entry.settingsForModel);
+  // 系统说明按入口模型的电脑操控档位写（与 agentLoop 给工具上下文的档位同一算法）
+  const computerUseTier = resolveAgentModelCapabilities({
+    modelId: effectiveModelId,
+    providerSource: provider?.source,
+    declared: entryModelDeclared,
+  }).computerUseTier;
 
   const systemPromptSections = await buildSystemPromptSections(
     route,
@@ -145,7 +152,7 @@ export async function precomputeOrchestration(
     conversationId,
     imContext,
     0,
-    { ...toolContext, abortSignal },
+    { ...toolContext, abortSignal, computerUseTier },
   );
 
   return { route, systemPromptSections };

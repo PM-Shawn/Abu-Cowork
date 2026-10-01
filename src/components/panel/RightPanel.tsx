@@ -80,7 +80,7 @@ function RightPanelImpl() {
     return () => {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      if (dragRef.current) document.body.style.pointerEvents = '';
+      if (dragRef.current) document.documentElement.style.pointerEvents = '';
     };
   }, []);
 
@@ -88,14 +88,14 @@ function RightPanelImpl() {
     // Only respond to left mouse button
     if (e.button !== 0) return;
     e.preventDefault();
-    e.stopPropagation();
 
     // Pointer capture keeps every move and the release coming to the handle, also
     // outside the window. An iframe under the pointer (an HTML preview, an embedded
     // app in the chat) would still take the moves for its own document, so the page
-    // stops being a pointer target for the length of the drag.
+    // stops being a pointer target for the length of the drag. The style goes on
+    // <html>: modal layers save and restore the one on <body>.
     e.currentTarget.setPointerCapture(e.pointerId);
-    document.body.style.pointerEvents = 'none';
+    document.documentElement.style.pointerEvents = 'none';
 
     const startX = e.clientX;
     // Wide content flex-fills, so the divider resizes the chat; otherwise it
@@ -140,7 +140,7 @@ function RightPanelImpl() {
     setIsDragging(false);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    document.body.style.pointerEvents = '';
+    document.documentElement.style.pointerEvents = '';
   }, []);
 
   // Restore before paint so another conversation’s tabs never flash on screen.
@@ -263,6 +263,8 @@ function RightPanelImpl() {
         'bg-surface flex overflow-hidden relative',
         'mt-2 mb-2 mr-2 rounded-panel shadow-panel',
         hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
+        // The narrow width eases between sizes; a drag follows the pointer directly.
+        !hasWideContent && !isDragging && 'transition-[width,min-width,max-width] duration-base ease-enter',
       )}
       style={
         // Inline `display: none` (not just the `hidden` attribute): the layout
@@ -272,7 +274,7 @@ function RightPanelImpl() {
           ? { display: 'none' }
           : hasWideContent
             ? { minWidth: PREVIEW_MIN_WIDTH }
-            : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }
+            : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth }
       }
     >
       {/* Drag handle on left edge */}
@@ -280,6 +282,7 @@ function RightPanelImpl() {
         onPointerDown={handlePointerDown}
         onPointerMove={(e) => dragRef.current?.(e.clientX)}
         onPointerUp={endDrag}
+        onPointerCancel={endDrag}
         onLostPointerCapture={endDrag}
         className={cn(
           'absolute inset-y-0 left-0 z-sticky w-[5px] cursor-col-resize select-none transition-colors duration-fast hover:bg-control-border',

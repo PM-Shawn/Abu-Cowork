@@ -1,9 +1,12 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { Popover } from '@/components/ds/popover';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -50,9 +53,14 @@ function conversation(): Conversation {
 // Stands in for App, which re-renders on every streamed token.
 function Host() {
   const [ticks, setTicks] = useState(0);
+  // A dialog opened by code, the way an approval request arrives while the user works.
+  const [dialogOpen, setDialogOpen] = useState(false);
   return (
     <DesignSystemProvider>
       <Button onClick={() => setTicks((n) => n + 1)}>Tick {ticks}</Button>
+      <Button onClick={() => setDialogOpen((open) => !open)}>Toggle dialog</Button>
+      <Dialog title="Approval" open={dialogOpen} onOpenChange={setDialogOpen}>Dialog body</Dialog>
+      <Popover trigger={<Button>Details</Button>}>Popover body</Popover>
       <RightPanel />
     </DesignSystemProvider>
   );
@@ -108,6 +116,7 @@ describe('RightPanel', () => {
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
     document.body.style.pointerEvents = '';
+    document.documentElement.style.pointerEvents = '';
     useChatStore.setState({
       conversations: { [CONVERSATION_ID]: conversation() },
       activeConversationId: CONVERSATION_ID,
@@ -178,25 +187,34 @@ describe('RightPanel', () => {
       await renderPanel();
       const handle = resizeHandle();
       expect(panel().style.width).toBe('320px');
+      // The width animates between its narrow sizes while nobody is dragging.
+      expect(panel()).toHaveClass('duration-base');
+      expect(panel()).toHaveClass('ease-enter');
+      const stripRenders = tabStrip.renders;
 
       fireEvent.pointerDown(handle, { button: 0, clientX: 800, pointerId: 1 });
       expect(capture).toHaveBeenCalledWith(1);
       expect(document.body.style.cursor).toBe('col-resize');
       expect(document.body.style.userSelect).toBe('none');
       // Keeps an iframe under the pointer from taking the moves.
-      expect(document.body.style.pointerEvents).toBe('none');
+      expect(document.documentElement.style.pointerEvents).toBe('none');
+      // Modal layers save and restore this one; the drag leaves it alone.
+      expect(document.body.style.pointerEvents).toBe('');
       expect(document.querySelector('.fixed')).toBeNull();
 
       fireEvent.pointerMove(handle, { clientX: 760, pointerId: 1 });
       expect(panel().style.width).toBe('360px');
-      expect(panel().style.transition).toBe('none');
+      expect(panel()).not.toHaveClass('duration-base');
       expect(document.querySelector('.fixed')).toBeNull();
 
       fireEvent.pointerUp(handle, { clientX: 760, pointerId: 1 });
       expect(document.body.style.cursor).toBe('');
       expect(document.body.style.userSelect).toBe('');
-      expect(document.body.style.pointerEvents).toBe('');
+      expect(document.documentElement.style.pointerEvents).toBe('');
       expect(panel().style.width).toBe('360px');
+      expect(panel()).toHaveClass('duration-base');
+      // The panel re-rendered on every move; the workspace inside it did not.
+      expect(tabStrip.renders).toBe(stripRenders);
       expect(document.querySelector('.fixed')).toBeNull();
 
       // The drag is over: further movement leaves the width alone.
@@ -227,10 +245,62 @@ describe('RightPanel', () => {
       fireEvent.lostPointerCapture(handle, { pointerId: 1 });
       expect(document.body.style.cursor).toBe('');
       expect(document.body.style.userSelect).toBe('');
-      expect(document.body.style.pointerEvents).toBe('');
+      expect(document.documentElement.style.pointerEvents).toBe('');
 
       fireEvent.pointerMove(handle, { clientX: 700, pointerId: 1 });
       expect(panel().style.width).toBe('340px');
+    });
+
+    it('ends the drag when the pointer is cancelled', async () => {
+      await renderPanel();
+      const handle = resizeHandle();
+
+      fireEvent.pointerDown(handle, { button: 0, clientX: 800, pointerId: 1 });
+      fireEvent.pointerMove(handle, { clientX: 780, pointerId: 1 });
+      expect(panel().style.width).toBe('340px');
+
+      fireEvent.pointerCancel(handle, { pointerId: 1 });
+      expect(document.body.style.cursor).toBe('');
+      expect(document.body.style.userSelect).toBe('');
+      expect(document.documentElement.style.pointerEvents).toBe('');
+
+      fireEvent.pointerMove(handle, { clientX: 700, pointerId: 1 });
+      expect(panel().style.width).toBe('340px');
+    });
+
+    it('leaves the app clickable when a dialog opens during the drag and closes after it', async () => {
+      await renderPanel();
+      const handle = resizeHandle();
+      const toggle = screen.getByRole('button', { name: 'Toggle dialog' });
+
+      fireEvent.pointerDown(handle, { button: 0, clientX: 800, pointerId: 1 });
+      // The dialog arrives by code while the pointer is still held.
+      fireEvent.click(toggle);
+      expect(screen.getByRole('dialog', { name: 'Approval' })).toBeInTheDocument();
+
+      fireEvent.pointerUp(handle, { clientX: 800, pointerId: 1 });
+      fireEvent.click(toggle);
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).toBeNull();
+      });
+
+      expect(document.documentElement.style.pointerEvents).toBe('');
+      expect(document.body.style.pointerEvents).toBe('');
+    });
+
+    it('lets a press on the handle close an open popover', async () => {
+      const user = userEvent.setup();
+      await renderPanel();
+      await user.click(screen.getByRole('button', { name: 'Details' }));
+      expect(screen.getByText('Popover body')).toBeInTheDocument();
+
+      const handle = resizeHandle();
+      fireEvent.pointerDown(handle, { button: 0, clientX: 800, pointerId: 1 });
+      fireEvent.pointerUp(handle, { clientX: 800, pointerId: 1 });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Popover body')).toBeNull();
+      });
     });
 
     it('ignores buttons other than the primary one', async () => {
@@ -275,18 +345,17 @@ describe('RightPanel', () => {
 
       expect(document.body.style.cursor).toBe('');
       expect(document.body.style.userSelect).toBe('');
-      expect(document.body.style.pointerEvents).toBe('');
+      expect(document.documentElement.style.pointerEvents).toBe('');
     });
 
     it('leaves the page’s pointer handling alone when it unmounts without a drag', async () => {
       const { unmount } = await renderPanel();
-      // An open modal menu sets this on the page; the panel must not undo it.
-      document.body.style.pointerEvents = 'none';
+      document.documentElement.style.pointerEvents = 'none';
 
       unmount();
 
-      expect(document.body.style.pointerEvents).toBe('none');
-      document.body.style.pointerEvents = '';
+      expect(document.documentElement.style.pointerEvents).toBe('none');
+      document.documentElement.style.pointerEvents = '';
     });
   });
 });

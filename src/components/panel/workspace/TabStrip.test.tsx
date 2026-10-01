@@ -306,6 +306,29 @@ describe('TabStrip pointer interactions', () => {
       unsubscribe();
     });
 
+    it('comes back when the strip unmounts while the report of the last close is still pending', async () => {
+      const queued: FrameRequestCallback[] = [];
+      vi.mocked(window.requestAnimationFrame).mockImplementation((cb: FrameRequestCallback) => queued.push(cb));
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id: number) => {
+        queued[id - 1] = () => {};
+      });
+      const user = userEvent.setup();
+      const { unmount } = renderTabs();
+
+      await user.click(screen.getByRole('button', { name: 'New tab' }));
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('menuitem', { name: 'New Browser' })).toBeNull();
+      expect(usePreviewStore.getState().menuOpen).toBe(true);
+
+      unmount();
+      expect(usePreviewStore.getState().menuOpen).toBe(false);
+
+      // A later menu elsewhere must not be undone by the cancelled frame.
+      usePreviewStore.getState().setMenuOpen(true);
+      for (const cb of queued.splice(0)) cb(0);
+      expect(usePreviewStore.getState().menuOpen).toBe(true);
+    });
+
     it('comes back when the tab whose context menu is open goes away', () => {
       renderTabs();
 

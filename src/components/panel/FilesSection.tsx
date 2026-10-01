@@ -1,9 +1,13 @@
 import { useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format as i18nFormat } from '@/i18n';
-import { File, FileCode, FileJson, FileText, FileImage, ExternalLink } from 'lucide-react';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
 import { cn } from '@/lib/utils';
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { getBaseName } from '@/utils/pathUtils';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
@@ -14,18 +18,18 @@ function getFileIcon(path: string) {
   const ext = path.split('.').pop()?.toLowerCase() || '';
 
   if (['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h'].includes(ext)) {
-    return FileCode;
+    return AppIcons.fileCode;
   }
   if (['json', 'yaml', 'yml', 'toml', 'xml'].includes(ext)) {
-    return FileJson;
+    return AppIcons.fileJson;
   }
   if (['md', 'txt', 'log'].includes(ext)) {
-    return FileText;
+    return AppIcons.file;
   }
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
-    return FileImage;
+    return AppIcons.fileImage;
   }
-  return File;
+  return AppIcons.fileGeneric;
 }
 
 function getFileName(path: string): string {
@@ -39,17 +43,20 @@ interface TrackedFile {
 }
 
 interface FileCardProps {
-  file: TrackedFile;
+  path: string;
+  operation: TrackedFile['operation'];
   conversationId: string | undefined;
-  operationLabels: Record<string, string>;
+  operationLabel: string;
   previewTitle: string;
   finderTitle: string;
   fileMissingTitle: string;
 }
 
-function FileCard({ file, conversationId, operationLabels, previewTitle, finderTitle, fileMissingTitle }: FileCardProps) {
-  const Icon = getFileIcon(file.path);
-  const fileName = getFileName(file.path);
+// FilesSection renders again for every streamed character (it reads the whole
+// conversation). The row holds a tooltip button, so it is memoized and takes
+// plain strings only.
+const FileCard = memo(function FileCard({ path, operation, conversationId, operationLabel, previewTitle, finderTitle, fileMissingTitle }: FileCardProps) {
+  const fileName = getFileName(path);
   const openPreview = usePreviewStore((s) => s.openPreview);
   const [resolved, setResolved] = useState<ResolvedSource | null>(null);
 
@@ -57,13 +64,13 @@ function FileCard({ file, conversationId, operationLabels, previewTitle, finderT
   // can switch behavior intelligently.
   useEffect(() => {
     let cancelled = false;
-    resolveFileSource(conversationId, file.path)
+    resolveFileSource(conversationId, path)
       .then((r) => { if (!cancelled) setResolved(r); })
       .catch(() => {
-        if (!cancelled) setResolved({ status: 'missing', basename: getBaseName(file.path), originalPath: file.path });
+        if (!cancelled) setResolved({ status: 'missing', basename: getBaseName(path), originalPath: path });
       });
     return () => { cancelled = true; };
-  }, [file.path, conversationId]);
+  }, [path, conversationId]);
 
   const isUnavailable = resolved?.status === 'missing' || resolved?.status === 'skipped';
   const effectivePath = resolved?.status === 'available' ? resolved.path : null;
@@ -72,57 +79,44 @@ function FileCard({ file, conversationId, operationLabels, previewTitle, finderT
     if (effectivePath) openPreview(effectivePath);
   };
 
-  const handleReveal = async (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleReveal = async () => {
     if (!effectivePath) return;
     try { await revealItemInDir(effectivePath); } catch (err) { console.error(err); }
   };
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      className={cn(
-        'group flex items-center gap-2 px-2 py-1.5 rounded-md bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors cursor-pointer',
-        file.operation === 'write' && 'ring-1 ring-[var(--abu-warning-bg)]',
-        file.operation === 'create' && 'ring-1 ring-[var(--abu-success-bg)]',
-        isUnavailable && 'opacity-60'
-      )}
-      title={isUnavailable ? `${fileMissingTitle}: ${file.path}` : `${previewTitle}: ${file.path}`}
-      onClick={handleClick}
-      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleClick())}
-    >
-      <Icon className="w-3.5 h-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-      <span className={cn(
-        'text-minor truncate flex-1',
-        isUnavailable
-          ? file.operation === 'read'
-            ? 'text-[var(--abu-text-muted)]'              // read: dim only, no strikethrough
-            : 'text-[var(--abu-text-muted)] line-through' // write/create: strikethrough = artifact lost
-          : 'text-[var(--abu-text-primary)]'
-      )}>{fileName}</span>
-      <span
-        className={cn(
-          'text-caption px-1 py-0.5 rounded font-medium',
-          file.operation === 'read' && 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]',
-          file.operation === 'write' && 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]',
-          file.operation === 'create' && 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
-        )}
+    <div className={cn('group flex items-center rounded-control hover:bg-fill-hover', isUnavailable && 'opacity-60')}>
+      <Pressable
+        title={isUnavailable ? `${fileMissingTitle}: ${path}` : `${previewTitle}: ${path}`}
+        onClick={handleClick}
+        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left"
       >
-        {operationLabels[file.operation]}
-      </span>
-      {!isUnavailable && (
-        <button
+        <Icon icon={getFileIcon(path)} size="sm" className="text-label-tertiary" />
+        <span className={cn(
+          'min-w-0 flex-1 truncate text-ui',
+          isUnavailable
+            ? operation === 'read'
+              ? 'text-label-tertiary'              // read: dim only, no strikethrough
+              : 'text-label-tertiary line-through' // write/create: strikethrough = artifact lost
+            : 'text-label'
+        )}>{fileName}</span>
+        <Tag>{operationLabel}</Tag>
+      </Pressable>
+      {isUnavailable ? (
+        // Keeps the operation tags of every row in one column.
+        <span className="h-6 w-6 shrink-0" />
+      ) : (
+        <IconButton
+          size="sm"
+          icon={AppIcons.folderOpen}
+          label={finderTitle}
           onClick={handleReveal}
-          className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-          title={finderTitle}
-        >
-          <ExternalLink className="w-3 h-3 text-[var(--abu-text-muted)]" />
-        </button>
+          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        />
       )}
     </div>
   );
-}
+});
 
 // Sort priority: create > write > read, then by timestamp descending
 function sortFiles(files: TrackedFile[]): TrackedFile[] {
@@ -176,35 +170,35 @@ export default function FilesSection() {
   if (trackedFiles.length === 0) return null;
 
   return (
-    <div className="space-y-2 mt-3">
+    <div className="mt-3 space-y-2">
       <div className="flex items-center justify-between">
-        <h4 className="text-caption font-medium text-[var(--abu-text-muted)] uppercase tracking-wider">
+        <h4 className="text-ui-sm font-medium text-label-tertiary">
           {t.panel.files}
         </h4>
-        <span className="text-caption text-[var(--abu-text-muted)]">
+        <span className="text-caption text-label-tertiary">
           {i18nFormat(t.panel.filesCount, { count: trackedFiles.length })}
         </span>
       </div>
 
-      <div className="space-y-1.5">
+      <div className="space-y-1">
         {visibleFiles.map((file) => (
           <FileCard
             key={file.path}
-            file={file}
+            path={file.path}
+            operation={file.operation}
             conversationId={conversation?.id}
-            operationLabels={operationLabels}
+            operationLabel={operationLabels[file.operation]}
             previewTitle={t.panel.clickToPreview}
             finderTitle={t.panel.showInFinderButton}
             fileMissingTitle={t.chat.fileMissing}
           />
         ))}
         {hiddenCount > 0 && (
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="w-full text-center text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] py-1 transition-colors"
-          >
-            {expanded ? t.panel.collapse : i18nFormat(t.panel.moreFiles, { count: hiddenCount })}
-          </button>
+          <div className="flex justify-center">
+            <Button variant="plain" size="sm" onClick={() => setExpanded(!expanded)}>
+              {expanded ? t.panel.collapse : i18nFormat(t.panel.moreFiles, { count: hiddenCount })}
+            </Button>
+          </div>
         )}
       </div>
     </div>

@@ -7,16 +7,12 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { exists } from '@tauri-apps/plugin-fs';
 import { scanMemoryFiles } from '@/core/memdir/scan';
-import {
-  FolderOpen,
-  ExternalLink,
-  FileText,
-  ChevronDown,
-  Check,
-  Folder,
-  Brain,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator } from '@/components/ds/menu';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
 import { useEffect, useState, useRef } from 'react';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import InstructionsEditModal from '@/components/common/InstructionsEditModal';
@@ -24,6 +20,9 @@ import MemoryViewModal from '@/components/common/MemoryViewModal';
 import FilesSection from './FilesSection';
 import { cn } from '@/lib/utils';
 import { joinPath } from '@/utils/pathUtils';
+
+// What the folder menu was asked to do; carried out once the menu has closed.
+type FolderMenuAction = { kind: 'recent'; path: string } | { kind: 'browse' };
 
 export default function WorkspaceSection() {
   const currentPath = useWorkspaceStore((s) => s.currentPath);
@@ -45,25 +44,11 @@ export default function WorkspaceSection() {
   const [hasInstructions, setHasInstructions] = useState(false);
   const [hasMemory, setHasMemory] = useState(false);
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [expanded, setExpanded] = useState(true);  // Main section expand/collapse
   const [showInstructionsModal, setShowInstructionsModal] = useState(false);
   const [showMemoryModal, setShowMemoryModal] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const pendingActionRef = useRef<FolderMenuAction | null>(null);
   const { t } = useI18n();
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsDropdownOpen(false);
-      }
-    }
-    if (isDropdownOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [isDropdownOpen]);
 
   // Check for .abu/ABU.md and .abu/MEMORY.md when workspace changes
   useEffect(() => {
@@ -100,7 +85,6 @@ export default function WorkspaceSection() {
   };
 
   const handleSelectWorkspace = async () => {
-    setIsDropdownOpen(false);
     try {
       const selected = await openDialog({
         directory: true,
@@ -121,12 +105,27 @@ export default function WorkspaceSection() {
     }
   };
 
-  const handleSelectRecent = (folderPath: string) => {
-    setIsDropdownOpen(false);
-    if (hasPermission(folderPath, 'read')) {
-      setWorkspace(folderPath);
+  const handleFolderMenuOpenChange = (open: boolean) => {
+    if (open) pendingActionRef.current = null;
+  };
+
+  // The system folder picker and the access dialog take the keyboard, so they open
+  // only after the menu has gone, with the focus return to the folder card cancelled.
+  // Switching to a folder that already has access opens nothing: the focus goes back
+  // to the card as usual.
+  const handleFolderMenuCloseAutoFocus = (event: Event) => {
+    const action = pendingActionRef.current;
+    pendingActionRef.current = null;
+    if (!action) return;
+    if (action.kind === 'recent' && hasPermission(action.path, 'read')) {
+      setWorkspace(action.path);
+      return;
+    }
+    event.preventDefault();
+    if (action.kind === 'recent') {
+      setPendingFolder(action.path);
     } else {
-      setPendingFolder(folderPath);
+      handleSelectWorkspace();
     }
   };
 
@@ -191,165 +190,121 @@ export default function WorkspaceSection() {
       )}
 
       <div className="space-y-3">
-        {/* Header - clickable to expand/collapse */}
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setExpanded(!expanded)}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(!expanded); } }}
-          className="flex items-center justify-between w-full text-left group cursor-pointer"
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <FolderOpen className="h-4 w-4 text-[var(--abu-text-tertiary)] shrink-0" />
-            <h3 className="text-body font-medium text-[var(--abu-text-primary)]">
+        {/* Header: the title button expands and collapses; the reveal button stands beside it */}
+        <div className="flex items-center gap-1">
+          <Pressable
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <Icon icon={AppIcons.folderOpen} className="text-label-secondary" />
+            <h3 className="text-ui font-medium text-label">
               {t.panel.workspace}
             </h3>
             {activeProject && (
-              <span className="text-caption text-[var(--abu-clay)] bg-[var(--abu-clay-bg-15)] px-1.5 py-0.5 rounded truncate max-w-[120px]">
-                {activeProject.name}
-              </span>
+              <Tag>
+                <span className="block max-w-28 truncate">{activeProject.name}</span>
+              </Tag>
             )}
-          </div>
-          <div className="flex items-center gap-1">
-            {currentPath && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-5 w-5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleOpenInFinder();
-                }}
-                title={t.panel.openInFinder}
-              >
-                <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
-              </Button>
-            )}
-            <ChevronDown
-              className={cn(
-                'h-4 w-4 text-[var(--abu-text-muted)] transition-transform',
-                !expanded && '-rotate-90'
-              )}
+            <Icon
+              icon={AppIcons.expand}
+              size="sm"
+              className={cn('ml-auto text-label-tertiary transition-transform duration-fast', !expanded && '-rotate-90')}
             />
-          </div>
+          </Pressable>
+          {currentPath && (
+            <IconButton
+              size="sm"
+              icon={AppIcons.openIn}
+              label={t.panel.openInFinder}
+              onClick={handleOpenInFinder}
+            />
+          )}
         </div>
 
         {expanded && (
           <>
             {currentPath ? (
-          <div className="space-y-2 mt-3">
-            {/* Folder card with dropdown */}
-            <div ref={dropdownRef} className="relative">
-              <button
-                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                className="w-full flex items-center gap-2.5 p-2.5 rounded-lg bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors text-left group"
-              >
-                <div className="w-8 h-8 rounded-md bg-[var(--abu-clay-bg)] flex items-center justify-center shrink-0">
-                  <FolderOpen className="w-4 h-4 text-[var(--abu-clay)]" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-body font-medium text-[var(--abu-text-primary)] truncate block">
-                    {folderName}
-                  </span>
-                  <div className="text-caption text-[var(--abu-text-muted)] truncate">
-                    {currentPath}
-                  </div>
-                </div>
-                <ChevronDown className={`w-3.5 h-3.5 text-[var(--abu-text-muted)] transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {/* Dropdown menu */}
-              {isDropdownOpen && (
-                <div className="absolute top-full left-0 right-0 mt-1.5 bg-[var(--abu-bg-base)] rounded-lg border border-[var(--abu-bg-hover)] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
-                  {/* Recent folders */}
+              <div className="mt-3 space-y-2">
+                {/* Folder card: opens the list of recent folders */}
+                <Menu
+                  onOpenChange={handleFolderMenuOpenChange}
+                  onCloseAutoFocus={handleFolderMenuCloseAutoFocus}
+                  trigger={
+                    <Pressable className="group flex w-full items-center gap-3 rounded-panel border border-separator px-3 py-2 text-left hover:bg-fill-hover">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-control bg-fill text-label-secondary">
+                        <Icon icon={AppIcons.folderOpen} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-ui font-medium text-label">
+                          {folderName}
+                        </span>
+                        <span className="block truncate text-caption text-label-tertiary">
+                          {currentPath}
+                        </span>
+                      </span>
+                      <Icon
+                        icon={AppIcons.expand}
+                        size="sm"
+                        className="text-label-tertiary transition-transform duration-fast group-data-[state=open]:rotate-180"
+                      />
+                    </Pressable>
+                  }
+                >
                   {recentPaths.length > 0 && (
                     <>
-                      <div className="px-3 py-2 text-caption font-medium text-[var(--abu-text-muted)] uppercase tracking-wider border-b border-[var(--abu-bg-active)]">
-                        {t.panel.recentlyUsed}
-                      </div>
-                      <div className="py-1 max-h-[200px] overflow-y-auto">
+                      <MenuLabel>{t.panel.recentlyUsed}</MenuLabel>
+                      <MenuRadioGroup
+                        value={currentPath}
+                        onValueChange={(path) => { pendingActionRef.current = { kind: 'recent', path }; }}
+                      >
                         {recentPaths.map((path) => (
-                          <button
-                            key={path}
-                            onClick={() => handleSelectRecent(path)}
-                            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--abu-bg-muted)] transition-colors"
-                          >
-                            <div className="w-4 h-4 flex items-center justify-center shrink-0">
-                              {path === currentPath && (
-                                <Check className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-                              )}
-                            </div>
-                            <Folder className={`h-3.5 w-3.5 shrink-0 ${path === currentPath ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'}`} />
-                            <span className={`text-minor truncate ${path === currentPath ? 'text-[var(--abu-text-primary)] font-medium' : 'text-[var(--abu-text-secondary)]'}`}>
-                              {getFolderName(path)}
-                            </span>
-                          </button>
+                          <MenuRadioItem key={path} value={path}>{getFolderName(path)}</MenuRadioItem>
                         ))}
-                      </div>
+                      </MenuRadioGroup>
+                      <MenuSeparator />
                     </>
                   )}
+                  <MenuItem
+                    icon={AppIcons.folderOpen}
+                    onSelect={() => { pendingActionRef.current = { kind: 'browse' }; }}
+                  >
+                    {t.panel.selectOtherFolder}
+                  </MenuItem>
+                </Menu>
 
-                  {/* Separator */}
-                  {recentPaths.length > 0 && <div className="border-t border-[var(--abu-bg-active)]" />}
+                {/* Instructions entry */}
+                <Pressable
+                  onClick={() => setShowInstructionsModal(true)}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-control bg-fill px-2 py-1 text-left text-ui-sm hover:bg-fill-hover',
+                    hasInstructions ? 'text-label' : 'text-label-tertiary'
+                  )}
+                >
+                  <Icon icon={AppIcons.file} size="sm" />
+                  {hasInstructions ? `${t.panel.instructions} · ABU.md` : t.panel.instructionsAdd}
+                </Pressable>
 
-                  {/* Choose different folder */}
-                  <div className="py-1">
-                    <button
-                      onClick={handleSelectWorkspace}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--abu-bg-muted)] transition-colors"
-                    >
-                      <div className="w-4 h-4" />
-                      <Folder className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-                      <span className="text-minor text-[var(--abu-text-tertiary)]">
-                        {t.panel.selectOtherFolder}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Instructions entry */}
-            <button
-              onClick={() => setShowInstructionsModal(true)}
-              className={cn(
-                'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md transition-colors text-left',
-                hasInstructions
-                  ? 'bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)]'
-                  : 'bg-[var(--abu-bg-muted)] hover:bg-[var(--abu-bg-hover)]'
-              )}
-            >
-              <FileText className={cn('w-3.5 h-3.5', hasInstructions ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-placeholder)]')} />
-              <span className={cn('text-caption font-medium', hasInstructions ? 'text-[var(--abu-text-secondary)]' : 'text-[var(--abu-text-muted)]')}>
-                {hasInstructions ? `${t.panel.instructions} · ABU.md` : t.panel.instructionsAdd}
-              </span>
-            </button>
-
-            {/* Memory entry */}
-            <button
-              onClick={() => setShowMemoryModal(true)}
-              className={cn(
-                'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md transition-colors text-left',
-                hasMemory
-                  ? 'bg-[#8b7ec8]/[0.08] hover:bg-[#8b7ec8]/[0.15]'
-                  : 'bg-[var(--abu-bg-muted)] hover:bg-[var(--abu-bg-hover)]'
-              )}
-            >
-              <Brain className={cn('w-3.5 h-3.5', hasMemory ? 'text-[#8b7ec8]' : 'text-[var(--abu-text-placeholder)]')} />
-              <span className={cn('text-caption font-medium', hasMemory ? 'text-[var(--abu-text-secondary)]' : 'text-[var(--abu-text-muted)]')}>
-                {hasMemory ? t.panel.memory : t.panel.memoryEmpty}
-              </span>
-            </button>
-          </div>
-        ) : (
-          // Empty state - clickable to select workspace
-          <button
-            onClick={handleSelectWorkspace}
-            className="text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-clay)] py-2 mt-3 cursor-pointer transition-colors text-left"
-          >
-            {t.panel.selectWorkspace}
-          </button>
-        )}
+                {/* Memory entry */}
+                <Pressable
+                  onClick={() => setShowMemoryModal(true)}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-control bg-fill px-2 py-1 text-left text-ui-sm hover:bg-fill-hover',
+                    hasMemory ? 'text-label' : 'text-label-tertiary'
+                  )}
+                >
+                  <Icon icon={AppIcons.thinking} size="sm" />
+                  {hasMemory ? t.panel.memory : t.panel.memoryEmpty}
+                </Pressable>
+              </div>
+            ) : (
+              // Empty state - clickable to select workspace
+              <div className="mt-3">
+                <Button variant="plain" size="sm" onClick={handleSelectWorkspace}>
+                  {t.panel.selectWorkspace}
+                </Button>
+              </div>
+            )}
 
             {/* Operated files - always shown */}
             <FilesSection />
@@ -359,4 +314,3 @@ export default function WorkspaceSection() {
     </>
   );
 }
-

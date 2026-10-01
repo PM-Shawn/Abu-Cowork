@@ -146,6 +146,11 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/panel/panelWidths*.ts',
   'src/components/panel/workspace/WorkspacePanel*.{ts,tsx}',
   'src/components/panel/workspace/TabStrip*.{ts,tsx}',
+  'src/components/panel/workspace/SummaryBody.tsx',
+  'src/components/panel/TaskProgressPanel*.{ts,tsx}',
+  'src/components/panel/WorkspaceSection*.{ts,tsx}',
+  'src/components/panel/FilesSection*.{ts,tsx}',
+  'src/components/panel/ContextSection*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

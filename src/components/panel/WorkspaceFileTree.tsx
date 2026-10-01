@@ -1,36 +1,26 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import {
-  ChevronRight,
-  ChevronDown,
-  Folder,
-  FolderOpen,
-  File,
-  FileCode,
-  FileJson,
-  FileText,
-  FileImage,
-  MoreHorizontal,
-  FolderPlus,
-  FilePlus,
-  ExternalLink,
-  Paperclip,
-  Copy,
-  Pencil,
-  Trash2,
-} from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { mkdir, copyFile, rename, writeTextFile, exists } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
-import { useI18n, type TranslationDict } from '@/i18n';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { useI18n } from '@/i18n';
+import { IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { ContextMenu } from '@/components/ds/context-menu';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
+import { Pressable } from '@/components/ds/pressable';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { TextField } from '@/components/ds/text-field';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode } from '@/stores/composerDraftStore';
-import { useWorkspaceTree, type WorkspaceTreeEntry } from '@/hooks/useWorkspaceTree';
+import { useWorkspaceTree, type UseWorkspaceTreeResult, type WorkspaceTreeEntry } from '@/hooks/useWorkspaceTree';
 import { joinPath, getBaseName, getParentDir, normalizeSeparators } from '@/utils/pathUtils';
+import { cn } from '@/lib/utils';
 
 // Extension → icon lookup. Deliberately simple (mirrors FilesSection's getFileIcon) —
 // this is a lightweight glance at the project, not a full IDE file-type registry.
@@ -38,22 +28,26 @@ function getFileIcon(name: string) {
   const ext = name.split('.').pop()?.toLowerCase() || '';
 
   if (['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h'].includes(ext)) {
-    return FileCode;
+    return AppIcons.fileCode;
   }
   if (['json', 'yaml', 'yml', 'toml', 'xml'].includes(ext)) {
-    return FileJson;
+    return AppIcons.fileJson;
   }
   if (['md', 'txt', 'log'].includes(ext)) {
-    return FileText;
+    return AppIcons.file;
   }
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
-    return FileImage;
+    return AppIcons.fileImage;
   }
-  return File;
+  return AppIcons.fileGeneric;
 }
 
 const INDENT_PX = 14;
 const BASE_PADDING_PX = 6;
+
+function indentOf(depth: number): number {
+  return depth * INDENT_PX + BASE_PADDING_PX;
+}
 
 /**
  * Resolve a destination path under `dir` for `fileName` that doesn't already
@@ -69,6 +63,54 @@ async function nonCollidingPath(dir: string, fileName: string): Promise<string> 
     candidate = joinPath(dir, `${stem} (${n})${ext}`);
   }
   return candidate;
+}
+
+/** What a row is, as plain values: the watcher hands out new entry objects on every re-read. */
+type RowEntry = Pick<WorkspaceTreeEntry, 'name' | 'path' | 'isDirectory'>;
+
+type CreateKind = 'file' | 'folder';
+
+// What a menu was asked to do that takes the focus; carried out once the menu has closed.
+type PendingAction =
+  | { kind: 'rename' | 'newFile' | 'newFolder' | 'delete'; path: string }
+  | { kind: 'newRootFolder' };
+
+// One line of the tree as it shows: a file or folder, the name field for a new entry,
+// or what an open folder has to say about its content.
+type TreeItem =
+  | { kind: 'row'; entry: WorkspaceTreeEntry; depth: number }
+  | { kind: 'create'; folderPath: string; createKind: CreateKind; depth: number }
+  | { kind: 'hint'; folderPath: string; hint: 'loading' | 'loadError' | 'empty'; depth: number };
+
+type TreeListing = Pick<UseWorkspaceTreeResult, 'childrenByPath' | 'expandedPaths' | 'loadingPaths' | 'errorsByPath'>;
+
+/** Lists `entries` and everything under their open folders, top to bottom. */
+function appendVisibleItems(
+  items: TreeItem[],
+  entries: WorkspaceTreeEntry[],
+  depth: number,
+  listing: TreeListing,
+  creatingInFolder: { folderPath: string; kind: CreateKind } | null,
+) {
+  for (const entry of entries) {
+    items.push({ kind: 'row', entry, depth });
+    if (!entry.isDirectory || !listing.expandedPaths.has(entry.path)) continue;
+    const children = listing.childrenByPath.get(entry.path);
+    const childDepth = depth + 1;
+    if (creatingInFolder?.folderPath === entry.path) {
+      items.push({ kind: 'create', folderPath: entry.path, createKind: creatingInFolder.kind, depth: childDepth });
+    }
+    if (listing.loadingPaths.has(entry.path) && !children) {
+      items.push({ kind: 'hint', folderPath: entry.path, hint: 'loading', depth: childDepth });
+    }
+    if (listing.errorsByPath.get(entry.path)) {
+      items.push({ kind: 'hint', folderPath: entry.path, hint: 'loadError', depth: childDepth });
+    }
+    if (children && children.length === 0) {
+      items.push({ kind: 'hint', folderPath: entry.path, hint: 'empty', depth: childDepth });
+    }
+    if (children) appendVisibleItems(items, children, childDepth, listing, creatingInFolder);
+  }
 }
 
 /**
@@ -98,7 +140,7 @@ function InlineNameInput({
   const submit = (v: string) => { if (settled.current) return; settled.current = true; onSubmit(v); };
   const cancel = () => { if (settled.current) return; settled.current = true; onCancel(); };
   return (
-    <input
+    <TextField
       autoFocus
       value={value}
       onChange={(e) => setValue(e.target.value)}
@@ -109,183 +151,163 @@ function InlineNameInput({
       }}
       onClick={(e) => e.stopPropagation()}
       placeholder={placeholder}
-      className="flex-1 min-w-0 text-minor bg-transparent border-b border-[var(--abu-clay)] outline-none text-[var(--abu-text-primary)]"
+      className="min-w-0 flex-1"
     />
   );
 }
 
 interface TreeRowProps {
-  entry: WorkspaceTreeEntry;
+  path: string;
+  name: string;
+  isDirectory: boolean;
   depth: number;
-  childrenByPath: Map<string, WorkspaceTreeEntry[]>;
-  expandedPaths: Set<string>;
-  loadingPaths: Set<string>;
-  errorsByPath: Map<string, string>;
+  isExpanded: boolean;
+  /** This file is the one open in the preview panel. */
+  isActive: boolean;
+  isRenaming: boolean;
   toggleExpand: (path: string) => void;
   openPreview: (path: string) => void;
-  /** Path of the file currently open in the preview panel, for highlighting. */
-  activePath: string | null;
-  onContextMenu: (e: React.MouseEvent, entry: WorkspaceTreeEntry) => void;
-  renamingPath: string | null;
-  onRenameSubmit: (entry: WorkspaceTreeEntry, name: string) => void;
+  renderMenu: (entry: RowEntry) => ReactNode;
+  onMenuOpenChange: (open: boolean) => void;
+  onMenuCloseAutoFocus: (event: Event, entry: RowEntry, isExpanded: boolean, rowElement: HTMLElement | null) => void;
+  onRenameSubmit: (entry: RowEntry, name: string) => void;
   onRenameCancel: () => void;
-  creatingInFolder: { folderPath: string; kind: 'file' | 'folder' } | null;
-  onCreateSubmit: (folderPath: string, kind: 'file' | 'folder', name: string) => void;
-  onCreateCancel: () => void;
-  t: TranslationDict;
+  onGone: (path: string) => void;
 }
 
-function TreeRow({
-  entry,
+// A folder can hold thousands of files: the row is memoized and takes plain values and
+// stable callbacks only, so a re-read of the folder, another file being previewed or a
+// folder opening leaves the other rows alone.
+const TreeRow = memo(function TreeRow({
+  path,
+  name,
+  isDirectory,
   depth,
-  childrenByPath,
-  expandedPaths,
-  loadingPaths,
-  errorsByPath,
+  isExpanded,
+  isActive,
+  isRenaming,
   toggleExpand,
   openPreview,
-  activePath,
-  onContextMenu,
-  renamingPath,
+  renderMenu,
+  onMenuOpenChange,
+  onMenuCloseAutoFocus,
   onRenameSubmit,
   onRenameCancel,
-  creatingInFolder,
-  onCreateSubmit,
-  onCreateCancel,
-  t,
+  onGone,
 }: TreeRowProps) {
-  const isExpanded = entry.isDirectory && expandedPaths.has(entry.path);
-  const isLoadingChildren = entry.isDirectory && loadingPaths.has(entry.path);
-  const childError = entry.isDirectory ? errorsByPath.get(entry.path) : undefined;
-  const children = entry.isDirectory ? childrenByPath.get(entry.path) : undefined;
-  const Icon = entry.isDirectory ? (isExpanded ? FolderOpen : Folder) : getFileIcon(entry.name);
-  const isRenaming = renamingPath === entry.path;
-  const isCreatingHere = entry.isDirectory && creatingInFolder?.folderPath === entry.path;
-  // Highlight the file currently open in the preview panel (files only).
-  const isActive = !entry.isDirectory && activePath === entry.path;
+  const rowRef = useRef<HTMLButtonElement>(null);
+  const focusRowAfterRename = useRef(false);
+  // Every mounted menu listens for each key press on the document, which adds up over
+  // thousands of rows. A row gets its menu with its first right-click; mounting the
+  // menu replaces the row's button, so that right-click is replayed on the new button.
+  const [hasMenu, setHasMenu] = useState(false);
+  const replayRightClick = useRef<{ clientX: number; clientY: number; hadFocus: boolean } | null>(null);
+
+  useEffect(() => {
+    const rightClick = replayRightClick.current;
+    const row = rowRef.current;
+    if (!hasMenu || !rightClick || !row) return;
+    replayRightClick.current = null;
+    if (rightClick.hadFocus) row.focus();
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: rightClick.clientX,
+      clientY: rightClick.clientY,
+    }));
+  }, [hasMenu]);
+
+  // The file went away (deleted, moved, its folder re-read) while its menu was open.
+  useEffect(() => () => onGone(path), [onGone, path]);
+
+  // Escape in the rename field gives the focus back to the row it replaced.
+  useEffect(() => {
+    if (isRenaming || !focusRowAfterRename.current) return;
+    focusRowAfterRename.current = false;
+    rowRef.current?.focus();
+  }, [isRenaming]);
+
+  const entry: RowEntry = { name, path, isDirectory };
+  const rowPadding = { paddingLeft: indentOf(depth), paddingRight: BASE_PADDING_PX };
 
   const handleActivate = () => {
-    if (entry.isDirectory) {
-      toggleExpand(entry.path);
+    if (isDirectory) {
+      toggleExpand(path);
     } else {
-      openPreview(entry.path);
+      openPreview(path);
     }
   };
 
-  const childIndent = (depth + 1) * INDENT_PX + BASE_PADDING_PX;
-  const rowIndent = depth * INDENT_PX + BASE_PADDING_PX;
-
-  return (
+  const leading = (
     <>
-      <div
-        role={isRenaming ? undefined : 'button'}
-        tabIndex={isRenaming ? undefined : 0}
-        className={`group flex items-center gap-1 py-1 rounded-md transition-colors cursor-pointer ${
-          isActive ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-hover)]'
-        }`}
-        style={{ paddingLeft: rowIndent, paddingRight: BASE_PADDING_PX }}
-        title={isRenaming ? undefined : entry.path}
-        onClick={isRenaming ? undefined : handleActivate}
-        onContextMenu={isRenaming ? undefined : (e) => onContextMenu(e, entry)}
-        onKeyDown={isRenaming ? undefined : (e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleActivate();
-          }
-        }}
-      >
-        {entry.isDirectory ? (
-          isExpanded ? (
-            <ChevronDown className="w-3 h-3 text-[var(--abu-text-tertiary)] shrink-0" />
-          ) : (
-            <ChevronRight className="w-3 h-3 text-[var(--abu-text-tertiary)] shrink-0" />
-          )
-        ) : (
-          <span className="w-3 h-3 shrink-0" />
-        )}
-        <Icon className="w-3.5 h-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        {isRenaming ? (
-          <InlineNameInput
-            initialValue={entry.name}
-            onSubmit={(name) => onRenameSubmit(entry, name)}
-            onCancel={onRenameCancel}
-          />
-        ) : (
-          <span className="text-minor truncate flex-1 text-[var(--abu-text-primary)]">{entry.name}</span>
-        )}
-      </div>
-
-      {isExpanded && (
-        <div>
-          {isCreatingHere && creatingInFolder && (
-            <div style={{ paddingLeft: childIndent }} className="flex items-center gap-1.5 py-1 pr-1.5">
-              {creatingInFolder.kind === 'folder' ? (
-                <FolderPlus className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-              ) : (
-                <FilePlus className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-              )}
-              <InlineNameInput
-                placeholder={
-                  creatingInFolder.kind === 'folder'
-                    ? t.panel.fileTree.newFolderPlaceholder
-                    : t.panel.fileTree.newFilePlaceholder
-                }
-                onSubmit={(name) => onCreateSubmit(entry.path, creatingInFolder.kind, name)}
-                onCancel={onCreateCancel}
-              />
-            </div>
-          )}
-          {isLoadingChildren && !children && (
-            <div
-              style={{ paddingLeft: childIndent }}
-              className="text-caption text-[var(--abu-text-muted)] py-0.5"
-            >
-              {t.panel.fileTree.loading}
-            </div>
-          )}
-          {childError && (
-            <div
-              style={{ paddingLeft: childIndent }}
-              className="text-caption text-[var(--abu-text-muted)] py-0.5"
-            >
-              {t.panel.fileTree.loadError}
-            </div>
-          )}
-          {children && children.length === 0 && (
-            <div
-              style={{ paddingLeft: childIndent }}
-              className="text-caption text-[var(--abu-text-muted)] py-0.5"
-            >
-              {t.panel.fileTree.empty}
-            </div>
-          )}
-          {children?.map((child) => (
-            <TreeRow
-              key={child.path}
-              entry={child}
-              depth={depth + 1}
-              childrenByPath={childrenByPath}
-              expandedPaths={expandedPaths}
-              loadingPaths={loadingPaths}
-              errorsByPath={errorsByPath}
-              toggleExpand={toggleExpand}
-              openPreview={openPreview}
-              activePath={activePath}
-              onContextMenu={onContextMenu}
-              renamingPath={renamingPath}
-              onRenameSubmit={onRenameSubmit}
-              onRenameCancel={onRenameCancel}
-              creatingInFolder={creatingInFolder}
-              onCreateSubmit={onCreateSubmit}
-              onCreateCancel={onCreateCancel}
-              t={t}
-            />
-          ))}
-        </div>
+      {isDirectory ? (
+        <Icon icon={isExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="text-label-tertiary" />
+      ) : (
+        // A file keeps the arrow's place (a small icon is 14px) so names of one level line up.
+        <span aria-hidden="true" className="size-3.5 shrink-0" />
       )}
+      <Icon
+        icon={isDirectory ? (isExpanded ? AppIcons.folderOpen : AppIcons.folder) : getFileIcon(name)}
+        size="sm"
+        className="text-label-tertiary"
+      />
     </>
   );
-}
+
+  if (isRenaming) {
+    return (
+      <div className="flex items-center gap-1" style={rowPadding}>
+        {leading}
+        <InlineNameInput
+          initialValue={name}
+          onSubmit={(next) => onRenameSubmit(entry, next)}
+          onCancel={() => {
+            focusRowAfterRename.current = true;
+            onRenameCancel();
+          }}
+        />
+      </div>
+    );
+  }
+
+  const button = (
+    <Pressable
+      ref={rowRef}
+      title={path}
+      onClick={handleActivate}
+      onContextMenu={hasMenu ? undefined : (event) => {
+        event.preventDefault();
+        replayRightClick.current = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+          hadFocus: document.activeElement === event.currentTarget,
+        };
+        setHasMenu(true);
+      }}
+      style={rowPadding}
+      // The scroll area clips a focus ring drawn outside the row.
+      className={cn(
+        'group flex w-full items-center gap-1 rounded-control py-1 text-left text-ui focus-visible:ring-inset',
+        isActive ? 'bg-fill-selected' : 'hover:bg-fill-hover',
+      )}
+    >
+      {leading}
+      <span className="min-w-0 flex-1 truncate text-label">{name}</span>
+    </Pressable>
+  );
+
+  if (!hasMenu) return button;
+
+  return (
+    <ContextMenu
+      content={renderMenu(entry)}
+      onOpenChange={onMenuOpenChange}
+      onCloseAutoFocus={(event) => onMenuCloseAutoFocus(event, entry, isExpanded, rowRef.current)}
+    >
+      {button}
+    </ContextMenu>
+  );
+});
 
 /**
  * Lightweight, lazily-expanding project file tree for the right-side workspace panel.
@@ -293,8 +315,9 @@ function TreeRow({
  * does support a right-click context menu (reveal in Finder / add to chat / copy path /
  * rename / delete / new file & folder inside a directory), mirroring TRAE Work.
  */
-export default function WorkspaceFileTree() {
+function WorkspaceFileTree() {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const openPreview = usePreviewStore((s) => s.openPreview);
   const previewFilePath = usePreviewStore((s) => s.previewFilePath);
   const {
@@ -311,27 +334,15 @@ export default function WorkspaceFileTree() {
     refresh,
   } = useWorkspaceTree();
 
-  // Header "more actions" menu (new folder / add file / refresh) — TRAE-style.
+  // Header "more actions" menu (new folder / add file) — TRAE-style.
   // New items land in the workspace root; the fs-watch auto-refresh + manual
   // refresh keep the tree in sync.
-  const [menuOpen, setMenuOpen] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    const timer = setTimeout(() => document.addEventListener('mousedown', onClick), 0);
-    return () => { clearTimeout(timer); document.removeEventListener('mousedown', onClick); };
-  }, [menuOpen]);
-
-
-  const handleNewFolder = () => {
-    setMenuOpen(false);
-    setCreatingFolder(true);
-  };
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [creatingInFolder, setCreatingInFolder] = useState<{ folderPath: string; kind: CreateKind } | null>(null);
+  // Rename, new file, new folder and the delete confirmation all take the focus, so a
+  // menu item only records them here; the menu's close hook carries them out.
+  const pendingActionRef = useRef<PendingAction | null>(null);
 
   const submitNewFolder = async (rawName: string) => {
     setCreatingFolder(false);
@@ -359,7 +370,6 @@ export default function WorkspaceFileTree() {
   };
 
   const handleAddFile = async () => {
-    setMenuOpen(false);
     if (!rootPath) return;
     try {
       const selected = await openFileDialog({ multiple: true });
@@ -381,74 +391,18 @@ export default function WorkspaceFileTree() {
     }
   };
 
-  // ── Per-node context menu (right-click) ──────────────────────────────
-  // Single fixed-position menu shared by every row (not one per row) —
-  // avoids z-index/clipping fights with the ScrollArea. Mirrors Sidebar's
-  // conversation context menu: state {x,y,entry} + useLayoutEffect clamp +
-  // outside-click-closes via a document listener.
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: WorkspaceTreeEntry } | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [renamingPath, setRenamingPath] = useState<string | null>(null);
-  const [creatingInFolder, setCreatingInFolder] = useState<{ folderPath: string; kind: 'file' | 'folder' } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, entry: WorkspaceTreeEntry) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setConfirmingDelete(false);
-    setContextMenu({ x: e.clientX, y: e.clientY, entry });
-  }, []);
-
-  // Close on any outside click (mirrors Sidebar: React's synthetic onClick on
-  // menu buttons fires first during bubbling since it's delegated closer to
-  // the DOM node than this document-level listener, so button actions still run)
-  // or Escape.
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleClick = () => { setContextMenu(null); setConfirmingDelete(false); };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setContextMenu(null); setConfirmingDelete(false); }
-    };
-    document.addEventListener('click', handleClick);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('click', handleClick);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [contextMenu]);
-
-  // Clamp context menu inside viewport once its real size is known (re-clamp
-  // when swapping to the smaller delete-confirm view too).
-  useLayoutEffect(() => {
-    if (!contextMenu) return;
-    const el = contextMenuRef.current;
-    if (!el) return;
-    const margin = 8;
-    const rect = el.getBoundingClientRect();
-    const overflowX = rect.right - (window.innerWidth - margin);
-    const overflowY = rect.bottom - (window.innerHeight - margin);
-    if (overflowX <= 0 && overflowY <= 0) return;
-    setContextMenu((prev) => prev && {
-      ...prev,
-      x: Math.max(margin, prev.x - Math.max(0, overflowX)),
-      y: Math.max(margin, prev.y - Math.max(0, overflowY)),
-    });
-  }, [contextMenu, confirmingDelete]);
-
-  const handleRevealInFinder = async (entry: WorkspaceTreeEntry) => {
-    setContextMenu(null);
+  const handleRevealInFinder = useCallback(async (entry: RowEntry) => {
     try {
       await revealItemInDir(entry.path);
     } catch (err) {
       console.error('[WorkspaceFileTree] revealItemInDir failed:', err);
     }
-  };
+  }, []);
 
   // "Add to chat" — pushes an explicitly workspace-scoped path into
   // chatStore's ephemeral pendingAttachmentRequests buffer. ChatInput drains
   // only the records for the draft key active when the user clicked.
-  const handleAddToChat = (entry: WorkspaceTreeEntry) => {
-    setContextMenu(null);
+  const handleAddToChat = useCallback((entry: RowEntry) => {
     const chatState = useChatStore.getState();
     const draftScope = getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode);
     chatState.addPendingAttachment({
@@ -457,24 +411,18 @@ export default function WorkspaceFileTree() {
       readScope: 'workspace',
     });
     useToastStore.getState().addToast({ type: 'success', title: t.panel.fileTree.addedToChat });
-  };
+  }, [t]);
 
-  const handleCopyPath = async (entry: WorkspaceTreeEntry) => {
-    setContextMenu(null);
+  const handleCopyPath = useCallback(async (entry: RowEntry) => {
     try {
       await navigator.clipboard.writeText(entry.path);
       useToastStore.getState().addToast({ type: 'success', title: t.panel.fileTree.copyPathDone });
     } catch (err) {
       console.error('[WorkspaceFileTree] clipboard write failed:', err);
     }
-  };
+  }, [t]);
 
-  const handleStartRename = (entry: WorkspaceTreeEntry) => {
-    setContextMenu(null);
-    setRenamingPath(entry.path);
-  };
-
-  const handleRenameSubmit = async (entry: WorkspaceTreeEntry, rawName: string) => {
+  const handleRenameSubmit = useCallback(async (entry: RowEntry, rawName: string) => {
     setRenamingPath(null);
     const name = rawName.trim();
     if (name === entry.name) return; // unchanged — silent no-op, matches Sidebar's rename behavior
@@ -502,15 +450,11 @@ export default function WorkspaceFileTree() {
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  };
+  }, [t, refresh]);
 
-  const handleStartCreateInFolder = (entry: WorkspaceTreeEntry, kind: 'file' | 'folder') => {
-    setContextMenu(null);
-    if (!expandedPaths.has(entry.path)) toggleExpand(entry.path);
-    setCreatingInFolder({ folderPath: entry.path, kind });
-  };
+  const handleRenameCancel = useCallback(() => setRenamingPath(null), []);
 
-  const handleCreateSubmit = async (folderPath: string, kind: 'file' | 'folder', rawName: string) => {
+  const handleCreateSubmit = async (folderPath: string, kind: CreateKind, rawName: string) => {
     setCreatingInFolder(null);
     const name = rawName.trim();
     const failTitle = kind === 'folder' ? t.panel.fileTree.newFolderFailed : t.panel.fileTree.newFileFailed;
@@ -543,9 +487,7 @@ export default function WorkspaceFileTree() {
     }
   };
 
-  const handleDeleteConfirmed = async (entry: WorkspaceTreeEntry) => {
-    setContextMenu(null);
-    setConfirmingDelete(false);
+  const handleDeleteConfirmed = useCallback(async (entry: RowEntry) => {
     // Defense in depth: the fs:allow-remove capability is broad ($HOME/**, to
     // match write/rename), so the ONLY thing keeping this recursive delete from
     // touching files outside the project is that the tree is rooted at the
@@ -578,40 +520,125 @@ export default function WorkspaceFileTree() {
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  }, [t, rootPath, refresh]);
+
+  // Abu cannot undo this itself (the file comes back only from the system trash), so it asks.
+  const confirmDelete = useCallback(async (entry: RowEntry) => {
+    if (await confirm({ title: t.panel.fileTree.confirmDelete, confirmLabel: t.panel.fileTree.moveToTrash, tone: 'danger' })) {
+      await handleDeleteConfirmed(entry);
+    }
+  }, [confirm, t, handleDeleteConfirmed]);
+
+  // Reopening a menu during its exit animation keeps it mounted, so its close hook never
+  // runs for the earlier choice. Drop that choice whenever a menu of the tree opens, or
+  // the next Escape would carry it out.
+  const handleMenuOpenChange = useCallback((open: boolean) => {
+    if (open) pendingActionRef.current = null;
+  }, []);
+
+  // A row that leaves the tree with its menu open still gets its close hook: it must
+  // find nothing to do for a file that is no longer there.
+  const handleRowGone = useCallback((path: string) => {
+    const action = pendingActionRef.current;
+    if (action && action.kind !== 'newRootFolder' && action.path === path) pendingActionRef.current = null;
+  }, []);
+
+  // The name field and the confirmation open only after the menu has gone, with the
+  // menu's own focus return cancelled so they keep the focus they take.
+  const handleRowMenuCloseAutoFocus = useCallback((event: Event, entry: RowEntry, isExpanded: boolean, rowElement: HTMLElement | null) => {
+    const action = pendingActionRef.current;
+    if (!action || action.kind === 'newRootFolder' || action.path !== entry.path) return;
+    pendingActionRef.current = null;
+    event.preventDefault();
+    if (action.kind === 'rename') {
+      setRenamingPath(entry.path);
+      return;
+    }
+    if (action.kind === 'delete') {
+      // The confirmation gives the focus back to whatever had it: the row that asked.
+      rowElement?.focus();
+      void confirmDelete(entry);
+      return;
+    }
+    if (!isExpanded) toggleExpand(entry.path);
+    setCreatingInFolder({ folderPath: entry.path, kind: action.kind === 'newFolder' ? 'folder' : 'file' });
+  }, [confirmDelete, toggleExpand]);
+
+  const handleHeaderMenuCloseAutoFocus = (event: Event) => {
+    if (pendingActionRef.current?.kind !== 'newRootFolder') return;
+    pendingActionRef.current = null;
+    event.preventDefault();
+    setCreatingFolder(true);
   };
+
+  // ── Per-node context menu (right-click) ──────────────────────────────
+  const renderRowMenu = useCallback((entry: RowEntry) => (
+    <>
+      <MenuItem icon={AppIcons.folderOpen} onSelect={() => { void handleRevealInFinder(entry); }}>
+        {t.panel.fileTree.revealInFinder}
+      </MenuItem>
+      {!entry.isDirectory && (
+        <MenuItem icon={AppIcons.attach} onSelect={() => handleAddToChat(entry)}>
+          {t.panel.fileTree.addToChat}
+        </MenuItem>
+      )}
+      <MenuItem icon={AppIcons.copy} onSelect={() => { void handleCopyPath(entry); }}>
+        {t.panel.fileTree.copyPath}
+      </MenuItem>
+      <MenuItem icon={AppIcons.rename} onSelect={() => { pendingActionRef.current = { kind: 'rename', path: entry.path }; }}>
+        {t.panel.fileTree.rename}
+      </MenuItem>
+      {entry.isDirectory && (
+        <>
+          <MenuItem icon={AppIcons.fileCreate} onSelect={() => { pendingActionRef.current = { kind: 'newFile', path: entry.path }; }}>
+            {t.panel.fileTree.newFile}
+          </MenuItem>
+          <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingActionRef.current = { kind: 'newFolder', path: entry.path }; }}>
+            {t.panel.fileTree.newFolder}
+          </MenuItem>
+        </>
+      )}
+      <MenuSeparator />
+      <MenuItem tone="danger" icon={AppIcons.delete} onSelect={() => { pendingActionRef.current = { kind: 'delete', path: entry.path }; }}>
+        {t.panel.fileTree.delete}
+      </MenuItem>
+    </>
+  ), [t, handleRevealInFinder, handleAddToChat, handleCopyPath]);
+
+  const items = useMemo(() => {
+    const list: TreeItem[] = [];
+    appendVisibleItems(list, rootEntries, 0, { childrenByPath, expandedPaths, loadingPaths, errorsByPath }, creatingInFolder);
+    return list;
+  }, [rootEntries, childrenByPath, expandedPaths, loadingPaths, errorsByPath, creatingInFolder]);
+
+  const hintText = { loading: t.panel.fileTree.loading, loadError: t.panel.fileTree.loadError, empty: t.panel.fileTree.empty };
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-2 mt-3">
       <div className="flex items-center justify-between shrink-0">
-        <h4 className="text-caption font-medium text-[var(--abu-text-muted)] uppercase tracking-wider">
+        <h4 className="text-ui-sm font-medium text-label-tertiary">
           {t.panel.fileTree.title}
         </h4>
         {rootPath && (
-          <div className="relative" ref={menuRef}>
-            <button
-              onClick={() => setMenuOpen((v) => !v)}
-              className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-              title={t.panel.fileTree.moreActions}
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </button>
-            {menuOpen && (
-              <div className="absolute top-full right-0 mt-1 z-50 w-36 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1">
-                <button onClick={handleNewFolder} className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]">
-                  <FolderPlus className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.newFolder}
-                </button>
-                <button onClick={handleAddFile} className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]">
-                  <FilePlus className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.addFile}
-                </button>
-              </div>
-            )}
-          </div>
+          <Menu
+            align="end"
+            onOpenChange={handleMenuOpenChange}
+            onCloseAutoFocus={handleHeaderMenuCloseAutoFocus}
+            trigger={<IconButton size="sm" icon={AppIcons.more} label={t.panel.fileTree.moreActions} />}
+          >
+            <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingActionRef.current = { kind: 'newRootFolder' }; }}>
+              {t.panel.fileTree.newFolder}
+            </MenuItem>
+            <MenuItem icon={AppIcons.fileCreate} onSelect={() => { void handleAddFile(); }}>
+              {t.panel.fileTree.addFile}
+            </MenuItem>
+          </Menu>
         )}
       </div>
 
       {creatingFolder && (
-        <div className="shrink-0 flex items-center gap-1.5 px-1">
-          <FolderPlus className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
+        <div className="flex shrink-0 items-center gap-1 px-1">
+          <Icon icon={AppIcons.newFolder} size="sm" className="text-label-tertiary" />
           <InlineNameInput
             placeholder={t.panel.fileTree.newFolderPlaceholder}
             onSubmit={submitNewFolder}
@@ -621,123 +648,84 @@ export default function WorkspaceFileTree() {
       )}
 
       {!rootPath ? (
-        <p className="text-minor text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.noWorkspace}</p>
+        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.noWorkspace}</p>
       ) : rootMissing ? (
-        <p className="text-minor text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.folderDeleted}</p>
+        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.folderDeleted}</p>
       ) : rootError ? (
-        <p className="text-minor text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.loadError}</p>
+        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.loadError}</p>
       ) : isRootLoading && rootEntries.length === 0 ? (
-        <p className="text-minor text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.loading}</p>
+        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.loading}</p>
       ) : rootEntries.length === 0 ? (
-        <p className="text-minor text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.empty}</p>
+        <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.empty}</p>
       ) : (
         <ScrollArea className="flex-1 min-h-0">
-          <div className="space-y-0.5 pr-2 pb-2">
-            {rootEntries.map((entry) => (
-              <TreeRow
-                key={entry.path}
-                entry={entry}
-                depth={0}
-                childrenByPath={childrenByPath}
-                expandedPaths={expandedPaths}
-                loadingPaths={loadingPaths}
-                errorsByPath={errorsByPath}
-                toggleExpand={toggleExpand}
-                openPreview={openPreview}
-                activePath={previewFilePath}
-                onContextMenu={handleRowContextMenu}
-                renamingPath={renamingPath}
-                onRenameSubmit={handleRenameSubmit}
-                onRenameCancel={() => setRenamingPath(null)}
-                creatingInFolder={creatingInFolder}
-                onCreateSubmit={handleCreateSubmit}
-                onCreateCancel={() => setCreatingInFolder(null)}
-                t={t}
-              />
-            ))}
+          <div className="pr-2 pb-2">
+            {items.map((item) => {
+              if (item.kind === 'row') {
+                const { entry } = item;
+                return (
+                  <TreeRow
+                    key={entry.path}
+                    path={entry.path}
+                    name={entry.name}
+                    isDirectory={entry.isDirectory}
+                    depth={item.depth}
+                    isExpanded={entry.isDirectory && expandedPaths.has(entry.path)}
+                    // Highlight the file currently open in the preview panel (files only).
+                    isActive={!entry.isDirectory && previewFilePath === entry.path}
+                    isRenaming={renamingPath === entry.path}
+                    toggleExpand={toggleExpand}
+                    openPreview={openPreview}
+                    renderMenu={renderRowMenu}
+                    onMenuOpenChange={handleMenuOpenChange}
+                    onMenuCloseAutoFocus={handleRowMenuCloseAutoFocus}
+                    onRenameSubmit={handleRenameSubmit}
+                    onRenameCancel={handleRenameCancel}
+                    onGone={handleRowGone}
+                  />
+                );
+              }
+              if (item.kind === 'create') {
+                return (
+                  <div
+                    key={`create:${item.folderPath}`}
+                    className="flex items-center gap-1"
+                    style={{ paddingLeft: indentOf(item.depth), paddingRight: BASE_PADDING_PX }}
+                  >
+                    <Icon
+                      icon={item.createKind === 'folder' ? AppIcons.newFolder : AppIcons.fileCreate}
+                      size="sm"
+                      className="text-label-tertiary"
+                    />
+                    <InlineNameInput
+                      placeholder={
+                        item.createKind === 'folder'
+                          ? t.panel.fileTree.newFolderPlaceholder
+                          : t.panel.fileTree.newFilePlaceholder
+                      }
+                      onSubmit={(name) => handleCreateSubmit(item.folderPath, item.createKind, name)}
+                      onCancel={() => setCreatingInFolder(null)}
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div
+                  key={`${item.hint}:${item.folderPath}`}
+                  style={{ paddingLeft: indentOf(item.depth) }}
+                  className="py-1 text-caption text-label-tertiary"
+                >
+                  {hintText[item.hint]}
+                </div>
+              );
+            })}
           </div>
         </ScrollArea>
-      )}
-
-      {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[160px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          {confirmingDelete ? (
-            <div className="px-3 py-2">
-              <p className="text-minor text-[var(--abu-text-secondary)] mb-2">{t.panel.fileTree.confirmDelete}</p>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleDeleteConfirmed(contextMenu.entry)}
-                  className="px-2.5 py-1 rounded text-minor font-medium bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
-                >
-                  {t.panel.fileTree.moveToTrash}
-                </button>
-                <button
-                  onClick={() => setContextMenu(null)}
-                  className="px-2.5 py-1 rounded text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-                >
-                  {t.common.cancel}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <button
-                onClick={() => handleRevealInFinder(contextMenu.entry)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-              >
-                <ExternalLink className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.revealInFinder}
-              </button>
-              {!contextMenu.entry.isDirectory && (
-                <button
-                  onClick={() => handleAddToChat(contextMenu.entry)}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-                >
-                  <Paperclip className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.addToChat}
-                </button>
-              )}
-              <button
-                onClick={() => handleCopyPath(contextMenu.entry)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-              >
-                <Copy className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.copyPath}
-              </button>
-              <button
-                onClick={() => handleStartRename(contextMenu.entry)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-              >
-                <Pencil className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.rename}
-              </button>
-              {contextMenu.entry.isDirectory && (
-                <>
-                  <button
-                    onClick={() => handleStartCreateInFolder(contextMenu.entry, 'file')}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-                  >
-                    <FilePlus className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.newFile}
-                  </button>
-                  <button
-                    onClick={() => handleStartCreateInFolder(contextMenu.entry, 'folder')}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-                  >
-                    <FolderPlus className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.newFolder}
-                  </button>
-                </>
-              )}
-              <div className="my-1 border-t border-[var(--abu-border)]" />
-              <button
-                onClick={(e) => { e.stopPropagation(); setConfirmingDelete(true); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-bg-hover)]"
-              >
-                <Trash2 className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.delete}
-              </button>
-            </>
-          )}
-        </div>
       )}
     </div>
   );
 }
+
+// The sidebar renders again for every streamed character; the tree takes no props, so
+// none of that reaches it.
+export default memo(WorkspaceFileTree);

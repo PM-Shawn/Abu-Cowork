@@ -164,6 +164,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/panel/workspace/BrowserTab*.{ts,tsx}',
   'src/components/panel/workspace/SubagentTab*.{ts,tsx}',
   'src/components/panel/workspace/TeamTab*.{ts,tsx}',
+  'src/components/panel/WorkspaceFileTree*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

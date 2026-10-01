@@ -418,6 +418,34 @@ describe('onCloseAutoFocus', () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
   });
+
+  // Radix keeps the content mounted while it animates out, and a second right-click in
+  // that time would reuse it where it stood. Every opening gets content of its own.
+  it('gives a ContextMenu opened again new content, which keeps the focus', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const seen: boolean[] = [];
+    render(<FocusField kind="context" onClose={(event) => seen.push(event.defaultPrevented)} />, { wrapper: DesignSystemProvider });
+    const target = screen.getByText('Message body');
+    act(() => target.focus());
+    fireEvent.contextMenu(target);
+    const first = screen.getByRole('menu');
+
+    fireEvent.contextMenu(target);
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    const second = screen.getByRole('menu');
+    expect(screen.getAllByRole('menu')).toHaveLength(1);
+    expect(second).not.toBe(first);
+    // The replaced content closed without taking the focus back from the new one.
+    expect(seen).toEqual([true]);
+    expect(second.contains(document.activeElement)).toBe(true);
+
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(seen).toEqual([true, false]);
+  });
 });
 
 describe('MenuRadioGroup', () => {

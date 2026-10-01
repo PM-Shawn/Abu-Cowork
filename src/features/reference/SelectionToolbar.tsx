@@ -1,6 +1,8 @@
 // src/features/reference/SelectionToolbar.tsx
 import { useEffect, useCallback } from 'react';
-import { MessageSquarePlus, MessageSquare } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Kbd } from '@/components/ds/kbd';
 import { useI18n } from '@/i18n';
 import { isMacOS } from '@/utils/platform';
 import { CommentEditor } from './CommentEditor';
@@ -48,42 +50,34 @@ export function SelectionToolbar({ rect, editing, onEditingChange, onAdd, onComm
     { width: window.innerWidth, height: window.innerHeight },
     TOOLBAR_SIZE,
   );
-  const style: React.CSSProperties = {
-    position: 'fixed',
-    left,
-    top,
-    zIndex: 50,
-  };
 
   const mod = isMacOS() ? '⌘' : 'Ctrl';
 
   const handleComment = useCallback((v: string) => { onComment(v); }, [onComment]);
 
   return (
-    <div style={style} role="toolbar" data-selection-toolbar aria-label={t.reference.addToChat} onMouseDown={(e) => e.preventDefault()}>
+    <div
+      className="fixed z-popover"
+      style={{ left, top }}
+      role="toolbar"
+      data-selection-toolbar
+      data-electron-no-drag
+      aria-label={t.reference.addToChat}
+      onMouseDown={(e) => e.preventDefault()}
+    >
       {editing ? (
         <CommentEditor onSubmit={handleComment} onCancel={() => { onEditingChange(false); onDismiss(); }} />
       ) : (
-        <div className="flex items-center gap-0.5 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] p-0.5 shadow-lg">
-          <button
-            type="button"
-            onClick={() => onEditingChange(true)}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-body text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-1 rounded-panel bg-raised p-1 shadow-float">
+          <Button variant="plain" size="sm" icon={AppIcons.commentToChat} onClick={() => onEditingChange(true)}>
             {t.reference.commentToChat}
-            {enableKeyboard && <span className="text-caption text-[var(--abu-text-tertiary)]">{mod} J</span>}
-          </button>
-          <div className="h-4 w-px bg-[var(--abu-border-subtle)]" />
-          <button
-            type="button"
-            onClick={onAdd}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-body text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
+            {enableKeyboard && <Kbd>{mod} J</Kbd>}
+          </Button>
+          <div className="h-4 w-px bg-separator" />
+          <Button variant="plain" size="sm" icon={AppIcons.quoteToChat} onClick={onAdd}>
             {t.reference.addToChat}
-            {enableKeyboard && <span className="text-caption text-[var(--abu-text-tertiary)]">↵</span>}
-          </button>
+            {enableKeyboard && <Kbd>↵</Kbd>}
+          </Button>
         </div>
       )}
     </div>

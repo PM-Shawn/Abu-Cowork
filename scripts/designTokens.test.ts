@@ -65,6 +65,11 @@ function over(values: Map<string, string>, top: string, bottom: string): Color {
   return blend([color(values, bottom), color(values, top)], 'normal');
 }
 
+// Layers painted bottom to top.
+function stack(values: Map<string, string>, ...layers: string[]): Color {
+  return blend(layers.map((layer) => color(values, layer)), 'normal');
+}
+
 const APPEARANCES: Appearance[] = ['light', 'dark', 'light-contrast', 'dark-contrast'];
 const TEXT = ['label', 'label-secondary', 'label-tertiary', 'link', 'success', 'warning', 'danger', 'info'];
 const SURFACES = ['surface', 'raised', 'code', 'field', 'desk-solid'];
@@ -198,5 +203,31 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
   // The source editor paints highlight colors on the panel surface.
   it.each(SYNTAX)('%s on surface is at least 4.5:1', (token) => {
     expect(wcagContrast(color(values, token), color(values, 'surface'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // The line being edited is where the user reads most: it keeps the full text bar.
+  it.each(['label', 'label-secondary', 'link', 'success', 'danger', ...SYNTAX])('%s on the editor active line is at least 4.5:1', (text) => {
+    expect(wcagContrast(color(values, text), stack(values, 'surface', 'fill-hover'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // CodeMirror paints the active line over the selection, so selected text on that line sits
+  // on both fills. Word and bracket matches sit on the match fill, on the active line or off it.
+  it.each([
+    ['selection on the active line', ['surface', 'selection', 'fill-hover']],
+    ['a match on the active line', ['surface', 'fill-hover', 'fill-selected']],
+  ] as const)('label on %s is at least 4.5:1', (_name, layers) => {
+    expect(wcagContrast(color(values, 'label'), stack(values, ...layers))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(['label-secondary', 'link', 'success', 'danger', ...SYNTAX].flatMap((text) => [
+    [text, 'selection on the active line', ['surface', 'selection', 'fill-hover']] as const,
+    [text, 'a match on the active line', ['surface', 'fill-hover', 'fill-selected']] as const,
+  ]))('%s on %s is at least 3:1', (text, _name, layers) => {
+    expect(wcagContrast(color(values, text), stack(values, ...layers))).toBeGreaterThanOrEqual(3);
+  });
+
+  // The editor's completion list is a floating layer; its current row is a selected fill.
+  it('label on the selected row of a floating list is at least 4.5:1', () => {
+    expect(wcagContrast(color(values, 'label'), stack(values, 'raised', 'fill-selected'))).toBeGreaterThanOrEqual(4.5);
   });
 });

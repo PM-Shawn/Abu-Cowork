@@ -35,6 +35,7 @@
  */
 import type { SettingsState } from '../stores/settingsStore';
 import type { ProviderInstance } from '../types/provider';
+import { localServerKind } from '../core/llm/localProvider';
 
 /** Get the active provider instance */
 export function getActiveProvider(state: SettingsState): ProviderInstance | undefined {
@@ -125,22 +126,17 @@ export function resolveAgentModel(agentModel: string | undefined, state: Setting
   return globalModel;
 }
 
-function isLoopbackUrl(value: string): boolean {
-  if (!URL.canParse(value)) return false;
-  const host = new URL(value).hostname;
-  return host === 'localhost' || host === '[::1]' || /^127(\.\d{1,3}){3}$/.test(host);
-}
-
 /**
- * 调用这个服务商是否必须有 API key。Ollama、LM Studio 不需要；用户自定义的
- * OpenAI 兼容服务地址指向本机时也不需要。Anthropic SDK 在 key 为空时直接拒绝发请求，
- * 所以 Anthropic 格式的自定义服务始终需要 key。
+ * 调用这个服务商是否必须有 API key。本地服务商（localServerKind）里，Ollama、LM Studio
+ * 不需要；地址在本机的自定义服务商只有 OpenAI 兼容格式不需要——Anthropic SDK 在 key
+ * 为空时直接拒绝发请求，所以 Anthropic 格式的自定义服务始终需要 key。
  */
 export function providerNeedsApiKey(
   provider: Pick<ProviderInstance, 'id' | 'source' | 'apiFormat' | 'baseUrl'>,
 ): boolean {
-  if (provider.id === 'ollama' || provider.id === 'lmstudio') return false;
-  return !(provider.source === 'custom' && provider.apiFormat === 'openai-compatible' && isLoopbackUrl(provider.baseUrl));
+  const kind = localServerKind(provider);
+  if (kind === 'ollama' || kind === 'lmstudio') return false;
+  return !(kind === 'custom-local' && provider.apiFormat === 'openai-compatible');
 }
 
 /** 服务商已经具备调用所需的凭据：有 key，或本来就不需要 key。 */

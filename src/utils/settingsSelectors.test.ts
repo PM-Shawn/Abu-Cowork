@@ -214,6 +214,7 @@ describe('providerNeedsApiKey', () => {
     ['a custom endpoint at 127.0.0.1', custom('http://127.0.0.1:8000/v1')],
     ['a custom endpoint elsewhere in 127.0.0.0/8', custom('http://127.1.2.3:8000/v1')],
     ['a custom endpoint at [::1]', custom('http://[::1]:8000/v1')],
+    ['a custom endpoint at localhost written without a scheme', custom('localhost:8000')],
   ])('is false for %s', (_name, provider) => {
     expect(providerNeedsApiKey(provider)).toBe(false);
   });
@@ -226,7 +227,6 @@ describe('providerNeedsApiKey', () => {
     ['a custom endpoint on the LAN', custom('http://192.168.1.20:8000/v1')],
     ['a host that only starts with localhost', custom('http://localhost.example.com/v1')],
     ['a custom Anthropic-format endpoint at localhost', custom('http://127.0.0.1:8080', 'anthropic')],
-    ['a custom endpoint whose address has no scheme', custom('localhost:8000')],
     ['a custom endpoint with an empty address', custom('')],
   ])('is true for %s', (_name, provider) => {
     expect(providerNeedsApiKey(provider)).toBe(true);

@@ -42,6 +42,22 @@ describe('EDITOR_THEME_SPEC', () => {
     expect(rule('&.cm-focused .cm-matchingBracket').backgroundColor).toBe('var(--ds-fill-selected)');
   });
 
+  // A search match can lie inside a selection on the active line. A third fill there drops
+  // highlight colors under 3:1 in dark, so matches are outlined and never filled.
+  it('outlines search matches instead of filling them', () => {
+    expect(rule('.cm-searchMatch').backgroundColor).toBe('transparent');
+    expect(rule('.cm-searchMatch').outline).toBe('1px solid var(--ds-control-border)');
+    expect(rule('.cm-searchMatch.cm-searchMatch-selected').backgroundColor).toBe('transparent');
+    expect(rule('.cm-selectionMatch').backgroundColor).toBe('var(--ds-fill-selected)');
+  });
+
+  it('replaces the fixed colors the base theme keeps for a pressed search button, control characters and snippet stops', () => {
+    expect(rule('.cm-button:active').backgroundImage).toBe('none');
+    expect(rule('.cm-button:active').backgroundColor).toBe('var(--ds-fill-pressed)');
+    expect(rule('.cm-specialChar').color).toBe('var(--ds-danger)');
+    expect(rule('.cm-snippetFieldPosition').borderLeftColor).toBe('var(--ds-label-tertiary)');
+  });
+
   it('uses the code type scale', () => {
     expect(rule('&').fontSize).toBe('var(--text-mono)');
     expect(rule('.cm-content').fontFamily).toBe('var(--ds-font-mono)');

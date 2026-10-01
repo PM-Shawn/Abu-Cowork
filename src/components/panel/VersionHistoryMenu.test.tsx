@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, within, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { Button } from '@/components/ds/button';
@@ -68,7 +68,7 @@ describe('VersionHistoryMenu', () => {
       { id: '1-0', ts: 1, byteSize: 10 },
     ]);
     renderMenu();
-    await waitFor(() => expect(screen.getByText(/把标题改成蓝色/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('把标题改成蓝色')).toBeTruthy());
     expect(screen.getByText('AI 修改前')).toBeTruthy();
     // The unlabeled, source-less entry gets no badge at all — only AI edits are called out.
     expect(screen.queryByText('手动')).toBeNull();
@@ -79,8 +79,8 @@ describe('VersionHistoryMenu', () => {
       { id: '2-1', ts: 2, byteSize: 10, source: 'manual', label: REVERT_LABEL },
     ]);
     renderMenu();
-    await waitFor(() => expect(screen.getByText(/回退前备份/)).toBeTruthy());
-    expect(screen.queryByText(new RegExp(REVERT_LABEL))).toBeNull();
+    await waitFor(() => expect(screen.getByText('回退前备份')).toBeTruthy());
+    expect(screen.queryByText(REVERT_LABEL)).toBeNull();
     expect(screen.queryByText('自动')).toBeNull();
     expect(screen.queryByText('手动')).toBeNull();
   });
@@ -102,6 +102,13 @@ describe('VersionHistoryMenu', () => {
     // The second line stays one line: the label is cut short, the size is never pushed out.
     expect(screen.getByText('把标题改成蓝色')).toHaveClass('truncate');
     expect(screen.getByText(/2\.0 KB/)).toHaveClass('shrink-0');
+    // Choosing a row overwrites the file, and its name is only a time: the hint says what it does.
+    for (const item of items) expect(item).toHaveAttribute('title', '恢复到此版本');
+    // Rows with and without the AI tag have the same first-line height (the tag's).
+    expect(screen.getByText('AI 修改前').parentElement).toHaveClass('h-5');
+    expect(within(items[1]).getByText(TIME).parentElement).toHaveClass('h-5');
+    // The menu's own height limit scrolls the list: the rows sit directly in the menu.
+    expect(items[0].parentElement).toBe(screen.getByRole('menu'));
   });
 
   it('reverts only on Enter: the arrow keys move the highlight', async () => {

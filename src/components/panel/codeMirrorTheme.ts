@@ -20,19 +20,22 @@ export const EDITOR_THEME_SPEC = {
   '.cm-activeLine': { backgroundColor: token('fill-hover') },
   '.cm-activeLineGutter': { backgroundColor: token('fill-hover'), color: token('label-secondary') },
   '.cm-foldPlaceholder': { backgroundColor: token('fill'), color: token('label-secondary'), border: 'none' },
-  '.cm-searchMatch, .cm-selectionMatch': { backgroundColor: token('fill-selected') },
-  // The current search match is also the selection, which already paints it; a second fill
-  // on top would darken the text's background past the selection contrast rule.
-  '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'transparent', outline: hairline('control-border') },
+  '.cm-selectionMatch': { backgroundColor: token('fill-selected') },
+  // A search match can lie inside a selection on the active line; a third fill there drops
+  // highlight colors under 3:1 in dark, so matches get a hairline and no fill.
+  '.cm-searchMatch, .cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'transparent', outline: hairline('control-border') },
   '.cm-matchingBracket, &.cm-focused .cm-matchingBracket': { backgroundColor: token('fill-selected'), color: token('label') },
   '&.cm-focused .cm-nonmatchingBracket': { backgroundColor: token('danger-soft') },
   '.cm-snippetField': { backgroundColor: token('fill') },
+  '.cm-snippetFieldPosition': { borderLeftColor: token('label-tertiary') },
+  '.cm-specialChar': { color: token('danger') },
   '.cm-tooltip': { backgroundColor: token('raised'), color: token('label'), border: hairline('separator') },
   '.cm-tooltip-autocomplete ul li[aria-selected]': { backgroundColor: token('fill-selected'), color: token('label') },
   '.cm-panels': { backgroundColor: token('surface'), color: token('label') },
   '.cm-panels-top': { borderBottom: hairline('separator') },
   '.cm-panels-bottom': { borderTop: hairline('separator') },
   '.cm-button': { backgroundImage: 'none', backgroundColor: token('fill'), border: hairline('control-border') },
+  '.cm-button:active': { backgroundImage: 'none', backgroundColor: token('fill-pressed') },
   '.cm-textfield': { backgroundColor: token('field'), border: hairline('control-border') },
 } as const;
 

@@ -222,6 +222,9 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
   it.each(['label-secondary', 'link', 'success', 'danger', ...SYNTAX].flatMap((text) => [
     [text, 'selection on the active line', ['surface', 'selection', 'fill-hover']] as const,
     [text, 'a match on the active line', ['surface', 'fill-hover', 'fill-selected']] as const,
+    // Folded-code placeholders and snippet fields are a fill; a bracket without a partner is a soft danger fill.
+    [text, 'a fold placeholder on the active line', ['surface', 'fill-hover', 'fill']] as const,
+    [text, 'an unmatched bracket on the active line', ['surface', 'fill-hover', 'danger-soft']] as const,
   ]))('%s on %s is at least 3:1', (text, _name, layers) => {
     expect(wcagContrast(color(values, text), stack(values, ...layers))).toBeGreaterThanOrEqual(3);
   });

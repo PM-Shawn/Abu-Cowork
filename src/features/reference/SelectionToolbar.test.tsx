@@ -111,6 +111,25 @@ describe('SelectionToolbar', () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
+  // The width changes with the language, the shortcut keys and the comment box, so the
+  // clamp uses the size the toolbar really has.
+  it('clamps to the window edge by its measured size', () => {
+    const measure = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const box = this.hasAttribute('data-selection-toolbar') ? { width: 265, height: 32 } : { width: 0, height: 0 };
+      return { ...box, x: 0, y: 0, left: 0, top: 0, right: box.width, bottom: box.height, toJSON: () => ({}) } as DOMRect;
+    });
+    try {
+      const atRightEdge = { left: window.innerWidth - 20, top: 100, right: window.innerWidth, bottom: 120, width: 20, height: 20 } as DOMRect;
+      render(
+        <SelectionToolbar rect={atRightEdge} editing={false} onEditingChange={() => {}} onAdd={() => {}} onComment={() => {}} onDismiss={() => {}} />,
+      );
+      expect(screen.getByRole('toolbar').style.left).toBe(`${window.innerWidth - 265 - 8}px`);
+      expect(screen.getByRole('toolbar').style.top).toBe('126px');
+    } finally {
+      measure.mockRestore();
+    }
+  });
+
   it('keeps the comment box in the same floating layer', () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: /评论到对话/ }));

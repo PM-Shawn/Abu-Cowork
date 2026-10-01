@@ -227,7 +227,6 @@ const PreviewToolbar = memo(function PreviewToolbar({
               icon={AppIcons.viewSource}
               label={t.panel.sourceMode}
               aria-pressed={viewMode === 'source'}
-              className={cn(viewMode === 'source' && 'bg-fill-selected text-label')}
               onClick={() => onViewModeChange('source')}
             />
             <IconButton
@@ -235,7 +234,6 @@ const PreviewToolbar = memo(function PreviewToolbar({
               icon={AppIcons.preview}
               label={t.panel.previewMode}
               aria-pressed={viewMode === 'preview'}
-              className={cn(viewMode === 'preview' && 'bg-fill-selected text-label')}
               onClick={() => onViewModeChange('preview')}
             />
           </div>
@@ -527,7 +525,12 @@ export default function PreviewPanel({
   // Esc exits app-fullscreen — only listen while fullscreen is active.
   useEffect(() => {
     if (!isFullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // An Escape that closes an open menu belongs to that menu.
+      if (e.target instanceof Element && e.target.closest('[role="menu"]')) return;
+      setIsFullscreen(false);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isFullscreen]);
@@ -883,7 +886,6 @@ export default function PreviewPanel({
             aria-pressed={inspecting}
             disabled={!iframeLoaded}
             onClick={toggleInspect}
-            className={cn(inspecting && 'bg-fill-selected text-label')}
           />
         </div>
       )}

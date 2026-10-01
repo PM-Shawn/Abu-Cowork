@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { mkdir, copyFile, rename, writeTextFile, exists } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
@@ -72,7 +72,7 @@ type CreateKind = 'file' | 'folder';
 
 // What a menu was asked to do that takes the focus; carried out once the menu has closed.
 type PendingAction =
-  | { kind: 'rename' | 'newFile' | 'newFolder' | 'delete'; path: string }
+  | { kind: 'rename' | 'newFile' | 'newFolder' | 'delete'; entry: RowEntry }
   | { kind: 'newRootFolder' };
 
 // One line of the tree as it shows: a file or folder, the name field for a new entry,
@@ -150,6 +150,8 @@ function InlineNameInput({
         if (e.key === 'Escape') { e.preventDefault(); cancel(); }
       }}
       onClick={(e) => e.stopPropagation()}
+      // A right-click in the field is about its text and never reaches the row menu.
+      onContextMenu={(e) => e.stopPropagation()}
       placeholder={placeholder}
       className="min-w-0 flex-1"
     />
@@ -164,15 +166,14 @@ interface TreeRowProps {
   isExpanded: boolean;
   /** This file is the one open in the preview panel. */
   isActive: boolean;
+  /** The open row menu, or the delete question, is about this row. */
+  isMenuTarget: boolean;
   isRenaming: boolean;
   toggleExpand: (path: string) => void;
   openPreview: (path: string) => void;
-  renderMenu: (entry: RowEntry) => ReactNode;
-  onMenuOpenChange: (open: boolean) => void;
-  onMenuCloseAutoFocus: (event: Event, entry: RowEntry, isExpanded: boolean, rowElement: HTMLElement | null) => void;
+  onContextMenu: (event: MouseEvent<HTMLElement>, entry: RowEntry) => void;
   onRenameSubmit: (entry: RowEntry, name: string) => void;
   onRenameCancel: () => void;
-  onGone: (path: string) => void;
 }
 
 // A folder can hold thousands of files: the row is memoized and takes plain values and
@@ -185,40 +186,16 @@ const TreeRow = memo(function TreeRow({
   depth,
   isExpanded,
   isActive,
+  isMenuTarget,
   isRenaming,
   toggleExpand,
   openPreview,
-  renderMenu,
-  onMenuOpenChange,
-  onMenuCloseAutoFocus,
+  onContextMenu,
   onRenameSubmit,
   onRenameCancel,
-  onGone,
 }: TreeRowProps) {
   const rowRef = useRef<HTMLButtonElement>(null);
   const focusRowAfterRename = useRef(false);
-  // Every mounted menu listens for each key press on the document, which adds up over
-  // thousands of rows. A row gets its menu with its first right-click; mounting the
-  // menu replaces the row's button, so that right-click is replayed on the new button.
-  const [hasMenu, setHasMenu] = useState(false);
-  const replayRightClick = useRef<{ clientX: number; clientY: number; hadFocus: boolean } | null>(null);
-
-  useEffect(() => {
-    const rightClick = replayRightClick.current;
-    const row = rowRef.current;
-    if (!hasMenu || !rightClick || !row) return;
-    replayRightClick.current = null;
-    if (rightClick.hadFocus) row.focus();
-    row.dispatchEvent(new MouseEvent('contextmenu', {
-      bubbles: true,
-      cancelable: true,
-      clientX: rightClick.clientX,
-      clientY: rightClick.clientY,
-    }));
-  }, [hasMenu]);
-
-  // The file went away (deleted, moved, its folder re-read) while its menu was open.
-  useEffect(() => () => onGone(path), [onGone, path]);
 
   // Escape in the rename field gives the focus back to the row it replaced.
   useEffect(() => {
@@ -270,42 +247,23 @@ const TreeRow = memo(function TreeRow({
     );
   }
 
-  const button = (
+  return (
     <Pressable
       ref={rowRef}
       title={path}
       onClick={handleActivate}
-      onContextMenu={hasMenu ? undefined : (event) => {
-        event.preventDefault();
-        replayRightClick.current = {
-          clientX: event.clientX,
-          clientY: event.clientY,
-          hadFocus: document.activeElement === event.currentTarget,
-        };
-        setHasMenu(true);
-      }}
+      onContextMenu={(event) => onContextMenu(event, entry)}
       style={rowPadding}
-      // The scroll area clips a focus ring drawn outside the row.
+      // The scroll area clips a focus ring drawn outside the row. An open menu takes the
+      // pointer away from the page, so the row it is about carries the hover fill itself.
       className={cn(
         'group flex w-full items-center gap-1 rounded-control py-1 text-left text-ui focus-visible:ring-inset',
-        isActive ? 'bg-fill-selected' : 'hover:bg-fill-hover',
+        isActive ? 'bg-fill-selected' : isMenuTarget ? 'bg-fill-hover' : 'hover:bg-fill-hover',
       )}
     >
       {leading}
       <span className="min-w-0 flex-1 truncate text-label">{name}</span>
     </Pressable>
-  );
-
-  if (!hasMenu) return button;
-
-  return (
-    <ContextMenu
-      content={renderMenu(entry)}
-      onOpenChange={onMenuOpenChange}
-      onCloseAutoFocus={(event) => onMenuCloseAutoFocus(event, entry, isExpanded, rowRef.current)}
-    >
-      {button}
-    </ContextMenu>
   );
 });
 
@@ -343,6 +301,25 @@ function WorkspaceFileTree() {
   // Rename, new file, new folder and the delete confirmation all take the focus, so a
   // menu item only records them here; the menu's close hook carries them out.
   const pendingActionRef = useRef<PendingAction | null>(null);
+  // One right-click menu serves every row: thousands of files stay one menu. It shows
+  // the actions of the row that was right-clicked last.
+  const [menuTarget, setMenuTarget] = useState<RowEntry | null>(null);
+  const [rowMenuOpen, setRowMenuOpen] = useState(false);
+  // The row a delete question is about, so the row stays marked while the question is open.
+  const [askingPath, setAskingPath] = useState<string | null>(null);
+  const menuRowRef = useRef<HTMLElement | null>(null);
+  const rowRightClick = useRef<Event | null>(null);
+  // Read when an answer or a menu's close hook arrives, which can be renders later.
+  const rootPathRef = useRef(rootPath);
+  const expandedPathsRef = useRef(expandedPaths);
+  const visiblePathsRef = useRef<Set<string>>(new Set());
+  useLayoutEffect(() => {
+    rootPathRef.current = rootPath;
+    expandedPathsRef.current = expandedPaths;
+  });
+  // The delete question outlives the tree (the dialog belongs to the app). Once the
+  // tree has gone there is no workspace to check an answer against, so it is refused.
+  useEffect(() => () => { rootPathRef.current = null; }, []);
 
   const submitNewFolder = async (rawName: string) => {
     setCreatingFolder(false);
@@ -493,6 +470,8 @@ function WorkspaceFileTree() {
     // touching files outside the project is that the tree is rooted at the
     // workspace. Enforce that explicitly — refuse to remove the root itself or
     // anything not strictly under it, so a bad entry.path can never escape.
+    // The workspace is the one the tree shows now: it can change while the question is open.
+    const rootPath = rootPathRef.current;
     const root = rootPath ? normalizeSeparators(rootPath).replace(/\/+$/, '') : '';
     const target = normalizeSeparators(entry.path).replace(/\/+$/, '');
     if (!root || !target.startsWith(root + '/')) {
@@ -520,35 +499,49 @@ function WorkspaceFileTree() {
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [t, rootPath, refresh]);
+  }, [t, refresh]);
 
-  // Abu cannot undo this itself (the file comes back only from the system trash), so it asks.
-  const confirmDelete = useCallback(async (entry: RowEntry) => {
-    if (await confirm({ title: t.panel.fileTree.confirmDelete, confirmLabel: t.panel.fileTree.moveToTrash, tone: 'danger' })) {
-      await handleDeleteConfirmed(entry);
-    }
-  }, [confirm, t, handleDeleteConfirmed]);
+  // Abu cannot undo this itself (the file comes back only from the system trash), so it
+  // asks, and the question names the file or folder it is about.
+  const confirmDelete = async (entry: RowEntry) => {
+    setAskingPath(entry.path);
+    const confirmed = await confirm({
+      title: t.panel.fileTree.confirmDelete,
+      message: entry.name,
+      confirmLabel: t.panel.fileTree.moveToTrash,
+      tone: 'danger',
+    });
+    setAskingPath((current) => (current === entry.path ? null : current));
+    if (confirmed) await handleDeleteConfirmed(entry);
+  };
 
-  // Reopening a menu during its exit animation keeps it mounted, so its close hook never
-  // runs for the earlier choice. Drop that choice whenever a menu of the tree opens, or
-  // the next Escape would carry it out.
-  const handleMenuOpenChange = useCallback((open: boolean) => {
+  // A menu opened again before its close hook ran would leave the earlier choice
+  // waiting. Drop that choice whenever a menu of the tree opens, or the next Escape
+  // would carry it out.
+  const handleHeaderMenuOpenChange = (open: boolean) => {
     if (open) pendingActionRef.current = null;
-  }, []);
+  };
 
-  // A row that leaves the tree with its menu open still gets its close hook: it must
-  // find nothing to do for a file that is no longer there.
-  const handleRowGone = useCallback((path: string) => {
-    const action = pendingActionRef.current;
-    if (action && action.kind !== 'newRootFolder' && action.path === path) pendingActionRef.current = null;
+  const handleRowMenuOpenChange = (open: boolean) => {
+    if (open) pendingActionRef.current = null;
+    setRowMenuOpen(open);
+  };
+
+  const handleRowContextMenu = useCallback((event: MouseEvent<HTMLElement>, entry: RowEntry) => {
+    rowRightClick.current = event.nativeEvent;
+    menuRowRef.current = event.currentTarget;
+    setMenuTarget(entry);
   }, []);
 
   // The name field and the confirmation open only after the menu has gone, with the
   // menu's own focus return cancelled so they keep the focus they take.
-  const handleRowMenuCloseAutoFocus = useCallback((event: Event, entry: RowEntry, isExpanded: boolean, rowElement: HTMLElement | null) => {
+  const handleRowMenuCloseAutoFocus = (event: Event) => {
     const action = pendingActionRef.current;
-    if (!action || action.kind === 'newRootFolder' || action.path !== entry.path) return;
+    if (!action || action.kind === 'newRootFolder') return;
     pendingActionRef.current = null;
+    const { entry } = action;
+    // The file went away (deleted, moved, its folder re-read) while its menu was open.
+    if (!visiblePathsRef.current.has(entry.path)) return;
     event.preventDefault();
     if (action.kind === 'rename') {
       setRenamingPath(entry.path);
@@ -556,13 +549,14 @@ function WorkspaceFileTree() {
     }
     if (action.kind === 'delete') {
       // The confirmation gives the focus back to whatever had it: the row that asked.
-      rowElement?.focus();
+      const row = menuRowRef.current;
+      if (row?.isConnected) row.focus();
       void confirmDelete(entry);
       return;
     }
-    if (!isExpanded) toggleExpand(entry.path);
+    if (!expandedPathsRef.current.has(entry.path)) toggleExpand(entry.path);
     setCreatingInFolder({ folderPath: entry.path, kind: action.kind === 'newFolder' ? 'folder' : 'file' });
-  }, [confirmDelete, toggleExpand]);
+  };
 
   const handleHeaderMenuCloseAutoFocus = (event: Event) => {
     if (pendingActionRef.current?.kind !== 'newRootFolder') return;
@@ -572,7 +566,7 @@ function WorkspaceFileTree() {
   };
 
   // ── Per-node context menu (right-click) ──────────────────────────────
-  const renderRowMenu = useCallback((entry: RowEntry) => (
+  const renderRowMenu = (entry: RowEntry) => (
     <>
       <MenuItem icon={AppIcons.folderOpen} onSelect={() => { void handleRevealInFinder(entry); }}>
         {t.panel.fileTree.revealInFinder}
@@ -585,25 +579,25 @@ function WorkspaceFileTree() {
       <MenuItem icon={AppIcons.copy} onSelect={() => { void handleCopyPath(entry); }}>
         {t.panel.fileTree.copyPath}
       </MenuItem>
-      <MenuItem icon={AppIcons.rename} onSelect={() => { pendingActionRef.current = { kind: 'rename', path: entry.path }; }}>
+      <MenuItem icon={AppIcons.rename} onSelect={() => { pendingActionRef.current = { kind: 'rename', entry }; }}>
         {t.panel.fileTree.rename}
       </MenuItem>
       {entry.isDirectory && (
         <>
-          <MenuItem icon={AppIcons.fileCreate} onSelect={() => { pendingActionRef.current = { kind: 'newFile', path: entry.path }; }}>
+          <MenuItem icon={AppIcons.fileCreate} onSelect={() => { pendingActionRef.current = { kind: 'newFile', entry }; }}>
             {t.panel.fileTree.newFile}
           </MenuItem>
-          <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingActionRef.current = { kind: 'newFolder', path: entry.path }; }}>
+          <MenuItem icon={AppIcons.newFolder} onSelect={() => { pendingActionRef.current = { kind: 'newFolder', entry }; }}>
             {t.panel.fileTree.newFolder}
           </MenuItem>
         </>
       )}
       <MenuSeparator />
-      <MenuItem tone="danger" icon={AppIcons.delete} onSelect={() => { pendingActionRef.current = { kind: 'delete', path: entry.path }; }}>
+      <MenuItem tone="danger" icon={AppIcons.delete} onSelect={() => { pendingActionRef.current = { kind: 'delete', entry }; }}>
         {t.panel.fileTree.delete}
       </MenuItem>
     </>
-  ), [t, handleRevealInFinder, handleAddToChat, handleCopyPath]);
+  );
 
   const items = useMemo(() => {
     const list: TreeItem[] = [];
@@ -611,7 +605,75 @@ function WorkspaceFileTree() {
     return list;
   }, [rootEntries, childrenByPath, expandedPaths, loadingPaths, errorsByPath, creatingInFolder]);
 
+  // The rows on screen, for the menu's close hook. A choice waiting for a row that has
+  // left the tree is dropped, so a file that comes back does not start in rename mode.
+  useLayoutEffect(() => {
+    const paths = new Set<string>();
+    for (const item of items) if (item.kind === 'row') paths.add(item.entry.path);
+    visiblePathsRef.current = paths;
+    const action = pendingActionRef.current;
+    if (action && action.kind !== 'newRootFolder' && !paths.has(action.entry.path)) pendingActionRef.current = null;
+  }, [items]);
+
   const hintText = { loading: t.panel.fileTree.loading, loadError: t.panel.fileTree.loadError, empty: t.panel.fileTree.empty };
+
+  const renderItem = (item: TreeItem) => {
+    if (item.kind === 'row') {
+      const { entry } = item;
+      return (
+        <TreeRow
+          key={entry.path}
+          path={entry.path}
+          name={entry.name}
+          isDirectory={entry.isDirectory}
+          depth={item.depth}
+          isExpanded={entry.isDirectory && expandedPaths.has(entry.path)}
+          // Highlight the file currently open in the preview panel (files only).
+          isActive={!entry.isDirectory && previewFilePath === entry.path}
+          isMenuTarget={(rowMenuOpen && menuTarget?.path === entry.path) || askingPath === entry.path}
+          isRenaming={renamingPath === entry.path}
+          toggleExpand={toggleExpand}
+          openPreview={openPreview}
+          onContextMenu={handleRowContextMenu}
+          onRenameSubmit={handleRenameSubmit}
+          onRenameCancel={handleRenameCancel}
+        />
+      );
+    }
+    if (item.kind === 'create') {
+      return (
+        <div
+          key={`create:${item.folderPath}`}
+          className="flex items-center gap-1"
+          style={{ paddingLeft: indentOf(item.depth), paddingRight: BASE_PADDING_PX }}
+        >
+          <Icon
+            icon={item.createKind === 'folder' ? AppIcons.newFolder : AppIcons.fileCreate}
+            size="sm"
+            className="text-label-tertiary"
+          />
+          <InlineNameInput
+            placeholder={
+              item.createKind === 'folder'
+                ? t.panel.fileTree.newFolderPlaceholder
+                : t.panel.fileTree.newFilePlaceholder
+            }
+            onSubmit={(name) => handleCreateSubmit(item.folderPath, item.createKind, name)}
+            onCancel={() => setCreatingInFolder(null)}
+          />
+        </div>
+      );
+    }
+    return (
+      <div
+        key={`${item.hint}:${item.folderPath}`}
+        style={{ paddingLeft: indentOf(item.depth) }}
+        className="py-1 text-caption text-label-tertiary"
+      >
+        {hintText[item.hint]}
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-2 mt-3">
@@ -622,7 +684,7 @@ function WorkspaceFileTree() {
         {rootPath && (
           <Menu
             align="end"
-            onOpenChange={handleMenuOpenChange}
+            onOpenChange={handleHeaderMenuOpenChange}
             onCloseAutoFocus={handleHeaderMenuCloseAutoFocus}
             trigger={<IconButton size="sm" icon={AppIcons.more} label={t.panel.fileTree.moreActions} />}
           >
@@ -659,67 +721,23 @@ function WorkspaceFileTree() {
         <p className="py-1 text-ui-sm text-label-tertiary">{t.panel.fileTree.empty}</p>
       ) : (
         <ScrollArea className="flex-1 min-h-0">
-          <div className="pr-2 pb-2">
-            {items.map((item) => {
-              if (item.kind === 'row') {
-                const { entry } = item;
-                return (
-                  <TreeRow
-                    key={entry.path}
-                    path={entry.path}
-                    name={entry.name}
-                    isDirectory={entry.isDirectory}
-                    depth={item.depth}
-                    isExpanded={entry.isDirectory && expandedPaths.has(entry.path)}
-                    // Highlight the file currently open in the preview panel (files only).
-                    isActive={!entry.isDirectory && previewFilePath === entry.path}
-                    isRenaming={renamingPath === entry.path}
-                    toggleExpand={toggleExpand}
-                    openPreview={openPreview}
-                    renderMenu={renderRowMenu}
-                    onMenuOpenChange={handleMenuOpenChange}
-                    onMenuCloseAutoFocus={handleRowMenuCloseAutoFocus}
-                    onRenameSubmit={handleRenameSubmit}
-                    onRenameCancel={handleRenameCancel}
-                    onGone={handleRowGone}
-                  />
-                );
-              }
-              if (item.kind === 'create') {
-                return (
-                  <div
-                    key={`create:${item.folderPath}`}
-                    className="flex items-center gap-1"
-                    style={{ paddingLeft: indentOf(item.depth), paddingRight: BASE_PADDING_PX }}
-                  >
-                    <Icon
-                      icon={item.createKind === 'folder' ? AppIcons.newFolder : AppIcons.fileCreate}
-                      size="sm"
-                      className="text-label-tertiary"
-                    />
-                    <InlineNameInput
-                      placeholder={
-                        item.createKind === 'folder'
-                          ? t.panel.fileTree.newFolderPlaceholder
-                          : t.panel.fileTree.newFilePlaceholder
-                      }
-                      onSubmit={(name) => handleCreateSubmit(item.folderPath, item.createKind, name)}
-                      onCancel={() => setCreatingInFolder(null)}
-                    />
-                  </div>
-                );
-              }
-              return (
-                <div
-                  key={`${item.hint}:${item.folderPath}`}
-                  style={{ paddingLeft: indentOf(item.depth) }}
-                  className="py-1 text-caption text-label-tertiary"
-                >
-                  {hintText[item.hint]}
-                </div>
-              );
-            })}
-          </div>
+          <ContextMenu
+            content={menuTarget ? renderRowMenu(menuTarget) : null}
+            onOpenChange={handleRowMenuOpenChange}
+            onCloseAutoFocus={handleRowMenuCloseAutoFocus}
+          >
+            <div
+              className="pr-2 pb-2"
+              // The menu writes its open state on its trigger, and a changed attribute here
+              // makes the browser restyle every row below (60 ms with 2000 files). Nothing
+              // reads that attribute, so the list declines it.
+              data-state={undefined}
+              // Only a right-click that came through a row opens the menu.
+              onContextMenu={(event) => { if (rowRightClick.current !== event.nativeEvent) event.preventDefault(); }}
+            >
+              {items.map(renderItem)}
+            </div>
+          </ContextMenu>
         </ScrollArea>
       )}
     </div>

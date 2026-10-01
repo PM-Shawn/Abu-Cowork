@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
-import type { ComponentProps, ReactElement } from 'react';
+import type { ComponentProps } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
@@ -47,36 +47,35 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
   revealItemInDir: vi.fn().mockResolvedValue(undefined),
 }));
 
-// What each row's right-click menu was given, keyed by the row's path, to drive a menu
-// the way Radix does when it is reopened during its exit animation (happy-dom has no
-// animations), plus the renders of each row, the rows that have a menu mounted and the
-// close hooks that have run.
+// What the tree's menus were given, to drive a menu the way Radix does when it is opened
+// again before its close hook ran (happy-dom has no animations), plus the renders of each
+// row, the right-click menus that are mounted and the close hooks that have run.
 const HEADER_MENU = vi.hoisted(() => 'header menu');
+const ROW_MENU = vi.hoisted(() => 'row menu');
 const rowMenus = vi.hoisted(() => ({
   renders: [] as string[],
-  mounted: new Set<string>(),
+  instances: new Set<string>(),
   closeHooks: [] as string[],
+  closeHooksSeen: new Map<string, number>(),
   headerRenders: { count: 0 },
   fieldsRendered: [] as string[],
-  onOpenChange: new Map<string, ((open: boolean) => void) | undefined>(),
-  onCloseAutoFocus: new Map<string, ((event: Event) => void) | undefined>(),
+  rowMenuOpenChange: { current: undefined as ((open: boolean) => void) | undefined },
   itemSelect: new Map<string, ((event: Event) => void) | undefined>(),
 }));
 
 vi.mock('@/components/ds/context-menu', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/components/ds/context-menu')>();
+  const { useId } = await import('react');
   return {
     ...actual,
     ContextMenu: (props: ComponentProps<typeof actual.ContextMenu>) => {
-      const path = (props.children as ReactElement<{ title: string }>).props.title;
-      rowMenus.mounted.add(path);
-      rowMenus.onOpenChange.set(path, props.onOpenChange);
-      rowMenus.onCloseAutoFocus.set(path, props.onCloseAutoFocus);
+      rowMenus.instances.add(useId());
+      rowMenus.rowMenuOpenChange.current = props.onOpenChange;
       return actual.ContextMenu({
         ...props,
         onCloseAutoFocus: (event) => {
           props.onCloseAutoFocus?.(event);
-          rowMenus.closeHooks.push(path);
+          rowMenus.closeHooks.push(ROW_MENU);
         },
       });
     },
@@ -191,10 +190,13 @@ async function chooseFromHeaderMenu(user: UserEvent, label: string) {
   await user.click(await screen.findByText(label));
 }
 
-// Waits until the close hook of a menu (a row's path, or HEADER_MENU) has run and
-// whatever it started has rendered.
+// Waits until a close hook of a menu (ROW_MENU or HEADER_MENU) has run since the last
+// call for that menu, and whatever it started has rendered.
 async function closeHookRan(menu: string) {
-  await waitFor(() => expect(rowMenus.closeHooks).toContain(menu));
+  const seen = rowMenus.closeHooksSeen.get(menu) ?? 0;
+  const count = () => rowMenus.closeHooks.filter((name) => name === menu).length;
+  await waitFor(() => expect(count()).toBeGreaterThan(seen));
+  rowMenus.closeHooksSeen.set(menu, count());
   await act(async () => {});
 }
 
@@ -231,12 +233,12 @@ beforeEach(() => {
   useChatStore.setState({ activeConversationId: null, addPendingAttachment });
   useToastStore.setState({ toasts: [] });
   rowMenus.renders.length = 0;
-  rowMenus.mounted.clear();
+  rowMenus.instances.clear();
   rowMenus.closeHooks.length = 0;
+  rowMenus.closeHooksSeen.clear();
   rowMenus.headerRenders.count = 0;
   rowMenus.fieldsRendered.length = 0;
-  rowMenus.onOpenChange.clear();
-  rowMenus.onCloseAutoFocus.clear();
+  rowMenus.rowMenuOpenChange.current = undefined;
   rowMenus.itemSelect.clear();
 });
 
@@ -319,6 +321,36 @@ describe('WorkspaceFileTree file operations', () => {
       await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.deleteFailed, message: copy.invalidName }]));
       expect(invoke).not.toHaveBeenCalled();
       expect(closePreviewTabsForPath).not.toHaveBeenCalled();
+    });
+
+    // The guard belongs to the workspace the tree shows when the answer arrives.
+    it('refuses when the workspace changed while the question was open', async () => {
+      const user = userEvent.setup();
+      renderTree();
+
+      await chooseFromRowMenu(user, NOTES, copy.delete);
+      await screen.findByText(copy.confirmDelete);
+      patchTree({ rootPath: '/work/other' });
+      await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
+
+      await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.deleteFailed, message: copy.invalidName }]));
+      expect(invoke).not.toHaveBeenCalled();
+      expect(closePreviewTabsForPath).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the tree has gone while the question was open', async () => {
+      const user = userEvent.setup();
+      const view = renderTree();
+
+      fireEvent.contextMenu(row(NOTES));
+      await user.click(screen.getByRole('menuitem', { name: copy.delete }));
+      await screen.findByRole('alertdialog');
+      view.rerender(<DesignSystemProvider>{null}</DesignSystemProvider>);
+      await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
+
+      await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.deleteFailed, message: copy.invalidName }]));
+      expect(invoke).not.toHaveBeenCalled();
     });
 
     it('passes a Windows path through untouched when it is inside the workspace', async () => {
@@ -893,7 +925,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       fireEvent.contextMenu(row(NOTES));
       await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Escape}');
 
-      await closeHookRan(NOTES.path);
+      await closeHookRan(ROW_MENU);
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
       expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalled();
@@ -907,10 +939,10 @@ describe('WorkspaceFileTree menus and rows', () => {
 
       fireEvent.contextMenu(row(NOTES));
       act(() => rowMenus.itemSelect.get(copy.delete)?.(new Event('select')));
-      act(() => rowMenus.onOpenChange.get(NOTES.path)?.(true));
+      act(() => rowMenus.rowMenuOpenChange.current?.(true));
       await user.keyboard('{Escape}');
 
-      await closeHookRan(NOTES.path);
+      await closeHookRan(ROW_MENU);
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
       expect(screen.queryByText(copy.confirmDelete)).not.toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalled();
@@ -924,12 +956,12 @@ describe('WorkspaceFileTree menus and rows', () => {
       act(() => rowMenus.itemSelect.get(copy.delete)?.(new Event('select')));
       fireEvent.contextMenu(row(PLAN));
 
-      await closeHookRan(NOTES.path);
+      await closeHookRan(ROW_MENU);
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
 
       await user.keyboard('{Escape}');
 
-      await closeHookRan(PLAN.path);
+      await closeHookRan(ROW_MENU);
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalled();
     });
@@ -944,7 +976,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       // An open menu hides the rest of the page from assistive technology.
       await user.click(screen.getByRole('button', { name: copy.moreActions, hidden: true }));
 
-      await closeHookRan(NOTES.path);
+      await closeHookRan(ROW_MENU);
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
       expect(screen.getByRole('menu')).toBeInTheDocument();
 
@@ -955,60 +987,144 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect(invoke).not.toHaveBeenCalled();
     });
 
-    it('lets a row carry out only the choice made in its own menu', async () => {
+    it('acts on the row that was right-clicked last when a second row is right-clicked with the menu open', async () => {
       const user = userEvent.setup();
       renderTree();
 
-      // plan.md has had its menu open before, so its menu is mounted.
-      fireEvent.contextMenu(row(PLAN));
-      await user.keyboard('{Escape}');
-      await closeHookRan(PLAN.path);
-
       fireEvent.contextMenu(row(NOTES));
-      act(() => rowMenus.itemSelect.get(copy.delete)?.(new Event('select')));
-      // Another row's close hook runs while the choice for notes.md is still waiting.
-      const strayClose = new Event('close', { cancelable: true });
-      act(() => rowMenus.onCloseAutoFocus.get(PLAN.path)?.(strayClose));
+      fireEvent.contextMenu(row(DOCS));
 
-      expect(strayClose.defaultPrevented).toBe(false);
-      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(menuItemNames()).toEqual([copy.revealInFinder, copy.copyPath, copy.rename, copy.newFile, copy.newFolder, copy.delete]);
 
-      // The menu of notes.md closes for real: Delete was chosen there, so it asks.
-      await user.keyboard('{Escape}');
+      await user.click(screen.getByRole('menuitem', { name: copy.delete }));
 
       const dialog = await screen.findByRole('alertdialog', { name: copy.confirmDelete });
+      expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+      expect(dialog).toHaveTextContent('docs');
       await user.click(within(dialog).getByRole('button', { name: copy.moveToTrash }));
       await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
-      expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: NOTES.path });
+      expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: DOCS.path });
+    });
+
+    it('does not open for a right-click that is not on a row', async () => {
+      const user = userEvent.setup();
+      const empty: WorkspaceTreeEntry = { name: 'empty', path: '/work/site/empty', isDirectory: true, isSymlink: false };
+      setTree({
+        rootEntries: [DOCS, empty, NOTES],
+        expandedPaths: new Set([empty.path]),
+        childrenByPath: new Map([[empty.path, []]]),
+      });
+      renderTree();
+
+      // A row was right-clicked before, so the menu has a row to show if it opened.
+      fireEvent.contextMenu(row(NOTES));
+      await user.keyboard('{Escape}');
+      await closeHookRan(ROW_MENU);
+
+      const onHint = fireEvent.contextMenu(screen.getByText(copy.empty));
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      // The page's own menu is cancelled there, like on the rest of the list.
+      expect(onHint).toBe(false);
+
+      await chooseFromRowMenu(user, DOCS, copy.newFile);
+      const createField = await screen.findByPlaceholderText(copy.newFilePlaceholder);
+      const onCreateField = fireEvent.contextMenu(createField);
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      // A right-click in a name field is left to the field.
+      expect(onCreateField).toBe(true);
+      fireEvent.contextMenu(createField.parentElement as HTMLElement);
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      await user.keyboard('{Escape}');
+
+      await chooseFromRowMenu(user, NOTES, copy.rename);
+      const renameField = await screen.findByRole('textbox');
+      expect(fireEvent.contextMenu(renameField)).toBe(true);
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('opens for a context-menu event raised on the focused row', async () => {
+      const user = userEvent.setup();
+      renderTree();
+
+      act(() => row(NOTES).focus());
+      act(() => { row(NOTES).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+
+      expect(menuItemNames()).toEqual([copy.revealInFinder, copy.addToChat, copy.copyPath, copy.rename, copy.delete]);
+
+      await user.keyboard('{Escape}');
+      await closeHookRan(ROW_MENU);
+      expect(row(NOTES)).toHaveFocus();
     });
 
     // The watcher can take a file away while its menu is still open.
-    it('drops a pending Delete when the row goes away with its menu open', async () => {
+    it('does nothing for a Delete chosen for a row that has left the tree', async () => {
+      const user = userEvent.setup();
       renderTree();
 
       fireEvent.contextMenu(row(NOTES));
-      act(() => rowMenus.itemSelect.get(copy.delete)?.(new Event('select')));
       patchTree({ rootEntries: [DOCS, PLAN] });
+      await user.click(screen.getByRole('menuitem', { name: copy.delete }));
 
-      await closeHookRan(NOTES.path);
+      await closeHookRan(ROW_MENU);
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
       expect(screen.queryByText(copy.confirmDelete)).not.toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalled();
     });
 
-    it('drops a pending Rename when the row goes away with its menu open', async () => {
+    it('drops a pending Rename when the row leaves the tree, also when the file comes back', async () => {
+      const user = userEvent.setup();
       renderTree();
 
       fireEvent.contextMenu(row(NOTES));
       act(() => rowMenus.itemSelect.get(copy.rename)?.(new Event('select')));
       patchTree({ rootEntries: [DOCS, PLAN] });
-
-      await closeHookRan(NOTES.path);
       // The file comes back under the same path: it must not start in rename mode.
       patchTree({ rootEntries: [DOCS, NOTES, PLAN] });
+      await user.keyboard('{Escape}');
 
-      expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+      await closeHookRan(ROW_MENU);
+      expect(rowMenus.fieldsRendered).toEqual([]);
       expect(row(NOTES)).toBeInTheDocument();
+    });
+  });
+
+  describe('the delete question', () => {
+    it('names the file it is about and keeps its row marked while it is open', async () => {
+      const user = userEvent.setup();
+      renderTree();
+
+      await chooseFromRowMenu(user, NOTES, copy.delete);
+
+      const dialog = await screen.findByRole('alertdialog', { name: copy.confirmDelete });
+      expect(dialog).toHaveTextContent('notes.md');
+      expect(row(NOTES)).toHaveClass('bg-fill-hover');
+      expect(row(PLAN)).not.toHaveClass('bg-fill-hover');
+
+      await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(row(NOTES)).not.toHaveClass('bg-fill-hover'));
+    });
+
+    it('stays about the row it was asked for when another row is right-clicked afterwards', async () => {
+      const user = userEvent.setup();
+      renderTree();
+
+      await chooseFromRowMenu(user, NOTES, copy.delete);
+      const dialog = await screen.findByRole('alertdialog', { name: copy.confirmDelete });
+      fireEvent.contextMenu(row(PLAN));
+      await user.keyboard('{Escape}');
+      await closeHookRan(ROW_MENU);
+
+      expect(dialog).toHaveTextContent('notes.md');
+      expect(dialog).not.toHaveTextContent('plan.md');
+      expect(row(NOTES)).toHaveClass('bg-fill-hover');
+
+      await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: copy.moveToTrash }));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: NOTES.path });
     });
   });
 
@@ -1045,7 +1161,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       fireEvent.contextMenu(row(NOTES));
       await closeHookRan(HEADER_MENU);
       await user.keyboard('{Escape}');
-      await closeHookRan(NOTES.path);
+      await closeHookRan(ROW_MENU);
 
       // A field that showed up would lose the focus to the row menu and go away at once,
       // so the test looks at what was rendered.
@@ -1062,49 +1178,52 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect(notes.tagName).toBe('BUTTON');
     });
 
-    // Each mounted menu listens for every key press on the document, so a tree of
-    // thousands of files mounts a menu only for the rows that were right-clicked.
-    it('mounts the menu of a row with its first right-click', async () => {
+    // Each mounted menu listens for every key press on the document, so the tree has
+    // one right-click menu however many files it shows.
+    it('share one right-click menu, and a right-click leaves the row in place', async () => {
       const user = userEvent.setup();
       renderTree();
-      expect([...rowMenus.mounted]).toEqual([]);
+      const notes = row(NOTES);
+      const plan = row(PLAN);
 
-      fireEvent.contextMenu(row(NOTES));
+      for (const entry of [NOTES, PLAN, DOCS]) {
+        fireEvent.contextMenu(row(entry));
+        await user.keyboard('{Escape}');
+        await closeHookRan(ROW_MENU);
+      }
 
-      expect(menuItemNames()).toEqual([copy.revealInFinder, copy.addToChat, copy.copyPath, copy.rename, copy.delete]);
-      expect([...rowMenus.mounted]).toEqual([NOTES.path]);
-
-      await user.keyboard('{Escape}');
-      await closeHookRan(NOTES.path);
-      fireEvent.contextMenu(row(NOTES));
-
-      expect(screen.getAllByRole('menu')).toHaveLength(1);
-      expect([...rowMenus.mounted]).toEqual([NOTES.path]);
+      expect(rowMenus.instances.size).toBe(1);
+      expect(row(NOTES)).toBe(notes);
+      expect(row(PLAN)).toBe(plan);
     });
 
-    it('keeps the keyboard focus on a row across its first right-click', async () => {
-      const user = userEvent.setup();
+    // A state attribute on the list would make the browser restyle every row at each
+    // opening and closing of the menu.
+    it('sit in a list that carries no menu state', () => {
       renderTree();
+      const list = row(NOTES).parentElement as HTMLElement;
+      expect(list).not.toHaveAttribute('data-state');
 
-      act(() => row(NOTES).focus());
       fireEvent.contextMenu(row(NOTES));
+
       expect(screen.getByRole('menu')).toBeInTheDocument();
-      await user.keyboard('{Escape}');
-
-      await closeHookRan(NOTES.path);
-      expect(row(NOTES)).toHaveFocus();
+      expect(list).not.toHaveAttribute('data-state');
     });
 
-    it('leaves the focus where it was when a row without it is right-clicked', async () => {
+    it('carry the hover fill while the menu is about them', async () => {
       const user = userEvent.setup();
       renderTree();
 
-      act(() => row(PLAN).focus());
       fireEvent.contextMenu(row(NOTES));
-      await user.keyboard('{Escape}');
+      expect(row(NOTES)).toHaveClass('bg-fill-hover');
+      expect(row(PLAN)).not.toHaveClass('bg-fill-hover');
 
-      await closeHookRan(NOTES.path);
-      expect(row(PLAN)).toHaveFocus();
+      fireEvent.contextMenu(row(PLAN));
+      expect(row(PLAN)).toHaveClass('bg-fill-hover');
+      expect(row(NOTES)).not.toHaveClass('bg-fill-hover');
+
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(row(PLAN)).not.toHaveClass('bg-fill-hover'));
     });
 
     it('marks the previewed file and nothing else', () => {
@@ -1159,6 +1278,14 @@ describe('WorkspaceFileTree menus and rows', () => {
       const added: WorkspaceTreeEntry = { name: 'added.md', path: '/work/site/added.md', isDirectory: false, isSymlink: false };
       patchTree({ rootEntries: [DOCS, added, NOTES, PLAN] });
       expect(rowMenus.renders).toEqual([added.path]);
+
+      // The menu opens on a row: that row. It moves to another row: those two rows.
+      rowMenus.renders.length = 0;
+      fireEvent.contextMenu(row(GUIDE));
+      expect(rowMenus.renders).toEqual([GUIDE.path]);
+      rowMenus.renders.length = 0;
+      fireEvent.contextMenu(row(DOCS));
+      expect([...rowMenus.renders].sort()).toEqual([DOCS.path, GUIDE.path].sort());
     });
 
     it('renders neither the rows nor the header menu when the sidebar around the tree renders again', () => {

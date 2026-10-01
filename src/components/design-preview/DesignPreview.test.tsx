@@ -54,8 +54,11 @@ describe('DesignPreview', () => {
     root.style.setProperty('--ds-focus', '#111111');
     try {
       render(<DesignPreview />);
-      for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft']) {
+      for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft', 'page-canvas']) {
         expect(document.querySelector(`[data-token="${name}"]`), name).not.toBeNull();
+      }
+      for (const name of ['selection', 'page-selection']) {
+        expect(document.querySelector(`[data-preview-selection] [data-token="${name}"] [data-token-value]`), name).not.toBeNull();
       }
       for (const name of ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property']) {
         expect(document.querySelector(`[data-preview-syntax] [data-token="${name}"] [data-token-value]`), name).not.toBeNull();

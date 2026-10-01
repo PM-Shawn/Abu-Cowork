@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { normalizeSlideBackgrounds } from './PptxPreview';
+import { normalizeSlideBackgrounds } from './pptxSlideBackground';
 
 function makeWrapper(index: number, bg?: string): HTMLDivElement {
   const el = document.createElement('div');

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent, { PointerEventsCheckLevel } from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
@@ -129,6 +129,46 @@ describe('Menu', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument();
   });
 
+  it('names a described menu item by its first line and describes it with the second', async () => {
+    const user = userEvent.setup();
+    render(
+      <Menu trigger={<Button>Versions</Button>}>
+        <MenuItem icon={AppIcons.history} shortcut="⌘Z" description="Before AI edit · 2.1 KB">10:24:31</MenuItem>
+        <MenuItem icon={AppIcons.copy} shortcut="⌘C">Plain</MenuItem>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Versions' }));
+    const item = screen.getByRole('menuitem', { name: /10:24:31/ });
+    expect(within(item).getByText('10:24:31')).toBeVisible();
+    expect(item).not.toHaveAccessibleName(/Before AI edit/);
+    expect(item).toHaveAccessibleDescription('Before AI edit · 2.1 KB');
+    expect(screen.getByText('Before AI edit · 2.1 KB')).toBeVisible();
+    expect(item).toHaveClass('h-auto');
+    expect(item).not.toHaveClass('h-6');
+    // The icon and the shortcut sit level with the first line, not at the top edge of the row.
+    expect(item.querySelector('svg')).toHaveClass('mt-0.5');
+    expect(within(item).getByText('⌘Z')).toHaveClass('mt-0.5');
+    const plain = screen.getByRole('menuitem', { name: /Plain/ });
+    expect(plain).not.toHaveAttribute('aria-describedby');
+    expect(plain).not.toHaveClass('h-auto');
+    expect(plain).toHaveClass('h-6');
+    expect(plain.querySelector('svg')).not.toHaveClass('mt-0.5');
+    expect(within(plain).getByText('⌘C')).not.toHaveClass('mt-0.5');
+  });
+
+  it('describes an item inside a ContextMenu too', async () => {
+    render(
+      <ContextMenu content={<MenuItem icon={AppIcons.history} description="Before AI edit · 2.1 KB">10:24:31</MenuItem>}>
+        <div>Message body</div>
+      </ContextMenu>,
+      { wrapper: DesignSystemProvider },
+    );
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    const item = await screen.findByRole('menuitem', { name: '10:24:31' });
+    expect(item).toHaveAccessibleDescription('Before AI edit · 2.1 KB');
+  });
+
   it('colors a destructive item and its icon', async () => {
     const user = userEvent.setup();
     render(<TaskMenu onRename={() => undefined} />, { wrapper: DesignSystemProvider });
@@ -193,6 +233,38 @@ describe('Menu', () => {
     expect(screen.getByRole('menu')).toHaveClass('origin-(--radix-dropdown-menu-content-transform-origin)');
   });
 
+  // A long list must not run past the window edge: the panel takes the room Radix measures and scrolls.
+  it('never grows taller than the room the window leaves, and scrolls instead', async () => {
+    const user = userEvent.setup();
+    render(<TaskMenu onRename={() => undefined} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const menu = screen.getByRole('menu');
+    expect(menu).toHaveClass('max-h-(--radix-dropdown-menu-content-available-height)');
+    expect(menu).toHaveClass('overflow-y-auto');
+  });
+
+  it('shows a native hint on an item that carries a title, in both kinds of menu', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <Menu trigger={<Button>Versions</Button>}>
+          <MenuItem title="Revert to this version">10:00:00</MenuItem>
+          <MenuItem>10:00:01</MenuItem>
+        </Menu>
+        <ContextMenu content={<MenuItem title="Copy the text">Copy</MenuItem>}>
+          <div>Message body</div>
+        </ContextMenu>
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Versions' }));
+    expect(screen.getByRole('menuitem', { name: '10:00:00' })).toHaveAttribute('title', 'Revert to this version');
+    expect(screen.getByRole('menuitem', { name: '10:00:01' })).not.toHaveAttribute('title');
+    await user.keyboard('{Escape}');
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(screen.getByRole('menuitem', { name: 'Copy' })).toHaveAttribute('title', 'Copy the text');
+  });
+
   it('refuses items outside a menu', () => {
     expect(() => render(<MenuItem>Orphan</MenuItem>)).toThrow(/inside <Menu> or <ContextMenu>/);
   });
@@ -220,6 +292,8 @@ describe('ContextMenu', () => {
     expect(menu).toHaveTextContent('Message');
     expect(menu.querySelector('[role="separator"]')).not.toBeNull();
     expect(menu).toHaveClass('origin-(--radix-context-menu-content-transform-origin)');
+    expect(menu).toHaveClass('max-h-(--radix-context-menu-content-available-height)');
+    expect(menu).toHaveClass('overflow-y-auto');
   });
 
   it('closes when another popover opens, and opens again on the next right-click', () => {
@@ -342,6 +416,71 @@ describe('onCloseAutoFocus', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
     await act(() => vi.runOnlyPendingTimersAsync());
     expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
+  });
+
+  // Radix keeps the content mounted while it animates out, and a second right-click in
+  // that time would reuse it where it stood. Every opening gets content of its own.
+  it('gives a ContextMenu opened again new content, which keeps the focus', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const seen: boolean[] = [];
+    render(<FocusField kind="context" onClose={(event) => seen.push(event.defaultPrevented)} />, { wrapper: DesignSystemProvider });
+    const target = screen.getByText('Message body');
+    act(() => target.focus());
+    fireEvent.contextMenu(target);
+    const first = screen.getByRole('menu');
+
+    fireEvent.contextMenu(target);
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    const second = screen.getByRole('menu');
+    expect(screen.getAllByRole('menu')).toHaveLength(1);
+    expect(second).not.toBe(first);
+    // The replaced content closed without taking the focus back from the new one.
+    expect(seen).toEqual([true]);
+    expect(second.contains(document.activeElement)).toBe(true);
+
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    // The focus goes back to the element that had it before the first opening; the
+    // caller's hook saw an event it could still have prevented.
+    expect(seen).toEqual([true, false]);
+    expect(target).toHaveFocus();
+  });
+
+  it('leaves the focus to a caller that takes it after a ContextMenu was opened again', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<FocusField kind="context" onClose={focusTitle} />, { wrapper: DesignSystemProvider });
+    const target = screen.getByText('Message body');
+    act(() => target.focus());
+    fireEvent.contextMenu(target);
+    fireEvent.contextMenu(target);
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
+  });
+
+  it('gives the focus back as before when a ContextMenu was opened once', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const seen: boolean[] = [];
+    render(<FocusField kind="context" onClose={(event) => seen.push(event.defaultPrevented)} />, { wrapper: DesignSystemProvider });
+    const target = screen.getByText('Message body');
+    act(() => target.focus());
+    fireEvent.contextMenu(target);
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    // Closed, then opened again by a new right-click: a new session, not a reopening.
+    act(() => screen.getByRole('textbox', { name: 'Title' }).focus());
+    fireEvent.contextMenu(target);
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(seen).toEqual([false, false]);
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
   });
 });

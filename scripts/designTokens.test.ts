@@ -65,11 +65,17 @@ function over(values: Map<string, string>, top: string, bottom: string): Color {
   return blend([color(values, bottom), color(values, top)], 'normal');
 }
 
+// Layers painted bottom to top.
+function stack(values: Map<string, string>, ...layers: string[]): Color {
+  return blend(layers.map((layer) => color(values, layer)), 'normal');
+}
+
 const APPEARANCES: Appearance[] = ['light', 'dark', 'light-contrast', 'dark-contrast'];
 const TEXT = ['label', 'label-secondary', 'label-tertiary', 'link', 'success', 'warning', 'danger', 'info'];
 const SURFACES = ['surface', 'raised', 'code', 'field', 'desk-solid'];
 const STATUS = ['success', 'warning', 'danger', 'info'];
 const SYNTAX = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property'];
+const SELECTION_BASES = ['surface', 'code'];
 
 describe('design tokens — completeness', () => {
   it('overrides every semantic light token in dark', () => {
@@ -160,5 +166,71 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
   // The user's own message sits on a fill over the content card.
   it.each(['label', 'label-secondary'])('%s on fill over surface is at least 4.5:1', (text) => {
     expect(wcagContrast(color(values, text), over(values, 'fill', 'surface'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // Selected text in the terminal, the source editor and document previews sits on the panel
+  // surface or on a code block. Selection is a transient state: primary text keeps 4.5:1, and
+  // secondary text and code highlighting keep 3:1, the bar the spec sets for placeholder and focus.
+  it.each(SELECTION_BASES)('label on selection over %s is at least 4.5:1', (base) => {
+    expect(wcagContrast(color(values, 'label'), over(values, 'selection', base))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(['label-secondary', ...SYNTAX].flatMap((text) => SELECTION_BASES.map((base) => [text, base] as const)))(
+    '%s on selection over %s is at least 3:1',
+    (text, base) => {
+      expect(wcagContrast(color(values, text), over(values, 'selection', base))).toBeGreaterThanOrEqual(3);
+    },
+  );
+
+  it.each(SELECTION_BASES)('selection stands out from the %s it sits on', (base) => {
+    expect(wcagContrast(over(values, 'selection', base), color(values, base))).toBeGreaterThanOrEqual(1.3);
+  });
+
+  // Web pages and Word pages bring their own dark text; their paper stays white.
+  it('page canvas keeps default page text readable', () => {
+    expect(wcagContrast(parse('#000000')!, color(values, 'page-canvas'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // White paper needs a dark selection in every appearance; the panel selection is light in dark.
+  it('page selection stands out from the page canvas', () => {
+    expect(wcagContrast(over(values, 'page-selection', 'page-canvas'), color(values, 'page-canvas'))).toBeGreaterThanOrEqual(1.3);
+  });
+
+  it('page selection keeps default page text readable', () => {
+    expect(wcagContrast(parse('#000000')!, over(values, 'page-selection', 'page-canvas'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // The source editor paints highlight colors on the panel surface.
+  it.each(SYNTAX)('%s on surface is at least 4.5:1', (token) => {
+    expect(wcagContrast(color(values, token), color(values, 'surface'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // The line being edited is where the user reads most: it keeps the full text bar.
+  it.each(['label', 'label-secondary', 'link', 'success', 'danger', ...SYNTAX])('%s on the editor active line is at least 4.5:1', (text) => {
+    expect(wcagContrast(color(values, text), stack(values, 'surface', 'fill-hover'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // CodeMirror paints the active line over the selection, so selected text on that line sits
+  // on both fills. Word and bracket matches sit on the match fill, on the active line or off it.
+  it.each([
+    ['selection on the active line', ['surface', 'selection', 'fill-hover']],
+    ['a match on the active line', ['surface', 'fill-hover', 'fill-selected']],
+  ] as const)('label on %s is at least 4.5:1', (_name, layers) => {
+    expect(wcagContrast(color(values, 'label'), stack(values, ...layers))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(['label-secondary', 'link', 'success', 'danger', ...SYNTAX].flatMap((text) => [
+    [text, 'selection on the active line', ['surface', 'selection', 'fill-hover']] as const,
+    [text, 'a match on the active line', ['surface', 'fill-hover', 'fill-selected']] as const,
+    // Folded-code placeholders and snippet fields are a fill; a bracket without a partner is a soft danger fill.
+    [text, 'a fold placeholder on the active line', ['surface', 'fill-hover', 'fill']] as const,
+    [text, 'an unmatched bracket on the active line', ['surface', 'fill-hover', 'danger-soft']] as const,
+  ]))('%s on %s is at least 3:1', (text, _name, layers) => {
+    expect(wcagContrast(color(values, text), stack(values, ...layers))).toBeGreaterThanOrEqual(3);
+  });
+
+  // The editor's completion list is a floating layer; its current row is a selected fill.
+  it('label on the selected row of a floating list is at least 4.5:1', () => {
+    expect(wcagContrast(color(values, 'label'), stack(values, 'raised', 'fill-selected'))).toBeGreaterThanOrEqual(4.5);
   });
 });

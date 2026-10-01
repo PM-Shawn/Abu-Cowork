@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { Profiler } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowserTab from './BrowserTab';
 import { initLanguage } from '@/i18n';
@@ -16,7 +16,7 @@ import {
   requestCapabilitySetup,
   resolveCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { DesignSystemProvider } from '@/components/ds/provider';
 
 const invoke = vi.fn();
 const listen = vi.fn();
@@ -32,6 +32,14 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
 vi.mock('@/utils/platform', () => ({
   isMacOS: () => true,
 }));
+
+function renderTab(tabId: string, url: string) {
+  return render(
+    <DesignSystemProvider>
+      <BrowserTab tabId={tabId} url={url} />
+    </DesignSystemProvider>,
+  );
+}
 
 describe('BrowserTab native overlay visibility', () => {
   beforeEach(() => {
@@ -92,14 +100,14 @@ describe('BrowserTab native overlay visibility', () => {
 
   it('restores a failed handover as retryable failure instead of human control', async () => {
     invoke.mockImplementation(async (command) => command === 'browser_control' ? 'yield-failed' : undefined);
-    const { getByRole } = render(<TooltipProvider><BrowserTab tabId="failed-handoff" url="https://example.com/" /></TooltipProvider>);
-    await waitFor(() => expect(getByRole('status')).toHaveTextContent('Could not change control'));
+    const { getByRole } = render(<DesignSystemProvider><BrowserTab tabId="failed-handoff" url="https://example.com/" /></DesignSystemProvider>);
+    await waitFor(() => expect(getByRole('alert')).toHaveTextContent('Could not change control'));
     expect(getByRole('button', { name: 'Take control' })).toBeEnabled();
   });
 
   it('keeps the document while taking and returning control through the host', async () => {
     invoke.mockImplementation(async (command, args) => command === 'browser_control' ? (args.action === 'take' ? 'human' : 'ai') : undefined);
-    const { getByRole } = render(<TooltipProvider><BrowserTab tabId="handoff" url="https://example.com/" /></TooltipProvider>);
+    const { getByRole } = render(<DesignSystemProvider><BrowserTab tabId="handoff" url="https://example.com/" /></DesignSystemProvider>);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('browser_control', { id: 'handoff' }));
     const before = invoke.mock.calls.filter(([command]) => ['browser_create', 'browser_navigate', 'browser_reload'].includes(command)).length;
     fireEvent.click(getByRole('button', { name: 'Take control' }));
@@ -111,7 +119,7 @@ describe('BrowserTab native overlay visibility', () => {
   });
 
   it('shows and dismisses a host-reported blocked popup without replaying navigation', async () => {
-    const { getByRole, queryByRole } = render(<TooltipProvider><BrowserTab tabId="popup-notice" url="https://example.com/" /></TooltipProvider>);
+    const { getByRole, queryByRole } = render(<DesignSystemProvider><BrowserTab tabId="popup-notice" url="https://example.com/" /></DesignSystemProvider>);
     await waitFor(() => expect(listen).toHaveBeenCalledWith('browser://popup-blocked/popup-notice', expect.any(Function)));
     const handler = listen.mock.calls.find(([event]) => event === 'browser://popup-blocked/popup-notice')![1] as () => void;
     const priorNavigations = invoke.mock.calls.filter(([command]) => command === 'browser_navigate').length;
@@ -124,12 +132,12 @@ describe('BrowserTab native overlay visibility', () => {
 
   it('hides the native view for an active-conversation approval and restores it afterwards', async () => {
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-approval-regression"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -174,12 +182,12 @@ describe('BrowserTab native overlay visibility', () => {
 
   it('hides the native view while the image lightbox is open and restores it on close', async () => {
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-image-lightbox"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -220,12 +228,12 @@ describe('BrowserTab native overlay visibility', () => {
     ));
 
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-lightbox-capture-handoff"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
@@ -288,12 +296,12 @@ describe('BrowserTab native overlay visibility', () => {
     });
 
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-created-under-lightbox"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -311,14 +319,13 @@ describe('BrowserTab native overlay visibility', () => {
     // hover since tooltips fire far more often than menu opens. The actual
     // fix renders the tooltip upward (`side="top"`) so it never overlaps the
     // native view's rect in the first place — no hide/show needed at all.
-    const user = userEvent.setup();
     const view = render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-toolbar-tooltip"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -328,21 +335,18 @@ describe('BrowserTab native overlay visibility', () => {
     });
     invoke.mockClear();
 
-    const backButton = view.getAllByRole('button')[0];
-    await user.hover(backButton);
-
-    const tooltip = await view.findByRole('tooltip', { name: 'Back' });
-    expect(tooltip.closest('[data-side]')).toHaveAttribute('data-side', 'top');
-
-    await user.unhover(backButton);
-    // happy-dom returns zero-sized bounding rects, which can make Radix's
-    // hoverable-content grace area think the pointer never left after a
-    // synthetic unhover. Force it with an explicit far-away pointermove —
-    // see the equivalent note in TabStrip.test.tsx's tooltip test.
-    fireEvent.pointerMove(document.body, { clientX: 9999, clientY: 9999 });
-    await waitFor(() => {
-      expect(view.queryByRole('tooltip', { name: 'Back' })).not.toBeInTheDocument();
-    });
+    // Every toolbar tooltip, not only the first: each one sits above the native view.
+    for (const name of ['Back', 'Forward', 'Reload', 'Open in system browser', 'Select element']) {
+      const button = view.getByRole('button', { name });
+      // A design-system tooltip opens at once on keyboard focus.
+      act(() => button.focus());
+      const tooltip = await view.findByRole('tooltip', { name });
+      expect(tooltip.closest('[data-side]')).toHaveAttribute('data-side', 'top');
+      act(() => button.blur());
+      await waitFor(() => {
+        expect(view.queryByRole('tooltip', { name })).not.toBeInTheDocument();
+      });
+    }
 
     expect(invoke).not.toHaveBeenCalledWith('browser_hide', expect.anything());
     expect(invoke).not.toHaveBeenCalledWith('browser_show', expect.anything());
@@ -350,12 +354,12 @@ describe('BrowserTab native overlay visibility', () => {
 
   it('hides the native view for task-local capability setup and restores it afterwards', async () => {
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-capability-setup"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -403,12 +407,12 @@ describe('BrowserTab native overlay visibility', () => {
     ));
 
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-create-approval-race"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.anything());
@@ -461,12 +465,12 @@ describe('BrowserTab native overlay visibility', () => {
     });
 
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-created-under-setup"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -486,12 +490,12 @@ describe('BrowserTab native overlay visibility', () => {
 
   it('retries a failed native hide instead of treating the view as hidden', async () => {
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-hide-retry"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.anything());
@@ -539,12 +543,12 @@ describe('BrowserTab native overlay visibility', () => {
     });
 
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-create-retry"
           url="https://example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -564,12 +568,12 @@ describe('BrowserTab native overlay visibility', () => {
     });
 
     const view = render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab
           tabId="browser-create-retry-latest-url"
           url="https://old.example.com"
         />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await act(async () => {
@@ -615,9 +619,9 @@ describe('BrowserTab native overlay visibility', () => {
     });
 
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab tabId="browser-adopted-hidden" url="https://example.com" />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -632,9 +636,9 @@ describe('BrowserTab native overlay visibility', () => {
 
   it('still creates a visible tab at its real rect (the fallback never overrides a laid-out placeholder)', async () => {
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab tabId="browser-visible-rect" url="https://example.com" />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -649,9 +653,9 @@ describe('BrowserTab native overlay visibility', () => {
 
   it('hides the native view on unmount instead of destroying it', async () => {
     const { unmount } = render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <BrowserTab tabId="browser-unmount-keepalive" url="https://example.com" />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
 
     await waitFor(() => {
@@ -677,9 +681,9 @@ describe('BrowserTab native overlay visibility', () => {
   describe('N3 — React-layer takeover signal (browser_note_user_interaction)', () => {
     async function renderReadyTab(tabId: string) {
       const view = render(
-        <TooltipProvider>
+        <DesignSystemProvider>
           <BrowserTab tabId={tabId} url="https://example.com" />
-        </TooltipProvider>,
+        </DesignSystemProvider>,
       );
       await waitFor(() => {
         expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: tabId }));
@@ -796,9 +800,9 @@ describe('BrowserTab native overlay visibility', () => {
         return Promise.resolve(() => {});
       });
       const view = render(
-        <TooltipProvider>
+        <DesignSystemProvider>
           <BrowserTab tabId={tabId} url="https://example.com" />
-        </TooltipProvider>,
+        </DesignSystemProvider>,
       );
       await waitFor(() => {
         expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: tabId }));
@@ -908,6 +912,417 @@ describe('BrowserTab native overlay visibility', () => {
       // Escape reveals the committed URL the tab actually tracked underneath.
       fireEvent.keyDown(input, { key: 'Escape' });
       expect(input.value).toBe('https://agent-went-here.example.com/page');
+    });
+  });
+
+  describe('toolbar', () => {
+    const TOOLBAR_NAMES = ['Back', 'Forward', 'Reload', 'Open in system browser', 'Select element'];
+
+    async function renderLoadedTab(tabId: string) {
+      const view = renderTab(tabId, 'https://example.com');
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: tabId }));
+      });
+      return view;
+    }
+
+    it('names the five icon buttons and keeps back, forward and reload first', async () => {
+      const view = await renderLoadedTab('browser-toolbar-names');
+
+      for (const name of TOOLBAR_NAMES) {
+        const button = view.getByRole('button', { name });
+        expect(button).toBeEnabled();
+        // The name comes from the button itself; a native title would add a second tooltip.
+        expect(button).not.toHaveAttribute('title');
+      }
+      const [first, second, third] = view.container.querySelectorAll('button');
+      expect(first).toHaveAccessibleName('Back');
+      expect(second).toHaveAccessibleName('Forward');
+      expect(third).toHaveAccessibleName('Reload');
+    });
+
+    it('keeps the names of the disabled buttons of an empty tab', () => {
+      const view = renderTab('browser-toolbar-empty', '');
+
+      for (const name of TOOLBAR_NAMES) {
+        expect(view.getByRole('button', { name })).toBeDisabled();
+      }
+      expect(view.getByRole('button', { name: 'Take control' })).toBeDisabled();
+    });
+
+    it('marks the element picker as pressed while it is on', async () => {
+      const view = await renderLoadedTab('browser-toolbar-inspect');
+      const picker = view.getByRole('button', { name: 'Select element' });
+      expect(picker).toHaveAttribute('aria-pressed', 'false');
+
+      fireEvent.click(picker);
+
+      await waitFor(() => expect(picker).toHaveAttribute('aria-pressed', 'true'));
+      expect(invoke).toHaveBeenCalledWith('browser_inspect_set', expect.objectContaining({
+        id: 'browser-toolbar-inspect',
+        enabled: true,
+      }));
+
+      fireEvent.click(picker);
+      await waitFor(() => expect(picker).toHaveAttribute('aria-pressed', 'false'));
+    });
+
+    it('hands the element picker the design-system colours', async () => {
+      const root = document.documentElement;
+      const tokens: Record<string, string> = {
+        '--ds-raised': 'rgb(1, 1, 1)',
+        '--ds-fill-hover': 'rgb(2, 2, 2)',
+        '--ds-separator': 'rgb(3, 3, 3)',
+        '--ds-label': 'rgb(4, 4, 4)',
+        '--ds-label-tertiary': 'rgb(5, 5, 5)',
+        '--ds-danger': 'rgb(6, 6, 6)',
+      };
+      for (const [name, value] of Object.entries(tokens)) root.style.setProperty(name, value);
+      try {
+        const view = await renderLoadedTab('browser-toolbar-theme');
+
+        fireEvent.click(view.getByRole('button', { name: 'Select element' }));
+
+        await waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith('browser_inspect_set', expect.objectContaining({ enabled: true }));
+        });
+        const [, args] = invoke.mock.calls.find(([command]) => command === 'browser_inspect_set')!;
+        expect(args.labels.theme).toEqual({
+          bgBase: 'rgb(1, 1, 1)',
+          bgHover: 'rgb(2, 2, 2)',
+          borderSubtle: 'rgb(3, 3, 3)',
+          textPrimary: 'rgb(4, 4, 4)',
+          textTertiary: 'rgb(5, 5, 5)',
+          danger: 'rgb(6, 6, 6)',
+        });
+      } finally {
+        for (const name of Object.keys(tokens)) root.style.removeProperty(name);
+      }
+    });
+
+    it('shows the start prompt on the panel card colour until a page is committed', () => {
+      const view = renderTab('browser-toolbar-start', '');
+
+      const prompt = view.getByText('Enter a URL to start');
+      expect(view.container.querySelector('.bg-surface')).toContainElement(prompt);
+    });
+
+    it('subscribes to neither messages nor other tabs', async () => {
+      const conversationsBefore = useChatStore.getState().conversations;
+      let commits = 0;
+      render(
+        <DesignSystemProvider>
+          <Profiler id="browser-tab" onRender={() => { commits += 1; }}>
+            <BrowserTab tabId="browser-toolbar-renders" url="https://example.com" />
+          </Profiler>
+        </DesignSystemProvider>,
+      );
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: 'browser-toolbar-renders' }));
+      });
+      await act(async () => { await Promise.resolve(); });
+      const before = commits;
+      expect(before).toBeGreaterThan(0);
+
+      try {
+        for (const text of ['Once', 'Once upon', 'Once upon a time']) {
+          act(() => {
+            useChatStore.setState({
+              conversations: {
+                'active-conversation': {
+                  id: 'active-conversation',
+                  title: 'Streaming',
+                  messages: [{ id: 'm1', role: 'assistant', content: text, timestamp: 1 }],
+                  createdAt: 1,
+                  updatedAt: 1,
+                  status: 'running',
+                },
+              },
+            } as never);
+          });
+          act(() => usePreviewStore.getState().updateBrowserUrl('some-other-tab', `https://other.example.com/${text.length}`));
+        }
+
+        expect(commits).toBe(before);
+      } finally {
+        act(() => useChatStore.setState({ conversations: conversationsBefore }));
+      }
+    });
+  });
+
+  describe('control and popup notices', () => {
+    type ControlHandler = (event: { payload: string }) => void;
+
+    async function renderWithControl(tabId: string) {
+      const handlers = new Map<string, (event: never) => void>();
+      listen.mockImplementation((event: string, handler: (e: never) => void) => {
+        handlers.set(event, handler);
+        return Promise.resolve(() => {});
+      });
+      const view = renderTab(tabId, 'https://example.com');
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('browser_control', { id: tabId }));
+      await waitFor(() => expect(handlers.has(`browser://control/${tabId}`)).toBe(true));
+      const setPhase = (phase: string) => {
+        act(() => (handlers.get(`browser://control/${tabId}`) as ControlHandler)({ payload: phase }));
+      };
+      const blockPopup = () => {
+        act(() => (handlers.get(`browser://popup-blocked/${tabId}`) as () => void)());
+      };
+      return { view, setPhase, blockPopup };
+    }
+
+    it('shows no notice while Abu drives the page', async () => {
+      const { view } = await renderWithControl('browser-notice-none');
+
+      expect(view.queryByRole('status')).toBeNull();
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('tells the user in place that they are in control, with a still icon', async () => {
+      const { view, setPhase } = await renderWithControl('browser-notice-human');
+
+      setPhase('human');
+
+      const notice = view.getByRole('status');
+      expect(notice).toHaveTextContent('You are in control. Hand the page back when you are ready for Abu to continue.');
+      expect(notice).toHaveClass('bg-info-soft');
+      expect(notice.querySelector('svg')).not.toBeNull();
+      expect(view.container.querySelector('[data-ds-spinner]')).toBeNull();
+      expect(view.getByRole('button', { name: 'Hand back to Abu' })).toBeEnabled();
+    });
+
+    it('shows one spinner with the sentence while Abu\'s current action is being finished', async () => {
+      const { view, setPhase } = await renderWithControl('browser-notice-yielding');
+
+      // The host enters this phase from `ai`, when the user asks for control.
+      setPhase('yielding');
+
+      expect(view.container.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+      const status = view.getByRole('status');
+      expect(status).toHaveTextContent('Finishing the current action…');
+      expect(status).toContainElement(view.container.querySelector('[data-ds-spinner]') as HTMLElement);
+      expect(view.queryByText(/You are in control/)).toBeNull();
+      // The control button keeps its existing wording and stays unavailable.
+      expect(view.getByRole('button', { name: 'Finishing the current action…' })).toBeDisabled();
+    });
+
+    it('announces a failed control change as an alert and lets the user retry', async () => {
+      const { view, setPhase } = await renderWithControl('browser-notice-failed');
+
+      setPhase('yield-failed');
+
+      const alert = view.getByRole('alert');
+      expect(alert).toHaveTextContent('Could not change control. Try again.');
+      expect(alert).toHaveClass('bg-danger-soft');
+      expect(view.queryByRole('status')).toBeNull();
+      expect(view.container.querySelector('[data-ds-spinner]')).toBeNull();
+      expect(view.getByRole('button', { name: 'Take control' })).toBeEnabled();
+    });
+
+    it('shows a failed control request as an alert', async () => {
+      const { view } = await renderWithControl('browser-notice-rejected');
+      invoke.mockImplementation(async (command: string, args?: { action?: string }) => {
+        if (command === 'browser_control' && args?.action) throw new Error('host refused');
+        return undefined;
+      });
+
+      fireEvent.click(view.getByRole('button', { name: 'Take control' }));
+
+      await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('Could not change control. Try again.'));
+      expect(view.getByRole('button', { name: 'Take control' })).toBeEnabled();
+    });
+
+    it('keeps the dismiss button inside the blocked-popup notice', async () => {
+      const { view, blockPopup } = await renderWithControl('browser-notice-popup');
+
+      blockPopup();
+
+      const notice = view.getByRole('status');
+      expect(notice).toHaveTextContent('Popup blocked. Keep the current page open and avoid submitting again.');
+      expect(notice).toHaveClass('bg-warning-soft');
+      const dismiss = view.getByRole('button', { name: 'Dismiss hint' });
+      expect(notice).toContainElement(dismiss);
+
+      fireEvent.click(dismiss);
+
+      expect(view.queryByRole('status')).toBeNull();
+      expect(view.queryByRole('button', { name: 'Dismiss hint' })).toBeNull();
+    });
+
+    it('stacks the control notice above the blocked-popup notice, between the toolbar and the page', async () => {
+      const { view, setPhase, blockPopup } = await renderWithControl('browser-notice-both');
+
+      setPhase('human');
+      blockPopup();
+
+      const notices = view.getAllByRole('status');
+      expect(notices).toHaveLength(2);
+      expect(notices[0]).toHaveTextContent(/You are in control/);
+      expect(notices[1]).toHaveTextContent(/Popup blocked/);
+      const strip = notices[0].parentElement as HTMLElement;
+      expect(strip).toContainElement(notices[1]);
+      const toolbar = view.getByRole('button', { name: 'Back' }).parentElement as HTMLElement;
+      expect(strip.previousElementSibling).toBe(toolbar);
+      expect(strip.nextElementSibling).toHaveClass('bg-surface');
+    });
+  });
+
+  // The address bar's keyboard and URL handling, pinned so a change of the input
+  // component cannot alter what the user's typing does.
+  describe('address bar keyboard and URL handling', () => {
+    const navigations = () => invoke.mock.calls.filter(
+      ([command]) => command === 'browser_create' || command === 'browser_navigate',
+    );
+
+    async function renderLoadedTab(tabId: string) {
+      const view = renderTab(tabId, 'https://example.com');
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: tabId }));
+      });
+      invoke.mockClear();
+      return view.getByPlaceholderText('Enter a URL or search') as HTMLInputElement;
+    }
+
+    it('focuses the address bar of an empty tab and creates no native view', async () => {
+      const view = renderTab('browser-address-empty', '');
+      const input = view.getByPlaceholderText('Enter a URL or search');
+
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      expect(navigations()).toHaveLength(0);
+      expect(view.getByText('Enter a URL to start')).toBeInTheDocument();
+    });
+
+    it('creates the native view at the normalised URL when Enter commits the first address', async () => {
+      const view = renderTab('browser-address-first', '');
+      const input = view.getByPlaceholderText('Enter a URL or search') as HTMLInputElement;
+
+      fireEvent.change(input, { target: { value: '  example.org/path  ' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+          id: 'browser-address-first',
+          url: 'https://example.org/path',
+        }));
+      });
+      expect(input.value).toBe('https://example.org/path');
+      expect(view.queryByText('Enter a URL to start')).toBeNull();
+    });
+
+    it('sends a bare local address over http and keeps an explicit scheme', async () => {
+      const input = await renderLoadedTab('browser-address-schemes');
+
+      fireEvent.change(input, { target: { value: 'localhost:5173/app' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-schemes', url: 'http://localhost:5173/app' });
+      });
+      expect(input.value).toBe('http://localhost:5173/app');
+
+      fireEvent.change(input, { target: { value: 'http://plain.example.com/' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-schemes', url: 'http://plain.example.com/' });
+      });
+    });
+
+    it('does nothing when Enter is pressed on a blank address', async () => {
+      const input = await renderLoadedTab('browser-address-blank');
+
+      fireEvent.change(input, { target: { value: '   ' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await act(async () => { await Promise.resolve(); });
+
+      expect(navigations()).toHaveLength(0);
+      expect(input.value).toBe('   ');
+    });
+
+    it('navigates only on Enter, not on other keys or on typing', async () => {
+      const input = await renderLoadedTab('browser-address-enter-only');
+
+      fireEvent.change(input, { target: { value: 'https://typed.example.com' } });
+      fireEvent.keyDown(input, { key: 'Tab' });
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: ' ' });
+      await act(async () => { await Promise.resolve(); });
+
+      expect(navigations()).toHaveLength(0);
+      expect(input.value).toBe('https://typed.example.com');
+    });
+
+    it('keeps the caret where it is when the address bar receives focus', async () => {
+      const input = await renderLoadedTab('browser-address-caret');
+
+      input.setSelectionRange(8, 8);
+      fireEvent.focus(input);
+
+      expect(input.value).toBe('https://example.com');
+      expect(input.selectionStart).toBe(8);
+      expect(input.selectionEnd).toBe(8);
+    });
+
+    it('holds text typed through an input method as a draft until Enter', async () => {
+      const input = await renderLoadedTab('browser-address-ime');
+
+      fireEvent.focus(input);
+      fireEvent.compositionStart(input);
+      fireEvent.change(input, { target: { value: 'tianqi' } });
+      fireEvent.compositionUpdate(input, { data: 'tianqi' });
+      // A key the input method consumes is reported as `Process`.
+      fireEvent.keyDown(input, { key: 'Process', keyCode: 229, isComposing: true });
+      fireEvent.change(input, { target: { value: '天气' } });
+      fireEvent.compositionEnd(input, { data: '天气' });
+      await act(async () => { await Promise.resolve(); });
+
+      expect(navigations()).toHaveLength(0);
+      expect(input.value).toBe('天气');
+
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-ime', url: 'https://天气' });
+      });
+    });
+
+    // The Enter that picks a candidate belongs to the input method: Chromium reports it
+    // with isComposing and keyCode 229, and fires compositionend after it.
+    it('leaves the Enter that commits a candidate to the input method and navigates on the next Enter', async () => {
+      const input = await renderLoadedTab('browser-address-ime-enter');
+
+      fireEvent.focus(input);
+      fireEvent.compositionStart(input);
+      fireEvent.change(input, { target: { value: 'tianqi' } });
+      fireEvent.compositionUpdate(input, { data: 'tianqi' });
+      fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true });
+      fireEvent.change(input, { target: { value: '天气' } });
+      fireEvent.compositionEnd(input, { data: '天气' });
+      await act(async () => { await Promise.resolve(); });
+
+      expect(navigations()).toHaveLength(0);
+      expect(input.value).toBe('天气');
+
+      fireEvent.keyDown(input, { key: 'Enter', keyCode: 13 });
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-ime-enter', url: 'https://天气' });
+      });
+      expect(navigations()).toHaveLength(1);
+      expect(input.value).toBe('https://天气');
+    });
+
+    it.each([
+      ['isComposing without keyCode 229', { key: 'Enter', keyCode: 13, isComposing: true }],
+      // Some Windows input methods report keyCode 229 and leave isComposing false.
+      ['keyCode 229 without isComposing', { key: 'Enter', keyCode: 229 }],
+    ])('does not navigate on an Enter keydown that reports %s', async (_signal, keydown) => {
+      const input = await renderLoadedTab('browser-address-ime-signal');
+
+      fireEvent.focus(input);
+      fireEvent.compositionStart(input);
+      fireEvent.change(input, { target: { value: 'tianqi' } });
+      fireEvent.keyDown(input, keydown);
+      await act(async () => { await Promise.resolve(); });
+
+      expect(navigations()).toHaveLength(0);
+      expect(input.value).toBe('tianqi');
     });
   });
 

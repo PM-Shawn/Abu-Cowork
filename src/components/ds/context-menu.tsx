@@ -1,5 +1,5 @@
 import { ContextMenu as ContextMenuPrimitive } from 'radix-ui';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { LayerScope } from './layer';
 import { useLayer, useLayerContainer, useOpenState } from './layer-context';
@@ -25,8 +25,29 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
     setDismissed(true);
     setOpen(false);
   });
+  // Radix keeps the content mounted while it animates out, and a menu opened again in
+  // that time stays where it was. Each opening gets its own content, placed at its own
+  // pointer; the content it replaces must not take the focus back from it.
+  const [opening, setOpening] = useState(0);
+  const latestOpening = useRef(0);
+  // The content that replaces another mounts when the page has already lost the focus
+  // to the first menu, so Radix would give the focus back to nothing. The element that
+  // had the focus before the first of a run of openings is kept for the last of them.
+  // A run lasts while content of an earlier opening has not finished closing.
+  const closingContents = useRef(0);
+  const focusBeforeRun = useRef<HTMLElement | null>(null);
+  const runStart = useRef(0);
   const handleOpenChange = (next: boolean) => {
-    if (next) setDismissed(false);
+    if (next) {
+      setDismissed(false);
+      latestOpening.current += 1;
+      if (closingContents.current === 0) {
+        focusBeforeRun.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        runStart.current = latestOpening.current;
+      }
+      closingContents.current += 1;
+      setOpening(latestOpening.current);
+    }
     setOpen(next);
   };
   return (
@@ -35,11 +56,23 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
       <ContextMenuPrimitive.Portal container={container}>
         {!dismissed && (
           <ContextMenuPrimitive.Content
+            key={opening}
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
-            onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
-            className={cn('z-popover min-w-40 origin-(--radix-context-menu-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
+            onCloseAutoFocus={(event) => {
+              closingContents.current = Math.max(0, closingContents.current - 1);
+              layerCloseAutoFocus(event);
+              if (latestOpening.current !== opening) event.preventDefault();
+              onCloseAutoFocus?.(event);
+              const before = focusBeforeRun.current;
+              if (opening !== runStart.current && !event.defaultPrevented && before?.isConnected) {
+                event.preventDefault();
+                before.focus();
+              }
+            }}
+            // Like Menu: no taller than the room the window leaves; a longer list scrolls.
+            className={cn('z-popover max-h-(--radix-context-menu-content-available-height) min-w-40 origin-(--radix-context-menu-content-transform-origin) overflow-y-auto p-1', FLOAT_SURFACE, FLOAT_MOTION)}
           >
             <LayerScope id={id}>
               <MenuKindContext.Provider value="context">{content}</MenuKindContext.Provider>

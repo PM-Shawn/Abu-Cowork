@@ -423,6 +423,16 @@ action (Send). Chat files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; the fi
 still draw their own full-window overlay (`ImageLightbox`, `McpAppBlock`, `RenderableCodeBlock`,
 `ToolCallsGroup`, `DetailBlockView`) and the directory glob join in batch 8.
 
+**Right panel (batch 5)**: the panel is UI text throughout; the source editor and the terminal use
+the code scale (`--text-mono`, `--ds-font-mono`). `--ds-selection` is the neutral selected-text color
+(terminal, source editor, document previews) and `--ds-page-canvas` / `bg-page-canvas` the white paper
+of web pages and Word pages. Third-party widgets read `--ds-*` variables: CodeMirror through
+`src/components/panel/codeMirrorTheme.ts`, xterm through `resolveTerminalTheme` with `useTokenRevision`
+re-reading them when the appearance changes. `MenuItem description` adds a second line. `RightPanel`
+and `WorkspacePanel` are `memo` and read primitive selectors, so the panel does not re-render per
+streamed token. Panel files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; `PreviewPanel` (in-place
+fullscreen) and the panel directory glob join in batch 8.
+
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one
 menu/popover open at a time, and `useConfirm()`); use `useConfirm()` instead of

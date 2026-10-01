@@ -11,12 +11,13 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
+import { MenuItem, MenuSeparator } from '@/components/ds/menu';
 import { NavItem } from '@/components/ds/nav-item';
 import { Spinner } from '@/components/ds/spinner';
 import { FOCUS_RING } from '@/components/ds/styles';
 import { TextField } from '@/components/ds/text-field';
 import ImportedBadge from './ImportedBadge';
+import { RowMenus } from './RowMenus';
 import { cn } from '@/lib/utils';
 import { format } from '@/i18n';
 import type { Project } from '@/types/project';
@@ -54,8 +55,6 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
 
   const setConversationProject = useChatStore((s) => s.setConversationProject);
 
-  // The task row whose "⋯" menu is open; right-click menus track their own state.
-  const [menuConvId, setMenuConvId] = useState<string | null>(null);
   // Inline rename state — mirrors Sidebar.tsx's editingId pattern so the
   // UX matches Recents exactly.
   const [editingConvId, setEditingConvId] = useState<string | null>(null);
@@ -71,6 +70,13 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   // behind a legacy dialog Enter would reopen the menu. The confirmations are ds
   // dialogs that take focus and give it back themselves.
   const afterMenuClose = useRef<{ run: () => void; holdFocus: boolean } | null>(null);
+
+  // Reopening a menu during its exit animation gives it new content, and the close hook
+  // of the content it replaces runs at once. Drop the earlier choice on open, or it would
+  // be carried out under the new menu.
+  const dropActionOnOpen = (open: boolean) => {
+    if (open) afterMenuClose.current = null;
+  };
 
   // Runs from the menus' close-focus hook, once the menu has gone.
   const runAfterMenuClose = (event: Event) => {
@@ -177,7 +183,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   return (
     <div>
       {/* Project header row */}
-      <ContextMenu content={projectMenuItems} onCloseAutoFocus={runAfterMenuClose}>
+      <ContextMenu content={projectMenuItems} onOpenChange={dropActionOnOpen} onCloseAutoFocus={runAfterMenuClose}>
         <div className="group flex items-center gap-1">
           <NavItem
             icon={expanded ? AppIcons.folderOpen : AppIcons.folder}
@@ -211,28 +217,27 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       {/* Expanded content */}
       {expanded && (
         <div className="mt-1 space-y-1">
-          {visibleConvs.map((conv) => {
-            const selected = conv.id === activeConversationId && viewMode === 'chat';
-            const editing = editingConvId === conv.id;
-            const menuOpen = menuConvId === conv.id;
-            const running = (loadedConversations[conv.id]?.status ?? 'idle') === 'running';
-            return (
-              <ContextMenu key={conv.id} content={conversationMenuItems(conv.id)} onCloseAutoFocus={runAfterMenuClose}>
-                {/* Not a NavItem: the row holds its own buttons, and a button cannot contain buttons. */}
+          {/* One right-click menu and one "⋯" menu for all the task rows. */}
+          <RowMenus
+            items={conversationMenuItems}
+            moreLabel={t.sidebar.moreActions}
+            onOpenChange={dropActionOnOpen}
+            onCloseAutoFocus={runAfterMenuClose}
+            className="space-y-1"
+          >
+            {(menus) => visibleConvs.map((conv) => {
+              const selected = conv.id === activeConversationId && viewMode === 'chat';
+              const editing = editingConvId === conv.id;
+              const menuOpen = menus.isMoreOpen(conv.id);
+              const running = (loadedConversations[conv.id]?.status ?? 'idle') === 'running';
+              return (
+                // Not a NavItem: the row holds its own buttons, and a button cannot contain buttons.
                 <div
+                  key={conv.id}
                   role="button"
                   tabIndex={0}
-                  onClick={(e) => {
-                    // The "⋯" menu renders inside this row in React's tree; its
-                    // portaled items must not also open the conversation.
-                    if (!e.currentTarget.contains(e.target as Node)) return;
-                    handleConvClick(conv.id);
-                  }}
-                  onContextMenu={(e) => {
-                    // Same for a right-click inside the open "⋯" menu: it must not
-                    // open this row's right-click menu on top of it.
-                    if (!e.currentTarget.contains(e.target as Node)) e.preventDefault();
-                  }}
+                  onClick={() => handleConvClick(conv.id)}
+                  onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
                   aria-current={selected ? 'true' : undefined}
                   className={cn(
                     'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control pl-8 pr-2 text-left text-ui-sm transition-colors duration-fast',
@@ -286,27 +291,18 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                     />
                   )}
                   {!editing && (
-                    <Menu
-                      open={menuOpen}
-                      onOpenChange={(open) => setMenuConvId(open ? conv.id : null)}
-                      onCloseAutoFocus={runAfterMenuClose}
-                      trigger={
-                        <IconButton
-                          icon={AppIcons.more}
-                          label={t.sidebar.moreActions}
-                          size="sm"
-                          onClick={(e) => e.stopPropagation()}
-                          className={cn(REVEAL, menuOpen && 'opacity-100')}
-                        />
-                      }
-                    >
-                      {conversationMenuItems(conv.id)}
-                    </Menu>
+                    <IconButton
+                      icon={AppIcons.more}
+                      label={t.sidebar.moreActions}
+                      size="sm"
+                      {...menus.moreButtonProps(conv.id)}
+                      className={cn(REVEAL, menuOpen && 'opacity-100')}
+                    />
                   )}
                 </div>
-              </ContextMenu>
-            );
-          })}
+              );
+            })}
+          </RowMenus>
 
           {hasMore && (
             <div className="pl-6">

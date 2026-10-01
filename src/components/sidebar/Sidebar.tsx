@@ -10,9 +10,8 @@ import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { Button, IconButton } from '@/components/ds/button';
-import { ContextMenu } from '@/components/ds/context-menu';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
+import { MenuItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { NavItem } from '@/components/ds/nav-item';
 import { ScrollArea } from '@/components/ds/scroll-area';
 import { FOCUS_RING } from '@/components/ds/styles';
@@ -38,6 +37,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
+import { RowMenus } from './RowMenus';
 import { isMacOS, isWindows } from '@/utils/platform';
 
 /** A nav item's label: the package's own title when it gives one, else Abu's name for that entry. */
@@ -119,8 +119,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const { t } = useI18n();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
 
-  // The row whose "⋯" menu is open; right-click menus track their own state.
-  const [menuConvId, setMenuConvId] = useState<string | null>(null);
   const [shareConvId, setShareConvId] = useState<string | null>(null);
   const projectsMap = useProjectStore((s) => s.projects);
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
@@ -230,8 +228,9 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   // 重命名 only marks the row; the rename field opens once the menu has gone, from its
   // close-focus hook, and preventDefault stops the menu handing focus back to the
   // trigger or the row so the field keeps it.
-  const startRenameAfterClose = (convId: string) => (event: Event) => {
-    if (renameAfterClose.current !== convId) return;
+  const startRenameAfterClose = (event: Event) => {
+    const convId = renameAfterClose.current;
+    if (!convId) return;
     renameAfterClose.current = null;
     event.preventDefault();
     setEditingId(convId);
@@ -483,34 +482,29 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
             <p className="text-ui text-label-tertiary">{t.sidebar.noSessionsYet}</p>
           </div>
         ) : (
-          <div className="space-y-1">
-            {sortedConvs.map((conv) => {
+          // One right-click menu and one "⋯" menu for all the rows.
+          <RowMenus
+            items={conversationMenuItems}
+            moreLabel={t.sidebar.moreActions}
+            onOpenChange={dropRenameOnOpen}
+            onCloseAutoFocus={startRenameAfterClose}
+            className="space-y-1"
+          >
+            {(menus) => sortedConvs.map((conv) => {
               // Look up runtime status from loaded conversations (ConversationMeta doesn't have status)
               const convStatus = conversations[conv.id]?.status ?? 'idle';
               const selected = conv.id === activeConversationId && viewMode === 'chat';
               const editing = editingId === conv.id;
-              const menuOpen = menuConvId === conv.id;
+              const menuOpen = menus.isMoreOpen(conv.id);
               return (
-              <ContextMenu
-                key={conv.id}
-                content={conversationMenuItems(conv.id)}
-                onOpenChange={dropRenameOnOpen}
-                onCloseAutoFocus={startRenameAfterClose(conv.id)}
-              >
               <div
+                key={conv.id}
                 role="button"
                 tabIndex={0}
-                onClick={(e) => {
-                  // The "⋯" menu renders inside this row in React's tree; its
-                  // portaled items must not also open the conversation.
-                  if (!e.currentTarget.contains(e.target as Node)) return;
+                onClick={() => {
                   switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id);
                 }}
-                onContextMenu={(e) => {
-                  // Same for a right-click inside the open "⋯" menu: it must not
-                  // open this row's right-click menu on top of it.
-                  if (!e.currentTarget.contains(e.target as Node)) e.preventDefault();
-                }}
+                onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
                 aria-current={selected ? 'true' : undefined}
                 className={cn(
                   'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-left text-ui text-label transition-colors duration-fast',
@@ -570,31 +564,21 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   />
                 )}
                 {!editing && (
-                  <Menu
-                    open={menuOpen}
-                    onOpenChange={(open) => { dropRenameOnOpen(open); setMenuConvId(open ? conv.id : null); }}
-                    onCloseAutoFocus={startRenameAfterClose(conv.id)}
-                    trigger={
-                      <IconButton
-                        icon={AppIcons.more}
-                        label={t.sidebar.moreActions}
-                        size="sm"
-                        onClick={(e) => e.stopPropagation()}
-                        className={cn(
-                          'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-                          menuOpen && 'opacity-100'
-                        )}
-                      />
-                    }
-                  >
-                    {conversationMenuItems(conv.id)}
-                  </Menu>
+                  <IconButton
+                    icon={AppIcons.more}
+                    label={t.sidebar.moreActions}
+                    size="sm"
+                    {...menus.moreButtonProps(conv.id)}
+                    className={cn(
+                      'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+                      menuOpen && 'opacity-100'
+                    )}
+                  />
                 )}
               </div>
-              </ContextMenu>
               );
             })}
-          </div>
+          </RowMenus>
         )}
         </div>
         )}

@@ -9,7 +9,8 @@ import { useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
 import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
 
-const MENU_PANEL = 'z-popover min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) p-1';
+// The panel never grows past the room Radix measures between the trigger and the window edge; a longer list scrolls.
+const MENU_PANEL = 'z-popover max-h-(--radix-dropdown-menu-content-available-height) min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto p-1';
 
 // onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
 // event.preventDefault() there to keep focus off the trigger (e.g. to focus a field).
@@ -51,26 +52,40 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
 
 // onSelect receives Radix's select event; event.preventDefault() keeps the menu open
 // (an item whose result shows in the item itself, like checking for updates).
-export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect }: {
+export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect, description, title }: {
   children: ReactNode;
   icon?: LucideIcon;
   shortcut?: string;
   tone?: 'default' | 'danger';
   disabled?: boolean;
   onSelect?: (event: Event) => void;
+  // A second line under the name. The name alone stays the item's name.
+  description?: ReactNode;
+  // Native hint for an item whose name does not say what choosing it does (a version's time).
+  title?: string;
 }) {
   const kind = useMenuKind();
-  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger');
+  const descriptionId = useId();
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger', description && 'h-auto items-start py-1');
+  // aria-hidden keeps the description out of the name; aria-describedby still reads it.
+  const label = description ? (
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="truncate">{children}</span>
+      <span id={descriptionId} aria-hidden="true" className="w-64 text-ui-sm text-label-secondary">{description}</span>
+    </span>
+  ) : <span className="min-w-0 flex-1 truncate">{children}</span>;
+  // With a second line the row aligns to the top; the nudge centers the icon and the shortcut on the first line.
   const body = (
     <>
-      {icon && <Icon icon={icon} size="sm" className={tone === 'danger' ? 'text-danger' : 'text-label-secondary'} />}
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-      {shortcut && <span className="text-ui-sm text-label-tertiary">{shortcut}</span>}
+      {icon && <Icon icon={icon} size="sm" className={cn(tone === 'danger' ? 'text-danger' : 'text-label-secondary', description && 'mt-0.5')} />}
+      {label}
+      {shortcut && <span className={cn('text-ui-sm text-label-tertiary', description && 'mt-0.5')}>{shortcut}</span>}
     </>
   );
+  const describedBy = description ? descriptionId : undefined;
   return kind === 'dropdown'
-    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</DropdownMenuPrimitive.Item>
-    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} className={className}>{body}</ContextMenuPrimitive.Item>;
+    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} className={className}>{body}</DropdownMenuPrimitive.Item>
+    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} className={className}>{body}</ContextMenuPrimitive.Item>;
 }
 
 // A nested list inside a Menu or ContextMenu. It belongs to the parent menu's layer:

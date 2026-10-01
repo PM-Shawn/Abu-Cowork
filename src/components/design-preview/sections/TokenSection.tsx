@@ -19,7 +19,7 @@ const SYNTAX_TOKENS = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syn
 // Tailwind can generate them.
 const COLOR_CLASS: Record<string, string> = {
   desk: 'bg-desk', 'desk-solid': 'bg-desk-solid', surface: 'bg-surface', raised: 'bg-raised',
-  code: 'bg-code', 'diagram-canvas': 'bg-diagram-canvas', field: 'bg-field', fill: 'bg-fill', 'fill-hover': 'bg-fill-hover', 'fill-selected': 'bg-fill-selected',
+  code: 'bg-code', 'diagram-canvas': 'bg-diagram-canvas', 'page-canvas': 'bg-page-canvas', field: 'bg-field', fill: 'bg-fill', 'fill-hover': 'bg-fill-hover', 'fill-selected': 'bg-fill-selected',
   'fill-pressed': 'bg-fill-pressed', emphasis: 'bg-emphasis', 'on-emphasis': 'bg-on-emphasis', scrim: 'bg-scrim',
   brand: 'bg-brand', 'brand-ink': 'bg-brand-ink',
   label: 'bg-label', 'label-secondary': 'bg-label-secondary', 'label-tertiary': 'bg-label-tertiary',
@@ -85,6 +85,28 @@ function SyntaxSwatch({ name }: { name: string }) {
   );
 }
 
+// Selection colors have no Tailwind class; each is painted over the background it sits on.
+// The class names are complete literals so Tailwind can generate them.
+const SELECTION_TOKENS = [
+  { name: 'selection', baseClass: 'bg-surface' },
+  { name: 'page-selection', baseClass: 'bg-page-canvas' },
+];
+
+function SelectionSwatch({ name, baseClass }: { name: string; baseClass: string }) {
+  const value = useComputedValue(() => readRootVariable(`--ds-${name}`));
+  return (
+    <div data-token={name} className="overflow-hidden rounded-panel bg-surface shadow-panel">
+      <div className={baseClass}>
+        <div className="h-12" style={{ backgroundColor: `var(--ds-${name})` }} />
+      </div>
+      <div className="px-2 py-1">
+        <div className="font-code text-ui-sm text-label">{name}</div>
+        <div data-token-value className="font-code text-caption text-label-secondary">{value}</div>
+      </div>
+    </div>
+  );
+}
+
 function ScaleRow({ name, className, property }: { name: string; className: string; property: string }) {
   const value = useComputedValue(() => {
     const sample = document.querySelector(`[data-scale-sample="${name}"]`);
@@ -114,6 +136,12 @@ export function TokenSection() {
         <p className="text-ui-sm font-medium text-label-tertiary">Code syntax</p>
         <div className="mt-2 grid grid-cols-6 gap-3">
           {SYNTAX_TOKENS.map((name) => <SyntaxSwatch key={name} name={name} />)}
+        </div>
+      </div>
+      <div data-preview-selection className="mt-4">
+        <p className="text-ui-sm font-medium text-label-tertiary">Selection</p>
+        <div className="mt-2 grid grid-cols-6 gap-3">
+          {SELECTION_TOKENS.map((token) => <SelectionSwatch key={token.name} {...token} />)}
         </div>
       </div>
       <div className="mt-4">

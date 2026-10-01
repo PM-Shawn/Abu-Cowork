@@ -54,6 +54,24 @@ describe('IconButton', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Copy code');
   });
 
+  it('opens its tooltip above by default and on the side it is given', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <IconButton icon={AppIcons.copy} label="Copy code" />
+        <IconButton icon={AppIcons.reload} label="Reload" tooltipSide="bottom" />
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.tab();
+    expect((await screen.findByRole('tooltip')).closest('[data-side]')).toHaveAttribute('data-side', 'top');
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Reload' })).toHaveFocus();
+    await screen.findByText('Reload', { selector: '[role="tooltip"]' });
+    expect(screen.getByRole('tooltip').closest('[data-side]')).toHaveAttribute('data-side', 'bottom');
+    expect(screen.getByRole('button', { name: 'Reload' })).not.toHaveAttribute('tooltipside');
+  });
+
   it('fails fast outside DesignSystemProvider', () => {
     expect(() => render(<IconButton icon={AppIcons.copy} label="Copy" />)).toThrow(/DesignSystemProvider/);
   });
@@ -65,5 +83,31 @@ describe('IconButton', () => {
     // One class per assertion: not.toHaveClass with several names passes when any one is missing.
     expect(button).not.toHaveClass('text-label-secondary');
     expect(button).not.toHaveClass('hover:text-label');
+  });
+
+  // A pressed toggle keeps its selected fill while the pointer rests on it; callers only set aria-pressed.
+  it('gives a pressed toggle its own fill, text color, hover and press-down classes', () => {
+    render(<IconButton icon={AppIcons.preview} label="Preview" aria-pressed />, { wrapper: DesignSystemProvider });
+    const button = screen.getByRole('button', { name: 'Preview' });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(button).toHaveClass('aria-pressed:bg-fill-selected');
+    expect(button).toHaveClass('aria-pressed:text-label');
+    expect(button).toHaveClass('aria-pressed:hover:bg-fill-selected');
+    expect(button).toHaveClass('aria-pressed:active:bg-fill-pressed');
+  });
+
+  // A mark that shows its state in the icon itself (a filled star) is still a toggle, without the fill.
+  it('lets a pressed toggle opt out of the pressed fill and keeps aria-pressed', () => {
+    render(<IconButton icon={AppIcons.favorite} label="Favorite" aria-pressed pressedFill={false} />, { wrapper: DesignSystemProvider });
+    const button = screen.getByRole('button', { name: 'Favorite' });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(button).not.toHaveAttribute('pressedfill');
+    expect(button).not.toHaveClass('aria-pressed:bg-fill-selected');
+    expect(button).not.toHaveClass('aria-pressed:text-label');
+    expect(button).not.toHaveClass('aria-pressed:hover:bg-fill-selected');
+    expect(button).not.toHaveClass('aria-pressed:active:bg-fill-pressed');
+    // It stays an ordinary plain button under the pointer.
+    expect(button).toHaveClass('hover:bg-fill-hover');
+    expect(button).toHaveClass('text-label-secondary');
   });
 });

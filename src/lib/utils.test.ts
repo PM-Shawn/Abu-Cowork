@@ -86,6 +86,10 @@ describe('cn() — design-system tokens', () => {
   it('lets the composer shadow replace another design-system shadow', () => {
     expect(cn('shadow-panel', 'shadow-composer')).toBe('shadow-composer');
   });
+
+  it('lets the page canvas replace another surface color', () => {
+    expect(cn('bg-surface', 'bg-page-canvas')).toBe('bg-page-canvas');
+  });
 });
 
 describe('cn() — design-system font family', () => {

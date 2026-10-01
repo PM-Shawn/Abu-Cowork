@@ -32,7 +32,18 @@ export const iconButtonVariants = cva(
         primary: 'bg-emphasis text-on-emphasis hover:text-on-emphasis hover:opacity-90 active:opacity-80',
       },
       size: { sm: 'h-6 w-6', md: 'h-7 w-7' },
+      // Whether a toggle (aria-pressed) shows the selected fill. A toggle whose icon already
+      // shows the state (a filled star) turns it off and keeps aria-pressed.
+      pressedFill: { true: '', false: '' },
     },
-    defaultVariants: { variant: 'plain', size: 'md' },
+    compoundVariants: [
+      // The pressed fill stays under the pointer and still darkens on press-down.
+      {
+        variant: 'plain',
+        pressedFill: true,
+        className: 'aria-pressed:bg-fill-selected aria-pressed:text-label aria-pressed:hover:bg-fill-selected aria-pressed:active:bg-fill-pressed',
+      },
+    ],
+    defaultVariants: { variant: 'plain', size: 'md', pressedFill: true },
   },
 );

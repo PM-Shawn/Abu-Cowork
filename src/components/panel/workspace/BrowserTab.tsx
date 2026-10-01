@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
-import { ArrowLeft, ArrowRight, RotateCw, AppWindow, Compass, SquareDashedMousePointer } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -8,9 +7,12 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useI18n } from '@/i18n';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { ToolbarTooltip } from '@/components/panel/workspace/ToolbarTooltip';
+import { Button, IconButton } from '@/components/ds/button';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
+import { TextField } from '@/components/ds/text-field';
 import { createLogger } from '@/core/logging/logger';
 import { normalizeBrowserUrl } from '@/utils/browserUrl';
 import { hasVisibleBlockingApproval } from '@/core/browser/nativeBrowserVisibility';
@@ -26,7 +28,6 @@ import {
   getPendingCapabilitySetup,
   subscribeCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
-import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
 import { isTauriEnv } from '@/utils/tauriEnv';
@@ -68,12 +69,12 @@ function resolveInspectTheme() {
   const styles = getComputedStyle(document.documentElement);
   const read = (name: string) => styles.getPropertyValue(name).trim();
   return {
-    bgBase: read('--abu-bg-base'),
-    bgHover: read('--abu-bg-hover'),
-    borderSubtle: read('--abu-border-subtle'),
-    textPrimary: read('--abu-text-primary'),
-    textTertiary: read('--abu-text-tertiary'),
-    danger: read('--abu-danger'),
+    bgBase: read('--ds-raised'),
+    bgHover: read('--ds-fill-hover'),
+    borderSubtle: read('--ds-separator'),
+    textPrimary: read('--ds-label'),
+    textTertiary: read('--ds-label-tertiary'),
+    danger: read('--ds-danger'),
   };
 }
 
@@ -601,90 +602,125 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     }
   };
 
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-1.5 shrink-0 px-2 py-1.5 border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)]">
-        <ToolbarTooltip content={t.workspace.browser.back}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_back', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
-            <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
-        </ToolbarTooltip>
-        <ToolbarTooltip content={t.workspace.browser.forward}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_forward', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
-            <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
-        </ToolbarTooltip>
-        <ToolbarTooltip content={t.workspace.browser.reload}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_reload', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
-            <RotateCw className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
-        </ToolbarTooltip>
+  // Same precedence as the hosts' phases: a failure outranks the phase it left behind.
+  const controlNotice = controlFailed
+    ? 'failed'
+    : controlPhase === 'yielding'
+      ? 'yielding'
+      : controlPhase !== 'ai'
+        ? 'human'
+        : null;
 
-        <Input
-          ref={addressInputRef}
-          value={addressInput}
-          placeholder={t.workspace.browser.addressPlaceholder}
-          onFocus={() => { addressFocusedRef.current = true; noteUserInteraction(); }}
-          onBlur={() => {
-            addressFocusedRef.current = false;
-            // A clean, emptied, or reverted input resumes following the page;
-            // a real uncommitted draft survives blur (acceptance G6/G7).
-            if (
-              !addressDirtyRef.current
-              || !addressInput.trim()
-              || addressInput === committedUrl
-            ) {
-              addressDirtyRef.current = false;
-              setAddressInput(committedUrl);
-            }
-          }}
-          onChange={(e) => {
-            addressDirtyRef.current = true;
-            noteUserInteraction();
-            setAddressInput(e.target.value);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commit(addressInput);
-            if (e.key === 'Escape') {
-              // Standard browser behavior — and the only way out of a held
-              // draft without committing it: show the page's real URL again.
-              addressDirtyRef.current = false;
-              setAddressInput(committedUrl);
-            }
-          }}
-          className="flex-1 h-7 text-minor"
+  return (
+    <div className="flex h-full flex-col">
+      {/* The native web view paints over React whatever the z-index, and it starts right
+          below this row. IconButton tooltips open upward, into the tab strip, so they
+          never reach its rect; hiding the view per hover instead made it flash every
+          time the pointer crossed the toolbar. */}
+      <div className="flex shrink-0 items-center gap-1 border-b border-separator px-2 py-1">
+        <IconButton
+          size="sm"
+          icon={AppIcons.back}
+          label={t.workspace.browser.back}
+          disabled={!committedUrl}
+          onClick={() => { noteUserInteraction(); void invoke('browser_back', { id: tabId }).catch(() => {}); }}
+        />
+        <IconButton
+          size="sm"
+          icon={AppIcons.forward}
+          label={t.workspace.browser.forward}
+          disabled={!committedUrl}
+          onClick={() => { noteUserInteraction(); void invoke('browser_forward', { id: tabId }).catch(() => {}); }}
+        />
+        <IconButton
+          size="sm"
+          icon={AppIcons.reload}
+          label={t.workspace.browser.reload}
+          disabled={!committedUrl}
+          onClick={() => { noteUserInteraction(); void invoke('browser_reload', { id: tabId }).catch(() => {}); }}
         />
 
-        <Button variant="ghost" size="sm" disabled={!committedUrl || controlPending || (controlPhase === 'yielding' && !controlFailed)} onClick={() => void changeControl()}>
+        <div className="min-w-0 flex-1">
+          <TextField
+            ref={addressInputRef}
+            value={addressInput}
+            placeholder={t.workspace.browser.addressPlaceholder}
+            onFocus={() => { addressFocusedRef.current = true; noteUserInteraction(); }}
+            onBlur={() => {
+              addressFocusedRef.current = false;
+              // A clean, emptied, or reverted input resumes following the page;
+              // a real uncommitted draft survives blur (acceptance G6/G7).
+              if (
+                !addressDirtyRef.current
+                || !addressInput.trim()
+                || addressInput === committedUrl
+              ) {
+                addressDirtyRef.current = false;
+                setAddressInput(committedUrl);
+              }
+            }}
+            onChange={(e) => {
+              addressDirtyRef.current = true;
+              noteUserInteraction();
+              setAddressInput(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              // An Enter inside a composition picks the input method's candidate.
+              // Windows input methods may report only keyCode 229.
+              const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+              if (e.key === 'Enter' && !composing) commit(addressInput);
+              if (e.key === 'Escape') {
+                // Standard browser behavior — and the only way out of a held
+                // draft without committing it: show the page's real URL again.
+                addressDirtyRef.current = false;
+                setAddressInput(committedUrl);
+              }
+            }}
+          />
+        </div>
+
+        <Button variant="secondary" size="sm" disabled={!committedUrl || controlPending || (controlPhase === 'yielding' && !controlFailed)} onClick={() => void changeControl()}>
           {controlPhase === 'yielding' || controlPending ? t.workspace.browser.yielding : controlPhase === 'human' ? t.workspace.browser.handBack : t.workspace.browser.takeControl}
         </Button>
-        <ToolbarTooltip content={t.workspace.browser.openExternal}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void handleOpenExternal()} className="text-[var(--abu-text-tertiary)]">
-            <Compass className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
-        </ToolbarTooltip>
-        <ToolbarTooltip content={t.workspace.browser.selectElement}>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            disabled={!committedUrl}
-            onClick={() => void toggleInspect()}
-            className={cn(inspecting ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)]' : 'text-[var(--abu-text-tertiary)]')}
-          >
-            <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </Button>
-        </ToolbarTooltip>
+        <IconButton
+          size="sm"
+          icon={AppIcons.openExternal}
+          label={t.workspace.browser.openExternal}
+          disabled={!committedUrl}
+          onClick={() => void handleOpenExternal()}
+        />
+        <IconButton
+          size="sm"
+          icon={AppIcons.selectElement}
+          label={t.workspace.browser.selectElement}
+          aria-pressed={inspecting}
+          disabled={!committedUrl}
+          onClick={() => void toggleInspect()}
+        />
       </div>
 
-      {(controlPhase !== 'ai' || controlFailed) && (
-        <div role="status" className="shrink-0 px-3 py-2 text-minor text-[var(--abu-text-secondary)] bg-[var(--abu-bg-subtle)]">
-          {controlFailed ? t.workspace.browser.controlFailed : controlPhase === 'yielding' ? t.workspace.browser.yielding : t.workspace.browser.humanControl}
-        </div>
-      )}
-      {popupBlocked && (
-        <div role="status" className="flex items-center gap-2 shrink-0 px-3 py-2 text-minor text-[var(--abu-text-secondary)] bg-[var(--abu-bg-subtle)]">
-          <span className="flex-1">{t.workspace.browser.popupBlocked}</span>
-          <Button variant="ghost" size="sm" onClick={() => setPopupBlocked(false)}>{t.workspace.browser.dismissHint}</Button>
+      {(controlNotice || popupBlocked) && (
+        <div className="flex shrink-0 flex-col gap-2 p-2">
+          {controlNotice === 'failed' && (
+            <InlineMessage tone="danger">{t.workspace.browser.controlFailed}</InlineMessage>
+          )}
+          {controlNotice === 'yielding' && (
+            // Same inset as the notices it trades places with, so the words stay in one column.
+            <div className="flex items-center px-3 py-2">
+              <Spinner size="sm" label={t.workspace.browser.yielding} />
+            </div>
+          )}
+          {controlNotice === 'human' && (
+            <InlineMessage tone="info">{t.workspace.browser.humanControl}</InlineMessage>
+          )}
+          {popupBlocked && (
+            <InlineMessage
+              tone="warning"
+              action={<Button variant="plain" size="sm" onClick={() => setPopupBlocked(false)}>{t.workspace.browser.dismissHint}</Button>}
+            >
+              {t.workspace.browser.popupBlocked}
+            </InlineMessage>
+          )}
         </div>
       )}
 
@@ -692,7 +728,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           yet, no webview exists, so this React start prompt is visible. While
           the native view is hidden for an overlay, the freeze-frame keeps the
           last rendered page visible instead of a blank pane. */}
-      <div ref={containerRef} className="relative flex-1 min-h-0 bg-white">
+      <div ref={containerRef} className="relative min-h-0 flex-1 bg-surface">
         {freezeFrame && committedUrl && (
           <img
             src={freezeFrame}
@@ -703,9 +739,8 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           />
         )}
         {!committedUrl && (
-          <div className="flex flex-col items-center justify-center h-full gap-2 text-center p-4">
-            <AppWindow className="w-6 h-6 text-[var(--abu-text-tertiary)]" strokeWidth={1.5} />
-            <p className="text-body font-medium text-[var(--abu-text-secondary)]">{t.workspace.browser.startPrompt}</p>
+          <div className="flex h-full items-center justify-center">
+            <EmptyState icon={AppIcons.webPage} title={t.workspace.browser.startPrompt} />
           </div>
         )}
       </div>

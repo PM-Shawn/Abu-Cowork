@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { getVisibleTabs, isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
-import { useActiveConversation } from '@/stores/chatStore';
+import { useChatStore } from '@/stores/chatStore';
 import { cn } from '@/lib/utils';
 import WorkspacePanel from './workspace/WorkspacePanel';
 import {
@@ -19,7 +19,7 @@ const PANEL_WIDTH = 320;          // Default width when showing the summary / em
 const MIN_PANEL_WIDTH = 260;      // Lower bound when dragging the narrow panel
 const MAX_PANEL_WIDTH = 560;      // Upper bound for the narrow panel
 
-export default function RightPanel() {
+function RightPanelImpl() {
   const collapsed = useSettingsStore((s) => s.rightPanelCollapsed);
   const setRightPanelCollapsed = useSettingsStore((s) => s.setRightPanelCollapsed);
   const viewMode = useSettingsStore((s) => s.viewMode);
@@ -39,7 +39,26 @@ export default function RightPanel() {
   // wide-content effect relies on that to tell "content appeared" apart from
   // "a different conversation's tabs came into view".
   const scopedConversationId = usePreviewStore((s) => s.currentConversationId);
-  const conversation = useActiveConversation();
+  // Primitive values only: the conversation object is replaced on every streamed
+  // token, and the whole panel (tab strip, every tab body) would re-render with it.
+  const conversationId = useChatStore((s) => {
+    const id = s.activeConversationId;
+    return id && s.conversations[id] ? id : null;
+  });
+  // Check if conversation has started (has messages)
+  const hasMessages = useChatStore((s) => {
+    const id = s.activeConversationId;
+    return ((id ? s.conversations[id]?.messages?.length : 0) ?? 0) > 0;
+  });
+  // Conversation has a workspace → panel is meaningful
+  const hasWorkspace = useChatStore((s) => {
+    const id = s.activeConversationId;
+    return !!(id && s.conversations[id]?.workspacePath);
+  });
+  const teamId = useChatStore((s) => {
+    const id = s.activeConversationId;
+    return (id ? s.conversations[id]?.teamId : undefined) ?? null;
+  });
   const prevHasMessagesRef = useRef(false);
   // Track whether auto-expand already fired for this conversation
   const autoExpandedRef = useRef(false);
@@ -50,31 +69,33 @@ export default function RightPanel() {
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragWidthRef = useRef<number | null>(null);
-  const moveHandlerRef = useRef<((ev: MouseEvent) => void) | null>(null);
-  const upHandlerRef = useRef<(() => void) | null>(null);
+  // The move function of the drag in progress (null when not dragging).
+  const dragRef = useRef<((clientX: number) => void) | null>(null);
 
   // Keep ref in sync with state
   useEffect(() => { dragWidthRef.current = dragWidth; }, [dragWidth]);
 
-  // Cleanup on unmount — remove any lingering listeners
+  // Cleanup on unmount — a drag in progress must not leave its page styles behind
   useEffect(() => {
     return () => {
-      if (moveHandlerRef.current) document.removeEventListener('mousemove', moveHandlerRef.current);
-      if (upHandlerRef.current) document.removeEventListener('mouseup', upHandlerRef.current);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      if (dragRef.current) document.documentElement.style.pointerEvents = '';
     };
   }, []);
 
-  const handleDragStart = useCallback((e: React.MouseEvent) => {
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     // Only respond to left mouse button
     if (e.button !== 0) return;
     e.preventDefault();
-    e.stopPropagation();
 
-    // Clean up any previous listeners first
-    if (moveHandlerRef.current) document.removeEventListener('mousemove', moveHandlerRef.current);
-    if (upHandlerRef.current) document.removeEventListener('mouseup', upHandlerRef.current);
+    // Pointer capture keeps every move and the release coming to the handle, also
+    // outside the window. An iframe under the pointer (an HTML preview, an embedded
+    // app in the chat) would still take the moves for its own document, so the page
+    // stops being a pointer target for the length of the drag. The style goes on
+    // <html>: modal layers save and restore the one on <body>.
+    e.currentTarget.setPointerCapture(e.pointerId);
+    document.documentElement.style.pointerEvents = 'none';
 
     const startX = e.clientX;
     // Wide content flex-fills, so the divider resizes the chat; otherwise it
@@ -82,24 +103,19 @@ export default function RightPanel() {
     const isWide = getVisibleTabs().some((t) => t.kind !== 'summary');
     const sidebarOpen = !useSettingsStore.getState().sidebarCollapsed;
 
-    setIsDragging(true);
-
-    let onMouseMove: (ev: MouseEvent) => void;
     if (isWide) {
       // Wide mode: the divider resizes the CHAT column (content flex-fills the rest).
       const startChat = resolveChatWidth(usePreviewStore.getState().chatWidth, getViewportWidth(), sidebarOpen);
-      onMouseMove = (ev) => {
-        ev.preventDefault();
-        const next = clampChatWidth(startChat + (ev.clientX - startX), getViewportWidth(), sidebarOpen);
+      dragRef.current = (clientX) => {
+        const next = clampChatWidth(startChat + (clientX - startX), getViewportWidth(), sidebarOpen);
         usePreviewStore.getState().setChatWidth(next);
       };
     } else {
       // Narrow mode: the divider resizes the panel itself — bounded by what the
       // chat column can spare, not by MAX_PANEL_WIDTH alone.
       const startWidth = dragWidthRef.current ?? PANEL_WIDTH;
-      onMouseMove = (ev) => {
-        ev.preventDefault();
-        const delta = startX - ev.clientX;
+      dragRef.current = (clientX) => {
+        const delta = startX - clientX;
         const newWidth = clampNarrowPanelWidth(
           startWidth + delta,
           getViewportWidth(),
@@ -111,32 +127,22 @@ export default function RightPanel() {
       };
     }
 
-    const onMouseUp = () => {
-      setIsDragging(false);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      moveHandlerRef.current = null;
-      upHandlerRef.current = null;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-
-    moveHandlerRef.current = onMouseMove;
-    upHandlerRef.current = onMouseUp;
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+    setIsDragging(true);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, []);
 
-  // Check if conversation has started (has messages)
-  const hasMessages = (conversation?.messages?.length ?? 0) > 0;
+  // Runs on release and again when the capture goes (the browser drops it after a
+  // release or a cancelled pointer), so it only acts while a drag is in progress.
+  const endDrag = useCallback(() => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setIsDragging(false);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    document.documentElement.style.pointerEvents = '';
+  }, []);
 
-  // Conversation has a workspace → panel is meaningful
-  const hasWorkspace = !!conversation?.workspacePath;
-
-  const conversationId = conversation?.id ?? null;
   // Restore before paint so another conversation’s tabs never flash on screen.
   useLayoutEffect(() => {
     const store = usePreviewStore.getState();
@@ -160,7 +166,7 @@ export default function RightPanel() {
       usePreviewStore.getState().openSummary();
       // Team-pinned conversation: the team overview sits next to the summary
       // and is what the user looks for first ("没看到 Agent 团队标签页").
-      if (conversation?.teamId && conversationId) {
+      if (teamId && conversationId) {
         usePreviewStore.getState().openTeam(conversationId, { activate: true });
       }
     }
@@ -257,6 +263,8 @@ export default function RightPanel() {
         'bg-surface flex overflow-hidden relative',
         'mt-2 mb-2 mr-2 rounded-panel shadow-panel',
         hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
+        // The narrow width eases between sizes; a drag follows the pointer directly.
+        !hasWideContent && !isDragging && 'transition-[width,min-width,max-width] duration-base ease-enter',
       )}
       style={
         // Inline `display: none` (not just the `hidden` attribute): the layout
@@ -266,20 +274,19 @@ export default function RightPanel() {
           ? { display: 'none' }
           : hasWideContent
             ? { minWidth: PREVIEW_MIN_WIDTH }
-            : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }
+            : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth }
       }
     >
-      {/* Full-screen overlay during drag — blocks iframe/webview from stealing mouse events */}
-      {isDragging && (
-        <div data-electron-no-drag className="fixed inset-0 z-50 cursor-col-resize select-none" />
-      )}
       {/* Drag handle on left edge */}
       <div
-        onMouseDown={handleDragStart}
+        onPointerDown={handlePointerDown}
+        onPointerMove={(e) => dragRef.current?.(e.clientX)}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
         className={cn(
-          'absolute left-0 top-0 bottom-0 w-[5px] cursor-col-resize z-20 select-none',
-          'hover:bg-[var(--abu-clay-20)] transition-colors',
-          isDragging && 'bg-[var(--abu-clay-40)]'
+          'absolute inset-y-0 left-0 z-sticky w-[5px] cursor-col-resize select-none transition-colors duration-fast hover:bg-control-border',
+          isDragging && 'bg-control-border',
         )}
       />
       {/* Panel content — always the tabbed workspace (summary is the default tab) */}
@@ -289,3 +296,5 @@ export default function RightPanel() {
     </div>
   );
 }
+
+export default memo(RightPanelImpl);

@@ -8,10 +8,12 @@ export function ScrollArea({ children, className }: { children: ReactNode; class
   return (
     <ScrollAreaPrimitive.Root className={cn('relative overflow-hidden', className)}>
       <ScrollAreaPrimitive.Viewport className="h-full w-full [&>div]:!block">{children}</ScrollAreaPrimitive.Viewport>
-      <ScrollAreaPrimitive.Scrollbar orientation="vertical" className="flex w-2 touch-none select-none">
+      {/* The bars share the layer of pinned content (z-sticky) and come later in the tree, so a
+          pinned table header never covers them. */}
+      <ScrollAreaPrimitive.Scrollbar orientation="vertical" className="z-sticky flex w-2 touch-none select-none">
         <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-fill-pressed" />
       </ScrollAreaPrimitive.Scrollbar>
-      <ScrollAreaPrimitive.Scrollbar orientation="horizontal" className="flex h-2 touch-none select-none flex-col">
+      <ScrollAreaPrimitive.Scrollbar orientation="horizontal" className="z-sticky flex h-2 touch-none select-none flex-col">
         <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-fill-pressed" />
       </ScrollAreaPrimitive.Scrollbar>
       <ScrollAreaPrimitive.Corner />

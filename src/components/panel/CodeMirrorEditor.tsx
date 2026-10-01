@@ -1,8 +1,8 @@
+import { useMemo } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { langs } from '@uiw/codemirror-extensions-langs';
-import { oneDark } from '@codemirror/theme-one-dark';
 import type { Extension } from '@codemirror/state';
-import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
+import { CODE_EDITOR_THEME } from './codeMirrorTheme';
 
 /**
  * Aliases for file extensions whose CodeMirror language doesn't share the
@@ -29,12 +29,15 @@ function resolveLanguageExtensions(language: string): Extension[] {
   }
 }
 
+const BASIC_SETUP = { lineNumbers: true, foldGutter: true, highlightActiveLine: true };
+const READ_ONLY_SETUP = { lineNumbers: true, foldGutter: true, highlightActiveLine: false };
+
 /**
  * Inline editable source view used by PreviewPanel for html/markdown "source"
  * mode and for code/text files (which have no rendered preview at all).
- * Wraps `@uiw/react-codemirror` with a theme that follows the app's resolved
- * theme: `oneDark` in dark mode (matching the existing read-only
- * `SyntaxHighlighter` look), or CodeMirror's built-in light theme in light mode.
+ * Wraps `@uiw/react-codemirror`. Every color, the font and the type size come
+ * from `codeMirrorTheme.ts`, which reads design tokens, so the editor follows
+ * light, dark and increased contrast without checking the appearance itself.
  */
 export default function CodeMirrorEditor({
   value,
@@ -47,18 +50,18 @@ export default function CodeMirrorEditor({
   onChange: (value: string) => void;
   readOnly?: boolean;
 }) {
-  const isDark = useEffectiveThemeIsDark();
+  const extensions = useMemo(() => [...CODE_EDITOR_THEME, ...resolveLanguageExtensions(language)], [language]);
 
   return (
     <CodeMirror
       value={value}
       onChange={onChange}
-      theme={isDark ? oneDark : 'light'}
-      extensions={resolveLanguageExtensions(language)}
+      theme="none"
+      extensions={extensions}
       readOnly={readOnly}
       height="100%"
-      basicSetup={{ lineNumbers: true, foldGutter: true, highlightActiveLine: !readOnly }}
-      className="h-full text-minor"
+      basicSetup={readOnly ? READ_ONLY_SETUP : BASIC_SETUP}
+      className="h-full"
     />
   );
 }

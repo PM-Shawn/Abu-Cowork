@@ -230,6 +230,7 @@ describe('Sidebar — Recents row menu', () => {
     renderSidebar();
     await user.click(screen.getByRole('button', { name: '更多操作' }));
     const menu = await screen.findByRole('menu');
+    expect(menu).toHaveAccessibleName('更多操作');
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
       '重命名', '导出会话', '移入项目', '删除会话',
     ]);

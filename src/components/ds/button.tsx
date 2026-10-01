@@ -19,7 +19,7 @@ export function Button({ variant, size, icon, className, children, type = 'butto
 }
 
 // Icon-only buttons must be named; the same words show as the hover tooltip.
-export function IconButton({ icon, label, variant, size = 'md', pressedFill = true, className, type = 'button', ...props }:
+export function IconButton({ icon, label, variant, size = 'md', pressedFill = true, tooltipSide = 'top', className, type = 'button', ...props }:
   Omit<ComponentProps<'button'>, 'children' | 'aria-label'> & {
     icon: LucideIcon;
     label: string;
@@ -27,9 +27,11 @@ export function IconButton({ icon, label, variant, size = 'md', pressedFill = tr
     size?: ControlSize;
     // false: a toggle with aria-pressed keeps the plain look (its icon shows the state).
     pressedFill?: boolean;
+    // Where the tooltip opens. A toolbar that sits right under other controls opens it below.
+    tooltipSide?: 'top' | 'right' | 'bottom' | 'left';
   }) {
   return (
-    <Tooltip content={label}>
+    <Tooltip content={label} side={tooltipSide}>
       <button type={type} aria-label={label} className={cn(iconButtonVariants({ variant, size, pressedFill }), className)} {...props}>
         <Icon icon={icon} size={size === 'sm' ? 'sm' : 'md'} />
       </button>

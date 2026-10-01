@@ -444,7 +444,44 @@ describe('onCloseAutoFocus', () => {
     await act(() => vi.runOnlyPendingTimersAsync());
 
     expect(screen.queryByRole('menu')).toBeNull();
+    // The focus goes back to the element that had it before the first opening; the
+    // caller's hook saw an event it could still have prevented.
     expect(seen).toEqual([true, false]);
+    expect(target).toHaveFocus();
+  });
+
+  it('leaves the focus to a caller that takes it after a ContextMenu was opened again', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<FocusField kind="context" onClose={focusTitle} />, { wrapper: DesignSystemProvider });
+    const target = screen.getByText('Message body');
+    act(() => target.focus());
+    fireEvent.contextMenu(target);
+    fireEvent.contextMenu(target);
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
+  });
+
+  it('gives the focus back as before when a ContextMenu was opened once', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const seen: boolean[] = [];
+    render(<FocusField kind="context" onClose={(event) => seen.push(event.defaultPrevented)} />, { wrapper: DesignSystemProvider });
+    const target = screen.getByText('Message body');
+    act(() => target.focus());
+    fireEvent.contextMenu(target);
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    // Closed, then opened again by a new right-click: a new session, not a reopening.
+    act(() => screen.getByRole('textbox', { name: 'Title' }).focus());
+    fireEvent.contextMenu(target);
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(seen).toEqual([false, false]);
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
   });
 });
 

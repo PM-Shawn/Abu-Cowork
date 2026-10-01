@@ -54,6 +54,24 @@ describe('IconButton', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Copy code');
   });
 
+  it('opens its tooltip above by default and on the side it is given', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <IconButton icon={AppIcons.copy} label="Copy code" />
+        <IconButton icon={AppIcons.reload} label="Reload" tooltipSide="bottom" />
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.tab();
+    expect((await screen.findByRole('tooltip')).closest('[data-side]')).toHaveAttribute('data-side', 'top');
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Reload' })).toHaveFocus();
+    await screen.findByText('Reload', { selector: '[role="tooltip"]' });
+    expect(screen.getByRole('tooltip').closest('[data-side]')).toHaveAttribute('data-side', 'bottom');
+    expect(screen.getByRole('button', { name: 'Reload' })).not.toHaveAttribute('tooltipside');
+  });
+
   it('fails fast outside DesignSystemProvider', () => {
     expect(() => render(<IconButton icon={AppIcons.copy} label="Copy" />)).toThrow(/DesignSystemProvider/);
   });

@@ -30,10 +30,22 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
   // pointer; the content it replaces must not take the focus back from it.
   const [opening, setOpening] = useState(0);
   const latestOpening = useRef(0);
+  // The content that replaces another mounts when the page has already lost the focus
+  // to the first menu, so Radix would give the focus back to nothing. The element that
+  // had the focus before the first of a run of openings is kept for the last of them.
+  // A run lasts while content of an earlier opening has not finished closing.
+  const closingContents = useRef(0);
+  const focusBeforeRun = useRef<HTMLElement | null>(null);
+  const runStart = useRef(0);
   const handleOpenChange = (next: boolean) => {
     if (next) {
       setDismissed(false);
       latestOpening.current += 1;
+      if (closingContents.current === 0) {
+        focusBeforeRun.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        runStart.current = latestOpening.current;
+      }
+      closingContents.current += 1;
       setOpening(latestOpening.current);
     }
     setOpen(next);
@@ -49,9 +61,15 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
             data-ds-motion
             data-electron-no-drag
             onCloseAutoFocus={(event) => {
+              closingContents.current = Math.max(0, closingContents.current - 1);
               layerCloseAutoFocus(event);
               if (latestOpening.current !== opening) event.preventDefault();
               onCloseAutoFocus?.(event);
+              const before = focusBeforeRun.current;
+              if (opening !== runStart.current && !event.defaultPrevented && before?.isConnected) {
+                event.preventDefault();
+                before.focus();
+              }
             }}
             // Like Menu: no taller than the room the window leaves; a longer list scrolls.
             className={cn('z-popover max-h-(--radix-context-menu-content-available-height) min-w-40 origin-(--radix-context-menu-content-transform-origin) overflow-y-auto p-1', FLOAT_SURFACE, FLOAT_MOTION)}

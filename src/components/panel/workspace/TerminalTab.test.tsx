@@ -302,6 +302,15 @@ describe('TerminalTab theming', () => {
     expect(theme.selectionBackground).toBe(LIGHT_VARS['--ds-selection']);
   });
 
+  it('asks xterm to keep program output readable on the terminal background', async () => {
+    renderTerminal('terminal-theme-min-contrast');
+
+    await waitFor(() => {
+      expect(terminalInstances).toHaveLength(1);
+    });
+    expect(terminalInstances[0].options.minimumContrastRatio).toBe(4.5);
+  });
+
   it('keeps the character under the block cursor readable: it takes the terminal background', async () => {
     renderTerminal('terminal-theme-cursor');
 
@@ -324,6 +333,7 @@ describe('TerminalTab theming', () => {
 
     await changeAppearance(() => document.documentElement.classList.add('dark'));
     expect(terminalInstances[0].options.theme).toEqual(expectedTheme(DARK_VARS));
+    expect(terminalInstances[0].options.minimumContrastRatio).toBe(4.5);
 
     // Still the same single terminal instance — no dispose/recreate cycle.
     expect(terminalInstances).toHaveLength(1);
@@ -342,6 +352,7 @@ describe('TerminalTab theming', () => {
 
     await changeAppearance(() => document.documentElement.setAttribute('data-contrast', 'more'));
     expect(terminalInstances[0].options.theme).toEqual(expectedTheme(LIGHT_CONTRAST_VARS));
+    expect(terminalInstances[0].options.minimumContrastRatio).toBe(4.5);
 
     expect(terminalInstances).toHaveLength(1);
     expect(terminalInstances[0].dispose).not.toHaveBeenCalled();

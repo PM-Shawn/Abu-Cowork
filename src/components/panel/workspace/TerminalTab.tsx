@@ -20,6 +20,10 @@ function readToken(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// xterm lifts any cell whose text falls under this contrast against its own background
+// (the terminal background, a program-set background, or the selection).
+const TERMINAL_MINIMUM_CONTRAST = 4.5;
+
 /**
  * Terminal colors from the design tokens. xterm takes concrete color values only,
  * so the `--ds-*` variables are read here and read again whenever the appearance
@@ -34,7 +38,8 @@ function readToken(name: string): string {
  * which disappears into a cursor drawn in the label color; the terminal background
  * always contrasts with the label.
  *
- * The 16 ANSI colors stay xterm's defaults: they are the program's output.
+ * The 16 ANSI colors stay xterm's defaults: they are the program's output. xterm keeps
+ * each cell readable through `minimumContrastRatio` (see TERMINAL_MINIMUM_CONTRAST).
  */
 function resolveTerminalTheme(): ITheme {
   return {
@@ -153,6 +158,7 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
       fontFamily: readToken('--ds-font-mono'),
       cursorBlink: true,
       convertEol: false,
+      minimumContrastRatio: TERMINAL_MINIMUM_CONTRAST,
       theme: resolveTerminalTheme(),
     });
     termRef.current = term;

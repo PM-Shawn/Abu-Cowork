@@ -1,0 +1,138 @@
+import { useCallback, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
+import { ContextMenu } from '@/components/ds/context-menu';
+import { Menu } from '@/components/ds/menu';
+
+interface AnchorBox {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+interface MoreMenu {
+  rowId: string;
+  // The row's button the menu was opened from; the focus goes back to it.
+  button: HTMLElement;
+  anchor: AnchorBox;
+}
+
+export interface RowMenuControls {
+  /** Whether the "more actions" menu is open for this row. */
+  isMoreOpen: (rowId: string) => boolean;
+  /** For the row element: a right-click on it opens the list's menu for this row. */
+  onRowContextMenu: (event: MouseEvent<HTMLElement>, rowId: string) => void;
+  /** For the row's "more actions" button: opens the list's menu at that button. */
+  moreButtonProps: (rowId: string) => {
+    'aria-haspopup': 'menu';
+    'aria-expanded': boolean;
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => void;
+    onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+    onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+  };
+}
+
+// Right-clicks that reached a row on their way up to the list.
+const rowRightClicks = new WeakSet<Event>();
+
+const NO_ANCHOR: AnchorBox = { top: 0, left: 0, width: 0, height: 0 };
+
+// Every mounted menu listens for each key press on the document, so a list of rows
+// shares two menus: one right-click menu around the list, and one "more actions" menu
+// that opens at the button of the row it is asked for. Both show the items of that row.
+export function RowMenus({ items, onOpenChange, onCloseAutoFocus, className, children }: {
+  items: (rowId: string) => ReactNode;
+  // Either menu opened or closed.
+  onOpenChange?: (open: boolean) => void;
+  // Either menu has gone; preventDefault() keeps the focus for what the caller opens.
+  onCloseAutoFocus?: (event: Event) => void;
+  className?: string;
+  children: (controls: RowMenuControls) => ReactNode;
+}) {
+  const [contextRow, setContextRow] = useState<string | null>(null);
+  const [more, setMore] = useState<MoreMenu | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  const onRowContextMenu = useCallback((event: MouseEvent<HTMLElement>, rowId: string) => {
+    rowRightClicks.add(event.nativeEvent);
+    setContextRow(rowId);
+  }, []);
+
+  const openMoreAt = (rowId: string, button: HTMLElement) => {
+    const frame = button.closest('[data-row-menus]');
+    if (!frame) throw new Error('A "more actions" button must sit inside its RowMenus');
+    const origin = frame.getBoundingClientRect();
+    const box = button.getBoundingClientRect();
+    setMore({
+      rowId,
+      button,
+      anchor: { top: box.top - origin.top, left: box.left - origin.left, width: box.width, height: box.height },
+    });
+    setMoreOpen(true);
+    onOpenChange?.(true);
+  };
+
+  const handleMoreOpenChange = (open: boolean) => {
+    setMoreOpen(open);
+    onOpenChange?.(open);
+  };
+
+  const controls: RowMenuControls = {
+    isMoreOpen: (rowId) => moreOpen && more?.rowId === rowId,
+    onRowContextMenu,
+    moreButtonProps: (rowId) => ({
+      'aria-haspopup': 'menu',
+      'aria-expanded': moreOpen && more?.rowId === rowId,
+      // Like a menu button: the press opens the menu, and the row behind does not act on it.
+      onPointerDown: (event) => {
+        if (event.button !== 0 || event.ctrlKey) return;
+        event.preventDefault();
+        openMoreAt(rowId, event.currentTarget);
+      },
+      onKeyDown: (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        openMoreAt(rowId, event.currentTarget);
+      },
+      onClick: (event) => event.stopPropagation(),
+    }),
+  };
+
+  return (
+    <div data-row-menus className="relative">
+      <ContextMenu
+        content={contextRow ? items(contextRow) : null}
+        onOpenChange={onOpenChange}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
+        <div
+          className={className}
+          // The menu writes its open state on its trigger, and a changed attribute here
+          // makes the browser restyle every row below. Nothing reads it, so the list declines it.
+          data-state={undefined}
+          // Only a right-click that came through a row opens the menu.
+          onContextMenu={(event) => { if (!rowRightClicks.has(event.nativeEvent)) event.preventDefault(); }}
+        >
+          {children(controls)}
+        </div>
+      </ContextMenu>
+      <Menu
+        open={moreOpen}
+        onOpenChange={handleMoreOpenChange}
+        onCloseAutoFocus={onCloseAutoFocus}
+        trigger={(
+          // Stands where the row's button is, so the menu opens there. The menu gives the
+          // focus back to its trigger when it closes; this one hands it on to that button.
+          <span
+            aria-hidden="true"
+            tabIndex={-1}
+            onFocus={() => more?.button.focus()}
+            className="pointer-events-none absolute"
+            style={more?.anchor ?? NO_ANCHOR}
+          />
+        )}
+      >
+        {more ? items(more.rowId) : null}
+      </Menu>
+    </div>
+  );
+}

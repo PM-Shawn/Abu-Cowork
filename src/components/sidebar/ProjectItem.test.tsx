@@ -13,6 +13,7 @@
  * The rest pins the task rows (selected, running), the row and project menus,
  * and rename.
  */
+import type { ComponentProps } from 'react';
 import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest';
 import { act, render, screen, cleanup, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -27,6 +28,42 @@ const mocks = vi.hoisted(() => ({
   project: {} as Record<string, unknown>,
   viewMode: 'chat',
 }));
+
+// What the menus were given, to drive a menu the way Radix does when it is opened again
+// before its close hook ran (happy-dom has no animations), and how many menus are mounted.
+const menuProps = vi.hoisted(() => ({
+  contextMenus: new Map<string, ((open: boolean) => void) | undefined>(),
+  menus: new Map<string, ((open: boolean) => void) | undefined>(),
+  itemSelect: new Map<string, ((event: Event) => void) | undefined>(),
+}));
+
+vi.mock('@/components/ds/context-menu', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/context-menu')>();
+  const { useId } = await import('react');
+  return {
+    ...actual,
+    ContextMenu: (props: ComponentProps<typeof actual.ContextMenu>) => {
+      menuProps.contextMenus.set(useId(), props.onOpenChange);
+      return actual.ContextMenu(props);
+    },
+  };
+});
+
+vi.mock('@/components/ds/menu', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/menu')>();
+  const { useId } = await import('react');
+  return {
+    ...actual,
+    Menu: (props: ComponentProps<typeof actual.Menu>) => {
+      menuProps.menus.set(useId(), props.onOpenChange);
+      return actual.Menu(props);
+    },
+    MenuItem: (props: ComponentProps<typeof actual.MenuItem>) => {
+      if (typeof props.children === 'string') menuProps.itemSelect.set(props.children, props.onSelect);
+      return actual.MenuItem(props);
+    },
+  };
+});
 
 vi.mock('./ImportedBadge', () => ({ default: () => null }));
 vi.mock('@/components/share/ShareExportDialog', () => ({ default: () => null }));
@@ -88,6 +125,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   initLanguage('zh-CN');
+  menuProps.contextMenus.clear();
+  menuProps.menus.clear();
+  menuProps.itemSelect.clear();
   mocks.viewMode = 'chat';
   mocks.chat = {
     switchConversation: vi.fn(),
@@ -228,6 +268,52 @@ describe('ProjectItem — project row', () => {
   });
 });
 
+// A menu opened again during its exit animation gets new content, and the close hook of
+// the content it replaces runs at once. A choice recorded before must be forgotten when
+// a menu opens, or it would be carried out under the new menu.
+describe('ProjectItem — a menu opened again before its close hook ran', () => {
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('forgets 项目设置 chosen in the project menu', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onOpenSettings = vi.fn();
+    renderItem([], { onOpenSettings });
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+    act(() => menuProps.itemSelect.get('项目设置')?.(new Event('select')));
+    // The project menu is the first one mounted.
+    act(() => [...menuProps.contextMenus.values()][0]?.(true));
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onOpenSettings).not.toHaveBeenCalled();
+  });
+
+  it('forgets 重命名 chosen in a task row menu, opened by right-click', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0)]);
+    fireEvent.contextMenu(screen.getByText('对话0'));
+    act(() => menuProps.itemSelect.get('重命名')?.(new Event('select')));
+    act(() => [...menuProps.contextMenus.values()][1]?.(true));
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '重命名' })).toBeNull();
+  });
+
+  it('forgets 重命名 chosen in a task row menu, opened from 更多操作', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0)]);
+    await user.click(screen.getByRole('button', { name: '更多操作' }));
+    act(() => menuProps.itemSelect.get('重命名')?.(new Event('select')));
+    act(() => [...menuProps.menus.values()][0]?.(true));
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '重命名' })).toBeNull();
+  });
+});
+
 describe('ProjectItem — task rows', () => {
   it('marks the open task and shows a spinner on a running one', () => {
     mocks.chat.activeConversationId = 'c0';
@@ -250,6 +336,27 @@ describe('ProjectItem — task rows', () => {
       '重命名', '导出会话', '移出项目', '删除会话',
     ]);
     expect(within(menu).getByRole('menuitem', { name: '删除会话' })).toHaveClass('text-danger');
+    expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+  });
+
+  // Every mounted menu listens for each key press on the document.
+  it('shares one right-click menu and one 更多操作 menu between all the task rows', async () => {
+    renderItem(Array.from({ length: 8 }, (_, i) => makeConv(i)));
+    await userEvent.click(screen.getByRole('button', { name: /还有 3 个/ }));
+
+    expect(screen.getAllByRole('button', { name: '更多操作' })).toHaveLength(8);
+    // The project row's own menu, and the task list's.
+    expect(menuProps.contextMenus.size).toBe(2);
+    expect(menuProps.menus.size).toBe(1);
+  });
+
+  it('opens the menu of the row whose 更多操作 was pressed', async () => {
+    const user = userEvent.setup();
+    renderItem([makeConv(0), makeConv(1)]);
+    const second = screen.getByText('对话1').closest('[role="button"]') as HTMLElement;
+    await user.click(within(second).getByRole('button', { name: '更多操作' }));
+    await user.click(await screen.findByRole('menuitem', { name: '删除会话' }));
+    expect(mocks.chat.deleteConversation).toHaveBeenCalledWith('c1');
     expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
   });
 

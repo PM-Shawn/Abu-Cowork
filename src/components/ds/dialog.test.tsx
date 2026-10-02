@@ -477,6 +477,85 @@ describe('Dialog close button, data attributes and focus', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
   });
 
+  // A press on an empty part of a dialog puts focus on its box. From there the browser would
+  // look for the neighbour outside the dialog and the focus trap would hand focus back to the box.
+  it('goes from the dialog box to its last control on Shift+Tab and to its first on Tab', async () => {
+    const user = userEvent.setup();
+    render(<Closable />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Open' }));
+    const dialog = screen.getByRole('dialog', { name: 'Grant access' });
+
+    dialog.focus();
+    await user.tab({ shift: true });
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveFocus();
+
+    dialog.focus();
+    await user.tab();
+    expect(within(dialog).getByRole('button', { name: 'Allow' })).toHaveFocus();
+  });
+
+  it('reaches the close button with Shift+Tab when it is the only control', async () => {
+    const user = userEvent.setup();
+    render(
+      <Dialog trigger={<Button>Enlarge</Button>} title="Picture" titleHidden closeButton>
+        <p>A picture</p>
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Enlarge' }));
+    expect(screen.getByRole('dialog', { name: 'Picture' })).toHaveFocus();
+
+    await user.tab({ shift: true });
+
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+  });
+
+  // The browser decides by itself whether focus moved by code shows its ring, and gets it wrong
+  // for the first such move after a load. The dialog says it: no ring after a pointer press.
+  it('asks for no focus ring on its first control when a pointer press opened it, and leaves the ring to a key press', async () => {
+    const user = userEvent.setup();
+    render(<Closable />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('button', { name: 'Open' });
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    const optionsFor = (name: string) => focus.mock.calls
+      .filter((_, index) => (focus.mock.contexts[index] as HTMLElement).textContent === name)
+      .map(([options]) => options);
+    try {
+      await user.click(trigger);
+      expect(screen.getByRole('button', { name: 'Allow' })).toHaveFocus();
+      expect(optionsFor('Allow')).toEqual([{ preventScroll: true, focusVisible: false }]);
+
+      focus.mockClear();
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(trigger).toHaveFocus();
+      focus.mockClear();
+      await user.keyboard('{Enter}');
+      expect(screen.getByRole('button', { name: 'Allow' })).toHaveFocus();
+      expect(optionsFor('Allow').some((options) => options?.focusVisible === false)).toBe(false);
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
+  it('opens with focus on the control its owner names', async () => {
+    const user = userEvent.setup();
+    render(
+      <Dialog
+        trigger={<Button>Open</Button>}
+        title="Pages"
+        initialFocus={(content) => content.querySelector<HTMLElement>('[aria-current="page"]')}
+      >
+        <Button>First page</Button>
+        <Button aria-current="page">Second page</Button>
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Open' }));
+
+    expect(screen.getByRole('button', { name: 'Second page' })).toHaveFocus();
+  });
+
   // happy-dom reports -1 as the tab index of an editable box and of a summary; a browser reports 0.
   // This gives those two the browser's answer and leaves every other element as it is.
   function tabIndexAsInABrowser() {

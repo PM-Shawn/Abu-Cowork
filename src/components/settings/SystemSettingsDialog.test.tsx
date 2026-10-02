@@ -23,6 +23,10 @@ vi.mock('@/components/settings/SystemSettingsModal', async () => {
   return {
     default: () => (
       <div>
+        <nav>
+          <Button>Another page</Button>
+          <Button aria-current="page">Page in view</Button>
+        </nav>
         <Button>First control</Button>
         <Select
           label="Sample choice"
@@ -207,6 +211,15 @@ describe('SystemSettingsDialog', () => {
       expect(isOpen()).toBe(true);
       expect(screen.getByRole('dialog', { name: getI18n().settings.title })).toBeInTheDocument();
     });
+  });
+
+  it('opens with focus on the navigation row of the page in view', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({ systemSettingsOpen: false });
+    renderWithOpener();
+    await user.click(screen.getByRole('button', { name: 'Open settings' }));
+
+    expect(screen.getByRole('button', { name: 'Page in view' })).toHaveFocus();
   });
 
   describe('focus when the window closes', () => {

@@ -37,6 +37,8 @@ export default function SystemSettingsDialog() {
       closeButton={{ 'data-abu-settings-close': '' }}
       contentProps={{ 'data-abu-settings-dialog': '' }}
       onCloseAutoFocus={(event) => { if (blockedRef.current) event.preventDefault(); }}
+      // The window opens on the navigation row of the page in view.
+      initialFocus={(content) => content.querySelector<HTMLElement>('nav [aria-current="page"]')}
     >
       <SystemSettingsView />
     </Dialog>

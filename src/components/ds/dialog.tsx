@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { Button, IconButton } from './button';
 import { AppIcons } from './icons';
+import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
 import { InDialogContext, useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
@@ -31,6 +32,57 @@ function hasOnlyCloseButton(content: HTMLElement): boolean {
   });
 }
 
+// Whether the Tab key reaches this element inside `content`: the test Radix makes for its own
+// first focus target, with the check that nothing up to the dialog box hides it.
+function isTabbable(element: HTMLElement, content: HTMLElement): boolean {
+  if (!(element.tabIndex >= 0)) return false;
+  const hiddenInput = element instanceof HTMLInputElement && element.type === 'hidden';
+  if ((element as HTMLElement & { disabled?: boolean }).disabled || element.hidden || hiddenInput) return false;
+  for (let node: HTMLElement | null = element; node && node !== content; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+  }
+  return true;
+}
+
+function firstTabbable(content: HTMLElement, skipLinks = false): HTMLElement | null {
+  for (const element of content.querySelectorAll<HTMLElement>('*')) {
+    if (skipLinks && element.tagName === 'A') continue;
+    if (isTabbable(element, content)) return element;
+  }
+  return null;
+}
+
+function lastTabbable(content: HTMLElement): HTMLElement | null {
+  const all = content.querySelectorAll<HTMLElement>('*');
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    if (isTabbable(all[index], content)) return all[index];
+  }
+  return null;
+}
+
+// Tab pressed while focus is on the dialog box itself (after a press on an empty part of it, or
+// in a dialog that opened with focus on its box): the first control, or the last with Shift.
+function tabFromBox(event: { key: string; shiftKey: boolean; target: EventTarget; currentTarget: HTMLElement; preventDefault: () => void }) {
+  if (event.key !== 'Tab' || event.target !== event.currentTarget) return;
+  const next = event.shiftKey ? lastTabbable(event.currentTarget) : firstTabbable(event.currentTarget);
+  if (!next) return;
+  event.preventDefault();
+  next.focus();
+}
+
+// After a pointer press, the control a layer opens on gets focus without its ring; after a key
+// press the default stands (Radix focuses it and the ring shows).
+function focusQuietlyAfterPointer(event: Event, pick: (content: HTMLElement) => HTMLElement | null) {
+  const content = event.currentTarget;
+  if (!lastInputWasPointer() || !(content instanceof HTMLElement)) return;
+  const target = pick(content);
+  if (!target) return;
+  event.preventDefault();
+  target.focus({ preventScroll: true, focusVisible: false });
+  if (target instanceof HTMLInputElement) target.select();
+}
+
 export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close {...props} />;
 }
@@ -43,6 +95,7 @@ export function Dialog({
   title, description, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
   closeButton: closeButtonAsked = false, dismissible = true, contentProps, onCloseAutoFocus: callerCloseAutoFocus,
+  initialFocus,
 }: {
   title: ReactNode;
   // Keeps the title as the accessible name without showing it.
@@ -71,6 +124,9 @@ export function Dialog({
   // there to put focus somewhere other than where it was before the dialog opened. When
   // event.defaultPrevented is already true, another dialog has taken the focus: leave it alone.
   onCloseAutoFocus?: (event: Event) => void;
+  // The control the dialog opens on, when that is not its first one (the current page of a
+  // window with navigation). Returning null leaves the first control.
+  initialFocus?: (content: HTMLElement) => HTMLElement | null;
 }) {
   const { t } = useI18n();
   const container = useLayerContainer();
@@ -152,16 +208,27 @@ export function Dialog({
             role={role}
             onEscapeKeyDown={stay}
             onInteractOutside={stay}
+            onKeyDown={tabFromBox}
             onOpenAutoFocus={(event) => {
               remember(returnTo);
+              const content = event.currentTarget;
+              if (!(content instanceof HTMLElement)) return;
               // The close button is the only control (an enlarged image): focus goes to the box.
               // On the button it would show the button's tooltip at once, and the first Escape
               // would close the tooltip, not the dialog. Tab still reaches the button.
-              const content = event.currentTarget;
-              if (content instanceof HTMLElement && hasOnlyCloseButton(content)) {
+              if (hasOnlyCloseButton(content)) {
                 event.preventDefault();
                 content.focus();
+                return;
               }
+              const named = initialFocus?.(content) ?? null;
+              if (named) {
+                event.preventDefault();
+                named.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+                return;
+              }
+              // Radix's own choice, links aside as it does.
+              focusQuietlyAfterPointer(event, (box) => firstTabbable(box, true));
             }}
             onCloseAutoFocus={(event) => {
               // The layer's handler first: it prevents the default when the registry
@@ -215,7 +282,11 @@ export function Dialog({
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
-            onOpenAutoFocus={() => remember(discardReturnTo)}
+            onOpenAutoFocus={(event) => {
+              remember(discardReturnTo);
+              // The first button is the one that keeps editing, which Radix focuses too.
+              focusQuietlyAfterPointer(event, (box) => firstTabbable(box));
+            }}
             onCloseAutoFocus={(event) => giveFocusBack(discardReturnTo, event, false)}
             className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION, DIALOG_CLOSING)}
           >

@@ -92,8 +92,8 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
 
     const hitTest = await page.evaluate(() => {
       const close = document.querySelector('[data-abu-settings-close]');
-      const scrim = document.querySelector('[data-abu-settings-dialog]');
-      if (!close || !scrim) throw new Error('settings dialog did not render its close button');
+      const box = document.querySelector('[data-abu-settings-dialog]');
+      if (!close || !box) throw new Error('settings dialog did not render its close button');
       const rect = close.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
       const y = rect.top + rect.height / 2;
@@ -104,7 +104,7 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
       const hit = document.elementFromPoint(x, y);
       return {
         closeAppRegion: getComputedStyle(close).webkitAppRegion,
-        scrimAppRegion: getComputedStyle(scrim).webkitAppRegion,
+        boxAppRegion: getComputedStyle(box).webkitAppRegion,
         receivesHit: Boolean(hit && (hit === close || close.contains(hit))),
         // Proof the scenario is real at this viewport rather than hypothetical.
         overlapsDragLane: dragLanes.some((lane) => (
@@ -115,11 +115,12 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
       };
     });
 
-    // The marker on the overlay ROOT is the entire mechanism: its rectangle
-    // covers the button, so the button needs no region of its own. Asserting
-    // the button stays `none` is the regression guard for 6239c807 — putting
-    // the descendant rule back would leak overlay geometry into the title bar.
-    expect(hitTest.scrimAppRegion).toBe('no-drag');
+    // The marker on the dialog box (and on the scrim behind it) is the entire
+    // mechanism: the box's rectangle covers the button, so the button needs no
+    // region of its own. Asserting the button stays `none` is the regression
+    // guard for 6239c807 — putting the descendant rule back would leak overlay
+    // geometry into the title bar.
+    expect(hitTest.boxAppRegion).toBe('no-drag');
     expect(hitTest.closeAppRegion).toBe('none');
     expect(hitTest.receivesHit).toBe(true);
     // The authoritative check: Chromium unions/subtracts in DOCUMENT order, so

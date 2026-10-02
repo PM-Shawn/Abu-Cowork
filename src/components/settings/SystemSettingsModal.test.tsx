@@ -61,6 +61,34 @@ describe('SystemSettingsView navigation', () => {
     ]);
   });
 
+  // The glyph of every row, read from the drawn icon (lucide names each icon in its class).
+  it('keeps the glyph each page had before the migration', () => {
+    const t = getI18n();
+    useSettingsStore.setState({ labs: { pet: true } });
+    renderView();
+    const glyphs = Object.fromEntries(within(navigation()).getAllByRole('button').map((button) => [
+      button.textContent,
+      Array.from(button.querySelector('svg')?.classList ?? []).filter((name) => name.startsWith('lucide-')).at(-1),
+    ]));
+    expect(glyphs).toEqual({
+      [t.account.title]: 'lucide-user-round',
+      [t.settings.general]: 'lucide-sliders-horizontal',
+      [t.settings.capabilityOverview]: 'lucide-zap',
+      [t.settings.sandbox]: 'lucide-shield',
+      [t.settings.labs]: 'lucide-flask-conical',
+      [t.settings.aiServices]: 'lucide-settings-2',
+      [t.usage.title]: 'lucide-chart-column',
+      [t.sidebar.personalMemory]: 'lucide-brain',
+      [t.soul.title]: 'lucide-heart',
+      [t.settings.petEnable]: 'lucide-paw-print',
+      [t.imChannel.title]: 'lucide-radio',
+      [t.diagnostic.title]: 'lucide-activity',
+      [t.about.feedback]: 'lucide-message-circle',
+      [t.common.version]: 'lucide-info',
+      [t.author.title]: 'lucide-user-round',
+    });
+  });
+
   it('marks the page in view and follows a click to another page', async () => {
     const t = getI18n();
     const user = userEvent.setup();

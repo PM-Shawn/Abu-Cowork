@@ -46,8 +46,8 @@ export default function SystemSettingsView() {
     [
       { id: 'account', label: t.account.title, icon: AppIcons.account },
       { id: 'general', label: t.settings.general, icon: AppIcons.preferences },
-      { id: 'capabilities', label: t.settings.capabilityOverview, icon: AppIcons.capability },
-      { id: 'sandbox', label: t.settings.sandbox, icon: AppIcons.shield },
+      { id: 'capabilities', label: t.settings.capabilityOverview, icon: AppIcons.capabilities },
+      { id: 'sandbox', label: t.settings.sandbox, icon: AppIcons.security },
       { id: 'labs', label: t.settings.labs, icon: AppIcons.labs },
     ],
     // ② 模型与用量
@@ -65,7 +65,7 @@ export default function SystemSettingsView() {
     ],
     // ④ 接入 — IM channels stands on its own
     [
-      { id: 'im-channels', label: t.imChannel.title, icon: AppIcons.channel },
+      { id: 'im-channels', label: t.imChannel.title, icon: AppIcons.imChannels },
     ],
     // ⑤ 支持 — enterprise mode is an enterprise-build-only trailing entry,
     // hidden in OSS builds (bind flow / business modules aren't public product).

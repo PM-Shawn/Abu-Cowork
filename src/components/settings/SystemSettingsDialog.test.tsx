@@ -3,8 +3,10 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
+import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import SystemSettingsDialog from './SystemSettingsDialog';
@@ -33,8 +35,46 @@ vi.mock('@/components/settings/SystemSettingsModal', async () => {
   };
 });
 
+// A command approval the tests can raise; the rest of the bridge is the real one.
+const commandApproval = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  const state = { pending: null as { conversationId: string } | null };
+  return {
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    get: () => state.pending,
+    set: (next: { conversationId: string } | null) => {
+      state.pending = next;
+      for (const listener of listeners) listener();
+    },
+  };
+});
+vi.mock('@/core/agent/permissionBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/agent/permissionBridge')>()),
+  subscribeToCommandConfirmation: commandApproval.subscribe,
+  getPendingCommandConfirmation: commandApproval.get,
+}));
+
 function renderDialog() {
   return render(<SystemSettingsDialog />, { wrapper: DesignSystemProvider });
+}
+
+// The window opened from a button on the page, the way the account menu opens it.
+function renderWithOpener() {
+  return render(
+    <>
+      <Button onClick={() => useSettingsStore.getState().openSystemSettings()}>Open settings</Button>
+      <SystemSettingsDialog />
+    </>,
+    { wrapper: DesignSystemProvider },
+  );
+}
+
+// Radix hands focus back from a timer once the dialog has gone.
+async function flushClose() {
+  await act(() => vi.runOnlyPendingTimersAsync());
 }
 
 const settingsWindow = () => document.querySelector('[data-abu-settings-dialog]');
@@ -136,6 +176,76 @@ describe('SystemSettingsDialog', () => {
     act(() => useSettingsStore.getState().openSystemSettings());
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(isOpen()).toBe(false);
+  });
+
+  describe('approvals of the conversation in view', () => {
+    beforeEach(() => {
+      useChatStore.setState({ activeConversationId: 'conversation-in-view' });
+      useSettingsStore.setState({ viewMode: 'chat' });
+    });
+
+    afterEach(() => {
+      commandApproval.set(null);
+      useChatStore.setState({ activeConversationId: null });
+      useSettingsStore.setState({ viewMode: 'chat' });
+    });
+
+    it('closes itself when a command approval appears in the chat view', () => {
+      renderDialog();
+      expect(settingsWindow()).not.toBeNull();
+      act(() => commandApproval.set({ conversationId: 'conversation-in-view' }));
+      expect(isOpen()).toBe(false);
+      expect(settingsWindow()).toBeNull();
+    });
+
+    // The approval is drawn by the chat view; in another view nothing is on screen to yield to.
+    it('opens in another view while that approval is waiting', () => {
+      useSettingsStore.setState({ systemSettingsOpen: false, viewMode: 'automation' });
+      commandApproval.set({ conversationId: 'conversation-in-view' });
+      renderDialog();
+      act(() => useSettingsStore.getState().openSystemSettings());
+      expect(isOpen()).toBe(true);
+      expect(screen.getByRole('dialog', { name: getI18n().settings.title })).toBeInTheDocument();
+    });
+  });
+
+  describe('focus when the window closes', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      useSettingsStore.setState({ systemSettingsOpen: false });
+    });
+
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('gives focus back to its opener when the user closes it', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderWithOpener();
+      const opener = screen.getByRole('button', { name: 'Open settings' });
+      await user.click(opener);
+      expect(settingsWindow()).not.toBeNull();
+
+      await user.keyboard('{Escape}');
+      await flushClose();
+
+      expect(settingsWindow()).toBeNull();
+      expect(opener).toHaveFocus();
+    });
+
+    // A legacy prompt takes no focus: with focus on the opener underneath it, Enter would open
+    // the opener's menu over the prompt and the Escape that closes the menu would answer the prompt.
+    it('leaves focus off its opener when it yields to a blocking prompt', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderWithOpener();
+      const opener = screen.getByRole('button', { name: 'Open settings' });
+      await user.click(opener);
+      expect(settingsWindow()).not.toBeNull();
+
+      act(() => usePreviewStore.setState({ appModalOpen: true }));
+      await flushClose();
+
+      expect(settingsWindow()).toBeNull();
+      expect(opener).not.toHaveFocus();
+    });
   });
 
   it('draws no blurred scrim', () => {

@@ -3,7 +3,7 @@ import {
   CircleStop, CircleX, Clock, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, File, FileCode, FileImage, FileJson, FilePen, FilePlus,
   FileSearch, FileText, FileType2, FileWarning, FileX, FlaskConical, Folder, FolderInput, FolderOpen, FolderPlus, Globe, Hand, Hash, Heart, History, ImageOff, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
   LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Minimize2, Minus, Monitor, MonitorCog, Palette, PanelLeft, PanelRight,
-  Paperclip, PawPrint, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scan, ScanEye, ScanLine, Search, Settings, Settings2, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
+  Paperclip, PawPrint, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Radio, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scan, ScanEye, ScanLine, Search, Settings, Settings2, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
   SlidersHorizontal, Sparkles, Square, SquareDashedMousePointer, SquarePen, Star, Terminal, ThumbsDown, ThumbsUp, Trash2, TriangleAlert, Undo2, UserCheck, UserRound, UsersRound,
   Wand2, Workflow, Wrench, X, Zap, ZoomIn, ZoomOut,
   type LucideIcon,
@@ -162,6 +162,9 @@ export const AppIcons = {
   newFolder: FolderPlus,
   // Settings: navigation
   preferences: SlidersHorizontal,
+  capabilities: Zap,
+  security: Shield,
+  imChannels: Radio,
   labs: FlaskConical,
   models: Settings2,
   memory: Brain,

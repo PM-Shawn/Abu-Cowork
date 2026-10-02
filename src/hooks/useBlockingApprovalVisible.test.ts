@@ -3,6 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useBlockingApprovalVisible } from './useBlockingApprovalVisible';
 
 type Owned = { conversationId: string } | null;
@@ -48,6 +49,7 @@ describe('useBlockingApprovalVisible', () => {
   beforeEach(() => {
     useChatStore.setState({ activeConversationId: 'conversation-in-view' });
     usePreviewStore.setState({ appModalOpen: false });
+    useSettingsStore.setState({ viewMode: 'chat' });
   });
 
   afterEach(() => {
@@ -55,6 +57,7 @@ describe('useBlockingApprovalVisible', () => {
     for (const source of Object.values(bridge)) source.set(null);
     usePreviewStore.setState({ appModalOpen: false });
     useChatStore.setState({ activeConversationId: null });
+    useSettingsStore.setState({ viewMode: 'chat' });
   });
 
   it('is false while nothing is waiting and the close-window question is not shown', () => {
@@ -95,6 +98,31 @@ describe('useBlockingApprovalVisible', () => {
     act(() => bridge.command.set({ conversationId: 'another-conversation' }));
     expect(result.current).toBe(false);
     act(() => useChatStore.setState({ activeConversationId: 'another-conversation' }));
+    expect(result.current).toBe(true);
+  });
+
+  // The three approval dialogs are drawn by the chat view only.
+  it.each([
+    ['a command approval', bridge.command],
+    ['a file approval', bridge.file],
+    ['a workspace approval', bridge.workspace],
+  ])('is false for %s while another view is in front, and true again back in the chat view', (_name, source) => {
+    const { result } = renderHook(() => useBlockingApprovalVisible());
+    act(() => source.set({ conversationId: 'conversation-in-view' }));
+    expect(result.current).toBe(true);
+    act(() => useSettingsStore.setState({ viewMode: 'automation' }));
+    expect(result.current).toBe(false);
+    act(() => useSettingsStore.setState({ viewMode: 'chat' }));
+    expect(result.current).toBe(true);
+  });
+
+  it('stays true for the close-window question and a capability grant in any view', () => {
+    const { result } = renderHook(() => useBlockingApprovalVisible());
+    act(() => useSettingsStore.setState({ viewMode: 'team' }));
+    act(() => usePreviewStore.setState({ appModalOpen: true }));
+    expect(result.current).toBe(true);
+    act(() => usePreviewStore.setState({ appModalOpen: false }));
+    act(() => bridge.capability.set({ conversationId: 'conversation-in-view' }));
     expect(result.current).toBe(true);
   });
 

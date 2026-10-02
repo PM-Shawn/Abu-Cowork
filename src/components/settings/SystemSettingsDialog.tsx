@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { Dialog } from '@/components/ds/dialog';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import { useBlockingApprovalVisible } from '@/hooks/useBlockingApprovalVisible';
@@ -21,6 +21,12 @@ export default function SystemSettingsDialog() {
     if (open && blocked) closeSystemSettings();
   }, [blocked, closeSystemSettings, open]);
 
+  // After a yield the prompt that took over is a legacy modal that takes no focus. Focus stays
+  // off the opener underneath it: Enter there would open the opener's menu over the prompt,
+  // and the Escape that closes the menu would answer the prompt.
+  const blockedRef = useRef(blocked);
+  useLayoutEffect(() => { blockedRef.current = blocked; });
+
   return (
     <Dialog
       open={open && !blocked}
@@ -30,6 +36,7 @@ export default function SystemSettingsDialog() {
       size="page"
       closeButton={{ 'data-abu-settings-close': '' }}
       contentProps={{ 'data-abu-settings-dialog': '' }}
+      onCloseAutoFocus={(event) => { if (blockedRef.current) event.preventDefault(); }}
     >
       <SystemSettingsView />
     </Dialog>

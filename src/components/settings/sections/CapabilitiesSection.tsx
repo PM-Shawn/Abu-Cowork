@@ -1,15 +1,13 @@
 import { BrowserDownloadHistoryEntry, BrowserDownloadHistoryPage } from './BrowserDownloadHistoryPage';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ChevronRight,
-  Chrome,
-  Globe2,
-  MonitorCog,
-  RefreshCw,
-} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { Disclosure } from '@/components/ds/disclosure';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { StatusIcon } from '@/components/ds/status-icon';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -111,7 +109,7 @@ function badgeToneFor(code: CapabilityStatusCode): StatusBadgeTone {
  * lives on the page this row opens.
  */
 function ChannelCard({
-  icon: Icon,
+  icon,
   title,
   subtitle,
   statusLabel,
@@ -119,7 +117,7 @@ function ChannelCard({
   checking = false,
   onOpen,
 }: {
-  icon: typeof Globe2;
+  icon: ComponentProps<typeof Icon>['icon'];
   title: string;
   subtitle: string;
   statusLabel: string;
@@ -128,29 +126,29 @@ function ChannelCard({
   onOpen: () => void;
 }) {
   return (
-    <Button
-      variant="ghost"
+    <Pressable
       onClick={onOpen}
       // The status is the whole reason this row exists, so it belongs in the
       // accessible name — a screen reader hearing only "My Chrome" learns
       // nothing the page did not already imply.
       aria-label={`${title} · ${statusLabel}`}
-      className="h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4 text-left hover:bg-[var(--abu-bg-hover)]"
+      className="flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover"
     >
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-base)] text-[var(--abu-clay)]">
-        <Icon className="size-4.5" />
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-control bg-fill text-label-secondary">
+        <Icon icon={icon} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-2">
-          <span className="text-body font-semibold text-[var(--abu-text-primary)]">{title}</span>
+          <span className="text-ui font-medium text-label">{title}</span>
+          {/* Three cards can be checking at once, so a card never spins. */}
           <StatusBadge label={statusLabel} tone={statusTone} checking={checking} />
         </span>
-        <span className="mt-1 block text-minor font-normal leading-relaxed text-[var(--abu-text-muted)]">
+        <span className="mt-1 block text-ui-sm text-label-secondary">
           {subtitle}
         </span>
       </span>
-      <ChevronRight className="size-4 shrink-0 text-[var(--abu-text-muted)]" />
-    </Button>
+      <Icon icon={AppIcons.disclose} className="text-label-tertiary" />
+    </Pressable>
   );
 }
 
@@ -579,6 +577,7 @@ export default function CapabilitiesSection({
 
   const browserStatus = statuses[CAPABILITY_IDS.builtinBrowser];
   const computerStatus = statuses[CAPABILITY_IDS.computerUse];
+  const computerModelTier = computerModelCapabilities.computerUseTier;
   const screenPermission = permissions?.screenRead;
   const controlPermission = permissions?.uiControl;
   const computerModelTierLabels = {
@@ -677,9 +676,9 @@ export default function CapabilitiesSection({
 
   if (setupView === 'builtin') {
     return (
-      <div className="space-y-7">
+      <div className="space-y-6">
         <SetupHeader
-          icon={Globe2}
+          icon={AppIcons.webPage}
           title={t.settings.capabilityBuiltinBrowser}
           description={t.settings.capabilityBuiltinBrowserSubtitle}
           onBack={cancelSetup}
@@ -706,17 +705,18 @@ export default function CapabilitiesSection({
             checking={browserChecking}
             note={browserFaultNote}
             action={(
-              <button
-                type="button"
+              // The row's badge is the one spinner while this runs; the icon here stays still.
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={AppIcons.retry}
                 onClick={handleBrowserRetry}
                 disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
-                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
                 {browserStatus.code === 'connection-lost'
                   ? t.settings.capabilityRetry
                   : t.settings.capabilityCheckStatus}
-              </button>
+              </Button>
             )}
           />
         )}
@@ -794,35 +794,38 @@ export default function CapabilitiesSection({
           all, so it belongs beside the permissions it gates rather than on the
           overview, where it was a second status the card had to explain.
         */}
-        <details className="text-minor text-[var(--abu-text-muted)]"
-          open={computerModelCapabilities.computerUseTier === 'unsupported' || computerModelCapabilities.computerUseTier === 'unknown'}>
-          <summary className="cursor-pointer">{t.settings.capabilityComputerModel}</summary>
-          <div className="mt-3 pl-4 text-minor">
-            <span className="min-w-0 break-all text-[var(--abu-text-secondary)]">
-              {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
-              {' · '}{computerModelTierLabels[computerModelCapabilities.computerUseTier]}
-            </span>
-          </div>
-          <p className={cn('mt-1 pl-4 text-caption',
-            computerModelCapabilities.computerUseTier === 'unsupported' ? 'text-[var(--abu-danger)]'
-              : computerModelCapabilities.computerUseTier === 'unknown' ? 'text-[var(--abu-warning)]'
-                : 'text-[var(--abu-text-muted)]')}>
-            {computerModelTierNotes[computerModelCapabilities.computerUseTier]}
+        {/* Keyed by tier: a model that cannot be used opens the section when it is picked. */}
+        <Disclosure
+          key={computerModelTier}
+          title={t.settings.capabilityComputerModel}
+          defaultOpen={computerModelTier === 'unsupported' || computerModelTier === 'unknown'}
+        >
+          <p className="min-w-0 break-all text-ui-sm text-label-secondary">
+            {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
+            {' · '}{computerModelTierLabels[computerModelTier]}
           </p>
-        </details>
+          <p className={cn('mt-1 flex items-start gap-1 text-caption',
+            computerModelTier === 'unsupported' ? 'text-danger'
+              : computerModelTier === 'unknown' ? 'text-warning'
+                : 'text-label-tertiary')}>
+            {computerModelTier === 'unsupported' && <StatusIcon tone="danger" size="sm" />}
+            {computerModelTier === 'unknown' && <StatusIcon tone="warning" size="sm" />}
+            <span className="min-w-0">{computerModelTierNotes[computerModelTier]}</span>
+          </p>
+        </Disclosure>
       </ComputerUseSetupView>
     );
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <SettingsSectionHeader
         title={t.settings.capabilityOverview}
         description={t.settings.capabilitiesDescription}
       />
 
       <section className="space-y-3">
-        <h4 className="text-body font-medium text-[var(--abu-text-secondary)]">
+        <h4 className="text-ui-sm font-medium text-label-tertiary">
           {t.settings.capabilityWebTitle}
         </h4>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
@@ -832,7 +835,7 @@ export default function CapabilitiesSection({
             way, and a problem is never hidden behind a marketing sentence.
           */}
           <ChannelCard
-            icon={Globe2}
+            icon={AppIcons.webPage}
             title={t.settings.capabilityBuiltinBrowser}
             subtitle={browserStatus.code === 'ready'
               ? t.settings.capabilityBuiltinBrowserSubtitle
@@ -846,7 +849,7 @@ export default function CapabilitiesSection({
           />
 
           <ChannelCard
-            icon={Chrome}
+            icon={AppIcons.chrome}
             title={t.settings.capabilityMyChrome}
             subtitle={t.settings.capabilityMyChromeSubtitle}
             statusLabel={chromeStatusLabel}
@@ -858,11 +861,11 @@ export default function CapabilitiesSection({
       </section>
 
       <section className="space-y-3">
-        <h4 className="text-body font-medium text-[var(--abu-text-secondary)]">
+        <h4 className="text-ui-sm font-medium text-label-tertiary">
           {t.settings.capabilityComputerTitle}
         </h4>
         <ChannelCard
-          icon={MonitorCog}
+          icon={AppIcons.computerUse}
           title={t.settings.computerUse}
           subtitle={!computerUseEnabled || computerDisplayStatus.code === 'ready'
             ? t.settings.capabilityComputerSubtitle

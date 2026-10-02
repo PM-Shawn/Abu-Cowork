@@ -33,6 +33,14 @@ const restartAppMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('@/core/updates/checker', () => ({
  restartApp: restartAppMock }));
 
+// Only the Retry button on the built-in browser page calls it.
+const ensureBuiltinBrowserRuntimeMock = vi.hoisted(() => vi.fn());
+vi.mock('@/core/browser/builtinBrowserRuntime', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/core/browser/builtinBrowserRuntime')>(),
+  ensureBuiltinBrowserRuntime: ensureBuiltinBrowserRuntimeMock,
+}));
+beforeEach(() => ensureBuiltinBrowserRuntimeMock.mockReset().mockResolvedValue(false));
+
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invoke(...args),
@@ -337,10 +345,119 @@ describe('CapabilitiesSection', () => {
         .toBeInTheDocument();
     });
 
-    // The model tier gates the permissions, so it moved in with them.
+    // The model tier gates the permissions, so it moved in with them. A tier that
+    // works stays folded until the user opens it.
     await openDetail(user, 'Computer Use');
+    expect(screen.queryByText(/deepseek-chat · Structured mode/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Current model' }));
     expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
     expect(screen.getByText(/No image input/)).toBeInTheDocument();
+  });
+
+  // A tier that stops Computer Use from working is shown without asking.
+  it('opens the current model by itself when the model cannot be used', async () => {
+    const provider = makeModelProvider({
+      source: 'custom',
+      models: [{ id: 'private-proxy-model', label: 'Private Proxy' }],
+    });
+    useSettingsStore.setState({
+      providers: [provider],
+      activeModel: { providerId: provider.id, modelId: 'private-proxy-model' },
+    });
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openDetail(user, 'Computer Use');
+
+    expect(screen.getByRole('button', { name: 'Current model' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(/private-proxy-model · Not verified/)).toBeInTheDocument();
+  });
+
+  // Three cards can be checking at once, so none of them spins.
+  it('keeps the overview still while its cards are checking', async () => {
+    const installation = deferredProbe();
+    installationMock.mockReturnValue(installation.promise);
+    let finishPermissionCheck!: (value: { screen_recording: boolean; accessibility: boolean }) => void;
+    const permissionCheck = new Promise<{ screen_recording: boolean; accessibility: boolean }>((resolve) => {
+      finishPermissionCheck = resolve;
+    });
+    invoke.mockImplementation((command: string) => (
+      command === 'check_macos_permissions' ? permissionCheck : Promise.resolve(undefined)
+    ));
+    render(<CapabilitiesSection />);
+
+    expect(within(findCapabilityCard('My Chrome')).getByText('Checking')).toBeInTheDocument();
+    expect(within(findCapabilityCard('Computer Use')).getByText('Checking')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(0);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    // Let both checks land so nothing is left waiting when the test ends.
+    installation.resolve('installed');
+    finishPermissionCheck({ screen_recording: true, accessibility: true });
+    await waitFor(() => {
+      expect(within(findCapabilityCard('My Chrome')).getByText('Installed')).toBeInTheDocument();
+      expect(within(findCapabilityCard('Computer Use')).queryByText('Checking')).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows one spinner on the built-in browser page while a retry runs, and holds the button', async () => {
+    let finishRetry!: (ready: boolean) => void;
+    ensureBuiltinBrowserRuntimeMock.mockReturnValue(new Promise<boolean>((resolve) => { finishRetry = resolve; }));
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openBuiltinBrowser(user);
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent('Checking');
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toBeDisabled();
+    expect(retry.querySelector('[data-ds-spinner]')).toBeNull();
+
+    finishRetry(false);
+    await waitFor(() => expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(0));
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
+  });
+
+  // The window a task opens puts focus on its first control; on both pages that is Cancel.
+  it.each([
+    ['chrome', 'My Chrome'],
+    ['computer', 'Computer Use'],
+  ] as const)('starts the %s page a task opened with Cancel, which refuses and nothing else', async (target, heading) => {
+    const onSetupCancel = vi.fn();
+    const onSetupComplete = vi.fn();
+    const onSetupRelaunch = vi.fn();
+    const user = userEvent.setup();
+    render(<CapabilitiesSection setupTarget={target} requestedByTask setupOnly
+      onSetupCancel={onSetupCancel} onSetupComplete={onSetupComplete} onSetupRelaunch={onSetupRelaunch} />);
+    expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument();
+
+    const first = screen.getAllByRole('button')[0];
+    expect(first).toHaveTextContent(/^Cancel$/);
+    await user.click(first);
+
+    expect(onSetupCancel).toHaveBeenCalledOnce();
+    expect(onSetupComplete).not.toHaveBeenCalled();
+    expect(onSetupRelaunch).not.toHaveBeenCalled();
+  });
+
+  it('reports completion to the waiting task only from Return to task', async () => {
+    useSettingsStore.setState({ computerUseEnabled: true });
+    invoke.mockImplementation((command: string) => command === 'check_macos_permissions'
+      ? Promise.resolve({ screen_recording: true, accessibility: true })
+      : Promise.resolve(undefined));
+    const onSetupCancel = vi.fn();
+    const onSetupComplete = vi.fn();
+    const user = userEvent.setup();
+    render(<CapabilitiesSection setupTarget="computer" requestedByTask setupOnly
+      onSetupCancel={onSetupCancel} onSetupComplete={onSetupComplete} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Return to task' }));
+
+    expect(onSetupComplete).toHaveBeenCalledOnce();
+    expect(onSetupCancel).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
   });
 
   it('marks an undeclared custom endpoint as not verified and not ready', async () => {

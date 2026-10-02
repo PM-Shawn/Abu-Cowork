@@ -76,4 +76,44 @@ describe('Chrome installation settings', () => {
     fireEvent.click(screen.getByRole('button', { name: '返回当前任务' }));
     expect(p.onDone).toHaveBeenCalledOnce();
   });
+  // The window a task opens puts focus on its first control. That control is 取消.
+  it('starts a page a task opened with 取消, which goes back and does nothing else', () => {
+    const p = { ...props(), requestedByTask: true };
+    render(<ChromeSetupView {...p} installation="installed" capabilityEnabled runtimeReady extensionConnected
+      breadcrumb={['能力', '我的 Chrome']} />);
+    const first = screen.getAllByRole('button')[0];
+    expect(first.textContent).toBe('取消');
+    expect(screen.queryByRole('button', { name: '返回能力' })).toBeNull();
+    fireEvent.click(first);
+    expect(p.onBack).toHaveBeenCalledOnce();
+    expect(p.onDone).not.toHaveBeenCalled();
+    expect(p.onPrepare).not.toHaveBeenCalled();
+  });
+  it('never offers both 连接 Chrome and 返回当前任务', () => {
+    const p = { ...props(), requestedByTask: true, capabilityEnabled: false, runtimeReady: false };
+    const view = render(<ChromeSetupView {...p} installation="installed" />);
+    expect(screen.getByRole('button', { name: '连接 Chrome' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '返回当前任务' })).toBeNull();
+    view.rerender(<ChromeSetupView {...p} installation="installed" connecting />);
+    expect(screen.getByRole('button', { name: '连接 Chrome' }).hasAttribute('disabled')).toBe(true);
+    view.rerender(<ChromeSetupView {...p} installation="installed" capabilityEnabled runtimeReady extensionConnected />);
+    expect(screen.queryByRole('button', { name: '连接 Chrome' })).toBeNull();
+    expect(screen.getByRole('button', { name: '返回当前任务' })).toBeVisible();
+  });
+  it('holds the installer buttons while one of them is opening, and the folder button without a folder', () => {
+    const p = props();
+    const view = render(<ChromeSetupView {...p} />);
+    fireEvent.click(screen.getByRole('button', { name: '安装扩展' }));
+    view.rerender(<ChromeSetupView {...p} openingInstaller />);
+    for (const name of ['安装扩展', '打开拓展管理页', '打开扩展文件夹']) {
+      expect(screen.getByRole('button', { name }).hasAttribute('disabled')).toBe(true);
+    }
+    view.rerender(<ChromeSetupView {...p} extensionPath={null} />);
+    expect(screen.getByRole('button', { name: '打开拓展管理页' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: '打开扩展文件夹' }).hasAttribute('disabled')).toBe(true);
+  });
+  it('reports a setup error as an alert', () => {
+    render(<ChromeSetupView {...props()} error="连接组件启动失败" />);
+    expect(screen.getByRole('alert').textContent).toContain('连接组件启动失败');
+  });
 });

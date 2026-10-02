@@ -177,6 +177,10 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/PetSection*.{ts,tsx}',
   'src/components/settings/sections/SandboxSection*.{ts,tsx}',
   'src/components/settings/sections/ComputerUseGrantsCard*.{ts,tsx}',
+  'src/components/settings/sections/CapabilitiesSection*.{ts,tsx}',
+  'src/components/settings/sections/CapabilitySetupView*.{ts,tsx}',
+  'src/components/settings/sections/ChromeConnectionCard.test.tsx',
+  'src/components/settings/CapabilitySetupDialog*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

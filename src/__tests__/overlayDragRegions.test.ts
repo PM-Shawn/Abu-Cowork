@@ -162,8 +162,7 @@ describe('overlay layers opt out of the OS drag lanes', () => {
     // Pinned by name so a refactor that drops the marker fails with the symptom
     // spelled out, not just as one line in the generic list above.
     const reported = [
-      'components/ds/dialog.tsx', // the settings window and every dialog draw their scrim here
-      'components/settings/CapabilitySetupDialog.tsx', // same centred geometry
+      'components/ds/dialog.tsx', // the settings window, the task's capability window and every dialog draw their scrim here
       'components/common/ToastContainer.tsx', // sits at top-4, fully inside the band
     ];
     for (const relative of reported) {

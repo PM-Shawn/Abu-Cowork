@@ -251,9 +251,11 @@ test.describe('Electron capability overview', () => {
     });
     if (await computerCheckButton.isVisible()) {
       await expect(computerCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
-      await expect(computerCheckButton.locator('.animate-spin')).toHaveCount(0);
+      // The page polls in the background; nothing spins while it does.
+      const spinners = page.locator('[data-abu-settings-dialog] [data-ds-spinner]');
+      await expect(spinners).toHaveCount(0);
       await page.waitForTimeout(2_500);
-      await expect(computerCheckButton.locator('.animate-spin')).toHaveCount(0);
+      await expect(spinners).toHaveCount(0);
     }
     await page.screenshot({ path: COMPUTER_SETUP_SCREENSHOT_PATH });
   });

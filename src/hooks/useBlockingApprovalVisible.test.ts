@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  drainCapabilitySetupRequests,
+  getPendingCapabilitySetup,
+  requestCapabilitySetup,
+} from '@/core/capabilityPlugins/setupBridge';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -25,10 +30,10 @@ const bridge = vi.hoisted(() => {
       },
     };
   };
-  return { command: source(), file: source(), workspace: source(), capability: source() };
+  return { command: source(), file: source(), workspace: source() };
 });
 
-// The chat store imports the rest of both bridges, so only the six readers are replaced.
+// The chat store imports the rest of the bridge, so only the six readers are replaced.
 vi.mock('@/core/agent/permissionBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/agent/permissionBridge')>()),
   subscribeToCommandConfirmation: bridge.command.subscribe,
@@ -37,12 +42,6 @@ vi.mock('@/core/agent/permissionBridge', async (importOriginal) => ({
   getPendingFilePermission: bridge.file.get,
   subscribeToWorkspaceRequest: bridge.workspace.subscribe,
   getPendingWorkspaceRequest: bridge.workspace.get,
-}));
-
-vi.mock('@/core/capabilityPlugins/setupBridge', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/core/capabilityPlugins/setupBridge')>()),
-  subscribeCapabilitySetup: bridge.capability.subscribe,
-  getPendingCapabilitySetup: bridge.capability.get,
 }));
 
 describe('useBlockingApprovalVisible', () => {
@@ -54,6 +53,7 @@ describe('useBlockingApprovalVisible', () => {
 
   afterEach(() => {
     cleanup();
+    drainCapabilitySetupRequests();
     for (const source of Object.values(bridge)) source.set(null);
     usePreviewStore.setState({ appModalOpen: false });
     useChatStore.setState({ activeConversationId: null });
@@ -116,21 +116,27 @@ describe('useBlockingApprovalVisible', () => {
     expect(result.current).toBe(true);
   });
 
-  it('stays true for the close-window question and a capability grant in any view', () => {
+  it('stays true for the close-window question in any view', () => {
     const { result } = renderHook(() => useBlockingApprovalVisible());
     act(() => useSettingsStore.setState({ viewMode: 'team' }));
     act(() => usePreviewStore.setState({ appModalOpen: true }));
     expect(result.current).toBe(true);
     act(() => usePreviewStore.setState({ appModalOpen: false }));
-    act(() => bridge.capability.set({ conversationId: 'conversation-in-view' }));
-    expect(result.current).toBe(true);
+    expect(result.current).toBe(false);
   });
 
-  it('is true while a task waits for a capability grant, whichever conversation is in view', () => {
+  // The grant window is a design-system dialog: the layer registry closes the settings
+  // window for it (CapabilitySetupDialog.test.tsx), so this signal leaves it out.
+  it('stays false while a task waits for a capability grant', () => {
     const { result } = renderHook(() => useBlockingApprovalVisible());
-    act(() => bridge.capability.set({ conversationId: 'another-conversation' }));
-    expect(result.current).toBe(true);
-    act(() => bridge.capability.set(null));
+    act(() => {
+      void requestCapabilitySetup('chrome', {
+        conversationId: 'conversation-in-view',
+        toolCallId: 'tool-waiting',
+        interactionMode: 'foreground',
+      });
+    });
+    expect(getPendingCapabilitySetup()).not.toBeNull();
     expect(result.current).toBe(false);
   });
 });

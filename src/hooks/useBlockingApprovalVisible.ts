@@ -8,16 +8,16 @@ import {
   subscribeToFilePermission,
   subscribeToWorkspaceRequest,
 } from '@/core/agent/permissionBridge';
-import { getPendingCapabilitySetup, subscribeCapabilitySetup } from '@/core/capabilityPlugins/setupBridge';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 // True while a legacy blocking modal is on screen: a command, file or workspace approval of
 // the conversation in view (the chat view draws them, so only while that view is in front),
-// a task's capability grant window, or the close-window question.
+// or the close-window question.
 // A design-system dialog is modal (everything outside it is inert), so the settings window
-// closes itself while this is true.
+// closes itself while this is true. A task's capability grant window is a design-system
+// dialog: the layer registry closes the settings window when it opens.
 // Remove with batch 8, when those modals become design-system dialogs.
 export function useBlockingApprovalVisible(): boolean {
   const appModalOpen = usePreviewStore((s) => s.appModalOpen);
@@ -27,6 +27,5 @@ export function useBlockingApprovalVisible(): boolean {
   const command = useSyncExternalStore(subscribeToCommandConfirmation, getPendingCommandConfirmation);
   const file = useSyncExternalStore(subscribeToFilePermission, getPendingFilePermission);
   const workspace = useSyncExternalStore(subscribeToWorkspaceRequest, getPendingWorkspaceRequest);
-  const capabilitySetup = useSyncExternalStore(subscribeCapabilitySetup, getPendingCapabilitySetup);
-  return hasVisibleBlockingApproval(activeConversationId, [command, file, workspace], capabilitySetup !== null || appModalOpen);
+  return hasVisibleBlockingApproval(activeConversationId, [command, file, workspace], appModalOpen);
 }

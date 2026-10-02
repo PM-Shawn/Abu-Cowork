@@ -153,6 +153,8 @@ export function ImageGenBackendModal({
 
   const canSave = isDraftValid(draft);
   const handleSave = () => {
+    // The window stays on screen while it fades out; a second click then must not save again.
+    if (!open) return;
     if (!canSave) return;
     if (editBackend) {
       updateImageGenBackend(editBackend.id, draft);

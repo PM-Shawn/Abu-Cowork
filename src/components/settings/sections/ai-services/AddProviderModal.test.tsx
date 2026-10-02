@@ -22,6 +22,7 @@ import userEvent from '@testing-library/user-event';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities, toggleEffort } from './providerCapabilities';
 import { toModelInfo } from './modelInfoUtil';
 import AddProviderModal from './AddProviderModal';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { getI18n, setLanguage } from '@/i18n';
@@ -45,6 +46,88 @@ vi.mock('@/components/ds/checkbox', async (importOriginal) => {
     },
   };
 });
+
+// The real dialog and the real key field, with what each render handed them written down: the
+// title and the unsaved-input flag the window gives its dialog, whether the content it hands over
+// (shown or not) carries the made-up key anywhere, and the value the key field is rendered with.
+const windowRenders = vi.hoisted(() => ({
+  dialogs: [] as { title: unknown; dirty: unknown; holdsKey: boolean }[],
+  keys: [] as string[],
+}));
+
+// Is the text anywhere in this element tree: in a string child or in a string prop of an element?
+// Only strings, lists and React elements are followed; refs, stores and other objects are not content.
+function carriesText(node: unknown, text: string): boolean {
+  if (typeof node === 'string') return node.includes(text);
+  if (Array.isArray(node)) return node.some((child) => carriesText(child, text));
+  if (node === null || typeof node !== 'object' || !('$$typeof' in node)) return false;
+  const props = (node as { props?: Record<string, unknown> }).props ?? {};
+  return Object.values(props).some((value) => carriesText(value, text));
+}
+
+vi.mock('@/components/ds/dialog', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/dialog')>();
+  return {
+    ...actual,
+    Dialog: (props: Parameters<typeof actual.Dialog>[0]) => {
+      windowRenders.dialogs.push({
+        title: props.title,
+        dirty: props.dirty,
+        holdsKey: carriesText([props.children, props.footer], 'sk-test-not-a-secret'),
+      });
+      return <actual.Dialog {...props} />;
+    },
+  };
+});
+vi.mock('@/components/settings/SecretField', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/settings/SecretField')>();
+  return {
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      windowRenders.keys.push(props.value);
+      return <actual.default {...props} />;
+    },
+  };
+});
+// Only the unsaved-input tests let the window detect local models.
+vi.mock('@/core/llm/ollama', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/llm/ollama')>();
+  return { ...actual, checkOllamaHealth: vi.fn(), fetchOllamaModels: vi.fn() };
+});
+import { checkOllamaHealth, fetchOllamaModels } from '@/core/llm/ollama';
+
+// happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+// layer has an exit animation: it stays on the page, as it does in the app while it fades out,
+// until the test ends the animation.
+function keepClosingLayersOnScreen() {
+  const real = window.getComputedStyle.bind(window);
+  return vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+    const styles = real(element, pseudo);
+    return new Proxy(styles, {
+      get(target, prop) {
+        if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+        const value = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  });
+}
+
+// The window that is fading out.
+function closingWindow(): HTMLElement {
+  const closing = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]');
+  if (!closing) throw new Error('No window is closing');
+  return closing;
+}
+
+// Ends the fade: the window leaves the page, and what it does once it has gone runs (one timer tick later).
+function finishClosing() {
+  vi.useFakeTimers();
+  const ended = new Event('animationend', { bubbles: true });
+  Object.defineProperty(ended, 'animationName', { value: 'exit' });
+  act(() => { closingWindow().dispatchEvent(ended); });
+  act(() => { vi.runOnlyPendingTimers(); });
+  vi.useRealTimers();
+}
 
 beforeAll(() => {
   // happy-dom lacks the pointer-capture and scroll calls Radix Select makes while opening.
@@ -900,9 +983,15 @@ function keyOutsideItsInput(): string[] {
 }
 
 const ui = {
+  // The panel gives the focus back to its button one timer tick after it closes. The fake clock
+  // runs that tick here; left pending, it would take the focus out of a panel opened right after
+  // and close it at a moment that depends on the machine.
   pickProvider(name: string) {
+    vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: t().settings.selectProviderType }));
     fireEvent.click(screen.getByRole('button', { name }));
+    act(() => { vi.runOnlyPendingTimers(); });
+    vi.useRealTimers();
   },
   keyInput: () => screen.getByPlaceholderText('sk-...') as HTMLInputElement,
   nameInput: () => screen.getByPlaceholderText(t().settings.serviceNameAuto) as HTMLInputElement,
@@ -1492,6 +1581,232 @@ describe('AddProviderModal — behaviour pins', () => {
       fireEvent.click(screen.getByRole('button', { name: t().settings.selectModel }));
       expect(screen.queryByPlaceholderText(t().settings.addModelPlaceholder)).not.toBeInTheDocument();
       expect(screen.getByText(t().settings.useOtherModel)).toBeInTheDocument();
+    });
+  });
+
+  describe('while the window fades out, and once it has gone', () => {
+    let computedStyle: ReturnType<typeof keepClosingLayersOnScreen>;
+
+    beforeEach(() => {
+      computedStyle = keepClosingLayersOnScreen();
+    });
+
+    afterEach(() => {
+      computedStyle.mockRestore();
+    });
+
+    // The models page: it closes the window and forgets the edited provider in one update, and can open it again.
+    function Page({ editProvider, keepProvider = false, onClose }: { editProvider?: ProviderInstance; keepProvider?: boolean; onClose: () => void }) {
+      const [shown, setShown] = useState(true);
+      const [editing, setEditing] = useState(editProvider);
+      return (
+        <>
+          <Button onClick={() => setShown(true)}>Open again</Button>
+          <AddProviderModal
+            open={shown}
+            editProvider={editing}
+            onClose={() => {
+              onClose();
+              setShown(false);
+              if (!keepProvider) setEditing(undefined);
+            }}
+          />
+        </>
+      );
+    }
+
+    function openOnPage(editProvider?: ProviderInstance, keepProvider = false) {
+      const onClose = vi.fn();
+      render(<Page editProvider={editProvider} keepProvider={keepProvider} onClose={onClose} />, { wrapper: DesignSystemProvider });
+      return { onClose };
+    }
+
+    const titlesOfThisWindow = () => windowRenders.dialogs
+      .map((dialog) => dialog.title)
+      .filter((title) => title === t().settings.addService || title === t().settings.editService);
+
+    it('saves once when Save is pressed again during the fade', () => {
+      const { onClose } = openOnPage();
+      ui.pickProvider(t().settings.customApi);
+      fireEvent.change(ui.urlInput(), { target: { value: 'https://gateway.example.test/v1' } });
+      ui.addManualModel('model-x');
+      ui.save();
+      expect(closingWindow()).toBeInTheDocument();
+
+      ui.save();
+
+      expect(log.map(([name]) => name)).toEqual(['addProvider', 'selectModel']);
+      expect(useSettingsStore.getState().providers).toHaveLength(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks nothing when Delete is pressed during the fade', () => {
+      seed([ownA, ownB], 'own-b');
+      const { onClose } = openOnPage(ownA, true);
+      ui.cancel();
+      expect(closingWindow()).toBeInTheDocument();
+
+      ui.askToDelete();
+
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+      expect(log).toEqual([]);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps showing the provider and what the form held during the fade', () => {
+      seed([ownA, ownB], 'own-b');
+      openOnPage(ownA);
+      ui.cancel();
+
+      const closing = closingWindow();
+      expect(closing).toHaveTextContent(t().settings.editService);
+      expect(closing).not.toHaveTextContent(t().settings.addService);
+      expect(ui.nameInput().value).toBe('Service A');
+      expect(ui.keyInput().value).toBe(FAKE_KEY);
+      expect(screen.getByRole('button', { name: t().settings.deleteService })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: t().settings.selectProviderType })).not.toBeInTheDocument();
+    });
+
+    it('forgets the provider and the form once it has gone, so the next opening starts empty', () => {
+      seed([ownA, ownB], 'own-b');
+      openOnPage(ownA);
+      fireEvent.change(ui.nameInput(), { target: { value: 'Service A renamed' } });
+      ui.cancel();
+      ui.discard();
+      // Fading out, it still holds the form, key included.
+      expect(windowRenders.dialogs.at(-1)).toMatchObject({ title: t().settings.editService, holdsKey: true });
+      finishClosing();
+
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      // Gone, it holds neither the provider it edited nor the key.
+      expect(windowRenders.dialogs.at(-1)).toMatchObject({ title: t().settings.addService, holdsKey: false });
+
+      windowRenders.dialogs.length = 0;
+      windowRenders.keys.length = 0;
+      fireEvent.click(screen.getByText('Open again'));
+
+      // No render of the new window was handed the old key, and none of them had anything to discard.
+      expect(windowRenders.keys.length).toBeGreaterThan(0);
+      expect(windowRenders.keys.filter((value) => value !== '')).toEqual([]);
+      expect(windowRenders.dialogs.length).toBeGreaterThan(0);
+      expect(windowRenders.dialogs.filter((dialog) => dialog.dirty)).toEqual([]);
+      expect(titlesOfThisWindow()).not.toContain(t().settings.editService);
+      expect(ui.nameInput().value).toBe('');
+      expect(screen.getByRole('button', { name: t().settings.selectProviderType })).toBeInTheDocument();
+    });
+
+    it('forgets a deleted provider once the window has gone', async () => {
+      seed([ownA, ownB], 'own-b');
+      const { onClose } = openOnPage(ownA);
+      ui.askToDelete();
+      await ui.answerDelete(true);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(closingWindow()).toHaveTextContent(t().settings.editService);
+
+      finishClosing();
+
+      expect(windowRenders.dialogs.at(-1)).toMatchObject({ title: t().settings.addService, holdsKey: false });
+      windowRenders.keys.length = 0;
+      fireEvent.click(screen.getByText('Open again'));
+      expect(windowRenders.keys.filter((value) => value !== '')).toEqual([]);
+    });
+  });
+
+  describe('unsaved input after a fetch or a detection', () => {
+    // The models page: it closes the window when the window asks to be closed.
+    function Page({ editProvider, onClose }: { editProvider: ProviderInstance; onClose: () => void }) {
+      const [shown, setShown] = useState(true);
+      return <AddProviderModal open={shown} editProvider={shown ? editProvider : undefined} onClose={() => { onClose(); setShown(false); }} />;
+    }
+
+    function openOnPage(editProvider: ProviderInstance) {
+      seed([editProvider]);
+      const onClose = vi.fn();
+      render(<Page editProvider={editProvider} onClose={onClose} />, { wrapper: DesignSystemProvider });
+      return { onClose };
+    }
+
+    // Saved before the window stored abilities with each model: its models carry none.
+    const ollama: ProviderInstance = {
+      id: 'ollama',
+      source: 'builtin',
+      name: 'Ollama',
+      enabled: true,
+      apiFormat: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1:11434',
+      apiKey: '',
+      models: [{ id: 'llama-a', label: 'llama-a' }, { id: 'llama-b', label: 'llama-b' }],
+      status: 'verified',
+      sortOrder: 0,
+      userAdded: true,
+    };
+
+    function detects(names: string[]) {
+      vi.mocked(checkOllamaHealth).mockResolvedValue({ ok: true });
+      vi.mocked(fetchOllamaModels).mockResolvedValue(names.map((name) => ({ name, details: {} })) as Awaited<ReturnType<typeof fetchOllamaModels>>);
+    }
+
+    async function blurAddress() {
+      await act(async () => { fireEvent.blur(screen.getByPlaceholderText('http://127.0.0.1:11434')); });
+    }
+
+    afterEach(() => {
+      vi.mocked(fetchProviderModels).mockReset();
+      vi.mocked(checkOllamaHealth).mockReset();
+      vi.mocked(fetchOllamaModels).mockReset();
+    });
+
+    it('has nothing to discard after fetching models and ticking none', async () => {
+      vi.mocked(fetchProviderModels).mockResolvedValue({
+        success: true,
+        models: ['model-a', 'model-a2', 'model-new'].map((id) => ({ id, label: id })),
+      });
+      const { onClose } = openOnPage(ownA);
+      fireEvent.click(screen.getByRole('button', { name: t().settings.fetchModels }));
+      await screen.findByText(t().settings.fetchModelsSuccess.replace('{count}', '3'));
+
+      await userEvent.keyboard('{Escape}');
+
+      expect(ui.discardQuestion()).not.toBeInTheDocument();
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('has nothing to discard after a detection that found the saved models again', async () => {
+      detects(['llama-a', 'llama-b']);
+      const { onClose } = openOnPage(ollama);
+      await blurAddress();
+      expect(vi.mocked(fetchOllamaModels)).toHaveBeenCalledTimes(1);
+
+      await userEvent.keyboard('{Escape}');
+
+      expect(ui.discardQuestion()).not.toBeInTheDocument();
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks before discarding a model that a detection added to the selection', async () => {
+      detects(['llama-a', 'llama-b', 'llama-c']);
+      const { onClose } = openOnPage(ollama);
+      await blurAddress();
+      expect(screen.getByText('llama-c')).toBeInTheDocument();
+
+      await userEvent.keyboard('{Escape}');
+
+      expect(ui.discardQuestion()).toBeInTheDocument();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('asks once an ability of a model was changed, also after a fetch', async () => {
+      vi.mocked(fetchProviderModels).mockResolvedValue({ success: true, models: [{ id: 'model-a', label: 'model-a' }] });
+      const { onClose } = openOnPage(ownA);
+      fireEvent.click(screen.getByRole('button', { name: t().settings.fetchModels }));
+      await screen.findByText(t().settings.fetchModelsSuccess.replace('{count}', '1'));
+      fireEvent.click(screen.getAllByRole('button', { name: t().settings.advancedConfig })[0]);
+      fireEvent.click(screen.getByRole('checkbox', { name: t().settings.capImages }));
+
+      await userEvent.keyboard('{Escape}');
+
+      expect(ui.discardQuestion()).toBeInTheDocument();
+      expect(onClose).not.toHaveBeenCalled();
     });
   });
 

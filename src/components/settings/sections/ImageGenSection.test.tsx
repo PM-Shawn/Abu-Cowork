@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
+import { useState } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -328,6 +329,77 @@ describe('ImageGenBackendModal', () => {
     render(<ImageGenBackendModal open={false} onClose={vi.fn()} />, { wrapper: DesignSystemProvider });
 
     expect(screen.queryByPlaceholderText(t().settings.imageGenBackendNamePlaceholder)).not.toBeInTheDocument();
+  });
+});
+
+describe('ImageGenBackendModal while it fades out', () => {
+  // happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+  // layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+  function keepClosingLayersOnScreen() {
+    const real = window.getComputedStyle.bind(window);
+    return vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const styles = real(element, pseudo);
+      return new Proxy(styles, {
+        get(target, prop) {
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+  }
+
+  // The models page: it closes the window and forgets the edited backend in one update.
+  function Page({ editBackend }: { editBackend?: ImageGenBackend }) {
+    const [adding, setAdding] = useState(!editBackend);
+    const [editing, setEditing] = useState<ImageGenBackend | null>(editBackend ?? null);
+    return (
+      <ImageGenBackendModal
+        open={adding || !!editing}
+        editBackend={editing ?? undefined}
+        onClose={() => { setAdding(false); setEditing(null); }}
+      />
+    );
+  }
+
+  let computedStyle: ReturnType<typeof keepClosingLayersOnScreen>;
+
+  beforeEach(() => {
+    computedStyle = keepClosingLayersOnScreen();
+  });
+
+  afterEach(() => {
+    computedStyle.mockRestore();
+  });
+
+  const closingWindow = () => document.querySelector('[role="dialog"][data-state="closed"]');
+
+  it('adds a backend once when Save is pressed again during the fade', () => {
+    render(<Page />, { wrapper: DesignSystemProvider });
+    type(nameField(), 'Seedream');
+    type(addressField(), 'https://images.example.test/api/v3');
+    type(keyField(), FAKE_KEY);
+    type(modelField(), 'seedream-test');
+    fireEvent.click(saveButton());
+    expect(closingWindow()).toBeInTheDocument();
+
+    fireEvent.click(saveButton());
+
+    expect(log.map(([name]) => name)).toEqual(['addImageGenBackend']);
+    expect(useSettingsStore.getState().imageGeneration.backends).toHaveLength(1);
+  });
+
+  it('updates the edited backend once, and adds no copy, when Save is pressed again during the fade', () => {
+    useSettingsStore.setState({ imageGeneration: { backends: [SEEDREAM], defaultId: 'backend-a' } });
+    render(<Page editBackend={SEEDREAM} />, { wrapper: DesignSystemProvider });
+    type(nameField(), 'Seedream 2');
+    fireEvent.click(saveButton());
+    expect(closingWindow()).toBeInTheDocument();
+
+    fireEvent.click(saveButton());
+
+    expect(log.map(([name]) => name)).toEqual(['updateImageGenBackend']);
+    expect(useSettingsStore.getState().imageGeneration.backends.map((backend) => backend.name)).toEqual(['Seedream 2']);
   });
 });
 

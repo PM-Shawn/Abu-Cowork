@@ -616,6 +616,38 @@ describe('windows opened from the page', () => {
     expect(save).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: t().browserSitePermsAddButton })).toBeEnabled();
   });
+  it('writes the website once when Add is pressed again while the add window fades out', async () => {
+    // happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+    // layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+    const real = window.getComputedStyle.bind(window);
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const styles = real(element, pseudo);
+      return new Proxy(styles, {
+        get(target, prop) {
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    // Saves the way the store does: the website is in the configuration once the save has answered.
+    const save = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteRule').mockImplementation(async (site, rule) => {
+      useSettingsStore.setState({ browserPermissionConfigV2: { ...createBrowserPermissionConfig(), sites: { [site]: rule } } });
+      return 'saved';
+    });
+    page();
+    const dialog = await openAdd(`${origin}/guide`);
+    await act(async () => { fireEvent.click(addButton(dialog)); });
+    expect(save).toHaveBeenCalledOnce();
+    const closing = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]')!;
+    expect(closing).toBeInTheDocument();
+
+    // The window is still on the page and its button still takes the click: the website it would
+    // add is already listed, so nothing is written again.
+    await act(async () => { fireEvent.click(addButton(closing)); });
+
+    expect(save).toHaveBeenCalledOnce();
+  });
 });
 
 describe('the list changing under an open access list', () => {

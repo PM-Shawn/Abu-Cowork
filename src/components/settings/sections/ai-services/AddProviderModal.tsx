@@ -793,9 +793,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // Everything the user can fill in, as one string. The window has something to lose once this
   // differs from what the form held when it opened (or when it was last saved). The string
   // holds the key: it stays in memory, and is never logged or rendered.
+  // A model without declared abilities counts as holding its defaults, which is what the form
+  // shows for it: a fetch or a detection that only fills those defaults in is no change.
   const formSnapshot = JSON.stringify([
     selectedId, serviceName, apiKey, baseUrl, selectedPlanId, useRawUrl, manualModelInput,
-    [...selectedModels].map((id) => [id, showAdvanced ? perModelDeclared[id] ?? null : null]),
+    [...selectedModels].map((id) => [id, showAdvanced ? perModelDeclared[id] ?? defaultModelDeclaredCapabilities(id) : null]),
   ]);
   // null until the form has been reset or prefilled for this opening (the layout effect below).
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
@@ -1090,8 +1092,14 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     <Dialog
       open={isOpen}
       onOpenChange={(next) => { if (!next) onClose(); }}
-      // The form is wiped once the window has gone, so it does not empty while it fades out.
-      onCloseAutoFocus={() => { if (!isOpen) resetFormState(); }}
+      // Once the window has gone it forgets the form, the baseline it compared the form with and
+      // the provider it showed (each holds the key). Not earlier: the form must not empty while it fades out.
+      onCloseAutoFocus={() => {
+        if (isOpen) return;
+        resetFormState();
+        setSavedSnapshot(null);
+        setHeldProvider(undefined);
+      }}
       title={shownProvider ? t.settings.editService : t.settings.addService}
       size="lg"
       closeButton

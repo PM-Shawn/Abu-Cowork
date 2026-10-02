@@ -111,6 +111,42 @@ describe('Dialog', () => {
     expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toHaveClass('data-[state=closed]:pointer-events-none!');
   });
 
+  it('closes once and raises nothing when Discard is activated again while the question fades out', async () => {
+    // happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+    // layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+    const real = window.getComputedStyle.bind(window);
+    const computed = vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const styles = real(element, pseudo);
+      return new Proxy(styles, {
+        get(target, prop) {
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    const errors: unknown[] = [];
+    const onError = (event: ErrorEvent) => { errors.push(event.error); event.preventDefault(); };
+    window.addEventListener('error', onError);
+    try {
+      const user = userEvent.setup();
+      const onOpenChange = vi.fn();
+      render(<Dialog open dirty title="Host" onOpenChange={onOpenChange}>Body</Dialog>, { wrapper: DesignSystemProvider });
+      await user.keyboard('{Escape}');
+      const discard = screen.getByRole('button', { name: 'Discard' });
+      fireEvent.click(discard);
+      expect(document.querySelector('[role="alertdialog"][data-state="closed"]')).toContainElement(discard);
+
+      fireEvent.click(discard);
+
+      expect(errors).toEqual([]);
+      expect(onOpenChange.mock.calls).toEqual([[false]]);
+    } finally {
+      window.removeEventListener('error', onError);
+      computed.mockRestore();
+    }
+  });
+
   it('opens from its trigger, closes on Escape, and returns focus to the trigger', async () => {
     const user = userEvent.setup();
     render(<RenameDialog />, { wrapper: DesignSystemProvider });

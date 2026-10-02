@@ -14,7 +14,7 @@ export const DIALOG_MOTION = 'data-[state=open]:animate-in data-[state=open]:fad
 // on Save must not land. Important, because Radix sets pointer-events inline on a modal layer.
 // Keys can still reach a closing dialog, so a save handler also checks that its dialog is open.
 export const DIALOG_CLOSING = 'data-[state=closed]:pointer-events-none!';
-export const SCRIM_MOTION ='data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-base data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-fast';
+export const SCRIM_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-base data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-fast';
 // Floating layers keep this many pixels between themselves and the window edge.
 export const EDGE_GAP = 8;
 export const DIALOG_SURFACE = 'fixed z-dialog flex flex-col rounded-window bg-raised text-label shadow-dialog outline-none';

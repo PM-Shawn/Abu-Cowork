@@ -167,6 +167,8 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
     else setError(result === 'conflict' ? t.settings.browserSiteRuleConflict : t.settings.browserSaveFailed);
   }
   function addSite() {
+    // The add window stays on the page while it fades out; it adds nothing then.
+    if (!adding) return;
     if (!analysis.normalizedOrigin || analysis.issue === 'credentials' || analysis.issue === 'invalid') {
       setError(analysis.issue === 'credentials' ? t.settings.browserSitePermsAddCredentials : t.settings.browserSitePermsAddInvalid);
       return;

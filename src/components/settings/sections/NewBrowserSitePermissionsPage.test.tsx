@@ -642,11 +642,12 @@ describe('windows opened from the page', () => {
     const closing = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]')!;
     expect(closing).toBeInTheDocument();
 
-    // The window is still on the page and its button still takes the click: the website it would
-    // add is already listed, so nothing is written again.
+    // The window is still on the page and its button still takes the click: the window is closing,
+    // so nothing is written again and nothing is said about a website that is already listed.
     await act(async () => { fireEvent.click(addButton(closing)); });
 
     expect(save).toHaveBeenCalledOnce();
+    expect(screen.queryByText(t().browserSiteAlreadyAdded)).toBeNull();
   });
 });
 

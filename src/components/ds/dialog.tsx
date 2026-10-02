@@ -79,11 +79,8 @@ export function Dialog({
     if (dirtyRef.current) askToDiscard(() => setOpen(false));
     else setOpen(false);
   };
-  const discard = () => {
-    const pending = takePendingDiscard();
-    if (!pending) throw new Error('No discard is pending');
-    pending.onDiscard();
-  };
+  // The question stays on the page while it fades out: a later activation finds nothing pending.
+  const discard = () => { takePendingDiscard()?.onDiscard(); };
   // Keep editing, Escape, or anything else that closes the question without discarding.
   const keep = () => { takePendingDiscard()?.onKeep?.(); };
 

@@ -439,6 +439,44 @@ describe('Dialog close button, data attributes and focus', () => {
     expect(within(dialog).getByText('Grant access')).toHaveClass('pr-8');
   });
 
+  // An enlarged image has nothing to press but the close button. Focus on that button would
+  // show its tooltip the moment the dialog opens, and the first Escape would close the tooltip.
+  it('opens with focus on the dialog itself when the close button is its only control, and closes on one Escape', async () => {
+    const user = userEvent.setup();
+    render(
+      <Dialog trigger={<Button>Enlarge</Button>} title="Picture" titleHidden closeButton>
+        <p>A picture</p>
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const trigger = screen.getByRole('button', { name: 'Enlarge' });
+    await user.click(trigger);
+    const dialog = screen.getByRole('dialog', { name: 'Picture' });
+
+    expect(dialog).toHaveFocus();
+    expect(within(dialog).getByRole('button', { name: 'Close' })).not.toHaveFocus();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('still reaches the close button with Tab when it is the only control', async () => {
+    const user = userEvent.setup();
+    render(
+      <Dialog trigger={<Button>Enlarge</Button>} title="Picture" titleHidden closeButton>
+        <p>A picture</p>
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Enlarge' }));
+
+    await user.tab();
+
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+  });
+
   it('has no close button and no room for one unless asked', () => {
     render(<Dialog open title="Grant access"><Button>Allow</Button></Dialog>, { wrapper: DesignSystemProvider });
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();

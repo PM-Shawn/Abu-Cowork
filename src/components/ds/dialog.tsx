@@ -17,6 +17,14 @@ export type DataAttributes = { [key: `data-${string}`]: string | undefined };
 // Its height limit counts from that edge, so the dialog still ends 48px above the window's bottom.
 const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0 max-h-[calc(100dvh*6/7-3rem)]' } as const;
 
+// True when the dialog has a close button and nothing else the Tab key can reach.
+function hasOnlyCloseButton(content: HTMLElement): boolean {
+  const close = content.querySelector('[data-ds-dialog-close]');
+  if (!close) return false;
+  const reachable = content.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]');
+  return Array.from(reachable).every((control) => close.contains(control) || control.tabIndex < 0 || control.hasAttribute('disabled'));
+}
+
 export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close {...props} />;
 }
@@ -138,7 +146,17 @@ export function Dialog({
             role={role}
             onEscapeKeyDown={stay}
             onInteractOutside={stay}
-            onOpenAutoFocus={() => remember(returnTo)}
+            onOpenAutoFocus={(event) => {
+              remember(returnTo);
+              // The close button is the only control (an enlarged image): focus goes to the box.
+              // On the button it would show the button's tooltip at once, and the first Escape
+              // would close the tooltip, not the dialog. Tab still reaches the button.
+              const content = event.currentTarget;
+              if (content instanceof HTMLElement && hasOnlyCloseButton(content)) {
+                event.preventDefault();
+                content.focus();
+              }
+            }}
             onCloseAutoFocus={(event) => {
               // The layer's handler first: it prevents the default when the registry
               // closed this dialog to make room for another. Then the caller's choice.
@@ -174,7 +192,7 @@ export function Dialog({
                 {footer && <div className="mt-6 flex shrink-0 justify-end gap-2">{footer}</div>}
                 {/* Last in the content, so the dialog opens with focus on its first control. */}
                 {closeButton && (
-                  <span className="absolute right-3 top-3 flex">
+                  <span data-ds-dialog-close className="absolute right-3 top-3 flex">
                     <DialogPrimitive.Close asChild>
                       <IconButton icon={AppIcons.close} label={t.common.close} {...(closeButton === true ? {} : closeButton)} />
                     </DialogPrimitive.Close>

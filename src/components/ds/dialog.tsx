@@ -7,7 +7,7 @@ import { Button, IconButton } from './button';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
 import { InDialogContext, useLayer, useLayerContainer, useOpenState } from './layer-context';
-import { DIALOG_BOX, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
+import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
 
 const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
 interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
@@ -139,7 +139,7 @@ export function Dialog({
               giveFocusBack(returnTo, event, trigger !== undefined);
             }}
             {...(description ? {} : { 'aria-describedby': undefined })}
-            className={cn(box, DIALOG_MOTION)}
+            className={cn(box, DIALOG_MOTION, DIALOG_CLOSING)}
           >
             <LayerScope id={id}>
               <InDialogContext.Provider value>
@@ -185,7 +185,7 @@ export function Dialog({
             data-electron-no-drag
             onOpenAutoFocus={() => remember(discardReturnTo)}
             onCloseAutoFocus={(event) => giveFocusBack(discardReturnTo, event, false)}
-            className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}
+            className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION, DIALOG_CLOSING)}
           >
             <AlertDialogPrimitive.Title className="text-title text-label">{t.designSystem.discardTitle}</AlertDialogPrimitive.Title>
             <AlertDialogPrimitive.Description className="mt-1 text-ui text-label-secondary">

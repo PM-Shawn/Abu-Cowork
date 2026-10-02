@@ -102,6 +102,15 @@ describe('Dialog', () => {
     expect(onNewcomerChange).not.toHaveBeenCalled();
   });
 
+  it('takes no pointer input once it is closing, and neither does its discard question', async () => {
+    const user = userEvent.setup();
+    render(<Dialog open dirty title="Host">Body</Dialog>, { wrapper: DesignSystemProvider });
+    // The important flag beats the inline pointer-events that Radix puts on a modal layer.
+    expect(screen.getByRole('dialog', { name: 'Host' })).toHaveClass('data-[state=closed]:pointer-events-none!');
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toHaveClass('data-[state=closed]:pointer-events-none!');
+  });
+
   it('opens from its trigger, closes on Escape, and returns focus to the trigger', async () => {
     const user = userEvent.setup();
     render(<RenameDialog />, { wrapper: DesignSystemProvider });

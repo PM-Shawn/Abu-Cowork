@@ -199,7 +199,8 @@ function managedStatusText(provider: ProviderInstance, t: ReturnType<typeof useI
 
 function ManagedStatus({ provider, t }: { provider: ProviderInstance; t: ReturnType<typeof useI18n>['t'] }) {
   const text = managedStatusText(provider, t);
-  if (provider.status === 'checking' || provider.status === 'unchecked') return <Spinner size="sm" label={text} />;
+  // Only a sync that is running spins; before the first one the words stand still.
+  if (provider.status === 'checking') return <Spinner size="sm" label={text} />;
   if (provider.status === 'failed') {
     return (
       <span className="inline-flex items-center gap-1 text-caption text-warning">

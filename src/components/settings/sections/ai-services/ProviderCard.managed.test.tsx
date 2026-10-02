@@ -93,10 +93,12 @@ describe('ProviderCard for a managed provider', () => {
     expect(resync.querySelector('.animate-spin')).toBeNull();
   });
 
-  it('keeps the button usable before the first sync has started', () => {
+  it('keeps the button usable and spins nothing before the first sync has started', () => {
     renderCard(managed({ status: 'unchecked', models: [] }));
 
     expect(screen.getByRole('button', { name: '重新同步' })).toBeEnabled();
+    expect(card().querySelector('[data-ds-spinner]')).toBeNull();
+    expect(screen.getByText('同步中')).toHaveClass('text-caption');
   });
 
   it('marks offline with a shape as well as a colour, and spins nothing', () => {

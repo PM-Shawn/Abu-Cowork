@@ -51,28 +51,20 @@ describe('SecretField', () => {
 
     expect(input()).toHaveAttribute('type', 'password');
     const show = screen.getByRole('button', { name: 'Show key' });
-    expect(show).toHaveAttribute('aria-pressed', 'false');
+    // The name says what the button does next; it carries no pressed state on top of that.
+    expect(show).not.toHaveAttribute('aria-pressed');
 
     await user.click(show);
 
     expect(input()).toHaveAttribute('type', 'text');
     const hide = screen.getByRole('button', { name: 'Hide key' });
-    expect(hide).toHaveAttribute('aria-pressed', 'true');
+    expect(hide).not.toHaveAttribute('aria-pressed');
     expect(screen.queryByRole('button', { name: 'Show key' })).not.toBeInTheDocument();
 
     await user.click(hide);
 
     expect(input()).toHaveAttribute('type', 'password');
-    expect(screen.getByRole('button', { name: 'Show key' })).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('keeps the plain look while the key is shown, because the icon already says so', async () => {
-    const user = userEvent.setup();
-    renderField();
-
-    await user.click(screen.getByRole('button', { name: 'Show key' }));
-
-    expect(screen.getByRole('button', { name: 'Hide key' })).not.toHaveClass('aria-pressed:bg-fill-selected');
+    expect(screen.getByRole('button', { name: 'Show key' })).not.toHaveAttribute('aria-pressed');
   });
 
   it('reports each change as a string', async () => {
@@ -118,11 +110,20 @@ describe('SecretField', () => {
 
     expect(everythingButTheValue()).not.toContain(FAKE_KEY);
 
-    const show = screen.getByRole('button', { name: 'Show key' });
-    await user.hover(show);
-    await user.click(show);
+    // Keyboard focus opens the tooltip at once, so the scan reads it too.
+    await user.tab();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Show key' })).toHaveFocus();
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Show key');
+    expect(everythingButTheValue()).not.toContain(FAKE_KEY);
+
+    await user.keyboard('{Enter}');
+    await user.tab({ shift: true });
+    await user.tab();
 
     expect(input().value).toBe(FAKE_KEY);
+    expect(screen.getByRole('button', { name: 'Hide key' })).toHaveFocus();
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Hide key');
     expect(everythingButTheValue()).not.toContain(FAKE_KEY);
     expect(screen.getByRole('button', { name: 'Hide key' })).toHaveAttribute('aria-label', 'Hide key');
   });

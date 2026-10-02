@@ -30,9 +30,6 @@ export default function SecretField({ value, onChange, placeholder, disabled, id
           size="sm"
           icon={shown ? AppIcons.hideSecret : AppIcons.showSecret}
           label={shown ? t.settings.secretHide : t.settings.secretShow}
-          aria-pressed={shown}
-          // The icon and the name already say whether the key is shown.
-          pressedFill={false}
           disabled={disabled}
           onClick={() => setShown(!shown)}
         />

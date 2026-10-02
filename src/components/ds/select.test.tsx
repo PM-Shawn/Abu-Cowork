@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import ReactDOM from 'react-dom';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { Combobox } from './combobox';
 import { AppIcons } from './icons';
@@ -324,6 +325,68 @@ describe('Select: picking the chosen option again', () => {
     await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
     expect(onReselect).not.toHaveBeenCalled();
     expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing for a key that is repeating because it is held down', async () => {
+    const user = userEvent.setup();
+    const { onValueChange, onReselect, trigger } = renderAccess();
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    const chosen = screen.getByRole('option', { name: 'Custom' });
+    await waitFor(() => expect(chosen).toHaveFocus());
+    // Radix picks on any Enter; a held key must neither open the window behind the option nor write again.
+    fireEvent.keyDown(chosen, { key: 'Enter', repeat: true });
+    expect(onReselect).not.toHaveBeenCalled();
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('Select: while it is closed', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('mounts no list and no portal, however many options it has', () => {
+    const createPortal = vi.spyOn(ReactDOM, 'createPortal');
+    render(
+      <>
+        <Select label="Site access" value="allow" onValueChange={() => undefined} options={ACCESS} />
+        <Select label="Model" value="opus" onValueChange={() => undefined} options={MODELS} />
+        <Select label="Unchosen" value="" placeholder="Choose a model" onValueChange={() => undefined} options={MODELS} />
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    expect(createPortal).not.toHaveBeenCalled();
+    expect(screen.queryByRole('option', { hidden: true })).toBeNull();
+    // The closed select still shows the chosen option: its mark and its name, never its description.
+    const access = screen.getByRole('combobox', { name: 'Site access' });
+    expect(access).toHaveTextContent(/^Allow$/);
+    expect(access.querySelectorAll('svg.text-success')).toHaveLength(1);
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveTextContent(/^Claude Opus 5$/);
+    const unchosen = screen.getByRole('combobox', { name: 'Unchosen' });
+    expect(unchosen).toHaveTextContent(/^Choose a model$/);
+    expect(unchosen).toHaveAttribute('data-placeholder');
+  });
+
+  it('shows the same mark and name in the closed select as in the list, and follows the value', async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [value, setValue] = useState('ask');
+      return <Select label="Site access" value={value} onValueChange={setValue} options={ACCESS} />;
+    }
+    render(<Harness />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('combobox', { name: 'Site access' });
+    expect(trigger).toHaveTextContent(/^Ask every time$/);
+    expect(trigger.querySelector('svg.text-success, svg.text-danger, svg.text-label-secondary')).toBeNull();
+    await user.click(trigger);
+    const inList = screen.getByRole('option', { name: 'Custom' }).querySelector('span.inline-flex')!.outerHTML;
+    await user.click(screen.getByRole('option', { name: 'Custom' }));
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(trigger).toHaveTextContent(/^Custom$/);
+    expect(trigger.querySelector('span.inline-flex')!.outerHTML).toBe(inList);
+  });
+
+  it('shows nothing for a value that is not among the options', () => {
+    render(<Select label="Model" value="gone" onValueChange={() => undefined} options={MODELS} />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveTextContent(/^$/);
   });
 });
 

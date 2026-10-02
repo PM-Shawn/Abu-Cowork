@@ -1,6 +1,6 @@
 import { Select as SelectPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import { useId, useRef } from 'react';
+import { useId, useRef, type KeyboardEvent } from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
@@ -20,6 +20,18 @@ export interface SelectOption {
   disabled?: boolean;
 }
 
+// What an option shows in the list and, once chosen, in the closed select: its mark and its
+// name, never its description.
+function markAndName(option: SelectOption) {
+  if (!option.tone && !option.icon) return option.label;
+  return (
+    <span className="inline-flex items-center gap-2">
+      {option.tone ? <StatusIcon tone={option.tone} size="sm" /> : option.icon && <Icon icon={option.icon} size="sm" className="text-label-secondary" />}
+      {option.label}
+    </span>
+  );
+}
+
 // Arrow keys on a closed select only open the list; inside the list they only move the
 // highlight. A value changes on Enter, Space or a click.
 export function Select({ value, onValueChange, onReselect, options, label, placeholder, disabled, open, defaultOpen = false, onOpenChange, onCloseAutoFocus: callerCloseAutoFocus, fullWidth = false }: {
@@ -37,7 +49,8 @@ export function Select({ value, onValueChange, onReselect, options, label, place
   onOpenChange?: (open: boolean) => void;
   // Runs once the list has gone, just before the focus returns to the select. Open a dialog
   // that a choice leads to from here, so the dialog gives the focus back to the select;
-  // event.preventDefault() keeps the focus from returning.
+  // event.preventDefault() keeps the focus from returning. When event.defaultPrevented is
+  // already true, the registry closed the list for another layer: leave the focus alone.
   onCloseAutoFocus?: (event: Event) => void;
   // Fills the width of its container, so a group of selects lines up (wrap them in a sized div).
   fullWidth?: boolean;
@@ -47,12 +60,14 @@ export function Select({ value, onValueChange, onReselect, options, label, place
   const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
   const level = useFloatingLevel();
   const descriptionBase = useId();
+  const chosen = options.find((option) => option.value === value);
   // The option under the pointer or key event that is being handled right now. Radix closes the
   // list inside that event when it picks the option, and says nothing more when the value is the same.
   const picking = useRef<string | null>(null);
   const notePick = (optionValue: string) => {
     const note = () => { picking.current = optionValue; };
-    return { onPointerUp: note, onClick: note, onKeyDown: note };
+    // A key that repeats because it is held down picks nothing a second time.
+    return { onPointerUp: note, onClick: note, onKeyDown: (event: KeyboardEvent) => { if (!event.repeat) note(); } };
   };
   // The event passed the option without closing the list: it was not a pick.
   const endPick = () => { picking.current = null; };
@@ -74,13 +89,16 @@ export function Select({ value, onValueChange, onReselect, options, label, place
         className={cn(fullWidth ? 'flex w-full' : 'inline-flex min-w-32', 'h-7 items-center justify-between gap-2 rounded-control border border-control-border bg-field px-2 text-ui text-label data-[placeholder]:text-label-placeholder', FOCUS_RING, DISABLED)}
       >
         <span className="min-w-0 truncate">
-          <SelectPrimitive.Value placeholder={placeholder} />
+          {/* The closed select draws the chosen option itself, so no list exists until it opens. */}
+          <SelectPrimitive.Value placeholder={placeholder}>{chosen && markAndName(chosen)}</SelectPrimitive.Value>
         </span>
         <SelectPrimitive.Icon className="inline-flex text-label-secondary">
           <Icon icon={AppIcons.selectorChevrons} size="sm" />
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
-      <SelectPrimitive.Portal container={container}>
+      {/* Mounted only while open. A closed Radix list would keep every option, and a React portal
+          with its full set of event listeners, alive for each select on the page. */}
+      {isOpen && <SelectPrimitive.Portal container={container}>
         <SelectPrimitive.Content
           position="popper"
           sideOffset={4}
@@ -107,7 +125,7 @@ export function Select({ value, onValueChange, onReselect, options, label, place
                 if (!option.description && !option.icon && !option.tone) {
                   return (
                     <SelectPrimitive.Item key={option.value} value={option.value} disabled={option.disabled} {...notePick(option.value)} className={cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6')}>
-                      <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
+                      <SelectPrimitive.ItemText>{markAndName(option)}</SelectPrimitive.ItemText>
                       {indicator}
                     </SelectPrimitive.Item>
                   );
@@ -125,13 +143,7 @@ export function Select({ value, onValueChange, onReselect, options, label, place
                     className={cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6', option.description && 'h-auto items-start py-1')}
                   >
                     <span className="flex min-w-0 flex-1 flex-col">
-                      {/* Radix copies the chosen option's ItemText into the closed select: icon and name, no description. */}
-                      <SelectPrimitive.ItemText>
-                        <span className="inline-flex items-center gap-2">
-                          {option.tone ? <StatusIcon tone={option.tone} size="sm" /> : option.icon && <Icon icon={option.icon} size="sm" className="text-label-secondary" />}
-                          {option.label}
-                        </span>
-                      </SelectPrimitive.ItemText>
+                      <SelectPrimitive.ItemText>{markAndName(option)}</SelectPrimitive.ItemText>
                       {/* aria-hidden keeps the description out of the name; aria-describedby still reads it.
                           Beside an icon it starts under the name: 22px is the 14px icon plus the 8px gap. */}
                       {option.description && (
@@ -145,7 +157,7 @@ export function Select({ value, onValueChange, onReselect, options, label, place
             </LayerScope>
           </SelectPrimitive.Viewport>
         </SelectPrimitive.Content>
-      </SelectPrimitive.Portal>
+      </SelectPrimitive.Portal>}
     </SelectPrimitive.Root>
   );
 }

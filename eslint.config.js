@@ -175,6 +175,8 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/GeneralSection*.{ts,tsx}',
   'src/components/settings/sections/LabsSection*.{ts,tsx}',
   'src/components/settings/sections/PetSection*.{ts,tsx}',
+  'src/components/settings/sections/SandboxSection*.{ts,tsx}',
+  'src/components/settings/sections/ComputerUseGrantsCard*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

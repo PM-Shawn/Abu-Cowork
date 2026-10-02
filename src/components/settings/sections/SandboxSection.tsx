@@ -4,16 +4,27 @@ import type { PermissionMode } from '@/core/permissions/permissionMode';
 import { getAuthorizedWritablePaths, revokeWorkspace } from '@/core/tools/pathSafety';
 import { useI18n } from '@/i18n';
 import { isWindows } from '@/utils/platform';
-import { Shield, ShieldAlert, Globe, Plus, X, Info, ShieldCheck, FolderOpen, Trash2, SlidersHorizontal } from 'lucide-react';
-import { Toggle } from '@/components/ui/toggle';
-import { Select } from '@/components/ui/select';
-import { cn } from '@/lib/utils';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Pressable } from '@/components/ds/pressable';
+import { Select } from '@/components/ds/select';
+import { Separator } from '@/components/ds/separator';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { TextField } from '@/components/ds/text-field';
+import { Tooltip } from '@/components/ds/tooltip';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import { SETTING_CONTROL_WIDTH } from '@/components/settings/settingsLayout';
 import ComputerUseGrantsCard from './ComputerUseGrantsCard';
 import { isOsSandboxCapable, syncNetworkWhitelist } from '@/core/sandbox/config';
 
 const PERMISSION_MODES: PermissionMode[] = ['standard', 'smart', 'autonomous'];
+
+const SUBHEADING = 'text-ui-sm font-medium text-label-tertiary';
 
 export default function SandboxSection() {
   const sandboxEnabled = useSettingsStore(s => s.sandboxEnabled);
@@ -25,6 +36,7 @@ export default function SandboxSection() {
   const allowPrivateNetworks = useSettingsStore(s => s.allowPrivateNetworks);
   const setAllowPrivateNetworks = useSettingsStore(s => s.setAllowPrivateNetworks);
   const { t } = useI18n();
+  const confirm = useConfirm();
   // Windows has a real OS-level sandbox too (restricted token + PowerShell
   // ConstrainedLanguage, see electron/commandHost.cjs) — the settings UI must
   // expose the same toggle there, with Windows-specific copy since the
@@ -51,13 +63,18 @@ export default function SandboxSection() {
         networkIsolationDescription: t.settings.networkIsolationDescription,
         disableWarning: t.settings.sandboxDisableWarning,
       };
-  const [showWarning, setShowWarning] = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
   const [newDomain, setNewDomain] = useState('');
 
-  const handleToggle = () => {
+  const handleToggle = async () => {
     if (sandboxEnabled) {
-      setShowWarning(true);
+      const confirmed = await confirm({
+        title: t.settings.sandbox,
+        message: copy.disableWarning,
+        confirmLabel: t.common.confirm,
+        tone: 'danger',
+      });
+      // The answer is about the sandbox as it is now: it may have been turned off while the question was open.
+      if (confirmed && useSettingsStore.getState().sandboxEnabled) setSandboxEnabled(false);
     } else {
       setSandboxEnabled(true);
     }
@@ -89,194 +106,149 @@ export default function SandboxSection() {
   }, [networkIsolationEnabled, setNetworkIsolationEnabled]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <SettingsSectionHeader title={t.settings.sandbox} description={copy.sectionDescription} />
       {/* Permission Mode */}
-      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <div className="min-w-0 flex flex-1 items-center gap-3">
-          <SlidersHorizontal className="h-5 w-5 shrink-0 text-[var(--abu-text-muted)]" />
-          <div className="min-w-0">
-            <h4 className="text-body font-medium text-[var(--abu-text-primary)]">
-              {t.settings.permissionMode}
-            </h4>
-            <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-              {t.settings.permissionModeDesc}
-            </p>
-          </div>
-        </div>
-        <PermissionModeSelector />
-      </div>
+      <SettingGroup>
+        <SettingRow title={t.settings.permissionMode} description={t.settings.permissionModeDesc}>
+          <PermissionModeSelector />
+        </SettingRow>
+      </SettingGroup>
 
       {osSandboxAvailable ? (
         <>
-          {/* Sandbox Toggle */}
-          <button
-            onClick={handleToggle}
-            className="w-full flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] transition-all text-left"
-          >
-            <div className="flex items-center gap-3">
-              <Shield className="h-5 w-5 text-[var(--abu-text-muted)]" />
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <p className="text-body font-medium text-[var(--abu-text-primary)]">
-                    {t.settings.sandboxProtection}
-                  </p>
-                  <div
-                    className="relative"
-                    onMouseEnter={() => setShowDetails(true)}
-                    onMouseLeave={() => setShowDetails(false)}
+          <SettingGroup>
+            {/* Sandbox Toggle */}
+            <SettingRow
+              htmlFor="setting-sandbox"
+              title={(
+                <span className="inline-flex items-center gap-1">
+                  <span>{t.settings.sandboxProtection}</span>
+                  <Tooltip
+                    content={(
+                      <>
+                        <p>{copy.tooltipPrimary}</p>
+                        <Separator className="my-1" />
+                        <p>{copy.tooltipSecondary}</p>
+                      </>
+                    )}
                   >
-                    <Info className="h-3.5 w-3.5 cursor-help text-[var(--abu-text-placeholder)]" />
-                    {showDetails && (
-                      <div className="absolute left-1/2 -translate-x-1/2 top-6 z-50 w-72 p-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-lg text-left pointer-events-none">
-                        <p className="text-caption text-[var(--abu-text-tertiary)] leading-relaxed">
-                          {copy.tooltipPrimary}
-                        </p>
-                        <div className="border-t border-[var(--abu-border)] my-1.5" />
-                        <p className="text-caption text-[var(--abu-text-muted)] leading-relaxed">
-                          {copy.tooltipSecondary}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                  {copy.protectionDescription}
-                </p>
-              </div>
-            </div>
-            <Toggle
-              checked={sandboxEnabled}
-              onChange={handleToggle}
-              size="md"
-            />
-          </button>
-
-          {/* Network Isolation */}
-          {sandboxEnabled && (
-            <div className="space-y-3">
-              <button
-                onClick={handleNetworkIsolationToggle}
-                className="w-full flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] transition-all text-left"
-              >
-                <div className="flex items-center gap-3">
-                  <Globe className="h-5 w-5 text-[var(--abu-text-muted)]" />
-                  <div>
-                    <p className="text-body font-medium text-[var(--abu-text-primary)]">
-                      {t.settings.networkIsolation}
-                    </p>
-                    <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                      {copy.networkIsolationDescription}
-                    </p>
-                  </div>
-                </div>
-                <Toggle
-                  checked={networkIsolationEnabled}
-                  onChange={handleNetworkIsolationToggle}
-                  size="md"
-                />
-              </button>
-
-              {/* Network whitelist config */}
-              {networkIsolationEnabled && (
-                <div className="space-y-3 p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-                  {/* Private networks toggle */}
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-minor text-[var(--abu-text-tertiary)]">
-                      {t.settings.allowPrivateNetworks}
-                    </span>
-                    <Toggle
-                      checked={allowPrivateNetworks}
-                      onChange={handlePrivateNetworkToggle}
-                      size="sm"
-                    />
-                  </label>
-
-                  <div className="border-t border-[var(--abu-border)]" />
-
-                  {/* Whitelist entries */}
-                  <div>
-                    <p className="text-minor text-[var(--abu-text-tertiary)] mb-2">{t.settings.networkWhitelist}</p>
-
-                    {/* Default entries (read-only) */}
-                    <div className="space-y-1 mb-2">
-                      <p className="text-caption text-[var(--abu-text-muted)] uppercase tracking-wider">{t.settings.networkPreset}</p>
-                      <p className="text-minor text-[var(--abu-text-muted)] leading-relaxed">
-                        npm · PyPI · GitHub · GitLab · Anthropic · OpenAI · DeepSeek
-                      </p>
-                    </div>
-
-                    {/* User entries */}
-                    {networkWhitelist.length > 0 && (
-                      <div className="space-y-1 mb-2">
-                        <p className="text-caption text-[var(--abu-text-tertiary)] uppercase tracking-wider">{t.settings.networkCustom}</p>
-                        {networkWhitelist.map(domain => (
-                          <div key={domain} className="flex items-center justify-between py-1 px-2 rounded bg-[var(--abu-bg-muted)] group">
-                            <span className="text-minor text-[var(--abu-text-primary)] font-mono">{domain}</span>
-                            <button
-                              onClick={() => handleRemoveDomain(domain)}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-[var(--abu-danger-bg)]"
-                            >
-                              <X className="h-3 w-3 text-[var(--abu-danger)]" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Add new entry */}
-                    <div className="flex gap-2 mt-2">
-                      <input
-                        type="text"
-                        value={newDomain}
-                        onChange={e => setNewDomain(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleAddDomain()}
-                        placeholder="*.company.com / 10.0.0.0/8"
-                        className="flex-1 text-minor px-3 py-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-placeholder)] focus:outline-none focus:border-[var(--abu-info)]"
-                      />
-                      <button
-                        onClick={handleAddDomain}
-                        disabled={!newDomain.trim()}
-                        className="px-2 py-1.5 rounded-lg bg-[var(--abu-info-solid)] text-white text-minor hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                    <Pressable
+                      aria-label={t.settings.sandboxProtection}
+                      className="inline-flex rounded-control text-label-tertiary hover:text-label"
+                    >
+                      <Icon icon={AppIcons.info} size="sm" />
+                    </Pressable>
+                  </Tooltip>
+                </span>
               )}
-            </div>
-          )}
+              description={copy.protectionDescription}
+            >
+              {/* The title also holds the info button; the switch states its own name so that button's words are not read into it. */}
+              <Switch
+                id="setting-sandbox"
+                aria-label={t.settings.sandboxProtection}
+                checked={sandboxEnabled}
+                onCheckedChange={handleToggle}
+              />
+            </SettingRow>
+
+            {/* Network Isolation */}
+            {sandboxEnabled && (
+              <SettingRow
+                htmlFor="setting-network-isolation"
+                title={t.settings.networkIsolation}
+                description={copy.networkIsolationDescription}
+              >
+                <Switch
+                  id="setting-network-isolation"
+                  checked={networkIsolationEnabled}
+                  onCheckedChange={handleNetworkIsolationToggle}
+                />
+              </SettingRow>
+            )}
+
+            {/* Network whitelist config */}
+            {sandboxEnabled && networkIsolationEnabled && (
+              <div className="space-y-3 py-3">
+                {/* Private networks toggle */}
+                <div className="flex items-center justify-between gap-6">
+                  <label htmlFor="setting-private-networks" className="min-w-0 text-ui text-label">
+                    {t.settings.allowPrivateNetworks}
+                  </label>
+                  <Switch
+                    id="setting-private-networks"
+                    checked={allowPrivateNetworks}
+                    onCheckedChange={handlePrivateNetworkToggle}
+                  />
+                </div>
+
+                <Separator />
+
+                {/* Whitelist entries */}
+                <div className="space-y-2">
+                  <p className="text-ui text-label">{t.settings.networkWhitelist}</p>
+
+                  {/* Default entries (read-only) */}
+                  <div className="space-y-1">
+                    <p className={SUBHEADING}>{t.settings.networkPreset}</p>
+                    <p className="text-ui-sm text-label-secondary">
+                      npm · PyPI · GitHub · GitLab · Anthropic · OpenAI · DeepSeek
+                    </p>
+                  </div>
+
+                  {/* User entries */}
+                  {networkWhitelist.length > 0 && (
+                    <div className="space-y-1">
+                      <p className={SUBHEADING}>{t.settings.networkCustom}</p>
+                      {networkWhitelist.map(domain => (
+                        <div key={domain} className="group flex items-center justify-between rounded-control px-2 py-1 hover:bg-fill-hover">
+                          <span className="font-code text-ui-sm text-label">{domain}</span>
+                          {/* Shown under the pointer and when the keyboard reaches the button. */}
+                          <span className="inline-flex opacity-0 transition-opacity duration-fast group-hover:opacity-100 group-focus-within:opacity-100">
+                            <IconButton
+                              size="sm"
+                              icon={AppIcons.close}
+                              label={t.common.delete}
+                              onClick={() => handleRemoveDomain(domain)}
+                            />
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Add new entry */}
+                  <div className="flex gap-2">
+                    <TextField
+                      value={newDomain}
+                      onChange={e => setNewDomain(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleAddDomain()}
+                      placeholder="*.company.com / 10.0.0.0/8"
+                      className="min-w-0 flex-1 font-code"
+                    />
+                    <IconButton
+                      variant="secondary"
+                      icon={AppIcons.add}
+                      label={t.settings.add}
+                      onClick={handleAddDomain}
+                      disabled={!newDomain.trim()}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </SettingGroup>
 
           {/* On Windows the app-layer guards ARE the file-path defense (the OS
               sandbox only reduces privileges), so keep the notice Windows
               users always had — macOS conveys paths via the Seatbelt copy. */}
-          {windows && <AppLayerProtectionCard />}
-
-          {/* Disable confirmation dialog */}
-          <ConfirmDialog
-            open={showWarning}
-            title={t.settings.sandbox}
-            message={copy.disableWarning}
-            confirmText={t.common.confirm}
-            cancelText={t.common.cancel}
-            variant="danger"
-            onConfirm={() => {
-              setSandboxEnabled(false);
-              setShowWarning(false);
-            }}
-            onCancel={() => setShowWarning(false)}
-          />
+          {windows && <AppLayerProtectionNotice />}
         </>
       ) : (
         <div className="space-y-3">
-          <div className="flex items-center gap-3 p-4 rounded-xl border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)]">
-            <ShieldAlert className="h-5 w-5 text-[var(--abu-warning)] shrink-0" />
-            <p className="text-body text-[var(--abu-warning)] font-medium">
-              {t.settings.sandboxMacOSOnly}
-            </p>
-          </div>
-          <AppLayerProtectionCard />
+          <InlineMessage tone="warning">{t.settings.sandboxMacOSOnly}</InlineMessage>
+          <AppLayerProtectionNotice />
         </div>
       )}
       {/* Content Guard toggle — Task #26, Module H kill switch.
@@ -284,40 +256,29 @@ export default function SandboxSection() {
           (exfiltration, injection, destructive commands) not file-path
           access. Default ON; turning off skips the 120-pattern scan for
           agent-initiated writes (memory + skill drafts). */}
-      <div>
-        <ContentGuardToggle />
-      </div>
+      <ContentGuardToggle />
 
       {/* Authorized Writable Paths */}
       {sandboxEnabled && (
-        <div className="mt-6 pt-6 border-t border-[var(--abu-border)]">
-          <h4 className="text-body font-medium text-[var(--abu-text-primary)] mb-1">
-            {t.sandbox.authorizedPaths}
-          </h4>
+        <SettingGroup title={t.sandbox.authorizedPaths}>
           <AuthorizedPathsList />
-        </div>
+        </SettingGroup>
       )}
 
       {/* Computer Use: remembered per-app grants and the denied list (L2 §2.4).
           Independent of the shell sandbox — it governs which desktop apps
           Abu may control, not file paths. */}
-      <div className="mt-6 pt-6 border-t border-[var(--abu-border)]">
-        <ComputerUseGrantsCard />
-      </div>
+      <ComputerUseGrantsCard />
     </div>
   );
 }
 
-function AppLayerProtectionCard() {
+function AppLayerProtectionNotice() {
   const { t } = useI18n();
   return (
-    <div className="p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-      <div className="flex items-center gap-2">
-        <Shield className="h-4 w-4 text-[var(--abu-text-muted)] shrink-0" />
-        <p className="text-minor text-[var(--abu-text-tertiary)] font-medium">
-          {t.settings.sandboxAppLayerProtection}
-        </p>
-      </div>
+    <div className="flex items-center gap-2 text-ui-sm text-label-secondary">
+      <Icon icon={AppIcons.shield} size="sm" />
+      <p>{t.settings.sandboxAppLayerProtection}</p>
     </div>
   );
 }
@@ -326,51 +287,37 @@ function ContentGuardToggle() {
   const { t } = useI18n();
   const enabled = useSettingsStore((s) => s.safety.enableContentGuard);
   const setEnabled = useSettingsStore((s) => s.setContentGuardEnabled);
-  const [showDisableConfirm, setShowDisableConfirm] = useState(false);
+  const confirm = useConfirm();
 
-  const handleClick = () => {
-    if (enabled) setShowDisableConfirm(true);
-    else setEnabled(true);
+  const handleClick = async () => {
+    if (enabled) {
+      const confirmed = await confirm({
+        title: t.settings.contentGuardDisableTitle,
+        message: t.settings.contentGuardDisableMessage,
+        confirmLabel: t.common.confirm,
+        tone: 'danger',
+      });
+      // The answer is about scanning as it is now: it may have been turned off while the question was open.
+      if (confirmed && useSettingsStore.getState().safety.enableContentGuard) setEnabled(false);
+    } else setEnabled(true);
   };
 
   return (
-    <>
-      <button
-        onClick={handleClick}
-        className={cn(
-          'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
-          enabled
-            ? 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
-            : 'border-[var(--abu-warning)] bg-[var(--abu-warning-bg)]',
+    <SettingGroup>
+      <SettingRow
+        htmlFor="setting-content-guard"
+        title={(
+          // Top-aligned, so the sign does not move the text baseline and the row keeps its height.
+          <span className="inline-flex items-center gap-1 align-top">
+            {!enabled && <StatusIcon tone="warning" size="sm" />}
+            <span>{t.settings.contentGuardTitle}</span>
+          </span>
         )}
+        description={t.settings.contentGuardDesc}
       >
-        <div className="flex items-center gap-3">
-          <ShieldCheck className={cn('h-5 w-5', enabled ? 'text-[var(--abu-text-muted)]' : 'text-[var(--abu-warning)]')} />
-          <div>
-            <p className={cn('text-body font-medium', enabled ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-warning)]')}>
-              {t.settings.contentGuardTitle}
-            </p>
-            <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-              {t.settings.contentGuardDesc}
-            </p>
-          </div>
-        </div>
-        <Toggle checked={enabled} onChange={handleClick} size="md" />
-      </button>
-      <ConfirmDialog
-        open={showDisableConfirm}
-        title={t.settings.contentGuardDisableTitle}
-        message={t.settings.contentGuardDisableMessage}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        onConfirm={() => {
-          setShowDisableConfirm(false);
-          setEnabled(false);
-        }}
-        onCancel={() => setShowDisableConfirm(false)}
-        variant="danger"
-      />
-    </>
+        <Switch id="setting-content-guard" checked={enabled} onCheckedChange={handleClick} />
+      </SettingRow>
+    </SettingGroup>
   );
 }
 
@@ -397,36 +344,32 @@ function AuthorizedPathsList() {
 
   if (paths.length === 0) {
     return (
-      <p className="text-minor text-[var(--abu-text-tertiary)] mt-1">
+      <p className="py-3 text-ui-sm text-label-tertiary">
         {t.sandbox.authorizedPathsEmpty}
       </p>
     );
   }
 
   return (
-    <div className="mt-2 space-y-1.5">
+    <>
       {paths.map((path) => (
-        <div
-          key={path}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-secondary)]"
-        >
-          <FolderOpen className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-          <span className="flex-1 text-minor text-[var(--abu-text-secondary)] truncate" title={path}>
+        <div key={path} className="flex items-center gap-2 py-2">
+          <Icon icon={AppIcons.folderOpen} size="sm" className="text-label-tertiary" />
+          <span className="min-w-0 flex-1 truncate font-code text-ui-sm text-label-secondary" title={path}>
             {path}
           </span>
-          <button
+          <IconButton
+            size="sm"
+            icon={AppIcons.delete}
+            label={t.sandbox.revoke}
             onClick={() => {
               revokeWorkspace(path);
               notifyPathsChanged();
             }}
-            className="p-1 rounded hover:bg-[var(--abu-danger-bg)] text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] transition-colors shrink-0"
-            title={t.sandbox.revoke}
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
+          />
         </div>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -442,17 +385,18 @@ function PermissionModeSelector() {
   };
 
   return (
-    <Select
-      variant="inline"
-      className="w-56 max-w-full shrink-0"
-      ariaLabel={t.settings.permissionMode}
-      value={permissionMode}
-      options={PERMISSION_MODES.map(value => ({
-        value,
-        label: labels[value].name,
-        description: labels[value].desc,
-      }))}
-      onChange={value => setPermissionMode(value as PermissionMode)}
-    />
+    <div className={SETTING_CONTROL_WIDTH.permissionMode}>
+      <Select
+        fullWidth
+        label={t.settings.permissionMode}
+        value={permissionMode}
+        options={PERMISSION_MODES.map(value => ({
+          value,
+          label: labels[value].name,
+          description: labels[value].desc,
+        }))}
+        onValueChange={value => setPermissionMode(value as PermissionMode)}
+      />
+    </div>
   );
 }

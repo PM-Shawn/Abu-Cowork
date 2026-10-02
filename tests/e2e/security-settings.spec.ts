@@ -59,24 +59,29 @@ test('security settings dropdown saves modes and keeps protection confirmations'
   const initialWindow = await app.browserWindow(page);
   await initialWindow.evaluate(win => win.setContentSize(1198, 796));
   await openSecurity(page);
-  await page.locator('[data-abu-settings-dialog] > div').screenshot({ path: testInfo.outputPath('security-light.png') });
+  await page.locator('[data-abu-settings-dialog]').screenshot({ path: testInfo.outputPath('security-light.png') });
 
-  const selector = page.getByRole('button', { name: /^默认权限模式:/ });
+  const selector = page.getByRole('combobox', { name: '默认权限模式' });
   await selector.click();
   await expect(page.getByText(/越界操作交 AI 审核/)).toBeVisible();
-  await page.locator('[data-abu-settings-dialog] > div').screenshot({ path: testInfo.outputPath('security-menu.png') });
-  await page.getByRole('button', { name: /^替我审批 越界操作/ }).click();
+  await page.locator('[data-abu-settings-dialog]').screenshot({ path: testInfo.outputPath('security-menu.png') });
+  await page.getByRole('option', { name: '替我审批', exact: true }).click();
   await expect.poll(() => savedMode(page)).toBe('smart');
   await expect(selector).toHaveAttribute('aria-expanded', 'false');
 
   await selector.focus();
   await page.keyboard.press('ArrowDown');
-  await expect(page.getByRole('button', { name: /^替我审批 越界操作/ })).toBeFocused();
+  // The list opens with the focus on the current mode; arrows only move the highlight.
+  await expect(page.getByRole('option', { name: '替我审批', exact: true })).toBeFocused();
+  expect(await savedMode(page)).toBe('smart');
   await page.keyboard.press('ArrowDown');
+  // The list moves its highlight on the next tick; Enter applies the highlighted mode.
+  await expect(page.getByRole('option', { name: '完全自主', exact: true })).toBeFocused();
+  expect(await savedMode(page)).toBe('smart');
   await page.keyboard.press('Enter');
   await expect.poll(() => savedMode(page)).toBe('autonomous');
   await selector.click();
-  await page.getByRole('button', { name: /^请求批准 工作区/ }).click();
+  await page.getByRole('option', { name: '请求批准', exact: true }).click();
   await expect.poll(() => savedMode(page)).toBe('standard');
 
   await page.getByText('沙箱保护', { exact: true }).click();
@@ -92,7 +97,7 @@ test('security settings dropdown saves modes and keeps protection confirmations'
   expect(protection).toEqual([true, false, true]);
 
   await selector.click();
-  await page.getByRole('button', { name: /^替我审批 越界操作/ }).click();
+  await page.getByRole('option', { name: '替我审批', exact: true }).click();
   await expect.poll(() => savedMode(page)).toBe('smart');
   await closeAbuElectron(app);
   app = undefined;
@@ -101,24 +106,23 @@ test('security settings dropdown saves modes and keeps protection confirmations'
   const window = await app.browserWindow(page);
   await window.evaluate(win => win.setContentSize(1198, 796));
   await openSecurity(page);
-  await expect(page.getByRole('button', { name: '默认权限模式: 替我审批', exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '默认权限模式' })).toHaveText('替我审批');
 
   await page.getByRole('button', { name: '偏好', exact: true }).click();
-  // Appearance is a dropdown now (same control as the other General rows):
-  // open it on the seeded 'light' value, then pick dark.
-  await page.getByRole('button', { name: '亮色', exact: true }).click();
-  await page.getByRole('button', { name: '暗色', exact: true }).click();
+  // Appearance is a segmented control: one press picks dark.
+  await page.getByRole('radio', { name: '暗色', exact: true }).click();
   await page.getByRole('button', { name: '安全', exact: true }).click();
-  await page.locator('[data-abu-settings-dialog] > div').screenshot({ path: testInfo.outputPath('security-dark.png') });
+  await page.locator('[data-abu-settings-dialog]').screenshot({ path: testInfo.outputPath('security-dark.png') });
 
   await window.evaluate(win => win.setSize(900, 720));
-  const narrowSelector = page.getByRole('button', { name: /^默认权限模式:/ });
+  const narrowSelector = page.getByRole('combobox', { name: '默认权限模式' });
   await narrowSelector.click();
-  await page.getByRole('button', { name: /^完全自主 电脑操控/ }).scrollIntoViewIfNeeded();
-  await expect(page.getByRole('button', { name: /^完全自主 电脑操控/ })).toBeVisible();
-  await page.locator('[data-abu-settings-dialog] > div').screenshot({ path: testInfo.outputPath('security-narrow-menu.png') });
+  await page.getByRole('option', { name: '完全自主', exact: true }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole('option', { name: '完全自主', exact: true })).toBeVisible();
+  await page.locator('[data-abu-settings-dialog]').screenshot({ path: testInfo.outputPath('security-narrow-menu.png') });
   await page.keyboard.press('Escape');
-  // The existing settings dialog also closes on Escape; neither exit selects a mode.
-  await expect(page.getByRole('button', { name: /^完全自主 电脑操控/ })).toBeHidden();
+  // Escape closes only the list: the settings window stays, and no mode is selected.
+  await expect(page.getByRole('option', { name: '完全自主', exact: true })).toBeHidden();
   await expect.poll(() => savedMode(page)).toBe('smart');
+  await expect(page.locator('[data-abu-settings-dialog]')).toBeVisible();
 });

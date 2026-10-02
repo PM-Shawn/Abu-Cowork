@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AppWindow, Ban, RotateCcw, Trash2 } from 'lucide-react';
 import { format, useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Tag } from '@/components/ds/tag';
 import {
   listComputerUseGrants,
   revokeComputerUseGrant,
@@ -10,6 +13,10 @@ import {
   type ComputerUseGrantRecord,
   type ComputerUseDeniedRecord,
 } from '@/core/computer-use/grants';
+
+const SUBHEADING = 'mt-4 text-ui-sm font-medium text-label-tertiary';
+// The same bordered box as a settings group, one line between apps.
+const ROW_BOX = 'mt-2 divide-y divide-separator rounded-panel border border-separator px-4';
 
 /**
  * Settings › Security › Computer Use: the apps the user answered
@@ -63,43 +70,45 @@ export default function ComputerUseGrantsCard() {
   }, [reload]);
 
   return (
-    <div>
-      <h4 className="text-body font-medium text-[var(--abu-text-primary)] mb-1">
+    <section>
+      <h4 className="text-ui font-medium text-label">
         {t.sandbox.computerUseGrantsTitle}
       </h4>
-      <p className="text-minor text-[var(--abu-text-tertiary)]">
+      <p className="mt-1 text-ui-sm text-label-secondary">
         {t.sandbox.computerUseGrantsDescription}
       </p>
 
       {loadFailed && (
-        <p className="text-minor text-[var(--abu-danger)] mt-2">{t.sandbox.computerUseGrantsLoadFailed}</p>
+        <div className="mt-2">
+          <InlineMessage tone="danger">{t.sandbox.computerUseGrantsLoadFailed}</InlineMessage>
+        </div>
       )}
       {!loadFailed && list && !list.available && (
-        <p className="text-minor text-[var(--abu-text-tertiary)] mt-2">{t.sandbox.computerUseGrantsUnavailable}</p>
+        <p className="mt-2 text-ui-sm text-label-tertiary">{t.sandbox.computerUseGrantsUnavailable}</p>
       )}
 
       {list?.available && (
         <>
-          <h5 className="text-h-xs text-[var(--abu-text-secondary)] mt-4 mb-1">
+          <h5 className={SUBHEADING}>
             {t.sandbox.computerUseGrantsAlwaysTitle}
           </h5>
           {list.grants.length === 0 ? (
-            <p className="text-minor text-[var(--abu-text-tertiary)]">{t.sandbox.computerUseGrantsEmpty}</p>
+            <p className="mt-1 text-ui-sm text-label-tertiary">{t.sandbox.computerUseGrantsEmpty}</p>
           ) : (
-            <div className="space-y-1.5">
+            <div className={ROW_BOX}>
               {list.grants.map((record) => (
                 <GrantRow key={record.key} record={record} onRevoke={revoke} onDeny={deny} />
               ))}
             </div>
           )}
 
-          <h5 className="text-h-xs text-[var(--abu-text-secondary)] mt-4 mb-1">
+          <h5 className={SUBHEADING}>
             {t.sandbox.computerUseGrantsDeniedTitle}
           </h5>
           {list.denied.length === 0 ? (
-            <p className="text-minor text-[var(--abu-text-tertiary)]">{t.sandbox.computerUseGrantsDeniedEmpty}</p>
+            <p className="mt-1 text-ui-sm text-label-tertiary">{t.sandbox.computerUseGrantsDeniedEmpty}</p>
           ) : (
-            <div className="space-y-1.5">
+            <div className={ROW_BOX}>
               {list.denied.map((record) => (
                 <DeniedRow key={record.key} record={record} onRestore={restore} />
               ))}
@@ -108,10 +117,10 @@ export default function ComputerUseGrantsCard() {
         </>
       )}
 
-      <p className="text-caption text-[var(--abu-text-muted)] mt-3">
+      <p className="mt-3 text-caption text-label-tertiary">
         {t.sandbox.computerUseGrantsRedLines}
       </p>
-    </div>
+    </section>
   );
 }
 
@@ -133,29 +142,27 @@ function GrantRow({
     ? t.sandbox.computerUseGrantTierOrdinary
     : t.sandbox.computerUseGrantTierApprovalRequired;
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-secondary)]">
-      <AppWindow className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-minor text-[var(--abu-text-secondary)] truncate" title={record.key}>
+    <div className="flex items-center gap-2 py-2">
+      <Icon icon={AppIcons.appWindow} size="sm" className="text-label-tertiary" />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-ui text-label" title={record.key}>
             {record.displayName}
           </span>
-          <span className="text-caption px-1.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] shrink-0">
-            {tierLabel}
+          <span className="flex shrink-0">
+            <Tag>{tierLabel}</Tag>
           </span>
         </div>
-        <p className="text-caption text-[var(--abu-text-muted)] truncate">
+        <p className="truncate text-caption text-label-tertiary">
           {format(t.sandbox.computerUseGrantGrantedAt, { date: formatDay(record.grantedAt) })}
           {' · '}
           {format(t.sandbox.computerUseGrantLastUsed, { date: formatDay(record.lastUsedAt) })}
         </p>
       </div>
-      <Button variant="ghost" size="xs" onClick={() => void onDeny(record)} title={t.sandbox.computerUseGrantDeny}>
-        <Ban className="h-3 w-3" />
+      <Button variant="plain" size="sm" icon={AppIcons.block} onClick={() => void onDeny(record)} title={t.sandbox.computerUseGrantDeny}>
         {t.sandbox.computerUseGrantDeny}
       </Button>
-      <Button variant="ghost" size="xs" onClick={() => void onRevoke(record)} title={t.sandbox.computerUseGrantRevoke}>
-        <Trash2 className="h-3 w-3" />
+      <Button variant="plain" size="sm" icon={AppIcons.delete} onClick={() => void onRevoke(record)} title={t.sandbox.computerUseGrantRevoke}>
         {t.sandbox.computerUseGrantRevoke}
       </Button>
     </div>
@@ -171,13 +178,12 @@ function DeniedRow({
 }) {
   const { t } = useI18n();
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-secondary)]">
-      <Ban className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-      <span className="flex-1 text-minor text-[var(--abu-text-secondary)] truncate" title={record.key}>
+    <div className="flex items-center gap-2 py-2">
+      <Icon icon={AppIcons.block} size="sm" className="text-label-tertiary" />
+      <span className="min-w-0 flex-1 truncate text-ui text-label" title={record.key}>
         {record.displayName}
       </span>
-      <Button variant="ghost" size="xs" onClick={() => void onRestore(record)} title={t.sandbox.computerUseGrantRestore}>
-        <RotateCcw className="h-3 w-3" />
+      <Button variant="plain" size="sm" icon={AppIcons.undo} onClick={() => void onRestore(record)} title={t.sandbox.computerUseGrantRestore}>
         {t.sandbox.computerUseGrantRestore}
       </Button>
     </div>

@@ -119,11 +119,11 @@ export default function SandboxSection() {
         <>
           <SettingGroup>
             {/* Sandbox Toggle */}
+            {/* The row has no htmlFor: the label holds the words only, and the info button sits beside it. */}
             <SettingRow
-              htmlFor="setting-sandbox"
               title={(
                 <span className="inline-flex items-center gap-1">
-                  <span>{t.settings.sandboxProtection}</span>
+                  <label htmlFor="setting-sandbox">{t.settings.sandboxProtection}</label>
                   <Tooltip
                     content={(
                       <>
@@ -144,13 +144,7 @@ export default function SandboxSection() {
               )}
               description={copy.protectionDescription}
             >
-              {/* The title also holds the info button; the switch states its own name so that button's words are not read into it. */}
-              <Switch
-                id="setting-sandbox"
-                aria-label={t.settings.sandboxProtection}
-                checked={sandboxEnabled}
-                onCheckedChange={handleToggle}
-              />
+              <Switch id="setting-sandbox" checked={sandboxEnabled} onCheckedChange={handleToggle} />
             </SettingRow>
 
             {/* Network Isolation */}

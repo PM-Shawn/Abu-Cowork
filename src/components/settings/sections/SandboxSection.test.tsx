@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, cleanup, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import SandboxSection from './SandboxSection';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -591,6 +592,30 @@ describe('SandboxSection protection behaviour', () => {
       expect(actions.setSandboxEnabled).not.toHaveBeenCalled();
     });
 
+    // The settings window closes itself when an approval needs the screen.
+    it.each([
+      ['sandbox', () => t().settings.sandboxProtection, () => actions.setSandboxEnabled, () => useSettingsStore.getState().sandboxEnabled],
+      ['content scanning', () => t().settings.contentGuardTitle, () => actions.setContentGuardEnabled, () => useSettingsStore.getState().safety.enableContentGuard],
+    ] as const)('withdraws the %s question and keeps the protection on when the settings window closes under it', async (_name, title, action, isOn) => {
+      const user = userEvent.setup();
+      const settings = (open: boolean) => (
+        <Dialog open={open} onOpenChange={() => undefined} title="Settings">
+          <SandboxSection />
+        </Dialog>
+      );
+      const { rerender } = render(settings(true), { wrapper: DesignSystemProvider });
+
+      await user.click(screen.getByText(title()));
+      expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+
+      rerender(settings(false));
+
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: t().common.confirm })).not.toBeInTheDocument();
+      expect(action()).not.toHaveBeenCalled();
+      expect(isOn()).toBe(true);
+    });
+
     it('leaves content scanning alone when it was turned off while the question was open', async () => {
       const user = userEvent.setup();
       renderSection();
@@ -608,10 +633,11 @@ describe('SandboxSection protection behaviour', () => {
       renderSection();
       expect(screen.getAllByRole('switch').map((control) => control.id))
         .toEqual(['setting-sandbox', 'setting-network-isolation', 'setting-private-networks', 'setting-content-guard']);
-      // The sandbox title also holds the info button, which carries the same words; Chromium would
-      // read both into the switch's name, so the switch states its own (checked in real Electron).
+      // Named by its visible label alone: the info button beside the label carries the same words.
       expect(screen.getByRole('switch', { name: t().settings.sandboxProtection })).toHaveAttribute('id', 'setting-sandbox');
-      expect(document.getElementById('setting-sandbox')).toHaveAttribute('aria-label', t().settings.sandboxProtection);
+      expect(document.getElementById('setting-sandbox')).not.toHaveAttribute('aria-label');
+      expect(document.querySelector('label[for="setting-sandbox"]')).toHaveTextContent(t().settings.sandboxProtection);
+      expect(document.querySelector('label[for="setting-sandbox"] button')).toBeNull();
       expect(screen.getByRole('switch', { name: t().settings.networkIsolation })).toHaveAttribute('id', 'setting-network-isolation');
       expect(screen.getByRole('switch', { name: t().settings.allowPrivateNetworks })).toHaveAttribute('id', 'setting-private-networks');
       expect(screen.getByRole('switch', { name: t().settings.contentGuardTitle })).toHaveAttribute('id', 'setting-content-guard');
@@ -626,9 +652,23 @@ describe('SandboxSection protection behaviour', () => {
       expect(within(rowOf(FOLDER_A)).getByRole('button', { name: t().sandbox.revoke })).toBeInTheDocument();
     });
 
-    // That pressing the info button leaves the switch alone is the browser's label rule
-    // (a button inside a label is not forwarded); happy-dom forwards it, so the real
-    // Electron check covers that part.
+    it.each([true, false])('keeps the info button outside the label, so pressing it asks nothing and saves nothing (sandbox on: %s)', async (sandboxEnabled) => {
+      useSettingsStore.setState({ sandboxEnabled });
+      const user = userEvent.setup();
+      renderSection();
+      const info = screen.getByRole('button', { name: t().settings.sandboxProtection });
+      expect(info.closest('label')).toBeNull();
+
+      await user.click(info);
+      info.focus();
+      await user.keyboard('{Enter}');
+      await user.keyboard(' ');
+
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+      expect(actions.setSandboxEnabled).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().sandboxEnabled).toBe(sandboxEnabled);
+    });
+
     it('explains the sandbox from its info button when the keyboard reaches it', async () => {
       renderSection();
       const info = screen.getByRole('button', { name: t().settings.sandboxProtection });

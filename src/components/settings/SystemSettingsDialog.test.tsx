@@ -2,6 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -17,25 +18,30 @@ vi.mock('@/utils/platform', () => ({
   isWindows: () => !platformMock.mac,
 }));
 
+// How many times the view inside the window has rendered.
+const viewRenders = vi.hoisted(() => ({ count: 0 }));
 vi.mock('@/components/settings/SystemSettingsModal', async () => {
   const { Button } = await import('@/components/ds/button');
   const { Select } = await import('@/components/ds/select');
   return {
-    default: () => (
-      <div>
-        <nav>
-          <Button>Another page</Button>
-          <Button aria-current="page">Page in view</Button>
-        </nav>
-        <Button>First control</Button>
-        <Select
-          label="Sample choice"
-          value="one"
-          onValueChange={() => undefined}
-          options={[{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }]}
-        />
-      </div>
-    ),
+    default: () => {
+      viewRenders.count += 1;
+      return (
+        <div>
+          <nav>
+            <Button>Another page</Button>
+            <Button aria-current="page">Page in view</Button>
+          </nav>
+          <Button>First control</Button>
+          <Select
+            label="Sample choice"
+            value="one"
+            onValueChange={() => undefined}
+            options={[{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }]}
+          />
+        </div>
+      );
+    },
   };
 });
 
@@ -96,6 +102,7 @@ describe('SystemSettingsDialog', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     platformMock.mac = false;
+    viewRenders.count = 0;
     usePreviewStore.setState({ appModalOpen: false });
     useSettingsStore.setState({ systemSettingsOpen: true });
   });
@@ -259,6 +266,40 @@ describe('SystemSettingsDialog', () => {
       expect(settingsWindow()).toBeNull();
       expect(opener).not.toHaveFocus();
     });
+  });
+
+  // The app around the window renders again for every piece of a streamed reply. The window
+  // takes nothing from it, so the page of settings on screen stays as it is.
+  it('does not render again when the app around it does', async () => {
+    const user = userEvent.setup();
+    function AppAround() {
+      const [pieces, setPieces] = useState(0);
+      return (
+        <>
+          <Button onClick={() => setPieces(pieces + 1)}>Piece {pieces}</Button>
+          <SystemSettingsDialog />
+        </>
+      );
+    }
+    useSettingsStore.setState({ systemSettingsOpen: false });
+    render(<AppAround />, { wrapper: DesignSystemProvider });
+    const piece = screen.getByRole('button', { name: 'Piece 0' });
+    // Three pieces arrive before the window opens: it is not on the page, and stays so.
+    await user.click(piece);
+    await user.click(piece);
+    await user.click(piece);
+    expect(piece).toHaveTextContent('Piece 3');
+    expect(viewRenders.count).toBe(0);
+
+    act(() => useSettingsStore.getState().openSystemSettings());
+    expect(settingsWindow()).not.toBeNull();
+    const rendered = viewRenders.count;
+    expect(rendered).toBeGreaterThan(0);
+
+    // The window is modal, so the pieces arrive by a state change of the app, not by a press.
+    for (let i = 0; i < 3; i += 1) act(() => piece.click());
+    expect(piece).toHaveTextContent('Piece 6');
+    expect(viewRenders.count).toBe(rendered);
   });
 
   it('draws no blurred scrim', () => {

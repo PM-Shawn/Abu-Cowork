@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react';
+import { memo, useLayoutEffect, useRef } from 'react';
 import { Dialog } from '@/components/ds/dialog';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import { useBlockingApprovalVisible } from '@/hooks/useBlockingApprovalVisible';
@@ -9,8 +9,11 @@ import { useSettingsStore } from '@/stores/settingsStore';
  * System settings as the app's settings-size dialog. The view behind it stays mounted.
  * Escape, the scrim and the close button close it; a menu, select or dialog opened inside
  * it closes first.
+ *
+ * `memo`, with no props: the app around it renders again for every piece of a streamed reply,
+ * and the page of settings on screen must not render with it.
  */
-export default function SystemSettingsDialog() {
+export default memo(function SystemSettingsDialog() {
   const open = useSettingsStore((s) => s.systemSettingsOpen);
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const { t } = useI18n();
@@ -43,4 +46,4 @@ export default function SystemSettingsDialog() {
       <SystemSettingsView />
     </Dialog>
   );
-}
+});

@@ -568,4 +568,73 @@ describe('windows opened from the page', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(remove).not.toHaveBeenCalled();
   });
+  it('asks before a press outside discards a typed address, and closes only the add window', async () => {
+    const save = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteRule').mockResolvedValue('saved');
+    // The page behind an open window ignores the pointer; the press still lands on the dimmed area.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const onSettingsChange = vi.fn();
+    render(
+      <Dialog open onOpenChange={onSettingsChange} title="Settings" size="page"><NewBrowserSitePermissionsPage trail={['网站权限']} onNavigate={vi.fn()} /></Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const pressOutside = async () => {
+      const dimmed = document.querySelectorAll('.bg-scrim');
+      await user.click(dimmed[dimmed.length - 1]);
+    };
+    const addWindow = () => screen.queryByRole('dialog', { name: t().browserSiteAddTitle });
+    await openAdd(`${origin}/guide`);
+    await pressOutside();
+    await user.click(within(discardQuestion()!).getByRole('button', { name: getI18n().designSystem.keepEditing }));
+    expect(within(addWindow()!).getByLabelText(t().browserSitePermsAddLabel)).toHaveValue(`${origin}/guide`);
+    await pressOutside();
+    await user.click(within(discardQuestion()!).getByRole('button', { name: getI18n().designSystem.discard }));
+    expect(addWindow()).toBeNull();
+    expect(discardQuestion()).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    expect(onSettingsChange).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    // An empty add window closes from the same press, and the settings window stays.
+    await openAdd();
+    await pressOutside();
+    expect(addWindow()).toBeNull();
+    expect(discardQuestion()).toBeNull();
+    expect(onSettingsChange).not.toHaveBeenCalled();
+  });
+  it('takes the discard question away when the save that was in flight closes the add window', async () => {
+    let finish!: (result: 'saved') => void;
+    const saving = new Promise<'saved'>((resolve) => { finish = resolve; });
+    const save = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteRule').mockReturnValue(saving);
+    const user = userEvent.setup();
+    page();
+    const dialog = await openAdd(`${origin}/guide`);
+    fireEvent.click(addButton(dialog));
+    await user.keyboard('{Escape}');
+    expect(discardQuestion()).not.toBeNull();
+    await act(async () => { finish('saved'); await saving; });
+    expect(discardQuestion()).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(save).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: t().browserSitePermsAddButton })).toBeEnabled();
+  });
+});
+
+describe('the list changing under an open access list', () => {
+  it('keeps the list open and writes to its own website with the rule that is saved now', async () => {
+    const save = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteRule').mockResolvedValue('saved');
+    const user = userEvent.setup();
+    const config = createBrowserPermissionConfig();
+    config.sites['https://a.example'] = browsing;
+    config.sites['https://b.example'] = browsing;
+    useSettingsStore.setState({ browserPermissionConfigV2: config });
+    page();
+    await user.click(screen.getByRole('combobox', { name: `https://b.example ${t().browserSiteAccess}` }));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    // Another window adds a website that sorts in front, and changes the rule of the open row.
+    const changed: BrowserSiteRule = { ...browsing, upload: 'deny' };
+    act(() => useSettingsStore.setState({ browserPermissionConfigV2: { ...config, sites: { 'https://a.example': browsing, 'https://a0.example': browsing, 'https://b.example': changed } } }));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: t().browserSiteAccessBlock }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith('https://b.example', { ...changed, blocked: true }, changed, expect.any(Function));
+  });
 });

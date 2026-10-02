@@ -2,7 +2,11 @@
 import { useI18n } from '@/i18n'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { MountPoint } from '@/core/enterprise/mounts'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/components/ds/button'
+import { useConfirm } from '@/components/ds/confirm-context'
+import { StatusIcon } from '@/components/ds/status-icon'
+import { Tag } from '@/components/ds/tag'
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader'
 import EnterpriseConnectionSlot from '@/components/enterprise/EnterpriseConnectionSlot'
 // Side-effect import: registers BrandSlot in the enterprise mounts registry.
 import '@/components/enterprise/BrandSlot'
@@ -11,16 +15,12 @@ export default function EnterpriseSection() {
   const { t } = useI18n()
   const mode = useEnterpriseStore(s => s.mode)
   const unbind = useEnterpriseStore(s => s.unbind)
+  const confirm = useConfirm()
 
   if (mode.kind === 'personal') {
     return (
       <div className="space-y-4">
-        <div>
-          <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-1">{t.enterprise.title}</h2>
-          <p className="text-body text-[var(--abu-text-tertiary)]">
-            {t.enterprise.description}
-          </p>
-        </div>
+        <SettingsSectionHeader title={t.enterprise.title} description={t.enterprise.description} />
         <EnterpriseConnectionSlot />
       </div>
     )
@@ -28,38 +28,43 @@ export default function EnterpriseSection() {
 
   const binding = mode.kind === 'enterprise' || mode.kind === 'offline' ? mode.binding : null
   const config = mode.kind === 'enterprise' ? mode.config : mode.kind === 'offline' ? mode.lastConfig : null
+  const licenseValid = config?.licenseStatus === 'valid'
+
+  const askToUnbind = async () => {
+    if (!await confirm({ title: t.enterprise.unbindConfirm, confirmLabel: t.enterprise.unbindButton, tone: 'danger' })) return
+    // Read again at answer time: the binding may have gone while the question was open.
+    if (useEnterpriseStore.getState().mode.kind !== 'personal') void unbind()
+  }
 
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-1">
-          {t.enterprise.title}
-          {mode.kind === 'offline' && (
-            <span className="ml-2 text-minor text-[var(--abu-warning)] font-normal">{t.enterprise.offlineBadge}</span>
-          )}
-        </h2>
-        <p className="text-body text-[var(--abu-text-tertiary)]">{t.enterprise.boundStatus}</p>
+        <SettingsSectionHeader title={t.enterprise.title} description={t.enterprise.boundStatus} />
+        {mode.kind === 'offline' && (
+          <div className="mt-2"><Tag tone="warning">{t.enterprise.offlineBadge}</Tag></div>
+        )}
       </div>
 
-      <section className="space-y-3 rounded-xl border border-[var(--abu-border)] p-4">
+      <section className="space-y-3 rounded-panel border border-separator p-4">
         <MountPoint slot="brandSlot" binding={binding} config={config} size="md" />
-        <dl className="mt-3 space-y-2 text-body">
+        <dl className="mt-3 space-y-2 text-ui">
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.instanceLabel}</dt>
-            <dd className="text-[var(--abu-text-primary)] font-mono text-minor">{binding?.serverUrl}</dd>
+            <dt className="text-label-tertiary">{t.enterprise.instanceLabel}</dt>
+            <dd className="font-code text-ui-sm text-label">{binding?.serverUrl}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.loginIdentityLabel}</dt>
-            <dd className="text-[var(--abu-text-primary)]">{binding?.userEmail}</dd>
+            <dt className="text-label-tertiary">{t.enterprise.loginIdentityLabel}</dt>
+            <dd className="text-label">{binding?.userEmail}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.boundAtLabel}</dt>
-            <dd className="text-[var(--abu-text-primary)]">{binding?.boundAt?.slice(0, 10)}</dd>
+            <dt className="text-label-tertiary">{t.enterprise.boundAtLabel}</dt>
+            <dd className="text-label">{binding?.boundAt?.slice(0, 10)}</dd>
           </div>
           {config?.licenseStatus && (
             <div className="flex justify-between">
-              <dt className="text-[var(--abu-text-tertiary)]">License</dt>
-              <dd className={config.licenseStatus === 'valid' ? 'text-[var(--abu-success)]' : 'text-[var(--abu-warning)]'}>
+              <dt className="text-label-tertiary">License</dt>
+              <dd className={licenseValid ? 'inline-flex items-center gap-1 text-success' : 'inline-flex items-center gap-1 text-warning'}>
+                <StatusIcon tone={licenseValid ? 'success' : 'warning'} size="sm" />
                 {config.licenseStatus}
               </dd>
             </div>
@@ -67,15 +72,7 @@ export default function EnterpriseSection() {
         </dl>
       </section>
 
-      <Button
-        variant="destructive"
-        size="sm"
-        onClick={() => {
-          if (confirm(t.enterprise.unbindConfirm)) {
-            void unbind()
-          }
-        }}
-      >
+      <Button variant="danger" size="sm" onClick={() => void askToUnbind()}>
         {t.enterprise.unbindButton}
       </Button>
     </div>

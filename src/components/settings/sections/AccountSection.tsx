@@ -1,9 +1,11 @@
 import EnterpriseAccountSlot from '@enterprise-modules/components/enterprise/EnterpriseAccountSlot';
-import { CircleAlert, LoaderCircle, LogIn, LogOut, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
 import { useAccountStore } from '@/core/account/accountStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 
 export default function AccountSection() {
@@ -23,57 +25,49 @@ export default function AccountSection() {
 
       <EnterpriseAccountSlot>
       {!signedIn && !expired ? (
-        <section className="space-y-4 rounded-xl border border-[var(--abu-border)] p-4">
-          <p className="text-body text-[var(--abu-text-secondary)]">
+        <section className="space-y-4 rounded-panel border border-separator p-4">
+          <p className="text-ui text-label-secondary">
             {t.account.localWithoutLogin}
           </p>
-          <Button onClick={openAccountLogin}>
-            <LogIn aria-hidden="true" />
+          <Button variant="primary" icon={AppIcons.signIn} onClick={openAccountLogin}>
             {t.account.loginRegister}
           </Button>
         </section>
       ) : (
-        <section className="space-y-4 rounded-xl border border-[var(--abu-border)] p-4">
-          {expired && (
-            <div className="flex items-start gap-2 rounded-xl bg-[var(--abu-danger-bg)] px-3 py-2.5 text-minor text-[var(--abu-danger)]">
-              <CircleAlert aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{t.account.sessionExpired}</span>
-            </div>
-          )}
+        <section className="space-y-4 rounded-panel border border-separator p-4">
+          {expired && <InlineMessage tone="danger">{t.account.sessionExpired}</InlineMessage>}
 
           {profileStatus === 'loading' && (
-            <div className="flex items-center gap-2 text-body text-[var(--abu-text-tertiary)]">
-              <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
-              {t.account.profileLoading}
-            </div>
+            <div><Spinner label={t.account.profileLoading} /></div>
           )}
 
           {profileStatus === 'error' && !expired && (
-            <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5">
-              <span className="text-minor text-[var(--abu-text-tertiary)]">
-                {t.account.profileUnavailable}
-              </span>
-              <Button size="sm" variant="subtle" onClick={() => void hydrate()}>
-                <RefreshCw aria-hidden="true" />
-                {t.account.reloadProfile}
-              </Button>
-            </div>
+            <InlineMessage
+              tone="warning"
+              action={(
+                <Button variant="plain" size="sm" icon={AppIcons.retry} onClick={() => void hydrate()}>
+                  {t.account.reloadProfile}
+                </Button>
+              )}
+            >
+              {t.account.profileUnavailable}
+            </InlineMessage>
           )}
 
           {(account.name || account.email) && (
-            <dl className="space-y-3 text-body">
+            <dl className="space-y-3">
               {account.name && (
-                <div className="flex items-center justify-between gap-6">
-                  <dt className="text-[var(--abu-text-tertiary)]">{t.account.name}</dt>
-                  <dd className="min-w-0 truncate font-medium text-[var(--abu-text-primary)]">
+                <div className="flex items-center justify-between gap-6 text-ui">
+                  <dt className="text-label-tertiary">{t.account.name}</dt>
+                  <dd className="min-w-0 truncate font-medium text-label">
                     {account.name}
                   </dd>
                 </div>
               )}
               {account.email && (
-                <div className="flex items-center justify-between gap-6">
-                  <dt className="text-[var(--abu-text-tertiary)]">{t.account.email}</dt>
-                  <dd className="min-w-0 truncate text-[var(--abu-text-primary)]">
+                <div className="flex items-center justify-between gap-6 text-ui">
+                  <dt className="text-label-tertiary">{t.account.email}</dt>
+                  <dd className="min-w-0 truncate text-label">
                     {account.email}
                   </dd>
                 </div>
@@ -83,13 +77,11 @@ export default function AccountSection() {
 
           <div className="flex flex-wrap gap-2 pt-1">
             {expired && (
-              <Button onClick={openAccountLogin}>
-                <LogIn aria-hidden="true" />
+              <Button variant="primary" icon={AppIcons.signIn} onClick={openAccountLogin}>
                 {t.account.retry}
               </Button>
             )}
-            <Button variant="subtle" onClick={() => void signOut()}>
-              <LogOut aria-hidden="true" />
+            <Button variant="secondary" icon={AppIcons.signOut} onClick={() => void signOut()}>
               {t.account.signOut}
             </Button>
           </div>

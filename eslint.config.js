@@ -193,6 +193,11 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/WebSearchSection*.{ts,tsx}',
   'src/components/settings/sections/ImageGenSection*.{ts,tsx}',
   'src/components/settings/sections/ai-services/**/*.{ts,tsx}',
+  'src/components/settings/sections/AccountSection*.{ts,tsx}',
+  'src/components/account/**/*.{ts,tsx}',
+  'src/components/settings/sections/EnterpriseSection*.{ts,tsx}',
+  'src/components/settings/sections/IMChannelSection*.{ts,tsx}',
+  'src/components/settings/sections/WeChatQRPanel.tsx',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

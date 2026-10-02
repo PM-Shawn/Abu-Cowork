@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { createPkcePair } from '@/core/account/pkce';
 import {
   __resetAccountStoreForTest,
@@ -75,7 +76,7 @@ describe('AccountLoginDialog pending personal login', () => {
       return undefined;
     });
 
-    render(<AccountLoginDialog />);
+    render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
     expect(screen.getByRole('button', { name: '个人账号登录' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '企业账号登录' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '个人账号登录' }));
@@ -99,7 +100,7 @@ describe('AccountLoginDialog pending personal login', () => {
       return undefined;
     });
 
-    render(<AccountLoginDialog />);
+    render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
     fireEvent.click(screen.getByRole('button', { name: '个人账号登录' }));
     fireEvent.click(screen.getByRole('button', { name: '企业账号登录' }));
     expect(ui.close).toHaveBeenCalledOnce();

@@ -607,3 +607,187 @@ describe('floating layers and dialogs', () => {
     expect(layer).not.toHaveClass('z-dialog');
   });
 });
+
+describe('Dialog that only its buttons can close', () => {
+  // The page behind a modal dialog ignores the pointer; the browser still delivers the
+  // pointerdown Radix listens for, so user-event's own check is skipped.
+  const anywhere = () => userEvent.setup({ pointerEventsCheck: 0 });
+
+  function PrivacyCheck({ dismissible, onOpenChange }: { dismissible?: boolean; onOpenChange?: (open: boolean) => void }) {
+    const [open, setOpen] = useState(false);
+    const [scope, setScope] = useState('all');
+    return (
+      <>
+        <Button onClick={() => setOpen(true)}>Check memories</Button>
+        <p>Elsewhere</p>
+        <Dialog
+          open={open}
+          onOpenChange={(next) => { onOpenChange?.(next); setOpen(next); }}
+          title="Privacy check"
+          role="alertdialog"
+          dismissible={dismissible}
+          closeButton
+          footer={(
+            <>
+              <DialogClose asChild><Button>Later</Button></DialogClose>
+              <Button variant="primary" onClick={() => setOpen(false)}>Mark private</Button>
+            </>
+          )}
+        >
+          <Select label="Scope" value={scope} onValueChange={setScope} options={[{ value: 'all', label: 'All' }, { value: 'some', label: 'Some' }]} />
+        </Dialog>
+      </>
+    );
+  }
+
+  async function openCheck(user: ReturnType<typeof userEvent.setup>) {
+    const opener = screen.getByRole('button', { name: 'Check memories' });
+    await user.click(opener);
+    return { opener, check: screen.getByRole('alertdialog', { name: 'Privacy check' }) };
+  }
+
+  it('stays open on Escape', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(<PrivacyCheck dismissible={false} onOpenChange={onOpenChange} />, { wrapper: DesignSystemProvider });
+    const { check } = await openCheck(user);
+    await user.keyboard('{Escape}');
+    expect(check).toBeInTheDocument();
+    expect(check).toHaveAttribute('data-state', 'open');
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('stays open when the user presses outside it, and still dims and blocks the window behind it', async () => {
+    const user = anywhere();
+    const onOpenChange = vi.fn();
+    render(<PrivacyCheck dismissible={false} onOpenChange={onOpenChange} />, { wrapper: DesignSystemProvider });
+    const { check } = await openCheck(user);
+    const scrim = document.querySelector('.bg-scrim');
+    expect(scrim).not.toBeNull();
+    await user.click(scrim as Element);
+    await user.click(screen.getByText('Elsewhere'));
+    expect(check).toHaveAttribute('data-state', 'open');
+    expect(onOpenChange).not.toHaveBeenCalled();
+    // The page behind it takes no pointer input while it is open.
+    expect(document.body.style.pointerEvents).toBe('none');
+  });
+
+  it('closes on Escape and on a press outside when nothing says otherwise', async () => {
+    const user = anywhere();
+    render(<PrivacyCheck />, { wrapper: DesignSystemProvider });
+    await openCheck(user);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await openCheck(user);
+    await user.click(screen.getByText('Elsewhere'));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('has no close button in the corner even when one is asked for', async () => {
+    const user = userEvent.setup();
+    render(<PrivacyCheck dismissible={false} />, { wrapper: DesignSystemProvider });
+    const { check } = await openCheck(user);
+    expect(within(check).queryByRole('button', { name: 'Close' })).toBeNull();
+    expect(within(check).getByText('Privacy check')).not.toHaveClass('pr-8');
+  });
+
+  it('closes from its own buttons and gives focus back to what opened it', async () => {
+    const user = userEvent.setup();
+    render(<PrivacyCheck dismissible={false} />, { wrapper: DesignSystemProvider });
+    const first = await openCheck(user);
+    await user.click(within(first.check).getByRole('button', { name: 'Later' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await waitFor(() => expect(first.opener).toHaveFocus());
+
+    const second = await openCheck(user);
+    await user.click(within(second.check).getByRole('button', { name: 'Mark private' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await waitFor(() => expect(second.opener).toHaveFocus());
+  });
+
+  it('keeps Tab inside it', async () => {
+    const user = userEvent.setup();
+    render(<PrivacyCheck dismissible={false} />, { wrapper: DesignSystemProvider });
+    const { check } = await openCheck(user);
+    const stops = [
+      within(check).getByRole('combobox', { name: 'Scope' }),
+      within(check).getByRole('button', { name: 'Later' }),
+      within(check).getByRole('button', { name: 'Mark private' }),
+    ];
+    expect(stops[0]).toHaveFocus();
+    await user.tab();
+    expect(stops[1]).toHaveFocus();
+    await user.tab();
+    expect(stops[2]).toHaveFocus();
+    // From the last control Tab goes back to the first, never to the page behind.
+    await user.tab();
+    expect(stops[0]).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(stops[2]).toHaveFocus();
+  });
+
+  it('lets a list opened inside it close on its own Escape', async () => {
+    const user = userEvent.setup();
+    render(<PrivacyCheck dismissible={false} />, { wrapper: DesignSystemProvider });
+    const { check } = await openCheck(user);
+    await user.click(within(check).getByRole('combobox', { name: 'Scope' }));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+    expect(check).toHaveAttribute('data-state', 'open');
+    // With the list gone, Escape reaches the dialog and still does nothing.
+    await user.keyboard('{Escape}');
+    expect(check).toHaveAttribute('data-state', 'open');
+  });
+
+  it('stacks over an open dialog and leaves both open on Escape', async () => {
+    const user = userEvent.setup();
+    function OverSettings() {
+      const [check, setCheck] = useState(false);
+      return (
+        <>
+          <Dialog open title="Settings"><Button onClick={() => setCheck(true)}>Open check</Button></Dialog>
+          <Dialog open={check} onOpenChange={setCheck} title="Privacy check" role="alertdialog" dismissible={false} footer={<Button onClick={() => setCheck(false)}>Later</Button>} />
+        </>
+      );
+    }
+    render(<OverSettings />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Open check' }));
+    const check = screen.getByRole('alertdialog', { name: 'Privacy check' });
+    await user.keyboard('{Escape}');
+    expect(check).toHaveAttribute('data-state', 'open');
+    // The dialog underneath is hidden from screen readers while the question is over it.
+    expect(screen.getByRole('dialog', { hidden: true })).toHaveAttribute('data-state', 'open');
+    await user.click(within(check).getByRole('button', { name: 'Later' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveAttribute('data-state', 'open');
+  });
+
+  it('is still closed by the layer registry when the dialog it was asked over goes away', async () => {
+    const user = userEvent.setup();
+    const onCheckChange = vi.fn();
+    function OverSettings() {
+      const [settings, setSettings] = useState(true);
+      const [check, setCheck] = useState(false);
+      return (
+        <>
+          <Dialog open={settings} onOpenChange={setSettings} title="Settings"><Button onClick={() => setCheck(true)}>Open check</Button></Dialog>
+          <Dialog
+            open={check}
+            onOpenChange={(next) => { onCheckChange(next); setCheck(next); }}
+            title="Privacy check"
+            role="alertdialog"
+            dismissible={false}
+            footer={<Button onClick={() => setSettings(false)}>Close settings</Button>}
+          />
+        </>
+      );
+    }
+    render(<OverSettings />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Open check' }));
+    await user.click(screen.getByRole('button', { name: 'Close settings' }));
+    expect(onCheckChange.mock.calls).toEqual([[false]]);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.queryByRole('dialog', { hidden: true })).toBeNull();
+  });
+});

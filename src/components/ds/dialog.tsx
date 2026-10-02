@@ -27,7 +27,7 @@ export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>)
 export function Dialog({
   title, description, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
-  closeButton = false, contentProps, onCloseAutoFocus: callerCloseAutoFocus,
+  closeButton: closeButtonAsked = false, dismissible = true, contentProps, onCloseAutoFocus: callerCloseAutoFocus,
 }: {
   title: ReactNode;
   // Keeps the title as the accessible name without showing it.
@@ -46,6 +46,11 @@ export function Dialog({
   role?: 'dialog' | 'alertdialog';
   // A close button in the top right corner; data attributes given here go on that button.
   closeButton?: boolean | DataAttributes;
+  // false: only the dialog's own buttons (and DialogClose) close it. Escape and a press outside
+  // do nothing and there is no close button; the scrim still blocks the window behind it. For a
+  // one-time question that a stray key or click must not skip. The layer registry can still
+  // close it: when the dialog it was asked over goes away, or another dialog takes its place.
+  dismissible?: boolean;
   contentProps?: DataAttributes;
   // Runs after the layer's own handler once the dialog has gone; call event.preventDefault()
   // there to put focus somewhere other than where it was before the dialog opened. When
@@ -110,6 +115,9 @@ export function Dialog({
     if (element?.isConnected) element.focus();
   };
 
+  const closeButton = dismissible && closeButtonAsked;
+  // Radix asks before it dismisses; a prevented event leaves the dialog open.
+  const stay = dismissible ? undefined : (event: Event) => event.preventDefault();
   const page = size === 'page';
   const box = page ? cn(DIALOG_PAGE, isMacOS() ? 'top-12' : 'top-6') : cn(DIALOG_BOX, WIDTH[size], PLACEMENT[placement]);
 
@@ -127,6 +135,8 @@ export function Dialog({
             data-ds-motion
             data-electron-no-drag
             role={role}
+            onEscapeKeyDown={stay}
+            onInteractOutside={stay}
             onOpenAutoFocus={() => remember(returnTo)}
             onCloseAutoFocus={(event) => {
               // The layer's handler first: it prevents the default when the registry

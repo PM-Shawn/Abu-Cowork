@@ -200,6 +200,10 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/WeChatQRPanel.tsx',
   'src/components/settings/sections/WeChatQRPanel.test.tsx',
   'src/components/settings/SensitiveAuditDialog*.{ts,tsx}',
+  'src/components/settings/sections/PersonalMemorySection*.{ts,tsx}',
+  'src/components/settings/sections/SoulSection*.{ts,tsx}',
+  'src/components/settings/sections/ProactivityPicker.tsx',
+  'src/components/settings/sections/UsageSection*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

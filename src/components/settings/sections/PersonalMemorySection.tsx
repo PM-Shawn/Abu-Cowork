@@ -1,31 +1,25 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { memo, useState, useEffect, useCallback, useId, useLayoutEffect, useRef, useMemo } from 'react';
 import { useI18n, format } from '@/i18n';
-import { HelpCircle, Trash2, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Globe, ListChecks, X, Check, Lock, AlertTriangle } from 'lucide-react';
 import { scanMemoryFiles, readMemoryFile } from '@/core/memdir/scan';
 import { deleteMemory, setMemoryPrivate, setMemoryDescription } from '@/core/memdir/write';
 import { memoryAge, isStale } from '@/core/memdir/age';
 import type { MemoryHeader, MemoryType } from '@/core/memdir/types';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
-import { Button } from '@/components/ui/button';
-import { Toggle } from '@/components/ui/toggle';
-import { Input } from '@/components/ui/input';
-
-// Abu 设计 token：toolbar 按钮风格（对齐 AboutSection 的"检查更新"按钮）
-const ABU_BTN_OUTLINE =
-  'border border-[var(--abu-border)] bg-transparent text-[var(--abu-text-secondary)] ' +
-  'hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)] hover:border-[var(--abu-border-hover)] ' +
-  'active:scale-[0.98]';
-
-const ABU_BTN_GHOST =
-  'bg-transparent text-[var(--abu-text-muted)] ' +
-  'hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)]';
-
-const ABU_BTN_DESTRUCTIVE =
-  'border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] ' +
-  'hover:bg-[var(--abu-danger-bg)] hover:border-[var(--abu-danger)] hover:text-[var(--abu-danger)] ' +
-  'active:scale-[0.98]';
+import { Button, IconButton } from '@/components/ds/button';
+import { Checkbox } from '@/components/ds/checkbox';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { EmptyState } from '@/components/ds/empty-state';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Popover } from '@/components/ds/popover';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
+import { cn } from '@/lib/utils';
 
 function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): string {
   const map: Record<MemoryType, string> = {
@@ -36,18 +30,6 @@ function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): str
   };
   return map[type];
 }
-
-/* eslint-disable no-restricted-syntax -- categorical memory-type tag palette
-   (4 arbitrary distinct hues for user/project/feedback/reference), NOT semantic
-   status colors. Deliberately raw so the categories stay visually distinct;
-   purple/teal have no token equivalent. See CLAUDE.md §6.2. */
-const TYPE_COLORS: Record<MemoryType, string> = {
-  user: 'bg-orange-100 text-orange-700 dark:bg-orange-400/15 dark:text-orange-300',
-  project: 'bg-purple-100 text-purple-700 dark:bg-purple-400/15 dark:text-purple-300',
-  feedback: 'bg-teal-100 text-teal-700 dark:bg-teal-400/15 dark:text-teal-300',
-  reference: 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300',
-};
-/* eslint-enable no-restricted-syntax */
 
 /**
  * Stale memory: 60+ days untouched. Replaces the old `isUnused` (accessCount-based)
@@ -117,15 +99,183 @@ interface SelectableEntry {
   workspacePath: string | null;
 }
 
+interface DescriptionHint {
+  key: string;
+  pristineDescription: string;
+  draft: string;
+}
+
+// What a row can ask the page to do. The object never changes, so a row is drawn again only
+// when what it shows changes.
+interface RowActions {
+  toggleSelected: (key: string) => void;
+  expand: (header: MemoryHeader) => void;
+  togglePrivate: (header: MemoryHeader, workspacePath: string | null, next: boolean) => void;
+  requestDelete: (header: MemoryHeader, workspacePath: string | null) => void;
+  editHintDraft: (draft: string) => void;
+  saveDescription: (header: MemoryHeader, workspacePath: string | null) => void;
+  dismissHint: () => void;
+}
+
+function entryKey(workspacePath: string | null, filename: string): string {
+  return `${workspacePath ?? 'g'}:${filename}`;
+}
+
+// One memory. A collapsed row mounts no tooltip, menu or other floating root, so a long list
+// adds no listeners to the page.
+const MemoryRow = memo(function MemoryRow({ header, workspacePath, bulkMode, selected, expanded, content, hint, actions }: {
+  header: MemoryHeader;
+  workspacePath: string | null;
+  bulkMode: boolean;
+  selected: boolean;
+  expanded: boolean;
+  // The file's text once it has been read; the description stands in until then.
+  content: string | undefined;
+  // Set only on the row whose description the page suggests rewriting.
+  hint: DescriptionHint | null;
+  actions: RowActions;
+}) {
+  const { t } = useI18n();
+  const id = useId();
+  const key = entryKey(workspacePath, header.filename);
+
+  const summary = (
+    <>
+      <Tag>{getTypeLabel(header.type, t)}</Tag>
+      <span className="flex min-w-0 flex-1 items-center gap-2 text-ui text-label">
+        <span className="truncate">{header.name}</span>
+        {header.private && (
+          <span title={t.memory.privateTooltip} className="flex shrink-0">
+            <Icon icon={AppIcons.private} size="sm" className="text-label-tertiary" />
+          </span>
+        )}
+      </span>
+      <span className="whitespace-nowrap text-caption text-label-tertiary">
+        {format(t.memory.updatedAt, { age: memoryAge(header.updated) })}
+      </span>
+      {isStale(header.updated) && (
+        <span title={t.memory.staleTooltip} className="flex shrink-0">
+          <Tag tone="warning">{t.memory.staleBadge}</Tag>
+        </span>
+      )}
+    </>
+  );
+
+  return (
+    <div className={cn('rounded-panel border', bulkMode && selected ? 'border-control-border bg-fill-selected' : 'border-separator')}>
+      {bulkMode ? (
+        // The whole row ticks its box: the row is the box's label.
+        <label htmlFor={`${id}-box`} className="flex items-center gap-2 rounded-panel px-3 py-2 hover:bg-fill-hover">
+          <Checkbox id={`${id}-box`} checked={selected} onCheckedChange={() => actions.toggleSelected(key)} />
+          {summary}
+        </label>
+      ) : (
+        <Pressable
+          aria-expanded={expanded}
+          onClick={() => actions.expand(header)}
+          className="flex w-full items-center gap-2 rounded-panel px-3 py-2 text-left hover:bg-fill-hover"
+        >
+          {summary}
+          <Icon icon={expanded ? AppIcons.collapse : AppIcons.expand} size="sm" className="text-label-tertiary" />
+        </Pressable>
+      )}
+
+      {!bulkMode && expanded && (
+        <div className="border-t border-separator px-3 pb-3">
+          <p className="mt-3 whitespace-pre-wrap rounded-control bg-code p-3 font-code text-ui-sm text-label-secondary">
+            {content ?? header.description}
+          </p>
+          <div className="mt-3 flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-caption text-label-tertiary">
+                {header.source === 'auto_flush' ? t.memory.sourceAutoFlush : header.source === 'agent_explicit' ? t.memory.sourceAgentExplicit : t.memory.sourceUserManual}
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <Icon icon={AppIcons.private} size="sm" className="text-label-tertiary" />
+                <span className="text-ui-sm text-label-secondary">
+                  {t.memory.privateLabel}
+                </span>
+                <Switch
+                  aria-label={t.memory.privateLabel}
+                  checked={header.private}
+                  onCheckedChange={() => actions.togglePrivate(header, workspacePath, !header.private)}
+                />
+              </div>
+              <p className="mt-1 text-caption text-label-tertiary">
+                {t.memory.privateDesc}
+              </p>
+
+              {/* Description-leak hint: shown only when the
+                  user just flipped private ON for a memory
+                  whose description looks like a content leak.
+                  Closing requires explicit user action — no
+                  outside-click dismiss. */}
+              {hint && (
+                <div className="mt-2 flex items-start gap-2 rounded-control bg-warning-soft p-3">
+                  <StatusIcon tone="warning" size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-ui-sm font-medium text-label">
+                      {t.memory.privateDescHintTitle}
+                    </div>
+                    <p className="mt-1 text-ui-sm text-label-secondary">
+                      {t.memory.privateDescHintBody}
+                    </p>
+                    <div className="mt-2">
+                      <div className="text-caption text-label-tertiary">
+                        {t.memory.privateDescCurrent}：
+                      </div>
+                      <div className="truncate text-caption text-label-secondary line-through">
+                        {hint.pristineDescription}
+                      </div>
+                    </div>
+                    <div className="mt-2">
+                      <label htmlFor={`${id}-description`} className="mb-1 block text-caption text-label-tertiary">
+                        {t.memory.privateDescNewLabel}
+                      </label>
+                      <TextField
+                        id={`${id}-description`}
+                        value={hint.draft}
+                        placeholder={t.memory.privateDescPlaceholder}
+                        onChange={(e) => actions.editHintDraft(e.target.value)}
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={!hint.draft.trim()}
+                        onClick={() => actions.saveDescription(header, workspacePath)}
+                      >
+                        {t.memory.privateDescSave}
+                      </Button>
+                      <Button size="sm" variant="plain" onClick={actions.dismissHint}>
+                        {t.memory.privateDescSkip}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <IconButton
+              size="sm"
+              icon={AppIcons.delete}
+              label={t.common.delete}
+              onClick={() => actions.requestDelete(header, workspacePath)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
 export default function PersonalMemorySection() {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const [groups, setGroups] = useState<MemoryGroup[]>([]);
   const [expandedContent, setExpandedContent] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ header: MemoryHeader; workspacePath: string | null } | null>(null);
-  const [showTip, setShowTip] = useState(false);
-  const tipRef = useRef<HTMLDivElement>(null);
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);
   const hasRunAudit = useSettingsStore((s) => s.hasRunSensitiveAudit_v015);
   const setShouldRunMemoryAudit = useSettingsStore((s) => s.setShouldRunMemoryAudit);
@@ -142,18 +292,13 @@ export default function PersonalMemorySection() {
   // Bulk cleanup mode
   const [bulkMode, setBulkMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
-  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
 
   // Inline "rewrite description" hint, fired when toggling private on a
   // memory whose description looks like it leaks content. Keyed by
   // workspacePath:filename so only the relevant row shows the panel.
   // `draft` is the user-edited new description; `pristineDescription` lets
   // us show the original below the input for context.
-  const [descHint, setDescHint] = useState<{
-    key: string;
-    pristineDescription: string;
-    draft: string;
-  } | null>(null);
+  const [descHint, setDescHint] = useState<DescriptionHint | null>(null);
 
   // Collapsed groups: workspace path key, '__global__' for the global group.
   // Default behavior: all groups start expanded so users see what's there;
@@ -178,7 +323,7 @@ export default function PersonalMemorySection() {
     for (const group of groups) {
       for (const header of group.headers) {
         entries.push({
-          key: `${group.workspacePath ?? 'g'}:${header.filename}`,
+          key: entryKey(group.workspacePath, header.filename),
           header,
           workspacePath: group.workspacePath,
         });
@@ -227,18 +372,6 @@ export default function PersonalMemorySection() {
 
   useEffect(() => { loadEntries(); }, [loadEntries]);
 
-  // Close tip on click outside
-  useEffect(() => {
-    if (!showTip) return;
-    const handleClick = (e: MouseEvent) => {
-      if (tipRef.current && !tipRef.current.contains(e.target as Node)) {
-        setShowTip(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [showTip]);
-
   const exitBulkMode = useCallback(() => {
     setBulkMode(false);
     setSelectedKeys(new Set());
@@ -276,11 +409,25 @@ export default function PersonalMemorySection() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
+  // What the list holds now. A question stays open while the list is read again, so its answer
+  // is checked against this, never against what the list held when the question was asked.
+  const current = useRef({ allEntries, selectedKeys });
+  useLayoutEffect(() => { current.current = { allEntries, selectedKeys }; });
+
+  const requestDelete = async (header: MemoryHeader, workspacePath: string | null) => {
+    const key = entryKey(workspacePath, header.filename);
+    const confirmed = await confirm({
+      title: t.memory.deleteTitle,
+      message: header.name,
+      confirmLabel: t.common.delete,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    // The memory the question named: still in the list, and still that memory.
+    const target = current.current.allEntries.find((entry) => entry.key === key);
+    if (!target || target.header.name !== header.name) return;
     try {
-      await deleteMemory(deleteTarget.header.filename, deleteTarget.workspacePath);
-      setDeleteTarget(null);
+      await deleteMemory(target.header.filename, target.workspacePath);
       await loadEntries();
     } catch (err) {
       console.error('Failed to delete memory:', err);
@@ -299,7 +446,7 @@ export default function PersonalMemorySection() {
       // existing description looks like a value rather than a topic.
       // Flipping OFF clears the hint regardless. Pre-fill `draft` with
       // a derived topic so the user just clicks save (or tweaks).
-      const key = `${workspacePath ?? 'g'}:${header.filename}`;
+      const key = entryKey(workspacePath, header.filename);
       if (next && descriptionLooksRevealing(header.description)) {
         setDescHint({
           key,
@@ -330,9 +477,17 @@ export default function PersonalMemorySection() {
     }
   };
 
-  const handleBulkDelete = async () => {
-    setBulkConfirmOpen(false);
-    const targets = allEntries.filter((e) => selectedKeys.has(e.key));
+  const requestBulkDelete = async () => {
+    const confirmed = await confirm({
+      title: t.memory.bulkConfirmTitle,
+      message: format(t.memory.bulkConfirmMessage, { count: String(selectedKeys.size) }),
+      confirmLabel: t.common.delete,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    // Only the ticked memories that are still in the list.
+    const now = current.current;
+    const targets = now.allEntries.filter((e) => now.selectedKeys.has(e.key));
     for (const target of targets) {
       try {
         await deleteMemory(target.header.filename, target.workspacePath);
@@ -344,313 +499,143 @@ export default function PersonalMemorySection() {
     await loadEntries();
   };
 
+  // The handlers above read this render's state. Rows get one object that never changes and
+  // always reaches the newest handlers.
+  const handlers = useRef({ toggleSelected, handleExpand, handleTogglePrivate, requestDelete, handleSaveDescription });
+  useLayoutEffect(() => {
+    handlers.current = { toggleSelected, handleExpand, handleTogglePrivate, requestDelete, handleSaveDescription };
+  });
+  const rowActions = useMemo<RowActions>(() => ({
+    toggleSelected: (key) => handlers.current.toggleSelected(key),
+    expand: (header) => { void handlers.current.handleExpand(header); },
+    togglePrivate: (header, workspacePath, next) => { void handlers.current.handleTogglePrivate(header, workspacePath, next); },
+    requestDelete: (header, workspacePath) => { void handlers.current.requestDelete(header, workspacePath); },
+    editHintDraft: (draft) => setDescHint((prev) => (prev ? { ...prev, draft } : prev)),
+    saveDescription: (header, workspacePath) => { void handlers.current.handleSaveDescription(header, workspacePath); },
+    dismissHint: () => setDescHint(null),
+  }), []);
+
   return (
-    <>
-      <ConfirmDialog
-        open={!!deleteTarget}
-        title={t.memory.deleteTitle}
-        message={deleteTarget?.header.name ?? ''}
-        confirmText={t.common.delete}
-        cancelText={t.common.cancel}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteTarget(null)}
-        variant="danger"
-      />
-
-      <ConfirmDialog
-        open={bulkConfirmOpen}
-        title={t.memory.bulkConfirmTitle}
-        message={format(t.memory.bulkConfirmMessage, { count: String(selectedKeys.size) })}
-        confirmText={t.common.delete}
-        cancelText={t.common.cancel}
-        onConfirm={handleBulkDelete}
-        onCancel={() => setBulkConfirmOpen(false)}
-        variant="danger"
-      />
-
-      <div className="space-y-4">
-        <div>
-          <div className="flex items-center gap-1.5 relative" ref={tipRef}>
-            <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-              {t.sidebar.personalMemoryTitle}
-            </h3>
-            <button
-              onClick={() => setShowTip(!showTip)}
-              className="text-[var(--abu-text-placeholder)] hover:text-[var(--abu-text-muted)] transition-colors"
-            >
-              <HelpCircle className="h-3.5 w-3.5" />
-            </button>
-
-            {showTip && (
-              <div className="absolute top-full left-0 mt-2 w-[340px] p-4 bg-[var(--abu-bg-base)] rounded-xl shadow-lg border border-[var(--abu-border)] z-50 animate-in fade-in slide-in-from-top-1 duration-150">
-                <div className="space-y-2.5 text-minor text-[var(--abu-text-tertiary)] leading-relaxed">
-                  <p className="text-body text-[var(--abu-text-secondary)] font-medium">{t.sidebar.memoryGuideTitle}</p>
-                  <div className="space-y-1.5">
-                    <p><span className="font-medium text-[var(--abu-clay)]">{t.sidebar.memoryGuidePersonalName}</span> — {t.sidebar.memoryGuidePersonalDesc}</p>
-                    <p><span className="font-medium text-[#8b7ec8]">{t.sidebar.memoryGuideProjectMemoryName}</span> — {t.sidebar.memoryGuideProjectMemoryDesc}</p>
-                    <p><span className="font-medium text-[var(--abu-text-secondary)]">{t.sidebar.memoryGuideProjectRulesName}</span> — {t.sidebar.memoryGuideProjectRulesDesc}</p>
-                  </div>
-                  <p className="text-caption text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-active)] pt-2">{t.sidebar.memoryGuideTip}</p>
-                </div>
+    <div className="space-y-4">
+      <div>
+        <div className="flex items-center gap-2">
+          <h3 className="text-title text-label">
+            {t.sidebar.personalMemoryTitle}
+          </h3>
+          <Popover
+            align="start"
+            className="w-85"
+            trigger={(
+              <Pressable aria-label={t.sidebar.memoryGuideTitle} className="inline-flex rounded-control text-label-tertiary hover:text-label">
+                <Icon icon={AppIcons.info} size="sm" />
+              </Pressable>
+            )}
+          >
+            <div className="space-y-2 text-ui-sm text-label-secondary">
+              <p className="text-ui font-medium text-label">{t.sidebar.memoryGuideTitle}</p>
+              <div className="space-y-1">
+                <p><span className="font-medium text-label">{t.sidebar.memoryGuidePersonalName}</span> — {t.sidebar.memoryGuidePersonalDesc}</p>
+                <p><span className="font-medium text-label">{t.sidebar.memoryGuideProjectMemoryName}</span> — {t.sidebar.memoryGuideProjectMemoryDesc}</p>
+                <p><span className="font-medium text-label">{t.sidebar.memoryGuideProjectRulesName}</span> — {t.sidebar.memoryGuideProjectRulesDesc}</p>
               </div>
+              <p className="border-t border-separator pt-2 text-caption text-label-tertiary">{t.sidebar.memoryGuideTip}</p>
+            </div>
+          </Popover>
+        </div>
+        <p className="mt-1 text-ui-sm text-label-secondary">
+          {t.sidebar.personalMemoryDesc}
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Spinner label={t.common.loading} />
+        </div>
+      ) : totalCount > 0 ? (
+        <div className="space-y-4">
+          {/* Top toolbar: count + bulk toggle / bulk actions */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-ui-sm text-label-tertiary">
+              {bulkMode
+                ? format(t.memory.bulkSelected, { count: String(selectedKeys.size) })
+                : format(t.memory.entryCount, { count: String(totalCount) })}
+            </div>
+            {bulkMode ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="secondary" onClick={() => selectByFilter(isAutoFlushStale)}>
+                  {t.memory.bulkSelectAutoFlushUnused}
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => selectByFilter(isStaleHeader)}>
+                  {t.memory.bulkSelectUnused}
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => selectByFilter(() => true)}>
+                  {t.memory.bulkSelectAll}
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setSelectedKeys(new Set())}>
+                  {t.memory.bulkClearSelection}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  icon={AppIcons.delete}
+                  disabled={selectedKeys.size === 0}
+                  onClick={() => { void requestBulkDelete(); }}
+                >
+                  {t.memory.bulkDelete}
+                </Button>
+                <Button size="sm" variant="plain" icon={AppIcons.close} onClick={exitBulkMode}>
+                  {t.memory.bulkExit}
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" variant="secondary" icon={AppIcons.tidyUp} onClick={() => setBulkMode(true)}>
+                {t.memory.bulkCleanup}
+              </Button>
             )}
           </div>
-          <p className="text-body text-[var(--abu-text-muted)] mt-1">
-            {t.sidebar.personalMemoryDesc}
-          </p>
-        </div>
 
-        {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <div className="w-5 h-5 border-2 border-[var(--abu-clay)] border-t-transparent rounded-full animate-spin" />
-          </div>
-        ) : totalCount > 0 ? (
-          <div className="space-y-4">
-            {/* Top toolbar: count + bulk toggle / bulk actions */}
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="text-minor text-[var(--abu-text-placeholder)]">
-                {bulkMode
-                  ? format(t.memory.bulkSelected, { count: String(selectedKeys.size) })
-                  : format(t.memory.entryCount, { count: String(totalCount) })}
-              </div>
-              {bulkMode ? (
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isAutoFlushStale)}>
-                    {t.memory.bulkSelectAutoFlushUnused}
-                  </Button>
-                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isStaleHeader)}>
-                    {t.memory.bulkSelectUnused}
-                  </Button>
-                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(() => true)}>
-                    {t.memory.bulkSelectAll}
-                  </Button>
-                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => setSelectedKeys(new Set())}>
-                    {t.memory.bulkClearSelection}
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    className={selectedKeys.size === 0 ? ABU_BTN_OUTLINE : ABU_BTN_DESTRUCTIVE}
-                    disabled={selectedKeys.size === 0}
-                    onClick={() => setBulkConfirmOpen(true)}
-                  >
-                    <Trash2 className="h-3 w-3 mr-1" />
-                    {t.memory.bulkDelete}
-                  </Button>
-                  <Button size="xs" variant="ghost" className={ABU_BTN_GHOST} onClick={exitBulkMode}>
-                    <X className="h-3 w-3 mr-1" />
-                    {t.memory.bulkExit}
-                  </Button>
-                </div>
-              ) : (
-                <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => setBulkMode(true)}>
-                  <ListChecks className="h-3 w-3 mr-1" />
-                  {t.memory.bulkCleanup}
-                </Button>
-              )}
-            </div>
-
-            {groups.map((group) => {
-              const groupKey = group.workspacePath ?? '__global__';
-              const isCollapsed = collapsedGroups.has(groupKey);
-              return (
+          {groups.map((group) => {
+            const groupKey = group.workspacePath ?? '__global__';
+            const isCollapsed = collapsedGroups.has(groupKey);
+            return (
               <div key={groupKey} className="space-y-2">
                 {/* Group header — clickable to toggle collapse */}
-                <button
-                  type="button"
+                <Pressable
+                  aria-expanded={!isCollapsed}
                   onClick={() => toggleGroup(groupKey)}
-                  className="flex items-center gap-1.5 text-caption font-medium text-[var(--abu-text-muted)] uppercase tracking-wider hover:text-[var(--abu-text-primary)] transition-colors w-full"
+                  className="flex items-center gap-1 rounded-control text-ui-sm font-medium text-label-tertiary hover:text-label"
                 >
-                  {isCollapsed ? (
-                    <ChevronRight className="h-3 w-3" />
-                  ) : (
-                    <ChevronDown className="h-3 w-3" />
-                  )}
-                  {group.icon === 'global' ? (
-                    <Globe className="h-3 w-3" />
-                  ) : (
-                    <FolderOpen className="h-3 w-3" />
-                  )}
+                  <Icon icon={AppIcons.disclose} size="sm" className={cn('transition-transform duration-fast', !isCollapsed && 'rotate-90')} />
+                  <Icon icon={group.icon === 'global' ? AppIcons.allProjects : AppIcons.folderOpen} size="sm" />
                   <span>{group.label}</span>
-                  <span className="text-[var(--abu-text-placeholder)]">({group.headers.length})</span>
-                </button>
+                  <span>({group.headers.length})</span>
+                </Pressable>
 
                 {/* Group entries — hidden when collapsed */}
                 {!isCollapsed && group.headers.map((header) => {
-                  const key = `${group.workspacePath ?? 'g'}:${header.filename}`;
-                  const isSelected = selectedKeys.has(key);
+                  const key = entryKey(group.workspacePath, header.filename);
+                  const expanded = expandedId === header.filename;
                   return (
-                    <div
+                    <MemoryRow
                       key={key}
-                      className={`border rounded-lg overflow-hidden transition-colors ${
-                        bulkMode && isSelected
-                          ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
-                          : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
-                      }`}
-                    >
-                      <div
-                        className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-[var(--abu-bg-hover)] transition-colors"
-                        onClick={() => bulkMode ? toggleSelected(key) : handleExpand(header)}
-                      >
-                        {bulkMode && (
-                          <span
-                            className={`flex h-4 w-4 items-center justify-center rounded-full border transition-colors ${
-                              isSelected
-                                ? 'border-[var(--abu-clay)] bg-[var(--abu-clay)] text-white'
-                                : 'border-[var(--abu-text-placeholder)]'
-                            }`}
-                          >
-                            {isSelected && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
-                          </span>
-                        )}
-                        <span className={`text-caption font-medium px-1.5 py-0.5 rounded ${TYPE_COLORS[header.type]}`}>
-                          {getTypeLabel(header.type, t)}
-                        </span>
-                        <span className="text-body text-[var(--abu-text-primary)] flex-1 truncate flex items-center gap-1.5">
-                          {header.name}
-                          {header.private && (
-                            <span title={t.memory.privateTooltip} className="shrink-0">
-                              <Lock className="h-3 w-3 text-[var(--abu-warning)]" />
-                            </span>
-                          )}
-                        </span>
-                        <span className="text-caption text-[var(--abu-text-placeholder)] whitespace-nowrap">
-                          {format(t.memory.updatedAt, { age: memoryAge(header.updated) })}
-                        </span>
-                        {isStale(header.updated) && (
-                          <span
-                            className="text-caption text-[var(--abu-warning)] bg-[var(--abu-warning-bg)] px-1.5 py-0.5 rounded whitespace-nowrap"
-                            title={t.memory.staleTooltip}
-                          >
-                            {t.memory.staleBadge}
-                          </span>
-                        )}
-                        {!bulkMode && (
-                          expandedId === header.filename ? (
-                            <ChevronUp className="h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
-                          ) : (
-                            <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
-                          )
-                        )}
-                      </div>
-
-                      {!bulkMode && expandedId === header.filename && (
-                        <div className="px-3 pb-3 border-t border-[var(--abu-bg-active)]">
-                          <p className="text-minor text-[var(--abu-text-tertiary)] leading-relaxed mt-2 whitespace-pre-wrap">
-                            {expandedContent[header.filename] ?? header.description}
-                          </p>
-                          <div
-                            className="flex items-start justify-between gap-3 mt-2 pt-2 border-t border-[var(--abu-bg-muted)]"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="text-caption text-[var(--abu-text-placeholder)]">
-                                {header.source === 'auto_flush' ? t.memory.sourceAutoFlush : header.source === 'agent_explicit' ? t.memory.sourceAgentExplicit : t.memory.sourceUserManual}
-                              </div>
-                              <div className="flex items-center gap-2 mt-1.5">
-                                <Lock className="h-3 w-3 text-[var(--abu-warning)] shrink-0" />
-                                <span className="text-caption text-[var(--abu-text-secondary)]">
-                                  {t.memory.privateLabel}
-                                </span>
-                                <Toggle
-                                  size="sm"
-                                  checked={header.private}
-                                  onChange={() => handleTogglePrivate(header, group.workspacePath, !header.private)}
-                                />
-                              </div>
-                              <p className="text-caption text-[var(--abu-text-placeholder)] mt-1 leading-snug">
-                                {t.memory.privateDesc}
-                              </p>
-
-                              {/* Description-leak hint: shown only when the
-                                  user just flipped private ON for a memory
-                                  whose description looks like a content leak.
-                                  Closing requires explicit user action — no
-                                  outside-click dismiss. */}
-                              {descHint?.key === key && (
-                                <div className="mt-2 p-2.5 border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] rounded-md">
-                                  <div className="flex items-start gap-1.5">
-                                    <AlertTriangle className="h-3.5 w-3.5 text-[var(--abu-warning)] shrink-0 mt-0.5" />
-                                    <div className="flex-1 min-w-0">
-                                      <div className="text-caption font-medium text-[var(--abu-warning)]">
-                                        {t.memory.privateDescHintTitle}
-                                      </div>
-                                      <p className="text-caption text-[var(--abu-warning)] leading-snug mt-0.5">
-                                        {t.memory.privateDescHintBody}
-                                      </p>
-                                      <div className="mt-2">
-                                        <div className="text-caption text-[var(--abu-text-placeholder)] mb-0.5">
-                                          {t.memory.privateDescCurrent}：
-                                        </div>
-                                        <div className="text-caption text-[var(--abu-text-tertiary)] line-through truncate">
-                                          {descHint.pristineDescription}
-                                        </div>
-                                      </div>
-                                      <div className="mt-1.5">
-                                        <label className="text-caption text-[var(--abu-text-placeholder)] block mb-0.5">
-                                          {t.memory.privateDescNewLabel}
-                                        </label>
-                                        <Input
-                                          type="text"
-                                          value={descHint.draft}
-                                          placeholder={t.memory.privateDescPlaceholder}
-                                          onChange={(e) =>
-                                            setDescHint((prev) =>
-                                              prev ? { ...prev, draft: e.target.value } : prev,
-                                            )
-                                          }
-                                          className="text-caption"
-                                        />
-                                      </div>
-                                      <div className="flex items-center gap-1.5 mt-2">
-                                        <Button
-                                          size="xs"
-                                          variant="default"
-                                          disabled={!descHint.draft.trim()}
-                                          onClick={() => handleSaveDescription(header, group.workspacePath)}
-                                        >
-                                          {t.memory.privateDescSave}
-                                        </Button>
-                                        <Button
-                                          size="xs"
-                                          variant="ghost"
-                                          onClick={() => setDescHint(null)}
-                                        >
-                                          {t.memory.privateDescSkip}
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setDeleteTarget({ header, workspacePath: group.workspacePath }); }}
-                              className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors shrink-0"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                      header={header}
+                      workspacePath={group.workspacePath}
+                      bulkMode={bulkMode}
+                      selected={selectedKeys.has(key)}
+                      expanded={expanded}
+                      content={expanded ? expandedContent[header.filename] : undefined}
+                      hint={descHint?.key === key ? descHint : null}
+                      actions={rowActions}
+                    />
                   );
                 })}
               </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <p className="text-body text-[var(--abu-text-placeholder)]">
-              {t.panel.memoryEmpty}
-            </p>
-            <p className="text-minor text-[var(--abu-text-placeholder)] mt-1">
-              {t.memory.emptyHint}
-            </p>
-          </div>
-        )}
-      </div>
-    </>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState title={t.panel.memoryEmpty} description={t.memory.emptyHint} />
+      )}
+    </div>
   );
 }

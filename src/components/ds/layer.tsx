@@ -19,8 +19,10 @@ interface Waiting {
 // open over that dialog is answered with cancel as soon as the new dialog arrives, held or not:
 // the discard question has to be the top layer for the user to decide.
 // Also decides which DOM node floating layers portal into.
-// `onModalChange` hears whether a dialog or an alert is open (menus and popovers do not count),
-// once per change. The app hides what the page cannot paint over (a native web view) while it is.
+// `onModalChange` hears whether a dialog or an alert is registered (menus and popovers do not
+// count), once per change. A dialog is reported until it leaves the registry, which happens when
+// it closes, before its fade ends. The app hides what the page cannot paint over (a native web
+// view) while one is.
 export function LayerProvider({ children, container, onModalChange }: {
   children: ReactNode;
   container?: HTMLElement | null;

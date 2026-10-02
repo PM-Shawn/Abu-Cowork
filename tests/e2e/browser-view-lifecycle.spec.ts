@@ -1683,6 +1683,22 @@ test.describe('Electron browser view lifecycle E2E', () => {
     ).toBe(true);
     const finalStates = await nativeBrowserViewStates(app!);
     expect(finalStates.filter((state) => state.url === fixture!.url)).toHaveLength(1);
+
+    // --- A dialog over the browser tab ---
+    // The native view paints above the page, so it is hidden for as long as a dialog is up
+    // (`App.tsx` hands the design-system provider's `onModalChange` to the preview store).
+    await page.getByRole('button', { name: /^(搜索对话\.\.\.|Search chats\.\.\.)$/ }).first().click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(
+      async () => (await ourNativeViewState(app!, fixture!.url))?.visible ?? null,
+      { timeout: READY_TIMEOUT },
+    ).toBe(false);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: READY_TIMEOUT });
+    await expect.poll(
+      async () => (await ourNativeViewState(app!, fixture!.url))?.visible ?? null,
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
   });
 
   /**

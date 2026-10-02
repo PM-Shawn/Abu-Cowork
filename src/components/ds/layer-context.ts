@@ -28,6 +28,14 @@ export interface LayerRegistry {
 export const LayerContext = createContext<LayerRegistry | null>(null);
 export const LayerScopeContext = createContext<readonly string[]>([]);
 
+// True inside a Dialog. A menu, select or popover opened there sits on the dialog's level:
+// it joins the page after the dialog, so it paints above it. Elsewhere it sits on the popover level.
+export const InDialogContext = createContext(false);
+
+export function useFloatingLevel(): 'z-dialog' | 'z-popover' {
+  return useContext(InDialogContext) ? 'z-dialog' : 'z-popover';
+}
+
 export function useLayerRegistry(): LayerRegistry {
   const registry = useContext(LayerContext);
   if (!registry) throw new Error('Design-system components must render inside <DesignSystemProvider>.');

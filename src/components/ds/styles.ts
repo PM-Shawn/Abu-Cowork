@@ -11,4 +11,10 @@ export const FLOAT_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade
 export const TOOLTIP_MOTION = 'data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-97 data-[state=instant-open]:animate-in data-[state=instant-open]:fade-in-0 data-[state=instant-open]:zoom-in-97 duration-fast ease-enter data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-97 data-[state=closed]:ease-exit';
 export const DIALOG_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-98 data-[state=open]:duration-base data-[state=open]:ease-enter data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-98 data-[state=closed]:duration-fast data-[state=closed]:ease-exit';
 export const SCRIM_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-base data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-fast';
-export const DIALOG_BOX = 'fixed left-1/2 top-1/2 z-dialog w-full -translate-x-1/2 -translate-y-1/2 rounded-window bg-raised p-6 text-label shadow-dialog outline-none';
+// Floating layers keep this many pixels between themselves and the window edge.
+export const EDGE_GAP = 8;
+export const DIALOG_SURFACE = 'fixed z-dialog flex flex-col rounded-window bg-raised text-label shadow-dialog outline-none';
+// Centered. At most the window height minus 48px above and below; the macOS title band is 44px.
+export const DIALOG_BOX = `${DIALOG_SURFACE} left-1/2 top-1/2 max-h-[calc(100dvh-6rem)] w-full -translate-x-1/2 -translate-y-1/2 p-6`;
+// The settings window. Auto margins center it, so a fixed element inside it still covers the app window.
+export const DIALOG_PAGE = `${DIALOG_SURFACE} inset-x-0 bottom-6 m-auto max-h-[840px] w-[min(1180px,92vw)] overflow-hidden`;

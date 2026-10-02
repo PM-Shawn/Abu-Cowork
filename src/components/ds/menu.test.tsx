@@ -6,6 +6,7 @@ import userEvent, { PointerEventsCheckLevel } from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { ContextMenu } from './context-menu';
+import { Dialog } from './dialog';
 import { AppIcons } from './icons';
 import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from './menu';
 import { Popover } from './popover';
@@ -609,6 +610,24 @@ describe('MenuSub', () => {
     expect(submenu).toHaveAttribute('data-electron-no-drag');
     expect(submenu).toHaveAttribute('data-ds-motion');
     expect(trigger).toHaveAttribute('data-state', 'open');
+  });
+
+  it('sits on the dialog level inside a dialog and on the popover level on the page', async () => {
+    const user = userEvent.setup();
+    const openSubmenu = async () => {
+      await user.click(screen.getByRole('button', { name: 'Actions' }));
+      await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}');
+      return (await screen.findByRole('menuitem', { name: 'Launch plan' })).closest('[role="menu"]');
+    };
+    const { unmount } = render(<Dialog open title="Host"><MoveMenu onMove={() => undefined} /></Dialog>, { wrapper: DesignSystemProvider });
+    const inDialog = await openSubmenu();
+    expect(inDialog).toHaveClass('z-dialog');
+    expect(inDialog).not.toHaveClass('z-popover');
+    unmount();
+    render(<MoveMenu onMove={() => undefined} />, { wrapper: DesignSystemProvider });
+    const onPage = await openSubmenu();
+    expect(onPage).toHaveClass('z-popover');
+    expect(onPage).not.toHaveClass('z-dialog');
   });
 
   it('works inside a ContextMenu too', async () => {

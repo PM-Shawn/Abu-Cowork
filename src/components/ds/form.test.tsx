@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Checkbox } from './checkbox';
 import { RadioGroup } from './radio-group';
 import { SegmentedControl } from './segmented-control';
-import { SettingRow } from './setting-row';
+import { SettingGroup, SettingRow } from './setting-row';
 import { Slider } from './slider';
 import { Switch } from './switch';
 import { TextArea } from './text-area';
@@ -83,6 +83,63 @@ describe('form controls', () => {
     expect(onValueChange).not.toHaveBeenCalled();
     await user.click(screen.getByRole('radio', { name: 'Dark' }));
     expect(onValueChange).toHaveBeenCalledWith('dark');
+  });
+
+  it('Switch without a visible label takes its name from aria-label', async () => {
+    const user = userEvent.setup();
+    const onCheckedChange = vi.fn();
+    render(<Switch aria-label="Turn off Computer Use" checked onCheckedChange={onCheckedChange} />);
+    const control = screen.getByRole('switch', { name: 'Turn off Computer Use' });
+    await user.click(control);
+    expect(onCheckedChange).toHaveBeenCalledWith(false);
+  });
+
+  it('SettingGroup puts its rows in one bordered box under a heading', () => {
+    render(
+      <SettingGroup title="Notifications" description="When Abu tells you about a task.">
+        <SettingRow title="Sound"><Switch aria-label="Sound" checked onCheckedChange={() => undefined} /></SettingRow>
+        <SettingRow title="Badge"><Switch aria-label="Badge" checked onCheckedChange={() => undefined} /></SettingRow>
+        <SettingRow title="Banner"><Switch aria-label="Banner" checked onCheckedChange={() => undefined} /></SettingRow>
+      </SettingGroup>,
+    );
+    expect(screen.getByRole('heading', { level: 4, name: 'Notifications' })).toBeInTheDocument();
+    expect(screen.getByText('When Abu tells you about a task.')).toBeInTheDocument();
+    const box = screen.getByRole('switch', { name: 'Sound' }).closest('.divide-y');
+    expect(box).not.toBeNull();
+    expect(box).toContainElement(screen.getByRole('switch', { name: 'Badge' }));
+    expect(box).toContainElement(screen.getByRole('switch', { name: 'Banner' }));
+    expect(box?.children).toHaveLength(3);
+    expect(box).toHaveClass('rounded-panel');
+    expect(box).toHaveClass('border');
+    expect(box).toHaveClass('mt-2');
+    expect(box).not.toContainElement(screen.getByRole('heading', { level: 4 }));
+  });
+
+  it('SettingGroup without a heading is only the box', () => {
+    const { container } = render(
+      <SettingGroup>
+        <SettingRow title="Sound"><Switch aria-label="Sound" checked onCheckedChange={() => undefined} /></SettingRow>
+      </SettingGroup>,
+    );
+    expect(screen.queryByRole('heading')).toBeNull();
+    const box = container.querySelector('.divide-y');
+    expect(box).not.toBeNull();
+    expect(box).not.toHaveClass('mt-2');
+  });
+
+  it('SettingRow centers its control on a single line and aligns it to the top beside a description', () => {
+    render(
+      <>
+        <SettingRow title="Sound"><Switch aria-label="Sound" checked onCheckedChange={() => undefined} /></SettingRow>
+        <SettingRow title="Badge" description="A dot on the app icon."><Switch aria-label="Badge" checked onCheckedChange={() => undefined} /></SettingRow>
+      </>,
+    );
+    const single = screen.getByText('Sound').parentElement?.parentElement;
+    expect(single).toHaveClass('items-center');
+    expect(single).not.toHaveClass('items-start');
+    const described = screen.getByText('Badge').parentElement?.parentElement;
+    expect(described).toHaveClass('items-start');
+    expect(described).not.toHaveClass('items-center');
   });
 
   it('SettingRow labels its control', () => {

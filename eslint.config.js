@@ -166,6 +166,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/panel/workspace/SubagentTab*.{ts,tsx}',
   'src/components/panel/workspace/TeamTab*.{ts,tsx}',
   'src/components/panel/WorkspaceFileTree*.{ts,tsx}',
+  // Settings window, file by file (batch 6). ToolboxModal (extensions, batch 7), LanguageSection (unused) and SensitiveAuditDialog (batch 8) stay out, so no directory glob yet.
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

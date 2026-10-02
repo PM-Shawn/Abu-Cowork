@@ -2,12 +2,16 @@ import { AlertDialog as AlertDialogPrimitive, Dialog as DialogPrimitive, Visuall
 import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Button } from './button';
+import { isMacOS } from '@/utils/platform';
+import { Button, IconButton } from './button';
+import { AppIcons } from './icons';
 import { LayerScope } from './layer';
-import { useLayer, useLayerContainer, useOpenState } from './layer-context';
-import { DIALOG_BOX, DIALOG_MOTION, SCRIM_MOTION } from './styles';
+import { InDialogContext, useLayer, useLayerContainer, useOpenState } from './layer-context';
+import { DIALOG_BOX, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
 
-const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl' } as const;
+const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
+// Hooks for tests and for the window-drag guard; nothing else reaches the dialog box.
+export type DataAttributes = { [key: `data-${string}`]: string | undefined };
 // `top` keeps the top edge still while the content grows or shrinks (search as you type).
 const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0' } as const;
 
@@ -15,11 +19,13 @@ export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>)
   return <DialogPrimitive.Close {...props} />;
 }
 
-// One dialog at a time (LayerProvider). Escape, the scrim and DialogClose all close it,
-// except while `dirty`: then the user is asked whether to discard what they typed.
+// One dialog at a time (LayerProvider). Escape, the scrim, the close button and DialogClose
+// all close it, except while `dirty`: then the user is asked whether to discard what they typed.
+// Content taller than the window scrolls inside the dialog; the title and the footer stay put.
 export function Dialog({
   title, description, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
+  closeButton = false, contentProps, onCloseAutoFocus: callerCloseAutoFocus,
 }: {
   title: ReactNode;
   // Keeps the title as the accessible name without showing it.
@@ -32,9 +38,16 @@ export function Dialog({
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   dirty?: boolean;
-  size?: keyof typeof WIDTH;
+  // `page` is the settings window: it fills a fixed box and its content does its own scrolling.
+  size?: keyof typeof WIDTH | 'page';
   placement?: keyof typeof PLACEMENT;
   role?: 'dialog' | 'alertdialog';
+  // A close button in the top right corner; data attributes given here go on that button.
+  closeButton?: boolean | DataAttributes;
+  contentProps?: DataAttributes;
+  // Runs after the layer's own handler once the dialog has gone; call event.preventDefault()
+  // there to put focus somewhere other than where it was before the dialog opened.
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const { t } = useI18n();
   const container = useLayerContainer();
@@ -74,6 +87,9 @@ export function Dialog({
     if (element?.isConnected) element.focus();
   };
 
+  const page = size === 'page';
+  const box = page ? cn(DIALOG_PAGE, isMacOS() ? 'top-12' : 'top-6') : cn(DIALOG_BOX, WIDTH[size], PLACEMENT[placement]);
+
   return (
     <>
       <DialogPrimitive.Root open={isOpen} onOpenChange={(next) => (next ? setOpen(true) : requestClose())}>
@@ -82,6 +98,7 @@ export function Dialog({
           {/* eslint-disable-next-line no-restricted-syntax -- Dialog owns the app's only scrim */}
           <DialogPrimitive.Overlay data-ds-motion data-electron-no-drag className={cn('fixed inset-0 z-dialog bg-scrim', SCRIM_MOTION)} />
           <DialogPrimitive.Content
+            {...contentProps}
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
@@ -89,27 +106,46 @@ export function Dialog({
             onOpenAutoFocus={() => remember(returnTo)}
             onCloseAutoFocus={(event) => {
               // The layer's handler first: it prevents the default when the registry
-              // closed this dialog to make room for another.
+              // closed this dialog to make room for another. Then the caller's choice.
               onCloseAutoFocus(event);
+              callerCloseAutoFocus?.(event);
               giveFocusBack(returnTo, event, trigger !== undefined);
             }}
             {...(description ? {} : { 'aria-describedby': undefined })}
-            className={cn(DIALOG_BOX, WIDTH[size], PLACEMENT[placement], DIALOG_MOTION)}
+            className={cn(box, DIALOG_MOTION)}
           >
             <LayerScope id={id}>
-              {titleHidden ? (
-                // Still the dialog's accessible name, for a dialog whose content says what it is (search).
-                <VisuallyHidden.Root asChild>
-                  <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
-                </VisuallyHidden.Root>
-              ) : (
-                <DialogPrimitive.Title className="text-title text-label">{title}</DialogPrimitive.Title>
-              )}
-              {description && (
-                <DialogPrimitive.Description className="mt-1 text-ui text-label-secondary">{description}</DialogPrimitive.Description>
-              )}
-              {children && <div className={cn('text-ui text-label', !titleHidden && 'mt-4')}>{children}</div>}
-              {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
+              <InDialogContext.Provider value>
+                {titleHidden ? (
+                  // Still the dialog's accessible name, for a dialog whose content says what it is (search).
+                  <VisuallyHidden.Root asChild>
+                    <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
+                  </VisuallyHidden.Root>
+                ) : (
+                  // With a close button the title stops short of the corner the button sits in.
+                  <DialogPrimitive.Title className={cn('text-title text-label', closeButton && 'pr-8')}>{title}</DialogPrimitive.Title>
+                )}
+                {description && (
+                  <DialogPrimitive.Description className="mt-1 text-ui text-label-secondary">{description}</DialogPrimitive.Description>
+                )}
+                {children && (page ? (
+                  <div className="min-h-0 flex-1 text-ui text-label">{children}</div>
+                ) : (
+                  <div className={cn('flex min-h-0 flex-col', !titleHidden && 'mt-4')}>
+                    {/* The 4px of padding keeps focus rings from being cut off by the scroll box. */}
+                    <div className="-m-1 min-h-0 overflow-y-auto p-1 text-ui text-label">{children}</div>
+                  </div>
+                ))}
+                {footer && <div className="mt-6 flex shrink-0 justify-end gap-2">{footer}</div>}
+                {/* Last in the content, so the dialog opens with focus on its first control. */}
+                {closeButton && (
+                  <span className="absolute right-3 top-3 flex">
+                    <DialogPrimitive.Close asChild>
+                      <IconButton icon={AppIcons.close} label={t.common.close} {...(closeButton === true ? {} : closeButton)} />
+                    </DialogPrimitive.Close>
+                  </span>
+                )}
+              </InDialogContext.Provider>
             </LayerScope>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>

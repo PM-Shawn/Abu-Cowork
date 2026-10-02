@@ -180,6 +180,10 @@ interface PreviewState {
   // Same z-order problem as menuOpen: the native browser webview would paint
   // over the modal, leaving the user unable to see or click it. Ephemeral.
   appModalOpen: boolean;
+  // True while a design-system dialog or question is open anywhere in the app (reported by
+  // the layer registry). The native browser webview hides for it like for the two above.
+  // Ephemeral.
+  dsModalOpen: boolean;
   // Resizable chat-column width (px) while the workspace is open; null = use default.
   // The workspace column flex-fills whatever the chat leaves.
   chatWidth: number | null;
@@ -269,6 +273,7 @@ interface PreviewState {
   // hide while it's up).
   setMenuOpen: (open: boolean) => void;
   setAppModalOpen: (open: boolean) => void;
+  setDsModalOpen: (open: boolean) => void;
 }
 
 export const usePreviewStore = create<PreviewState>((set, get) => {
@@ -366,6 +371,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   focusTabId: null,
   menuOpen: false,
   appModalOpen: false,
+  dsModalOpen: false,
   chatWidth: null,
   fileTreeMode: false,
   previewFilePath: null,
@@ -680,6 +686,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   setAppModalOpen: (open) => {
     set({ appModalOpen: open });
+  },
+
+  setDsModalOpen: (open) => {
+    set({ dsModalOpen: open });
   },
   });
 });

@@ -1,4 +1,4 @@
-import { useContext, useMemo, useRef, type ReactNode } from 'react';
+import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import { LayerContext, LayerScopeContext, type LayerEntry, type LayerRegistry } from './layer-context';
 
 // A new dialog that is held back while the user decides about unsaved input.
@@ -19,8 +19,17 @@ interface Waiting {
 // open over that dialog is answered with cancel as soon as the new dialog arrives, held or not:
 // the discard question has to be the top layer for the user to decide.
 // Also decides which DOM node floating layers portal into.
-export function LayerProvider({ children, container }: { children: ReactNode; container?: HTMLElement | null }) {
+// `onModalChange` hears whether a dialog or an alert is open (menus and popovers do not count),
+// once per change. The app hides what the page cannot paint over (a native web view) while it is.
+export function LayerProvider({ children, container, onModalChange }: {
+  children: ReactNode;
+  container?: HTMLElement | null;
+  onModalChange?: (open: boolean) => void;
+}) {
   const layers = useRef<LayerEntry[]>([]);
+  const modalListener = useRef(onModalChange);
+  useLayoutEffect(() => { modalListener.current = onModalChange; });
+  const modalOpen = useRef(false);
   // Alert id → the dialog that was open when the alert was asked. The alert is a question
   // about that dialog, so it is answered with cancel when the dialog goes away for any reason.
   const askedOver = useRef(new Map<string, string>());
@@ -110,7 +119,18 @@ export function LayerProvider({ children, container }: { children: ReactNode; co
       }
       layers.current = [...layers.current.filter((layer) => layer.id !== entry.id), entry];
     }
-    return { container: container ?? undefined, unregister: remove, register };
+    // After the registry has settled: one register or unregister can close and reopen others.
+    const publish = () => {
+      const open = layers.current.some((layer) => layer.kind !== 'popover');
+      if (open === modalOpen.current) return;
+      modalOpen.current = open;
+      modalListener.current?.(open);
+    };
+    return {
+      container: container ?? undefined,
+      unregister: (id) => { remove(id); publish(); },
+      register: (entry) => { register(entry); publish(); },
+    };
   }, [container]);
   return <LayerContext.Provider value={registry}>{children}</LayerContext.Provider>;
 }

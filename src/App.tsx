@@ -879,7 +879,8 @@ function App() {
 
   return (
     <ErrorBoundary onError={traceAppRootRenderError}>
-    <DesignSystemProvider>
+    {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
+    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen}>
     <TooltipProvider delayDuration={200}>
       <div
         data-abu-app-shell

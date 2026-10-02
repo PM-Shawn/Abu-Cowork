@@ -375,6 +375,125 @@ describe('LayerProvider', () => {
     });
   });
 
+  describe('reporting whether a dialog or an alert is open', () => {
+    it('says so with the first dialog, stays quiet while an alert stacks over it, and says no when the last one leaves', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      render(
+        <LayerProvider onModalChange={onModalChange}>
+          <FakeLayer name="dialog" kind="dialog" />
+          <FakeLayer name="alert" kind="alert" />
+        </LayerProvider>,
+      );
+      expect(onModalChange).not.toHaveBeenCalled();
+      await user.click(screen.getByText('open dialog'));
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('open alert'));
+      await user.click(screen.getByText('close alert'));
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('close dialog'));
+      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('counts an alert that is open by itself', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      render(<LayerProvider onModalChange={onModalChange}><FakeLayer name="alert" kind="alert" /></LayerProvider>);
+      await user.click(screen.getByText('open alert'));
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('close alert'));
+      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('never counts a menu or a popover', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      render(
+        <LayerProvider onModalChange={onModalChange}>
+          <FakeLayer name="menu" kind="popover" />
+          <FakeLayer name="dialog" kind="dialog"><FakeLayer name="inner menu" kind="popover" /></FakeLayer>
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open menu'));
+      await user.click(screen.getByText('close menu'));
+      expect(onModalChange).not.toHaveBeenCalled();
+
+      // A menu inside a dialog comes and goes without a second report.
+      await user.click(screen.getByText('open dialog'));
+      await user.click(screen.getByText('open inner menu'));
+      await user.click(screen.getByText('close inner menu'));
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+    });
+
+    it('stays yes while one dialog replaces another', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      render(
+        <LayerProvider onModalChange={onModalChange}>
+          <FakeLayer name="first" kind="dialog" />
+          <FakeLayer name="second" kind="dialog" />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open first'));
+      await user.click(screen.getByText('open second'));
+      expect(screen.queryByTestId('first')).toBeNull();
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('close second'));
+      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('says no when a dialog goes and takes the dialog opened inside it along', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      render(
+        <LayerProvider onModalChange={onModalChange}>
+          <FakeLayer name="outer" kind="dialog"><FakeLayer name="inner" kind="dialog" /></FakeLayer>
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open outer'));
+      await user.click(screen.getByText('open inner'));
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('close outer'));
+      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('stays yes for a held newcomer: while it waits, when it is shown, until it closes', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      render(
+        <LayerProvider onModalChange={onModalChange}>
+          <FakeLayer name="draft" kind="dialog" dirty />
+          <FakeLayer name="other" kind="dialog" />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open other'));
+      expect(screen.queryByTestId('other')).toBeNull();
+      await user.click(screen.getByText('discard draft'));
+      expect(screen.getByTestId('other')).toBeInTheDocument();
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('close other'));
+      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('says no when the held newcomer is turned away and the first dialog then closes', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      render(
+        <LayerProvider onModalChange={onModalChange}>
+          <FakeLayer name="draft" kind="dialog" dirty />
+          <FakeLayer name="other" kind="dialog" />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open other'));
+      await user.click(screen.getByText('keep draft'));
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('close draft'));
+      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    });
+  });
+
   it('portals into the container it was given', () => {
     const container = document.createElement('div');
     container.id = 'preview-host';

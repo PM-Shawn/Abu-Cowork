@@ -608,6 +608,39 @@ describe('floating layers and dialogs', () => {
   });
 });
 
+describe('telling the app that a dialog is on screen', () => {
+  it('reports a dialog and a question through the provider, and nothing for a menu', async () => {
+    const user = userEvent.setup();
+    const onModalChange = vi.fn();
+    function Page() {
+      const confirm = useConfirm();
+      return (
+        <>
+          <Menu trigger={<Button>Actions</Button>}><MenuItem>Rename</MenuItem></Menu>
+          <Button onClick={() => { void confirm({ title: 'Delete this file?', confirmLabel: 'Delete' }); }}>Delete</Button>
+          <Dialog trigger={<Button>Search</Button>} title="Search" />
+        </>
+      );
+    }
+    render(<DesignSystemProvider onModalChange={onModalChange}><Page /></DesignSystemProvider>);
+
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.keyboard('{Escape}');
+    expect(onModalChange).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    await user.keyboard('{Escape}');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.getByRole('alertdialog', { name: 'Delete this file?' })).toBeInTheDocument();
+    expect(onModalChange.mock.calls).toEqual([[true], [false], [true]]);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onModalChange.mock.calls).toEqual([[true], [false], [true], [false]]);
+  });
+});
+
 describe('Dialog that only its buttons can close', () => {
   // The page behind a modal dialog ignores the pointer; the browser still delivers the
   // pointerdown Radix listens for, so user-event's own check is skipped.

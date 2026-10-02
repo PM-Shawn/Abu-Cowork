@@ -104,6 +104,9 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // App-global modals (close-window dialog) sit above the chat column but the
   // native webview would still paint over them — treat like a blocking approval.
   const appModalOpen = usePreviewStore((s) => s.appModalOpen);
+  // A design-system dialog or question (search, sign-in, a delete question) is centred in
+  // the window, so part of it lies over this panel: the same treatment as an app modal.
+  const dsModalOpen = usePreviewStore((s) => s.dsModalOpen);
   const lightboxOpen = useImageLightboxStore((s) => s.isOpen);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const commandApproval = useSyncExternalStore(
@@ -125,7 +128,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const blockingApprovalOpen = hasVisibleBlockingApproval(
     activeConversationId,
     [commandApproval, fileApproval, workspaceApproval],
-    capabilitySetup !== null || appModalOpen,
+    capabilitySetup !== null || appModalOpen || dsModalOpen,
   );
 
   const [addressInput, setAddressInput] = useState(url);

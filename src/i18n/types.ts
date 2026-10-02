@@ -1132,6 +1132,8 @@ export interface TranslationDict {
     clearAllKeys: string;
     clearAllKeysConfirm: string;
     clearAllKeysDone: string;
+    secretShow: string;
+    secretHide: string;
     // Model Section
     model: string;
     customModelOption: string;

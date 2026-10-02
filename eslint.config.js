@@ -187,6 +187,11 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/BrowserDownloadHistoryPage*.{ts,tsx}',
   'src/components/settings/sections/browserSitePermissionDraft*.ts',
   'src/components/settings/sections/browserDownloadHistoryProjection*.ts',
+  'src/components/settings/SecretField*.{ts,tsx}',
+  'src/components/settings/sections/AIServicesSection*.{ts,tsx}',
+  'src/components/settings/sections/ai-services/ProviderCard*.{ts,tsx}',
+  'src/components/settings/sections/WebSearchSection*.{ts,tsx}',
+  'src/components/settings/sections/ImageGenSection*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

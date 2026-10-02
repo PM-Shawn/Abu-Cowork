@@ -151,4 +151,12 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     expect(await messages(code, 'src/components/panel/workspace/TabStrip.tsx')).not.toEqual([]);
     expect(await messages(code, 'src/components/preview/ImagePreview.tsx')).not.toEqual([]);
   });
+
+  it('checks the settings files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/settings/SystemSettingsDialog.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/settings/sections/SandboxSection.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/settings/sections/ai-services/AddProviderModal.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/account/LoginPage.tsx')).not.toEqual([]);
+  });
 });

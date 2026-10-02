@@ -385,9 +385,8 @@ blue token — do NOT reuse the accent). Brand orange stays `--abu-clay*`.
 Notes: tokens are theme-aware — do **not** add `dark:` color variants. Solid-fill hover =
 `hover:opacity-90` (no per-role hover-fill token). There is no per-role hover *foreground*
 token except link, so `hover:text-[var(--abu-{role})]` on an element already in that role is
-a no-op (fine). Categorical tag palettes (e.g. memory-type tags: purple/teal + orange/blue)
-are a different concern from semantic status — keep those raw with a scoped
-`eslint-disable no-restricted-syntax` + comment.
+a no-op (fine). Categorical tag palettes are a different concern from semantic status —
+keep those raw with a scoped `eslint-disable no-restricted-syntax` + comment.
 
 ### 6.3 Design-system tokens and the migration list (MANDATORY for migrated files)
 Files matched by `DESIGN_SYSTEM_MIGRATED_FILES` / `DESIGN_SYSTEM_UI_FILES` in `eslint.config.js`
@@ -432,6 +431,26 @@ re-reading them when the appearance changes. `MenuItem description` adds a secon
 and `WorkspacePanel` are `memo` and read primitive selectors, so the panel does not re-render per
 streamed token. Panel files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; `PreviewPanel` (in-place
 fullscreen) and the panel directory glob join in batch 8.
+
+**Settings (batch 6)**: the settings window is a `Dialog size="page"`; every page is UI text. A group
+of settings is a `SettingGroup` of `SettingRow`s (title, one-line description, control); dropdowns
+are `Select fullWidth` inside a width wrapper from `settingsLayout.ts`, with option explanations in
+`SelectOption.description`. A menu, select or popover opened inside a dialog sits on the dialog's
+level (`useFloatingLevel`), and every floating layer keeps 8px from the window edge. A closed
+`Select` never changes its value from a key press; arrow keys only move the highlight, so it is the
+control for consequential choices as well. Secrets use `settings/SecretField`. Confirmations go
+through `useConfirm`, name what they act on and re-read their target after the answer; a form that
+can fail stays in a `Dialog`. A dialog keeps rendering while it fades out: its content takes no
+pointer input then, and every save, add, delete and export handler in a window returns once the
+window is closing, with a test (`getComputedStyle` stub recipe in
+`ai-services/AddProviderModal.test.tsx`). Form baselines and held objects that contain a secret are
+cleared once the window has closed. `Dialog dismissible={false}` is for a window only its own
+buttons may close; a dismissible dialog whose only control is its corner close button opens with
+focus on its own box. `LayerProvider.onModalChange` feeds `previewStore.dsModalOpen`, which hides
+the native browser view under any dialog or confirmation. `useBlockingApprovalVisible` closes the
+settings window while a legacy approval modal is on screen (remove in batch 8). Settings files join
+`DESIGN_SYSTEM_MIGRATED_FILES` one by one; only `ToolboxModal` (batch 7) and `LanguageSection` stay
+out.
 
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one

@@ -127,6 +127,107 @@ describe('useConfirm', () => {
     expect(screen.getByRole('dialog', { name: 'Shortcut dialog' })).toBeInTheDocument();
   });
 
+  describe('asked while a dialog is open', () => {
+    const page = (settings: 'open' | 'closed' | 'absent', other = false) => (
+      <>
+        <Capture onReady={keep} />
+        {settings !== 'absent' && <Dialog open={settings === 'open'} onOpenChange={() => undefined} title="Settings" />}
+        <Dialog open={other} onOpenChange={() => undefined} title="Approval" />
+      </>
+    );
+    const track = (answer: Promise<boolean>) => {
+      const state: { settled: boolean | 'pending' } = { settled: 'pending' };
+      void answer.then((confirmed) => { state.settled = confirmed; });
+      return state;
+    };
+    const flush = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    it('answers false and goes away when that dialog closes', async () => {
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const state = track(ask());
+      expect(screen.getByRole('alertdialog', { name: 'Delete this channel?' })).toBeInTheDocument();
+
+      rerender(page('closed'));
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('answers false and goes away when that dialog is taken off the page', async () => {
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const state = track(ask());
+
+      rerender(page('absent'));
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+    });
+
+    it('answers false when another dialog replaces that dialog', async () => {
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const state = track(ask());
+
+      rerender(page('open', true));
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+    });
+
+    it('is asked again without the earlier dialog deciding its fate', async () => {
+      const user = userEvent.setup();
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const first = track(ask());
+      rerender(page('closed'));
+      await flush();
+      expect(first.settled).toBe(false);
+
+      // Asked with no dialog open: nothing but its own buttons answers it.
+      const second = ask();
+      const state = track(second);
+      rerender(page('absent'));
+      await flush();
+      expect(state.settled).toBe('pending');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await expect(second).resolves.toBe(true);
+    });
+  });
+
+  it('stays open when it was asked with no dialog open and the page around it changes', async () => {
+    const user = userEvent.setup();
+    captured = null;
+    const tree = (extra: boolean) => (
+      <>
+        <Capture onReady={keep} />
+        <Dialog open={false} onOpenChange={() => undefined} title="Settings" />
+        {extra && <output>later</output>}
+      </>
+    );
+    const { rerender } = renderTree(tree(false), { wrapper: DesignSystemProvider });
+    const answer = ask();
+    let settled: boolean | 'pending' = 'pending';
+    void answer.then((confirmed) => { settled = confirmed; });
+
+    rerender(tree(true));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toBe('pending');
+    expect(screen.getByRole('alertdialog', { name: 'Delete this channel?' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await expect(answer).resolves.toBe(true);
+  });
+
   it('answers a pending request with false when the provider goes away', async () => {
     const { unmount } = render('provider');
     const answer = ask();

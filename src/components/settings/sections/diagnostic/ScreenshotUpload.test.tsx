@@ -171,5 +171,35 @@ describe('ScreenshotUpload', () => {
 
       expect(screen.getByRole('button', { name: '附加截图' })).toBeInTheDocument();
     });
+
+    it('shows the name of the add button when the keyboard reaches it', async () => {
+      const user = userEvent.setup();
+      renderPanel();
+
+      await user.tab();
+
+      expect(screen.getByRole('button', { name: '附加截图' })).toHaveFocus();
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('附加截图');
+    });
+
+    // Adding by keyboard is the add button; the panel around it is no second stop for the same thing.
+    it('has one Tab stop for adding, and still takes a paste while the add button has the focus', async () => {
+      const user = userEvent.setup();
+      renderPanel([shot('a')]);
+      const panel = fileInput().parentElement as HTMLElement;
+
+      await user.tab();
+      expect(screen.getByRole('button', { name: '删除截图' })).toHaveFocus();
+      await user.tab();
+      const add = screen.getByRole('button', { name: '附加截图' });
+      expect(add).toHaveFocus();
+      // A press on the panel can still put the focus there, for a paste.
+      expect(panel).toHaveAttribute('tabindex', '-1');
+
+      const pasted = image('pasted.png');
+      fireEvent.paste(add, { clipboardData: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => pasted }] } });
+      await waitFor(() => expect(held).toHaveLength(2));
+      expect(held.map((s) => s.name)).toEqual(['a.png', 'pasted.png']);
+    });
   });
 });

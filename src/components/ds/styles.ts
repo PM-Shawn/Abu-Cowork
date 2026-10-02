@@ -1,6 +1,8 @@
 // Shared class fragments for src/components/ds. Complete literals so Tailwind generates them.
 export const FOCUS_RING = 'outline-none focus-visible:ring-2 focus-visible:ring-focus';
 export const DISABLED = 'disabled:pointer-events-none disabled:opacity-40';
+// The look of DISABLED on a button that is working (aria-disabled): it keeps the focus.
+export const BUSY = 'aria-disabled:pointer-events-none aria-disabled:opacity-40';
 export const FIELD_BOX = 'w-full rounded-control border border-control-border bg-field px-2 text-ui text-label placeholder:text-label-placeholder aria-[invalid=true]:border-danger';
 export const FLOAT_SURFACE = 'rounded-panel bg-raised text-label shadow-float';
 export const MENU_ITEM = 'flex h-6 cursor-default select-none items-center gap-2 rounded-control px-2 text-ui text-label outline-none data-[highlighted]:bg-fill-selected';

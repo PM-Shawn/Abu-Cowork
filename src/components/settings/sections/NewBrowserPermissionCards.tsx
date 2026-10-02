@@ -12,7 +12,7 @@ import { SETTING_CONTROL_WIDTH } from '@/components/settings/settingsLayout';
 import { format, useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useBrowserSaveStatusStore } from '@/stores/browserSaveStatus';
-import { BROWSER_PERMISSION_RESOURCES, emptyBrowserSiteRule, parseBrowserPermissionConfig, type BrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import { BROWSER_PERMISSION_RESOURCES, emptyBrowserSiteRule, parseBrowserPermissionConfig, type BrowserPermissionConfig, type BrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
 import type { BrowserDefaultDecision, BrowserSiteOverride } from '@/core/permissions/browserPermissionDefaults';
 import type { BrowserBackend } from './BrowserPermissionCards';
 import { analyzeBrowserSitePermissionDraft } from './browserSitePermissionDraft';
@@ -72,7 +72,8 @@ export function NewBrowserPermissionCards({ onManageSites }: { backend: BrowserB
       </SettingGroup>
       <SaveStatus />
     </div>
-    <Pressable onClick={onManageSites} aria-label={t.settings.browserSitePermsTitle} className="flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover">
+    {/* Named as the entry of the site list: the capabilities page gives it the focus when that list is left. */}
+    <Pressable onClick={onManageSites} data-capability-entry="sites" aria-label={t.settings.browserSitePermsTitle} className="flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover">
       <span className="min-w-0 flex-1"><span className="block text-ui font-medium text-label">{t.settings.browserSitePermsTitle}</span><span className="mt-1 block text-ui-sm text-label-secondary">{format(t.settings.browserSiteRulesSummary, { count: Object.keys(config.sites).length + Object.values(config.embeddedSites).reduce((count, sites) => count + Object.keys(sites).length, 0) })}</span></span>
       <Icon icon={AppIcons.disclose} className="text-label-tertiary" />
     </Pressable>
@@ -133,6 +134,14 @@ const SiteRow = memo(function SiteRow({ origin, embeddedIn, rule, busy, onStatus
   && previous.onStatus === next.onStatus && previous.onRemove === next.onRemove && sameRule(previous.rule, next.rule)
 ));
 
+// The websites of the list, in the order the page shows them.
+function siteRows(config: BrowserPermissionConfig) {
+  return [
+    ...Object.entries(config.sites).map(([origin, rule]) => ({ origin, rule, embeddedIn: undefined as string | undefined })),
+    ...Object.entries(config.embeddedSites).flatMap(([embeddedIn, sites]) => Object.entries(sites).map(([origin, overrides]) => ({ origin, embeddedIn, rule: { ...overrides, blocked: false } }))),
+  ].sort((a, b) => a.origin.localeCompare(b.origin));
+}
+
 export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
   trail: string[]; onNavigate: (index: number) => void;
 }) {
@@ -148,6 +157,11 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
   const [busy, setBusy] = useState(false);
   const operation = useRef(0);
   useEffect(() => () => { operation.current += 1; }, []);
+  // A removed website takes its delete button, which had the focus, with it. This is the place
+  // the website had in the list, kept until the removal question has gone.
+  const pageRef = useRef<HTMLDivElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const removedAt = useRef(-1);
   const analysis = analyzeBrowserSitePermissionDraft(draft, 'denied', {});
   const browsingRule = (): BrowserSiteRule => ({ ...emptyBrowserSiteRule(), browse: 'allow' });
   function closeDialog() {
@@ -186,13 +200,28 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
   async function removeSite() {
     if (!pendingRemoval) return;
     const token = ++operation.current;
+    const place = config ? siteRows(config).findIndex((row) => row.origin === pendingRemoval.origin && row.embeddedIn === pendingRemoval.embeddedIn) : -1;
     setBusy(true); setError('');
     const saved = pendingRemoval.embeddedIn
       ? await useSettingsStore.getState().setBrowserEmbeddedRule(pendingRemoval.embeddedIn, pendingRemoval.origin, null, { browse: pendingRemoval.expected.browse, upload: pendingRemoval.expected.upload, script: pendingRemoval.expected.script }, () => token === operation.current) === 'saved'
       : await useSettingsStore.getState().removeBrowserSiteRule(pendingRemoval.origin, pendingRemoval.expected, () => token === operation.current);
     if (token !== operation.current) return;
     setBusy(false);
-    if (saved) closeDialog(); else setError(t.settings.browserSaveFailed);
+    if (saved) { removedAt.current = place; closeDialog(); } else setError(t.settings.browserSaveFailed);
+  }
+  // Once the removal question has gone: the focus goes to the website that took the removed
+  // one's place, else to the one before it, else to the add button. After Cancel no place is kept,
+  // and the focus goes back to the delete button.
+  function focusAfterRemoval(event: Event) {
+    const place = removedAt.current;
+    removedAt.current = -1;
+    if (place < 0 || event.defaultPrevented) return;
+    const websites = pageRef.current?.querySelectorAll<HTMLElement>('section[aria-label]');
+    const website = websites?.[Math.min(place, websites.length - 1)];
+    const target = website?.querySelector<HTMLElement>('button') ?? addButtonRef.current;
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
   }
   // Rows keep the same two callbacks for as long as the page lives; the first always runs the latest changeStatus.
   const latestChangeStatus = useRef(changeStatus);
@@ -210,17 +239,14 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
     const override = site?.[resource];
     return override && override !== 'inherit' ? override : config.defaults[resource];
   };
-  const rows = [
-    ...Object.entries(config.sites).map(([origin, rule]) => ({ origin, rule, embeddedIn: undefined as string | undefined })),
-    ...Object.entries(config.embeddedSites).flatMap(([embeddedIn, sites]) => Object.entries(sites).map(([origin, overrides]) => ({ origin, embeddedIn, rule: { ...overrides, blocked: false } }))),
-  ].sort((a, b) => a.origin.localeCompare(b.origin));
+  const rows = siteRows(config);
   const errorMessage = error && <InlineMessage tone="danger">{error}</InlineMessage>;
   const closeWhenDismissed = (next: boolean) => { if (!next) closeDialog(); };
-  return <div className="space-y-5">
+  return <div ref={pageRef} className="space-y-5">
     <CapabilityBreadcrumb trail={trail} onNavigate={onNavigate} />
     <div className="flex items-start gap-3">
       <div className="min-w-0 flex-1"><h3 className="text-title text-label">{t.settings.browserSitePermsTitle}</h3><p className="mt-1 text-ui-sm text-label-secondary">{t.settings.browserSiteRulesDesc}</p></div>
-      <Button variant="secondary" size="sm" icon={AppIcons.add} disabled={busy} onClick={() => { operation.current += 1; setDraft(''); setError(''); setAdding(true); }}>{t.settings.browserSitePermsAddButton}</Button>
+      <Button ref={addButtonRef} variant="secondary" size="sm" icon={AppIcons.add} disabled={busy} onClick={() => { operation.current += 1; setDraft(''); setError(''); setAdding(true); }}>{t.settings.browserSitePermsAddButton}</Button>
     </div>
     {rows.length === 0 && <p className="py-4 text-ui-sm text-label-tertiary">{t.settings.browserSitePermsEmpty}</p>}
     {rows.length > 0 && <div>
@@ -262,7 +288,7 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
       </div>
     </Dialog>}
     {/* Mounted only while asked: every frame of the question names the website it is about. */}
-    {pendingRemoval && <Dialog open role="alertdialog" size="sm" onOpenChange={closeWhenDismissed} title={t.settings.browserSiteDeleteTitle} description={format(t.settings.browserSiteDeleteMessage, { origin: pendingRemoval.origin })}
+    {pendingRemoval && <Dialog open role="alertdialog" size="sm" onOpenChange={closeWhenDismissed} onCloseAutoFocus={focusAfterRemoval} title={t.settings.browserSiteDeleteTitle} description={format(t.settings.browserSiteDeleteMessage, { origin: pendingRemoval.origin })}
       footer={<>
         <Button variant="secondary" onClick={closeDialog}>{t.common.cancel}</Button>
         <Button variant="danger" disabled={busy} onClick={() => void removeSite()}>{t.settings.browserSiteDeleteButton}</Button>

@@ -1,12 +1,12 @@
 import { cva } from 'class-variance-authority';
-import { DISABLED, FOCUS_RING } from './styles';
+import { BUSY, DISABLED, FOCUS_RING } from './styles';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'plain' | 'danger';
 export type ControlSize = 'sm' | 'md';
 
 // primary is the one filled button of an area (the inverse of the text color).
 export const buttonVariants = cva(
-  `inline-flex shrink-0 select-none items-center justify-center gap-1 rounded-control font-medium transition-colors duration-fast ${FOCUS_RING} ${DISABLED}`,
+  `inline-flex shrink-0 select-none items-center justify-center gap-1 rounded-control font-medium transition-colors duration-fast ${FOCUS_RING} ${DISABLED} ${BUSY}`,
   {
     variants: {
       variant: {

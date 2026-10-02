@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ComponentProps } from 'react';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
@@ -8,6 +8,7 @@ import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon } from '@/components/ds/status-icon';
 import { Switch } from '@/components/ds/switch';
 import { TextArea } from '@/components/ds/text-area';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
@@ -31,6 +32,18 @@ function screenshotFilename(index: number, mediaType: string): string {
   const ext =
     mediaType === 'image/jpeg' ? 'jpg' : mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : mediaType === 'image/gif' ? 'gif' : 'png';
   return `${String(index + 1).padStart(2, '0')}.${ext}`;
+}
+
+/** The information button beside a field title. Its words show when the pointer rests on it or
+ *  the keyboard reaches it; the panel it opens hands it the rest of its props. */
+function InfoButton({ label, ...props }: Omit<ComponentProps<'button'>, 'children' | 'aria-label'> & { label: string }) {
+  return (
+    <Tooltip content={label}>
+      <Pressable aria-label={label} className="inline-flex rounded-control text-label-tertiary hover:text-label" {...props}>
+        <Icon icon={AppIcons.info} size="sm" />
+      </Pressable>
+    </Tooltip>
+  );
 }
 
 export default function DiagnosticUpload({ onExportSuccess, description, onDescriptionChange }: Props) {
@@ -186,14 +199,7 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
           <Popover
             align="start"
             className="w-65"
-            trigger={(
-              <Pressable
-                aria-label={t.diagnostic.conversationPickerInfoTooltip}
-                className="inline-flex rounded-control text-label-tertiary hover:text-label"
-              >
-                <Icon icon={AppIcons.info} size="sm" />
-              </Pressable>
-            )}
+            trigger={<InfoButton label={t.diagnostic.conversationPickerInfoTooltip} />}
           >
             <p className="text-ui-sm text-label-secondary">{t.diagnostic.conversationPickerInfoTooltip}</p>
           </Popover>
@@ -231,11 +237,11 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary: upload to console */}
-          <Button variant="primary" icon={AppIcons.upload} onClick={onUpload} disabled={uploadInProgress || exportInProgress}>
+          <Button variant="primary" icon={AppIcons.upload} onClick={onUpload} busy={busy}>
             {t.diagnostic.uploadButton}
           </Button>
           {/* Secondary: export offline bundle */}
-          <Button variant="secondary" icon={AppIcons.bundle} onClick={onExport} disabled={exportInProgress || uploadInProgress}>
+          <Button variant="secondary" icon={AppIcons.bundle} onClick={onExport} busy={busy}>
             {t.diagnostic.exportButton}
           </Button>
         </div>

@@ -2,9 +2,10 @@ import { createBrowserPermissionConfig } from '@/core/permissions/browserPermiss
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render as renderBare, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import CapabilitiesSection from './CapabilitiesSection';
 import { initLanguage } from '@/i18n';
@@ -334,6 +335,85 @@ describe('CapabilitiesSection', () => {
     await user.click(screen.getByRole('button', { name: 'Back to Capabilities' }));
     expect(findCapabilityCard('My Chrome')).toBeInTheDocument();
     expect(screen.queryByText('Browser permissions')).not.toBeInTheDocument();
+  });
+
+  // The page under the keyboard is replaced on each of these presses. The focus goes to the new
+  // page's way back, and on the way back to the control that opened the page just left.
+  describe('keyboard focus between the pages', () => {
+    const backToOverview = () => screen.getByRole('button', { name: 'Back to Capabilities' });
+    const sitePermissions = () => screen.getByRole('button', { name: 'Site permissions' });
+
+    async function press(user: User, control: HTMLElement) {
+      control.focus();
+      await user.keyboard('{Enter}');
+    }
+
+    it('goes to the way back on entering a page, and to the card on leaving it', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      await press(user, findCapabilityCard('Abu built-in browser'));
+      expect(backToOverview()).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(findCapabilityCard('Abu built-in browser')).toHaveFocus();
+
+      await press(user, findCapabilityCard('My Chrome'));
+      expect(backToOverview()).toHaveFocus();
+      await user.keyboard('{Enter}');
+      expect(findCapabilityCard('My Chrome')).toHaveFocus();
+
+      await press(user, findCapabilityCard('Computer Use'));
+      expect(backToOverview()).toHaveFocus();
+      await user.keyboard('{Enter}');
+      expect(findCapabilityCard('Computer Use')).toHaveFocus();
+    });
+
+    it('goes to the page one step up on entering the site list, and to its entry on going back', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await press(user, findCapabilityCard('Abu built-in browser'));
+
+      await press(user, sitePermissions());
+      expect(screen.getByRole('button', { name: 'Abu built-in browser' })).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(sitePermissions()).toHaveFocus();
+    });
+
+    it('goes to the download history entry after its page is left', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await press(user, findCapabilityCard('Abu built-in browser'));
+
+      await press(user, screen.getByRole('button', { name: 'Download history' }));
+      expect(screen.getByRole('button', { name: 'Abu built-in browser' })).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(screen.getByRole('button', { name: 'Download history' })).toHaveFocus();
+    });
+
+    it('goes to the card of the browser when the site list is left for the overview', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await press(user, findCapabilityCard('Abu built-in browser'));
+      await press(user, sitePermissions());
+
+      await press(user, backToOverview());
+      expect(findCapabilityCard('Abu built-in browser')).toHaveFocus();
+    });
+
+    it('leaves the focus where it is when a task opens a page', async () => {
+      render(<><Button>Elsewhere</Button><CapabilitiesSection /></>);
+      const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+      elsewhere.focus();
+
+      act(() => useSettingsStore.setState({ capabilitySetupTarget: 'chrome' }));
+
+      // The page of My Chrome has replaced the three cards.
+      await waitFor(() => expect(screen.queryByRole('button', { name: /^Computer Use/ })).toBeNull());
+      expect(elsewhere).toHaveFocus();
+    });
   });
 
   it('shows DeepSeek without vision as structured mode instead of unavailable', async () => {

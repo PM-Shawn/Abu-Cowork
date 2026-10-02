@@ -41,6 +41,42 @@ describe('Button', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(onClick).not.toHaveBeenCalled();
   });
+
+  // A button that is working keeps the keyboard where it is: it stays focusable and takes no press.
+  it('keeps focus and takes no press while busy', async () => {
+    const user = userEvent.setup();
+    const onClick = vi.fn();
+    const { rerender } = render(<Button onClick={onClick}>Check</Button>);
+    const button = screen.getByRole('button', { name: 'Check' });
+    await user.tab();
+    expect(button).toHaveFocus();
+
+    rerender(<Button busy onClick={onClick}>Check</Button>);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).not.toHaveAttribute('disabled');
+    expect(button).not.toHaveAttribute('busy');
+    expect(button).toHaveClass('aria-disabled:opacity-40');
+    expect(button).toHaveClass('aria-disabled:pointer-events-none');
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(onClick).not.toHaveBeenCalled();
+
+    rerender(<Button onClick={onClick}>Check</Button>);
+    expect(button).toHaveFocus();
+    expect(button).not.toHaveAttribute('aria-disabled');
+    await user.keyboard('{Enter}');
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  it('submits no form while busy', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn((event: { preventDefault: () => void }) => event.preventDefault());
+    render(<form onSubmit={onSubmit}><Button type="submit" busy>Send</Button></form>);
+    screen.getByRole('button', { name: 'Send' }).focus();
+    await user.keyboard('{Enter}');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 });
 
 describe('IconButton', () => {

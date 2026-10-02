@@ -124,6 +124,8 @@ export function CapabilityBreadcrumb({
             ) : (
               <Pressable
                 onClick={() => onNavigate(index)}
+                // The link one step up is the page's way back: it takes the focus when the page opens.
+                data-capability-back={index === trail.length - 2 ? '' : undefined}
                 aria-label={index === 0 ? t.settings.capabilityBackToOverview : segment}
                 className="rounded-control text-ui-sm text-label-secondary hover:text-label"
               >
@@ -162,7 +164,7 @@ export function SetupHeader({
         <CapabilityBreadcrumb trail={breadcrumb} onNavigate={onBack} />
       ) : (
         <div className="mb-5">
-          <Button variant="plain" size="sm" icon={AppIcons.back} onClick={onBack}>
+          <Button variant="plain" size="sm" icon={AppIcons.back} data-capability-back="" onClick={onBack}>
             {backLabel ?? t.settings.capabilityBackToOverview}
           </Button>
         </div>

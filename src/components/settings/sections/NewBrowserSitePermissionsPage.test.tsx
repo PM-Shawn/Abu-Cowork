@@ -358,6 +358,62 @@ describe('removing a website', () => {
   });
 });
 
+// The delete button under the keyboard goes away with its website. The focus goes to the
+// website that takes its place, so the next Tab continues from there.
+describe('keyboard focus after a removal', () => {
+  const sites = ['https://a.example', 'https://b.example', 'https://c.example'];
+  function pageWith(origins: string[]) {
+    const config = createBrowserPermissionConfig();
+    for (const site of origins) config.sites[site] = browsing;
+    useSettingsStore.setState({ browserPermissionConfigV2: config });
+    // The store's own removal writes to disk; this one takes the website out of the saved rules.
+    vi.spyOn(useSettingsStore.getState(), 'removeBrowserSiteRule').mockImplementation(async (site) => {
+      const current = useSettingsStore.getState().browserPermissionConfigV2 as ReturnType<typeof createBrowserPermissionConfig>;
+      const remaining = { ...current.sites };
+      delete remaining[site];
+      useSettingsStore.setState({ browserPermissionConfigV2: { ...current, sites: remaining } });
+      return true;
+    });
+    page();
+  }
+  const deleteButton = (site: string) => screen.getByRole('button', { name: format(t().browserSiteDeleteLabel, { origin: site }) });
+  const access = (site: string) => screen.getByRole('combobox', { name: `${site} ${t().browserSiteAccess}` });
+  async function answerByKeyboard(site: string, answer: string) {
+    // No pause between the focus and the key: a focus move left over from the test before (Radix
+    // gives focus back from a timer) cannot land in between.
+    const user = userEvent.setup({ delay: null });
+    deleteButton(site).focus();
+    await user.keyboard('{Enter}');
+    const dialog = screen.getByRole('alertdialog', { name: t().browserSiteDeleteTitle });
+    within(dialog).getByRole('button', { name: answer }).focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(removalDialog()).toBeNull());
+  }
+
+  it('goes to the first control of the next website', async () => {
+    pageWith(sites);
+    await answerByKeyboard(sites[1], t().browserSiteDeleteButton);
+    expect(screen.queryByRole('region', { name: sites[1] })).toBeNull();
+    await waitFor(() => expect(access(sites[2])).toHaveFocus());
+  });
+  it('goes to the previous website when the last one was removed', async () => {
+    pageWith(sites);
+    await answerByKeyboard(sites[2], t().browserSiteDeleteButton);
+    await waitFor(() => expect(access(sites[1])).toHaveFocus());
+  });
+  it('goes to the add button when no website is left', async () => {
+    pageWith([sites[0]]);
+    await answerByKeyboard(sites[0], t().browserSiteDeleteButton);
+    expect(screen.getByText(t().browserSitePermsEmpty)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: t().browserSitePermsAddButton })).toHaveFocus());
+  });
+  it('goes back to the delete button when the website is kept', async () => {
+    pageWith(sites);
+    await answerByKeyboard(sites[1], '取消');
+    await waitFor(() => expect(deleteButton(sites[1])).toHaveFocus());
+  });
+});
+
 describe('the list', () => {
   it('says the list is empty, and shows one region per website in address order once there are some', () => {
     page();

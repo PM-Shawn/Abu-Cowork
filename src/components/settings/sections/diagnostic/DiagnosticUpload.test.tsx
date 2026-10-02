@@ -213,7 +213,7 @@ describe('DiagnosticUpload export and upload', () => {
     await user.click(exportButton());
     await waitFor(() => expect(produceBundle).toHaveBeenCalledTimes(1));
     expect(produceBundle.mock.calls[0][0]).toMatchObject({ includeRawText: true });
-    await waitFor(() => expect(exportButton()).toBeEnabled());
+    await waitFor(() => expect(exportButton()).not.toHaveAttribute('aria-disabled'));
 
     await user.click(includeText);
     expect(includeText).toHaveAttribute('aria-checked', 'false');
@@ -279,17 +279,46 @@ describe('DiagnosticUpload export and upload', () => {
     await user.click(exportOffline);
 
     expect(screen.getByText('Packing…')).toBeInTheDocument();
-    expect(upload).toBeDisabled();
-    expect(exportOffline).toBeDisabled();
+    expect(upload).toHaveAttribute('aria-disabled', 'true');
+    expect(exportOffline).toHaveAttribute('aria-disabled', 'true');
     await user.click(upload);
     await user.click(exportOffline);
     expect(produceBundle).toHaveBeenCalledTimes(1);
     expect(collectAndZip).not.toHaveBeenCalled();
 
     gate.resolve(RESULT);
-    await waitFor(() => expect(exportOffline).toBeEnabled());
-    expect(upload).toBeEnabled();
+    await waitFor(() => expect(exportOffline).not.toHaveAttribute('aria-disabled'));
+    expect(upload).not.toHaveAttribute('aria-disabled');
     expect(screen.queryByText('Packing…')).not.toBeInTheDocument();
+  });
+
+  // A button that went out of the tab order while it worked would drop the keyboard onto the
+  // window: the next Tab would start from the top of the settings window.
+  it.each([
+    ['export', exportButton, () => produceBundle],
+    ['upload', uploadButton, () => collectAndZip],
+  ] as const)('keeps the keyboard on the %s button while it works and when it is done', async (_name, pressed, called) => {
+    const user = userEvent.setup();
+    const gate = pending<unknown>();
+    called().mockReturnValue(gate.promise);
+    renderUpload('It froze after sending.');
+    const button = pressed();
+    button.focus();
+
+    await user.keyboard('{Enter}');
+
+    expect(called()).toHaveBeenCalledTimes(1);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    // Still a Tab stop: a natively disabled button cannot hold the focus.
+    expect(button).not.toBeDisabled();
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(called()).toHaveBeenCalledTimes(1);
+
+    gate.reject(new Error('made-up failure'));
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'));
+    expect(button).toHaveFocus();
   });
 
   it('takes no press on either button while a bundle is being uploaded', async () => {
@@ -303,16 +332,16 @@ describe('DiagnosticUpload export and upload', () => {
     await user.click(upload);
 
     expect(screen.getByText('Uploading…')).toBeInTheDocument();
-    expect(upload).toBeDisabled();
-    expect(exportOffline).toBeDisabled();
+    expect(upload).toHaveAttribute('aria-disabled', 'true');
+    expect(exportOffline).toHaveAttribute('aria-disabled', 'true');
     await user.click(exportOffline);
     await user.click(upload);
     expect(collectAndZip).toHaveBeenCalledTimes(1);
     expect(produceBundle).not.toHaveBeenCalled();
 
     gate.resolve(ZIP);
-    await waitFor(() => expect(upload).toBeEnabled());
-    expect(exportOffline).toBeEnabled();
+    await waitFor(() => expect(upload).not.toHaveAttribute('aria-disabled'));
+    expect(exportOffline).not.toHaveAttribute('aria-disabled');
     expect(screen.queryByText('Uploading…')).not.toBeInTheDocument();
   });
 
@@ -341,7 +370,7 @@ describe('DiagnosticUpload export and upload', () => {
     expect(addToast).toHaveBeenCalledWith({ title: 'Export failed', message: 'made-up failure', type: 'error', duration: 6000 });
     expect(onExportSuccess).not.toHaveBeenCalled();
     expect(useDiagnosticStore.getState().lastExportPath).toBeNull();
-    await waitFor(() => expect(exportButton()).toBeEnabled());
+    await waitFor(() => expect(exportButton()).not.toHaveAttribute('aria-disabled'));
   });
 
   it('puts the known cause before the raw text when the export fails for a known reason', async () => {
@@ -387,7 +416,24 @@ describe('DiagnosticUpload export and upload', () => {
     expect(done).toHaveTextContent('Uploaded');
     expect(done.querySelector('svg')).not.toBeNull();
     expect(done.querySelector('[data-ds-spinner]')).toBeNull();
-    expect(uploadButton()).toBeEnabled();
+    expect(uploadButton()).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('shows what the information button is when the keyboard reaches it, and still opens its panel on a press', async () => {
+    const user = userEvent.setup();
+    renderUpload('');
+    const info = screen.getByRole('button', { name: 'info' });
+
+    // The description field comes first, then the button.
+    await user.tab();
+    await user.tab();
+    expect(info).toHaveFocus();
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('info');
+
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('dialog')).toHaveTextContent('info');
+    expect(info).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('names the switch after its label and toggles it from the label', async () => {
@@ -432,9 +478,12 @@ describe('DiagnosticUpload export and upload', () => {
     await user.click(about);
     const panel = screen.getByText('info');
     expect(panel.closest('[data-ds-layer]')).not.toBeNull();
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
 
+    // Escape closes the panel and the focus is back on the button, which shows its words.
     await user.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByText('info')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(about).toHaveFocus();
   });
 
   describe('while the settings window is closing', () => {

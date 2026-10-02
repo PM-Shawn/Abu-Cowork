@@ -17,7 +17,7 @@
  */
 import { useState, type ReactElement } from 'react';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities, toggleEffort } from './providerCapabilities';
 import { toModelInfo } from './modelInfoUtil';
@@ -638,9 +638,13 @@ describe('AddProviderModal — Bailian pay-as-you-go', () => {
     expect(screen.getByRole('combobox', { name: 'Access method' })).toHaveTextContent('Token Plan');
     await choosePlan('Pay-as-you-go (Beijing)');
 
-    // The fixed address of a built-in provider is the value of a read-only field.
-    const address = screen.getByDisplayValue('https://dashscope.aliyuncs.com/compatible-mode/v1');
-    expect(address).toHaveAttribute('readonly');
+    // The fixed address of a built-in provider is text that wraps, so a long one shows in full;
+    // a field would cut it off at its right edge.
+    const address = screen.getByText('https://dashscope.aliyuncs.com/compatible-mode/v1');
+    expect(address.tagName).toBe('P');
+    expect(address).toHaveClass('break-all');
+    expect(address).toHaveClass('select-all');
+    expect(screen.queryByDisplayValue('https://dashscope.aliyuncs.com/compatible-mode/v1')).toBeNull();
     expect(screen.getByText(/POST https:\/\/dashscope\.aliyuncs\.com\/compatible-mode\/v1\/chat\/completions/))
       .toBeInTheDocument();
 
@@ -1856,6 +1860,57 @@ describe('AddProviderModal — behaviour pins', () => {
       expect(screen.getByRole('checkbox', { name: MANY[3] })).toHaveAttribute('aria-checked', 'false');
     });
 
+    // The row of a model is the box around its checkbox and its name.
+    const rowOf = (name: string) => screen.getByRole('checkbox', { name }).closest('div') as HTMLElement;
+
+    it('ticks a fetched model from a press on the empty part of its row, and unticks it', async () => {
+      await fetchInto(ownA);
+
+      fireEvent.click(rowOf(MANY[3]));
+      expect(screen.getByRole('checkbox', { name: MANY[3] })).toHaveAttribute('aria-checked', 'true');
+      fireEvent.click(rowOf(MANY[3]));
+      expect(screen.getByRole('checkbox', { name: MANY[3] })).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('ticks a fetched model once from a press on its name', async () => {
+      const user = userEvent.setup();
+      await fetchInto(ownA);
+
+      await user.click(screen.getByText(MANY[3]));
+      expect(screen.getByRole('checkbox', { name: MANY[3] })).toHaveAttribute('aria-checked', 'true');
+    });
+
+    it('ticks a model in the panel of a built-in provider from a press on the empty part of its row', async () => {
+      const deepSeek: ProviderInstance = { ...seededDeepSeek, enabled: true, apiKey: FAKE_KEY, userAdded: true };
+      await fetchInto(deepSeek);
+
+      fireEvent.click(rowOf(MANY[3]));
+      expect(screen.getByRole('checkbox', { name: MANY[3] })).toHaveAttribute('aria-checked', 'true');
+    });
+
+    it('leaves a model the user typed alone on a press on its row', () => {
+      seed([ownA]);
+      open(ownA);
+      const boxes = screen.getAllByRole('checkbox');
+      expect(boxes).toHaveLength(2);
+
+      fireEvent.click(boxes[0].closest('div') as HTMLElement);
+
+      expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+      expect(boxes[0]).toHaveAttribute('aria-checked', 'true');
+    });
+
+    it('does not tick a fetched model from a press on the button that opens its abilities', async () => {
+      await fetchInto(ownA);
+      fireEvent.click(screen.getByRole('checkbox', { name: MANY[3] }));
+      expect(screen.getByRole('checkbox', { name: MANY[3] })).toHaveAttribute('aria-checked', 'true');
+
+      fireEvent.click(within(rowOf(MANY[3])).getByRole('button', { name: t().settings.advancedConfig }));
+
+      expect(screen.getByRole('checkbox', { name: MANY[3] })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByText(t().settings.capPerModelHint)).toBeInTheDocument();
+    });
+
     it('renders only the row that changed when one fetched model is ticked', async () => {
       await fetchInto(ownA);
       expect(checkboxRenders.count).toBeGreaterThan(0);
@@ -1960,6 +2015,33 @@ describe('AddProviderModal — behaviour pins', () => {
       // Validating is not saving.
       expect(log).toEqual([]);
       expect(onClose).not.toHaveBeenCalled();
+    });
+
+    // A button that went out of the tab order while it checked would drop the keyboard onto
+    // the window: the next Tab would start from its first control.
+    it('keeps the keyboard on the button while it checks and when the answer is in', async () => {
+      const user = userEvent.setup();
+      let finish: (result: { success: boolean; latencyMs: number }) => void = () => undefined;
+      vi.mocked(checkProviderHealth).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      fillDeepSeek();
+      const button = screen.getByRole('button', { name: t().settings.validateConnection });
+      button.focus();
+
+      await user.keyboard('{Enter}');
+
+      expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+      expect(button).toHaveFocus();
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      // Still a Tab stop: a natively disabled button cannot hold the focus.
+      expect(button).not.toBeDisabled();
+      await user.keyboard('{Enter}');
+      await user.keyboard(' ');
+      expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+
+      await act(async () => { finish({ success: true, latencyMs: 88 }); });
+
+      expect(button).toHaveFocus();
+      expect(button).not.toHaveAttribute('aria-disabled');
     });
 
     it('shows the reason when the check fails', async () => {

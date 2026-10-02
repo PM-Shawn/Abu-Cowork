@@ -191,7 +191,11 @@ const PanelModelRow = memo(function PanelModelRow({ id, label, checked, onToggle
 }) {
   const boxId = useId();
   return (
-    <div className="flex h-7 items-center gap-2 rounded-control px-2 hover:bg-fill-hover">
+    // A press on the row's own space (its padding, the gap beside the box) ticks it too.
+    <div
+      className="flex h-7 items-center gap-2 rounded-control px-2 hover:bg-fill-hover"
+      onClick={(event) => { if (event.target === event.currentTarget) onToggle(id); }}
+    >
       <Checkbox id={boxId} checked={checked} onCheckedChange={() => onToggle(id)} />
       <label htmlFor={boxId} className="min-w-0 flex-1 truncate text-ui text-label">{label}</label>
     </div>
@@ -217,7 +221,11 @@ const ModelRow = memo(function ModelRow({ id, label, kind, selected, expandable,
   const boxId = useId();
   return (
     <div className="rounded-control border border-separator p-2">
-      <div className="flex items-center gap-2">
+      {/* A press on the row's own space (the gaps between its parts) ticks a fetched model too. */}
+      <div
+        className="flex items-center gap-2"
+        onClick={kind === 'choice' ? (event) => { if (event.target === event.currentTarget) onToggle(id); } : undefined}
+      >
         {expandable && (
           <IconButton
             size="sm"
@@ -1118,7 +1126,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                 variant="plain"
                 size="sm"
                 onClick={handleValidate}
-                disabled={validating || !apiKey.trim() || !baseUrl.trim() || selectedModels.size === 0}
+                busy={validating}
+                disabled={!apiKey.trim() || !baseUrl.trim() || selectedModels.size === 0}
               >
                 {t.settings.validateConnection}
               </Button>
@@ -1296,7 +1305,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
             custom/local, disabled placeholder before a provider is picked. */}
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-2">
-            <label htmlFor={`${fieldId}-url`} className={FIELD_LABEL}>
+            <label htmlFor={isBuiltinCloud ? undefined : `${fieldId}-url`} className={FIELD_LABEL}>
               {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
             </label>
             {showAdvanced && effectiveFormat !== 'anthropic' && (
@@ -1307,7 +1316,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
             )}
           </div>
           {isBuiltinCloud ? (
-            <TextField id={`${fieldId}-url`} readOnly value={baseUrl} className="font-code" />
+            // Text in the box of a field: a long address wraps and shows in full, and one press selects it all.
+            <p className="select-all break-all rounded-control border border-control-border bg-field px-2 py-1 font-code text-ui text-label">{baseUrl}</p>
           ) : (
             <TextField
               id={`${fieldId}-url`}

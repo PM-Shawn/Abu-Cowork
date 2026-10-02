@@ -1,11 +1,12 @@
 import { BrowserDownloadHistoryEntry, BrowserDownloadHistoryPage } from './BrowserDownloadHistoryPage';
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ds/button';
 import { Disclosure } from '@/components/ds/disclosure';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
 import { Pressable } from '@/components/ds/pressable';
 import { StatusIcon } from '@/components/ds/status-icon';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
@@ -115,6 +116,7 @@ function ChannelCard({
   statusLabel,
   statusTone,
   checking = false,
+  entry,
   onOpen,
 }: {
   icon: ComponentProps<typeof Icon>['icon'];
@@ -123,11 +125,14 @@ function ChannelCard({
   statusLabel: string;
   statusTone: StatusBadgeTone;
   checking?: boolean;
+  /** The page this card opens: the focus comes back here when that page is left. */
+  entry: NonNullable<CapabilityDetailView>;
   onOpen: () => void;
 }) {
   return (
     <Pressable
       onClick={onOpen}
+      data-capability-entry={entry}
       // The status is the whole reason this row exists, so it belongs in the
       // accessible name — a screen reader hearing only "My Chrome" learns
       // nothing the page did not already imply.
@@ -217,6 +222,26 @@ export default function CapabilitiesSection({
   // Which channel's detail page the site list was opened from, so "back" lands
   // where the user actually was rather than always on the built-in browser.
   const [sitesOrigin, setSitesOrigin] = useState<BrowserBackend>('builtin');
+  // The pages of this section replace each other under the keyboard. When the control that had
+  // the focus went away with its page, the focus goes to the entry of the page just left (on the
+  // way back), or to the new page's way back (on the way in). Focus that sits elsewhere stays.
+  const viewRoot = useRef<HTMLDivElement>(null);
+  const viewShown = useRef(setupView);
+  useLayoutEffect(() => {
+    const left = viewShown.current;
+    viewShown.current = setupView;
+    const root = viewRoot.current;
+    if (left === setupView || !root) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const entries = [left, left === 'sites' ? sitesOrigin : left === 'downloads' ? 'builtin' : null];
+    const target = entries
+      .map((entry) => (entry ? root.querySelector<HTMLElement>(`[data-capability-entry="${entry}"]`) : null))
+      .find((entry) => entry !== null)
+      ?? root.querySelector<HTMLElement>('[data-capability-back]');
+    target?.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
+  }, [setupView, sitesOrigin]);
+  const inViewRoot = (view: ReactNode) => <div ref={viewRoot} className="contents">{view}</div>;
   const [setupRequestedByTask, setSetupRequestedByTask] =
     useState(requestedByTask);
   const [chromeSetupWorking, setChromeSetupWorking] = useState(false);
@@ -661,7 +686,7 @@ export default function CapabilitiesSection({
   };
 
   if (setupView === 'sites') {
-    return (
+    return inViewRoot(
       <BrowserSitePermissionsPage
         trail={sitesTrail}
         onNavigate={navigateTrail(sitesOrigin)}
@@ -669,13 +694,13 @@ export default function CapabilitiesSection({
     );
   }
 
-  if (setupView === 'downloads') return <BrowserDownloadHistoryPage
+  if (setupView === 'downloads') return inViewRoot(<BrowserDownloadHistoryPage
     trail={[...builtinTrail, t.settings.browserDownloadsTitle]}
     onNavigate={(index) => { if (index === 0) cancelSetup(); else setSetupView('builtin'); }}
-    query={browserDownloadsQuery} onQueryChange={setBrowserDownloadsQuery} />;
+    query={browserDownloadsQuery} onQueryChange={setBrowserDownloadsQuery} />);
 
   if (setupView === 'builtin') {
-    return (
+    return inViewRoot(
       <div className="space-y-6">
         <SetupHeader
           icon={AppIcons.webPage}
@@ -731,7 +756,7 @@ export default function CapabilitiesSection({
   }
 
   if (setupView === 'chrome') {
-    return (
+    return inViewRoot(
       <ChromeSetupView
         capabilityEnabled={Boolean(chromeBridge && chromeBridgeEnabled)}
         requestedByTask={setupRequestedByTask}
@@ -752,7 +777,7 @@ export default function CapabilitiesSection({
   }
 
   if (setupView === 'computer') {
-    return (
+    return inViewRoot(
       <ComputerUseSetupView
         enabled={computerUseEnabled}
         requestedByTask={setupRequestedByTask}
@@ -817,7 +842,7 @@ export default function CapabilitiesSection({
     );
   }
 
-  return (
+  return inViewRoot(
     <div className="space-y-6">
       <SettingsSectionHeader
         title={t.settings.capabilityOverview}
@@ -845,6 +870,7 @@ export default function CapabilitiesSection({
               : statusLabels[browserStatus.code]}
             statusTone={badgeToneFor(browserStatus.code)}
             checking={browserChecking}
+            entry="builtin"
             onOpen={openBuiltinBrowser}
           />
 
@@ -855,6 +881,7 @@ export default function CapabilitiesSection({
             statusLabel={chromeStatusLabel}
             statusTone={chromeStatusTone}
             checking={chromeInstallation === undefined}
+            entry="chrome"
             onOpen={openChromeSetup}
           />
         </div>
@@ -873,6 +900,7 @@ export default function CapabilitiesSection({
           statusLabel={computerStatusLabel}
           statusTone={computerStatusTone}
           checking={computerChecking}
+          entry="computer"
           onOpen={openComputerSetup}
         />
       </section>

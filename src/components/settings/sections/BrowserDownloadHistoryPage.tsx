@@ -63,6 +63,8 @@ export function BrowserDownloadHistoryEntry({ onOpen }: { onOpen: () => void }) 
   return (
     <Pressable
       onClick={onOpen}
+      // The entry of the history page: the capabilities page gives it the focus when that page is left.
+      data-capability-entry="downloads"
       aria-label={t.settings.browserDownloadsTitle}
       className="flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover"
     >

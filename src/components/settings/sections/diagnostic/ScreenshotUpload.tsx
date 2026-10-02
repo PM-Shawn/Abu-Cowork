@@ -4,6 +4,7 @@ import { HiddenFileInput } from '@/components/ds/file-input';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { compressImage } from '@/utils/imageCompress';
@@ -125,8 +126,10 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
 
   return (
     <section>
+      {/* Focusable by a press, for a paste; the Tab key goes to the add button inside it, and a
+          paste there arrives here as well. */}
       <div
-        tabIndex={0}
+        tabIndex={-1}
         onPaste={onPaste}
         onDragOver={(e) => {
           e.preventDefault();
@@ -177,14 +180,16 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
           ))}
 
           {screenshots.length < MAX_SHOTS && (
-            <Pressable
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled}
-              aria-label={t.diagnostic.screenshotTitle}
-              className="flex size-16 flex-col items-center justify-center gap-1 rounded-control border border-dashed border-control-border text-label-tertiary hover:text-label"
-            >
-              <Icon icon={AppIcons.addImage} />
-            </Pressable>
+            <Tooltip content={t.diagnostic.screenshotTitle}>
+              <Pressable
+                onClick={() => fileInputRef.current?.click()}
+                disabled={disabled}
+                aria-label={t.diagnostic.screenshotTitle}
+                className="flex size-16 flex-col items-center justify-center gap-1 rounded-control border border-dashed border-control-border text-label-tertiary hover:text-label"
+              >
+                <Icon icon={AppIcons.addImage} />
+              </Pressable>
+            </Tooltip>
           )}
         </div>
 

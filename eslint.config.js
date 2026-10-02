@@ -209,6 +209,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/FeedbackSection*.{ts,tsx}',
   'src/components/settings/sections/AboutSection*.{ts,tsx}',
   'src/components/settings/sections/AuthorSection*.{ts,tsx}',
+  'src/components/settings/sections/index.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

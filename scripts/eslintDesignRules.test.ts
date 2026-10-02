@@ -158,5 +158,8 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     expect(await messages(code, 'src/components/settings/sections/SandboxSection.tsx')).not.toEqual([]);
     expect(await messages(code, 'src/components/settings/sections/ai-services/AddProviderModal.tsx')).not.toEqual([]);
     expect(await messages(code, 'src/components/account/LoginPage.tsx')).not.toEqual([]);
+    // The file that re-exports the sections holds no JSX: an icon imported past the design system shows it is checked.
+    const reexport = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(reexport, 'src/components/settings/sections/index.ts')).not.toEqual([]);
   });
 });

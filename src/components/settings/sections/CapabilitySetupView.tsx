@@ -183,9 +183,6 @@ export function SetupHeader({
   );
 }
 
-/** The neutral settings card every capability detail page is built out of. */
-export const settingsCardClass = 'rounded-panel border border-separator p-4';
-
 /**
  * The mark in front of a state line. A state that works or needs attention gets
  * its status shape; "off" and "not there yet" get a hollow dot. All of them fill
@@ -256,7 +253,7 @@ export function ChromeSetupView({
       description={t.settings.capabilityMyChromeSubtitle} onBack={onBack}
       backLabel={requestedByTask ? t.common.cancel : undefined}
       breadcrumb={requestedByTask ? undefined : breadcrumb} />
-    <section aria-label={t.settings.capabilityChromeExtension} className={settingsCardClass}>
+    <section aria-label={t.settings.capabilityChromeExtension} className="rounded-panel border border-separator p-4">
       <div className="flex items-center gap-4">
         <p role="status" className="flex min-w-0 flex-1 items-center gap-2 text-ui font-medium text-label">
           <StateMark tone={installed ? 'success' : 'off'} />

@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import type { BrowserRunReportArtifact, BrowserRunReportSnapshot } from '@/core/observability/browserRunReport';
 import type { Message } from '@/types';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import CapabilitiesSection from './CapabilitiesSection';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -14,6 +15,20 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 const originalSwitchConversation = useChatStore.getState().switchConversation;
+
+// The real icon button (it mounts a tooltip), with its renders counted by label: a download
+// row must stay still while the page around it re-renders.
+const iconButtonRenders = vi.hoisted(() => ({ labels: [] as string[] }));
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    IconButton: (props: Parameters<typeof actual.IconButton>[0]) => {
+      iconButtonRenders.labels.push(props.label);
+      return <actual.IconButton {...props} />;
+    },
+  };
+});
 
 const loadMessagesMock = vi.hoisted(() => vi.fn());
 vi.mock('@/core/session/conversationStorage', async (importOriginal) => ({
@@ -134,6 +149,10 @@ function messagesFor(
   ];
 }
 
+function renderCapabilities() {
+  return render(<CapabilitiesSection />, { wrapper: DesignSystemProvider });
+}
+
 async function openDownloadHistory() {
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: /^Abu built-in browser/ }));
@@ -225,7 +244,7 @@ describe('browser download history through CapabilitiesSection', () => {
     });
     loadMessagesMock.mockImplementation(async (id: string) => histories.get(id) ?? []);
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     const user = await openDownloadHistory();
     await screen.findByText('oldest.csv');
 
@@ -266,7 +285,7 @@ describe('browser download history through CapabilitiesSection', () => {
       return true;
     });
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     const user = await openDownloadHistory();
     await waitFor(() => expect(within(rowFor('present.csv')).getByRole('button', { name: 'Open file: present.csv' })).toBeEnabled());
     expect(within(rowFor('moved.csv')).getByText('Original location unavailable')).toBeInTheDocument();
@@ -290,7 +309,7 @@ describe('browser download history through CapabilitiesSection', () => {
     loadMessagesMock.mockResolvedValue(messagesFor('task', [saved]));
     existsMock.mockResolvedValue(true);
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     const user = await openDownloadHistory();
     await waitFor(() => expect(within(rowFor('saved.csv')).getByRole('button', { name: 'Open file: saved.csv' })).toBeEnabled());
     await user.click(within(rowFor('saved.csv')).getByRole('button', {
@@ -318,7 +337,7 @@ describe('browser download history through CapabilitiesSection', () => {
       id === 'one' ? messagesFor(id, [one], { time: 200 }) : messagesFor(id, [two], { time: 100 })
     ));
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     const user = await openDownloadHistory();
     await screen.findAllByText('shared.csv');
     await user.click(screen.getByRole('button', { name: 'Open task: Second owner' }));
@@ -350,7 +369,7 @@ describe('browser download history through CapabilitiesSection', () => {
       id === 'old' ? oldLoad : Promise.resolve(messagesFor('fresh', [fresh]))
     ));
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     await openDownloadHistory();
     act(() => {
       useChatStore.setState({ conversationIndex: { fresh: meta('fresh', 'Fresh task') } });
@@ -375,7 +394,7 @@ describe('browser download history through CapabilitiesSection', () => {
       return checks === 1 ? Promise.resolve(true) : recheck;
     });
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     const user = await openDownloadHistory();
     await waitFor(() => expect(within(rowFor('saved.csv')).getByRole('button', { name: 'Open file: saved.csv' })).toBeEnabled());
     await user.click(within(rowFor('saved.csv')).getByRole('button', {
@@ -403,7 +422,7 @@ describe('browser download history through CapabilitiesSection', () => {
       return checks === 1 ? Promise.resolve(true) : recheck;
     });
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     const user = await openDownloadHistory();
     await waitFor(() => expect(within(rowFor('saved.csv')).getByRole('button', { name: 'Open file: saved.csv' })).toBeEnabled());
     await user.click(within(rowFor('saved.csv')).getByRole('button', {
@@ -430,7 +449,7 @@ describe('browser download history through CapabilitiesSection', () => {
     });
     loadMessagesMock.mockResolvedValue([tool, firstReport, secondReport]);
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     await openDownloadHistory();
     await screen.findByText('saved.csv');
 
@@ -455,7 +474,7 @@ describe('browser download history through CapabilitiesSection', () => {
           : Promise.resolve(messagesFor('unreadable', [recovered]))
     ));
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     const user = await openDownloadHistory();
 
     expect(await screen.findByText('saved.csv')).toBeInTheDocument();
@@ -479,11 +498,159 @@ describe('browser download history through CapabilitiesSection', () => {
     });
     loadMessagesMock.mockRejectedValue(new Error('app data directory unavailable'));
 
-    render(<CapabilitiesSection />);
+    renderCapabilities();
     await openDownloadHistory();
 
     expect(await screen.findByText('Download history could not be read.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Read again' })).toBeInTheDocument();
     expect(screen.queryByText('No download records are available to show yet.')).not.toBeInTheDocument();
+  });
+
+  it('shows the exact file in its folder after checking it is still there, and keeps Settings open', async () => {
+    const saved = artifact('saved', '/downloads/saved/report.csv', 'saved.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Download task') } });
+    loadMessagesMock.mockResolvedValue(messagesFor('task', [saved]));
+    revealItemInDirMock.mockResolvedValue(undefined);
+
+    renderCapabilities();
+    const user = await openDownloadHistory();
+    const reveal = () => within(rowFor('saved.csv')).getByRole('button', { name: 'Show in folder: saved.csv' });
+    await waitFor(() => expect(reveal()).toBeEnabled());
+    existsMock.mockClear();
+    await user.click(reveal());
+
+    await waitFor(() => expect(revealItemInDirMock).toHaveBeenCalledWith(saved.path));
+    expect(revealItemInDirMock).toHaveBeenCalledOnce();
+    expect(existsMock).toHaveBeenCalledWith(saved.path);
+    expect(usePreviewStore.getState().previewFilePath).toBeNull();
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
+  });
+
+  it('says the file cannot be verified when the folder cannot be shown', async () => {
+    const saved = artifact('saved', '/downloads/saved/report.csv', 'saved.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Download task') } });
+    loadMessagesMock.mockResolvedValue(messagesFor('task', [saved]));
+    revealItemInDirMock.mockRejectedValue(new Error('no file manager'));
+
+    renderCapabilities();
+    const user = await openDownloadHistory();
+    const reveal = () => within(rowFor('saved.csv')).getByRole('button', { name: 'Show in folder: saved.csv' });
+    await waitFor(() => expect(reveal()).toBeEnabled());
+    await user.click(reveal());
+
+    await waitFor(() => expect(within(rowFor('saved.csv')).getByText('Unable to verify')).toBeInTheDocument());
+    expect(reveal()).toBeDisabled();
+  });
+
+  it('turns off both file actions for a file that is no longer there, and still opens its task', async () => {
+    const moved = artifact('moved', '/downloads/moved/report.csv', 'moved.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Download task') } });
+    loadMessagesMock.mockResolvedValue(messagesFor('task', [moved]));
+    existsMock.mockResolvedValue(false);
+
+    renderCapabilities();
+    await openDownloadHistory();
+    await screen.findByText('moved.csv');
+    const row = within(rowFor('moved.csv'));
+    expect(row.getByRole('button', { name: 'Open file: moved.csv' })).toBeDisabled();
+    expect(row.getByRole('button', { name: 'Show in folder: moved.csv' })).toBeDisabled();
+    expect(row.getByRole('button', { name: 'Open task: Download task' })).toBeEnabled();
+  });
+
+  it('has exactly three actions per record and none that deletes a record or a file', async () => {
+    const saved = artifact('saved', '/downloads/saved/report.csv', 'saved.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Download task') } });
+    loadMessagesMock.mockResolvedValue(messagesFor('task', [saved]));
+
+    renderCapabilities();
+    await openDownloadHistory();
+    await screen.findByText('saved.csv');
+    expect(within(rowFor('saved.csv')).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Open file: saved.csv',
+      'Open task: Download task',
+      'Show in folder: saved.csv',
+    ]);
+    // Besides the rows the page has its trail and the search field, and nothing that clears the list.
+    const outsideRows = screen.getAllByRole('button').filter((button) => !button.closest('li'));
+    expect(outsideRows.map((button) => button.textContent)).toEqual(['Capabilities', 'Abu built-in browser']);
+    expect(screen.getByRole('searchbox', { name: 'Search file names' })).toBeInTheDocument();
+  });
+
+  it('shows one spinner with its sentence while the history is read, and none afterwards', async () => {
+    let finish!: (messages: Message[]) => void;
+    const reading = new Promise<Message[]>((resolve) => { finish = resolve; });
+    const saved = artifact('saved', '/downloads/saved.csv', 'saved.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Task') } });
+    loadMessagesMock.mockReturnValue(reading);
+
+    renderCapabilities();
+    await openDownloadHistory();
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Reading verifiable download records…');
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
+
+    await act(async () => { finish(messagesFor('task', [saved])); await reading; });
+    await screen.findByText('saved.csv');
+    expect(document.querySelector('[data-ds-spinner]')).toBeNull();
+  });
+
+  it('marks the record being checked with a still icon beside the word, and no spinner', async () => {
+    const saved = artifact('saved', '/downloads/saved.csv', 'saved.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Task') } });
+    loadMessagesMock.mockResolvedValue(messagesFor('task', [saved]));
+    let checks = 0;
+    existsMock.mockImplementation(() => {
+      checks++;
+      return checks === 1 ? Promise.resolve(true) : new Promise<boolean>(() => undefined);
+    });
+
+    renderCapabilities();
+    const user = await openDownloadHistory();
+    await waitFor(() => expect(within(rowFor('saved.csv')).getByRole('button', { name: 'Open file: saved.csv' })).toBeEnabled());
+    await user.click(within(rowFor('saved.csv')).getByRole('button', { name: 'Open file: saved.csv' }));
+
+    const checking = within(rowFor('saved.csv')).getByText('Checking');
+    expect(checking.querySelector('svg')).not.toBeNull();
+    expect(document.querySelector('[data-ds-spinner]')).toBeNull();
+    expect(document.querySelector('.animate-spin')).toBeNull();
+    expect(within(rowFor('saved.csv')).getByRole('button', { name: 'Show in folder: saved.csv' })).toBeDisabled();
+  });
+
+  it('keeps the search field at the width of its group and names the folder button after the file', async () => {
+    const saved = artifact('saved', '/downloads/saved.csv', 'saved.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Task') } });
+    loadMessagesMock.mockResolvedValue(messagesFor('task', [saved]));
+
+    renderCapabilities();
+    await openDownloadHistory();
+    await screen.findByText('saved.csv');
+    expect(screen.getByRole('searchbox', { name: 'Search file names' }).parentElement).toHaveClass('w-56');
+    const row = within(rowFor('saved.csv'));
+    expect(row.getByRole('button', { name: 'Open file: saved.csv' })).toHaveAttribute('title', 'saved.csv');
+    expect(row.getByRole('button', { name: 'Show in folder: saved.csv' })).not.toHaveAttribute('title');
+  });
+
+  it('renders no record again while the search still matches it, and only the checked record during a check', async () => {
+    const one = artifact('one', '/downloads/report-one.csv', 'report-one.csv');
+    const two = artifact('two', '/downloads/report-two.csv', 'report-two.csv');
+    useChatStore.setState({ conversationIndex: { task: meta('task', 'Task') } });
+    loadMessagesMock.mockResolvedValue(messagesFor('task', [one, two]));
+    let hold = false;
+    existsMock.mockImplementation(() => (hold ? new Promise<boolean>(() => undefined) : Promise.resolve(true)));
+
+    renderCapabilities();
+    const user = await openDownloadHistory();
+    await waitFor(() => expect(within(rowFor('report-two.csv')).getByRole('button', { name: 'Show in folder: report-two.csv' })).toBeEnabled());
+
+    iconButtonRenders.labels = [];
+    await user.type(screen.getByRole('searchbox', { name: 'Search file names' }), 'report');
+    expect(screen.getByText('report-one.csv')).toBeInTheDocument();
+    expect(iconButtonRenders.labels).toEqual([]);
+
+    hold = true;
+    await user.click(within(rowFor('report-one.csv')).getByRole('button', { name: 'Show in folder: report-one.csv' }));
+    expect(within(rowFor('report-one.csv')).getByText('Checking')).toBeInTheDocument();
+    expect(new Set(iconButtonRenders.labels)).toEqual(new Set(['Show in folder: report-one.csv']));
   });
 });

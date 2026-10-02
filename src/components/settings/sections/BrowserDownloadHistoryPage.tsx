@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, FolderOpen, LoaderCircle, Search } from 'lucide-react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { exists } from '@tauri-apps/plugin-fs';
 import { formatBytes } from '@/core/permissions/browserUploadFiles';
 import { loadMessages, type ConversationMeta } from '@/core/session/conversationStorage';
 import { format, useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -56,49 +61,40 @@ async function checkAvailability(path: string): Promise<BrowserDownloadAvailabil
 export function BrowserDownloadHistoryEntry({ onOpen }: { onOpen: () => void }) {
   const { t } = useI18n();
   return (
-    <Button
-      type="button"
-      variant="ghost"
+    <Pressable
       onClick={onOpen}
       aria-label={t.settings.browserDownloadsTitle}
-      className="h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-lg border border-[var(--abu-border)] bg-transparent p-4 text-left hover:bg-[var(--abu-bg-hover)]"
+      className="flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover"
     >
       <span className="min-w-0 flex-1">
-        <span className="block text-body font-semibold text-[var(--abu-text-primary)]">
+        <span className="block text-ui font-medium text-label">
           {t.settings.browserDownloadsTitle}
         </span>
-        <span className="mt-1 block text-minor font-normal leading-relaxed text-[var(--abu-text-muted)]">
+        <span className="mt-1 block text-ui-sm text-label-secondary">
           {t.settings.browserDownloadsEntryDesc}
         </span>
       </span>
-      <ChevronRight className="size-4 shrink-0 text-[var(--abu-text-muted)]" aria-hidden="true" />
-    </Button>
+      <Icon icon={AppIcons.disclose} className="text-label-tertiary" />
+    </Pressable>
   );
 }
 
 function availabilityCopy(
   availability: BrowserDownloadAvailability,
   settings: ReturnType<typeof useI18n>['t']['settings'],
-): { label: string; className: string } {
+): { label: string; tone: 'success' | 'warning' | 'neutral' } {
   if (availability === 'completed') {
-    return {
-      label: settings.browserDownloadsCompleted,
-      className: 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]',
-    };
+    return { label: settings.browserDownloadsCompleted, tone: 'success' };
   }
   if (availability === 'unavailable') {
-    return {
-      label: settings.browserDownloadsUnavailable,
-      className: 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]',
-    };
+    return { label: settings.browserDownloadsUnavailable, tone: 'warning' };
   }
-  return {
-    label: settings.browserDownloadsUnknown,
-    className: 'bg-[var(--abu-bg-active)] text-[var(--abu-text-muted)]',
-  };
+  return { label: settings.browserDownloadsUnknown, tone: 'neutral' };
 }
 
-function DownloadRow({
+// One record of the list. The list can be long and the page re-renders on every character
+// typed in the search field, so a record renders again only when it changes itself.
+const DownloadRow = memo(function DownloadRow({
   row,
   checking,
   onFileAction,
@@ -116,45 +112,44 @@ function DownloadRow({
   return (
     <li className="flex items-center gap-3 py-3">
       <div className="min-w-0 flex-1">
-        <Button type="button" variant="link" disabled={!available}
+        <Pressable disabled={!available}
           onClick={() => onFileAction(row, 'open')}
           aria-label={format(t.settings.browserDownloadsOpenFileLabel, { file: row.name })}
           title={row.name}
-          className="h-auto max-w-full justify-start truncate p-0 text-body font-medium text-[var(--abu-text-primary)]">
+          className="block max-w-full truncate rounded-control text-left text-ui font-medium text-label hover:underline">
           {row.name}
-        </Button>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-[var(--abu-text-muted)]">
+        </Pressable>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-label-tertiary">
           <span>{formatBytes(row.bytes)}</span>
           <span className="max-w-64 truncate" title={row.sourceOrigin}>{row.sourceOrigin}</span>
-          <Button type="button" variant="link" size="sm" onClick={() => onOpenTask(row)}
-            className="h-auto max-w-64 justify-start truncate p-0 text-caption text-[var(--abu-text-muted)]"
+          <Pressable onClick={() => onOpenTask(row)}
+            className="block max-w-64 truncate rounded-control text-left text-caption text-label-tertiary hover:underline"
             aria-label={format(t.settings.browserDownloadsOpenTaskLabel, { task: row.conversationTitle })}>
             {row.conversationTitle}
-          </Button>
+          </Pressable>
         </div>
         {(checking || row.availability !== 'completed') && (
-          <p className={`mt-1 inline-flex items-center gap-1 text-caption ${status.className}`}>
-            {checking && <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />}
-            {checking ? t.settings.browserDownloadsChecking : status.label}
-          </p>
+          <div className="mt-1">
+            {/* A record being checked waits with a still icon; the page spins only while the history is read. */}
+            {checking
+              ? <Tag><Icon icon={AppIcons.loading} size="sm" />{t.settings.browserDownloadsChecking}</Tag>
+              : <Tag tone={status.tone}>{status.label}</Tag>}
+          </div>
         )}
       </div>
-      <time className="shrink-0 text-minor text-[var(--abu-text-muted)]" dateTime={new Date(row.recordedAt).toISOString()}>{recordedAt}</time>
-      <Button type="button" variant="ghost" size="sm" disabled={!available}
+      <time className="shrink-0 text-ui-sm text-label-secondary" dateTime={new Date(row.recordedAt).toISOString()}>{recordedAt}</time>
+      <IconButton size="sm" icon={AppIcons.folderOpen} disabled={!available}
         onClick={() => onFileAction(row, 'reveal')}
-        aria-label={format(t.settings.browserDownloadsRevealLabel, { file: row.name })}
-        title={t.settings.browserDownloadsReveal} className="size-8 shrink-0 p-0 text-[var(--abu-text-muted)]">
-        <FolderOpen className="size-4" aria-hidden="true" />
-      </Button>
+        label={format(t.settings.browserDownloadsRevealLabel, { file: row.name })} />
     </li>
   );
-}
+});
 
 function OmissionNotes({ omissions }: { omissions: BrowserDownloadHistoryOmission[] }) {
   const { t } = useI18n();
   if (omissions.length === 0) return null;
   return (
-    <ul className="space-y-1 border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
+    <ul className="space-y-1 border-t border-separator pt-3 text-ui-sm text-label-tertiary">
       {omissions.map((omission) => (
         <li key={omission.key}>
           {format(t.settings.browserDownloadsOmitted, {
@@ -331,6 +326,16 @@ export function BrowserDownloadHistoryPage({
     closeSystemSettings();
   };
 
+  // Records keep the same two callbacks for as long as the page lives; each runs the latest action.
+  const latestActions = useRef({ runFileAction, openTask });
+  useLayoutEffect(() => { latestActions.current = { runFileAction, openTask }; });
+  const onFileAction = useCallback((row: BrowserDownloadHistoryRow, action: 'open' | 'reveal') => {
+    void latestActions.current.runFileAction(row, action);
+  }, []);
+  const onOpenTask = useCallback((row: BrowserDownloadHistoryRow) => {
+    void latestActions.current.openTask(row);
+  }, []);
+
   const groups = new Map<string, BrowserDownloadHistoryRow[]>();
   for (const row of visibleRows) {
     const date = new Intl.DateTimeFormat(locale, { dateStyle: 'long' }).format(new Date(row.recordedAt));
@@ -344,88 +349,75 @@ export function BrowserDownloadHistoryPage({
       <CapabilityBreadcrumb trail={trail} onNavigate={onNavigate} />
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
-        <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
+        <h3 className="text-title text-label">
           {t.settings.browserDownloadsTitle}
         </h3>
-        <p className="mt-1 max-w-2xl text-minor leading-relaxed text-[var(--abu-text-muted)]">
+        <p className="mt-1 max-w-2xl text-ui-sm text-label-secondary">
           {t.settings.browserDownloadsDesc}
         </p>
         {taskUnavailable && (
-          <p role="status" className="mt-1 text-minor text-[var(--abu-warning)]">
-            {t.settings.browserDownloadsTaskUnavailable}
-          </p>
+          <div className="mt-2">
+            <InlineMessage tone="warning">{t.settings.browserDownloadsTaskUnavailable}</InlineMessage>
+          </div>
         )}
         </div>
-        {rows.length > 0 && <div className="relative w-56 max-w-full shrink-0">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--abu-text-muted)]" aria-hidden="true" />
-          <Input
+        {rows.length > 0 && <div className="w-56 max-w-full shrink-0">
+          <TextField
             type="search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder={t.settings.browserDownloadsSearchPlaceholder}
             aria-label={t.settings.browserDownloadsSearchLabel}
-            className="h-8 w-full rounded-lg pl-8 text-minor"
           />
         </div>}
       </div>
 
       <div className="space-y-5">
         {!loading && historyReadFailures > 0 && (
-          <div
-            role="status"
-            className="mb-3 flex flex-wrap items-center gap-2 border-t border-[var(--abu-border)] pt-3"
+          <InlineMessage
+            tone="warning"
+            action={(
+              <Button variant="secondary" size="sm" onClick={() => setReloadRevision((revision) => revision + 1)}>
+                {t.settings.browserDownloadsReadAgain}
+              </Button>
+            )}
           >
-            <p className="min-w-0 flex-1 text-minor text-[var(--abu-warning)]">
-              {everyHistoryReadFailed
-                ? t.settings.browserDownloadsReadFailed
-                : t.settings.browserDownloadsPartialRead}
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setReloadRevision((revision) => revision + 1)}
-              className="shrink-0 border-[var(--abu-border)] bg-[var(--abu-bg-base)]"
-            >
-              {t.settings.browserDownloadsReadAgain}
-            </Button>
-          </div>
+            {everyHistoryReadFailed
+              ? t.settings.browserDownloadsReadFailed
+              : t.settings.browserDownloadsPartialRead}
+          </InlineMessage>
         )}
         {loading ? (
-          <p role="status" className="py-8 text-center text-minor text-[var(--abu-text-tertiary)]">
-            {t.settings.browserDownloadsLoading}
-          </p>
+          <div className="flex justify-center py-8">
+            <Spinner label={t.settings.browserDownloadsLoading} />
+          </div>
         ) : everyHistoryReadFailed ? null : rows.length === 0 ? (
-          <p className="py-8 text-center text-minor text-[var(--abu-text-tertiary)]">
+          <p className="py-8 text-center text-ui-sm text-label-tertiary">
             {t.settings.browserDownloadsEmpty}
           </p>
         ) : visibleRows.length === 0 ? (
-          <div className="border-t border-[var(--abu-border)] pt-3">
-            <p className="text-minor text-[var(--abu-text-tertiary)]">
+          <div className="border-t border-separator pt-3">
+            <p className="text-ui-sm text-label-tertiary">
               {t.settings.browserDownloadsNoResults}
             </p>
             {filtersActive && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onQueryChange('')}
-                className="mt-2 border-[var(--abu-border)] bg-[var(--abu-bg-base)]"
-              >
-                {t.settings.browserDownloadsClearSearch}
-              </Button>
+              <div className="mt-2">
+                <Button variant="secondary" size="sm" onClick={() => onQueryChange('')}>
+                  {t.settings.browserDownloadsClearSearch}
+                </Button>
+              </div>
             )}
           </div>
         ) : (
           <div className="space-y-3">
             {[...groups].map(([date, entries]) => (
-              <section key={date} className="rounded-xl border border-[var(--abu-border)] px-4">
-                <h4 className="border-b border-[var(--abu-border)] py-3 text-body font-medium text-[var(--abu-text-primary)]">{date}</h4>
-                <ul className="divide-y divide-[var(--abu-border)]">
+              <section key={date} className="rounded-panel border border-separator px-4">
+                <h4 className="border-b border-separator py-3 text-ui font-medium text-label">{date}</h4>
+                <ul className="divide-y divide-separator">
                   {entries.map((row) => (
                     <DownloadRow key={row.key} row={row} checking={checkingKeys.has(row.key)}
-                      onFileAction={(item, action) => void runFileAction(item, action)}
-                      onOpenTask={(item) => void openTask(item)} />
+                      onFileAction={onFileAction}
+                      onOpenTask={onOpenTask} />
                   ))}
                 </ul>
               </section>

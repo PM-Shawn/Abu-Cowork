@@ -181,6 +181,12 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/CapabilitySetupView*.{ts,tsx}',
   'src/components/settings/sections/ChromeConnectionCard.test.tsx',
   'src/components/settings/CapabilitySetupDialog*.{ts,tsx}',
+  'src/components/settings/sections/NewBrowserPermissionCards*.{ts,tsx}',
+  'src/components/settings/sections/NewBrowserSitePermissionsPage.test.tsx',
+  'src/components/settings/sections/BrowserPermissionCards.tsx',
+  'src/components/settings/sections/BrowserDownloadHistoryPage*.{ts,tsx}',
+  'src/components/settings/sections/browserSitePermissionDraft*.ts',
+  'src/components/settings/sections/browserDownloadHistoryProjection*.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

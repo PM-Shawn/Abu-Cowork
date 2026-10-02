@@ -2,8 +2,10 @@ import { createBrowserPermissionConfig } from '@/core/permissions/browserPermiss
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import CapabilitiesSection from './CapabilitiesSection';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -21,6 +23,9 @@ import {
   hasChromeExtensionHandshaked,
   setChromeExtensionHandshaked,
 } from '@/core/capabilityPlugins/chromeHandshakeLatch';
+
+// The built-in browser page holds selects, which need the design-system layers.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const installationMock = vi.hoisted(() => vi.fn());
 vi.mock('@/core/capabilityPlugins/chromeSetup', async (importOriginal) => ({
@@ -1230,7 +1235,7 @@ describe('CapabilitiesSection', () => {
       expect(screen.getByText('上传文件')).toBeInTheDocument();
       expect(screen.queryByText('自动任务')).toBeNull();
       expect(screen.queryByText('你在场时')).toBeNull();
-      expect(screen.getByRole('button', { name: /^运行脚本:/ })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: '运行脚本' })).toBeInTheDocument();
       expect(screen.getByText('在网页中执行代码。')).toBeInTheDocument();
       expect(screen.queryByText(/登录失效/)).toBeNull();
 

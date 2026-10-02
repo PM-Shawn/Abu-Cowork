@@ -257,6 +257,102 @@ describe('Select options', () => {
   });
 });
 
+describe('Select: picking the chosen option again', () => {
+  function renderAccess(value = 'custom') {
+    const onValueChange = vi.fn();
+    const onReselect = vi.fn();
+    render(<Select label="Site access" value={value} onValueChange={onValueChange} onReselect={onReselect} options={ACCESS} />, { wrapper: DesignSystemProvider });
+    return { onValueChange, onReselect, trigger: screen.getByRole('combobox', { name: 'Site access' }) };
+  }
+
+  it('reports a click on the chosen option through onReselect only', async () => {
+    const user = userEvent.setup();
+    const { onValueChange, onReselect, trigger } = renderAccess();
+    await user.click(trigger);
+    await user.click(screen.getByRole('option', { name: 'Custom' }));
+    expect(onReselect).toHaveBeenCalledOnce();
+    expect(onReselect).toHaveBeenCalledWith('custom');
+    expect(onValueChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it.each(['{Enter}', ' '])('reports the chosen option picked with the key "%s"', async (key) => {
+    const user = userEvent.setup();
+    const { onValueChange, onReselect, trigger } = renderAccess();
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Custom' })).toHaveFocus());
+    await user.keyboard(key);
+    expect(onReselect).toHaveBeenCalledOnce();
+    expect(onReselect).toHaveBeenCalledWith('custom');
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it('reports another option through onValueChange only', async () => {
+    const user = userEvent.setup();
+    const { onValueChange, onReselect, trigger } = renderAccess();
+    await user.click(trigger);
+    await user.click(screen.getByRole('option', { name: 'Block' }));
+    expect(onValueChange).toHaveBeenCalledOnce();
+    expect(onValueChange).toHaveBeenCalledWith('block');
+    expect(onReselect).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when the list is browsed and closed with Escape on the chosen option', async () => {
+    const user = userEvent.setup();
+    const { onValueChange, onReselect, trigger } = renderAccess();
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Custom' })).toHaveFocus());
+    await user.keyboard('{ArrowUp}{ArrowDown}{Escape}');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(onReselect).not.toHaveBeenCalled();
+    expect(onValueChange).not.toHaveBeenCalled();
+    // The next time the list closes without a choice, an earlier key on the chosen option does not count.
+    await user.keyboard('{Enter}');
+    await user.keyboard('{Tab}{Escape}');
+    expect(onReselect).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when the list is closed by a click outside it', async () => {
+    // The page ignores the pointer while the list is open; the click still lands outside the list.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const { onValueChange, onReselect, trigger } = renderAccess();
+    await user.click(trigger);
+    await user.hover(screen.getByRole('option', { name: 'Custom' }));
+    await user.click(document.body);
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+    expect(onReselect).not.toHaveBeenCalled();
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('Select: after the list has closed', () => {
+  it('calls onCloseAutoFocus once the list has gone, then takes the focus back', async () => {
+    const user = userEvent.setup();
+    const listGone = vi.fn(() => screen.queryByRole('listbox') === null);
+    render(<Select label="Model" value="sonnet" onValueChange={() => undefined} onCloseAutoFocus={() => { listGone(); }} options={MODELS} />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('combobox', { name: 'Model' });
+    await user.click(trigger);
+    expect(listGone).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('option', { name: 'Claude Opus 5' }));
+    await waitFor(() => expect(listGone).toHaveBeenCalledOnce());
+    expect(listGone).toHaveReturnedWith(true);
+    expect(trigger).toHaveFocus();
+  });
+
+  it('leaves the focus alone when onCloseAutoFocus prevents the default', async () => {
+    const user = userEvent.setup();
+    const onCloseAutoFocus = vi.fn((event: Event) => event.preventDefault());
+    render(<Select label="Model" value="sonnet" onValueChange={() => undefined} onCloseAutoFocus={onCloseAutoFocus} options={MODELS} />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('combobox', { name: 'Model' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('option', { name: 'Claude Opus 5' }));
+    await waitFor(() => expect(onCloseAutoFocus).toHaveBeenCalledOnce());
+    expect(trigger).not.toHaveFocus();
+  });
+});
+
 describe('Combobox', () => {
   it('filters as the user types and picks with Enter', async () => {
     const user = userEvent.setup();

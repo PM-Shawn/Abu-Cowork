@@ -1,6 +1,6 @@
 import { Select as SelectPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import { useId } from 'react';
+import { useId, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
@@ -22,9 +22,12 @@ export interface SelectOption {
 
 // Arrow keys on a closed select only open the list; inside the list they only move the
 // highlight. A value changes on Enter, Space or a click.
-export function Select({ value, onValueChange, options, label, placeholder, disabled, open, defaultOpen = false, onOpenChange, fullWidth = false }: {
+export function Select({ value, onValueChange, onReselect, options, label, placeholder, disabled, open, defaultOpen = false, onOpenChange, onCloseAutoFocus: callerCloseAutoFocus, fullWidth = false }: {
   value: string;
   onValueChange: (value: string) => void;
+  // The user picked the option that is already chosen. For an option that opens something
+  // (a "Custom…" window), where picking it again means "open it again".
+  onReselect?: (value: string) => void;
   options: SelectOption[];
   label: string;
   placeholder?: string;
@@ -32,6 +35,10 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
   open?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  // Runs once the list has gone, just before the focus returns to the select. Open a dialog
+  // that a choice leads to from here, so the dialog gives the focus back to the select;
+  // event.preventDefault() keeps the focus from returning.
+  onCloseAutoFocus?: (event: Event) => void;
   // Fills the width of its container, so a group of selects lines up (wrap them in a sized div).
   fullWidth?: boolean;
 }) {
@@ -40,8 +47,23 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
   const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
   const level = useFloatingLevel();
   const descriptionBase = useId();
+  // The option under the pointer or key event that is being handled right now. Radix closes the
+  // list inside that event when it picks the option, and says nothing more when the value is the same.
+  const picking = useRef<string | null>(null);
+  const notePick = (optionValue: string) => {
+    const note = () => { picking.current = optionValue; };
+    return { onPointerUp: note, onClick: note, onKeyDown: note };
+  };
+  // The event passed the option without closing the list: it was not a pick.
+  const endPick = () => { picking.current = null; };
+  const changeOpen = (next: boolean) => {
+    const picked = picking.current;
+    picking.current = null;
+    setOpen(next);
+    if (!next && picked !== null && picked === value) onReselect?.(picked);
+  };
   return (
-    <SelectPrimitive.Root value={value} onValueChange={onValueChange} open={isOpen} onOpenChange={setOpen} disabled={disabled}>
+    <SelectPrimitive.Root value={value} onValueChange={onValueChange} open={isOpen} onOpenChange={changeOpen} disabled={disabled}>
       <SelectPrimitive.Trigger
         aria-label={label}
         // A closed select never changes its value from a key press. Radix would otherwise pick the
@@ -63,13 +85,17 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
           position="popper"
           sideOffset={4}
           collisionPadding={EDGE_GAP}
-          onCloseAutoFocus={onCloseAutoFocus}
+          onCloseAutoFocus={(event) => {
+            // The layer's handler first: it prevents the default when the registry closed this list.
+            onCloseAutoFocus(event);
+            callerCloseAutoFocus?.(event);
+          }}
           data-ds-layer
           data-ds-motion
           data-electron-no-drag
           className={cn(level, 'max-h-72 min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden p-1', FLOAT_SURFACE, FLOAT_MOTION)}
         >
-          <SelectPrimitive.Viewport>
+          <SelectPrimitive.Viewport onPointerUp={endPick} onClick={endPick} onKeyDown={endPick}>
             <LayerScope id={id}>
               {options.map((option, index) => {
                 // With a second line the row aligns to the top; the nudge centers the check mark on the name line.
@@ -80,7 +106,7 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
                 );
                 if (!option.description && !option.icon && !option.tone) {
                   return (
-                    <SelectPrimitive.Item key={option.value} value={option.value} disabled={option.disabled} className={cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6')}>
+                    <SelectPrimitive.Item key={option.value} value={option.value} disabled={option.disabled} {...notePick(option.value)} className={cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6')}>
                       <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
                       {indicator}
                     </SelectPrimitive.Item>
@@ -95,6 +121,7 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
                     // Typing in the open list matches the name, never the description.
                     textValue={option.label}
                     aria-describedby={option.description ? descriptionId : undefined}
+                    {...notePick(option.value)}
                     className={cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6', option.description && 'h-auto items-start py-1')}
                   >
                     <span className="flex min-w-0 flex-1 flex-col">

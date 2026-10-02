@@ -147,7 +147,8 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
     return (
       <div className={cn(wrapCls, 'flex flex-col items-center gap-3 text-center')}>
         <p className="text-ui text-label-secondary">{t.imChannel.wechatBindHint}</p>
-        <Button variant="primary" onClick={fetchQR}>
+        {/* The panel always sits in a place that has its own filled button. */}
+        <Button variant="secondary" onClick={fetchQR}>
           {t.imChannel.wechatScanQR}
         </Button>
       </div>

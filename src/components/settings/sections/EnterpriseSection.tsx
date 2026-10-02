@@ -31,9 +31,12 @@ export default function EnterpriseSection() {
   const licenseValid = config?.licenseStatus === 'valid'
 
   const askToUnbind = async () => {
-    if (!await confirm({ title: t.enterprise.unbindConfirm, confirmLabel: t.enterprise.unbindButton, tone: 'danger' })) return
-    // Read again at answer time: the binding may have gone while the question was open.
-    if (useEnterpriseStore.getState().mode.kind !== 'personal') void unbind()
+    const asked = binding?.serverUrl
+    if (!await confirm({ title: t.enterprise.unbindConfirm, message: asked, confirmLabel: t.enterprise.unbindButton, tone: 'danger' })) return
+    // Read again at answer time: only the instance the question named is unbound.
+    const now = useEnterpriseStore.getState().mode
+    if (now.kind === 'personal' || now.binding.serverUrl !== asked) return
+    void unbind()
   }
 
   return (

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { Dialog } from '@/components/ds/dialog';
+import { useBlockingApprovalVisible } from '@/hooks/useBlockingApprovalVisible';
 import { useAccountStore } from '@/core/account/accountStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
@@ -51,9 +52,16 @@ export default function AccountLoginDialog() {
     if (error) personalStartRequested.current = false;
   }, [error]);
 
+  // An old blocking prompt (an approval of the task in view, the close-window question) cannot
+  // take a press under a design-system dialog. The window leaves the page while one is up,
+  // the sign-in goes on, and the window is back when the prompt has gone. Remove with batch 8.
+  const blocked = useBlockingApprovalVisible();
+  const blockedRef = useRef(blocked);
+  useLayoutEffect(() => { blockedRef.current = blocked; });
+
   // The window is on screen until it is closed or the sign-in has finished. It stays on the
   // page while it fades out; its buttons do nothing then.
-  const shown = open && status !== 'signed_in';
+  const shown = open && status !== 'signed_in' && !blocked;
   // A finished sign-in fades out on the sentence it was showing.
   const pageStatus: LoginPageStatus = status === 'signed_in' ? 'exchanging' : status;
 
@@ -65,6 +73,8 @@ export default function AccountLoginDialog() {
       size="sm"
       closeButton={{ 'data-abu-account-dialog-close': '' }}
       contentProps={{ 'data-abu-account-dialog': '' }}
+      // The prompt that took over takes no focus; focus stays off the opener underneath it.
+      onCloseAutoFocus={(event) => { if (blockedRef.current) event.preventDefault(); }}
     >
       <LoginPage
         status={pageStatus}

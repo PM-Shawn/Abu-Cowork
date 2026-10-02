@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
-import { __resetAccountStoreForTest } from '@/core/account/accountStore';
+import { __resetAccountStoreForTest, useAccountStore } from '@/core/account/accountStore';
 import { initLanguage } from '@/i18n';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -60,6 +60,55 @@ describe('AccountLoginDialog opened from the settings window', () => {
     const close = document.querySelector('[data-abu-account-dialog-close]');
     expect(dialog).toContainElement(close as HTMLElement);
     expect(close).toHaveAccessibleName('关闭');
+  });
+
+  // The close-window question and the approvals of the task in view are still drawn by the old
+  // modals. A design-system dialog would leave them unable to take a press.
+  describe('while an old blocking prompt is on screen', () => {
+    const cancel = vi.fn();
+    beforeEach(() => {
+      cancel.mockReset();
+      useSettingsStore.setState({ systemSettingsOpen: false, accountLoginOpen: true });
+      useAccountStore.setState({ status: 'awaiting_browser', cancel });
+    });
+    afterEach(() => { usePreviewStore.setState({ appModalOpen: false }); });
+
+    it('leaves the page without cancelling the sign-in, and comes back when the prompt has gone', () => {
+      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
+      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toHaveTextContent('请在浏览器中完成登录');
+
+      act(() => { usePreviewStore.setState({ appModalOpen: true }); });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(useAccountStore.getState().status).toBe('awaiting_browser');
+
+      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
+      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toHaveTextContent('请在浏览器中完成登录');
+      expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it('does not appear when it is asked for while the prompt is up, and appears afterwards', () => {
+      usePreviewStore.setState({ appModalOpen: true });
+      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
+      expect(screen.queryByRole('dialog')).toBeNull();
+
+      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
+      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
+      expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it('still closes itself when the sign-in finishes behind the prompt', () => {
+      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
+      act(() => { usePreviewStore.setState({ appModalOpen: true }); });
+      act(() => {
+        useAccountStore.setState({ status: 'signed_in', account: { serverUrl: 'https://accounts.example.com', userId: 'user-1', kind: 'personal', name: 'Ada', email: null } });
+      });
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(cancel).not.toHaveBeenCalled();
+    });
   });
 
   it('can be used once it is open: its buttons take the press and Escape closes only it', async () => {

@@ -198,6 +198,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/EnterpriseSection*.{ts,tsx}',
   'src/components/settings/sections/IMChannelSection*.{ts,tsx}',
   'src/components/settings/sections/WeChatQRPanel.tsx',
+  'src/components/settings/sections/WeChatQRPanel.test.tsx',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

@@ -36,6 +36,9 @@ const CAPABILITY_OPTIONS: { value: IMCapabilityLevel; labelKey: keyof ReturnType
 ];
 
 const LAN_WEBHOOK_SWITCH_ID = 'im-allow-lan-webhook';
+// The five built-in platforms fit side by side in the control column. An IM plugin adds more;
+// from six on they are offered in a select.
+const MAX_PLATFORM_SEGMENTS = 5;
 
 function useCapLabels() {
   const { t } = useI18n();
@@ -259,7 +262,8 @@ export default function IMChannelSection() {
 
             {/* Expanded detail — grouped layout */}
             {isExpanded && (
-              <div className="space-y-5 border-t border-separator px-5 py-5">
+              // Named after the channel, so its Delete button is told apart from the ones of its allowed users.
+              <div role="group" aria-label={channel.name} className="space-y-5 border-t border-separator px-5 py-5">
                 {/* Group 1: Connection */}
                 <FormGroup title={t.imChannel.groupConnection}>
                   <FormRow label={t.imChannel.channelName}>
@@ -379,12 +383,7 @@ export default function IMChannelSection() {
 
           {/* Platform */}
           <FormRow label={t.imChannel.platform}>
-            <SegmentedControl
-              label={t.imChannel.platform}
-              value={newPlatform}
-              onValueChange={(p) => handlePlatformChange(p as IMPlatform)}
-              options={getIMPlatformOptions()}
-            />
+            <PlatformChoice value={newPlatform} onChange={handlePlatformChange} />
           </FormRow>
 
           {/* Credentials — WeChat uses QR scan, others use AppId/AppSecret */}
@@ -488,6 +487,16 @@ function LanWebhookRow() {
   );
 }
 
+/** The platform of a new channel: side by side while they fit the control column, a select beyond that. */
+function PlatformChoice({ value, onChange }: { value: IMPlatform; onChange: (platform: IMPlatform) => void }) {
+  const { t } = useI18n();
+  const options = getIMPlatformOptions();
+  if (options.length > MAX_PLATFORM_SEGMENTS) {
+    return <Select fullWidth label={t.imChannel.platform} value={value} options={options} onValueChange={(p) => onChange(p as IMPlatform)} />;
+  }
+  return <SegmentedControl label={t.imChannel.platform} value={value} onValueChange={(p) => onChange(p as IMPlatform)} options={options} />;
+}
+
 function PlatformBadge({ platform }: { platform: IMPlatform }) {
   return (
     <span className="flex size-8 shrink-0 items-center justify-center rounded-control bg-fill text-ui-sm font-medium text-label-secondary">
@@ -554,7 +563,7 @@ function TagInput({
         {values.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             {values.map((v) => (
-              <span key={v} className="inline-flex items-center gap-1">
+              <span key={v} role="group" aria-label={v} className="inline-flex items-center gap-1">
                 <Tag>{v}</Tag>
                 <IconButton size="sm" icon={AppIcons.close} label={t.common.delete} onClick={() => removeTag(v)} />
               </span>

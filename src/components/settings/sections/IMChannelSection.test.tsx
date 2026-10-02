@@ -35,13 +35,12 @@ vi.mock('@/stores/settingsStore', () => {
 });
 vi.mock('@/core/trigger/triggerEngine', () => ({ triggerEngine: { getServerPort: () => 18080 } }));
 vi.mock('@/core/im/pluginRegistry', () => ({ hasHeartbeatPlugin: () => false }));
-vi.mock('@/core/im/platformLabels', () => {
-  const names: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wechat: '微信' };
-  return {
-    getIMPlatformOptions: () => Object.entries(names).map(([value, label]) => ({ value, label })),
-    getPlatformDisplayName: (platform: string) => names[platform] ?? platform,
-  };
-});
+// The platforms the page offers: the built-in ones plus whatever IM plugins are installed.
+const platforms = vi.hoisted(() => ({ names: {} as Record<string, string> }));
+vi.mock('@/core/im/platformLabels', () => ({
+  getIMPlatformOptions: () => Object.entries(platforms.names).map(([value, label]) => ({ value, label })),
+  getPlatformDisplayName: (platform: string) => platforms.names[platform] ?? platform,
+}));
 // The scan itself talks to WeChat. Here one button stands for a finished scan.
 vi.mock('./WeChatQRPanel', () => ({
   default: ({ onBound }: { onBound: (credentials: typeof WECHAT_CREDENTIALS) => void }) => (
@@ -123,6 +122,7 @@ describe('IMChannelSection', () => {
   });
   beforeEach(() => {
     initLanguage('zh-CN');
+    platforms.names = { feishu: '飞书', dingtalk: '钉钉', wechat: '微信' };
     store.state.channels = {};
     store.state.sessions = {};
     store.state.addChannel.mockReset();
@@ -297,8 +297,9 @@ describe('IMChannelSection', () => {
       show(channel());
       ui.expand();
       expect(screen.queryByText('0 = 不超时')).toBeNull();
-      await user.tab();
-      while (document.activeElement !== screen.getByRole('button', { name: '会话超时（分钟）' })) await user.tab();
+      const hint = screen.getByRole('button', { name: '会话超时（分钟）' });
+      for (let presses = 0; presses < 30 && document.activeElement !== hint; presses += 1) await user.tab();
+      expect(hint).toHaveFocus();
       expect(await screen.findByRole('tooltip')).toHaveTextContent('0 = 不超时');
     });
 
@@ -332,8 +333,25 @@ describe('IMChannelSection', () => {
       expect(store.state.updateChannel).not.toHaveBeenCalled();
       expect(input).toHaveValue('');
 
-      fireEvent.click(within(screen.getByText('ou_ada').parentElement!).getByRole('button'));
+      fireEvent.click(within(screen.getByRole('group', { name: 'ou_ada' })).getByRole('button', { name: '删除' }));
       expect(store.state.updateChannel).toHaveBeenCalledExactlyOnceWith('ch-1', { allowedUsers: [] });
+    });
+
+    it('tells the delete buttons apart by what they are grouped with: each allowed user, and the channel', () => {
+      show(channel({ allowedUsers: ['ou_ada', 'ou_grace'] }));
+      ui.expand();
+      expect(screen.getAllByRole('button', { name: '删除' })).toHaveLength(3);
+      const detail = screen.getByRole('group', { name: 'Team bot' });
+      for (const user of ['ou_ada', 'ou_grace']) {
+        const group = within(detail).getByRole('group', { name: user });
+        expect(within(group).getAllByRole('button', { name: '删除' })).toHaveLength(1);
+        expect(group).toHaveTextContent(user);
+      }
+      // The channel's own delete button belongs to the channel and to no user.
+      const channelDelete = within(detail).getAllByRole('button', { name: '删除' }).at(-1)!;
+      expect(channelDelete.closest('[role="group"]')).toBe(detail);
+      expect(detail).toContainElement(ui.secretField());
+      expect(readableOutsideFields()).not.toContain(SECRET);
     });
 
     it('offers the user-id hint only while no user is listed', () => {
@@ -521,6 +539,44 @@ describe('IMChannelSection', () => {
 
       const filled = screen.getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
       expect(filled).toEqual([ui.saveButton()]);
+    });
+
+    it('keeps the segmented choice with five platforms', () => {
+      platforms.names = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', slack: 'Slack', wechat: '微信' };
+      show();
+      ui.openAddForm();
+      expect(within(screen.getByRole('group', { name: '平台' })).getAllByRole('radio')).toHaveLength(5);
+      expect(screen.queryByRole('combobox', { name: '平台' })).toBeNull();
+    });
+
+    // An installed IM plugin adds a platform; six no longer fit the control column side by side.
+    it('offers more than five platforms in a select as wide as the column, and picks one the same way', async () => {
+      platforms.names = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', slack: 'Slack', wechat: '微信', dchat: 'D-Chat' };
+      show();
+      ui.openAddForm();
+      const select = screen.getByRole('combobox', { name: '平台' });
+      expect(screen.queryByRole('radio')).toBeNull();
+      expect(select).toHaveTextContent('飞书');
+      expect(select).toHaveClass('w-full');
+      expect(select.parentElement).toHaveClass('w-85');
+
+      const user = userEvent.setup();
+      await user.click(select);
+      expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['飞书', '钉钉', '企业微信', 'Slack', '微信', 'D-Chat']);
+      await user.click(screen.getByRole('option', { name: '微信' }));
+      // The same handler as the segmented choice: WeChat asks for a scan, and leaving it forgets the scan.
+      expect(screen.queryByPlaceholderText('输入应用 ID')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Finish scan' }));
+      await ui.choose('平台', 'D-Chat');
+      await ui.choose('平台', '微信');
+      expect(ui.saveButton()).toBeDisabled();
+
+      await ui.choose('平台', 'D-Chat');
+      ui.type('例如：研发群机器人', 'Team bot');
+      ui.type('输入应用 ID', 'cli_app_not_real');
+      ui.type('输入应用密钥', SECRET);
+      fireEvent.click(ui.saveButton());
+      expect(store.state.addChannel).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ platform: 'dchat' }));
     });
 
     it('starts on Feishu with the standard ability', () => {

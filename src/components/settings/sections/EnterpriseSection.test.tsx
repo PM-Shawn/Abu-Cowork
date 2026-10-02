@@ -179,6 +179,38 @@ describe('EnterpriseSection', () => {
     expect(unbind).not.toHaveBeenCalled();
   });
 
+  it('names the instance the question is about', async () => {
+    show({ kind: 'enterprise', binding, config: config('valid') });
+    fireEvent.click(unbindButton());
+    expect(await unbindQuestion()).toHaveAccessibleDescription('https://abu.example.test');
+    const page = everythingOnThePage();
+    for (const secret of SECRETS) expect(page).not.toContain(secret);
+  });
+
+  it('does nothing when another instance is bound by the time the user confirms', async () => {
+    show({ kind: 'enterprise', binding, config: config('valid') });
+    fireEvent.click(unbindButton());
+    const question = await unbindQuestion();
+    act(() => {
+      useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding: { ...binding, serverUrl: 'https://other.example.test' }, config: config('valid') } });
+    });
+    fireEvent.click(within(question).getByRole('button', { name: '解绑企业实例' }));
+    await settled();
+    expect(unbind).not.toHaveBeenCalled();
+  });
+
+  it('still unbinds the instance that was asked about once it has gone offline', async () => {
+    show({ kind: 'enterprise', binding, config: config('valid') });
+    fireEvent.click(unbindButton());
+    const question = await unbindQuestion();
+    act(() => {
+      useEnterpriseStore.setState({ mode: { kind: 'offline', binding, lastConfig: config('valid'), reason: 'network' } });
+    });
+    fireEvent.click(within(question).getByRole('button', { name: '解绑企业实例' }));
+    await settled();
+    expect(unbind).toHaveBeenCalledExactlyOnceWith();
+  });
+
   it('shows the offline mark as a warning tag under the title row, and the licence state with a shape', () => {
     show({ kind: 'offline', binding, lastConfig: config('expired'), reason: 'network' });
     const mark = screen.getByText('· 离线');

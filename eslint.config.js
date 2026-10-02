@@ -166,7 +166,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/panel/workspace/SubagentTab*.{ts,tsx}',
   'src/components/panel/workspace/TeamTab*.{ts,tsx}',
   'src/components/panel/WorkspaceFileTree*.{ts,tsx}',
-  // Settings window, file by file (batch 6). ToolboxModal (extensions, batch 7), LanguageSection (unused) and SensitiveAuditDialog (batch 8) stay out, so no directory glob yet.
+  // Settings window, file by file (batch 6). ToolboxModal (extensions, batch 7) and LanguageSection (unused) stay out, so no directory glob yet.
   'src/components/settings/SystemSettingsDialog*.{ts,tsx}',
   'src/components/settings/SystemSettingsModal*.{ts,tsx}',
   'src/components/settings/SettingsSectionHeader.tsx',
@@ -199,6 +199,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/IMChannelSection*.{ts,tsx}',
   'src/components/settings/sections/WeChatQRPanel.tsx',
   'src/components/settings/sections/WeChatQRPanel.test.tsx',
+  'src/components/settings/SensitiveAuditDialog*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

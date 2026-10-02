@@ -2,7 +2,7 @@ import {
   Activity, AppWindow, Archive, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, Bot, Brain, Building2, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Chrome, CircleCheck, CircleHelp,
   CircleStop, CircleX, Clock, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, EyeOff, File, FileCode, FileImage, FileJson, FilePen, FilePlus,
   FileSearch, FileText, FileType2, FileWarning, FileX, FlaskConical, Folder, FolderInput, FolderOpen, FolderPlus, Globe, Hand, Hash, Heart, History, ImageIcon, ImageOff, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
-  LoaderCircle, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Minimize2, Minus, Monitor, MonitorCog, MousePointer2, Palette, PanelLeft, PanelRight,
+  LoaderCircle, Lock, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Minimize2, Minus, Monitor, MonitorCog, MousePointer2, Palette, PanelLeft, PanelRight,
   Paperclip, PawPrint, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Radio, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scan, ScanEye, ScanLine, Search, Settings, Settings2, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
   SlidersHorizontal, Sparkles, Square, SquareDashedMousePointer, SquarePen, Star, Terminal, ThumbsDown, ThumbsUp, Trash2, TriangleAlert, Undo2, UserCheck, UserRound, UsersRound,
   Wand2, Workflow, Wrench, X, Zap, ZoomIn, ZoomOut,
@@ -183,6 +183,10 @@ export const AppIcons = {
   showSecret: Eye,
   hideSecret: EyeOff,
   imageGen: ImageIcon,
+  // Settings: memory
+  private: Lock,
+  allProjects: Globe,
+  tidyUp: ListChecks,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

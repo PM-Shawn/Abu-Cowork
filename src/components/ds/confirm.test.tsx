@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { act, render as renderTree, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { useConfirm, type Confirm } from './confirm-context';
 import { Dialog } from './dialog';
@@ -181,6 +181,45 @@ describe('useConfirm', () => {
 
       expect(state.settled).toBe(false);
       expect(screen.queryByRole('alertdialog')).toBeNull();
+    });
+
+    // The newcomer is only held, and the user may still keep editing. The confirmation is cancelled
+    // all the same: the discard question has to be the top layer for the user to decide.
+    it('answers false when a new dialog arrives and is held by unsaved input in that dialog', async () => {
+      const user = userEvent.setup();
+      captured = null;
+      const onApprovalChange = vi.fn();
+      let requestApproval!: () => void;
+      function Form() {
+        const [approval, setApproval] = useState(false);
+        useEffect(() => { requestApproval = () => setApproval(true); }, []);
+        return (
+          <>
+            <Capture onReady={keep} />
+            <Dialog open onOpenChange={() => undefined} title="Edit channel" dirty>
+              <input aria-label="Name" defaultValue="draft" />
+            </Dialog>
+            <Dialog open={approval} onOpenChange={(next) => { onApprovalChange(next); setApproval(next); }} title="Approval" />
+          </>
+        );
+      }
+      renderTree(<Form />, { wrapper: DesignSystemProvider });
+      const state = track(ask());
+      expect(screen.getByRole('alertdialog', { name: 'Delete this channel?' })).toBeInTheDocument();
+
+      act(() => requestApproval());
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog', { name: 'Delete this channel?' })).toBeNull();
+      expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+      expect(screen.queryByText('Approval')).toBeNull();
+      expect(onApprovalChange).not.toHaveBeenCalled();
+      // Keep editing: the form and what was typed stay, and only now is the newcomer refused.
+      await user.click(screen.getByRole('button', { name: 'Keep editing' }));
+      expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('draft');
+      expect(onApprovalChange).toHaveBeenCalledOnce();
+      expect(onApprovalChange).toHaveBeenCalledWith(false);
     });
 
     it('is asked again without the earlier dialog deciding its fate', async () => {

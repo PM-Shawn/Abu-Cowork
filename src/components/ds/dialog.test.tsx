@@ -128,6 +128,37 @@ describe('Dialog', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  // A form that saves in the background closes itself when the save lands. A discard question
+  // that was asked meanwhile has nothing left to ask about.
+  it('takes the discard question away when the owner closes the dialog, and asks nothing on the next opening', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    const tree = (open: boolean) => (
+      <Dialog open={open} onOpenChange={onOpenChange} title="Add service" dirty>
+        <input aria-label="Name" />
+      </Dialog>
+    );
+    const { rerender } = render(tree(true), { wrapper: DesignSystemProvider });
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    rerender(tree(false));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.queryByRole('dialog', { hidden: true })).toBeNull();
+    // Neither answer was given: the owner is not told to close a second time.
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    rerender(tree(true));
+    expect(screen.getByRole('dialog', { name: 'Add service' })).toBeInTheDocument();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    // The next Escape asks afresh, and Discard closes once.
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(onOpenChange).toHaveBeenCalledOnce();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it('returns focus to the trigger after the user discards', async () => {
     const user = userEvent.setup();
     render(<RenameDialog dirty />, { wrapper: DesignSystemProvider });

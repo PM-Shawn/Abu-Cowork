@@ -15,7 +15,9 @@ interface Waiting {
 // A layer opened inside another layer is its child and leaves that parent open.
 // A new dialog replaces the open one. When the open one, or a dialog opened inside it, holds
 // unsaved input, the new dialog is held while the user is asked: Discard closes the open
-// dialog and shows the new one, keeping the input closes the new one.
+// dialog and shows the new one, keeping the input closes the new one. A confirmation that was
+// open over that dialog is answered with cancel as soon as the new dialog arrives, held or not:
+// the discard question has to be the top layer for the user to decide.
 // Also decides which DOM node floating layers portal into.
 export function LayerProvider({ children, container }: { children: ReactNode; container?: HTMLElement | null }) {
   const layers = useRef<LayerEntry[]>([]);

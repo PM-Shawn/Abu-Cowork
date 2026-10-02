@@ -88,6 +88,13 @@ export function Dialog({
   const keep = () => { takePendingDiscard()?.onKeep?.(); };
 
   const { id, onCloseAutoFocus, held } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  // The owner closed the dialog while the discard question was on screen (a save that was in
+  // flight landed): nothing is left to discard, so the question goes unanswered.
+  useLayoutEffect(() => {
+    if (isOpen || !pendingDiscard.current) return;
+    pendingDiscard.current = null;
+    setDiscardAsked(false);
+  }, [isOpen]);
 
   // Radix gives focus back only to a Dialog.Trigger. A dialog opened by code (search,
   // useConfirm(), the discard question) has none, so it would leave focus on the page

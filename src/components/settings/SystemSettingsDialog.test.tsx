@@ -1,8 +1,11 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initLanguage } from '@/i18n';
+import { act, cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { getI18n, initLanguage } from '@/i18n';
+import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import SystemSettingsDialog from './SystemSettingsDialog';
 
@@ -12,53 +15,132 @@ vi.mock('@/utils/platform', () => ({
   isWindows: () => !platformMock.mac,
 }));
 
-vi.mock('@/components/settings/SystemSettingsModal', () => ({
-  default: () => <div>settings-view</div>,
-}));
+vi.mock('@/components/settings/SystemSettingsModal', async () => {
+  const { Button } = await import('@/components/ds/button');
+  const { Select } = await import('@/components/ds/select');
+  return {
+    default: () => (
+      <div>
+        <Button>First control</Button>
+        <Select
+          label="Sample choice"
+          value="one"
+          onValueChange={() => undefined}
+          options={[{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }]}
+        />
+      </div>
+    ),
+  };
+});
 
-/**
- * macOS paints its traffic lights natively over the top 44px of the window
- * (`trafficLightPosition: { x: 20, y: 27 }` in `electron/windowChrome.cjs`,
- * `h-11` chrome overlay in `WindowTitleBar.tsx`). A dialog card centred on the
- * whole viewport starts at 5vh ≈ 40px on the default 800px-tall window and its
- * corner lands under the green light. The card must therefore be laid out
- * below that band on macOS, while Windows keeps its full-viewport centring.
- */
-describe('SystemSettingsDialog — macOS chrome safe area', () => {
+function renderDialog() {
+  return render(<SystemSettingsDialog />, { wrapper: DesignSystemProvider });
+}
+
+const settingsWindow = () => document.querySelector('[data-abu-settings-dialog]');
+const isOpen = () => useSettingsStore.getState().systemSettingsOpen;
+
+describe('SystemSettingsDialog', () => {
+  beforeAll(() => {
+    // happy-dom lacks the pointer-capture and scroll calls Radix Select makes while opening.
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.setPointerCapture ??= () => undefined;
+    Element.prototype.releasePointerCapture ??= () => undefined;
+    Element.prototype.scrollIntoView ??= () => undefined;
+  });
+
   beforeEach(() => {
     initLanguage('zh-CN');
+    platformMock.mac = false;
+    usePreviewStore.setState({ appModalOpen: false });
     useSettingsStore.setState({ systemSettingsOpen: true });
   });
 
   afterEach(() => {
     cleanup();
+    usePreviewStore.setState({ appModalOpen: false });
     useSettingsStore.setState({ systemSettingsOpen: false });
   });
 
-  it('reserves the traffic-light band on macOS', () => {
+  // macOS paints its window buttons over the top 44px of the window
+  // (`trafficLightPosition` in `electron/windowChrome.cjs`), so the settings window starts
+  // 48px down there and 24px down elsewhere.
+  it('starts below the window buttons on macOS and keeps the settings-window box', () => {
     platformMock.mac = true;
-    const { container } = render(<SystemSettingsDialog />);
-    const scrim = container.querySelector('[data-abu-settings-dialog]');
-    expect(scrim).not.toBeNull();
-    expect(scrim).toHaveClass('pt-12');
-    expect(scrim).toHaveClass('inset-0');
+    renderDialog();
+    expect(settingsWindow()).toHaveClass('top-12');
+    expect(settingsWindow()).toHaveClass('m-auto');
+    expect(settingsWindow()).toHaveClass('max-h-[840px]');
   });
 
-  it('keeps full-viewport centring on Windows', () => {
-    platformMock.mac = false;
-    const { container } = render(<SystemSettingsDialog />);
-    const scrim = container.querySelector('[data-abu-settings-dialog]');
-    expect(scrim).not.toBeNull();
-    expect(scrim).not.toHaveClass('pt-12');
-    expect(scrim).toHaveClass('inset-0');
+  it('starts nearer the top on other platforms', () => {
+    renderDialog();
+    expect(settingsWindow()).toHaveClass('top-6');
+    expect(settingsWindow()).not.toHaveClass('top-12');
   });
 
-  it('sizes the card from the padded box so it never spills into the reserved band', () => {
-    platformMock.mac = true;
-    const { container } = render(<SystemSettingsDialog />);
-    const card = container.querySelector('[data-abu-settings-dialog] > div');
-    expect(card).toHaveClass('h-full');
-    expect(card).toHaveClass('max-h-[840px]');
-    expect(card).not.toHaveClass('h-[min(840px,90vh)]');
+  it('is a dialog named after the settings title, and it and its scrim stay out of the window drag lanes', () => {
+    renderDialog();
+    const dialog = screen.getByRole('dialog', { name: getI18n().settings.title });
+    expect(dialog).toBe(settingsWindow());
+    expect(dialog).toHaveAttribute('data-electron-no-drag');
+    const scrim = document.querySelector('.bg-scrim');
+    expect(scrim).not.toBeNull();
+    expect(scrim).toHaveAttribute('data-electron-no-drag');
+  });
+
+  it('closes from the close button', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const close = document.querySelector<HTMLElement>('[data-abu-settings-close]');
+    expect(close).toHaveAccessibleName(getI18n().common.close);
+    await user.click(close!);
+    expect(isOpen()).toBe(false);
+    expect(settingsWindow()).toBeNull();
+  });
+
+  it('closes on Escape', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await user.keyboard('{Escape}');
+    expect(isOpen()).toBe(false);
+  });
+
+  it('closes one layer per Escape: an open select first, then the settings window', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(screen.getByRole('combobox', { name: 'Sample choice' }));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(isOpen()).toBe(true);
+    expect(settingsWindow()).not.toBeNull();
+
+    await user.keyboard('{Escape}');
+    expect(isOpen()).toBe(false);
+  });
+
+  it('closes itself when the close-window question appears', () => {
+    renderDialog();
+    expect(settingsWindow()).not.toBeNull();
+    act(() => usePreviewStore.setState({ appModalOpen: true }));
+    expect(isOpen()).toBe(false);
+    expect(settingsWindow()).toBeNull();
+  });
+
+  it('does not open over the close-window question', () => {
+    useSettingsStore.setState({ systemSettingsOpen: false });
+    usePreviewStore.setState({ appModalOpen: true });
+    renderDialog();
+    act(() => useSettingsStore.getState().openSystemSettings());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(isOpen()).toBe(false);
+  });
+
+  it('draws no blurred scrim', () => {
+    renderDialog();
+    expect(settingsWindow()).not.toBeNull();
+    expect(document.querySelector('[class*="backdrop-blur"]')).toBeNull();
   });
 });

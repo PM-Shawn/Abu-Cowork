@@ -57,8 +57,10 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   // Profile, settings, account settings, feedback, enterprise login and sign-in open
   // dialogs of their own: they start
   // once the menu has gone, so no dialog opens inside or under the closing menu.
-  const afterMenuClose = useRef<(() => void) | null>(null);
-  const openAfterClose = (action: () => void) => { afterMenuClose.current = action; };
+  const afterMenuClose = useRef<{ action: () => void; keepTriggerFocus: boolean } | null>(null);
+  const openAfterClose = (action: () => void, keepTriggerFocus = false) => {
+    afterMenuClose.current = { action, keepTriggerFocus };
+  };
 
   const handleCheck = useCallback(async () => {
     setCheckedResult('idle');
@@ -221,14 +223,15 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
       }}
       side="top"
       onCloseAutoFocus={(event) => {
-        const action = afterMenuClose.current;
-        if (!action) return;
+        const pending = afterMenuClose.current;
+        if (!pending) return;
         afterMenuClose.current = null;
-        // These open legacy dialogs that take no focus themselves; keeping focus off the
-        // trigger (it stays on the page body, as before) stops Enter or Space from
-        // reopening the menu underneath the dialog.
-        event.preventDefault();
-        action();
+        // Two cases. A legacy dialog takes no focus itself: focus stays off the trigger (on
+        // the page body), so Enter or Space cannot reopen the menu underneath it. The
+        // settings window is a design-system dialog: focus goes back to the trigger first,
+        // the window remembers it and hands focus back to this button when it closes.
+        if (!pending.keepTriggerFocus) event.preventDefault();
+        pending.action();
       }}
       trigger={
         <Button variant="plain" className="w-full justify-start gap-2 px-2">
@@ -258,7 +261,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
 
         {!enterpriseSignedIn && signedIn && (
           <>
-            <MenuItem icon={AppIcons.account} onSelect={() => openAfterClose(() => openSystemSettings('account'))}>
+            <MenuItem icon={AppIcons.account} onSelect={() => openAfterClose(() => openSystemSettings('account'), true)}>
               {t.account.accountSettings}
             </MenuItem>
             {IS_ENTERPRISE_BUILD && (
@@ -270,7 +273,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           </>
         )}
 
-        <MenuItem icon={AppIcons.settings} onSelect={() => openAfterClose(() => openSystemSettings())}>
+        <MenuItem icon={AppIcons.settings} onSelect={() => openAfterClose(() => openSystemSettings(), true)}>
           {t.settings.title}
         </MenuItem>
 
@@ -299,7 +302,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           </span>
         </MenuItem>
 
-        <MenuItem icon={AppIcons.feedback} onSelect={() => openAfterClose(() => openSystemSettings('feedback'))}>
+        <MenuItem icon={AppIcons.feedback} onSelect={() => openAfterClose(() => openSystemSettings('feedback'), true)}>
           {t.about.feedback}
         </MenuItem>
 

@@ -401,6 +401,28 @@ describe('DiagnosticUpload export and upload', () => {
     expect(useDiagnosticStore.getState().includeRawText).toBe(false);
   });
 
+  // This switch decides whether message text goes into a bundle, and its value is kept for later
+  // bundles: a stray press on the empty part of its row must not move it.
+  it('leaves the switch alone on a press beside its words, and toggles it on a press on the words', async () => {
+    const user = userEvent.setup();
+    renderUpload('');
+    const includeText = screen.getByRole('switch', { name: 'Include raw text' });
+    const words = screen.getByText('Include raw text');
+    // The box that takes the spare width of the row, from the words to the switch.
+    const spare = words.closest('.flex-1');
+    if (!spare) throw new Error('No box takes the spare width of the row');
+
+    await user.click(spare);
+    expect(includeText).toHaveAttribute('aria-checked', 'true');
+    expect(useDiagnosticStore.getState().includeRawText).toBe(true);
+    expect(words).not.toHaveClass('flex-1');
+    expect(spare).not.toBe(words);
+
+    await user.click(words);
+    expect(includeText).toHaveAttribute('aria-checked', 'false');
+    expect(useDiagnosticStore.getState().includeRawText).toBe(false);
+  });
+
   it('explains the conversation choice in a panel that opens on a press and closes on Escape', async () => {
     const user = userEvent.setup();
     renderUpload('');

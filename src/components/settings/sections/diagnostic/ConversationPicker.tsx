@@ -40,10 +40,14 @@ const ConversationRow = memo(function ConversationRow({ id, title, checked, curr
   return (
     <li className="flex h-7 items-center gap-2 rounded-control px-2 hover:bg-fill-hover">
       <Checkbox id={boxId} checked={checked} disabled={disabled} onCheckedChange={() => onToggle(id)} />
-      <label htmlFor={boxId} className="min-w-0 flex-1 truncate text-ui text-label">{title}</label>
-      {current && <Tag>{currentLabel}</Tag>}
-      <span className="shrink-0 text-caption text-label-tertiary">{formatRelativeTime(updatedAt)}</span>
-      <span className="w-16 shrink-0 text-right text-caption text-label-tertiary">{messageCountText}</span>
+      {/* The label is the rest of the row: a press on the title, the mark, the time or the
+          count ticks the box, once. It is tied to the box by id and does not wrap it. */}
+      <label htmlFor={boxId} className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-ui text-label">{title}</span>
+        {current && <Tag>{currentLabel}</Tag>}
+        <span className="shrink-0 text-caption text-label-tertiary">{formatRelativeTime(updatedAt)}</span>
+        <span className="w-16 shrink-0 text-right text-caption text-label-tertiary">{messageCountText}</span>
+      </label>
     </li>
   );
 });

@@ -182,6 +182,27 @@ describe('ConversationPicker', () => {
       expect(within(row('Gamma review')).getByRole('checkbox')).toHaveAttribute('aria-checked', 'true');
     });
 
+    it('ticks a conversation from anywhere on its row: the time, the count, the mark of the one in view', async () => {
+      const user = userEvent.setup();
+      renderPicker();
+      await openPicker(user);
+
+      await user.click(within(row('Gamma review')).getByText('含 2 条消息'));
+      expect(onChange).toHaveBeenLastCalledWith(['c-gamma']);
+
+      await user.click(within(row('Beta notes')).getByText('当前'));
+      expect(onChange).toHaveBeenLastCalledWith(['c-gamma', 'c-beta']);
+
+      // The time sits between the title and the count; a press on it unticks the row again.
+      const gamma = row('Gamma review');
+      const time = within(gamma).getByText('含 2 条消息').previousElementSibling;
+      if (!time) throw new Error('No time on the row');
+      await user.click(time);
+      expect(onChange).toHaveBeenLastCalledWith(['c-beta']);
+      // One press, one change.
+      expect(onChange).toHaveBeenCalledTimes(3);
+    });
+
     it('takes no sixth conversation and says what the limit is', async () => {
       const user = userEvent.setup();
       const five = ['c-report', 'c-alpha', 'c-untitled', 'c-beta', 'c-gamma'];
@@ -229,8 +250,9 @@ describe('ConversationPicker', () => {
       expect(layer).not.toBeNull();
       expect(document.querySelectorAll('[data-ds-layer]')).toHaveLength(1);
       expect(within(layer as HTMLElement).getAllByRole('checkbox')).toHaveLength(6);
-      expect(screen.getByRole('checkbox', { name: 'Alpha plan' })).toBeInTheDocument();
-      expect(screen.getByRole('checkbox', { name: '（无标题对话）' })).toBeInTheDocument();
+      // A box is named by its row: the title first, then the time and the message count.
+      expect(screen.getByRole('checkbox', { name: /^Alpha plan .*含 4 条消息$/ })).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: /^（无标题对话）/ })).toBeInTheDocument();
     });
 
     it('draws no row while it is closed', () => {
@@ -246,7 +268,7 @@ describe('ConversationPicker', () => {
       expect(checkboxRenders.count).toBeGreaterThan(0);
 
       checkboxRenders.count = 0;
-      fireEvent.click(screen.getByRole('checkbox', { name: 'Gamma review' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: /^Gamma review/ }));
 
       expect(checkboxRenders.count).toBe(1);
     });

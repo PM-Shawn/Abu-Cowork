@@ -210,9 +210,13 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
         {/* Raw-text toggle — ON by default (message text is included, secrets
             still scrubbed). Off strips text down to a size placeholder. */}
         <div className="mt-2 flex items-center justify-between gap-4 py-2">
-          <label htmlFor="diag-include-raw" className="flex-1 text-ui-sm text-label-secondary">
-            {t.diagnostic.exportIncludeRaw}
-          </label>
+          {/* The box takes the spare width; the label is only as wide as its words, so a press
+              on the empty part of the row does not move the switch. */}
+          <div className="min-w-0 flex-1">
+            <label htmlFor="diag-include-raw" className="text-ui-sm text-label-secondary">
+              {t.diagnostic.exportIncludeRaw}
+            </label>
+          </div>
           <Switch id="diag-include-raw" checked={includeRawText} onCheckedChange={() => setIncludeRawText(!includeRawText)} />
         </div>
         <div className="text-caption text-label-tertiary">

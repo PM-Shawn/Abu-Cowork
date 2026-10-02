@@ -477,6 +477,58 @@ describe('Dialog close button, data attributes and focus', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
   });
 
+  // happy-dom reports -1 as the tab index of an editable box and of a summary; a browser reports 0.
+  // This gives those two the browser's answer and leaves every other element as it is.
+  function tabIndexAsInABrowser() {
+    const real = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'tabIndex');
+    if (!real?.get) throw new Error('No tabIndex getter to stand in for');
+    const realGet = real.get;
+    return vi.spyOn(HTMLElement.prototype, 'tabIndex', 'get').mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute('tabindex')) return realGet.call(this) as number;
+      if (this.getAttribute('contenteditable') === 'true' || this.tagName === 'SUMMARY') return 0;
+      return realGet.call(this) as number;
+    });
+  }
+
+  it.each([
+    ['an editable box', <div key="control" contentEditable suppressContentEditableWarning data-test-control="">Notes</div>],
+    ['a summary', <details key="control"><summary data-test-control="">More</summary>Details</details>],
+    ['a frame', <iframe key="control" title="Preview" data-test-control="" />],
+  ])('leaves the first focus to %s beside the close button: it is a control the Tab key reaches', async (_name, control) => {
+    const user = userEvent.setup();
+    const tabIndex = tabIndexAsInABrowser();
+    try {
+      render(
+        <Dialog trigger={<Button>Open</Button>} title="Picture" titleHidden closeButton>
+          {control}
+        </Dialog>,
+        { wrapper: DesignSystemProvider },
+      );
+      await user.click(screen.getByRole('button', { name: 'Open' }));
+      const dialog = screen.getByRole('dialog', { name: 'Picture' });
+
+      expect(dialog).not.toHaveFocus();
+      expect(dialog.querySelector('[data-test-control]')).toHaveFocus();
+    } finally {
+      tabIndex.mockRestore();
+    }
+  });
+
+  it('counts neither a hidden field, a disabled button nor a hidden one as a control', async () => {
+    const user = userEvent.setup();
+    render(
+      <Dialog trigger={<Button>Open</Button>} title="Picture" titleHidden closeButton>
+        <input type="hidden" name="kind" value="picture" />
+        <Button disabled>Save</Button>
+        <Button hidden>Later</Button>
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Open' }));
+
+    expect(screen.getByRole('dialog', { name: 'Picture' })).toHaveFocus();
+  });
+
   it('has no close button and no room for one unless asked', () => {
     render(<Dialog open title="Grant access"><Button>Allow</Button></Dialog>, { wrapper: DesignSystemProvider });
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();

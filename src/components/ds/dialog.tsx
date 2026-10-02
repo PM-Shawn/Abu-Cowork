@@ -17,12 +17,18 @@ export type DataAttributes = { [key: `data-${string}`]: string | undefined };
 // Its height limit counts from that edge, so the dialog still ends 48px above the window's bottom.
 const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0 max-h-[calc(100dvh*6/7-3rem)]' } as const;
 
-// True when the dialog has a close button and nothing else the Tab key can reach.
+// True when the dialog has a close button and nothing else the Tab key can reach. Every element
+// is asked the way Radix asks when it looks for the first focus target, so an editable box, a
+// summary, a frame or a media player counts as a control like a button does.
 function hasOnlyCloseButton(content: HTMLElement): boolean {
   const close = content.querySelector('[data-ds-dialog-close]');
   if (!close) return false;
-  const reachable = content.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]');
-  return Array.from(reachable).every((control) => close.contains(control) || control.tabIndex < 0 || control.hasAttribute('disabled'));
+  return Array.from(content.querySelectorAll<HTMLElement>('*')).every((element) => {
+    if (close.contains(element)) return true;
+    const hiddenInput = element instanceof HTMLInputElement && element.type === 'hidden';
+    if ((element as HTMLElement & { disabled?: boolean }).disabled || element.hidden || hiddenInput) return true;
+    return !(element.tabIndex >= 0);
+  });
 }
 
 export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>) {

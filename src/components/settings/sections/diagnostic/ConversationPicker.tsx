@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Checkbox } from '@/components/ds/checkbox';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Popover } from '@/components/ds/popover';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
-import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
 import { formatRelativeTime } from '@/utils/messageTime';
 import { MAX_ATTACH_CONVERSATIONS } from '@/core/diagnostic/collect';
 import { cn } from '@/lib/utils';
@@ -13,6 +17,94 @@ interface Props {
   selectedIds: string[];
   onChange: (ids: string[]) => void;
   disabled?: boolean;
+}
+
+// The look of a select field, for a trigger that opens a panel.
+const PANEL_TRIGGER = 'flex h-7 w-full items-center justify-between gap-2 rounded-control border border-control-border bg-field px-2 text-ui text-label';
+
+/** One conversation in the panel. memo with primitive props and a stable `onToggle`: a user can
+ *  have hundreds of conversations, and a keystroke in the search box or a tick on one row must
+ *  not draw the rows that stay as they are. */
+const ConversationRow = memo(function ConversationRow({ id, title, checked, current, currentLabel, updatedAt, messageCountText, disabled, onToggle }: {
+  id: string;
+  title: string;
+  checked: boolean;
+  current: boolean;
+  currentLabel: string;
+  updatedAt: number;
+  messageCountText: string;
+  disabled: boolean;
+  onToggle: (id: string) => void;
+}) {
+  const boxId = useId();
+  return (
+    <li className="flex h-7 items-center gap-2 rounded-control px-2 hover:bg-fill-hover">
+      <Checkbox id={boxId} checked={checked} disabled={disabled} onCheckedChange={() => onToggle(id)} />
+      <label htmlFor={boxId} className="min-w-0 flex-1 truncate text-ui text-label">{title}</label>
+      {current && <Tag>{currentLabel}</Tag>}
+      <span className="shrink-0 text-caption text-label-tertiary">{formatRelativeTime(updatedAt)}</span>
+      <span className="w-16 shrink-0 text-right text-caption text-label-tertiary">{messageCountText}</span>
+    </li>
+  );
+});
+
+/** The panel's content. It is a component of its own so that the list is built only while the
+ *  panel is open. */
+function ConversationPanel({ search, onSearchChange, selectedIds, disabled, onToggle }: {
+  search: string;
+  onSearchChange: (value: string) => void;
+  selectedIds: string[];
+  disabled: boolean;
+  onToggle: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  const conversationIndex = useChatStore((s) => s.conversationIndex);
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
+
+  const sorted = useMemo(
+    () => Object.values(conversationIndex).sort((a, b) => b.updatedAt - a.updatedAt),
+    [conversationIndex],
+  );
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter((c) => (c.title || '').toLowerCase().includes(q));
+  }, [sorted, search]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  return (
+    <>
+      <TextField
+        value={search}
+        onChange={(e) => onSearchChange(e.target.value)}
+        placeholder={t.diagnostic.conversationPickerSearchPlaceholder}
+        disabled={disabled}
+      />
+
+      {filtered.length === 0 ? (
+        <div className="py-3 text-center text-caption text-label-tertiary">
+          {t.diagnostic.conversationPickerEmpty}
+        </div>
+      ) : (
+        <ul className="mt-2 max-h-60 overflow-y-auto">
+          {filtered.map((c) => (
+            <ConversationRow
+              key={c.id}
+              id={c.id}
+              title={c.title || t.diagnostic.conversationPickerNoTitle}
+              checked={selectedSet.has(c.id)}
+              current={c.id === activeConversationId}
+              currentLabel={t.diagnostic.conversationPickerCurrentBadge}
+              updatedAt={c.updatedAt}
+              messageCountText={format(t.diagnostic.conversationPickerMessageCount, { count: c.messageCount })}
+              disabled={disabled}
+              onToggle={onToggle}
+            />
+          ))}
+        </ul>
+      )}
+    </>
+  );
 }
 
 /**
@@ -25,41 +117,10 @@ interface Props {
  */
 export default function ConversationPicker({ selectedIds, onChange, disabled }: Props) {
   const { t } = useI18n();
-  const conversationIndex = useChatStore((s) => s.conversationIndex);
-  const activeConversationId = useChatStore((s) => s.activeConversationId);
   const addToast = useToastStore((s) => s.addToast);
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Close on outside-click / Escape while open. Capture phase mirrors ui/Select
-  // so an ancestor that stopPropagation()s on mousedown can't kill it.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown, true);
-    document.addEventListener('keydown', onEsc);
-    return () => {
-      document.removeEventListener('mousedown', onDown, true);
-      document.removeEventListener('keydown', onEsc);
-    };
-  }, [open]);
-
-  const sorted = useMemo(
-    () => Object.values(conversationIndex).sort((a, b) => b.updatedAt - a.updatedAt),
-    [conversationIndex],
-  );
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return sorted;
-    return sorted.filter((c) => (c.title || '').toLowerCase().includes(q));
-  }, [sorted, search]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const toggle = (id: string) => {
@@ -78,98 +139,38 @@ export default function ConversationPicker({ selectedIds, onChange, disabled }: 
     }
     onChange([...selectedIds, id]);
   };
+  // The rows keep one function for as long as the panel is open; it runs the latest `toggle`.
+  const latestToggle = useRef(toggle);
+  useLayoutEffect(() => { latestToggle.current = toggle; });
+  const onToggle = useCallback((id: string) => latestToggle.current(id), []);
 
   const isEmpty = selectedIds.length === 0;
 
   return (
-    <div ref={containerRef} className="relative">
-      {/* Trigger — looks like a select field, shows a selection summary. */}
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          'w-full h-9 px-3 flex items-center justify-between rounded-lg border text-body transition-all',
-          'bg-[var(--abu-bg-muted)] border-[var(--abu-border)]',
-          'focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
-          open && 'ring-2 ring-[var(--abu-clay-ring)] border-[var(--abu-clay)]',
-          disabled && 'opacity-50 cursor-not-allowed',
-        )}
-      >
-        <span
-          className={cn(
-            'truncate',
-            isEmpty ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-text-primary)]',
-          )}
-        >
-          {isEmpty
-            ? t.diagnostic.conversationPickerTriggerPlaceholder
-            : format(t.diagnostic.conversationPickerSelectedCount, { count: selectedIds.length })}
-        </span>
-        <ChevronDown
-          className={cn(
-            'h-3.5 w-3.5 text-[var(--abu-text-muted)] transition-transform shrink-0 ml-2',
-            open && 'rotate-180',
-          )}
-        />
-      </button>
-
-      {/* Dropdown — search + scrollable checkbox list. */}
-      {open && (
-        <div className="absolute z-50 top-full left-0 right-0 mt-1 p-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg">
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t.diagnostic.conversationPickerSearchPlaceholder}
-            disabled={disabled}
-            autoFocus
-            className="h-8 text-minor mb-2"
-          />
-
-          {filtered.length === 0 ? (
-            <div className="py-3 text-center text-caption text-[var(--abu-text-muted)]">
-              {t.diagnostic.conversationPickerEmpty}
-            </div>
-          ) : (
-            <ul className="max-h-60 overflow-y-auto space-y-0.5 pr-1">
-              {filtered.map((c) => (
-                <li key={c.id}>
-                  {/* Plain div + onClick, NOT a <label>: a <label> wrapping the
-                      Checkbox <button> re-dispatches its click back to the
-                      button in macOS WKWebView, double-toggling so the box could
-                      never be unchecked. A single handler here = one toggle.
-                      Keyboard access is via the inner Checkbox <button> (its own
-                      tab stop) — the row div is intentionally NOT focusable, so
-                      it can't double-fire a keydown alongside the button. */}
-                  <div
-                    onClick={() => toggle(c.id)}
-                    className={cn(
-                      'flex items-center gap-2 py-1 px-1.5 rounded-md hover:bg-[var(--abu-bg-hover)] cursor-pointer select-none',
-                      disabled && 'opacity-50 pointer-events-none',
-                    )}
-                  >
-                    <Checkbox checked={selectedSet.has(c.id)} onChange={() => toggle(c.id)} disabled={disabled} />
-                    <span className="flex-1 min-w-0 truncate text-minor text-[var(--abu-text-primary)]">
-                      {c.title || t.diagnostic.conversationPickerNoTitle}
-                    </span>
-                    {c.id === activeConversationId && (
-                      <span className="shrink-0 px-1.5 py-0.5 rounded text-caption bg-[var(--abu-clay)]/15 text-[var(--abu-clay)]">
-                        {t.diagnostic.conversationPickerCurrentBadge}
-                      </span>
-                    )}
-                    <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
-                      {formatRelativeTime(c.updatedAt)}
-                    </span>
-                    <span className="shrink-0 text-caption text-[var(--abu-text-muted)] w-16 text-right">
-                      {format(t.diagnostic.conversationPickerMessageCount, { count: c.messageCount })}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      align="start"
+      className="w-(--radix-popover-trigger-width) p-2"
+      trigger={(
+        // Looks like a select field, shows a selection summary.
+        <Pressable disabled={disabled} aria-expanded={open} className={PANEL_TRIGGER}>
+          <span className={cn('min-w-0 truncate text-left', isEmpty && 'text-label-placeholder')}>
+            {isEmpty
+              ? t.diagnostic.conversationPickerTriggerPlaceholder
+              : format(t.diagnostic.conversationPickerSelectedCount, { count: selectedIds.length })}
+          </span>
+          <Icon icon={AppIcons.selectorChevrons} size="sm" className="text-label-secondary" />
+        </Pressable>
       )}
-    </div>
+    >
+      <ConversationPanel
+        search={search}
+        onSearchChange={setSearch}
+        selectedIds={selectedIds}
+        disabled={Boolean(disabled)}
+        onToggle={onToggle}
+      />
+    </Popover>
   );
 }

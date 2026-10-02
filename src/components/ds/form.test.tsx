@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { useState } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { createRef, useState } from 'react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Checkbox } from './checkbox';
+import { HiddenFileInput } from './file-input';
 import { RadioGroup } from './radio-group';
 import { SegmentedControl } from './segmented-control';
 import { SettingGroup, SettingRow } from './setting-row';
@@ -150,5 +151,23 @@ describe('form controls', () => {
     render(<SettingRow title="Follow system appearance" description="Changes with your computer." htmlFor="follow"><Switch id="follow" checked={false} onCheckedChange={() => undefined} /></SettingRow>);
     expect(screen.getByRole('switch', { name: 'Follow system appearance' })).toBeInTheDocument();
     expect(screen.getByText('Changes with your computer.')).toBeInTheDocument();
+  });
+
+  it('HiddenFileInput is a file input that is never shown or tabbed to, and hands on what it is given', () => {
+    const onChange = vi.fn();
+    const ref = createRef<HTMLInputElement>();
+    const { container } = render(<HiddenFileInput ref={ref} accept="image/*" multiple onChange={onChange} />);
+    const input = container.querySelector('input');
+    if (!input) throw new Error('No input');
+
+    expect(input).toHaveAttribute('type', 'file');
+    expect(input).toHaveClass('hidden');
+    expect(input.tabIndex).toBe(-1);
+    expect(input).toHaveAttribute('accept', 'image/*');
+    expect(input.multiple).toBe(true);
+    expect(ref.current).toBe(input);
+
+    fireEvent.change(input, { target: { files: [new File(['made-up'], 'made-up.png', { type: 'image/png' })] } });
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 });

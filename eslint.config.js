@@ -204,6 +204,11 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/SoulSection*.{ts,tsx}',
   'src/components/settings/sections/ProactivityPicker.tsx',
   'src/components/settings/sections/UsageSection*.{ts,tsx}',
+  'src/components/settings/sections/DiagnosticSection*.{ts,tsx}',
+  'src/components/settings/sections/diagnostic/**/*.{ts,tsx}',
+  'src/components/settings/sections/FeedbackSection*.{ts,tsx}',
+  'src/components/settings/sections/AboutSection*.{ts,tsx}',
+  'src/components/settings/sections/AuthorSection*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

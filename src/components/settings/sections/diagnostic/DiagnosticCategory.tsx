@@ -1,5 +1,8 @@
 import { useState, useMemo } from 'react';
-import { ChevronDown, ChevronRight, RefreshCw, type LucideIcon } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons, type AppIconName } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
 import { cn } from '@/lib/utils';
 import { useI18n, format as i18nFormat } from '@/i18n';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
@@ -9,7 +12,7 @@ import DiagnosticItem from './DiagnosticItem';
 interface Props {
   category: CheckCategory;
   label: string;
-  icon: LucideIcon;
+  icon: AppIconName;
   results: CheckResult[];
 }
 
@@ -24,7 +27,7 @@ function summarize(results: CheckResult[]): { pass: number; warn: number; fail: 
   return { pass, warn, fail, skip };
 }
 
-export default function DiagnosticCategory({ category, label, icon: Icon, results }: Props) {
+export default function DiagnosticCategory({ category, label, icon, results }: Props) {
   const { t } = useI18n();
   const runCategory = useDiagnosticStore((s) => s.runCategory);
   const isChecking = useDiagnosticStore((s) => s.isChecking);
@@ -52,44 +55,38 @@ export default function DiagnosticCategory({ category, label, icon: Icon, result
     });
 
   return (
-    <section className="border border-[var(--abu-border)] rounded-lg overflow-hidden bg-[var(--abu-bg-base)]">
-      <header className="px-4 py-3 flex items-center gap-3 bg-[var(--abu-bg-muted)]">
-        <button
-          type="button"
+    <section className="overflow-hidden rounded-panel border border-separator">
+      <header className="flex items-center gap-3 px-4 py-3">
+        <Pressable
           onClick={() => setCollapsed((v) => !v)}
-          className="flex items-center gap-2 flex-1 text-left"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-control text-left"
           aria-expanded={!collapsed}
         >
-          {collapsed ? (
-            <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-          )}
-          <Icon className="h-4 w-4 text-[var(--abu-text-tertiary)] shrink-0" />
-          <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{label}</h3>
+          <Icon icon={collapsed ? AppIcons.disclose : AppIcons.expand} size="sm" className="text-label-tertiary" />
+          <Icon icon={AppIcons[icon]} className="text-label-secondary" />
+          <h3 className="text-ui font-medium text-label">{label}</h3>
           <span className={cn(
             'text-caption tabular-nums',
-            summary.fail > 0 ? 'text-[var(--abu-danger)]' :
-            summary.warn > 0 ? 'text-[var(--abu-warning)]' :
-            'text-[var(--abu-text-muted)]'
+            summary.fail > 0 ? 'text-danger' :
+            summary.warn > 0 ? 'text-warning' :
+            'text-label-tertiary'
           )}>
             · {summaryText}
           </span>
-        </button>
-        <button
-          type="button"
+        </Pressable>
+        <Button
+          variant="plain"
+          size="sm"
+          icon={AppIcons.retry}
           onClick={() => runCategory(category)}
           disabled={isChecking}
-          className="text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-clay)] transition-colors flex items-center gap-1 px-2 py-1 rounded-md hover:bg-[var(--abu-bg-hover)] disabled:opacity-50"
           title={t.diagnostic.categoryRecheck}
-        >
-          <RefreshCw className="h-3 w-3" />
-        </button>
+        />
       </header>
       {!collapsed && (
-        <ul className="divide-y divide-[var(--abu-border-subtle)]">
+        <ul className="divide-y divide-separator border-t border-separator">
           {results.length === 0 ? (
-            <li className="px-4 py-3 text-minor text-[var(--abu-text-muted)]">—</li>
+            <li className="px-4 py-3 text-ui-sm text-label-tertiary">—</li>
           ) : (
             results.map((r) => <DiagnosticItem key={r.id} result={r} />)
           )}

@@ -1,7 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { RefreshCw, Download, CheckCircle, CircleAlert, RotateCcw, ExternalLink, Copy, Check } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Pressable } from '@/components/ds/pressable';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
 import { getDeviceId } from '@/utils/deviceId';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,9 +18,10 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp, refreshUpdateNotes } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
 import { useI18n } from '@/i18n';
-import { cn } from '@/lib/utils';
 
 type CheckResult = 'idle' | 'just-checked' | 'error';
+
+const TEXT_LINK = 'inline-flex items-center gap-1 rounded-control text-ui-sm text-link hover:underline';
 
 
 export default function AboutSection() {
@@ -96,6 +104,8 @@ export default function AboutSection() {
   }, []);
 
   const handleDownload = useCallback(async () => {
+    // The settings window stays on the page while it fades out; a key press there starts nothing.
+    if (!useSettingsStore.getState().systemSettingsOpen) return;
     setDownloadError(null);
     try {
       await downloadAndInstallUpdate();
@@ -105,6 +115,7 @@ export default function AboutSection() {
   }, []);
 
   const handleRestart = useCallback(async () => {
+    if (!useSettingsStore.getState().systemSettingsOpen) return;
     try {
       await restartApp();
     } catch (err) {
@@ -140,42 +151,38 @@ export default function AboutSection() {
       <SettingsSectionHeader title={t.common.version} description={t.about.versionDescription} />
 
       {/* Version info */}
-      <div className="space-y-1">
-        <div className="flex justify-between items-center py-3 border-b border-[var(--abu-border)]">
-          <span className="text-body text-[var(--abu-text-tertiary)]">{t.updates.currentVersion}</span>
-          <span className="text-body font-semibold text-[var(--abu-text-primary)]">v{APP_VERSION}</span>
-        </div>
-        <div className="flex justify-between items-center py-3 border-b border-[var(--abu-border)]">
-          <span className="text-body text-[var(--abu-text-tertiary)]">{t.about.deviceId}</span>
-          <button
-            type="button"
+      <SettingGroup>
+        <SettingRow title={t.updates.currentVersion}>
+          <span className="text-ui font-medium text-label">v{APP_VERSION}</span>
+        </SettingRow>
+        <SettingRow title={t.about.deviceId}>
+          <Pressable
             onClick={handleCopyDeviceId}
-            className="flex items-center gap-1.5 text-body font-mono text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)] transition-colors"
+            className="inline-flex items-center gap-2 rounded-control font-code text-ui-sm text-label-secondary hover:text-label"
             title={deviceId}
           >
             <span>{deviceId.slice(0, 8)}</span>
-            {idCopied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
-          </button>
-        </div>
-      </div>
+            <Icon icon={idCopied ? AppIcons.done : AppIcons.copy} size="sm" />
+          </Pressable>
+        </SettingRow>
+      </SettingGroup>
 
       {/* Update card */}
       {updateInfo && (
-        <div className="rounded-xl border border-[var(--abu-clay-ring)] bg-[var(--abu-clay-5)] p-4 space-y-3">
+        <div className="space-y-3 rounded-panel border border-separator p-4">
           <div className="flex items-center justify-between">
-            <span className="text-body font-semibold text-[var(--abu-clay)]">{t.updates.newVersionAvailable}</span>
-            <span className="text-body font-mono font-semibold text-[var(--abu-text-primary)]">v{updateInfo.version}</span>
+            <span className="text-ui font-medium text-label">{t.updates.newVersionAvailable}</span>
+            <span className="font-code text-ui font-medium text-label">v{updateInfo.version}</span>
           </div>
           {(updateInfo.releaseNotes || updateInfo.releaseUrl) && (
-            <div className="space-y-1.5">
-              <span className="text-minor font-medium text-[var(--abu-text-tertiary)]">{t.updates.releaseNotes}</span>
+            <div className="space-y-2">
+              <span className="text-ui-sm font-medium text-label-tertiary">{t.updates.releaseNotes}</span>
               {updateInfo.releaseNotes && updateInfo.releaseNotes.trim().length > 0 ? (
-                <div className="text-body text-[var(--abu-text-secondary)] space-y-1.5
-                  [&_h3]:text-minor [&_h3]:font-semibold [&_h3]:text-[var(--abu-text-primary)] [&_h3]:mt-2
-                  [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-0.5
-                  [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-0.5
-                  [&_strong]:font-semibold [&_strong]:text-[var(--abu-text-primary)]
-                  [&_p]:leading-relaxed">
+                <div className="space-y-2 text-ui text-label-secondary
+                  [&_h3]:mt-2 [&_h3]:text-ui-sm [&_h3]:font-medium [&_h3]:text-label
+                  [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5
+                  [&_ol]:list-decimal [&_ol]:space-y-1 [&_ol]:pl-5
+                  [&_strong]:font-medium [&_strong]:text-label">
                   <ReactMarkdown
                     remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
                     components={{
@@ -186,7 +193,7 @@ export default function AboutSection() {
                             e.preventDefault();
                             if (href) void handleOpenLink(href);
                           }}
-                          className="text-[var(--abu-clay)] hover:underline cursor-pointer"
+                          className="cursor-pointer text-link hover:underline"
                         >
                           {children}
                         </a>
@@ -198,28 +205,25 @@ export default function AboutSection() {
                 </div>
               ) : null}
               {updateInfo.releaseUrl && (
-                <button
-                  onClick={() => void handleOpenLink(updateInfo.releaseUrl)}
-                  className="flex items-center gap-1.5 text-minor text-[var(--abu-clay)] hover:underline"
-                >
-                  <ExternalLink className="h-3 w-3" />
+                <Pressable onClick={() => void handleOpenLink(updateInfo.releaseUrl)} className={TEXT_LINK}>
+                  <Icon icon={AppIcons.openExternal} size="sm" />
                   {t.updates.viewOnGitHub}
-                </button>
+                </Pressable>
               )}
             </div>
           )}
 
           {/* Download progress bar */}
           {downloadProgress && (
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-minor text-[var(--abu-text-tertiary)]">
+            <div className="space-y-2">
+              <div className="flex justify-between text-ui-sm text-label-secondary">
                 <span>{progressStatus}</span>
                 {progressPresentation?.percentLabel && (
                   <span className="tabular-nums">{progressPresentation.percentLabel}%</span>
                 )}
               </div>
               <div
-                className="w-full h-2 rounded-full bg-[var(--abu-bg-active)] overflow-hidden"
+                className="h-2 w-full overflow-hidden rounded-full bg-fill"
                 role="progressbar"
                 aria-label={progressStatus}
                 aria-valuemin={0}
@@ -227,13 +231,13 @@ export default function AboutSection() {
                 aria-valuenow={progressPresentation?.percent ?? undefined}
               >
                 {progressPresentation?.indeterminate ? (
-                  <div className="update-progress-indeterminate h-full rounded-full bg-[var(--abu-clay)]" />
+                  <div className="update-progress-indeterminate h-full rounded-full bg-emphasis" />
                 ) : (
                   // Snap to the real value instead of easing behind frequent
                   // updater events. The one-decimal label keeps slow downloads
                   // visibly alive even while the fill advances by tiny amounts.
                   <div
-                    className="h-full rounded-full bg-[var(--abu-clay)]"
+                    className="h-full rounded-full bg-emphasis"
                     style={{ width: `${progressPresentation?.percent ?? 0}%` }}
                   />
                 )}
@@ -243,87 +247,73 @@ export default function AboutSection() {
 
           {/* Download error */}
           {downloadError && (
-            <div className="flex items-center gap-2 text-body text-[var(--abu-danger)]">
-              <CircleAlert className="h-4 w-4 shrink-0" />
-              <span className="flex-1">{t.updates.downloadFailed}</span>
-              <button
-                onClick={handleDownload}
-                className="text-minor font-medium text-[var(--abu-clay)] hover:underline"
-              >
-                {t.updates.retry}
-              </button>
-            </div>
+            <InlineMessage
+              tone="danger"
+              action={<Button variant="plain" size="sm" onClick={handleDownload}>{t.updates.retry}</Button>}
+            >
+              {t.updates.downloadFailed}
+            </InlineMessage>
           )}
 
-          {/* Action buttons */}
+          {/* Action buttons: one at a time, so the page never shows two filled buttons. */}
           {updateInstalling ? (
-            <button
-              onClick={handleRestart}
-              className="flex items-center gap-2 w-full justify-center py-2 px-4 rounded-lg bg-[var(--abu-success-solid)] text-white text-body font-medium hover:opacity-90 transition-colors"
-            >
-              <RotateCcw className="h-4 w-4" />
-              {t.updates.restartToInstall}
-            </button>
+            <div className="flex justify-end">
+              <Button variant="primary" icon={AppIcons.restart} onClick={handleRestart}>
+                {t.updates.restartToInstall}
+              </Button>
+            </div>
           ) : !downloadProgress && !downloadError && (
-            <button
-              onClick={handleDownload}
-              className="flex items-center gap-2 w-full justify-center py-2 px-4 rounded-lg bg-[var(--abu-clay)] text-white text-body font-medium hover:bg-[var(--abu-clay-hover)] transition-colors"
-            >
-              <Download className="h-4 w-4" />
-              {t.updates.downloadUpdate}
-            </button>
+            <div className="flex justify-end">
+              <Button variant="primary" icon={AppIcons.download} onClick={handleDownload}>
+                {t.updates.downloadUpdate}
+              </Button>
+            </div>
           )}
         </div>
       )}
 
-      {/* Check for updates button */}
-      <div className="space-y-2">
-        <button
+      {/* Check for updates: the button, and beside it what the check is doing or found. */}
+      <div className="flex items-start gap-3">
+        <Button
+          variant="secondary"
+          icon={AppIcons.retry}
           onClick={handleCheckUpdate}
           disabled={updateChecking || !!downloadProgress}
-          className={cn(
-            'flex items-center gap-2 w-full justify-center py-2.5 px-4 rounded-lg border text-body font-medium transition-all duration-200',
-            updateChecking || downloadProgress
-              ? 'border-[var(--abu-border)] text-[var(--abu-text-muted)] cursor-not-allowed'
-              : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] hover:border-[var(--abu-border-hover)] active:scale-[0.98]'
-          )}
         >
-          <RefreshCw className={cn('h-4 w-4 transition-transform', updateChecking && 'animate-spin')} />
-          {updateChecking ? t.updates.checking : t.updates.checkForUpdates}
-        </button>
+          {t.updates.checkForUpdates}
+        </Button>
 
-        {/* Status caption under the button — flat lookup on captionState (see
-            its derivation above; 'unknown' deliberately renders nothing). */}
-        {captionState === 'unsupported' && (
-          <div className="flex flex-col items-center gap-1 text-minor text-[var(--abu-text-muted)]">
-            <div className="flex items-center justify-center gap-1.5">
-              <CircleAlert className="h-3.5 w-3.5 shrink-0" />
-              <span className="text-center">{t.updates.unsupportedBuild}</span>
+        {/* Status caption beside the button — flat lookup on captionState (see
+            its derivation above; 'unknown' deliberately renders nothing). The box keeps the
+            button's height, so the button does not move when the words change. */}
+        <div className="flex min-h-7 min-w-0 flex-1 items-center text-ui-sm text-label-secondary">
+          {updateChecking && <Spinner size="sm" label={t.updates.checking} />}
+          {captionState === 'unsupported' && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <Icon icon={AppIcons.info} size="sm" className="text-label-tertiary" />
+              <span>{t.updates.unsupportedBuild}</span>
+              <Pressable onClick={() => void handleOpenLink(OFFICIAL_WEBSITE_URL)} className={TEXT_LINK}>
+                <Icon icon={AppIcons.openExternal} size="sm" />
+                {t.updates.getFromWebsite}
+              </Pressable>
             </div>
-            <button
-              onClick={() => void handleOpenLink(OFFICIAL_WEBSITE_URL)}
-              className="flex items-center gap-1 text-[var(--abu-clay)] hover:underline"
-            >
-              <ExternalLink className="h-3 w-3" />
-              {t.updates.getFromWebsite}
-            </button>
-          </div>
-        )}
-        {captionState === 'error' && (
-          <div className="flex items-center justify-center gap-1.5 text-minor transition-all duration-300 text-[var(--abu-danger)]">
-            <CircleAlert className="h-3.5 w-3.5" />
-            <span>{t.updates.checkFailed}</span>
-          </div>
-        )}
-        {captionState === 'up-to-date' && (
-          <div className="flex items-center justify-center gap-1.5 text-minor transition-all duration-300 text-[var(--abu-text-muted)]">
-            <CheckCircle className="h-3.5 w-3.5 text-[var(--abu-success)]" />
-            <span>{t.updates.upToDate}</span>
-            {checkResult === 'just-checked' && (
-              <span className="text-[var(--abu-text-muted)]">· {t.updates.justChecked}</span>
-            )}
-          </div>
-        )}
+          )}
+          {captionState === 'error' && (
+            <div className="flex items-center gap-2 text-danger">
+              <StatusIcon tone="danger" size="sm" />
+              <span>{t.updates.checkFailed}</span>
+            </div>
+          )}
+          {captionState === 'up-to-date' && (
+            <div className="flex items-center gap-2">
+              <StatusIcon tone="success" size="sm" />
+              <span>{t.updates.upToDate}</span>
+              {checkResult === 'just-checked' && (
+                <span>· {t.updates.justChecked}</span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
     </div>

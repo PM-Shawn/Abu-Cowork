@@ -1,27 +1,29 @@
-import { CheckCircle2, XCircle, AlertTriangle, MinusCircle, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { StatusIcon } from '@/components/ds/status-icon';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useCustomizeStore } from '@/stores/customizeStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
-import type { CheckResult, SuggestedAction } from '@/core/diagnostic/types';
+import type { CheckResult, CheckStatus, SuggestedAction } from '@/core/diagnostic/types';
 
-const STATUS_ICON = {
-  passed: CheckCircle2,
-  failed: XCircle,
-  warning: AlertTriangle,
-  skipped: MinusCircle,
-  checking: Loader2,
-} as const;
+const STATUS_TONE = { passed: 'success', failed: 'danger', warning: 'warning' } as const;
 
-const STATUS_COLOR = {
-  passed: 'text-[var(--abu-success)]',
-  failed: 'text-[var(--abu-danger)]',
-  warning: 'text-[var(--abu-warning)]',
-  skipped: 'text-[var(--abu-text-muted)]',
-  checking: 'text-[var(--abu-clay)]',
-} as const;
+// A check that is running shows a still icon: the summary at the top of the page holds the one
+// indicator that turns.
+function StatusMark({ status }: { status: CheckStatus }) {
+  return (
+    <span aria-label={status} className="flex h-5 shrink-0 items-center">
+      {status === 'checking' && <Icon icon={AppIcons.loading} className="text-label-secondary" />}
+      {status === 'skipped' && <Icon icon={AppIcons.notChecked} className="text-label-tertiary" />}
+      {status !== 'checking' && status !== 'skipped' && <StatusIcon tone={STATUS_TONE[status]} />}
+    </span>
+  );
+}
 
 function ItemActions({ result }: { result: CheckResult }) {
   const { t } = useI18n();
@@ -49,32 +51,31 @@ function ItemActions({ result }: { result: CheckResult }) {
   };
 
   return (
-    <div className="flex items-center gap-1 shrink-0">
+    <div className="flex shrink-0 items-center gap-1">
       {result.suggestedAction && (
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={AppIcons.openExternal}
           onClick={() => onAction(result.suggestedAction!)}
-          className="text-caption px-2 py-1 rounded-md text-[var(--abu-clay)] hover:bg-[var(--abu-clay-bg)] transition-colors flex items-center gap-1"
           title={result.suggestedAction.label}
         >
-          <ExternalLink className="h-3 w-3" />
           {result.suggestedAction.label}
-        </button>
+        </Button>
       )}
-      <button
+      <IconButton
+        size="sm"
+        icon={AppIcons.retry}
+        label={t.diagnostic.actionRecheck}
         onClick={() => runItem(result.id)}
         disabled={reRunning}
-        className="p-1 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors disabled:opacity-50"
-        title={t.diagnostic.actionRecheck}
-      >
-        <RefreshCw className={cn('h-3 w-3', reRunning && 'animate-spin')} />
-      </button>
-      <button
+      />
+      <IconButton
+        size="sm"
+        icon={copied ? AppIcons.done : AppIcons.copy}
+        label={t.diagnostic.actionCopyError}
         onClick={onCopyError}
-        className="p-1 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-        title={t.diagnostic.actionCopyError}
-      >
-        {copied ? <Check className="h-3 w-3 text-[var(--abu-success)]" /> : <Copy className="h-3 w-3" />}
-      </button>
+      />
     </div>
   );
 }
@@ -84,31 +85,27 @@ export default function DiagnosticItem({ result }: { result: CheckResult }) {
   const reRunning = useDiagnosticStore((s) => Boolean(s.reRunning[result.id]));
   const [detailExpanded, setDetailExpanded] = useState(false);
   const status = reRunning ? 'checking' : result.status;
-  const Icon = STATUS_ICON[status];
   const showActions = status === 'failed' || status === 'warning';
   const hasDetail = Boolean(
     result.errorDetail && result.errorDetail.trim() && result.errorDetail !== result.errorMessage
   );
 
   return (
-    <li className="px-4 py-2.5 flex items-start gap-3 hover:bg-[var(--abu-bg-hover)] transition-colors group">
-      <Icon
-        className={cn('h-4 w-4 shrink-0 mt-0.5', STATUS_COLOR[status], status === 'checking' && 'animate-spin')}
-        aria-label={status}
-      />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-baseline gap-2 flex-wrap">
-          <span className="text-body text-[var(--abu-text-primary)]">{result.name}</span>
+    <li className="group flex items-start gap-3 px-4 py-2 transition-colors duration-fast hover:bg-fill-hover">
+      <StatusMark status={status} />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="text-ui text-label">{result.name}</span>
           {result.metric && (
-            <span className="text-caption text-[var(--abu-text-muted)] tabular-nums">{result.metric}</span>
+            <span className="text-caption tabular-nums text-label-tertiary">{result.metric}</span>
           )}
           {/* Inline friendly error — same row as title to mirror the passed-state
-              "name + metric" rhythm. Color shift (primary → red/amber) carries
-              the visual segmentation; no explicit separator needed. */}
+              "name + metric" rhythm. The status mark at the start of the row says
+              which kind it is; the color repeats it. */}
           {(status === 'failed' || status === 'warning') && result.errorMessage && (
             <span className={cn(
-              'text-minor break-words',
-              status === 'failed' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-warning)]'
+              'break-words text-ui-sm',
+              status === 'failed' ? 'text-danger' : 'text-warning'
             )}>
               {result.errorMessage}
             </span>
@@ -117,19 +114,16 @@ export default function DiagnosticItem({ result }: { result: CheckResult }) {
         {/* Folded raw error — exits for tech-savvy users without spamming the casual flow */}
         {hasDetail && (status === 'failed' || status === 'warning') && (
           <>
-            <button
-              type="button"
+            <Pressable
               onClick={() => setDetailExpanded((v) => !v)}
-              className="mt-1 inline-flex items-center gap-1 text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] transition-colors"
+              aria-expanded={detailExpanded}
+              className="mt-1 inline-flex items-center gap-1 rounded-control text-caption text-label-tertiary hover:text-label-secondary"
             >
-              {detailExpanded
-                ? <ChevronDown className="h-3 w-3" />
-                : <ChevronRight className="h-3 w-3" />
-              }
+              <Icon icon={detailExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
               {detailExpanded ? t.diagnostic.detailHide : t.diagnostic.detailShow}
-            </button>
+            </Pressable>
             {detailExpanded && (
-              <pre className="mt-1 px-2 py-1.5 rounded text-caption font-mono text-[var(--abu-text-tertiary)] bg-[var(--abu-bg-muted)] whitespace-pre-wrap break-all max-h-48 overflow-auto">
+              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-control bg-fill p-2 font-code text-caption text-label-secondary">
                 {result.errorDetail}
               </pre>
             )}
@@ -137,7 +131,7 @@ export default function DiagnosticItem({ result }: { result: CheckResult }) {
         )}
       </div>
       {showActions && (
-        <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <div className="opacity-0 transition-opacity duration-fast group-hover:opacity-100 group-focus-within:opacity-100">
           <ItemActions result={result} />
         </div>
       )}

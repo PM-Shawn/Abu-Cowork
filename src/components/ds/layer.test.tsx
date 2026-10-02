@@ -3,28 +3,50 @@
 import { useState, type ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LayerProvider, LayerScope } from './layer';
 import { useLayer, useLayerContainer, useOpenState, type LayerKind } from './layer-context';
 
-function FakeLayer({ name, kind, dirty = false, defaultOpen = false, children }: {
+interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
+
+function FakeLayer({ name, kind, dirty = false, defaultOpen = false, onOpenChange, children }: {
   name: string;
   kind: LayerKind;
   dirty?: boolean;
   defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   children?: ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
-  const { id } = useLayer(kind, open, setOpen, kind === 'dialog'
-    ? { isDirty: () => dirty, confirmDiscard: (onDiscard) => setPendingDiscard(() => onDiscard) }
+  const [open, setOpenState] = useState(defaultOpen);
+  const setOpen = (next: boolean) => {
+    onOpenChange?.(next);
+    setOpenState(next);
+  };
+  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
+  const { id, held } = useLayer(kind, open, setOpen, kind === 'dialog'
+    ? {
+        isDirty: () => dirty,
+        confirmDiscard: (onDiscard, onKeep) => {
+          const pending = { onDiscard, onKeep };
+          setPendingDiscard(pending);
+          return () => setPendingDiscard((current) => (current === pending ? null : current));
+        },
+      }
     : undefined);
   return (
     <div>
       <button type="button" onClick={() => setOpen(true)}>{`open ${name}`}</button>
-      {open && <div data-testid={name}><LayerScope id={id}>{children}</LayerScope></div>}
+      {open && !held && (
+        <div data-testid={name}>
+          <button type="button" onClick={() => setOpen(false)}>{`close ${name}`}</button>
+          <LayerScope id={id}>{children}</LayerScope>
+        </div>
+      )}
       {pendingDiscard && (
-        <button type="button" onClick={() => { setPendingDiscard(null); pendingDiscard(); }}>{`discard ${name}`}</button>
+        <>
+          <button type="button" onClick={() => { setPendingDiscard(null); pendingDiscard.onDiscard(); }}>{`discard ${name}`}</button>
+          <button type="button" onClick={() => { setPendingDiscard(null); pendingDiscard.onKeep?.(); }}>{`keep ${name}`}</button>
+        </>
       )}
     </div>
   );
@@ -178,6 +200,179 @@ describe('LayerProvider', () => {
     await user.click(screen.getByText('discard draft'));
     expect(screen.queryByTestId('draft')).toBeNull();
     expect(screen.getByTestId('other')).toBeInTheDocument();
+  });
+
+  describe('a new dialog facing a dialog with unsaved input', () => {
+    function DraftAndOther({ onOther, withOther = true }: { onOther: (open: boolean) => void; withOther?: boolean }) {
+      return (
+        <LayerProvider>
+          <FakeLayer name="draft" kind="dialog" dirty />
+          {withOther && <FakeLayer name="other" kind="dialog" onOpenChange={onOther} />}
+        </LayerProvider>
+      );
+    }
+
+    it('is held: not shown, and not told to close, while the user decides', async () => {
+      const user = userEvent.setup();
+      const onOther = vi.fn();
+      render(<DraftAndOther onOther={onOther} />);
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open other'));
+
+      expect(screen.getByText('discard draft')).toBeInTheDocument();
+      expect(screen.getByTestId('draft')).toBeInTheDocument();
+      expect(screen.queryByTestId('other')).toBeNull();
+      expect(onOther.mock.calls).toEqual([[true]]);
+    });
+
+    it('opens after Discard, without ever being told to close', async () => {
+      const user = userEvent.setup();
+      const onOther = vi.fn();
+      render(<DraftAndOther onOther={onOther} />);
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open other'));
+      await user.click(screen.getByText('discard draft'));
+
+      expect(screen.queryByTestId('draft')).toBeNull();
+      expect(screen.getByTestId('other')).toBeInTheDocument();
+      expect(onOther.mock.calls).toEqual([[true]]);
+    });
+
+    it('is closed, once, when the user keeps editing', async () => {
+      const user = userEvent.setup();
+      const onOther = vi.fn();
+      render(<DraftAndOther onOther={onOther} />);
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open other'));
+      await user.click(screen.getByText('keep draft'));
+
+      expect(screen.getByTestId('draft')).toBeInTheDocument();
+      expect(screen.queryByTestId('other')).toBeNull();
+      expect(onOther.mock.calls).toEqual([[true], [false]]);
+      // It was closed, not left hidden: it opens normally the next time.
+      await user.click(screen.getByText('open other'));
+      expect(screen.getByText('discard draft')).toBeInTheDocument();
+    });
+
+    it('opens when the dialog it waits for closes by itself, and the question goes', async () => {
+      const user = userEvent.setup();
+      const onOther = vi.fn();
+      render(<DraftAndOther onOther={onOther} />);
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open other'));
+      await user.click(screen.getByText('close draft'));
+
+      expect(screen.queryByTestId('draft')).toBeNull();
+      expect(screen.queryByText('discard draft')).toBeNull();
+      expect(screen.getByTestId('other')).toBeInTheDocument();
+      expect(onOther.mock.calls).toEqual([[true]]);
+    });
+
+    it('withdraws the question when the held dialog goes away', async () => {
+      const user = userEvent.setup();
+      const onOther = vi.fn();
+      const view = render(<DraftAndOther onOther={onOther} />);
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open other'));
+      expect(screen.getByText('discard draft')).toBeInTheDocument();
+
+      view.rerender(<DraftAndOther onOther={onOther} withOther={false} />);
+
+      expect(screen.queryByText('discard draft')).toBeNull();
+      expect(screen.getByTestId('draft')).toBeInTheDocument();
+    });
+
+    it('closes an earlier held dialog when another one arrives, and holds the new one', async () => {
+      const user = userEvent.setup();
+      const onFirst = vi.fn();
+      const onSecond = vi.fn();
+      render(
+        <LayerProvider>
+          <FakeLayer name="draft" kind="dialog" dirty />
+          <FakeLayer name="first" kind="dialog" onOpenChange={onFirst} />
+          <FakeLayer name="second" kind="dialog" onOpenChange={onSecond} />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open draft'));
+      await user.click(screen.getByText('open first'));
+      await user.click(screen.getByText('open second'));
+
+      expect(onFirst.mock.calls).toEqual([[true], [false]]);
+      expect(onSecond.mock.calls).toEqual([[true]]);
+      expect(screen.queryByTestId('first')).toBeNull();
+      expect(screen.queryByTestId('second')).toBeNull();
+
+      await user.click(screen.getByText('discard draft'));
+      expect(screen.queryByTestId('draft')).toBeNull();
+      expect(screen.queryByTestId('first')).toBeNull();
+      expect(screen.getByTestId('second')).toBeInTheDocument();
+      expect(onSecond.mock.calls).toEqual([[true]]);
+    });
+
+    describe('when the unsaved input is in a dialog opened inside another', () => {
+      function NestedDraftAndOther({ onOuter, onOther }: { onOuter: (open: boolean) => void; onOther: (open: boolean) => void }) {
+        return (
+          <LayerProvider>
+            <FakeLayer name="outer" kind="dialog" onOpenChange={onOuter}>
+              <FakeLayer name="form" kind="dialog" dirty />
+            </FakeLayer>
+            <FakeLayer name="other" kind="dialog" onOpenChange={onOther} />
+          </LayerProvider>
+        );
+      }
+
+      it('asks on the inner dialog and leaves the outer one open', async () => {
+        const user = userEvent.setup();
+        const onOuter = vi.fn();
+        const onOther = vi.fn();
+        render(<NestedDraftAndOther onOuter={onOuter} onOther={onOther} />);
+        await user.click(screen.getByText('open outer'));
+        await user.click(screen.getByText('open form'));
+        await user.click(screen.getByText('open other'));
+
+        expect(screen.getByText('discard form')).toBeInTheDocument();
+        expect(screen.queryByText('discard outer')).toBeNull();
+        expect(screen.getByTestId('outer')).toBeInTheDocument();
+        expect(screen.getByTestId('form')).toBeInTheDocument();
+        expect(screen.queryByTestId('other')).toBeNull();
+        expect(onOuter.mock.calls).toEqual([[true]]);
+        expect(onOther.mock.calls).toEqual([[true]]);
+      });
+
+      it('closes the outer dialog on Discard and shows the new one, once', async () => {
+        const user = userEvent.setup();
+        const onOuter = vi.fn();
+        const onOther = vi.fn();
+        render(<NestedDraftAndOther onOuter={onOuter} onOther={onOther} />);
+        await user.click(screen.getByText('open outer'));
+        await user.click(screen.getByText('open form'));
+        await user.click(screen.getByText('open other'));
+        await user.click(screen.getByText('discard form'));
+
+        expect(screen.queryByTestId('outer')).toBeNull();
+        expect(screen.queryByTestId('form')).toBeNull();
+        expect(screen.getByTestId('other')).toBeInTheDocument();
+        expect(screen.queryByText('discard form')).toBeNull();
+        expect(onOuter.mock.calls).toEqual([[true], [false]]);
+        expect(onOther.mock.calls).toEqual([[true]]);
+      });
+
+      it('keeps both dialogs and closes the new one when the user keeps editing', async () => {
+        const user = userEvent.setup();
+        const onOuter = vi.fn();
+        const onOther = vi.fn();
+        render(<NestedDraftAndOther onOuter={onOuter} onOther={onOther} />);
+        await user.click(screen.getByText('open outer'));
+        await user.click(screen.getByText('open form'));
+        await user.click(screen.getByText('open other'));
+        await user.click(screen.getByText('keep form'));
+
+        expect(screen.getByTestId('outer')).toBeInTheDocument();
+        expect(screen.getByTestId('form')).toBeInTheDocument();
+        expect(onOuter.mock.calls).toEqual([[true]]);
+        expect(onOther.mock.calls).toEqual([[true], [false]]);
+      });
+    });
   });
 
   it('portals into the container it was given', () => {

@@ -437,23 +437,60 @@ describe('CapabilitySetupDialog', () => {
       expect(second.state.settled).toBe(false);
     });
 
-    it('answers no without showing when a dialog with unsaved input is open, and never reappears', async () => {
-      useOtherDialog.setState({ open: true, dirty: true });
-      renderWindow(<OtherDialog />);
-      await screen.findByRole('dialog', { name: 'Other dialog' });
+    describe('a request that arrives while a dialog holds unsaved input', () => {
+      async function arriveOverUnsavedInput() {
+        useOtherDialog.setState({ open: true, dirty: true });
+        renderWindow(<OtherDialog />);
+        await screen.findByRole('dialog', { name: 'Other dialog' });
+        let first!: ReturnType<typeof requestFromTask>;
+        let second!: ReturnType<typeof requestFromTask>;
+        act(() => {
+          first = requestFromTask('chrome', 'tool-first');
+          second = requestFromTask('computer', 'tool-second');
+        });
+        expect(await screen.findByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+        return { first, second };
+      }
 
-      let request!: ReturnType<typeof requestFromTask>;
-      act(() => { request = requestFromTask(); });
+      it('waits, unanswered and not shown, while the user decides', async () => {
+        const { first, second } = await arriveOverUnsavedInput();
+        await Promise.resolve();
 
-      await expect(request.promise).resolves.toBe(false);
-      expect(setupWindow()).not.toBeInTheDocument();
-      expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+        expect(setupWindow()).not.toBeInTheDocument();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(first.state.settled).toBe(false);
+        expect(second.state.settled).toBe(false);
+        expect(getPendingCapabilitySetup()?.id).toContain('tool-first');
+      });
 
-      fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
-      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Other dialog' })).not.toBeInTheDocument());
-      expect(setupWindow()).not.toBeInTheDocument();
-      expect(resolveCapabilitySetup).toHaveBeenCalledTimes(1);
-      expect(resolveCapabilitySetup).toHaveBeenCalledWith(expect.any(String), false);
+      it('shows its window after Discard, still unanswered', async () => {
+        const { first, second } = await arriveOverUnsavedInput();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+        expect(await screen.findByRole('dialog', { name: 'Connect My Chrome' })).toBeInTheDocument();
+        expect(screen.queryByRole('dialog', { name: 'Other dialog' })).not.toBeInTheDocument();
+        expect(useOtherDialog.getState().open).toBe(false);
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(first.state.settled).toBe(false);
+        expect(second.state.settled).toBe(false);
+      });
+
+      it('is refused by Keep editing, one request per decision', async () => {
+        const { first, second } = await arriveOverUnsavedInput();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+
+        await expect(first.promise).resolves.toBe(false);
+        expect(resolveCapabilitySetup).toHaveBeenCalledTimes(1);
+        expect(resolveCapabilitySetup).toHaveBeenCalledWith(expect.stringContaining('tool-first'), false);
+        expect(useOtherDialog.getState().open).toBe(true);
+        // The next waiting request asks the same question; it is not refused along with the first.
+        expect(await screen.findByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+        expect(setupWindow()).not.toBeInTheDocument();
+        expect(second.state.settled).toBe(false);
+        expect(getPendingCapabilitySetup()?.id).toContain('tool-second');
+      });
     });
 
     it('closes the settings window when a task asks while it is open', async () => {

@@ -10,6 +10,7 @@ import { InDialogContext, useLayer, useLayerContainer, useOpenState } from './la
 import { DIALOG_BOX, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
 
 const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
+interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
 // Hooks for tests and for the window-drag guard; nothing else reaches the dialog box.
 export type DataAttributes = { [key: `data-${string}`]: string | undefined };
 // `top` keeps the top edge still while the content grows or shrinks (search as you type).
@@ -54,23 +55,39 @@ export function Dialog({
   const { t } = useI18n();
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
+  // The discard question that is on screen. The ref is what the handlers read: Discard and
+  // the question's own close arrive in one event, and only the first of them may answer.
+  const [discardAsked, setDiscardAsked] = useState(false);
+  const pendingDiscard = useRef<PendingDiscard | null>(null);
   const dirtyRef = useRef(dirty);
   useLayoutEffect(() => { dirtyRef.current = dirty; });
 
-  const askToDiscard = (onDiscard: () => void) => setPendingDiscard(() => onDiscard);
+  const takePendingDiscard = () => {
+    const pending = pendingDiscard.current;
+    pendingDiscard.current = null;
+    setDiscardAsked(false);
+    return pending;
+  };
+  // Returns a function that takes this question back without answering it.
+  const askToDiscard = (onDiscard: () => void, onKeep?: () => void) => {
+    const pending = { onDiscard, onKeep };
+    pendingDiscard.current = pending;
+    setDiscardAsked(true);
+    return () => { if (pendingDiscard.current === pending) takePendingDiscard(); };
+  };
   const requestClose = () => {
     if (dirtyRef.current) askToDiscard(() => setOpen(false));
     else setOpen(false);
   };
   const discard = () => {
-    const onDiscard = pendingDiscard;
-    setPendingDiscard(null);
-    if (!onDiscard) throw new Error('No discard is pending');
-    onDiscard();
+    const pending = takePendingDiscard();
+    if (!pending) throw new Error('No discard is pending');
+    pending.onDiscard();
   };
+  // Keep editing, Escape, or anything else that closes the question without discarding.
+  const keep = () => { takePendingDiscard()?.onKeep?.(); };
 
-  const { id, onCloseAutoFocus } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  const { id, onCloseAutoFocus, held } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
 
   // Radix gives focus back only to a Dialog.Trigger. A dialog opened by code (search,
   // useConfirm(), the discard question) has none, so it would leave focus on the page
@@ -94,7 +111,8 @@ export function Dialog({
 
   return (
     <>
-      <DialogPrimitive.Root open={isOpen} onOpenChange={(next) => (next ? setOpen(true) : requestClose())}>
+      {/* Held by the layer registry: open as far as the owner knows, not on the page yet. */}
+      <DialogPrimitive.Root open={isOpen && !held} onOpenChange={(next) => (next ? setOpen(true) : requestClose())}>
         {trigger && <DialogPrimitive.Trigger asChild>{trigger}</DialogPrimitive.Trigger>}
         <DialogPrimitive.Portal container={container}>
           {/* eslint-disable-next-line no-restricted-syntax -- Dialog owns the app's only scrim */}
@@ -152,7 +170,7 @@ export function Dialog({
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
-      <AlertDialogPrimitive.Root open={pendingDiscard !== null} onOpenChange={(next) => { if (!next) setPendingDiscard(null); }}>
+      <AlertDialogPrimitive.Root open={discardAsked} onOpenChange={(next) => { if (!next) keep(); }}>
         <AlertDialogPrimitive.Portal container={container}>
           <AlertDialogPrimitive.Content
             data-ds-layer

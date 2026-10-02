@@ -42,7 +42,7 @@ function RenameDialog({ dirty = false }: { dirty?: boolean }) {
   );
 }
 
-function TwoDialogs({ firstDirty = false }: { firstDirty?: boolean }) {
+function TwoDialogs({ firstDirty = false, onSecondChange }: { firstDirty?: boolean; onSecondChange?: (open: boolean) => void }) {
   const [first, setFirst] = useState(false);
   const [second, setSecond] = useState(false);
   return (
@@ -51,13 +51,56 @@ function TwoDialogs({ firstDirty = false }: { firstDirty?: boolean }) {
       <Dialog open={first} onOpenChange={setFirst} title="First" dirty={firstDirty}>
         <Button onClick={() => setSecond(true)}>Open second</Button>
       </Dialog>
-      <Dialog open={second} onOpenChange={setSecond} title="Second" />
+      <Dialog open={second} onOpenChange={(next) => { onSecondChange?.(next); setSecond(next); }} title="Second" />
+    </>
+  );
+}
+
+// A settings-like dialog with a form dialog inside it, and a third dialog that arrives from outside.
+function NestedFormAndNewcomer({ onOuterChange, onNewcomerChange }: {
+  onOuterChange: (open: boolean) => void;
+  onNewcomerChange: (open: boolean) => void;
+}) {
+  const [outer, setOuter] = useState(true);
+  const [form, setForm] = useState(true);
+  const [newcomer, setNewcomer] = useState(false);
+  return (
+    <>
+      <Dialog open={outer} onOpenChange={(next) => { onOuterChange(next); setOuter(next); }} title="Outer">
+        <Dialog open={form} onOpenChange={setForm} title="Form" dirty>
+          <Button onClick={() => setNewcomer(true)}>Open newcomer</Button>
+        </Dialog>
+      </Dialog>
+      <Dialog open={newcomer} onOpenChange={(next) => { onNewcomerChange(next); setNewcomer(next); }} title="Newcomer" />
     </>
   );
 }
 
 describe('Dialog', () => {
   afterEach(() => { vi.useRealTimers(); });
+
+  it('asks about unsaved input in a dialog opened inside the open one before a new dialog replaces both', async () => {
+    const user = userEvent.setup();
+    const onOuterChange = vi.fn();
+    const onNewcomerChange = vi.fn();
+    render(<NestedFormAndNewcomer onOuterChange={onOuterChange} onNewcomerChange={onNewcomerChange} />, { wrapper: DesignSystemProvider });
+    await user.click(await screen.findByRole('button', { name: 'Open newcomer' }));
+
+    expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+    // Both dialogs are still there; the question hides them from screen readers.
+    expect(screen.getAllByRole('dialog', { hidden: true })).toHaveLength(2);
+    expect(screen.getByText('Outer')).toBeInTheDocument();
+    expect(screen.getByText('Form')).toBeInTheDocument();
+    expect(screen.queryByText('Newcomer')).toBeNull();
+    expect(onOuterChange).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(screen.getByRole('dialog', { name: 'Newcomer' })).toBeInTheDocument();
+    expect(screen.queryByText('Outer')).toBeNull();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(onOuterChange.mock.calls).toEqual([[false]]);
+    expect(onNewcomerChange).not.toHaveBeenCalled();
+  });
 
   it('opens from its trigger, closes on Escape, and returns focus to the trigger', async () => {
     const user = userEvent.setup();
@@ -109,6 +152,36 @@ describe('Dialog', () => {
     expect(screen.getAllByRole('dialog', { hidden: true })).toHaveLength(1);
     expect(screen.getByRole('dialog', { name: 'Second' })).toBeInTheDocument();
     expect(screen.queryByText('First')).toBeNull();
+  });
+
+  // The waiting dialog is held, not closed: closing it is the user's decision.
+  it('does not tell the waiting dialog to close before the user decides, nor when they discard', async () => {
+    const user = userEvent.setup();
+    const onSecondChange = vi.fn();
+    render(<TwoDialogs firstDirty onSecondChange={onSecondChange} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Open first' }));
+    await user.click(screen.getByRole('button', { name: 'Open second' }));
+    expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+    expect(onSecondChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(screen.getByRole('dialog', { name: 'Second' })).toBeInTheDocument();
+    expect(onSecondChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Keep editing', async (user: ReturnType<typeof userEvent.setup>) => { await user.click(screen.getByRole('button', { name: 'Keep editing' })); }],
+    ['Escape', async (user: ReturnType<typeof userEvent.setup>) => { await user.keyboard('{Escape}'); }],
+  ])('closes the waiting dialog when the user answers with %s, and keeps the first one', async (_name, answer) => {
+    const user = userEvent.setup();
+    const onSecondChange = vi.fn();
+    render(<TwoDialogs firstDirty onSecondChange={onSecondChange} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Open first' }));
+    await user.click(screen.getByRole('button', { name: 'Open second' }));
+    await answer(user);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'First' })).toBeInTheDocument();
+    expect(screen.queryByText('Second')).toBeNull();
+    expect(onSecondChange.mock.calls).toEqual([[false]]);
   });
 
   it('closes the open dialog before showing another one', async () => {

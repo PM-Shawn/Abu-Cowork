@@ -5,7 +5,9 @@ export type LayerKind = 'dialog' | 'popover' | 'alert';
 
 export interface DialogGuard {
   isDirty: () => boolean;
-  confirmDiscard: (onDiscard: () => void) => void;
+  // Asks whether to discard the unsaved input. `onKeep` runs when the question closes any
+  // other way than Discard. Returns a function that takes the question back unanswered.
+  confirmDiscard: (onDiscard: () => void, onKeep?: () => void) => () => void;
 }
 
 export interface LayerEntry {
@@ -14,9 +16,12 @@ export interface LayerEntry {
   // Ids of the layers this one was opened inside; those stay open.
   ancestors: readonly string[];
   close: () => void;
-  reopen: () => void;
+  // Held: open as far as its owner knows, but not on the page. The registry holds a new
+  // dialog while the user decides about unsaved input in the dialog it would replace.
+  hold: () => void;
+  release: () => void;
   isDirty: () => boolean;
-  confirmDiscard: (onDiscard: () => void) => void;
+  confirmDiscard: (onDiscard: () => void, onKeep?: () => void) => () => void;
 }
 
 export interface LayerRegistry {
@@ -68,6 +73,8 @@ export interface LayerHandle {
   // Passed to the Radix Content: when the registry closes this layer to make room for
   // another, focus stays where the new layer put it.
   onCloseAutoFocus: (event: Event) => void;
+  // True while the registry holds this layer back; the layer renders as closed.
+  held: boolean;
 }
 
 // Registers an open layer with the nearest LayerProvider.
@@ -77,6 +84,7 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
   const id = useId();
   const latest = useRef({ setOpen, guard });
   const closedByRegistry = useRef(false);
+  const [held, setHeld] = useState(false);
   useLayoutEffect(() => { latest.current = { setOpen, guard }; });
   useLayoutEffect(() => {
     if (!open) return undefined;
@@ -89,12 +97,13 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
         closedByRegistry.current = true;
         latest.current.setOpen(false);
       },
-      reopen: () => latest.current.setOpen(true),
+      hold: () => setHeld(true),
+      release: () => setHeld(false),
       isDirty: () => latest.current.guard?.isDirty() ?? false,
-      confirmDiscard: (onDiscard) => {
+      confirmDiscard: (onDiscard, onKeep) => {
         const current = latest.current.guard;
         if (!current) throw new Error('Only a dialog can ask to discard its content');
-        current.confirmDiscard(onDiscard);
+        return current.confirmDiscard(onDiscard, onKeep);
       },
     });
     return () => registry.unregister(id);
@@ -103,5 +112,5 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
     if (closedByRegistry.current) event.preventDefault();
     closedByRegistry.current = false;
   }, []);
-  return { id, onCloseAutoFocus };
+  return { id, onCloseAutoFocus, held };
 }

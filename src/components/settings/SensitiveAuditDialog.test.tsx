@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
+import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,8 +12,15 @@ import type { MemoryHeader } from '@/core/memdir/types';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { usePreviewStore } from '@/stores/previewStore';
 import PersonalMemorySection from './sections/PersonalMemorySection';
 import SensitiveAuditDialog from './SensitiveAuditDialog';
+import SystemSettingsDialog from './SystemSettingsDialog';
+
+// The real settings window around a stand-in for its pages.
+vi.mock('@/components/settings/SystemSettingsModal', () => ({
+  default: () => <div data-testid="settings-view"><Button>Memory page</Button></div>,
+}));
 
 // Made-up memories on a made-up disk: which folder holds which files, and which of them the
 // privacy scan flags. Nothing here touches a real memory folder.
@@ -114,6 +122,7 @@ describe('SensitiveAuditDialog', () => {
       systemSettingsOpen: originals.systemSettingsOpen,
     });
     useWorkspaceStore.setState({ recentPaths: [] });
+    usePreviewStore.setState({ appModalOpen: false });
   });
 
   describe('when the check runs', () => {
@@ -348,6 +357,89 @@ describe('SensitiveAuditDialog', () => {
       askForCheck();
       const again = await screen.findByRole('alertdialog', { name: TITLE });
       expect(within(again).getAllByRole('checkbox')).toHaveLength(3);
+    });
+
+    it('goes away without marking the check done when the real settings window yields to a blocking prompt', async () => {
+      render(<><SystemSettingsDialog /><SensitiveAuditDialog /></>, { wrapper: DesignSystemProvider });
+      askForCheck();
+      await screen.findByRole('alertdialog', { name: TITLE });
+      expect(screen.getByTestId('settings-view')).toBeInTheDocument();
+
+      // The close-window question arrives: the settings window closes itself to make room.
+      act(() => { usePreviewStore.setState({ appModalOpen: true }); });
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
+      expect(setMemoryPrivate).not.toHaveBeenCalled();
+    });
+
+    it('goes away without marking the check done when another dialog takes the place of the settings window', async () => {
+      function Newcomer() {
+        const [open, setOpen] = useState(false);
+        return (
+          <>
+            <Dialog open={open} onOpenChange={setOpen} title="Search" />
+            <Button data-open-search onClick={() => setOpen(true)}>Open search</Button>
+          </>
+        );
+      }
+      render(<><SettingsWindow /><SensitiveAuditDialog /><Newcomer /></>, { wrapper: DesignSystemProvider });
+      askForCheck();
+      await screen.findByRole('alertdialog', { name: TITLE });
+
+      // Opened by code (a shortcut): the page under the question takes no press.
+      fireEvent.click(document.querySelector('[data-open-search]') as HTMLElement);
+      expect(await screen.findByRole('dialog', { name: 'Search' })).toBeInTheDocument();
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(settingsWindow()).toBeNull();
+      expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
+      expect(setMemoryPrivate).not.toHaveBeenCalled();
+    });
+
+    it('finishes marking the ticked memories when the settings window closes meanwhile, and only then marks the check done', async () => {
+      let finish: () => void = () => undefined;
+      vi.mocked(setMemoryPrivate).mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+      render(<><SettingsWindow /><SensitiveAuditDialog /></>, { wrapper: DesignSystemProvider });
+      askForCheck();
+      await screen.findByRole('alertdialog', { name: TITLE });
+      fireEvent.click(markAll());
+      await settled();
+      expect(setMemoryPrivate).toHaveBeenCalledTimes(1);
+
+      act(() => { useSettingsStore.setState({ systemSettingsOpen: false }); });
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
+
+      finish();
+      await settled();
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
+      finish();
+      await settled();
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
+      finish();
+      await settled();
+      expect(vi.mocked(setMemoryPrivate).mock.calls).toEqual([
+        [passport.filename, true, null],
+        [salary.filename, true, null],
+        [bank.filename, true, WORKSPACE],
+      ]);
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(true);
+    });
+
+    it('leaves when the settings flag turns false even though no settings dialog was on the page', async () => {
+      show();
+      askForCheck();
+      await screen.findByRole('alertdialog', { name: TITLE });
+
+      act(() => { useSettingsStore.setState({ systemSettingsOpen: false }); });
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
+
+      // The settings window opening again does not bring the old question back by itself.
+      act(() => { useSettingsStore.setState({ systemSettingsOpen: true }); });
+      await settled();
+      expect(screen.queryByRole('alertdialog')).toBeNull();
     });
   });
 

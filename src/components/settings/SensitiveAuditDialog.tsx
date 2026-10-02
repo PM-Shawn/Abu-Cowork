@@ -113,7 +113,11 @@ export default function SensitiveAuditDialog() {
     };
   }, [shouldRun, hasRun, recentPaths, setShouldRun, setHasRun]);
 
-  const shown = open && !loading && !hasRun;
+  // The question follows the settings window: when that window closes, the question is taken
+  // back unanswered, whether or not the layer registry knew the two belonged together.
+  const settingsOpen = useSettingsStore((s) => s.systemSettingsOpen);
+  if (open && !settingsOpen) setOpen(false);
+  const shown = open && settingsOpen && !loading && !hasRun;
 
   const finish = () => {
     setOpen(false);

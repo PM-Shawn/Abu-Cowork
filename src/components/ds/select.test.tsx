@@ -189,6 +189,37 @@ describe('Select options', () => {
     expect(screen.getByRole('option', { name: 'Custom' }).querySelectorAll('svg.text-label-secondary')).toHaveLength(1);
   });
 
+  it('starts a description under the name when the option has an icon, and centers the check mark on the name line', async () => {
+    const user = userEvent.setup();
+    const options = [
+      { value: 'allow', label: 'Allow', tone: 'success' as const, description: 'Abu opens the site without asking.' },
+      { value: 'custom', label: 'Custom', icon: AppIcons.settings, description: 'You choose for each site.' },
+      { value: 'ask', label: 'Ask every time', description: 'Abu asks before it opens a site.' },
+      { value: 'block', label: 'Block', tone: 'danger' as const },
+    ];
+    function Harness() {
+      const [value, setValue] = useState('allow');
+      return <Select label="Site access" value={value} onValueChange={setValue} options={options} />;
+    }
+    render(<Harness />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('combobox', { name: 'Site access' });
+    await user.click(trigger);
+    // 22px: the 14px icon plus the 8px gap before the name.
+    expect(screen.getByText('Abu opens the site without asking.')).toHaveClass('pl-5.5');
+    expect(screen.getByText('You choose for each site.')).toHaveClass('pl-5.5');
+    expect(screen.getByText('Abu asks before it opens a site.')).not.toHaveClass('pl-5.5');
+    // The chosen described option: its check mark moves down with the name line.
+    const chosen = screen.getByRole('option', { name: 'Allow' });
+    expect(chosen.lastElementChild).toHaveClass('absolute');
+    expect(chosen.lastElementChild).toHaveClass('mt-0.5');
+    // Without a description the row is one centered line, so the check mark is not moved.
+    await user.click(screen.getByRole('option', { name: 'Block' }));
+    await user.click(trigger);
+    const plain = screen.getByRole('option', { name: 'Block' });
+    expect(plain.lastElementChild).toHaveClass('absolute');
+    expect(plain.lastElementChild).not.toHaveClass('mt-0.5');
+  });
+
   it('jumps to an option with an icon by the first letter of its name', async () => {
     const user = userEvent.setup();
     render(<Select label="Site access" value="allow" onValueChange={() => undefined} options={ACCESS} />, { wrapper: DesignSystemProvider });

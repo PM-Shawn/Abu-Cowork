@@ -127,7 +127,7 @@ describe('form controls', () => {
     expect(box).not.toHaveClass('mt-2');
   });
 
-  it('SettingRow centers its control on a single line and aligns it to the top beside a description', () => {
+  it('SettingRow centers its control on the row, with or without a description', () => {
     render(
       <>
         <SettingRow title="Sound"><Switch aria-label="Sound" checked onCheckedChange={() => undefined} /></SettingRow>
@@ -138,8 +138,12 @@ describe('form controls', () => {
     expect(single).toHaveClass('items-center');
     expect(single).not.toHaveClass('items-start');
     const described = screen.getByText('Badge').parentElement?.parentElement;
-    expect(described).toHaveClass('items-start');
-    expect(described).not.toHaveClass('items-center');
+    expect(described).toHaveClass('items-center');
+    expect(described).not.toHaveClass('items-start');
+    // The control's box is a flex box: as a plain block it would add a text line's spare
+    // height under an inline control (a switch) and push it above the row's center.
+    expect(described?.lastElementChild).toHaveClass('flex');
+    expect(described?.lastElementChild).toHaveClass('items-center');
   });
 
   it('SettingRow labels its control', () => {

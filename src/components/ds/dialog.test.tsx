@@ -200,6 +200,13 @@ describe('Dialog', () => {
     expect(anchored).not.toHaveClass('-translate-y-1/2');
   });
 
+  it('keeps a top-placed dialog inside the window: its height limit starts from where it is anchored', () => {
+    render(<Dialog open title="Anchored" placement="top" />, { wrapper: DesignSystemProvider });
+    const anchored = screen.getByRole('dialog');
+    expect(anchored).toHaveClass('max-h-[calc(100dvh*6/7-3rem)]');
+    expect(anchored).not.toHaveClass('max-h-[calc(100dvh-6rem)]');
+  });
+
   it('marks its content as an open layer and dims the window behind it', async () => {
     const user = userEvent.setup();
     render(<RenameDialog />, { wrapper: DesignSystemProvider });
@@ -259,6 +266,8 @@ describe('Dialog sizes and scrolling', () => {
 });
 
 describe('Dialog close button, data attributes and focus', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   function Closable({ dirty = false, closeButton = true }: { dirty?: boolean; closeButton?: true | { 'data-test-close': string } }) {
     return (
       <Dialog trigger={<Button>Open</Button>} title="Grant access" dirty={dirty} closeButton={closeButton} footer={<Button>Done</Button>}>
@@ -378,7 +387,6 @@ describe('Dialog close button, data attributes and focus', () => {
     await act(() => vi.runOnlyPendingTimersAsync());
     expect(seen).toEqual([true]);
     expect(screen.getByRole('dialog', { name: 'Second' })).toContainElement(document.activeElement as HTMLElement);
-    vi.useRealTimers();
   });
 });
 

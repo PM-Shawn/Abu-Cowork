@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
-// Title and optional one-line description on the left, the control on the right.
+// Title and optional one-line description on the left; the control on the right, centered on the row.
 export function SettingRow({ title, description, children, htmlFor }: {
   title: ReactNode;
   description?: ReactNode;
@@ -9,14 +9,15 @@ export function SettingRow({ title, description, children, htmlFor }: {
   htmlFor?: string;
 }) {
   return (
-    <div className={cn('flex justify-between gap-6 py-3', description ? 'items-start' : 'items-center')}>
+    <div className="flex items-center justify-between gap-6 py-3">
       <div className="min-w-0">
         {htmlFor
           ? <label htmlFor={htmlFor} className="text-ui text-label">{title}</label>
           : <div className="text-ui text-label">{title}</div>}
         {description && <p className="mt-1 text-ui-sm text-label-secondary">{description}</p>}
       </div>
-      <div className="shrink-0">{children}</div>
+      {/* A flex box, so an inline control (a switch) gets no text-line slack under it and sits on the row's center. */}
+      <div className="flex shrink-0 items-center">{children}</div>
     </div>
   );
 }

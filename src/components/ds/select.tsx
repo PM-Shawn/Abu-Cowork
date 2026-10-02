@@ -72,8 +72,9 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
           <SelectPrimitive.Viewport>
             <LayerScope id={id}>
               {options.map((option, index) => {
+                // With a second line the row aligns to the top; the nudge centers the check mark on the name line.
                 const indicator = (
-                  <SelectPrimitive.ItemIndicator className="absolute right-2 inline-flex">
+                  <SelectPrimitive.ItemIndicator className={cn('absolute right-2 inline-flex', option.description && 'mt-0.5')}>
                     <Icon icon={AppIcons.done} size="sm" />
                   </SelectPrimitive.ItemIndicator>
                 );
@@ -104,9 +105,10 @@ export function Select({ value, onValueChange, options, label, placeholder, disa
                           {option.label}
                         </span>
                       </SelectPrimitive.ItemText>
-                      {/* aria-hidden keeps the description out of the name; aria-describedby still reads it. */}
+                      {/* aria-hidden keeps the description out of the name; aria-describedby still reads it.
+                          Beside an icon it starts under the name: 22px is the 14px icon plus the 8px gap. */}
                       {option.description && (
-                        <span id={descriptionId} aria-hidden="true" className="w-64 whitespace-normal text-ui-sm text-label-secondary">{option.description}</span>
+                        <span id={descriptionId} aria-hidden="true" className={cn('w-64 whitespace-normal text-ui-sm text-label-secondary', (option.tone || option.icon) && 'pl-5.5')}>{option.description}</span>
                       )}
                     </span>
                     {indicator}

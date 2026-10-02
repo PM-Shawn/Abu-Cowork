@@ -13,7 +13,8 @@ const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl'
 // Hooks for tests and for the window-drag guard; nothing else reaches the dialog box.
 export type DataAttributes = { [key: `data-${string}`]: string | undefined };
 // `top` keeps the top edge still while the content grows or shrinks (search as you type).
-const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0' } as const;
+// Its height limit counts from that edge, so the dialog still ends 48px above the window's bottom.
+const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0 max-h-[calc(100dvh*6/7-3rem)]' } as const;
 
 export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close {...props} />;
@@ -46,7 +47,8 @@ export function Dialog({
   closeButton?: boolean | DataAttributes;
   contentProps?: DataAttributes;
   // Runs after the layer's own handler once the dialog has gone; call event.preventDefault()
-  // there to put focus somewhere other than where it was before the dialog opened.
+  // there to put focus somewhere other than where it was before the dialog opened. When
+  // event.defaultPrevented is already true, another dialog has taken the focus: leave it alone.
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   const { t } = useI18n();

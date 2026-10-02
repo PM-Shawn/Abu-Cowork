@@ -19,6 +19,7 @@ import {
 } from '@/core/capabilityPlugins/setupBridge';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useChatStore } from '@/stores/chatStore';
+import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -358,6 +359,101 @@ describe('CapabilitySetupDialog', () => {
     await waitFor(() => expect(send).toHaveFocus());
   });
 
+  // After a run of queued requests, focus goes back to where it was before the first one.
+  it('gives focus back to the element that had it before the first of several queued requests', async () => {
+    renderWindow(
+      <>
+        <Button>send</Button>
+        <TextArea data-chat-composer aria-label="chat composer" />
+      </>,
+    );
+    const send = screen.getByRole('button', { name: 'send' });
+    send.focus();
+
+    let first!: ReturnType<typeof requestFromTask>;
+    let second!: ReturnType<typeof requestFromTask>;
+    act(() => {
+      first = requestFromTask('chrome', 'tool-first');
+      second = requestFromTask('computer', 'tool-second');
+    });
+    await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+    fireEvent.click(screen.getByRole('button', { name: 'cancel setup' }));
+    await expect(first.promise).resolves.toBe(false);
+
+    const next = await screen.findByRole('dialog', { name: 'Enable Computer Use' });
+    await waitFor(() => expect(next).toContainElement(document.activeElement as HTMLElement));
+    fireEvent.click(screen.getByRole('button', { name: 'cancel setup' }));
+    await expect(second.promise).resolves.toBe(false);
+
+    await waitFor(() => expect(send).toHaveFocus());
+    expect(screen.getByRole('textbox', { name: 'chat composer' })).not.toHaveFocus();
+  });
+
+  // A prompt under the window listens for Escape too; one key answers one thing.
+  it('answers Escape itself and lets the key go no further', async () => {
+    const { promise } = requestFromTask();
+    renderWindow();
+    await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+    const onDocument = vi.fn();
+    const onWindow = vi.fn();
+    document.addEventListener('keydown', onDocument);
+    window.addEventListener('keydown', onWindow);
+    try {
+      await userEvent.setup().keyboard('{Escape}');
+
+      await expect(promise).resolves.toBe(false);
+      expect(resolveCapabilitySetup).toHaveBeenCalledTimes(1);
+      expect(onDocument).not.toHaveBeenCalled();
+      expect(onWindow).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener('keydown', onDocument);
+      window.removeEventListener('keydown', onWindow);
+    }
+  });
+
+  describe('while the close-window question is open', () => {
+    afterEach(() => { usePreviewStore.setState({ appModalOpen: false }); });
+
+    it('steps aside unanswered, and comes back with focus on its first control', async () => {
+      const { state } = requestFromTask();
+      renderWindow();
+      await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+      const request = getPendingCapabilitySetup();
+
+      act(() => usePreviewStore.setState({ appModalOpen: true }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+      expect(state.settled).toBe(false);
+      expect(getPendingCapabilitySetup()).toBe(request);
+
+      act(() => usePreviewStore.setState({ appModalOpen: false }));
+
+      const dialog = await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'cancel setup' })).toHaveFocus());
+      expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+      expect(state.settled).toBe(false);
+    });
+
+    it('leaves Escape to the question: the request is not answered and the key travels on', async () => {
+      const { state } = requestFromTask();
+      act(() => usePreviewStore.setState({ appModalOpen: true }));
+      renderWindow();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      const onWindow = vi.fn();
+      window.addEventListener('keydown', onWindow);
+      try {
+        fireEvent.keyDown(document.body, { key: 'Escape' });
+
+        expect(onWindow).toHaveBeenCalledTimes(1);
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(state.settled).toBe(false);
+      } finally {
+        window.removeEventListener('keydown', onWindow);
+      }
+    });
+  });
+
   it('opens with focus on the first control of the page, never on the one that completes setup', async () => {
     requestFromTask();
     renderWindow();
@@ -407,7 +503,7 @@ describe('CapabilitySetupDialog', () => {
       );
       await screen.findByRole('dialog', { name: 'Connect My Chrome' });
       const id = getPendingCapabilitySetup()?.id;
-      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.useFakeTimers();
 
       act(() => useOtherDialog.setState({ open: true }));
 

@@ -20,6 +20,7 @@ import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { ensureConversationModelUsable } from '@/components/chat/sendModelGuard';
 import { rehydrateImageData } from '@/core/llm/imageRehydration';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
+import { usePreviewStore } from '@/stores/previewStore';
 
 /**
  * Task-local capability onboarding. The originating tool call remains
@@ -32,27 +33,39 @@ export default function CapabilitySetupDialog() {
   );
   const { t } = useI18n();
   const lightboxOpen = useImageLightboxStore((s) => s.isOpen);
+  // The close-window question is a legacy layer that cannot be used under a modal dialog.
+  const closeQuestionOpen = usePreviewStore((s) => s.appModalOpen);
+  const windowShown = request !== null && !lightboxOpen && !closeQuestionOpen;
   const previousFocus = useRef<Element | null>(null);
+  const hadRequest = useRef(false);
 
-  // What had focus when the request arrived. A layout effect, so it runs before the
-  // window opens and takes the focus.
+  // What had focus when the first of a run of requests arrived; a later request of the run
+  // arrives with focus already lost to the window before it. A layout effect, so it runs
+  // before the window opens and takes the focus.
   useLayoutEffect(() => {
-    if (request) previousFocus.current = document.activeElement;
+    if (request && !hadRequest.current) previousFocus.current = document.activeElement;
+    hadRequest.current = request !== null;
   }, [request]);
 
   useEffect(() => {
-    if (!request || !lightboxOpen) return;
+    if (!request) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
       // The visible, full-window lightbox owns Escape while it is open. A
       // capability request may arrive asynchronously underneath it; never
       // turn that same keypress into a hidden permission denial.
-      if (event.key === 'Escape' && useImageLightboxStore.getState().isOpen) {
+      if (useImageLightboxStore.getState().isOpen) {
         useImageLightboxStore.getState().close();
+        return;
       }
+      // The window is the top layer: its Escape goes no further, so a prompt
+      // underneath is not answered by the same key. The dialog's own listener is on
+      // `document` in the capture phase as well and still runs.
+      if (windowShown) event.stopPropagation();
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [request, lightboxOpen]);
+  }, [request, windowShown]);
 
   if (!request) return null;
 
@@ -140,11 +153,13 @@ export default function CapabilitySetupDialog() {
   // Escape, the scrim, the corner button, and another dialog taking this window's place all
   // arrive as a close, and a close is always a refusal. Only the page reporting that setup
   // is complete answers yes. The image viewer covers the whole app, so the window waits
-  // for it to close. One dialog per request: the next waiting request opens as a new dialog.
+  // for it to close; it steps aside, unanswered, for the close-window question and comes
+  // back when that is cancelled. One dialog per request: the next waiting request opens
+  // as a new dialog.
   return (
     <Dialog
       key={request.id}
-      open={!lightboxOpen}
+      open={windowShown}
       onOpenChange={(next) => { if (!next) resolveCapabilitySetup(request.id, false); }}
       title={request.target === 'computer'
         ? t.settings.capabilityComputerSetupTitle

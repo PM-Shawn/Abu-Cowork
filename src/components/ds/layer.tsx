@@ -11,8 +11,10 @@ interface Waiting {
 }
 
 // Keeps at most one dialog and one menu or popover open at a time (spec §6.4, flow 2).
-// An alert stacks over an open dialog; a newer alert, a new dialog, or that dialog closing closes it.
-// A layer opened inside another layer is its child and leaves that parent open.
+// An alert stacks over an open dialog and belongs to the innermost open one; a newer alert, a
+// new dialog, or that dialog closing closes it.
+// A layer opened inside another layer is its child and leaves that parent open. Dialogs opened
+// inside a dialog are closed with it.
 // A new dialog replaces the open one. When the open one, or a dialog opened inside it, holds
 // unsaved input, the new dialog is held while the user is asked: Discard closes the open
 // dialog and shows the new one, keeping the input closes the new one. A confirmation that was
@@ -32,7 +34,7 @@ export function LayerProvider({ children, container, onModalChange }: {
   const modalListener = useRef(onModalChange);
   useLayoutEffect(() => { modalListener.current = onModalChange; });
   const modalOpen = useRef(false);
-  // Alert id → the dialog that was open when the alert was asked. The alert is a question
+  // Alert id → the innermost dialog that was open when the alert was asked. The alert is a question
   // about that dialog, so it is answered with cancel when the dialog goes away for any reason.
   const askedOver = useRef(new Map<string, string>());
   const waiting = useRef<Waiting | null>(null);
@@ -48,13 +50,18 @@ export function LayerProvider({ children, container, onModalChange }: {
     const remove = (id: string) => {
       const removed = layers.current.find((layer) => layer.id === id);
       // Dialogs opened inside a dialog go with it.
-      layers.current = layers.current.filter((layer) => (
-        layer.id !== id && !(removed?.kind === 'dialog' && layer.kind === 'dialog' && layer.ancestors.includes(id))
+      const dropped = layers.current.filter((layer) => (
+        layer.id !== id && removed?.kind === 'dialog' && layer.kind === 'dialog' && layer.ancestors.includes(id)
       ));
-      askedOver.current.delete(id);
+      const gone = new Set([id, ...dropped.map((layer) => layer.id)]);
+      layers.current = layers.current.filter((layer) => !gone.has(layer.id));
+      for (const key of gone) askedOver.current.delete(key);
       for (const layer of layers.current) {
-        if (askedOver.current.get(layer.id) === id) dismiss(layer);
+        const over = askedOver.current.get(layer.id);
+        if (over !== undefined && gone.has(over)) dismiss(layer);
       }
+      // Their owners hear it, so none stays open (or painted) without its outer dialog.
+      for (const layer of dropped) layer.close();
       const held = waiting.current;
       if (!held) return;
       if (held.entry.id === id) {
@@ -116,7 +123,8 @@ export function LayerProvider({ children, container, onModalChange }: {
         }
       }
       if (entry.kind === 'alert') {
-        const dialog = layers.current.find((layer) => layer.kind === 'dialog');
+        // The innermost open dialog: the one registered last.
+        const dialog = [...layers.current].reverse().find((layer) => layer.kind === 'dialog');
         if (dialog) askedOver.current.set(entry.id, dialog.id);
       }
       layers.current = [...layers.current.filter((layer) => layer.id !== entry.id), entry];

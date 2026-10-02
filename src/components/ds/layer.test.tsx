@@ -310,11 +310,15 @@ describe('LayerProvider', () => {
     });
 
     describe('when the unsaved input is in a dialog opened inside another', () => {
-      function NestedDraftAndOther({ onOuter, onOther }: { onOuter: (open: boolean) => void; onOther: (open: boolean) => void }) {
+      function NestedDraftAndOther({ onOuter, onOther, onForm }: {
+        onOuter: (open: boolean) => void;
+        onOther: (open: boolean) => void;
+        onForm?: (open: boolean) => void;
+      }) {
         return (
           <LayerProvider>
             <FakeLayer name="outer" kind="dialog" onOpenChange={onOuter}>
-              <FakeLayer name="form" kind="dialog" dirty />
+              <FakeLayer name="form" kind="dialog" dirty onOpenChange={onForm} />
             </FakeLayer>
             <FakeLayer name="other" kind="dialog" onOpenChange={onOther} />
           </LayerProvider>
@@ -343,7 +347,8 @@ describe('LayerProvider', () => {
         const user = userEvent.setup();
         const onOuter = vi.fn();
         const onOther = vi.fn();
-        render(<NestedDraftAndOther onOuter={onOuter} onOther={onOther} />);
+        const onForm = vi.fn();
+        render(<NestedDraftAndOther onOuter={onOuter} onOther={onOther} onForm={onForm} />);
         await user.click(screen.getByText('open outer'));
         await user.click(screen.getByText('open form'));
         await user.click(screen.getByText('open other'));
@@ -355,6 +360,8 @@ describe('LayerProvider', () => {
         expect(screen.queryByText('discard form')).toBeNull();
         expect(onOuter.mock.calls).toEqual([[true], [false]]);
         expect(onOther.mock.calls).toEqual([[true]]);
+        // The form inside the outer dialog is told to close with it.
+        expect(onForm.mock.calls).toEqual([[true], [false]]);
       });
 
       it('keeps both dialogs and closes the new one when the user keeps editing', async () => {
@@ -372,6 +379,51 @@ describe('LayerProvider', () => {
         expect(onOuter.mock.calls).toEqual([[true]]);
         expect(onOther.mock.calls).toEqual([[true], [false]]);
       });
+    });
+  });
+
+  describe('a dialog opened inside another dialog', () => {
+    it('takes the alert asked over it along when it closes by itself, and leaves the outer dialog open', async () => {
+      const user = userEvent.setup();
+      const onAlert = vi.fn();
+      render(
+        <LayerProvider>
+          <FakeLayer name="outer" kind="dialog"><FakeLayer name="inner" kind="dialog" /></FakeLayer>
+          <FakeLayer name="alert" kind="alert" onOpenChange={onAlert} />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open outer'));
+      await user.click(screen.getByText('open inner'));
+      await user.click(screen.getByText('open alert'));
+      expect(screen.getByTestId('alert')).toBeInTheDocument();
+
+      await user.click(screen.getByText('close inner'));
+
+      expect(screen.queryByTestId('inner')).toBeNull();
+      expect(screen.queryByTestId('alert')).toBeNull();
+      expect(screen.getByTestId('outer')).toBeInTheDocument();
+      expect(onAlert.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('is told to close, once, when another dialog replaces the outer one', async () => {
+      const user = userEvent.setup();
+      const onInner = vi.fn();
+      const onOther = vi.fn();
+      render(
+        <LayerProvider>
+          <FakeLayer name="outer" kind="dialog"><FakeLayer name="inner" kind="dialog" onOpenChange={onInner} /></FakeLayer>
+          <FakeLayer name="other" kind="dialog" onOpenChange={onOther} />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open outer'));
+      await user.click(screen.getByText('open inner'));
+      await user.click(screen.getByText('open other'));
+
+      expect(screen.queryByTestId('outer')).toBeNull();
+      expect(screen.queryByTestId('inner')).toBeNull();
+      expect(screen.getByTestId('other')).toBeInTheDocument();
+      expect(onInner.mock.calls).toEqual([[true], [false]]);
+      expect(onOther.mock.calls).toEqual([[true]]);
     });
   });
 

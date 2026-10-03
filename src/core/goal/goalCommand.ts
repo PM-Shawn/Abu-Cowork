@@ -94,7 +94,7 @@ export function checkGoalCreatable(conversationId: string | undefined, objective
 }
 
 /** Create the goal (the caller then sends the objective as the first message of round 0). */
-export function createGoalFromCommand(conversationId: string, objective: string, maxRounds = GOAL_DEFAULT_MAX_ROUNDS): GoalCommandOutcome {
+export function createGoalFromCommand(conversationId: string, objective: string, maxRounds?: number): GoalCommandOutcome {
   const t = getI18n().chat.goal;
   const precheck = checkGoalCreatable(conversationId, objective);
   if (!precheck.ok) return precheck;

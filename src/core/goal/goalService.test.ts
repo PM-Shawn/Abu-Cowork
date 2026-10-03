@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation } from '@/types';
 import {
@@ -8,6 +9,7 @@ import {
   createConversationGoal,
   disarmConversationGoal,
   editConversationGoal,
+  getDefaultGoalMaxRounds,
   getGoal,
   pauseConversationGoal,
   recordConversationGoalRound,
@@ -38,6 +40,20 @@ describe('goalService', () => {
   beforeEach(() => {
     resetGoalActivationsForTest();
     seed();
+  });
+
+  describe('default round budget', () => {
+    afterEach(() => useSettingsStore.setState({ goalDefaultMaxRounds: undefined }));
+
+    it('uses the built-in default, then the user setting, and an explicit budget over both', () => {
+      expect(getDefaultGoalMaxRounds()).toBe(256);
+      useSettingsStore.setState({ goalDefaultMaxRounds: 50 });
+      expect(getDefaultGoalMaxRounds()).toBe(50);
+      const created = createConversationGoal('c1', { objective: 'o' });
+      expect(created).toMatchObject({ ok: true, goal: { maxRounds: 50 } });
+      clearConversationGoal('c1', goalRef(getGoal('c1')!));
+      expect(createConversationGoal('c1', { objective: 'o', maxRounds: 12 })).toMatchObject({ ok: true, goal: { maxRounds: 12 } });
+    });
   });
 
   describe('create', () => {

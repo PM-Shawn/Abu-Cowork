@@ -71,6 +71,18 @@ export const GOAL_BLOCK_AFTER_ROUNDS = 3;
 export const GOAL_MAX_IDLE_ROUNDS = 2;
 /** Goal-wide cap on team member hand-offs (the per-run cap resets each round). */
 export const GOAL_TEAM_MAX_DISPATCHES = 200;
+/** Choices offered in settings for the default round budget. */
+export const GOAL_ROUNDS_CHOICES: readonly number[] = [20, 50, 100, GOAL_DEFAULT_MAX_ROUNDS, 500, GOAL_MAX_MAX_ROUNDS];
+
+/** Settings dropdown values: the standard choices plus a current value set elsewhere. */
+export function buildGoalRoundsOptions(current: number | undefined): number[] {
+  const values = new Set(GOAL_ROUNDS_CHOICES);
+  if (typeof current === 'number' && Number.isInteger(current) && current >= GOAL_MIN_MAX_ROUNDS && current <= GOAL_MAX_MAX_ROUNDS) {
+    values.add(current);
+  }
+  return [...values].sort((a, b) => a - b);
+}
+
 /** Rounds added by the goal bar's "run more" once the budget is spent. */
 export const GOAL_RESUME_EXTRA_ROUNDS = 20;
 export const GOAL_COMPLETION_SUMMARY_MAX_CHARS = 4000;

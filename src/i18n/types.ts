@@ -1660,6 +1660,11 @@ export interface TranslationDict {
     agentMaxTurnsOption: string;
     /** Shown only when a cap of "no cap" is already in force from outside the UI. */
     agentMaxTurnsUnlimited: string;
+    /** Goal mode: default round budget for a new goal (settings › general). */
+    goalDefaultMaxRounds: string;
+    goalDefaultMaxRoundsDesc: string;
+    /** One dropdown option. {n} = the number of rounds. */
+    goalDefaultMaxRoundsOption: string;
     composerEnterSends: string;
     /** `{modifier}` = ⌘ / Ctrl. */
     composerEnterNewline: string;

@@ -228,6 +228,8 @@ export interface SettingsState {
   sidebarCollapsed: boolean;
   rightPanelCollapsed: boolean;
   agentMaxTurns?: number; // undefined = 用默认上界 (resolveMaxTurns: DEFAULT_MAX_TURNS); <=0 = 不限制(显式 opt-in)
+  /** Goal mode: round budget for a new goal. undefined = GOAL_DEFAULT_MAX_ROUNDS. */
+  goalDefaultMaxRounds?: number;
   maxOutputTokens: number;
   contextWindowSize: number;
   language: LanguageSetting;
@@ -521,6 +523,7 @@ interface SettingsActions {
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
   setAgentMaxTurns: (n: number | undefined) => void;
+  setGoalDefaultMaxRounds: (n: number | undefined) => void;
   setMaxOutputTokens: (tokens: number) => void;
   setContextWindowSize: (size: number) => void;
   setLanguage: (lang: LanguageSetting) => void;
@@ -1638,6 +1641,7 @@ export const useSettingsStore = create<SettingsStore>()(
       toggleRightPanel: () => set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
       setRightPanelCollapsed: (collapsed) => set({ rightPanelCollapsed: collapsed }),
       setAgentMaxTurns: (agentMaxTurns) => set({ agentMaxTurns }),
+      setGoalDefaultMaxRounds: (goalDefaultMaxRounds) => set({ goalDefaultMaxRounds }),
       setMaxOutputTokens: (maxOutputTokens) => set({ maxOutputTokens }),
       setContextWindowSize: (contextWindowSize) => set({ contextWindowSize }),
       setLanguage: (lang) => {
@@ -2004,7 +2008,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 53,
+      version: 54,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -2920,6 +2924,9 @@ export const useSettingsStore = create<SettingsStore>()(
 
         // V53: one conservative browser permission model, after existing migrations.
         if (version < 53) state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(state);
+        // V54: goal mode — added optional goalDefaultMaxRounds (absent = the
+        // built-in default). Nothing to transform.
+        if (version < 54) { /* no transform needed */ }
         return state;
       },
       partialize: (state) => ({
@@ -2957,6 +2964,7 @@ export const useSettingsStore = create<SettingsStore>()(
         language: state.language,
         labs: state.labs,
         agentMaxTurns: state.agentMaxTurns,
+        goalDefaultMaxRounds: state.goalDefaultMaxRounds,
         maxOutputTokens: state.maxOutputTokens,
         contextWindowSize: state.contextWindowSize,
         sidebarCollapsed: state.sidebarCollapsed,

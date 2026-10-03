@@ -1,4 +1,5 @@
 import { useChatStore } from '@/stores/chatStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { armGoal, clearGoalActivation, disarmGoal, isGoalArmed, type GoalDisarmReason } from './goalActivation';
 import {
   blockGoal,
@@ -34,6 +35,11 @@ function generateGoalId(): string {
   return 'goal-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
+/** Round budget for a new goal: the user's setting, else the built-in default. */
+export function getDefaultGoalMaxRounds(): number {
+  return clampMaxRounds(useSettingsStore.getState().goalDefaultMaxRounds, GOAL_DEFAULT_MAX_ROUNDS);
+}
+
 export function getGoal(conversationId: string): GoalState | undefined {
   return useChatStore.getState().conversations[conversationId]?.goal;
 }
@@ -55,7 +61,7 @@ export function createConversationGoal(
   const result = commit(conversationId, createGoal(getGoal(conversationId), {
     id: generateGoalId(),
     objective: input.objective,
-    maxRounds: clampMaxRounds(input.maxRounds, GOAL_DEFAULT_MAX_ROUNDS),
+    maxRounds: clampMaxRounds(input.maxRounds, getDefaultGoalMaxRounds()),
     now: input.now ?? Date.now(),
   }));
   if (result.ok) armGoal(conversationId, result.goal.id);

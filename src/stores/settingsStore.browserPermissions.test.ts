@@ -229,7 +229,7 @@ describe('scoped grants and V53 hydration', () => {
     expect(readConfirmedBrowserPermissionConfig(useSettingsStore.getState()).embeddedSites[top][SITE].browse).toBe('deny');
   });
 
-  it('hydrates a V52 profile and persists V53 without losing denials or iframe scope', async () => {
+  it('hydrates a V52 profile and persists the current version without losing denials or iframe scope', async () => {
     localStorage.setItem('abu-settings', JSON.stringify({ version: 52, state: {
       browserOperationPolicy: { readOnly: 'allow', interactive: 'allow', upload: 'deny', scripting: 'ask' },
       allowUnattendedBrowser: true,
@@ -240,7 +240,9 @@ describe('scoped grants and V53 hydration', () => {
     await useSettingsStore.persist.rehydrate();
     await drained();
     const blob = JSON.parse(localStorage.getItem('abu-settings')!);
-    expect(blob.version).toBe(53);
+    // Through V53 (browser permissions) and on to whatever the store is now.
+    expect(blob.version).toBe(useSettingsStore.persist.getOptions().version);
+    expect(blob.version).toBeGreaterThanOrEqual(53);
     expect(blob.state.browserPermissionConfigV2.defaults).toEqual({ browse: 'ask', upload: 'deny', script: 'ask' });
     expect(blob.state.browserPermissionConfigV2.sites[other].blocked).toBe(true);
     expect(blob.state.browserPermissionConfigV2.sites[SITE]).toBeUndefined();

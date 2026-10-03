@@ -12,7 +12,7 @@ import {
   pauseConversationGoal,
 } from '../../goal/goalService';
 import type { GoalTransitionResult } from '../../goal/goalTransitions';
-import { GOAL_BLOCK_AFTER_ROUNDS, GOAL_DEFAULT_MAX_ROUNDS, goalRef, type GoalPhase } from '../../goal/goalTypes';
+import { GOAL_BLOCK_AFTER_ROUNDS, goalRef, type GoalPhase } from '../../goal/goalTypes';
 
 const ACTIONS: readonly GoalToolAction[] = ['get', 'create', 'edit', 'pause', 'complete', 'block'];
 
@@ -72,7 +72,7 @@ export const manageGoalTool: ToolDefinition = {
     properties: {
       action: { type: 'string', enum: [...ACTIONS], description: 'What to do with the goal.' },
       objective: { type: 'string', description: 'create / edit: the goal, stated as a checkable end state in the user\'s words.' },
-      max_rounds: { type: 'number', description: `create: optional round budget (default ${GOAL_DEFAULT_MAX_ROUNDS}). Only set it when the user asks for a limit.` },
+      max_rounds: { type: 'number', description: 'create: optional round budget (defaults to the user\'s setting). Only set it when the user asks for a limit.' },
       summary: { type: 'string', description: 'complete: what was achieved.' },
       evidence: {
         type: 'array',

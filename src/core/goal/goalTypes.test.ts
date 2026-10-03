@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { GOAL_MAX_MAX_ROUNDS, sanitizeGoalState } from './goalTypes';
+import { GOAL_MAX_MAX_ROUNDS, buildGoalRoundsOptions, sanitizeGoalState } from './goalTypes';
 
 const valid = {
   id: 'g1',
@@ -47,6 +47,20 @@ describe('goalTypes', () => {
       expect(activeWithStale?.settledLoopId).toBeUndefined();
       const complete = sanitizeGoalState({ ...valid, phase: 'complete', completion: { summary: 's', evidence: ['a', 3] } });
       expect(complete?.completion).toEqual({ summary: 's', evidence: ['a'] });
+    });
+  });
+
+  describe('buildGoalRoundsOptions', () => {
+    it('offers the standard choices in order', () => {
+      expect(buildGoalRoundsOptions(undefined)).toEqual([20, 50, 100, 256, 500, 1000]);
+    });
+
+    it('keeps a valid value set elsewhere, and ignores an invalid one', () => {
+      expect(buildGoalRoundsOptions(30)).toEqual([20, 30, 50, 100, 256, 500, 1000]);
+      expect(buildGoalRoundsOptions(256)).toHaveLength(6);
+      expect(buildGoalRoundsOptions(0)).toHaveLength(6);
+      expect(buildGoalRoundsOptions(5000)).toHaveLength(6);
+      expect(buildGoalRoundsOptions(12.5)).toHaveLength(6);
     });
   });
 });

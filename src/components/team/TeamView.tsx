@@ -553,19 +553,16 @@ function TeamDetailBody({ team, pluginName, onStartChat }: {
   // "what can this team actually do" without opening every member.
   const skills = [...new Set([leader, ...members.map((m) => m.agent)]
     .flatMap((a) => a?.skills ?? []))].sort();
-  const row = (agent: SubagentDefinition | undefined, fallback: string, onPick?: () => void) => {
+  // A row names an expert and does nothing else, so it is a plain row.
+  const row = (agent: SubagentDefinition | undefined, fallback: string) => {
     return (
-      <Pressable
-        disabled={!agent}
-        onClick={onPick}
-        className="flex w-full items-center gap-2 rounded-control px-2 py-1 text-left hover:bg-fill-hover"
-      >
+      <div className="flex w-full items-center gap-2 rounded-control px-2 py-1">
         {agent ? <AgentAvatar agent={agent} size="sm" /> : <Icon icon={AppIcons.agent} className="text-label-tertiary" />}
         <span className="min-w-0 flex-1">
           <span className="block truncate text-ui text-label">{agent?.name ?? fallback}</span>
           {agent?.description && <span className="block truncate text-caption text-label-tertiary">{agent.description}</span>}
         </span>
-      </Pressable>
+      </div>
     );
   };
   return (

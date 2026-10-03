@@ -62,6 +62,7 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useTeamStore } from '@/stores/teamStore';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import AgentsSection from './AgentsSection';
 
@@ -386,10 +387,71 @@ describe('AgentsSection — the detail window', () => {
     openDetail('我的助手');
     await choose('我的助手', tb().deleteItem);
     const question = await screen.findByRole('alertdialog');
-    // The list no longer holds the expert; the page has not shown that yet.
-    useDiscoveryStore.getState().agents.length = 0;
+    // The expert's file has gone; the page has not shown that yet.
+    vi.mocked(agentRegistry.getAgent).mockImplementation(() => undefined);
     fireEvent.click(within(question).getByRole('button', { name: tb().agentDeleteAnyway }));
     await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+    expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a team lists it', true, () => tb().agentDeleteAnyway],
+    ['no team lists it', false, () => getI18n().common.delete],
+  ] as const)('removes nothing when the name leads to another owner’s expert by the time the question is answered (%s)', async (_what, listed, answer) => {
+    if (listed) useTeamStore.setState({ teams: [reviewerInTeam] });
+    renderShelf('mine', [userMeta]);
+    openDetail('我的助手');
+    await choose('我的助手', tb().deleteItem);
+    const question = await screen.findByRole('alertdialog');
+    // A plugin's expert of the same name has taken the place of the user's own.
+    const pluginsOwn = { ...definitions['我的助手'], filePath: '/Users/tester/.abu/plugin-packages/official/weather/1.2.0/agents/mine/AGENT.md' };
+    vi.mocked(agentRegistry.getAgent).mockImplementation(() => pluginsOwn);
+    fireEvent.click(within(question).getByRole('button', { name: answer() }));
+    await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+    expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
+  });
+
+  it('asks before deleting an expert no team lists, in a question that names it', async () => {
+    renderShelf('mine', [userMeta]);
+    openDetail('我的助手');
+    await choose('我的助手', tb().deleteItem);
+    const question = await screen.findByRole('alertdialog', { name: tb().deleteItem });
+    expect(question).toHaveTextContent('我的助手');
+    expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+    expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
+    fireEvent.click(within(question).getByRole('button', { name: getI18n().common.cancel }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+    expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: '我的助手' })).toBeInTheDocument();
+
+    await choose('我的助手', tb().deleteItem);
+    const again = await screen.findByRole('alertdialog', { name: tb().deleteItem });
+    fireEvent.click(within(again).getByRole('button', { name: getI18n().common.delete }));
+    await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(fsRemove)).toHaveBeenCalledWith('/Users/tester/.abu/agents/mine', { recursive: true });
+  });
+
+  it('asks one question, the one about the teams, for an expert a team lists', async () => {
+    useTeamStore.setState({ teams: [reviewerInTeam] });
+    renderShelf('mine', [userMeta]);
+    openDetail('我的助手');
+    await choose('我的助手', tb().deleteItem);
+    const question = await screen.findByRole('alertdialog', { name: format(tb().agentDeleteInTeamsTitle, { name: '我的助手' }) });
+    fireEvent.click(within(question).getByRole('button', { name: tb().agentDeleteAnyway }));
+    await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('answers the question with no when the page leaves, and removes nothing', async () => {
+    useDiscoveryStore.setState({ agents: [userMeta], skills: [], isLoading: false });
+    const view = render(<AgentsSection source="mine" />);
+    openDetail('我的助手');
+    await choose('我的助手', tb().deleteItem);
+    await screen.findByRole('alertdialog');
+    view.unmount();
+    await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
   });
 
@@ -498,6 +560,7 @@ describe('AgentsSection — the detail window', () => {
     act(() => { useDiscoveryStore.setState({ refresh: vi.fn(async () => { useDiscoveryStore.setState({ agents: [badToolsMeta] }); }) }); });
     openDetail('我的助手');
     await choose('我的助手', tb().deleteItem);
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: getI18n().common.delete }));
     await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByText('我的助手')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(card('坏工具')));
@@ -555,15 +618,22 @@ describe('AgentsSection — the editor window', () => {
 
   it('after a save: reads the list again, closes the window and shows 我的', async () => {
     const refresh = vi.mocked(useDiscoveryStore.getState().refresh);
+    const setSource = vi.spyOn(useExtensionSourceStore.getState(), 'setSource');
     renderShelf('mine', [userMeta]);
     openDetail('我的助手');
     await choose('我的助手', tb().agentEdit);
     const editor = await screen.findByRole('dialog', { name: tb().agentEditorTitleEdit });
     refresh.mockClear();
+    // Typed input does not make a save ask before the window closes.
+    fireEvent.change(within(editor).getByLabelText(tb().agentEditorDescription), { target: { value: '改过的描述' } });
     fireEvent.click(within(editor).getByTestId('agent-editor-save'));
     await waitFor(() => expect(vi.mocked(saveItemToAbuDir)).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(setSource).toHaveBeenCalledTimes(1);
+    expect(setSource).toHaveBeenCalledWith('members', 'mine');
+    expect(refresh.mock.invocationCallOrder[0]).toBeLessThan(setSource.mock.invocationCallOrder[0]);
   });
 
   it('gives the focus to the expert’s card once the editor has closed', async () => {

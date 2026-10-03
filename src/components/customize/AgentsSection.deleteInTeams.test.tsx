@@ -2,13 +2,13 @@
 /**
  * Deleting an expert removes its file and nothing else — the teams that list
  * it keep a roleId no agent answers to. Until now that was one silent click
- * behind the "…" menu. When at least one team references the agent, the
- * delete asks first and names the teams; when none does, behaviour is
- * unchanged (no dialog).
+ * behind the "…" menu. Every delete asks first, with one question: when at
+ * least one team references the agent it names the teams; when none does it
+ * names the expert.
  */
 
 import type { ReactElement } from 'react';
-import { render as renderBare, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render as renderBare, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -105,10 +105,15 @@ describe('AgentsSection — deleting an agent that teams reference', () => {
     expect(screen.getByRole('dialog', { name: 'reviewer' })).toBeInTheDocument();
   });
 
-  it('deletes without a dialog when no team references the agent (unchanged behaviour)', async () => {
+  it('asks the plain delete question when no team references the agent, and deletes on 删除', async () => {
     await chooseDelete();
-    await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledTimes(1));
+    // One question, and not the one about teams: no team lists the expert.
+    const question = await screen.findByRole('alertdialog', { name: tb().deleteItem });
+    expect(question).toHaveTextContent('reviewer');
     expect(screen.queryByText(format(tb().agentDeleteInTeamsTitle, { name: 'reviewer' }))).toBeNull();
+    expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
+    fireEvent.click(within(question).getByRole('button', { name: getI18n().common.delete }));
+    await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledTimes(1));
     // The expert's own folder, with everything in it, and nothing else.
     expect(vi.mocked(fsRemove)).toHaveBeenCalledWith('/Users/tester/.abu/agents/reviewer', { recursive: true });
     // The list is read again once the folder has gone.

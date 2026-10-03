@@ -377,26 +377,31 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     if (!windowOpen.current && focusIsOnWindow()) focusExpertCard(rootRef.current, gone);
   }, [installedAgents]);
 
-  // 删除 removes the expert's folder for good. An expert no team lists is removed at once; one a
-  // team lists is asked about first, naming the expert and the teams. The question is asked over
-  // the open window, which answers it "no" when it goes. The answer acts on the list as it is at
-  // that moment: nothing is removed once the expert has left it.
+  // 删除 removes the expert's folder for good, so it is asked first, naming the expert: one
+  // question per delete. An expert a team lists gets the question that names those teams. The
+  // question is asked over the open window, which answers it "no" when it goes. The answer acts
+  // on the expert as it is at that moment: nothing is removed when the name no longer leads to
+  // the same file.
   const requestDelete = async (agent: SubagentDefinition) => {
     // The window stays on the page while it fades out; a key press there removes nothing.
     if (selectedRef.current !== agent.name || deleting.current) return;
+    const stillThatExpert = () => agentRegistry.getAgent(agent.name, { includeDisabledPlugins: true })?.filePath === agent.filePath;
     const using = teamsReferencing(agent);
-    if (using.teams.length > 0) {
-      const confirmed = await confirm({
-        title: format(t.toolbox.agentDeleteInTeamsTitle, { name: agent.name }),
-        message: using.leads.length
-          ? format(t.toolbox.agentDeleteLeaderInTeamsMessage, { count: String(using.leads.length), teams: using.leads.join('、') })
-          : format(t.toolbox.agentDeleteInTeamsMessage, { count: String(using.teams.length), teams: using.teams.join('、') }),
-        confirmLabel: t.toolbox.agentDeleteAnyway,
-        tone: 'danger',
-      });
-      if (!confirmed || deleting.current) return;
-      if (!useDiscoveryStore.getState().agents.some((a) => a.name === agent.name)) return;
-    }
+    const confirmed = await confirm(using.teams.length > 0 ? {
+      title: format(t.toolbox.agentDeleteInTeamsTitle, { name: agent.name }),
+      message: using.leads.length
+        ? format(t.toolbox.agentDeleteLeaderInTeamsMessage, { count: String(using.leads.length), teams: using.leads.join('、') })
+        : format(t.toolbox.agentDeleteInTeamsMessage, { count: String(using.teams.length), teams: using.teams.join('、') }),
+      confirmLabel: t.toolbox.agentDeleteAnyway,
+      tone: 'danger',
+    } : {
+      title: t.toolbox.deleteItem,
+      message: displayName(agent, locale),
+      confirmLabel: t.common.delete,
+      tone: 'danger',
+    });
+    if (!confirmed || deleting.current) return;
+    if (!stillThatExpert()) return;
     deleting.current = true;
     leaving.current = cardPlace(rootRef.current, 'expert', agent.name);
     try {
@@ -404,7 +409,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     } finally {
       deleting.current = false;
       // The delete failed and the expert is still there: its card keeps its place.
-      if (useDiscoveryStore.getState().agents.some((a) => a.name === agent.name)) leaving.current = null;
+      if (stillThatExpert()) leaving.current = null;
     }
   };
 

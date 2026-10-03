@@ -1146,6 +1146,28 @@ describe('TeamView', () => {
       expect(deleteTeam).not.toHaveBeenCalled();
     });
 
+    it('answers the question with no when the page leaves, and deletes nothing', async () => {
+      const deleteTeam = vi.spyOn(useTeamStore.getState(), 'deleteTeam');
+      const view = render(<TeamView />);
+      await askToDeleteTeam('数据小队');
+      view.unmount();
+      await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(deleteTeam).not.toHaveBeenCalled();
+      expect(useTeamStore.getState().teams).toHaveLength(2);
+    });
+
+    it('lists the leader and the members as plain rows: none of them is a button', () => {
+      render(<TeamView />);
+      openDetail('数据小队');
+      const detail = screen.getByRole('dialog', { name: '数据小队' });
+      expect(within(detail).getByText('分析师')).toBeInTheDocument();
+      expect(within(detail).getByText('校对')).toBeInTheDocument();
+      expect(within(detail).queryByRole('button', { name: /分析师/ })).toBeNull();
+      expect(within(detail).queryByRole('button', { name: /校对/ })).toBeNull();
+      expect(within(detail).getByText('校对').closest('[tabindex]')).toBe(detail);
+    });
+
     it.each([
       ['deletes nothing', 'team-detail-delete'],
       ['opens no edit window', 'team-detail-edit'],
@@ -1311,6 +1333,51 @@ describe('TeamView', () => {
         fireEvent.click(within(again).getByRole('button', { name: '放弃' }));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
         expect(useTeamStore.getState().teams).toHaveLength(2);
+      });
+
+      it.each([
+        ['a new team', () => openNewTeam()],
+        ['an edit', () => openTeamEditor('数据小队')],
+      ] as const)('counts an avatar choice as a change: %s asks before closing', async (_what, open) => {
+        render(<TeamView />);
+        await open();
+        fireEvent.click(screen.getByTestId('avatar-picker-trigger'));
+        fireEvent.click(screen.getByTestId('avatar-icon-users'));
+        // The picker closes first: one Escape, one layer.
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByTestId('avatar-picker')).toBeNull());
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(await screen.findByRole('alertdialog', { name: '放弃这些内容？' })).toBeInTheDocument();
+      });
+
+      it('keeps the window and what was typed when the save fails, and the button can be pressed again', async () => {
+        const { ensureRoleId } = await import('@/core/team/roleIdentity');
+        vi.mocked(ensureRoleId).mockRejectedValueOnce(new Error('disk is read-only'));
+        const updateTeam = vi.spyOn(useTeamStore.getState(), 'updateTeam');
+        render(<TeamView />);
+        await openTeamEditor('数据小队');
+        fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '新名字' } });
+        fireEvent.click(screen.getByTestId('team-save'));
+        await waitFor(() => expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', title: '保存专家团失败' })));
+        expect(updateTeam).not.toHaveBeenCalled();
+        expect(screen.getByRole('dialog', { name: '编辑专家团' })).toBeInTheDocument();
+        expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
+        await waitFor(() => expect(screen.getByTestId('team-save')).not.toHaveAttribute('aria-disabled'));
+        fireEvent.click(screen.getByTestId('team-save'));
+        await waitFor(() => expect(updateTeam).toHaveBeenCalledTimes(1));
+      });
+
+      it('closes without a question once typed input was saved', async () => {
+        const updateTeam = vi.spyOn(useTeamStore.getState(), 'updateTeam');
+        render(<TeamView />);
+        await openTeamEditor('数据小队');
+        fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '新名字' } });
+        fireEvent.click(screen.getByTestId('team-save'));
+        await waitFor(() => expect(updateTeam).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.queryByTestId('team-name-input')).toBeNull());
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+        expect(useTeamStore.getState().teams.find((item) => item.id === 't1')?.name).toBe('新名字');
       });
 
       it('closes at once when nothing was changed, for a new team and for an edit', async () => {

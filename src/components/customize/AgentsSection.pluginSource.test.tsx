@@ -12,7 +12,7 @@
  */
 
 import type { ReactElement } from 'react';
-import { render as renderBare, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render as renderBare, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -230,8 +230,9 @@ describe('AgentsSection — the store\'s normalised source wins over the registr
     const remove = screen.getByRole('menuitem', { name: tb().deleteItem });
     expect(remove).not.toHaveAttribute('aria-disabled');
 
-    // …and the handler behind the entry actually proceeds to the disk delete.
+    // …and the handler behind the entry actually proceeds to the disk delete, once the question is answered.
     fireEvent.click(remove);
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: getI18n().common.delete }));
     await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledWith('/Users/tester/.abu/agents/reviewer', { recursive: true }));
   });
 

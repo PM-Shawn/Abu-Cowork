@@ -340,6 +340,20 @@ function assertTrustedIpcSender(event) {
   return result.record;
 }
 
+/**
+ * Whether `rawUrl` is the registered page of the main window's WebContents.
+ * Used by Chromium permission handlers, which see a WebContents + URL rather
+ * than an IPC event.
+ *
+ * @param {object | null | undefined} webContents
+ * @param {string} rawUrl
+ */
+function isTrustedMainWindowPage(webContents, rawUrl) {
+  const record = webContents && trustedWebContents.get(webContents);
+  if (!record || record.label !== 'main' || isDestroyedSender(webContents)) return false;
+  return typeof rawUrl === 'string' && isAllowedRegisteredPage(record, rawUrl);
+}
+
 function assertTrustedMainIpcSender(event) {
   const record = assertTrustedIpcSender(event);
   if (record.label !== 'main') {
@@ -655,6 +669,7 @@ module.exports = {
   validateTrustedIpcSender,
   assertTrustedIpcSender,
   assertTrustedMainIpcSender,
+  isTrustedMainWindowPage,
   canonicalFilePage,
   isWindowsAbsolutePath,
   canonicalNavigatedFilePage,

@@ -24,7 +24,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, dialog, Menu, nativeTheme } = require('electron');
+const { app, BrowserWindow, dialog, Menu, nativeTheme, session, systemPreferences } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const {
@@ -42,7 +42,12 @@ const {
   sidecarPathFor,
 } = require('./appEnv.cjs');
 const { initDeepLink, handleSecondInstanceArgv, getActiveScheme } = require('./deepLinkHost.cjs');
-const { configureIpcPayloadLimits, registerPrivilegedWindow } = require('./securityBoundary.cjs');
+const {
+  configureIpcPayloadLimits,
+  isTrustedMainWindowPage,
+  registerPrivilegedWindow,
+} = require('./securityBoundary.cjs');
+const { installMicrophonePermissions } = require('./microphonePermissions.cjs');
 const { configureMcpBridgeTestHooks } = require('./mcpBridge.cjs');
 const { readE2ETestHooks } = require('./e2eTestHooks.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
@@ -482,6 +487,13 @@ if (!app.requestSingleInstanceLock()) {
     // Fallback for a platform where the pre-ready resolution above failed;
     // idempotent, so it is a no-op on the normal path.
     configureRuntimeObservability(app);
+    // Voice input: only the main window's page may capture audio (and on macOS
+    // only after OS consent). Installed before any window can request media.
+    installMicrophonePermissions(session.defaultSession, {
+      platform: process.platform,
+      systemPreferences,
+      isTrustedMainWindowPage,
+    });
     // Quiet E2E launches: drop the Dock icon before any window exists so the
     // app never becomes frontmost (see windowShowPolicy.cjs).
     if (windowShowPolicy.hideDock && app.dock) {

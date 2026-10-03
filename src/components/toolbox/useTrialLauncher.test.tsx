@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
 import { useTrialLauncher } from './useTrialLauncher';
 
 // 「立即试用」 is a three-store dance (new conversation → prefill the composer →
@@ -45,7 +46,7 @@ vi.mock('@/i18n', () => ({
 
 function Harness({ item }: { item: { name: string; description?: string | null } }) {
   const launchTrial = useTrialLauncher();
-  return <button onClick={() => launchTrial(item)}>trial</button>;
+  return <Button onClick={() => launchTrial(item)}>trial</Button>;
 }
 
 function launch(item: { name: string; description?: string | null }) {

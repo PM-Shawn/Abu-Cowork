@@ -243,6 +243,8 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/team/TeamView*.{ts,tsx}',
   'src/components/customize/AgentsSection*.{ts,tsx}',
   'src/components/customize/AgentEditor*.{ts,tsx}',
+  // The whole toolbox directory has migrated: files added to it later are checked from their first commit.
+  'src/components/toolbox/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

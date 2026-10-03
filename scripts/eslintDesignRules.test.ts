@@ -269,4 +269,16 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     // customize/ has no directory entry: the files nothing renders stay on the old rules.
     expect(await messages(code, 'src/components/customize/AgentDetailModal.tsx')).toEqual([]);
   });
+
+  it('checks the extensions and experts files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/toolbox/ToolCard.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/toolbox/plugins/MarketplaceBrowser.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/customize/MCPSection.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/team/TeamView.tsx')).not.toEqual([]);
+    // The directory entry: a toolbox file no file-by-file entry names is checked as well.
+    expect(await messages(code, 'src/components/toolbox/NewFileOfTheDirectory.tsx')).not.toEqual([]);
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/toolbox/useTrialLauncher.ts')).not.toEqual([]);
+  });
 });

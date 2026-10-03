@@ -476,8 +476,38 @@ the focus to its way back, and to the control that opened it when it is left (`C
 that took its place, else the one before it, else the add button. An icon-only `Pressable` sits in
 a `Tooltip` with its name, so the name shows on keyboard focus. `SystemSettingsDialog` is `memo`
 with no props: `App` renders for every piece of a streamed reply and the settings window must not
-render with it. Settings files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; only `ToolboxModal`
-(batch 7) and `LanguageSection` stay out.
+render with it. Settings files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; only
+`LanguageSection` stays out.
+
+**Other pages (batch 7a)**: the extensions and experts pages share one shell — `toolbox/TopTabNav`
+(buttons, not tabs: E2E reads them by button name), `SourceSubNav` (a `tablist`), `ToolCard`
+(`div role="button"` because it nests a `Switch`), `ToolGrid`, `SourceBadge` (a `Tag`), and the
+window chrome `ToolDetailModal` (a `Dialog` with a hidden title named after the item). Its name row
+— avatar, name as a `div`, subtitle and actions — sits in the `Dialog` `header` slot, which stays
+above the scrolling content; the page's `h2` stays in the body.
+
+Menus: `InstalledItemMenu` and `ToolboxCreateMenu` are `Menu`s. A menu item that opens a window
+records the action in a ref; `onCloseAutoFocus` focuses the trigger, then runs it. `Menu
+contentProps` and `MenuItem testId` carry the test ids E2E reads.
+
+Buttons: a page's one `primary` is its 「添加」 button; card buttons are `secondary size="sm"`; a
+window's `primary` is its main action.
+
+Deletes: three deletes ask first through `useConfirm` and re-read their target by a stable identity
+at answer time — a skill (file path), a connector (store entry), an expert (file path through the
+registry; the "used by teams" question stays for that case).
+
+Rendering: pages that `App` re-renders per streamed piece (`ExtensionsView`, `TeamView`) are `memo`
+with no props and read stores through selectors. Cards in long grids are `memo` and mount no
+Tooltip, Menu or Select root, so `IconButton` is not used on cards.
+
+Private repo: it renders `ToolCard`, `ToolGrid`, `ToolDetailModal`, `MarketplaceEntryRow`,
+`InstallDisclosureDialog` and `InstalledItemMenu`; their props only grow until batch 9
+(`EnterprisePluginTab` mounts one `InstalledItemMenu` per row — batch 9 moves it to one menu per
+list).
+
+Migration list: `src/components/toolbox/**` is on it; `customize/` and `common/` join file by file
+(unused legacy files there wait for batch 10).
 
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one
@@ -488,7 +518,17 @@ for feedback. Icon-only buttons are `IconButton` with a `label`. A tooltip is no
 Escape hides it and still acts on the layer underneath, and focus moved by code after a
 pointer action opens no tooltip (after a key press it does). A confirmation from
 `useConfirm()` is a question about the current dialog: it stacks over an open dialog, and
-it answers `false` when another dialog opens and replaces it. `Toaster` renders its own
+it answers `false` when another dialog opens and replaces it. A question asked inside the
+click handler ends with its window; one asked after an `await` keeps a mounted/open check.
+`useConfirm` freezes its text at asking time, so the handler takes the names before asking
+and acts only on those that still exist at the answer. `Dialog` has a `header` slot outside
+the scroll area. When a dialog leaves with a menu still fading in it, Radix leaves
+`pointer-events: none` on `body`; `ds/layer-context.ts` clears it once no `[data-ds-layer]`
+remains, and it is the only code that writes `pointer-events` on `body` — page code never
+does. `MultiCombobox` is the multi-select with a search box: chosen options carry
+`aria-checked`, Enter or a click toggles one and the list stays open, and Space types into
+the search box. In `Combobox` and `MultiCombobox` Tab closes the list and keeps focus on the
+trigger. Option objects are stable (`useMemo`), because the rows are `memo`. `Toaster` renders its own
 notification list (a labelled region whose `aria-live="polite"` area holds the list, newest
 last) and
 does not use Radix Toast, so a toast never takes Escape from an open dialog. Every floating

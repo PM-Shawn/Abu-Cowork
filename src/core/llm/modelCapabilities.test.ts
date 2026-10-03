@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveCapabilities,
-  resolveEffectiveContextWindow,
   computeReasoningParams,
   isReasoningStarvation,
   deriveDeclaredDefaults,
   isKnownModel,
   resolveAgentModelCapabilities,
+  hasVisionName,
   CONTENT_FLOOR_TOKENS,
+  reserveOutputTokens,
+  type ModelCapabilities,
 } from './modelCapabilities';
 import { classifyThinking } from './model-data/classify';
 
@@ -128,6 +130,42 @@ describe('modelCapabilities', () => {
     });
   });
 
+  describe('vision from the model name', () => {
+    it.each([
+      'qwen3-vl-8b',
+      'qwen/qwen3-vl-8b',
+      'Qwen2.5-VL-7B-Instruct',
+      'qwen2.5vl:7b',
+      'deepseek-vl2',
+      'llama-3.2-11b-vision-instruct',
+      'minicpm-v',
+      'qwen2.5-omni-7b',
+    ])('treats %s as able to see images', (id) => {
+      expect(hasVisionName(id)).toBe(true);
+      expect(resolveCapabilities(id).vision).toBe(true);
+    });
+
+    it.each(['qwen3-8b', 'deepseek-v4-flash', 'mimo-v2.5-pro', 'glm-5', 'devlin-7b'])('does not read %s as a vision model', (id) => {
+      expect(hasVisionName(id)).toBe(false);
+    });
+
+    it('keeps the family limits when only the vision flag changes', () => {
+      const vl = resolveCapabilities('qwen3-vl-8b');
+      expect(vl.contextWindow).toBe(131072);
+      expect(vl.maxOutputTokens).toBe(8192);
+    });
+
+    it('checks a new local vision model by default', () => {
+      expect(deriveDeclaredDefaults('qwen3-vl-8b').supportsImages).toBe(true);
+      expect(deriveDeclaredDefaults('my-private-vl-model').supportsImages).toBe(true);
+      expect(deriveDeclaredDefaults('totally-unknown-proxy-model-xyz').supportsImages).toBe(false);
+    });
+
+    it('does not make an unknown vision-named model count as a known model', () => {
+      expect(isKnownModel('my-private-vl-model')).toBe(false);
+    });
+  });
+
   describe('computeReasoningParams — content floor', () => {
     it('qwen: reserves the content floor below max_tokens via thinking_budget', () => {
       const caps = resolveCapabilities('qwen3.7-max');
@@ -172,6 +210,43 @@ describe('modelCapabilities', () => {
     });
   });
 
+  describe('computeReasoningParams — the answer reserve follows the window', () => {
+    const plain: ModelCapabilities = {
+      vision: false, thinking: false, toolResultImages: 'none', documentBlock: false,
+      maxOutputTokens: 8192, contextWindow: 131072,
+    };
+
+    it('reserves a quarter of an 8K window, leaving room for input', () => {
+      expect(computeReasoningParams(plain, 32768, 8192).maxTokens).toBe(2048);
+    });
+
+    it('keeps min(model cap, user setting) when the window is large', () => {
+      expect(computeReasoningParams(plain, 4096, 200000).maxTokens).toBe(4096);
+      expect(computeReasoningParams(plain, 32768, 200000).maxTokens).toBe(8192);
+    });
+
+    it('also caps a reasoning model and keeps its thinking budget within the answer budget', () => {
+      const params = computeReasoningParams({ ...plain, thinking: 'qwen', maxOutputTokens: 65536 }, 32768, 16384);
+      expect(params.maxTokens).toBe(4096);
+      expect(params.thinkingBudget).toBe(1024);
+
+      const small = computeReasoningParams({ ...plain, thinking: 'qwen', maxOutputTokens: 65536 }, 32768, 4096);
+      expect(small.maxTokens).toBe(1024);
+      expect(small.thinkingBudget).toBe(512);
+      expect(small.thinkingBudget).toBeLessThan(small.maxTokens);
+    });
+
+    it('is unchanged when no window is given', () => {
+      expect(computeReasoningParams(plain, 32768).maxTokens).toBe(8192);
+    });
+  });
+
+  describe('reserveOutputTokens', () => {
+    it('never goes below one token', () => {
+      expect(reserveOutputTokens(8192, 2)).toBe(1);
+    });
+  });
+
   describe('isReasoningStarvation', () => {
     it('true when truncated with no content and no tool calls', () => {
       expect(isReasoningStarvation('max_tokens', 0, 0)).toBe(true);
@@ -188,35 +263,6 @@ describe('modelCapabilities', () => {
 
     it('false on normal end_turn', () => {
       expect(isReasoningStarvation('end_turn', 0, 0)).toBe(false);
-    });
-  });
-
-  describe('resolveEffectiveContextWindow', () => {
-    it('returns model cap when no user setting or discovered value provided', () => {
-      // mimo-v2.5-pro falls back to FALLBACK_DEFAULT which has contextWindow=128000
-      expect(resolveEffectiveContextWindow('mimo-v2.5-pro')).toBe(128_000);
-    });
-
-    it('does NOT overstate when user setting exceeds model cap (the 200k-on-128k bug)', () => {
-      // User has settingsStore default of 200000, but the model is 128k.
-      // The effective window must be clamped to 128k so the indicator does not
-      // claim more headroom than the model actually has.
-      expect(resolveEffectiveContextWindow('mimo-v2.5-pro', 200_000)).toBe(128_000);
-    });
-
-    it('honours a smaller user setting as an intentional self-limit', () => {
-      // If the user sets a tighter window than the model cap, respect it.
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 100_000)).toBe(100_000);
-    });
-
-    it('clamps further when runtime-discovered cap is smaller still', () => {
-      // Provider returned a smaller window at runtime (e.g. tenant-scoped quota).
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 200_000, 50_000)).toBe(50_000);
-    });
-
-    it('ignores invalid (zero / negative / undefined) candidates', () => {
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 0)).toBe(200_000);
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', undefined, -5)).toBe(200_000);
     });
   });
 

@@ -249,7 +249,7 @@ async function pickModel(page: Page, label: string): Promise<void> {
   await composerModelButton(page).click();
   // Rows are role=button divs; the toolbar trigger is a real <button>. The
   // provider list is the last section, so `.last()` skips the Recent entry.
-  const row = page.locator('div[role="button"]').filter({ hasText: new RegExp(`^${label}$`) }).last();
+  const row = page.locator('div[role="button"]').filter({ has: page.getByText(label, { exact: true }) }).last();
   await expect(row).toBeVisible();
   await row.click();
   await expectComposerModel(page, label);

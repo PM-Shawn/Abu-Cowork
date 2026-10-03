@@ -349,11 +349,18 @@ describe('evaluateBrowserGate', () => {
         expect(scoped.intermediates.scriptAllowedByPolicy).toBe(true);
       });
 
-      it('never offers "always allow this site"', () => {
+      it('offers "always allow scripts on this site", like any other operation', () => {
         expect(evaluateBrowserGate(facts({
           opClass: 'scripting',
           siteVerdict: 'default',
-        })).ask?.offersPersistentGrant).toBe(false);
+        })).ask?.offersPersistentGrant).toBe(true);
+      });
+
+      it('offers no standing grant for scripts on a high-risk site', () => {
+        expect(evaluateBrowserGate(facts({
+          opClass: 'scripting',
+          siteVerdict: 'high-risk',
+        })).ask?.offersPersistentGrant).not.toBe(true);
       });
     });
 

@@ -7,15 +7,16 @@ import type { ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 
-const mockResolveWindow = vi.hoisted(() => vi.fn((_modelId: string, _user?: number) => 2000));
-vi.mock('@/core/llm/modelCapabilities', async (orig) => ({
-  ...(await orig<typeof import('@/core/llm/modelCapabilities')>()),
-  resolveEffectiveContextWindow: (m: string, u?: number) => mockResolveWindow(m, u),
+const mockResolveWindow = vi.hoisted(() => vi.fn((_inputs: { modelId: string }) => ({ size: 2000, source: 'estimate' as const })));
+vi.mock('@/core/llm/contextWindow', async (orig) => ({
+  ...(await orig<typeof import('@/core/llm/contextWindow')>()),
+  resolveContextWindow: (inputs: { modelId: string }) => mockResolveWindow(inputs),
 }));
 
 import ContextIndicator from './ContextIndicator';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
 import type { Conversation } from '../../types';
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
@@ -130,8 +131,50 @@ describe('ContextIndicator', () => {
     });
     mockResolveWindow.mockClear();
     render(<ContextIndicator conversationId="c1" />);
-    expect(mockResolveWindow).toHaveBeenCalledWith('conv-model', expect.anything());
-    expect(mockResolveWindow).not.toHaveBeenCalledWith('global-model', expect.anything());
+    expect(mockResolveWindow).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'conv-model' }));
+    expect(mockResolveWindow).not.toHaveBeenCalledWith(expect.objectContaining({ modelId: 'global-model' }));
+  });
+
+  it('feeds the fallback window with what the service reported and what the user typed', () => {
+    useSettingsStore.setState({
+      activeModel: { providerId: 'lmstudio', modelId: 'qwen/qwen3-8b' },
+      providers: [{
+        id: 'lmstudio', source: 'builtin', name: 'LM Studio', enabled: true, apiFormat: 'openai-compatible',
+        baseUrl: 'http://127.0.0.1:1234/v1', apiKey: '', status: 'verified', sortOrder: 0,
+        models: [{ id: 'qwen/qwen3-8b', label: 'qwen3', contextWindow: 8192, declaredCapabilities: { maxInputTokens: 16384 } }],
+      }],
+    });
+    setConv({ messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 0 }] });
+    mockResolveWindow.mockClear();
+    render(<ContextIndicator conversationId="c1" />);
+    expect(mockResolveWindow).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: 'qwen/qwen3-8b',
+      probed: 8192,
+      userSetting: 16384,
+      isLocal: true,
+    }));
+  });
+
+  it('feeds the fallback window with the learned value and what the service reported when it was learned', () => {
+    useSettingsStore.setState({
+      activeModel: { providerId: 'lmstudio', modelId: 'qwen/qwen3-8b' },
+      providers: [{
+        id: 'lmstudio', source: 'builtin', name: 'LM Studio', enabled: true, apiFormat: 'openai-compatible',
+        baseUrl: 'http://127.0.0.1:1234/v1', apiKey: '', status: 'verified', sortOrder: 0,
+        models: [{ id: 'qwen/qwen3-8b', label: 'qwen3', contextWindow: 8192 }],
+      }],
+    });
+    useDiscoveredCapsStore.setState({ capabilities: {} });
+    useDiscoveredCapsStore.getState().recordContextWindow('lmstudio', 'qwen/qwen3-8b', 6000, 8192);
+    setConv({ messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 0 }] });
+    mockResolveWindow.mockClear();
+    render(<ContextIndicator conversationId="c1" />);
+    expect(mockResolveWindow).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: 'qwen/qwen3-8b',
+      discovered: 6000,
+      discoveredProbe: 8192,
+    }));
+    useDiscoveredCapsStore.setState({ capabilities: {} });
   });
 
   it('adds only the messages after messageCountAtPublish, so streaming output moves the ring', () => {

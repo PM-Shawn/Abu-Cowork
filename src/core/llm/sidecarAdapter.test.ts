@@ -218,6 +218,24 @@ describe('SidecarLLMAdapter', () => {
       });
     });
 
+    it('rebuilds a local first-response timeout as the same non-retryable error', async () => {
+      requestMock.mockRejectedValue(
+        new SidecarRpcError(-32000, 'local server timeout', {
+          name: 'LLMError',
+          code: 'local_server_timeout',
+          retryable: false,
+          message: '本地服务 600 秒内没有开始回答',
+        }),
+      );
+      const adapter = new SidecarLLMAdapter('ollama');
+
+      await expect(adapter.chat([], { model: 'm', apiKey: '' }, () => {})).rejects.toMatchObject({
+        code: 'local_server_timeout',
+        retryable: false,
+        message: '本地服务 600 秒内没有开始回答',
+      });
+    });
+
     it.each([
       '{"private":"legacy provider body"}',
       '<html><body>legacy proxy response</body></html>',
@@ -288,6 +306,24 @@ describe('SidecarLLMAdapter', () => {
       expect(caught).toMatchObject({ code: 'network_error', retryable: true, message: 'Sidecar transport failed' });
       expect(formatLlmTerminalError(caught)).toBe('Sidecar transport failed');
       expect(JSON.stringify(caught)).not.toContain('plain transport body');
+    });
+
+    it('carries the learned context limit across the wire', async () => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'too long', {
+        name: 'LLMError', code: 'context_too_long', retryable: false, statusCode: 400, contextLimit: 8192, message: 'too long',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'context_too_long', contextLimit: 8192 });
+    });
+
+    it('treats a context limit on any other error as a corrupt response', async () => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'x', {
+        name: 'LLMError', code: 'rate_limit', retryable: true, contextLimit: 8192, message: 'x',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'unknown', message: 'Invalid sidecar LLM error response' });
     });
   });
 

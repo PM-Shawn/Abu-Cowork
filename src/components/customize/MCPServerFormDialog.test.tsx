@@ -392,8 +392,21 @@ describe('MCPServerFormDialog · closing', () => {
     render(<Host onClose={onClose} />);
     fireEvent.click(screen.getByRole('radio', { name: tb().jsonMode }));
     fireEvent.click(screen.getByRole('radio', { name: tb().formMode }));
+    fireEvent.click(screen.getByRole('radio', { name: tb().transportHttp }));
+    expect(screen.getByRole('radio', { name: tb().transportHttp })).toBeChecked();
     fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('still asks about text typed in a field of the other transport', async () => {
+    const onClose = vi.fn();
+    render(<Host onClose={onClose} />);
+    fireEvent.click(screen.getByRole('radio', { name: tb().transportHttp }));
+    fireEvent.change(input('URL'), { target: { value: 'https://example.test/mcp' } });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(await screen.findByRole('alertdialog', { name: ds().discardTitle })).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('opens an edit with the connector it holds as the starting point', () => {

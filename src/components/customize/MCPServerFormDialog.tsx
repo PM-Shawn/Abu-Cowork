@@ -56,12 +56,15 @@ interface Content extends Draft {
   nameLockedHint: string | undefined;
 }
 
-const VALUE_KEYS: (keyof MCPServerFormValues)[] = ['name', 'transport', 'command', 'args', 'env', 'url', 'headers'];
+// The fields that hold typed text. The transport is a choice between two sets of fields: it is
+// shown, and choosing one loses nothing.
+const TYPED_KEYS: (keyof MCPServerFormValues)[] = ['name', 'command', 'args', 'env', 'url', 'headers'];
 
-const sameDraft = (a: Draft, b: Draft) => a.jsonInput === b.jsonInput && VALUE_KEYS.every((key) => a.values[key] === b.values[key]);
+const sameDraft = (a: Draft, b: Draft) => a.jsonInput === b.jsonInput && TYPED_KEYS.every((key) => a.values[key] === b.values[key]);
 
 const sameContent = (a: Content | null, b: Content) => a !== null
   && sameDraft(a, b)
+  && a.values.transport === b.values.transport
   && a.mode === b.mode
   && a.addMode === b.addMode
   && a.serverNameError === b.serverNameError

@@ -1564,13 +1564,30 @@ describe('MCPSection · the page and its add window', () => {
   });
 
   it('asks before discarding what was typed, and opens blank the next time', async () => {
-    render(<FormHost />);
+    function Reopenable() {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <Button data-testid="reopen" onClick={() => setOpen(true)}>add</Button>
+          <MCPSection source="mine" showAddForm={open} onAddFormChange={setOpen} />
+        </>
+      );
+    }
+    render(<Reopenable />);
     type(tb().serverName, 'my-server');
+    type(tb().serverCommand, 'node');
+    type(ENV_PLACEHOLDER, `{"TOKEN":"${ENV_VALUE}"}`);
     fireEvent.keyDown(document, { key: 'Escape' });
     const asked = await screen.findByRole('alertdialog', { name: getI18n().designSystem.discardTitle });
     expect(field(tb().serverName).value).toBe('my-server');
     fireEvent.click(within(asked).getByRole('button', { name: getI18n().designSystem.discard }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    fireEvent.click(screen.getByTestId('reopen'));
+    await screen.findByRole('dialog', { name: tb().addCustomServer });
+    expect(field(tb().serverName).value).toBe('');
+    expect(field(tb().serverCommand).value).toBe('');
+    expect(field(ENV_PLACEHOLDER).value).toBe('');
   });
 
   it('does not ask about a catalog entry it was opened with', async () => {

@@ -1285,6 +1285,65 @@ describe('Escape while the layer above fades out', () => {
     expect(document.body.style.pointerEvents).toBe('');
   });
 
+  it('gives the page its pointer input back when the dialog leaves before the context menu that was fading in it', () => {
+    render(
+      <Window onOpenChange={() => {}}>
+        <ContextMenu content={<MenuItem>Copy</MenuItem>}><div>Message body</div></ContextMenu>
+      </Window>,
+      { wrapper: DesignSystemProvider },
+    );
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(document.body.style.pointerEvents).toBe('none');
+    keepClosingLayersOnScreen();
+    escape();
+    escape();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]');
+    expect(dialog).not.toBeNull();
+    expect(document.querySelector('[role="menu"][data-state="closed"]')).not.toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { dialog!.dispatchEvent(ended); });
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+  });
+
+  it('gives the page its pointer input back when the owner takes the dialog away while its menu fades', async () => {
+    const user = userEvent.setup();
+    // The page that owns the dialog leaves: the dialog and its menu go in one step, with no fade.
+    function Page({ shown }: { shown: boolean }) {
+      return shown ? <Window onOpenChange={() => {}}>{more}</Window> : null;
+    }
+    const view = render(<Page shown />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect(document.body.style.pointerEvents).toBe('none');
+    keepClosingLayersOnScreen();
+    escape();
+    expect(document.querySelector('[role="menu"][data-state="closed"]')).not.toBeNull();
+    expect(document.querySelector('[role="dialog"][data-state="open"]')).not.toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      view.rerender(<Page shown={false} />);
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+  });
+
   it('leaves pointer input off while a layer is still on the page', async () => {
     const user = userEvent.setup();
     render(<Window onOpenChange={() => {}}>{more}</Window>, { wrapper: DesignSystemProvider });

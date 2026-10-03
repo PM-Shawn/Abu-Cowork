@@ -455,6 +455,32 @@ describe('SkillUploadModal · the window', () => {
     expect(mockInstall).toHaveBeenCalledTimes(1);
   });
 
+  // The question is asked from the import's continuation, one render after the import ends. A
+  // window that closes in that same render leaves the question on the page with no window under it.
+  it('overwrites nothing when the answer comes after the window closed in the render the question arrived in', async () => {
+    let finish: (result: typeof exists) => void = () => {};
+    mockInstall.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    mockInstall.mockResolvedValue(installed);
+    mockOpenDialog.mockResolvedValue('/Users/test/my-skill' as never);
+    const onInstalled = vi.fn();
+    const view = render(<SkillUploadModal open onClose={vi.fn()} onInstalled={onInstalled} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Drop a folder' }));
+    await waitFor(() => expect(mockInstall).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      finish(exists);
+      for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+      view.rerender(<SkillUploadModal open={false} onClose={vi.fn()} onInstalled={onInstalled} />);
+    });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'Overwrite' }));
+    await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+
+    expect(mockInstall).toHaveBeenCalledTimes(1);
+    expect(onInstalled).not.toHaveBeenCalled();
+  });
+
   it('imports a dropped folder, ignores a drop while that import runs, and listens only while it is open', async () => {
     let finish: (result: typeof installed) => void = () => {};
     mockInstall.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));

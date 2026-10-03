@@ -11,7 +11,7 @@ import AuthoredPluginList from './AuthoredPluginList';
 import InstalledPluginList from './InstalledPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
-import { focusAddButton, focusIsOnWindow } from './cardFocus';
+import { focusByTestId, focusIsOnWindow } from '../cardFocus';
 import type { ExtensionSource } from '../extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
@@ -76,7 +76,7 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
   // Recovery succeeded: its message leaves with the button that was pressed. The focus goes to the page's 「添加」.
   const hadRecoveryError = useRef(false);
   useLayoutEffect(() => {
-    if (hadRecoveryError.current && !recoveryError && focusIsOnWindow()) focusAddButton();
+    if (hadRecoveryError.current && !recoveryError && focusIsOnWindow()) focusByTestId('plugin-create-trigger');
     hadRecoveryError.current = Boolean(recoveryError);
   }, [recoveryError]);
 
@@ -162,7 +162,7 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
             if (event.defaultPrevented || (from !== null && from !== document.body && from.isConnected)) return;
             event.preventDefault();
             (scrollParent?.querySelector<HTMLElement>('[data-marketplace-toolbar] button') ?? null)?.focus();
-            if (focusIsOnWindow()) focusAddButton();
+            if (focusIsOnWindow()) focusByTestId('plugin-create-trigger');
           }}
         />
       )}

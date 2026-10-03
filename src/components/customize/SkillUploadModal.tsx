@@ -277,7 +277,9 @@ export default function SkillUploadModal({ open = true, onClose, onInstalled, on
     });
     if (pendingConflict.current !== conflict) return;
     pendingConflict.current = null;
-    if (!confirmed || importing.current) return;
+    // The question can reach the page in the render its window closes in; nothing then ends it,
+    // so the answer checks that the window is still there.
+    if (!confirmed || !mounted.current || !openRef.current || importing.current) return;
     await handleImportOverwrite(conflict);
   };
 

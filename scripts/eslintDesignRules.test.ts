@@ -201,7 +201,10 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
       expect(await messages(code, file), file).not.toEqual([]);
     }
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/toolbox/plugins/cardFocus.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/plugins/serverCommand.ts')).not.toEqual([]);
+    // The focus helper the card grids of the page share.
+    expect(await messages(icon, 'src/components/toolbox/cardFocus.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/cardFocus.test.ts')).not.toEqual([]);
   });
 
   it('checks every file of the skills page, tests and helpers included', async () => {
@@ -222,7 +225,7 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     }
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/customize/skillHistoryTime.ts')).not.toEqual([]);
-    expect(await messages(icon, 'src/components/toolbox/skills/skillCardFocus.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/skills/isSystemSkill.ts')).not.toEqual([]);
     // customize/ has no directory entry: the pages that migrate in later tasks and the unused files stay on the old rules.
     expect(await messages(code, 'src/components/customize/MCPSection.tsx')).toEqual([]);
     expect(await messages(code, 'src/components/customize/SkillDetailModal.tsx')).toEqual([]);

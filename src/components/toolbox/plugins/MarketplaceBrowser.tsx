@@ -38,7 +38,9 @@ import InstalledPluginCard from './InstalledPluginCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import UninstallPluginDialog from './UninstallPluginDialog';
-import { focusIsOnWindow, pluginCardIndex, pluginCardOrNeighbour, pluginCardProps, type PluginCardKind } from './cardFocus';
+import { cardIndex, cardOrNeighbour, cardProps, focusIsOnWindow } from '../cardFocus';
+
+type PluginCardKind = 'plugin-market' | 'plugin-orphan';
 
 /** The centred content column, the width the 「我的」 shelf has. `gutter` is the page's side padding. */
 function Column({ gutter, className, children }: { gutter: string; className?: string; children: ReactNode }) {
@@ -153,7 +155,7 @@ export default function MarketplaceBrowser({
   const opener = useRef<{ kind: PluginCardKind; id: string; index: number } | null>(null);
   const openedFrom = useRef<Element | null>(null);
   const noteOpener = useCallback((kind: PluginCardKind, id: string) => {
-    opener.current = { kind, id, index: rootRef.current ? pluginCardIndex(rootRef.current, kind, id) : -1 };
+    opener.current = { kind, id, index: cardIndex(rootRef.current, kind, id) };
     openedFrom.current = document.activeElement;
   }, []);
   const focusToolbar = useCallback(() => {
@@ -163,7 +165,7 @@ export default function MarketplaceBrowser({
     const root = rootRef.current;
     const from = opener.current;
     if (!root || !from) return;
-    const card = pluginCardOrNeighbour(root, from.kind, from.id, from.kind === 'orphan' ? from.index : -1);
+    const card = cardOrNeighbour(root, from.kind, from.id, from.kind === 'plugin-orphan' ? from.index : -1);
     if (card) card.focus();
     else focusToolbar();
   }, [focusToolbar]);
@@ -319,7 +321,7 @@ export default function MarketplaceBrowser({
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
       if (!selected || entriesState.kind !== 'ready') return;
-      noteOpener('market', entry.name);
+      noteOpener('plugin-market', entry.name);
       releasePreparation();
       const epoch = (planEpochRef.current += 1);
       setFlow({ kind: 'planning', entry });
@@ -482,7 +484,7 @@ export default function MarketplaceBrowser({
       name={entryLabel(entry)}
       description={entry.description}
       testId="plugin-marketplace-entry"
-      onClick={() => { noteOpener('market', entry.name); setManaging(installedRecord); }}
+      onClick={() => { noteOpener('plugin-market', entry.name); setManaging(installedRecord); }}
       actions={<>
         {hasUpdate && <Button variant="secondary" size="sm" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button>}
         {isApp && <Button variant="secondary" size="sm" data-testid="plugin-enter-app" aria-label={`${tb.pluginsEnter}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); enterApp(installedRecord.key); }}>{tb.pluginsEnter}</Button>}
@@ -614,7 +616,7 @@ export default function MarketplaceBrowser({
               data-testid="plugin-marketplace-list"
               data={entryRows}
               computeItemKey={(_, row) => row[0].name}
-              itemContent={(_, row) => <div className="pb-4"><ToolGrid>{row.map(entry => <div key={entry.name} className="h-full" {...pluginCardProps('market', entry.name)}>{renderEntry(entry)}</div>)}</ToolGrid></div>}
+              itemContent={(_, row) => <div className="pb-4"><ToolGrid>{row.map(entry => <div key={entry.name} className="h-full" {...cardProps('plugin-market', entry.name)}>{renderEntry(entry)}</div>)}</ToolGrid></div>}
             />
           </div>
         </div>
@@ -650,12 +652,12 @@ export default function MarketplaceBrowser({
             <div className="mt-2">
               <ToolGrid>
                 {orphans.map((plugin) => (
-                  <div key={plugin.key} className="h-full" {...pluginCardProps('orphan', plugin.key)}>
+                  <div key={plugin.key} className="h-full" {...cardProps('plugin-orphan', plugin.key)}>
                     <MarketplaceEntryRow
                       testId="plugin-orphan-row"
                       name={plugin.name}
                       description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
-                      onClick={() => { noteOpener('orphan', plugin.key); setManaging(plugin); }}
+                      onClick={() => { noteOpener('plugin-orphan', plugin.key); setManaging(plugin); }}
                     />
                   </div>
                 ))}

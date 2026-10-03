@@ -32,7 +32,7 @@ import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
 import { StatusIcon } from '@/components/ds/status-icon';
-import { focusIsOnWindow } from '@/components/toolbox/plugins/cardFocus';
+import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import type { DraftRecord } from '@/core/skill/drafts';
 
 type ProactivityLevel = 'shy' | 'companion' | 'butler';

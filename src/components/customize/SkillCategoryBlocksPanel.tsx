@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ds/button';
-import { focusIsOnWindow } from '@/components/toolbox/plugins/cardFocus';
+import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { useI18n, format } from '@/i18n';

@@ -32,9 +32,8 @@ import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import SkillDetailPanel from '@/components/toolbox/skills/SkillDetailPanel';
 import { usePluginSkillGate } from '@/components/toolbox/plugins/usePluginSkillGate';
-import { focusIsOnWindow } from '@/components/toolbox/plugins/cardFocus';
+import { cardOrNeighbour, cardPlace, cardProps, focusByTestId, focusIsOnWindow, type CardPlace } from '@/components/toolbox/cardFocus';
 import { isUserOwnedSkill } from '@/components/toolbox/skills/isSystemSkill';
-import { focusSkillCard, skillCardPlace, skillEntryProps, type SkillCardPlace } from '@/components/toolbox/skills/skillCardFocus';
 import SourceBadge from '@/components/toolbox/SourceBadge';
 import { pluginOwnerForSkill } from '@/core/plugin/activationPolicy';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
@@ -60,6 +59,16 @@ function sourceLabelKey(skill: Skill): SourceLabelKey | null {
 }
 
 /**
+ * Puts the focus on the skill's card; once that card has gone, on the card that took its place,
+ * else the one before it, else the empty shelf's own button, else the page's 「添加」 button.
+ */
+function focusSkillCard(root: ParentNode | null, place: CardPlace | null): void {
+  const card = root && place ? cardOrNeighbour(root, 'skill', place.id, place.index) : null;
+  if (card) card.focus();
+  else if (!root || !focusByTestId('skills-mine-create', root)) focusByTestId('skill-create-trigger');
+}
+
+/**
  * One card of the shelf. `memo` with stable props: a shelf holds up to a hundred cards and each
  * holds a switch, and the page renders for every window it opens and every character typed in
  * its search box.
@@ -80,7 +89,7 @@ const SkillCard = memo(function SkillCard({ skill, enabled, gated, market, plugi
   const provenance = skill.source === 'plugin' ? <SourceBadge source={{ kind: 'plugin', plugin: pluginName }} />
     : skill.source === 'enterprise' ? <SourceBadge source={{ kind: 'enterprise' }} /> : null;
   return (
-    <div className="h-full" {...skillEntryProps(skill.name)}>
+    <div className="h-full" {...cardProps('skill', skill.name)}>
       <ToolCard
         item={{
           id: skill.name,
@@ -172,9 +181,9 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // The card whose windows are open (detail, then history). The window that closes last may have
   // opened from a control that is gone: the focus then goes back to the card, or to what took its
   // place once it has gone.
-  const opener = useRef<SkillCardPlace | null>(null);
+  const opener = useRef<CardPlace | null>(null);
   const openDetail = useCallback((name: string) => {
-    opener.current = skillCardPlace(rootRef.current, name);
+    opener.current = cardPlace(rootRef.current, 'skill', name);
     setSelectedSkill(name);
   }, []);
   const afterWindowClosed = (event: Event) => {
@@ -188,12 +197,12 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
   // The editor replaces the list. It takes the focus on its way back; when it is left the focus
   // returns to the control it was opened from, or to the card of the skill once that control has gone.
-  const editorEntry = useRef<{ element: Element | null; place: SkillCardPlace | null } | null>(null);
+  const editorEntry = useRef<{ element: Element | null; place: CardPlace | null } | null>(null);
   const openEditor = (target: Skill | 'new') => {
     if (!editorOpen.current) {
       editorEntry.current = {
         element: document.activeElement,
-        place: target === 'new' ? null : skillCardPlace(rootRef.current, target.name),
+        place: target === 'new' ? null : cardPlace(rootRef.current, 'skill', target.name),
       };
     }
     setEditorSkill(target);
@@ -300,11 +309,11 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
   // The skill a delete is removing, and where its card sat: once it has gone the focus goes to
   // the card that took its place, else the one before it, else the page's 「添加」 button.
-  const leaving = useRef<SkillCardPlace | null>(null);
+  const leaving = useRef<CardPlace | null>(null);
   const deleting = useRef(false);
   useLayoutEffect(() => {
     const gone = leaving.current;
-    if (!gone || installedSkills.some((s) => s.name === gone.name)) return;
+    if (!gone || installedSkills.some((s) => s.name === gone.id)) return;
     leaving.current = null;
     opener.current = gone;
     if (!windowOpen.current && focusIsOnWindow()) focusSkillCard(rootRef.current, gone);
@@ -327,7 +336,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     const current = skillLoader.getSkill(skill.name);
     if (!current || current.filePath !== skill.filePath) return;
     deleting.current = true;
-    leaving.current = skillCardPlace(rootRef.current, skill.name);
+    leaving.current = cardPlace(rootRef.current, 'skill', skill.name);
     try {
       await handleDelete(skill);
     } finally {

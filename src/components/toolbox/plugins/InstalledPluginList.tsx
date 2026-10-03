@@ -33,7 +33,7 @@ import InstalledPluginDetail, { InstalledPluginSummary } from './InstalledPlugin
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginCard from './InstalledPluginCard';
 import UninstallPluginDialog from './UninstallPluginDialog';
-import { focusAddButton, focusIsOnWindow, pluginCardIndex, pluginCardOrNeighbour, pluginCardProps } from './cardFocus';
+import { cardIndex, cardOrNeighbour, cardProps, focusByTestId, focusIsOnWindow } from '../cardFocus';
 
 interface InstalledPluginListProps {
   home: string;
@@ -78,7 +78,7 @@ export default function InstalledPluginList({
   const rootRef = useRef<HTMLDivElement>(null);
   const leaving = useRef<{ key: string; index: number } | null>(null);
   const askToUninstall = (plugin: InstalledPlugin) => {
-    leaving.current = { key: plugin.key, index: rootRef.current ? pluginCardIndex(rootRef.current, 'mine', plugin.key) : -1 };
+    leaving.current = { key: plugin.key, index: cardIndex(rootRef.current, 'plugin-mine', plugin.key) };
     setPendingRemoval(plugin);
   };
   const focusCardOrWhatReplacedIt = useCallback(() => {
@@ -86,9 +86,9 @@ export default function InstalledPluginList({
     const gone = leaving.current;
     // Only when no control has the focus: the user may have moved on while the uninstall ran.
     if (!root || !gone || !focusIsOnWindow()) return;
-    const next = pluginCardOrNeighbour(root, 'mine', gone.key, gone.index) ?? root.querySelector<HTMLElement>('button');
+    const next = cardOrNeighbour(root, 'plugin-mine', gone.key, gone.index) ?? root.querySelector<HTMLElement>('button');
     if (next) next.focus();
-    else focusAddButton();
+    else focusByTestId('plugin-create-trigger');
   }, []);
   useLayoutEffect(() => {
     const gone = leaving.current;
@@ -116,7 +116,7 @@ export default function InstalledPluginList({
     {visible.length === 0 && childCount === 0 && emptyState}
     <ToolGrid>
       {visible.map((plugin) => (
-        <div key={plugin.key} className="h-full" {...pluginCardProps('mine', plugin.key)}>
+        <div key={plugin.key} className="h-full" {...cardProps('plugin-mine', plugin.key)}>
           <InstalledPluginCard
             plugin={plugin}
             home={home}

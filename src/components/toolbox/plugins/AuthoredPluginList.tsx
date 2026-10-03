@@ -23,14 +23,14 @@ import InstalledPluginDetail from './InstalledPluginDetail';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import UninstallPluginDialog from './UninstallPluginDialog';
 import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
-import { focusAddButton, focusIsOnWindow, pluginCardIndex, pluginCardOrNeighbour, pluginCardProps } from './cardFocus';
+import { cardIndex, cardOrNeighbour, cardProps, focusByTestId, focusIsOnWindow } from '../cardFocus';
 
 /** The card at `from`, or what took its place once it has gone, else the page's 「添加」 button. */
 function focusMineCard(from: { id: string; index: number } | null) {
   if (!from) return;
-  const card = pluginCardOrNeighbour(document, 'mine', from.id, from.index);
+  const card = cardOrNeighbour(document, 'plugin-mine', from.id, from.index);
   if (card) card.focus();
-  else focusAddButton();
+  else focusByTestId('plugin-create-trigger');
 }
 
 /**
@@ -71,7 +71,7 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
   const windowOpen = useRef(false);
   useLayoutEffect(() => { windowOpen.current = selected !== null || plan !== null || removing !== null; });
   const openDetail = (author: PluginAuthor) => {
-    opener.current = { id: author.id, index: pluginCardIndex(document, 'mine', author.id) };
+    opener.current = { id: author.id, index: cardIndex(document, 'plugin-mine', author.id) };
     setSelected(author);
   };
   const afterWindowClosed = (event: Event) => {
@@ -164,7 +164,7 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
   useEffect(() => { onVisibleCount?.(visible.length); }, [onVisibleCount, visible.length]);
   const cards = visible.map(author => {
     const record = recordFor(author);
-    return <div key={author.id} className="h-full" {...pluginCardProps('mine', author.id)}>
+    return <div key={author.id} className="h-full" {...cardProps('plugin-mine', author.id)}>
       {record ? <InstalledPluginCard plugin={record} home={home} description={author.prepared?.description} testId="plugin-mine-row" actions={hasUpdate(author) ? <Tag tone="info">{tb.pluginsAuthorUpdateAvailable}</Tag> : undefined} onClick={() => openDetail(author)} />
         : <MarketplaceEntryRow testId="plugin-mine-draft" name={author.name ?? tb.pluginsDraft}
           description={author.prepared?.description || tb.pluginsDraftHint} onClick={() => openDetail(author)}

@@ -18,7 +18,7 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import MarketplaceBrowser from './MarketplaceBrowser';
-import { focusIsOnWindow } from './cardFocus';
+import { focusIsOnWindow } from '../cardFocus';
 
 export default function AppMarketDialog() {
   const { t } = useI18n();

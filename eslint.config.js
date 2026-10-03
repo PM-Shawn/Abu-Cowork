@@ -234,6 +234,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/customize/SkillCategoryBlocksPanel*.{ts,tsx}',
   'src/components/customize/skillHistoryTime*.ts',
   'src/components/toolbox/skills/**/*.{ts,tsx}',
+  'src/components/toolbox/cardFocus*.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

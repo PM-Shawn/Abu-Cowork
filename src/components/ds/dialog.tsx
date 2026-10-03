@@ -214,8 +214,8 @@ export function Dialog({
               const content = event.currentTarget;
               if (!(content instanceof HTMLElement)) return;
               // The close button is the only control (an enlarged image): focus goes to the box.
-              // On the button it would show the button's tooltip at once, and the first Escape
-              // would close the tooltip, not the dialog. Tab still reaches the button.
+              // On the button it would show the button's tooltip the moment the dialog opens.
+              // Tab still reaches the button.
               if (hasOnlyCloseButton(content)) {
                 event.preventDefault();
                 content.focus();

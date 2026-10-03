@@ -99,12 +99,10 @@ describe('AvatarPicker', () => {
     expect(screen.queryByTestId('avatar-picker')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     expect(trigger).toHaveFocus();
-    // Focus is back on the trigger, so its name shows; that tooltip is the next layer Escape closes.
+    // Focus is back on the trigger, so its name shows; the next Escape hides it and closes the shell.
     expect(await screen.findByRole('tooltip')).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('tooltip')).toBeNull();
-    expect(onClose).not.toHaveBeenCalled();
-    await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -130,12 +128,11 @@ describe('AvatarPicker', () => {
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(screen.getByRole('dialog', { name: 'Edit expert' })).toBeInTheDocument();
     expect(trigger).toHaveFocus();
-    // One press, one layer: the trigger's tooltip (shown again with the focus), then the dialog.
+    // One press, one layer: the trigger's tooltip (shown again with the focus) is no layer, so the next press closes the dialog.
     expect(await screen.findByRole('tooltip')).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('tooltip')).toBeNull();
-    expect(onOpenChange).not.toHaveBeenCalled();
-    await user.keyboard('{Escape}');
+    expect(onOpenChange).toHaveBeenCalledTimes(1);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 

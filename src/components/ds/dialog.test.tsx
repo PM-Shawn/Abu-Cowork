@@ -440,7 +440,7 @@ describe('Dialog close button, data attributes and focus', () => {
   });
 
   // An enlarged image has nothing to press but the close button. Focus on that button would
-  // show its tooltip the moment the dialog opens, and the first Escape would close the tooltip.
+  // show its tooltip the moment the dialog opens.
   it('opens with focus on the dialog itself when the close button is its only control, and closes on one Escape', async () => {
     const user = userEvent.setup();
     render(

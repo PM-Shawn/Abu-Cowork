@@ -483,7 +483,9 @@ render with it. Settings files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; o
 menu/popover open at a time, and `useConfirm()`); use `useConfirm()` instead of
 `window.confirm()`, `Dialog` for every modal (it owns the only scrim and asks before
 discarding `dirty` input), and `InlineMessage` / `Toaster` / `EmptyState` / `LoadError`
-for feedback. Icon-only buttons are `IconButton` with a `label`. A confirmation from
+for feedback. Icon-only buttons are `IconButton` with a `label`. A tooltip is not a layer:
+Escape hides it and still acts on the layer underneath, and focus moved by code after a
+pointer action opens no tooltip (after a key press it does). A confirmation from
 `useConfirm()` is a question about the current dialog: it stacks over an open dialog, and
 it answers `false` when another dialog opens and replaces it. `Toaster` renders its own
 notification list (a labelled region whose `aria-live="polite"` area holds the list, newest

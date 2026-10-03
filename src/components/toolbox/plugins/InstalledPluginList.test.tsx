@@ -27,6 +27,18 @@ vi.mock('@/core/plugin/installedStore', () => ({
   upsertInstalled: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
+// How many times each card has rendered, by the id of its item.
+const cardRenders = vi.hoisted(() => ({ byId: {} as Record<string, number> }));
+vi.mock('@/components/toolbox/ToolCard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/toolbox/ToolCard')>();
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      cardRenders.byId[props.item.id] = (cardRenders.byId[props.item.id] ?? 0) + 1;
+      return actual.default(props);
+    },
+  };
+});
 
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -58,6 +70,7 @@ function renderList(searchQuery = '') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cardRenders.byId = {};
   usePluginStore.setState({ marketplaces: [], installed: [weather], activationByKey: {}, loading: false, error: null });
   vi.mocked(uninstallPlugin).mockResolvedValue({
     key: weather.key,
@@ -66,6 +79,21 @@ beforeEach(() => {
 });
 
 describe('InstalledPluginList', () => {
+  it('renders no card again when a detail window opens and closes', async () => {
+    const other: InstalledPlugin = { ...weather, key: 'notes@official', name: 'notes' };
+    usePluginStore.setState({ installed: [weather, other] });
+    renderList();
+    const before = { ...cardRenders.byId };
+    expect(Object.keys(before).sort()).toEqual(['notes', 'weather']);
+
+    fireEvent.click(screen.getByText('weather'));
+    expect(screen.getByTestId('plugin-manage-dialog')).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByTestId('plugin-manage-dialog'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('plugin-manage-dialog')).toBeNull());
+
+    expect(cardRenders.byId).toEqual(before);
+  });
+
   it('shows name and contributions without the card version', () => {
     renderList();
     const row = screen.getByTestId('plugin-mine-row');

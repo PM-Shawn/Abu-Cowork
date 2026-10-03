@@ -37,6 +37,14 @@ describe('InstalledItemMenu', () => {
     menuProps.onSelect = {};
   });
 
+  it('draws its trigger at the size of the other detail windows\' menu buttons', () => {
+    renderMenu(<InstalledItemMenu ariaLabel="demo actions" testId="demo-menu" actions={[{ id: 'view', label: 'View', onSelect: () => {} }]} />);
+    const trigger = screen.getByTestId('demo-menu');
+    // The default icon button, 28 by 28.
+    expect(trigger).toHaveClass('h-7');
+    expect(trigger).toHaveClass('w-7');
+  });
+
   it('opens on the trigger, lists actions in order, runs the chosen one', async () => {
     const user = userEvent.setup();
     const trial = vi.fn(); const uninstall = vi.fn();

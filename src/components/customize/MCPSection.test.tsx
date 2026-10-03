@@ -1482,6 +1482,10 @@ describe('MCPSection · the detail window', () => {
     expect(within(view).getByText('slow start')).toHaveClass('text-warning');
     expect(within(view).getByText('exited')).toHaveClass('text-danger');
     expect(within(view).getByText('exited').parentElement).toHaveClass('font-code');
+    // Colour never stands alone: a warning and an error line carry a shape named after the level.
+    expect(within(within(view).getByText('slow start').parentElement as HTMLElement).getByRole('img', { name: 'warn' })).toBeInTheDocument();
+    expect(within(within(view).getByText('exited').parentElement as HTMLElement).getByRole('img', { name: 'error' })).toBeInTheDocument();
+    expect(within(within(view).getByText('listening').parentElement as HTMLElement).queryByRole('img')).toBeNull();
   });
 
   describe('while it fades out', () => {

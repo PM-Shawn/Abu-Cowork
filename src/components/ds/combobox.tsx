@@ -161,6 +161,13 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
   const layer = useLayer('popover', open, setOpen);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const selected = options.find((option) => option.value === value);
+  // One callback for the life of the list, so a row renders only when its own choice changes.
+  const latest = useRef(onValueChange);
+  useLayoutEffect(() => { latest.current = onValueChange; });
+  const pick = useCallback((picked: string) => {
+    latest.current(picked);
+    setOpen(false);
+  }, []);
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
       <ComboboxTrigger ref={triggerRef} label={label} open={open} disabled={disabled} text={selected ? selected.label : ''} placeholder={placeholder} />
@@ -170,10 +177,7 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
         onLeave={() => setOpen(false)}
         options={options}
         isSelected={(candidate) => candidate === value}
-        onPick={(picked) => {
-          onValueChange(picked);
-          setOpen(false);
-        }}
+        onPick={pick}
         label={label}
         searchPlaceholder={searchPlaceholder}
         emptyText={emptyText}

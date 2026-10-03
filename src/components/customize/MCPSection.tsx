@@ -1241,6 +1241,12 @@ function ServerLogsPanel({ serverName }: { serverName: string }) {
           <span className="shrink-0 text-label-tertiary">
             {new Date(log.timestamp).toLocaleTimeString()}
           </span>
+          {/* Status colour comes with a shape; the level string is the shape's name. */}
+          {(log.level === 'error' || log.level === 'warn') && (
+            <span className="flex h-4 shrink-0 items-center">
+              <StatusIcon tone={log.level === 'error' ? 'danger' : 'warning'} size="sm" label={log.level} />
+            </span>
+          )}
           <span className={
             log.level === 'error' ? 'text-danger' :
             log.level === 'warn' ? 'text-warning' : 'text-label-secondary'

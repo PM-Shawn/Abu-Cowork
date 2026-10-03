@@ -67,7 +67,6 @@ export default function InstalledItemMenu({ actions, ariaLabel, testId }: Instal
       trigger={(
         <IconButton
           ref={triggerRef}
-          size="sm"
           icon={AppIcons.more}
           label={ariaLabel}
           data-testid={testId}

@@ -13,7 +13,7 @@ import { AppIcons } from '@/components/ds/icons';
 import { Switch } from '@/components/ds/switch';
 import { Tag } from '@/components/ds/tag';
 import { usePluginActivation } from './usePluginActivation';
-import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
+import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
 import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
 import { useToastStore } from '@/stores/toastStore';
 import { useAppStore } from '@/stores/appStore';
@@ -181,7 +181,7 @@ export default function InstalledPluginDetail({
       onCloseAutoFocus={onCloseAutoFocus}
       stackedHeader
       maxWidth="max-w-2xl"
-      panelClassName={PLUGIN_WINDOW_CONTENT_HEIGHT}
+      panelClassName={DETAIL_WINDOW_CONTENT_HEIGHT}
       avatar={showSource
         ? <IconButton ref={backRef} icon={AppIcons.back} label={tb.backToDetails} onClick={() => openSource(false)} />
         : <Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}

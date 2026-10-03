@@ -8,7 +8,7 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 // The detail window is a design-system dialog, so the list renders inside the provider like the app does.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 import AuthoredPluginList from './AuthoredPluginList';
-import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
+import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
 const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], error: null as string | null, refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn(), remove: vi.fn(), toast: vi.fn() }));
@@ -71,7 +71,7 @@ it('keeps the preview shell stable while validating and returns to details on ca
   const panel = screen.getByTestId('plugin-install-disclosure');
   // The window carries the width; the height asked for sits on its content area.
   expect(panel).toHaveClass('max-w-2xl');
-  expect(Array.from(panel.querySelectorAll('div')).some((area) => area.classList.contains(PLUGIN_WINDOW_CONTENT_HEIGHT))).toBe(true);
+  expect(Array.from(panel.querySelectorAll('div')).some((area) => area.classList.contains(DETAIL_WINDOW_CONTENT_HEIGHT))).toBe(true);
   expect(screen.getByRole('status')).toHaveTextContent(getI18n().toolbox.pluginsDisclosureLoading);
   await act(async () => { finish({ author, disclosure }); });
   expect(screen.getByTestId('plugin-install-disclosure')).toBe(panel);

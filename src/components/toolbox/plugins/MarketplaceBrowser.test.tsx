@@ -51,6 +51,18 @@ vi.mock('@/core/plugin/configuration', async (importOriginal) => {
   return { ...original, pluginConfigFields: vi.fn(original.pluginConfigFields) };
 });
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
+// How many times each card has rendered, by the id of its item.
+const cardRenders = vi.hoisted(() => ({ byId: {} as Record<string, number> }));
+vi.mock('@/components/toolbox/ToolCard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/toolbox/ToolCard')>();
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      cardRenders.byId[props.item.id] = (cardRenders.byId[props.item.id] ?? 0) + 1;
+      return actual.default(props);
+    },
+  };
+});
 // happy-dom gives Virtuoso a zero-size viewport and its ResizeObserver never
 // fires, so the real component mounts no rows at all. Mock it as a plain list
 // (the same shape ChatView's tests use) so the row markup and the wiring —
@@ -153,6 +165,7 @@ function renderBrowser() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cardRenders.byId = {};
   usePluginStore.setState({
     marketplaces: [{ name: 'official', dir: '/m/official' }],
     installed: [],
@@ -442,6 +455,21 @@ describe('MarketplaceBrowser', () => {
       home: '/Users/tester',
       key: 'weather@official',
     });
+  });
+
+  it('renders no card again when a detail window opens and closes', async () => {
+    usePluginStore.setState({ installed: [installedWeather] });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    const before = { ...cardRenders.byId };
+    expect(Object.keys(before).sort()).toEqual(['cloud-thing', 'weather']);
+
+    fireEvent.click(screen.getByText('weather'));
+    expect(screen.getByTestId('plugin-manage-dialog')).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByTestId('plugin-manage-dialog'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('plugin-manage-dialog')).toBeNull());
+
+    expect(cardRenders.byId).toEqual(before);
   });
 
   it('opens the installed record in a manage dialog', async () => {

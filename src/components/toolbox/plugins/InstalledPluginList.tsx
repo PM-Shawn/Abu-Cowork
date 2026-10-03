@@ -20,7 +20,7 @@
  * {@link UninstallPluginDialog}, which owns the confirmation and the store call.
  */
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ds/button';
 import { EmptyState } from '@/components/ds/empty-state';
@@ -34,6 +34,41 @@ import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginCard from './InstalledPluginCard';
 import UninstallPluginDialog from './UninstallPluginDialog';
 import { cardIndex, cardOrNeighbour, cardProps, focusByTestId, focusIsOnWindow } from '../cardFocus';
+
+/**
+ * One card of the shelf. memo: a window opening over the shelf, or a card
+ * leaving it, renders no other card again. Its callbacks are the same for the
+ * life of the list.
+ */
+const MineCard = memo(function MineCard({ plugin, home, onOpen, onUninstall }: {
+  plugin: InstalledPlugin;
+  home: string;
+  onOpen: (key: string) => void;
+  onUninstall: (plugin: InstalledPlugin) => void;
+}) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  return (
+    <InstalledPluginCard
+      plugin={plugin}
+      home={home}
+      testId="plugin-mine-row"
+      description={<InstalledPluginSummary plugin={plugin} />}
+      onClick={() => onOpen(plugin.key)}
+      actions={
+        <Button
+          variant="danger"
+          size="sm"
+          icon={AppIcons.delete}
+          aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
+          onClick={(event) => { event.stopPropagation(); onUninstall(plugin); }}
+        >
+          {tb.pluginsUninstall}
+        </Button>
+      }
+    />
+  );
+});
 
 interface InstalledPluginListProps {
   home: string;
@@ -77,10 +112,10 @@ export default function InstalledPluginList({
   // place, else the one before it, else the shelf's own button, else the page's 「添加」.
   const rootRef = useRef<HTMLDivElement>(null);
   const leaving = useRef<{ key: string; index: number } | null>(null);
-  const askToUninstall = (plugin: InstalledPlugin) => {
+  const askToUninstall = useCallback((plugin: InstalledPlugin) => {
     leaving.current = { key: plugin.key, index: cardIndex(rootRef.current, 'plugin-mine', plugin.key) };
     setPendingRemoval(plugin);
-  };
+  }, []);
   const focusCardOrWhatReplacedIt = useCallback(() => {
     const root = rootRef.current;
     const gone = leaving.current;
@@ -117,24 +152,7 @@ export default function InstalledPluginList({
     <ToolGrid>
       {visible.map((plugin) => (
         <div key={plugin.key} className="h-full" {...cardProps('plugin-mine', plugin.key)}>
-          <InstalledPluginCard
-            plugin={plugin}
-            home={home}
-            testId="plugin-mine-row"
-            description={<InstalledPluginSummary plugin={plugin} />}
-            onClick={() => setSelectedKey(plugin.key)}
-            actions={
-              <Button
-                variant="danger"
-                size="sm"
-                icon={AppIcons.delete}
-                aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
-                onClick={(event) => { event.stopPropagation(); askToUninstall(plugin); }}
-              >
-                {tb.pluginsUninstall}
-              </Button>
-            }
-          />
+          <MineCard plugin={plugin} home={home} onOpen={setSelectedKey} onUninstall={askToUninstall} />
         </div>
       ))}
       {children}

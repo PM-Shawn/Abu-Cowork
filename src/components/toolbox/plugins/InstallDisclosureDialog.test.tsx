@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import InstallDisclosureDialog from './InstallDisclosureDialog';
 import { formatServerCommand } from './serverCommand';
-import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
+import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
 import { PLUGIN_CONFIG_VALUE_LIMIT } from '@/core/plugin/configuration';
 import type { InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
@@ -524,7 +524,7 @@ describe('InstallDisclosureDialog: the window', () => {
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveClass('max-w-2xl');
     expect(screen.getByRole('heading', { level: 2 }).firstElementChild).toHaveClass('h-11');
-    expect(Array.from(dialog.querySelectorAll('div')).some((area) => area.classList.contains(PLUGIN_WINDOW_CONTENT_HEIGHT))).toBe(true);
+    expect(Array.from(dialog.querySelectorAll('div')).some((area) => area.classList.contains(DETAIL_WINDOW_CONTENT_HEIGHT))).toBe(true);
   });
 
   it('shows one spinner whose words say what is being read', () => {

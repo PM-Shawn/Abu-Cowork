@@ -3,7 +3,7 @@
  * Every install consumes an immutable preview after explicit confirmation.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { useI18n, format } from '@/i18n';
 import { Button, IconButton } from '@/components/ds/button';
@@ -97,6 +97,57 @@ function authorName(author: MarketplaceEntry['author']): string | undefined {
 function entryLabel(entry: MarketplaceEntry): string {
   return entry.displayName ?? entry.name;
 }
+
+/**
+ * One card of a marketplace. memo: a window opening over the list, or another
+ * card changing, renders no card again. Its callbacks are the same for the life
+ * of the browser.
+ */
+const MarketCard = memo(function MarketCard({ entry, record, hasUpdate, ready, appsOnly, home, onPlan, onManage, onEnter }: {
+  entry: MarketplaceEntry;
+  /** The install of this entry, when there is one. */
+  record: InstalledPlugin | undefined;
+  hasUpdate: boolean;
+  /** The marketplace has been read: installing and updating are offered. */
+  ready: boolean;
+  appsOnly: boolean;
+  home: string;
+  onPlan: (entry: MarketplaceEntry) => void;
+  onManage: (entry: MarketplaceEntry, record: InstalledPlugin) => void;
+  onEnter: (key: string) => void;
+}) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  // An installed app keeps its market card (marked installed by the switch)
+  // and offers 进入; an app not yet installed offers 使用, which installs and
+  // enters in one step.
+  const isApp = entry.providesApp === true;
+  if (record) return <InstalledPluginCard
+    plugin={record}
+    home={home}
+    control={appsOnly ? 'none' : 'installed'}
+    name={entryLabel(entry)}
+    description={entry.description}
+    testId="plugin-marketplace-entry"
+    onClick={() => onManage(entry, record)}
+    actions={<>
+      {hasUpdate && <Button variant="secondary" size="sm" data-testid="plugin-update-button" disabled={!ready} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); onPlan(entry); }}>{tb.pluginsUpdate}</Button>}
+      {isApp && <Button variant="secondary" size="sm" data-testid="plugin-enter-app" aria-label={`${tb.pluginsEnter}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); onEnter(record.key); }}>{tb.pluginsEnter}</Button>}
+    </>}
+  />;
+  const installLabel = isApp ? tb.pluginsUse : tb.pluginsInstall;
+  return (
+    <div className="h-full">
+      <MarketplaceEntryRow
+        testId="plugin-marketplace-entry"
+        name={entryLabel(entry)}
+        description={entry.description}
+        onClick={() => onPlan(entry)}
+        actions={<Button variant="secondary" size="sm" disabled={!ready} onClick={event => { event.stopPropagation(); onPlan(entry); }} aria-label={`${installLabel}: ${entryLabel(entry)}`}>{installLabel}</Button>}
+      />
+    </div>
+  );
+});
 
 function matchesQuery(entry: MarketplaceEntry, query: string): boolean {
   if (!query) return true;
@@ -464,45 +515,35 @@ export default function MarketplaceBrowser({
     (_, index) => visibleEntries.slice(index * columns, (index + 1) * columns),
   ), [visibleEntries, columns]);
 
+  // The cards are memo: what they call stays the same while the browser renders.
+  const planLatest = useRef(handlePlan);
+  useLayoutEffect(() => { planLatest.current = handlePlan; });
+  const planEntry = useCallback((entry: MarketplaceEntry) => { void planLatest.current(entry); }, []);
+  const manageEntry = useCallback((entry: MarketplaceEntry, record: InstalledPlugin) => {
+    noteOpener('plugin-market', entry.name);
+    setManaging(record);
+  }, [noteOpener]);
+  const ready = entriesState.kind === 'ready';
+
   // Plugin cards reuse the released toolbox geometry; the grid owns spacing.
-  const renderEntry = (entry: MarketplaceEntry) => {
-    // "Installed" is read from the record map, not a separate name set: the
-    // row's menu acts on that exact record, so a row that claims to be
-    // installed without one would offer 管理/卸载 that quietly do nothing.
-    const installedRecord = installedByName.get(entry.name);
-    // Read from the store rather than scored here: one source of truth for the
-    // badge count and this button (see the recompute effect above).
-    const hasUpdate = !!selected && updateKeySet.has(pluginKey(entry.name, selected.name));
-    // An installed app keeps its market card (marked installed by the switch)
-    // and offers 进入; an app not yet installed offers 使用, which installs and
-    // enters in one step.
-    const isApp = entry.providesApp === true;
-    if (installedRecord) return <InstalledPluginCard
-      plugin={installedRecord}
+  const renderEntry = (entry: MarketplaceEntry) => (
+    <MarketCard
+      entry={entry}
+      // "Installed" is read from the record map, not a separate name set: the
+      // row's menu acts on that exact record, so a row that claims to be
+      // installed without one would offer 管理/卸载 that quietly do nothing.
+      record={installedByName.get(entry.name)}
+      // Read from the store rather than scored here: one source of truth for the
+      // badge count and this button (see the recompute effect above).
+      hasUpdate={!!selected && updateKeySet.has(pluginKey(entry.name, selected.name))}
+      ready={ready}
+      appsOnly={appsOnly}
       home={home}
-      control={appsOnly ? 'none' : 'installed'}
-      name={entryLabel(entry)}
-      description={entry.description}
-      testId="plugin-marketplace-entry"
-      onClick={() => { noteOpener('plugin-market', entry.name); setManaging(installedRecord); }}
-      actions={<>
-        {hasUpdate && <Button variant="secondary" size="sm" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button>}
-        {isApp && <Button variant="secondary" size="sm" data-testid="plugin-enter-app" aria-label={`${tb.pluginsEnter}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); enterApp(installedRecord.key); }}>{tb.pluginsEnter}</Button>}
-      </>}
-    />;
-    const installLabel = isApp ? tb.pluginsUse : tb.pluginsInstall;
-    return (
-      <div className="h-full">
-        <MarketplaceEntryRow
-          testId="plugin-marketplace-entry"
-          name={entryLabel(entry)}
-          description={entry.description}
-          onClick={() => void handlePlan(entry)}
-          actions={<Button variant="secondary" size="sm" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${installLabel}: ${entryLabel(entry)}`}>{installLabel}</Button>}
-        />
-      </div>
-    );
-  };
+      onPlan={planEntry}
+      onManage={manageEntry}
+      onEnter={enterApp}
+    />
+  );
 
   // Removing a marketplace is asked first, by name. The answer acts on what is in the list at
   // that moment: a marketplace that has gone meanwhile is not removed again.

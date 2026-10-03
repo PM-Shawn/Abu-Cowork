@@ -293,6 +293,19 @@ describe('Combobox options with a description and an icon', () => {
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 
+  it('renders no row again when the owner renders with the same choice', async () => {
+    const user = userEvent.setup();
+    // A new callback on every render, as an owner that writes an inline arrow passes it.
+    const lead = () => <Combobox label="Lead" value="lin" onValueChange={() => undefined} options={EXPERTS} {...COMBOBOX_TEXT} />;
+    const view = render(lead(), { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('combobox', { name: 'Lead' }));
+    expect(screen.getByRole('option', { name: 'Lin' })).toBeInTheDocument();
+    iconRenders.icons.length = 0;
+    view.rerender(lead());
+    // The check is drawn by the chosen row: it was not drawn again.
+    expect(iconRenders.icons.filter((icon) => icon === AppIcons.done)).toHaveLength(0);
+  });
+
   it('closes on Tab without choosing and keeps the focus on the trigger', async () => {
     const user = userEvent.setup();
     const onValueChange = vi.fn();

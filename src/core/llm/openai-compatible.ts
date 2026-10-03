@@ -554,13 +554,13 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         if (!localServer) connectHangTimer.clear();
         if (!response.ok) {
           connectHangTimer.clear();
-          throw classifyError(response.status, await response.text());
+          throw classifyError(response.status, await response.text(), [options.apiKey]);
         }
         // Retry succeeded — surface the discovered limit so the caller can
         // persist it. Next request will use the correct value pre-emptively.
         options.onMaxTokensLimitDiscovered?.(retryLimit);
       } else {
-        throw classifyError(response.status, errorText);
+        throw classifyError(response.status, errorText, [options.apiKey]);
       }
     }
 

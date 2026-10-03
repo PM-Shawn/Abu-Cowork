@@ -26,6 +26,7 @@
 
 import type { Message, MessageContent, ToolCall } from '@/types';
 import { sanitizeMemoryText } from '@/core/memdir/sanitize';
+import type { CheckResult } from './types';
 
 // ════════════════════════════════════════════════════════════════════════
 // Secret redaction
@@ -270,6 +271,57 @@ export function scrubSecrets(value: unknown, seen: WeakSet<object> = new WeakSet
     }
   }
   return out;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Failure text (exception messages, provider / server error bodies)
+// ════════════════════════════════════════════════════════════════════════
+
+/** 进入脱敏的文字上限：异常文字和服务端响应正文没有长度限制 */
+const FAILURE_TEXT_SCAN_CHARS = 4000;
+/** 短于这个长度的已知密钥（本机服务常填的 ollama、none 这类占位值）不做原文替换，避免把普通文字替换掉 */
+const MIN_EXACT_SECRET_LENGTH = 8;
+// 参数名两侧的长度有上限，匹配耗时与文字长度成线性关系
+const SECRET_QUERY_PARAM_PATTERN =
+  /([?&](?:[\w.-]{0,40}(?:key|token|secret|signature|password|auth)[\w.-]{0,40}|sig)=)[^&#\s"'<>)]+/gi;
+/** 带 u 标志时只匹配不成对的 surrogate；encodeURIComponent 遇到它会抛出 URIError */
+const LONE_SURROGATE_PATTERN = /[\uD800-\uDFFF]/u;
+
+/** 密钥在失败文字里可能出现的几种写法：原文、JSON 转义、URL 编码（十六进制大小写两种） */
+function secretForms(secret: string): string[] {
+  const forms = [secret, JSON.stringify(secret).slice(1, -1)];
+  if (!LONE_SURROGATE_PATTERN.test(secret)) {
+    const encoded = encodeURIComponent(secret);
+    forms.push(encoded, encoded.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase()));
+  }
+  return forms;
+}
+
+/**
+ * 给一段失败文字脱敏。失败文字来自异常或服务端响应正文，可能带有请求里的
+ * 密钥、Authorization 请求头或带密钥的 URL。`exactSecrets` 是调用方已知的
+ * 密钥，按原文替换，与密钥的形状无关。返回值可能比输入长，需要限制长度的
+ * 调用方在拿到返回值之后再截断。
+ */
+export function redactFailureText(raw: string, exactSecrets: readonly string[] = []): string {
+  let text = raw.slice(0, FAILURE_TEXT_SCAN_CHARS);
+  for (const candidate of exactSecrets) {
+    const secret = candidate.trim();
+    if (secret.length < MIN_EXACT_SECRET_LENGTH) continue;
+    for (const form of secretForms(secret)) text = text.split(form).join(REDACTED);
+  }
+  text = text.replace(SECRET_QUERY_PARAM_PATTERN, `$1${REDACTED}`);
+  return redactStringValue(text);
+}
+
+/** 给一条检查结果里的失败文字脱敏，其余字段保持原样。 */
+export function redactCheckResult(row: CheckResult): CheckResult {
+  if (row.errorMessage === undefined && row.errorDetail === undefined) return row;
+  return {
+    ...row,
+    ...(row.errorMessage !== undefined ? { errorMessage: redactFailureText(row.errorMessage) } : {}),
+    ...(row.errorDetail !== undefined ? { errorDetail: redactFailureText(row.errorDetail) } : {}),
+  };
 }
 
 // ════════════════════════════════════════════════════════════════════════

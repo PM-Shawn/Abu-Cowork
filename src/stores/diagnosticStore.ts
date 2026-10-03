@@ -12,6 +12,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ALL_CATEGORIES, runCategoryChecks } from '@/core/diagnostic/runner';
+import { redactCheckResult } from '@/core/diagnostic/scrub';
 import type { CheckCategory, CheckResult, OverallStatus } from '@/core/diagnostic/types';
 
 interface DiagnosticState {
@@ -153,13 +154,19 @@ export const useDiagnosticStore = create<DiagnosticStore>()(
     }),
     {
       name: 'abu-diagnostic-store',
-      version: 2,
+      version: 3,
       // v1→v2: `includeRawText` default flipped false→true. Reset any persisted
       // v1 value to the new default (the toggle predates release, so a stored
       // `false` is the old default rather than a deliberate opt-out).
+      // v2→v3: v2 及更早保存的检查结果里，失败文字没有脱敏。
       migrate: (persisted, version) => {
         const state = persisted as Partial<DiagnosticState> | undefined;
         if (state && version < 2) state.includeRawText = true;
+        if (state?.results && version < 3) {
+          state.results = Object.fromEntries(
+            Object.entries(state.results).map(([id, row]) => [id, redactCheckResult(row)]),
+          );
+        }
         return state as DiagnosticState;
       },
       partialize: (s) => ({

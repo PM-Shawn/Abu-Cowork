@@ -16,7 +16,7 @@ import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Tag } from '@/components/ds/tag';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
-import InstalledItemMenu, { type InstalledItemMenuAction } from '@/components/toolbox/InstalledItemMenu';
+import InstalledItemMenu from '@/components/toolbox/InstalledItemMenu';
 import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
 import InstalledPluginDetail from './InstalledPluginDetail';
@@ -88,7 +88,13 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
     focusMineCard(opener.current);
   }, [installed]);
 
+  // Keys still reach a window that is fading out; nothing in it acts then.
+  const selectedRef = useRef(selected);
+  useLayoutEffect(() => { selectedRef.current = selected; });
+  const stillOpen = (author: PluginAuthor) => selectedRef.current?.id === author.id;
+
   const edit = (author: PluginAuthor) => { void usePluginAuthorStore.getState().edit(author).catch(report); };
+  const reveal = (author: PluginAuthor) => { void revealItemInDir(author.sourceDir).catch(report); };
   const prepare = async (author: PluginAuthor) => {
     const requestEpoch = ++epoch.current;
     setSelected(null); setPlan({ author, state: { kind: 'loading' } });
@@ -153,14 +159,19 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
     void usePluginAuthorStore.getState().remove(current.id).then(() => { setSelected(null); }).catch(report)
       .finally(() => { deletingRef.current = false; });
   };
-  const sourceActions = (author: PluginAuthor): InstalledItemMenuAction[] => [
-    { id: 'edit', label: tb.pluginsContinueEditing, onSelect: () => edit(author) },
-    { id: 'source', label: tb.pluginsSourceFiles, onSelect: () => { void revealItemInDir(author.sourceDir).catch(report); } },
-  ];
   // Only a draft that was never installed can be deleted; an installed one is uninstalled.
   const isDraftOnly = (author: PluginAuthor) => !installed.some(item => item.authoringId === author.id || item.key === author.key);
   const hasUpdate = (author: PluginAuthor) => Boolean(author.prepared && recordFor(author) && author.prepared.checksum !== recordFor(author)?.checksum);
   const selectedRecord = selected ? recordFor(selected) : undefined;
+  // A window stays on the page while it fades out and keeps showing the card it was opened for.
+  const [held, setHeld] = useState(selected);
+  if (selected && selected !== held) setHeld(selected);
+  const shown = selected ?? held;
+  // The draft window shows a card that has no install; the installed one has its own window.
+  const draftOpen = selected !== null && !selectedRecord;
+  const [heldDraft, setHeldDraft] = useState(draftOpen ? selected : null);
+  if (draftOpen && selected !== heldDraft) setHeldDraft(selected);
+  const draft = draftOpen ? selected : heldDraft;
   useEffect(() => { onVisibleCount?.(visible.length); }, [onVisibleCount, visible.length]);
   const cards = visible.map(author => {
     const record = recordFor(author);
@@ -172,21 +183,24 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
     </div>;
   });
   const dialogs = <>
-    {selected && !selectedRecord && <ToolDetailModal open testId="plugin-author-detail" ariaLabel={selected.name ?? tb.pluginsDraft} onClose={() => setSelected(null)} onCloseAutoFocus={afterWindowClosed} stackedHeader maxWidth="max-w-2xl" panelClassName={PLUGIN_WINDOW_CONTENT_HEIGHT} avatar={<Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}
+    {draft && <ToolDetailModal open={draftOpen} testId="plugin-author-detail" ariaLabel={draft.name ?? tb.pluginsDraft} onClose={() => setSelected(null)} onCloseAutoFocus={afterWindowClosed} stackedHeader maxWidth="max-w-2xl" panelClassName={PLUGIN_WINDOW_CONTENT_HEIGHT} avatar={<Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}
       headerActions={<InstalledItemMenu ariaLabel={tb.plugins} testId="plugin-author-menu" actions={[
-        ...sourceActions(selected),
-        ...(isDraftOnly(selected) ? [{ id: 'delete' as const, label: tb.pluginsDeleteDraft, destructive: true, onSelect: () => { void deleteDraft(selected); } }] : []),
+        { id: 'edit', label: tb.pluginsContinueEditing, onSelect: () => { if (stillOpen(draft)) edit(draft); } },
+        { id: 'source', label: tb.pluginsSourceFiles, onSelect: () => { if (stillOpen(draft)) reveal(draft); } },
+        ...(isDraftOnly(draft) ? [{ id: 'delete' as const, label: tb.pluginsDeleteDraft, destructive: true, onSelect: () => { if (stillOpen(draft)) void deleteDraft(draft); } }] : []),
       ]} />}
-      footer={<div className="flex w-full items-center justify-between gap-3"><Button variant="secondary" onClick={() => edit(selected)}>{tb.pluginsContinueEditing}</Button><Button variant="primary" onClick={() => void prepare(selected)}>{tb.pluginsReviewChanges}</Button></div>}>
-      <h2 className="text-title text-label">{selected.name ?? tb.pluginsDraft} <span className="font-normal text-label-tertiary">{tb.plugins}</span></h2>
-      <p className="mt-3 text-ui text-label-tertiary">{selected.prepared?.description || tb.pluginsDraftHint}</p>
+      footer={<div className="flex w-full items-center justify-between gap-3"><Button variant="secondary" onClick={() => { if (stillOpen(draft)) edit(draft); }}>{tb.pluginsContinueEditing}</Button><Button variant="primary" onClick={() => { if (stillOpen(draft)) void prepare(draft); }}>{tb.pluginsReviewChanges}</Button></div>}>
+      <h2 className="text-title text-label">{draft.name ?? tb.pluginsDraft} <span className="font-normal text-label-tertiary">{tb.plugins}</span></h2>
+      <p className="mt-3 text-ui text-label-tertiary">{draft.prepared?.description || tb.pluginsDraftHint}</p>
     </ToolDetailModal>}
-    <InstalledPluginDetail home={home} plugin={selectedRecord ?? null} description={selected?.prepared?.description} onClose={() => setSelected(null)} onCloseAutoFocus={afterWindowClosed}
+    <InstalledPluginDetail home={home} plugin={selectedRecord ?? null} description={shown?.prepared?.description} onClose={() => setSelected(null)} onCloseAutoFocus={afterWindowClosed}
       onUninstall={plugin => { setSelected(null); uninstalled.current = true; setRemoving(plugin); }}
-      authorUpdate={selected ? { available: hasUpdate(selected), onReview: () => void prepare(selected) } : undefined}
-      authorActions={selected ? [
-        ...sourceActions(selected),
-        ...(isDraftOnly(selected) ? [{ id: 'delete' as const, label: tb.pluginsDeleteDraft, destructive: true, onSelect: () => { void deleteDraft(selected); } }] : []),
+      authorUpdate={shown ? { available: hasUpdate(shown), onReview: () => { if (stillOpen(shown)) void prepare(shown); } } : undefined}
+      authorActions={shown ? [
+        // The installed window runs these only while it is open.
+        { id: 'edit', label: tb.pluginsContinueEditing, onSelect: () => edit(shown) },
+        { id: 'source', label: tb.pluginsSourceFiles, onSelect: () => reveal(shown) },
+        ...(isDraftOnly(shown) ? [{ id: 'delete' as const, label: tb.pluginsDeleteDraft, destructive: true, onSelect: () => { void deleteDraft(shown); } }] : []),
       ] : undefined} />
     <InstallDisclosureDialog authoring updating={Boolean(plan && recordFor(plan.author))} open={plan !== null} entryName={plan?.author.name ?? tb.pluginsDraft} state={plan?.state ?? { kind: 'loading' }} installing={busy}
       onCloseAutoFocus={afterWindowClosed}

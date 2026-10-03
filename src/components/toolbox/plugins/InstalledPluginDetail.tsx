@@ -141,33 +141,43 @@ export default function InstalledPluginDetail({
   const moveFocus = useRef(false);
   const backRef = useRef<HTMLButtonElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
-  const [shownKey, setShownKey] = useState(plugin?.key);
-  if (shownKey !== plugin?.key) {
-    // Another plugin (or none): its window opens on the details.
-    setShownKey(plugin?.key);
-    setShowSource(false);
+  // The window stays on the page while it fades out and keeps showing the plugin it showed.
+  const [held, setHeld] = useState({ plugin, description });
+  if (plugin && (plugin !== held.plugin || description !== held.description)) setHeld({ plugin, description });
+  const shown = plugin ?? held.plugin;
+  const shownDescription = plugin ? description : held.description;
+  const [openedKey, setOpenedKey] = useState(plugin?.key ?? null);
+  if (openedKey !== (plugin?.key ?? null)) {
+    setOpenedKey(plugin?.key ?? null);
+    // Another plugin, or the same one opened again: its window opens on the details.
+    if (plugin) setShowSource(false);
   }
+  // Keys still reach a window that is fading out; nothing in it acts then.
+  const openRef = useRef(plugin !== null);
+  useLayoutEffect(() => { openRef.current = plugin !== null; });
   useLayoutEffect(() => {
     if (!moveFocus.current) return;
     moveFocus.current = false;
     if (showSource) backRef.current?.focus();
     else actionsRef.current?.querySelector<HTMLElement>('[data-testid="plugin-detail-menu"]')?.focus();
   }, [showSource]);
-  const activation = usePluginActivation(plugin, home);
+  const activation = usePluginActivation(shown, home);
   const launchTrial = useTrialLauncher();
   const addToast = useToastStore(s => s.addToast);
 
-  if (!plugin) return null;
+  if (!shown) return null;
   const tb = t.toolbox;
   // A verified remote install pins one of these; a local one pins neither.
-  const pinned = plugin.sha ?? plugin.checksum;
-  const openSource = (open: boolean) => { moveFocus.current = true; setShowSource(open); };
+  const pinned = shown.sha ?? shown.checksum;
+  const openSource = (open: boolean) => { if (!openRef.current) return; moveFocus.current = true; setShowSource(open); };
+  // Menu actions run after the menu has gone; by then the window may be closing.
+  const whileOpen = (run: () => void) => () => { if (openRef.current) run(); };
 
   return (
     <ToolDetailModal
-      open
+      open={plugin !== null}
       // The window's name is the plugin's: the heading inside adds the word for what it is.
-      ariaLabel={plugin.name}
+      ariaLabel={shown.name}
       onClose={onClose}
       onCloseAutoFocus={onCloseAutoFocus}
       stackedHeader
@@ -179,55 +189,56 @@ export default function InstalledPluginDetail({
       headerActions={showSource ? undefined : <div ref={actionsRef} className="flex items-center gap-2">
         {/* Dimmed while the plugin is being turned on; it stays enabled so the keyboard focus stays on it. */}
         <span className={cn('flex', activation.busy && 'opacity-40')}>
-          <Switch checked={activation.enabled} disabled={!activation.available} aria-label={plugin.name} onCheckedChange={() => {
-            void activation.toggle().catch(error => addToast({ type: 'error', title: plugin.name, message: String(error) }));
+          <Switch checked={activation.enabled} disabled={!activation.available} aria-label={shown.name} onCheckedChange={() => {
+            if (!openRef.current) return;
+            void activation.toggle().catch(error => addToast({ type: 'error', title: shown.name, message: String(error) }));
           }} />
         </span>
-        <InstalledItemMenu testId="plugin-detail-menu" ariaLabel={format(tb.itemMenuLabel, { name: plugin.name })} actions={[
-          ...(authorActions ?? []),
+        <InstalledItemMenu testId="plugin-detail-menu" ariaLabel={format(tb.itemMenuLabel, { name: shown.name })} actions={[
+          ...(authorActions ?? []).map(action => ({ ...action, onSelect: whileOpen(action.onSelect) })),
           { id: 'view', label: tb.pluginsDisclosureSource, onSelect: () => openSource(true) },
         ]} />
       </div>}
       // The row is as tall as the footer of the draft window and of the preview, so the three windows are one size.
       footer={showSource ? undefined : <div className="flex min-h-7 w-full items-center justify-between gap-3">
-        <Button variant="danger" size="sm" icon={AppIcons.delete} onClick={() => onUninstall(plugin)}>{tb.pluginsUninstall}</Button>
+        <Button variant="danger" size="sm" icon={AppIcons.delete} onClick={() => { if (plugin) onUninstall(plugin); }}>{tb.pluginsUninstall}</Button>
         <div className="flex items-center gap-2">
-          {authorUpdate && <Button variant="secondary" size="sm" onClick={authorUpdate.onReview}>{authorUpdate.available ? tb.pluginsPreviewUpdate : tb.pluginsCheckChanges}</Button>}
-          <Button variant="primary" size="sm" icon={AppIcons.startChat} disabled={!activation.enabled || activation.busy} onClick={() => { onClose(); launchTrial({ name: plugin.name, description }); }}>{tb.menuTrial}</Button>
+          {authorUpdate && <Button variant="secondary" size="sm" onClick={() => { if (plugin) authorUpdate.onReview(); }}>{authorUpdate.available ? tb.pluginsPreviewUpdate : tb.pluginsCheckChanges}</Button>}
+          <Button variant="primary" size="sm" icon={AppIcons.startChat} disabled={!activation.enabled || activation.busy} onClick={() => { if (!plugin) return; onClose(); launchTrial({ name: plugin.name, description }); }}>{tb.menuTrial}</Button>
         </div>
       </div>}
     >
       {showSource ? <div data-testid="plugin-source-dialog" className="space-y-4">
         <h2 className="text-title text-label">{tb.pluginsDisclosureSource}</h2>
-        <p className="text-ui text-label">{plugin.authoringId ? tb.pluginsAuthoredSource : format(tb.pluginsFromMarketplace, { name: plugin.marketplace })} · v{plugin.version}</p>
+        <p className="text-ui text-label">{shown.authoringId ? tb.pluginsAuthoredSource : format(tb.pluginsFromMarketplace, { name: shown.marketplace })} · v{shown.version}</p>
         {pinned && <p className="break-all font-code text-ui-sm text-label-tertiary">{pinned}</p>}
       </div> : <div data-testid="plugin-manage-dialog" className="space-y-4">
         <div className="space-y-2">
-          <h2 className="text-title text-label">{plugin.name} <span className="font-normal text-label-tertiary">{tb.plugins}</span></h2>
+          <h2 className="text-title text-label">{shown.name} <span className="font-normal text-label-tertiary">{tb.plugins}</span></h2>
           {authorUpdate && (authorUpdate.available
             ? <p><Tag tone="info">{tb.pluginsAuthorUpdateAvailable}</Tag></p>
             : <p className="text-ui-sm text-label-tertiary">{tb.pluginsAuthorUpdateHint}</p>)}
-          {description && <p className="text-ui text-label-secondary">{description}</p>}
+          {shownDescription && <p className="text-ui text-label-secondary">{shownDescription}</p>}
         </div>
         <div className="space-y-5">
           <Section
             icon={AppIcons.sparkles}
             title={tb.skills}
-            items={plugin.contributed.skills}
+            items={shown.contributed.skills}
           />
           <Section
             icon={AppIcons.connector}
             title={tb.connectors}
-            items={plugin.contributed.mcpServers}
+            items={shown.contributed.mcpServers}
           />
           {/* Named for the same reason as the other two: uninstall withdraws
               these, and they live outside the package directory. */}
           <Section
             icon={AppIcons.agent}
             title={tb.pluginsDisclosureAgents}
-            items={plugin.contributed.agents}
+            items={shown.contributed.agents}
           />
-          <AppContents pluginKey={plugin.key} />
+          <AppContents pluginKey={shown.key} />
         </div>
       </div>}
     </ToolDetailModal>

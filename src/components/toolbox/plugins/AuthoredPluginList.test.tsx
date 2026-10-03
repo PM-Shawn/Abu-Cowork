@@ -242,6 +242,60 @@ it('gives the focus to the card that took the place of a deleted draft', async (
   await waitFor(() => expect(within(screen.getByTestId('plugin-mine-draft')).getByRole('button')).toHaveFocus());
 });
 
+// happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+// layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+function keepClosingLayersOnScreen() {
+  const real = window.getComputedStyle.bind(window);
+  return vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+    const styles = real(element, pseudo);
+    return new Proxy(styles, {
+      get(target, prop) {
+        if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+        const value = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  });
+}
+
+it('keeps showing the draft while its window fades out', () => {
+  const computedStyle = keepClosingLayersOnScreen();
+  try {
+    state.authors = [{ ...author, name: 'demo', prepared: { checksum: 'new', description: 'A greeting plugin' } }];
+    render(<AuthoredPluginList home="/home" searchQuery="" />);
+    fireEvent.click(within(screen.getByTestId('plugin-mine-draft')).getByRole('button'));
+    fireEvent.keyDown(screen.getByTestId('plugin-author-detail'), { key: 'Escape' });
+
+    const closing = screen.getByTestId('plugin-author-detail');
+    expect(closing).toHaveAttribute('data-state', 'closed');
+    expect(closing).toHaveTextContent('demo');
+    expect(closing).toHaveTextContent('A greeting plugin');
+  } finally {
+    computedStyle.mockRestore();
+  }
+});
+
+it('edits nothing and prepares nothing from a draft window that is closing', async () => {
+  const computedStyle = keepClosingLayersOnScreen();
+  try {
+    state.edit.mockResolvedValue(undefined);
+    render(<AuthoredPluginList home="/home" searchQuery="" />);
+    fireEvent.click(within(screen.getByTestId('plugin-mine-draft')).getByRole('button'));
+    fireEvent.keyDown(screen.getByTestId('plugin-author-detail'), { key: 'Escape' });
+    expect(screen.getByTestId('plugin-author-detail')).toHaveAttribute('data-state', 'closed');
+
+    fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsContinueEditing, hidden: true }));
+    fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsReviewChanges, hidden: true }));
+    await act(async () => {});
+
+    expect(state.edit).not.toHaveBeenCalled();
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull();
+  } finally {
+    computedStyle.mockRestore();
+  }
+});
+
 it('marks a draft as ready to install once it has been validated', () => {
   state.authors = [{ ...author, name: 'demo', prepared: { checksum: 'new', description: 'A greeting plugin' } }];
   render(<AuthoredPluginList home="/home" searchQuery="" />);

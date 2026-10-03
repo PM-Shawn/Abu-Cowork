@@ -206,6 +206,68 @@ describe('InstalledPluginDetail: the window and its controls', () => {
     expect(screen.queryByTestId('plugin-source-dialog')).toBeNull();
   });
 
+  describe('while the window fades out', () => {
+    // happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+    // layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+    function keepClosingLayersOnScreen() {
+      const real = window.getComputedStyle.bind(window);
+      return vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+        const styles = real(element, pseudo);
+        return new Proxy(styles, {
+          get(target, prop) {
+            if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+            const value = Reflect.get(target, prop);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      });
+    }
+    const detail = (plugin: InstalledPlugin | null, props: Partial<React.ComponentProps<typeof InstalledPluginDetail>>) => (
+      <InstalledPluginDetail home="/Users/tester" plugin={plugin} description={plugin ? 'Sells things' : undefined} onClose={() => {}} onUninstall={() => {}} {...props} />
+    );
+
+    it('keeps showing the plugin while it fades out', () => {
+      const computedStyle = keepClosingLayersOnScreen();
+      try {
+        const view = renderBare(detail(pinned, {}), { wrapper: DesignSystemProvider });
+        view.rerender(detail(null, {}));
+
+        expect(document.querySelector('[role="dialog"][data-state="closed"]')).not.toBeNull();
+        const body = screen.getByTestId('plugin-manage-dialog');
+        expect(body).toHaveTextContent('shop');
+        expect(body).toHaveTextContent('Sells things');
+        expect(body).toHaveTextContent('product-listing');
+        expect(body).toHaveTextContent('shop-api');
+      } finally {
+        computedStyle.mockRestore();
+      }
+    });
+
+    it('asks nothing and starts nothing from a window that is closing', () => {
+      const computedStyle = keepClosingLayersOnScreen();
+      try {
+        const setPluginEnabled = vi.fn().mockResolvedValue(undefined);
+        usePluginStore.setState({ activationByKey: enabledShop, setPluginEnabled });
+        const props = { onClose: vi.fn(), onUninstall: vi.fn(), authorUpdate: { available: true, onReview: vi.fn() } };
+        const view = renderBare(detail(pinned, props), { wrapper: DesignSystemProvider });
+        view.rerender(detail(null, props));
+        expect(document.querySelector('[role="dialog"][data-state="closed"]')).not.toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: tb().pluginsUninstall, hidden: true }));
+        fireEvent.click(screen.getByRole('button', { name: tb().menuTrial, hidden: true }));
+        fireEvent.click(screen.getByRole('button', { name: tb().pluginsPreviewUpdate, hidden: true }));
+        fireEvent.click(screen.getByRole('switch', { name: 'shop', hidden: true }));
+
+        expect(props.onUninstall).not.toHaveBeenCalled();
+        expect(props.onClose).not.toHaveBeenCalled();
+        expect(props.authorUpdate.onReview).not.toHaveBeenCalled();
+        expect(setPluginEnabled).not.toHaveBeenCalled();
+      } finally {
+        computedStyle.mockRestore();
+      }
+    });
+  });
+
   it('puts the author\'s own actions in the menu and marks an available update', async () => {
     const onReview = vi.fn();
     const onEdit = vi.fn();

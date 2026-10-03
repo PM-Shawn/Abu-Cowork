@@ -37,9 +37,18 @@ vi.mock('@/core/llm/contextWindowProbe', () => ({
   fetchLmStudioContextWindows: vi.fn(async () => new Map<string, number>()),
   fetchOllamaLoadedContextWindows: vi.fn(async () => new Map<string, number>()),
 }));
-// Only the behaviour pins at the end of this file press Validate.
+// The behaviour pins at the end of this file press Validate against a stubbed health check; the
+// redaction test runs the real one over a stubbed adapter (the only thing that would reach the network).
 vi.mock('@/core/llm/healthCheck', () => ({ checkProviderHealth: vi.fn() }));
 import { checkProviderHealth } from '@/core/llm/healthCheck';
+const { mockAdapterChat } = vi.hoisted(() => ({ mockAdapterChat: vi.fn() }));
+vi.mock('@/core/llm/openai-compatible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/llm/openai-compatible')>()),
+  OpenAICompatibleAdapter: class {
+    chat = mockAdapterChat;
+  },
+}));
+import { classifyError } from '@/core/llm/adapter';
 // The real checkbox, counted: a model row renders one, so the count says which rows rendered again.
 const checkboxRenders = vi.hoisted(() => ({ count: 0 }));
 vi.mock('@/components/ds/checkbox', async (importOriginal) => {
@@ -614,6 +623,38 @@ describe('AddProviderModal — Validate Connection gating', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'DeepSeek V4 Pro' }));
 
     expect(validateButton).not.toBeDisabled();
+  });
+
+  it('shows a failed validation without the key the endpoint echoed back', async () => {
+    const fakeKey = 'sk-test-not-a-secret';
+    // The real health check runs here; only the adapter under it is stubbed.
+    const realHealthCheck = await vi.importActual<typeof import('@/core/llm/healthCheck')>('@/core/llm/healthCheck');
+    vi.mocked(checkProviderHealth).mockImplementation(realHealthCheck.checkProviderHealth);
+    mockAdapterChat.mockRejectedValue(
+      classifyError(401, JSON.stringify({ error: { message: `Incorrect API key provided: ${fakeKey}` } })),
+    );
+    try {
+      renderWindow(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'DeepSeek' }));
+      const apiKeyInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+      fireEvent.change(apiKeyInput, { target: { value: fakeKey } });
+      fireEvent.click(screen.getByRole('button', { name: /select model/i }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'DeepSeek V4 Pro' }));
+      fireEvent.click(screen.getByRole('button', { name: /validate connection/i }));
+
+      expect(await screen.findByText('Incorrect API key provided: [REDACTED]')).toBeInTheDocument();
+      expect(mockAdapterChat).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).not.toContain(fakeKey);
+      for (const attribute of ['title', 'aria-label']) {
+        const values = Array.from(document.querySelectorAll(`[${attribute}]`), (el) => el.getAttribute(attribute));
+        expect(values.join('\n')).not.toContain(fakeKey);
+      }
+    } finally {
+      vi.mocked(checkProviderHealth).mockReset();
+      mockAdapterChat.mockReset();
+    }
   });
 });
 

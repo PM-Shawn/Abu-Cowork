@@ -312,7 +312,7 @@ test.describe('stale provider pin', () => {
       const dialog = await openModelSettings(page);
       const card = providerCard(dialog, PROVIDER_A.name);
       await card.hover();
-      await card.getByTitle('删除', { exact: true }).click();
+      await card.getByRole('button', { name: '删除', exact: true }).click();
       await page.getByRole('button', { name: '确认', exact: true }).last().click();
       await expect(dialog.locator('div.group', { hasText: PROVIDER_A.name })).toHaveCount(0);
       await closeSettings(page);

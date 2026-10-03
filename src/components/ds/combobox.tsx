@@ -5,8 +5,8 @@ import { cn } from '@/lib/utils';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
-import { useLayer, useLayerContainer } from './layer-context';
-import { DISABLED, FLOAT_MOTION, FLOAT_SURFACE, FOCUS_RING, MENU_ITEM } from './styles';
+import { useFloatingLevel, useLayer, useLayerContainer } from './layer-context';
+import { DISABLED, EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE, FOCUS_RING, MENU_ITEM } from './styles';
 
 export interface ComboboxOption {
   value: string;
@@ -29,6 +29,7 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
   const container = useLayerContainer();
   const [open, setOpen] = useState(false);
   const { id, onCloseAutoFocus } = useLayer('popover', open, setOpen);
+  const level = useFloatingLevel();
   const selected = options.find((option) => option.value === value);
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
@@ -49,11 +50,12 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
         <PopoverPrimitive.Content
           align="start"
           sideOffset={4}
+          collisionPadding={EDGE_GAP}
           onCloseAutoFocus={onCloseAutoFocus}
           data-ds-layer
           data-ds-motion
           data-electron-no-drag
-          className={cn('z-popover w-(--radix-popover-trigger-width) min-w-56 origin-(--radix-popover-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
+          className={cn(level, 'w-(--radix-popover-trigger-width) min-w-56 origin-(--radix-popover-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}
         >
           <LayerScope id={id}>
             {/* cmdk names its search box with aria-labelledby pointing at this label. */}

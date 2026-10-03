@@ -2,8 +2,11 @@ import { createBrowserPermissionConfig } from '@/core/permissions/browserPermiss
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { Button } from '@/components/ds/button';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import CapabilitiesSection from './CapabilitiesSection';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -22,6 +25,9 @@ import {
   setChromeExtensionHandshaked,
 } from '@/core/capabilityPlugins/chromeHandshakeLatch';
 
+// The built-in browser page holds selects, which need the design-system layers.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
 const installationMock = vi.hoisted(() => vi.fn());
 vi.mock('@/core/capabilityPlugins/chromeSetup', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/core/capabilityPlugins/chromeSetup')>(),
@@ -32,6 +38,14 @@ beforeEach(() => installationMock.mockReset().mockResolvedValue('installed'));
 const restartAppMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('@/core/updates/checker', () => ({
  restartApp: restartAppMock }));
+
+// Only the Retry button on the built-in browser page calls it.
+const ensureBuiltinBrowserRuntimeMock = vi.hoisted(() => vi.fn());
+vi.mock('@/core/browser/builtinBrowserRuntime', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/core/browser/builtinBrowserRuntime')>(),
+  ensureBuiltinBrowserRuntime: ensureBuiltinBrowserRuntimeMock,
+}));
+beforeEach(() => ensureBuiltinBrowserRuntimeMock.mockReset().mockResolvedValue(false));
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
@@ -323,6 +337,85 @@ describe('CapabilitiesSection', () => {
     expect(screen.queryByText('Browser permissions')).not.toBeInTheDocument();
   });
 
+  // The page under the keyboard is replaced on each of these presses. The focus goes to the new
+  // page's way back, and on the way back to the control that opened the page just left.
+  describe('keyboard focus between the pages', () => {
+    const backToOverview = () => screen.getByRole('button', { name: 'Back to Capabilities' });
+    const sitePermissions = () => screen.getByRole('button', { name: 'Site permissions' });
+
+    async function press(user: User, control: HTMLElement) {
+      control.focus();
+      await user.keyboard('{Enter}');
+    }
+
+    it('goes to the way back on entering a page, and to the card on leaving it', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      await press(user, findCapabilityCard('Abu built-in browser'));
+      expect(backToOverview()).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(findCapabilityCard('Abu built-in browser')).toHaveFocus();
+
+      await press(user, findCapabilityCard('My Chrome'));
+      expect(backToOverview()).toHaveFocus();
+      await user.keyboard('{Enter}');
+      expect(findCapabilityCard('My Chrome')).toHaveFocus();
+
+      await press(user, findCapabilityCard('Computer Use'));
+      expect(backToOverview()).toHaveFocus();
+      await user.keyboard('{Enter}');
+      expect(findCapabilityCard('Computer Use')).toHaveFocus();
+    });
+
+    it('goes to the page one step up on entering the site list, and to its entry on going back', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await press(user, findCapabilityCard('Abu built-in browser'));
+
+      await press(user, sitePermissions());
+      expect(screen.getByRole('button', { name: 'Abu built-in browser' })).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(sitePermissions()).toHaveFocus();
+    });
+
+    it('goes to the download history entry after its page is left', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await press(user, findCapabilityCard('Abu built-in browser'));
+
+      await press(user, screen.getByRole('button', { name: 'Download history' }));
+      expect(screen.getByRole('button', { name: 'Abu built-in browser' })).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(screen.getByRole('button', { name: 'Download history' })).toHaveFocus();
+    });
+
+    it('goes to the card of the browser when the site list is left for the overview', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await press(user, findCapabilityCard('Abu built-in browser'));
+      await press(user, sitePermissions());
+
+      await press(user, backToOverview());
+      expect(findCapabilityCard('Abu built-in browser')).toHaveFocus();
+    });
+
+    it('leaves the focus where it is when a task opens a page', async () => {
+      render(<><Button>Elsewhere</Button><CapabilitiesSection /></>);
+      const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+      elsewhere.focus();
+
+      act(() => useSettingsStore.setState({ capabilitySetupTarget: 'chrome' }));
+
+      // The page of My Chrome has replaced the three cards.
+      await waitFor(() => expect(screen.queryByRole('button', { name: /^Computer Use/ })).toBeNull());
+      expect(elsewhere).toHaveFocus();
+    });
+  });
+
   it('shows DeepSeek without vision as structured mode instead of unavailable', async () => {
     const provider = makeModelProvider({});
     useSettingsStore.setState({
@@ -337,10 +430,119 @@ describe('CapabilitiesSection', () => {
         .toBeInTheDocument();
     });
 
-    // The model tier gates the permissions, so it moved in with them.
+    // The model tier gates the permissions, so it moved in with them. A tier that
+    // works stays folded until the user opens it.
     await openDetail(user, 'Computer Use');
+    expect(screen.queryByText(/deepseek-chat · Structured mode/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Current model' }));
     expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
     expect(screen.getByText(/No image input/)).toBeInTheDocument();
+  });
+
+  // A tier that stops Computer Use from working is shown without asking.
+  it('opens the current model by itself when the model cannot be used', async () => {
+    const provider = makeModelProvider({
+      source: 'custom',
+      models: [{ id: 'private-proxy-model', label: 'Private Proxy' }],
+    });
+    useSettingsStore.setState({
+      providers: [provider],
+      activeModel: { providerId: provider.id, modelId: 'private-proxy-model' },
+    });
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openDetail(user, 'Computer Use');
+
+    expect(screen.getByRole('button', { name: 'Current model' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(/private-proxy-model · Not verified/)).toBeInTheDocument();
+  });
+
+  // Three cards can be checking at once, so none of them spins.
+  it('keeps the overview still while its cards are checking', async () => {
+    const installation = deferredProbe();
+    installationMock.mockReturnValue(installation.promise);
+    let finishPermissionCheck!: (value: { screen_recording: boolean; accessibility: boolean }) => void;
+    const permissionCheck = new Promise<{ screen_recording: boolean; accessibility: boolean }>((resolve) => {
+      finishPermissionCheck = resolve;
+    });
+    invoke.mockImplementation((command: string) => (
+      command === 'check_macos_permissions' ? permissionCheck : Promise.resolve(undefined)
+    ));
+    render(<CapabilitiesSection />);
+
+    expect(within(findCapabilityCard('My Chrome')).getByText('Checking')).toBeInTheDocument();
+    expect(within(findCapabilityCard('Computer Use')).getByText('Checking')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(0);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    // Let both checks land so nothing is left waiting when the test ends.
+    installation.resolve('installed');
+    finishPermissionCheck({ screen_recording: true, accessibility: true });
+    await waitFor(() => {
+      expect(within(findCapabilityCard('My Chrome')).getByText('Installed')).toBeInTheDocument();
+      expect(within(findCapabilityCard('Computer Use')).queryByText('Checking')).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows one spinner on the built-in browser page while a retry runs, and holds the button', async () => {
+    let finishRetry!: (ready: boolean) => void;
+    ensureBuiltinBrowserRuntimeMock.mockReturnValue(new Promise<boolean>((resolve) => { finishRetry = resolve; }));
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openBuiltinBrowser(user);
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent('Checking');
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toBeDisabled();
+    expect(retry.querySelector('[data-ds-spinner]')).toBeNull();
+
+    finishRetry(false);
+    await waitFor(() => expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(0));
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
+  });
+
+  // The window a task opens puts focus on its first control; on both pages that is Cancel.
+  it.each([
+    ['chrome', 'My Chrome'],
+    ['computer', 'Computer Use'],
+  ] as const)('starts the %s page a task opened with Cancel, which refuses and nothing else', async (target, heading) => {
+    const onSetupCancel = vi.fn();
+    const onSetupComplete = vi.fn();
+    const onSetupRelaunch = vi.fn();
+    const user = userEvent.setup();
+    render(<CapabilitiesSection setupTarget={target} requestedByTask setupOnly
+      onSetupCancel={onSetupCancel} onSetupComplete={onSetupComplete} onSetupRelaunch={onSetupRelaunch} />);
+    expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument();
+
+    const first = screen.getAllByRole('button')[0];
+    expect(first).toHaveTextContent(/^Cancel$/);
+    await user.click(first);
+
+    expect(onSetupCancel).toHaveBeenCalledOnce();
+    expect(onSetupComplete).not.toHaveBeenCalled();
+    expect(onSetupRelaunch).not.toHaveBeenCalled();
+  });
+
+  it('reports completion to the waiting task only from Return to task', async () => {
+    useSettingsStore.setState({ computerUseEnabled: true });
+    invoke.mockImplementation((command: string) => command === 'check_macos_permissions'
+      ? Promise.resolve({ screen_recording: true, accessibility: true })
+      : Promise.resolve(undefined));
+    const onSetupCancel = vi.fn();
+    const onSetupComplete = vi.fn();
+    const user = userEvent.setup();
+    render(<CapabilitiesSection setupTarget="computer" requestedByTask setupOnly
+      onSetupCancel={onSetupCancel} onSetupComplete={onSetupComplete} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Return to task' }));
+
+    expect(onSetupComplete).toHaveBeenCalledOnce();
+    expect(onSetupCancel).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
   });
 
   it('marks an undeclared custom endpoint as not verified and not ready', async () => {
@@ -1113,7 +1315,7 @@ describe('CapabilitiesSection', () => {
       expect(screen.getByText('上传文件')).toBeInTheDocument();
       expect(screen.queryByText('自动任务')).toBeNull();
       expect(screen.queryByText('你在场时')).toBeNull();
-      expect(screen.getByRole('button', { name: /^运行脚本:/ })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: '运行脚本' })).toBeInTheDocument();
       expect(screen.getByText('在网页中执行代码。')).toBeInTheDocument();
       expect(screen.queryByText(/登录失效/)).toBeNull();
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { act, render as renderTree, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { useConfirm, type Confirm } from './confirm-context';
 import { Dialog } from './dialog';
@@ -125,6 +125,146 @@ describe('useConfirm', () => {
     expect(settled).toBe(false);
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Shortcut dialog' })).toBeInTheDocument();
+  });
+
+  describe('asked while a dialog is open', () => {
+    const page = (settings: 'open' | 'closed' | 'absent', other = false) => (
+      <>
+        <Capture onReady={keep} />
+        {settings !== 'absent' && <Dialog open={settings === 'open'} onOpenChange={() => undefined} title="Settings" />}
+        <Dialog open={other} onOpenChange={() => undefined} title="Approval" />
+      </>
+    );
+    const track = (answer: Promise<boolean>) => {
+      const state: { settled: boolean | 'pending' } = { settled: 'pending' };
+      void answer.then((confirmed) => { state.settled = confirmed; });
+      return state;
+    };
+    const flush = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    it('answers false and goes away when that dialog closes', async () => {
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const state = track(ask());
+      expect(screen.getByRole('alertdialog', { name: 'Delete this channel?' })).toBeInTheDocument();
+
+      rerender(page('closed'));
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('answers false and goes away when that dialog is taken off the page', async () => {
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const state = track(ask());
+
+      rerender(page('absent'));
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+    });
+
+    it('answers false when another dialog replaces that dialog', async () => {
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const state = track(ask());
+
+      rerender(page('open', true));
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+    });
+
+    // The newcomer is only held, and the user may still keep editing. The confirmation is cancelled
+    // all the same: the discard question has to be the top layer for the user to decide.
+    it('answers false when a new dialog arrives and is held by unsaved input in that dialog', async () => {
+      const user = userEvent.setup();
+      captured = null;
+      const onApprovalChange = vi.fn();
+      let requestApproval!: () => void;
+      function Form() {
+        const [approval, setApproval] = useState(false);
+        useEffect(() => { requestApproval = () => setApproval(true); }, []);
+        return (
+          <>
+            <Capture onReady={keep} />
+            <Dialog open onOpenChange={() => undefined} title="Edit channel" dirty>
+              <input aria-label="Name" defaultValue="draft" />
+            </Dialog>
+            <Dialog open={approval} onOpenChange={(next) => { onApprovalChange(next); setApproval(next); }} title="Approval" />
+          </>
+        );
+      }
+      renderTree(<Form />, { wrapper: DesignSystemProvider });
+      const state = track(ask());
+      expect(screen.getByRole('alertdialog', { name: 'Delete this channel?' })).toBeInTheDocument();
+
+      act(() => requestApproval());
+      await flush();
+
+      expect(state.settled).toBe(false);
+      expect(screen.queryByRole('alertdialog', { name: 'Delete this channel?' })).toBeNull();
+      expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+      expect(screen.queryByText('Approval')).toBeNull();
+      expect(onApprovalChange).not.toHaveBeenCalled();
+      // Keep editing: the form and what was typed stay, and only now is the newcomer refused.
+      await user.click(screen.getByRole('button', { name: 'Keep editing' }));
+      expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('draft');
+      expect(onApprovalChange).toHaveBeenCalledOnce();
+      expect(onApprovalChange).toHaveBeenCalledWith(false);
+    });
+
+    it('is asked again without the earlier dialog deciding its fate', async () => {
+      const user = userEvent.setup();
+      captured = null;
+      const { rerender } = renderTree(page('open'), { wrapper: DesignSystemProvider });
+      const first = track(ask());
+      rerender(page('closed'));
+      await flush();
+      expect(first.settled).toBe(false);
+
+      // Asked with no dialog open: nothing but its own buttons answers it.
+      const second = ask();
+      const state = track(second);
+      rerender(page('absent'));
+      await flush();
+      expect(state.settled).toBe('pending');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await expect(second).resolves.toBe(true);
+    });
+  });
+
+  it('stays open when it was asked with no dialog open and the page around it changes', async () => {
+    const user = userEvent.setup();
+    captured = null;
+    const tree = (extra: boolean) => (
+      <>
+        <Capture onReady={keep} />
+        <Dialog open={false} onOpenChange={() => undefined} title="Settings" />
+        {extra && <output>later</output>}
+      </>
+    );
+    const { rerender } = renderTree(tree(false), { wrapper: DesignSystemProvider });
+    const answer = ask();
+    let settled: boolean | 'pending' = 'pending';
+    void answer.then((confirmed) => { settled = confirmed; });
+
+    rerender(tree(true));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toBe('pending');
+    expect(screen.getByRole('alertdialog', { name: 'Delete this channel?' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await expect(answer).resolves.toBe(true);
   });
 
   it('answers a pending request with false when the provider goes away', async () => {

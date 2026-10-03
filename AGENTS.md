@@ -385,9 +385,8 @@ blue token — do NOT reuse the accent). Brand orange stays `--abu-clay*`.
 Notes: tokens are theme-aware — do **not** add `dark:` color variants. Solid-fill hover =
 `hover:opacity-90` (no per-role hover-fill token). There is no per-role hover *foreground*
 token except link, so `hover:text-[var(--abu-{role})]` on an element already in that role is
-a no-op (fine). Categorical tag palettes (e.g. memory-type tags: purple/teal + orange/blue)
-are a different concern from semantic status — keep those raw with a scoped
-`eslint-disable no-restricted-syntax` + comment.
+a no-op (fine). Categorical tag palettes are a different concern from semantic status —
+keep those raw with a scoped `eslint-disable no-restricted-syntax` + comment.
 
 ### 6.3 Design-system tokens and the migration list (MANDATORY for migrated files)
 Files matched by `DESIGN_SYSTEM_MIGRATED_FILES` / `DESIGN_SYSTEM_UI_FILES` in `eslint.config.js`
@@ -432,6 +431,52 @@ re-reading them when the appearance changes. `MenuItem description` adds a secon
 and `WorkspacePanel` are `memo` and read primitive selectors, so the panel does not re-render per
 streamed token. Panel files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; `PreviewPanel` (in-place
 fullscreen) and the panel directory glob join in batch 8.
+
+**Settings (batch 6)**: the settings window is a `Dialog size="page"`; every page is UI text. A group
+of settings is a `SettingGroup` of `SettingRow`s (title, one-line description, control); dropdowns
+are `Select fullWidth` inside a width wrapper from `settingsLayout.ts`, with option explanations in
+`SelectOption.description`. A menu, select or popover opened inside a dialog sits on the dialog's
+level (`useFloatingLevel`), and every floating layer keeps 8px from the window edge. A closed
+`Select` never changes its value from a key press; arrow keys only move the highlight, so it is the
+control for consequential choices as well. A `Select` mounts its list only while open (a closed
+Radix list keeps every option and its listeners alive per select), so it closes without an exit
+fade; do not remount it to get one. A secret field that offers show / hide is
+`settings/SecretField`; a secret field that only masks stays a `TextField type="password"` (IM App
+Secret). Neither puts the value anywhere but the input. Confirmations go through `useConfirm`, name
+what they act on and re-read their target after the answer; a form that can fail stays in a
+`Dialog`. A confirmation or `role="alertdialog"` window asked while a dialog is open belongs to the
+innermost open dialog: it is answered with cancel when that dialog leaves, and dialogs opened
+inside a dialog are closed by the registry together with it, so an owner never has to close a
+nested window itself. `role="alertdialog"` registers as an alert: it stacks over the open dialog, a
+new alert or a new dialog replaces it, and it is never held. Use it for a question about what is on
+screen (a confirmation, the privacy check, a site removal), never for a form. A dialog keeps
+rendering while it fades out and its content takes no pointer input then. Closing guards: a handler
+in a window that closes on success (save, add, remove in a form dialog) returns once the window is
+closing; a page handler inside the settings window gets the same `systemSettingsOpen` check only
+when it starts something that cannot be taken back (export, upload, download an update, relaunch).
+Store writes and switches need no guard. Each guard has a test (`getComputedStyle` stub recipe in
+`ai-services/AddProviderModal.test.tsx`). Form baselines and held objects that contain a secret are
+cleared once the window has closed. `Dialog dismissible={false}` is for a window only its own
+buttons may close; a dismissible dialog whose only control is its corner close button opens with
+focus on its own box. `LayerProvider.onModalChange` feeds `previewStore.dsModalOpen`, which hides
+the native browser view under any dialog or confirmation. Until batch 8 replaces
+`CommandConfirmDialog` / `PermissionDialog` / `CloseDialog`: the settings window closes when one
+appears (`useBlockingApprovalVisible`), the sign-in window hides and returns, and the task's grant
+window steps aside only for the close-window question. All three go with that batch.
+
+Keyboard focus in dialogs and settings pages: a dialog opens on its first control, or on the one
+`Dialog initialFocus` names (the settings window opens on the navigation row of the page in view);
+after a pointer press that first focus shows no ring (`ds/input-modality.ts`), after a key press it
+does. Tab from the dialog's own box goes to its first control and Shift+Tab to its last. A control
+never drops the focus onto the window: a button whose own action is running is `Button busy`
+(`aria-disabled`, focusable, takes no press) and not `disabled`; a page that replaces another moves
+the focus to its way back, and to the control that opened it when it is left (`CapabilitiesSection`,
+`data-capability-entry` / `data-capability-back`); after a row is removed the focus goes to the row
+that took its place, else the one before it, else the add button. An icon-only `Pressable` sits in
+a `Tooltip` with its name, so the name shows on keyboard focus. `SystemSettingsDialog` is `memo`
+with no props: `App` renders for every piece of a streamed reply and the settings window must not
+render with it. Settings files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; only `ToolboxModal`
+(batch 7) and `LanguageSection` stay out.
 
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one

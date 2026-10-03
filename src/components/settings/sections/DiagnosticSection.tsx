@@ -1,5 +1,8 @@
 import { useEffect, useMemo } from 'react';
-import { Bot, FolderLock, Plug, Sparkles, Globe, AppWindow } from 'lucide-react';
+import type { AppIconName } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { Switch } from '@/components/ds/switch';
 import { useI18n } from '@/i18n';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -8,16 +11,15 @@ import type { CheckCategory, CheckResult } from '@/core/diagnostic/types';
 import DiagnosticBanner from './diagnostic/DiagnosticBanner';
 import DiagnosticCategory from './diagnostic/DiagnosticCategory';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
-import { Toggle } from '@/components/ui/toggle';
 
-const CATEGORY_ICON = {
-  'ai-services': Bot,
-  'permissions': FolderLock,
-  'mcp': Plug,
-  'skills': Sparkles,
-  'network': Globe,
-  'app': AppWindow,
-} as const;
+const CATEGORY_ICON: Record<CheckCategory, AppIconName> = {
+  'ai-services': 'agent',
+  'permissions': 'dataAccess',
+  'mcp': 'plug',
+  'skills': 'sparkles',
+  'network': 'webPage',
+  'app': 'appWindow',
+};
 
 export default function DiagnosticSection() {
   const { t } = useI18n();
@@ -70,7 +72,7 @@ export default function DiagnosticSection() {
   };
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="max-w-3xl space-y-6">
       <SettingsSectionHeader title={t.diagnostic.title} description={t.diagnostic.desc} />
 
       {/* Banner */}
@@ -94,27 +96,24 @@ export default function DiagnosticSection() {
           outrank the diagnostic results this page exists to show. Personal
           installs previously had no way to turn reporting off at all — only a
           build-time constant and, for enterprise, a server-side flag. */}
-      <div className="pt-2 border-t border-[var(--abu-border)] flex items-center justify-between gap-4">
-        <div className="flex-1">
-          <p className="text-minor text-[var(--abu-text-primary)]">{t.diagnostic.telemetryOptOut}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.diagnostic.telemetryOptOutDesc}</p>
-        </div>
-        <Toggle
-          checked={!telemetryOptOut}
-          onChange={() => setTelemetryOptOut(!telemetryOptOut)}
-          size="sm"
-        />
-      </div>
+      <SettingGroup>
+        <SettingRow title={t.diagnostic.telemetryOptOut} description={t.diagnostic.telemetryOptOutDesc} htmlFor="diag-error-reports">
+          <Switch
+            id="diag-error-reports"
+            checked={!telemetryOptOut}
+            onCheckedChange={() => setTelemetryOptOut(!telemetryOptOut)}
+          />
+        </SettingRow>
+      </SettingGroup>
 
       {/* Feedback navigation prompt */}
-      <div className="pt-2 border-t border-[var(--abu-border)]">
-        <button
-          type="button"
+      <div className="border-t border-separator pt-2">
+        <Pressable
           onClick={() => setActiveSystemTab('feedback')}
-          className="text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-clay)] transition-colors"
+          className="inline-flex items-center gap-1 rounded-control text-ui-sm text-link hover:underline"
         >
           {t.diagnostic.feedbackPageHint}
-        </button>
+        </Pressable>
       </div>
 
     </div>

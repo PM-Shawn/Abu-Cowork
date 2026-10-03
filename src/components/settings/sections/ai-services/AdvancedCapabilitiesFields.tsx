@@ -1,8 +1,8 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useId, type Dispatch, type SetStateAction } from 'react';
 import { useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
+import { Button } from '@/components/ds/button';
+import { Checkbox } from '@/components/ds/checkbox';
+import { TextField } from '@/components/ds/text-field';
 import { toggleEffort } from './providerCapabilities';
 import type { ApiFormat } from '@/types';
 import type { ModelDeclaredCapabilities } from '@/types/provider';
@@ -22,81 +22,73 @@ export default function AdvancedCapabilitiesFields({
   apiFormat: ApiFormat;
 }) {
   const { t } = useI18n();
+  const fieldId = useId();
   const isAnthropic = apiFormat === 'anthropic';
   return (
     <div className="space-y-2">
-      <div className="text-minor font-medium text-[var(--abu-text-primary)]">
+      <div className="text-ui-sm font-medium text-label">
         {t.settings.advancedConfig}
       </div>
       <div className="space-y-2">
         <div className="grid grid-cols-2 gap-2">
-          <div className="flex items-center gap-2 cursor-pointer select-none"
-            onClick={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))}>
-            <Checkbox checked={!!declared.supportsTools}
-              onChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))} />
-            <span className="text-body text-[var(--abu-text-primary)]">{t.settings.capTools}</span>
-          </div>
-          <div className="flex items-center gap-2 cursor-pointer select-none"
-            onClick={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))}>
-            <Checkbox checked={!!declared.supportsImages}
-              onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
-            <span className="text-body text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
-          </div>
-          <div className="flex items-center gap-2 cursor-pointer select-none"
-            onClick={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))}>
-            <Checkbox checked={!!declared.supportsReasoning}
-              onChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))} />
-            <span className="text-body text-[var(--abu-text-primary)]">{t.settings.capReasoning}</span>
-          </div>
+          <Checkbox
+            checked={!!declared.supportsTools}
+            onCheckedChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))}
+            label={t.settings.capTools}
+          />
+          <Checkbox
+            checked={!!declared.supportsImages}
+            onCheckedChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))}
+            label={t.settings.capImages}
+          />
+          <Checkbox
+            checked={!!declared.supportsReasoning}
+            onCheckedChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))}
+            label={t.settings.capReasoning}
+          />
         </div>
         {!isAnthropic && declared.supportsReasoning && (
-          <div className="pl-3 space-y-2 border-l border-black/10">
-            <div className="flex items-center gap-2">
-              <span className="text-body text-[var(--abu-text-secondary)]">{t.settings.capEffort}</span>
-              {(['low', 'medium', 'high'] as const).map(e => (
-                <div key={e} className="flex items-center gap-1 cursor-pointer select-none"
-                  onClick={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))}>
-                  <Checkbox checked={!!declared.supportedEfforts?.includes(e)}
-                    onChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))} />
-                  <span className="text-minor text-[var(--abu-text-secondary)]">
-                    {{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
-                  </span>
-                </div>
-              ))}
-            </div>
+          <div className="flex items-center gap-3 border-l border-separator pl-3">
+            <span className="text-ui text-label-secondary">{t.settings.capEffort}</span>
+            {(['low', 'medium', 'high'] as const).map(e => (
+              <Checkbox
+                key={e}
+                checked={!!declared.supportedEfforts?.includes(e)}
+                onCheckedChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))}
+                label={{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
+              />
+            ))}
           </div>
         )}
-        <div className="grid grid-cols-2 gap-2 mt-3">
+        <div className="grid grid-cols-2 gap-2 pt-1">
           <div className="space-y-1">
-            <div className="text-body text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
-            <Input
-              type="text"
+            <label htmlFor={`${fieldId}-input`} className="block text-ui text-label">{t.settings.capMaxInput}</label>
+            <TextField
+              id={`${fieldId}-input`}
               inputMode="numeric"
               placeholder={t.settings.capTokenDefault}
               value={declared.maxInputTokens ?? ''}
-              className="h-8"
               onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxInputTokens: raw === '' ? undefined : Number(raw) })); }}
             />
-            <div className="flex gap-1 flex-wrap">
+            <div className="flex flex-wrap gap-1">
               {[32768, 65536, 131072, 262144].map(v => (
-                <Button key={v} variant="ghost" size="xs" type="button"
+                <Button key={v} variant="plain" size="sm"
                   onClick={() => setDeclared(d => ({ ...d, maxInputTokens: v }))}>{v / 1024}K</Button>
               ))}
             </div>
           </div>
           <div className="space-y-1">
-            <div className="text-body text-[var(--abu-text-primary)]">{t.settings.capMaxOutput}</div>
-            <Input
-              type="text"
+            <label htmlFor={`${fieldId}-output`} className="block text-ui text-label">{t.settings.capMaxOutput}</label>
+            <TextField
+              id={`${fieldId}-output`}
               inputMode="numeric"
               placeholder={t.settings.capTokenDefault}
               value={declared.maxOutputTokens ?? ''}
-              className="h-8"
               onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxOutputTokens: raw === '' ? undefined : Number(raw) })); }}
             />
-            <div className="flex gap-1 flex-wrap">
+            <div className="flex flex-wrap gap-1">
               {[8192, 16384, 32768, 65536].map(v => (
-                <Button key={v} variant="ghost" size="xs" type="button"
+                <Button key={v} variant="plain" size="sm"
                   onClick={() => setDeclared(d => ({ ...d, maxOutputTokens: v }))}>{v / 1024}K</Button>
               ))}
             </div>

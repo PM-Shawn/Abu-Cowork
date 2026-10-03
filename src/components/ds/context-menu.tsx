@@ -2,9 +2,9 @@ import { ContextMenu as ContextMenuPrimitive } from 'radix-ui';
 import { useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { LayerScope } from './layer';
-import { useLayer, useLayerContainer, useOpenState } from './layer-context';
+import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext } from './menu-context';
-import { FLOAT_MOTION, FLOAT_SURFACE } from './styles';
+import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE } from './styles';
 
 // onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
 // event.preventDefault() there to stop Radix restoring focus (e.g. to focus a field).
@@ -15,6 +15,7 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   const container = useLayerContainer();
+  const level = useFloatingLevel();
   const [isOpen, setOpen] = useOpenState(undefined, false, onOpenChange);
   // Radix has no controlled open state here, so the registry closes the menu by
   // dropping its content until the next right-click opens it again, and reports the
@@ -57,6 +58,7 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
         {!dismissed && (
           <ContextMenuPrimitive.Content
             key={opening}
+            collisionPadding={EDGE_GAP}
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
@@ -72,7 +74,7 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
               }
             }}
             // Like Menu: no taller than the room the window leaves; a longer list scrolls.
-            className={cn('z-popover max-h-(--radix-context-menu-content-available-height) min-w-40 origin-(--radix-context-menu-content-transform-origin) overflow-y-auto p-1', FLOAT_SURFACE, FLOAT_MOTION)}
+            className={cn(level, 'max-h-(--radix-context-menu-content-available-height) min-w-40 origin-(--radix-context-menu-content-transform-origin) overflow-y-auto p-1', FLOAT_SURFACE, FLOAT_MOTION)}
           >
             <LayerScope id={id}>
               <MenuKindContext.Provider value="context">{content}</MenuKindContext.Provider>

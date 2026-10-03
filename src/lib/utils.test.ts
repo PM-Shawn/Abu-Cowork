@@ -90,6 +90,10 @@ describe('cn() — design-system tokens', () => {
   it('lets the page canvas replace another surface color', () => {
     expect(cn('bg-surface', 'bg-page-canvas')).toBe('bg-page-canvas');
   });
+
+  it('lets a heatmap step replace the empty-day fill', () => {
+    expect(cn('bg-fill', 'bg-heat-2')).toBe('bg-heat-2');
+  });
 });
 
 describe('cn() — design-system font family', () => {

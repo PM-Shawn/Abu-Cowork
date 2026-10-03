@@ -2,24 +2,100 @@ import { AlertDialog as AlertDialogPrimitive, Dialog as DialogPrimitive, Visuall
 import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Button } from './button';
+import { isMacOS } from '@/utils/platform';
+import { Button, IconButton } from './button';
+import { AppIcons } from './icons';
+import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
-import { useLayer, useLayerContainer, useOpenState } from './layer-context';
-import { DIALOG_BOX, DIALOG_MOTION, SCRIM_MOTION } from './styles';
+import { InDialogContext, useLayer, useLayerContainer, useOpenState } from './layer-context';
+import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
 
-const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl' } as const;
+const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
+interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
+// Hooks for tests and for the window-drag guard; nothing else reaches the dialog box.
+export type DataAttributes = { [key: `data-${string}`]: string | undefined };
 // `top` keeps the top edge still while the content grows or shrinks (search as you type).
-const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0' } as const;
+// Its height limit counts from that edge, so the dialog still ends 48px above the window's bottom.
+const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0 max-h-[calc(100dvh*6/7-3rem)]' } as const;
+
+// True when the dialog has a close button and nothing else the Tab key can reach. Every element
+// is asked the way Radix asks when it looks for the first focus target, so an editable box, a
+// summary, a frame or a media player counts as a control like a button does.
+function hasOnlyCloseButton(content: HTMLElement): boolean {
+  const close = content.querySelector('[data-ds-dialog-close]');
+  if (!close) return false;
+  return Array.from(content.querySelectorAll<HTMLElement>('*')).every((element) => {
+    if (close.contains(element)) return true;
+    const hiddenInput = element instanceof HTMLInputElement && element.type === 'hidden';
+    if ((element as HTMLElement & { disabled?: boolean }).disabled || element.hidden || hiddenInput) return true;
+    return !(element.tabIndex >= 0);
+  });
+}
+
+// Whether the Tab key reaches this element inside `content`: the test Radix makes for its own
+// first focus target, with the check that nothing up to the dialog box hides it.
+function isTabbable(element: HTMLElement, content: HTMLElement): boolean {
+  if (!(element.tabIndex >= 0)) return false;
+  const hiddenInput = element instanceof HTMLInputElement && element.type === 'hidden';
+  if ((element as HTMLElement & { disabled?: boolean }).disabled || element.hidden || hiddenInput) return false;
+  for (let node: HTMLElement | null = element; node && node !== content; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+  }
+  return true;
+}
+
+function firstTabbable(content: HTMLElement, skipLinks = false): HTMLElement | null {
+  for (const element of content.querySelectorAll<HTMLElement>('*')) {
+    if (skipLinks && element.tagName === 'A') continue;
+    if (isTabbable(element, content)) return element;
+  }
+  return null;
+}
+
+function lastTabbable(content: HTMLElement): HTMLElement | null {
+  const all = content.querySelectorAll<HTMLElement>('*');
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    if (isTabbable(all[index], content)) return all[index];
+  }
+  return null;
+}
+
+// Tab pressed while focus is on the dialog box itself (after a press on an empty part of it, or
+// in a dialog that opened with focus on its box): the first control, or the last with Shift.
+function tabFromBox(event: { key: string; shiftKey: boolean; target: EventTarget; currentTarget: HTMLElement; preventDefault: () => void }) {
+  if (event.key !== 'Tab' || event.target !== event.currentTarget) return;
+  const next = event.shiftKey ? lastTabbable(event.currentTarget) : firstTabbable(event.currentTarget);
+  if (!next) return;
+  event.preventDefault();
+  next.focus();
+}
+
+// After a pointer press, the control a layer opens on gets focus without its ring; after a key
+// press the default stands (Radix focuses it and the ring shows).
+function focusQuietlyAfterPointer(event: Event, pick: (content: HTMLElement) => HTMLElement | null) {
+  const content = event.currentTarget;
+  if (!lastInputWasPointer() || !(content instanceof HTMLElement)) return;
+  const target = pick(content);
+  if (!target) return;
+  event.preventDefault();
+  target.focus({ preventScroll: true, focusVisible: false });
+  if (target instanceof HTMLInputElement) target.select();
+}
 
 export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close {...props} />;
 }
 
-// One dialog at a time (LayerProvider). Escape, the scrim and DialogClose all close it,
-// except while `dirty`: then the user is asked whether to discard what they typed.
+// One dialog at a time (LayerProvider). Escape, the scrim, the close button and DialogClose
+// all close it, except while `dirty`: then the user is asked whether to discard what they typed.
+// With `dismissible={false}` only the dialog's own buttons and DialogClose close it.
+// Content taller than the window scrolls inside the dialog; the title and the footer stay put.
 export function Dialog({
   title, description, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
+  closeButton: closeButtonAsked = false, dismissible = true, contentProps, onCloseAutoFocus: callerCloseAutoFocus,
+  initialFocus,
 }: {
   title: ReactNode;
   // Keeps the title as the accessible name without showing it.
@@ -32,30 +108,66 @@ export function Dialog({
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   dirty?: boolean;
-  size?: keyof typeof WIDTH;
+  // `page` is the settings window: it fills a fixed box and its content does its own scrolling.
+  size?: keyof typeof WIDTH | 'page';
   placement?: keyof typeof PLACEMENT;
   role?: 'dialog' | 'alertdialog';
+  // A close button in the top right corner; data attributes given here go on that button.
+  closeButton?: boolean | DataAttributes;
+  // false: only the dialog's own buttons (and DialogClose) close it. Escape and a press outside
+  // do nothing and there is no close button; the scrim still blocks the window behind it. For a
+  // one-time question that a stray key or click must not skip. The layer registry can still
+  // close it: when the dialog it was asked over goes away, or another dialog takes its place.
+  dismissible?: boolean;
+  contentProps?: DataAttributes;
+  // Runs after the layer's own handler once the dialog has gone; call event.preventDefault()
+  // there to put focus somewhere other than where it was before the dialog opened. When
+  // event.defaultPrevented is already true, another dialog has taken the focus: leave it alone.
+  onCloseAutoFocus?: (event: Event) => void;
+  // The control the dialog opens on, when that is not its first one (the current page of a
+  // window with navigation). Returning null leaves the first control.
+  initialFocus?: (content: HTMLElement) => HTMLElement | null;
 }) {
   const { t } = useI18n();
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
+  // The discard question that is on screen. The ref is what the handlers read: Discard and
+  // the question's own close arrive in one event, and only the first of them may answer.
+  const [discardAsked, setDiscardAsked] = useState(false);
+  const pendingDiscard = useRef<PendingDiscard | null>(null);
   const dirtyRef = useRef(dirty);
   useLayoutEffect(() => { dirtyRef.current = dirty; });
 
-  const askToDiscard = (onDiscard: () => void) => setPendingDiscard(() => onDiscard);
+  const takePendingDiscard = () => {
+    const pending = pendingDiscard.current;
+    pendingDiscard.current = null;
+    setDiscardAsked(false);
+    return pending;
+  };
+  // Returns a function that takes this question back without answering it.
+  const askToDiscard = (onDiscard: () => void, onKeep?: () => void) => {
+    const pending = { onDiscard, onKeep };
+    pendingDiscard.current = pending;
+    setDiscardAsked(true);
+    return () => { if (pendingDiscard.current === pending) takePendingDiscard(); };
+  };
   const requestClose = () => {
     if (dirtyRef.current) askToDiscard(() => setOpen(false));
     else setOpen(false);
   };
-  const discard = () => {
-    const onDiscard = pendingDiscard;
-    setPendingDiscard(null);
-    if (!onDiscard) throw new Error('No discard is pending');
-    onDiscard();
-  };
+  // The question stays on the page while it fades out: a later activation finds nothing pending.
+  const discard = () => { takePendingDiscard()?.onDiscard(); };
+  // Keep editing, Escape, or anything else that closes the question without discarding.
+  const keep = () => { takePendingDiscard()?.onKeep?.(); };
 
-  const { id, onCloseAutoFocus } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  const { id, onCloseAutoFocus, held } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  // The owner closed the dialog while the discard question was on screen (a save that was in
+  // flight landed): nothing is left to discard, so the question goes unanswered.
+  useLayoutEffect(() => {
+    if (isOpen || !pendingDiscard.current) return;
+    pendingDiscard.current = null;
+    setDiscardAsked(false);
+  }, [isOpen]);
 
   // Radix gives focus back only to a Dialog.Trigger. A dialog opened by code (search,
   // useConfirm(), the discard question) has none, so it would leave focus on the page
@@ -74,55 +186,109 @@ export function Dialog({
     if (element?.isConnected) element.focus();
   };
 
+  const closeButton = dismissible && closeButtonAsked;
+  // Radix asks before it dismisses; a prevented event leaves the dialog open.
+  const stay = dismissible ? undefined : (event: Event) => event.preventDefault();
+  const page = size === 'page';
+  const box = page ? cn(DIALOG_PAGE, isMacOS() ? 'top-12' : 'top-6') : cn(DIALOG_BOX, WIDTH[size], PLACEMENT[placement]);
+
   return (
     <>
-      <DialogPrimitive.Root open={isOpen} onOpenChange={(next) => (next ? setOpen(true) : requestClose())}>
+      {/* Held by the layer registry: open as far as the owner knows, not on the page yet. */}
+      <DialogPrimitive.Root open={isOpen && !held} onOpenChange={(next) => (next ? setOpen(true) : requestClose())}>
         {trigger && <DialogPrimitive.Trigger asChild>{trigger}</DialogPrimitive.Trigger>}
         <DialogPrimitive.Portal container={container}>
           {/* eslint-disable-next-line no-restricted-syntax -- Dialog owns the app's only scrim */}
           <DialogPrimitive.Overlay data-ds-motion data-electron-no-drag className={cn('fixed inset-0 z-dialog bg-scrim', SCRIM_MOTION)} />
           <DialogPrimitive.Content
+            {...contentProps}
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
             role={role}
-            onOpenAutoFocus={() => remember(returnTo)}
+            onEscapeKeyDown={stay}
+            onInteractOutside={stay}
+            onKeyDown={tabFromBox}
+            onOpenAutoFocus={(event) => {
+              remember(returnTo);
+              const content = event.currentTarget;
+              if (!(content instanceof HTMLElement)) return;
+              // The close button is the only control (an enlarged image): focus goes to the box.
+              // On the button it would show the button's tooltip at once, and the first Escape
+              // would close the tooltip, not the dialog. Tab still reaches the button.
+              if (hasOnlyCloseButton(content)) {
+                event.preventDefault();
+                content.focus();
+                return;
+              }
+              const named = initialFocus?.(content) ?? null;
+              if (named) {
+                event.preventDefault();
+                named.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+                return;
+              }
+              // Radix's own choice, links aside as it does.
+              focusQuietlyAfterPointer(event, (box) => firstTabbable(box, true));
+            }}
             onCloseAutoFocus={(event) => {
               // The layer's handler first: it prevents the default when the registry
-              // closed this dialog to make room for another.
+              // closed this dialog to make room for another. Then the caller's choice.
               onCloseAutoFocus(event);
+              callerCloseAutoFocus?.(event);
               giveFocusBack(returnTo, event, trigger !== undefined);
             }}
             {...(description ? {} : { 'aria-describedby': undefined })}
-            className={cn(DIALOG_BOX, WIDTH[size], PLACEMENT[placement], DIALOG_MOTION)}
+            className={cn(box, DIALOG_MOTION, DIALOG_CLOSING)}
           >
             <LayerScope id={id}>
-              {titleHidden ? (
-                // Still the dialog's accessible name, for a dialog whose content says what it is (search).
-                <VisuallyHidden.Root asChild>
-                  <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
-                </VisuallyHidden.Root>
-              ) : (
-                <DialogPrimitive.Title className="text-title text-label">{title}</DialogPrimitive.Title>
-              )}
-              {description && (
-                <DialogPrimitive.Description className="mt-1 text-ui text-label-secondary">{description}</DialogPrimitive.Description>
-              )}
-              {children && <div className={cn('text-ui text-label', !titleHidden && 'mt-4')}>{children}</div>}
-              {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
+              <InDialogContext.Provider value>
+                {titleHidden ? (
+                  // Still the dialog's accessible name, for a dialog whose content says what it is (search).
+                  <VisuallyHidden.Root asChild>
+                    <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
+                  </VisuallyHidden.Root>
+                ) : (
+                  // With a close button the title stops short of the corner the button sits in.
+                  <DialogPrimitive.Title className={cn('text-title text-label', closeButton && 'pr-8')}>{title}</DialogPrimitive.Title>
+                )}
+                {description && (
+                  <DialogPrimitive.Description className="mt-1 text-ui text-label-secondary">{description}</DialogPrimitive.Description>
+                )}
+                {children && (page ? (
+                  <div className="min-h-0 flex-1 text-ui text-label">{children}</div>
+                ) : (
+                  <div className={cn('flex min-h-0 flex-col', !titleHidden && 'mt-4')}>
+                    {/* The 4px of padding keeps focus rings from being cut off by the scroll box. */}
+                    <div className="-m-1 min-h-0 overflow-y-auto p-1 text-ui text-label">{children}</div>
+                  </div>
+                ))}
+                {footer && <div className="mt-6 flex shrink-0 justify-end gap-2">{footer}</div>}
+                {/* Last in the content, so the dialog opens with focus on its first control. */}
+                {closeButton && (
+                  <span data-ds-dialog-close className="absolute right-3 top-3 flex">
+                    <DialogPrimitive.Close asChild>
+                      <IconButton icon={AppIcons.close} label={t.common.close} {...(closeButton === true ? {} : closeButton)} />
+                    </DialogPrimitive.Close>
+                  </span>
+                )}
+              </InDialogContext.Provider>
             </LayerScope>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
-      <AlertDialogPrimitive.Root open={pendingDiscard !== null} onOpenChange={(next) => { if (!next) setPendingDiscard(null); }}>
+      <AlertDialogPrimitive.Root open={discardAsked} onOpenChange={(next) => { if (!next) keep(); }}>
         <AlertDialogPrimitive.Portal container={container}>
           <AlertDialogPrimitive.Content
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
-            onOpenAutoFocus={() => remember(discardReturnTo)}
+            onOpenAutoFocus={(event) => {
+              remember(discardReturnTo);
+              // The first button is the one that keeps editing, which Radix focuses too.
+              focusQuietlyAfterPointer(event, (box) => firstTabbable(box));
+            }}
             onCloseAutoFocus={(event) => giveFocusBack(discardReturnTo, event, false)}
-            className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION)}
+            className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION, DIALOG_CLOSING)}
           >
             <AlertDialogPrimitive.Title className="text-title text-label">{t.designSystem.discardTitle}</AlertDialogPrimitive.Title>
             <AlertDialogPrimitive.Description className="mt-1 text-ui text-label-secondary">

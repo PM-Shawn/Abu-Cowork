@@ -192,20 +192,59 @@ describe('AccountMenu identity', () => {
     expect(mocks.startEnterpriseLogin).toHaveBeenCalledOnce();
   });
 
-  it('opens settings only after the menu has gone, with focus off the account trigger', async () => {
+  // The settings window gives focus back to whatever had it when it opened, so the three
+  // items that open it leave focus on the account button first.
+  it.each([
+    ['设置', undefined],
+    ['账号设置', 'account'],
+    ['反馈', 'feedback'],
+  ])('opens settings from 「%s」 only after the menu has gone, with focus back on the account button', async (item, section) => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderMenu();
+    const trigger = screen.getByRole('button', { name: '账号' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: item }));
+    await flushMenuClose();
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(mocks.settings.openSystemSettings).toHaveBeenCalledOnce();
+    if (section) expect(mocks.settings.openSystemSettings).toHaveBeenCalledWith(section);
+    else expect(mocks.settings.openSystemSettings).toHaveBeenCalledWith();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps focus off the account button when the item opens a legacy dialog', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const editProfile = vi.fn();
+    renderMenu(editProfile);
+    const trigger = screen.getByRole('button', { name: '账号' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: '编辑资料' }));
+    await flushMenuClose();
+
+    expect(editProfile).toHaveBeenCalledOnce();
+    // The profile dialog takes no focus; Enter on the trigger behind it would reopen
+    // this menu underneath, so focus stays on the page body.
+    expect(trigger).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('runs a chosen item once: closing the menu again with Escape does not repeat it', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderMenu();
     const trigger = screen.getByRole('button', { name: '账号' });
     await user.click(trigger);
     await user.click(screen.getByRole('menuitem', { name: '设置' }));
     await flushMenuClose();
+    expect(mocks.settings.openSystemSettings).toHaveBeenCalledOnce();
+
+    await user.click(trigger);
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await flushMenuClose();
 
     expect(screen.queryByRole('menu')).toBeNull();
     expect(mocks.settings.openSystemSettings).toHaveBeenCalledOnce();
-    // Settings is a legacy dialog that takes no focus; Enter on the trigger behind it
-    // would reopen this menu underneath, so focus stays on the page body.
-    expect(trigger).not.toHaveFocus();
-    expect(document.activeElement).toBe(document.body);
   });
 
   it('keeps the local identity head separate from the signed-out login action', async () => {

@@ -856,6 +856,8 @@ const zhCN: TranslationDict = {
     clearAllKeys: '清除所有已保存密钥',
     clearAllKeysConfirm: '这会把所有 provider 和辅助服务的 API Key 从本机清除，下次使用时需重新输入。确定继续？',
     clearAllKeysDone: '已清除所有密钥',
+    secretShow: '显示密钥',
+    secretHide: '隐藏密钥',
     // Model Section
     model: '模型',
     customModelOption: '自定义模型...',

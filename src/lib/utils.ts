@@ -19,6 +19,7 @@ const DS_BG_COLORS = [
   "desk", "desk-solid", "surface", "raised", "code", "diagram-canvas", "page-canvas", "field",
   "fill", "fill-hover", "fill-selected", "fill-pressed", "emphasis", "scrim", "brand",
   "success-soft", "warning-soft", "danger-soft", "info-soft",
+  "heat-1", "heat-2", "heat-3", "heat-4",
 ]
 
 const twMerge = extendTailwindMerge({

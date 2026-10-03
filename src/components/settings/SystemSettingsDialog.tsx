@@ -1,64 +1,49 @@
-import { useEffect } from 'react';
-import { X } from 'lucide-react';
-import { useSettingsStore } from '@/stores/settingsStore';
-import { useI18n } from '@/i18n';
-import { cn } from '@/lib/utils';
-import { isMacOS } from '@/utils/platform';
+import { memo, useLayoutEffect, useRef } from 'react';
+import { Dialog } from '@/components/ds/dialog';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
+import { useBlockingApprovalVisible } from '@/hooks/useBlockingApprovalVisible';
+import { useI18n } from '@/i18n';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 /**
- * System settings as a centered overlay dialog (like TRAE / WorkBuddy), instead
- * of a full-view swap. Shown when `systemSettingsOpen` is set; the underlying
- * view stays mounted behind the scrim. Close via X, backdrop click, or Esc.
+ * System settings as the app's settings-size dialog. The view behind it stays mounted.
+ * Escape, the scrim and the close button close it; a menu, select or dialog opened inside
+ * it closes first.
+ *
+ * `memo`, with no props: the app around it renders again for every piece of a streamed reply,
+ * and the page of settings on screen must not render with it.
  */
-export default function SystemSettingsDialog() {
+export default memo(function SystemSettingsDialog() {
   const open = useSettingsStore((s) => s.systemSettingsOpen);
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const { t } = useI18n();
+  const blocked = useBlockingApprovalVisible();
 
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeSystemSettings();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [open, closeSystemSettings]);
+  // One dialog at a time (spec flow 2): an approval or the close-window question takes over.
+  useLayoutEffect(() => {
+    if (open && blocked) closeSystemSettings();
+  }, [blocked, closeSystemSettings, open]);
 
-  if (!open) return null;
-
-  // macOS paints the traffic lights natively over the top 44px band (see
-  // `trafficLightPosition` in electron/windowChrome.cjs and the `h-11` chrome
-  // overlay in WindowTitleBar). A card centred on the whole viewport starts at
-  // 5vh ≈ 40px on the default window and its corner lands under the green
-  // light, so the scrim keeps covering the viewport but the card is laid out
-  // below that band. Windows keeps its chrome rows in normal flow and is
-  // already covered by the no-drag marker, so it keeps full-viewport centring.
-  const mac = isMacOS();
+  // After a yield the prompt that took over is a legacy modal that takes no focus. Focus stays
+  // off the opener underneath it: Enter there would open the opener's menu over the prompt,
+  // and the Escape that closes the menu would answer the prompt.
+  const blockedRef = useRef(blocked);
+  useLayoutEffect(() => { blockedRef.current = blocked; });
 
   return (
-    <div
-      data-abu-settings-dialog
-      data-electron-no-drag
-      className={cn(
-        'fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/32 backdrop-blur-[2px]',
-        mac && 'pt-12',
-      )}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) closeSystemSettings();
-      }}
+    <Dialog
+      open={open && !blocked}
+      onOpenChange={(next) => { if (!next) closeSystemSettings(); }}
+      title={t.settings.title}
+      titleHidden
+      size="page"
+      closeButton={{ 'data-abu-settings-close': '' }}
+      contentProps={{ 'data-abu-settings-dialog': '' }}
+      onCloseAutoFocus={(event) => { if (blockedRef.current) event.preventDefault(); }}
+      // The window opens on the navigation row of the page in view.
+      initialFocus={(content) => content.querySelector<HTMLElement>('nav [aria-current="page"]')}
     >
-      <div className="relative w-[min(1180px,92vw)] h-full max-h-[840px] rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-2xl overflow-hidden">
-        <button
-          data-abu-settings-close
-          onClick={closeSystemSettings}
-          aria-label={t.common.close}
-          className="absolute top-3 right-3 z-10 w-8 h-8 flex items-center justify-center rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-        >
-          <X className="h-[18px] w-[18px]" strokeWidth={1.7} />
-        </button>
-        <SystemSettingsView />
-      </div>
-    </div>
+      <SystemSettingsView />
+    </Dialog>
   );
-}
+});

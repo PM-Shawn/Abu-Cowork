@@ -12,6 +12,9 @@ import { Tooltip } from '@/components/ds/tooltip';
 import { Section } from './Section';
 import { PREVIEW_MODELS } from './specimen';
 
+// Enough lines to be taller than a small window, so the dialog scrolls inside.
+const SCROLL_LINES = Array.from({ length: 30 }, (_, index) => `Line ${index + 1} of 30`);
+
 export function OverlaySection() {
   const confirm = useConfirm();
   const [renameOpen, setRenameOpen] = useState(false);
@@ -19,6 +22,8 @@ export function OverlaySection() {
   const [popoverModel, setPopoverModel] = useState('opus');
   const [answer, setAnswer] = useState('none yet');
   const [menuTheme, setMenuTheme] = useState('system');
+  const [dialogModel, setDialogModel] = useState('sonnet');
+  const [pageModel, setPageModel] = useState('opus');
 
   const askToDelete = async () => {
     const confirmed = await confirm({
@@ -111,6 +116,45 @@ export function OverlaySection() {
           trigger={<Button>Dialog without a visible title</Button>}
         >
           <TextField aria-label="Search tasks" placeholder="Search tasks..." />
+        </Dialog>
+        <Dialog
+          size="lg"
+          title="Dialog with a select inside"
+          description="The list and the menu open above the dialog; the lines scroll inside it."
+          closeButton
+          trigger={<Button>Dialog with a select inside</Button>}
+          footer={<DialogClose asChild><Button variant="primary">Done</Button></DialogClose>}
+        >
+          <div className="flex items-center gap-3">
+            <Select label="Model inside dialog" value={dialogModel} onValueChange={setDialogModel} options={PREVIEW_MODELS} />
+            <Menu trigger={<Button icon={AppIcons.more}>Menu inside dialog</Button>}>
+              <MenuItem icon={AppIcons.rename}>Rename</MenuItem>
+              <MenuSub icon={AppIcons.folder} label="Move to">
+                <MenuItem icon={AppIcons.folder}>Launch plan</MenuItem>
+              </MenuSub>
+            </Menu>
+            <Tooltip content="Show a tooltip above the dialog"><Button>Hover inside dialog</Button></Tooltip>
+          </div>
+          <div className="mt-3 flex flex-col gap-1">
+            {SCROLL_LINES.map((line) => <p key={line}>{line}</p>)}
+          </div>
+        </Dialog>
+        <Dialog
+          size="page"
+          title="Settings"
+          titleHidden
+          closeButton
+          trigger={<Button>Settings-size dialog</Button>}
+        >
+          <div className="flex h-full">
+            <div className="w-56 shrink-0 border-r border-separator p-3 text-ui-sm text-label-secondary">Navigation</div>
+            <div className="min-w-0 flex-1 p-6">
+              <p className="text-title text-label">Settings-size dialog</p>
+              <div className="mt-4">
+                <Select label="Model inside the settings-size dialog" value={pageModel} onValueChange={setPageModel} options={PREVIEW_MODELS} />
+              </div>
+            </div>
+          </div>
         </Dialog>
         <Button variant="danger" onClick={() => { void askToDelete(); }}>Confirm dialog</Button>
         <Button onClick={() => { void askToArchive(); }}>Confirm (default tone)</Button>

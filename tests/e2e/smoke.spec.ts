@@ -130,9 +130,11 @@ test.describe.serial('Electron shell — real app smoke', () => {
       await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
       await page.getByRole('button', { name: '偏好', exact: true }).click();
     };
+    const turns = () => page.getByRole('combobox', { name: '最大轮次', exact: true });
     await openGeneral();
-    await page.getByRole('button', { name: '200 轮', exact: true }).click();
-    await page.getByRole('button', { name: '不限制', exact: true }).click();
+    await expect(turns()).toHaveText('200 轮');
+    await turns().click();
+    await page.getByRole('option', { name: '不限制', exact: true }).click();
     await expect.poll(() => page.evaluate(() =>
       JSON.parse(localStorage.getItem('abu-settings')!).state.agentMaxTurns,
     )).toBe(0);
@@ -141,8 +143,9 @@ test.describe.serial('Electron shell — real app smoke', () => {
     app = (await launchAbuElectron(dataRoot)).app;
     page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await openGeneral();
-    await page.getByRole('button', { name: '不限制', exact: true }).click();
-    await page.getByRole('button', { name: '1000 轮', exact: true }).click();
+    await expect(turns()).toHaveText('不限制');
+    await turns().click();
+    await page.getByRole('option', { name: '1000 轮', exact: true }).click();
     await expect.poll(() => page.evaluate(() =>
       JSON.parse(localStorage.getItem('abu-settings')!).state.agentMaxTurns,
     )).toBe(1000);

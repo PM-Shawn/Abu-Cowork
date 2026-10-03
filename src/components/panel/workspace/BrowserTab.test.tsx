@@ -62,7 +62,7 @@ describe('BrowserTab native overlay visibility', () => {
     drainCapabilitySetupRequests();
     useChatStore.setState({ activeConversationId: 'active-conversation' });
     useSettingsStore.setState({ systemSettingsOpen: false });
-    usePreviewStore.setState({ menuOpen: false });
+    usePreviewStore.setState({ menuOpen: false, dsModalOpen: false });
     useImageLightboxStore.getState().close();
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -451,6 +451,52 @@ describe('BrowserTab native overlay visibility', () => {
       approvalBridge.resolveActive('command', false);
     });
     await expect(approvalPromise!).resolves.toBe(false);
+  });
+
+  it('hides the native view while a design-system dialog is open and restores it afterwards', async () => {
+    render(
+      <DesignSystemProvider>
+        <BrowserTab tabId="browser-under-dialog" url="https://example.com" />
+      </DesignSystemProvider>,
+    );
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: 'browser-under-dialog' }));
+    });
+    invoke.mockClear();
+
+    act(() => { usePreviewStore.getState().setDsModalOpen(true); });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_hide', { id: 'browser-under-dialog' });
+    });
+
+    invoke.mockClear();
+    act(() => { usePreviewStore.getState().setDsModalOpen(false); });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_show', { id: 'browser-under-dialog' });
+    });
+  });
+
+  it('creates an Electron native view hidden when a design-system dialog is already open', async () => {
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    };
+    runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    usePreviewStore.setState({ dsModalOpen: true });
+
+    render(
+      <DesignSystemProvider>
+        <BrowserTab tabId="browser-created-under-dialog" url="https://example.com" />
+      </DesignSystemProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-created-under-dialog',
+        visible: false,
+      }));
+    });
+    expect(invoke.mock.calls.some(([command]) => command === 'browser_hide')).toBe(false);
+    delete runtime.__ABU_SHELL__;
   });
 
   it('creates an Electron native view hidden when setup is already open', async () => {

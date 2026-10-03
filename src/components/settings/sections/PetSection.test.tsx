@@ -3,8 +3,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import PetSection from './PetSection';
 import { useSettingsStore } from '@/stores/settingsStore';
+
+function renderSection() {
+  return render(<PetSection />, { wrapper: DesignSystemProvider });
+}
+
+// The switch, named after its row title.
+const petSwitch = () => screen.getByRole('switch', { name: 'Desktop Pet' });
 
 // Local proxy so each test controls resolve/reject independently.
 const invoke = vi.fn();
@@ -33,10 +41,9 @@ describe('PetSection', () => {
     it('calls pet_show and sets petOpen=true', async () => {
       useSettingsStore.setState({ petOpen: false });
       const user = userEvent.setup();
-      render(<PetSection />);
+      renderSection();
 
-      const toggle = screen.getByRole('switch');
-      await user.click(toggle);
+      await user.click(petSwitch());
 
       expect(invoke).toHaveBeenCalledWith('pet_show');
       expect(useSettingsStore.getState().petOpen).toBe(true);
@@ -47,10 +54,9 @@ describe('PetSection', () => {
     it('calls pet_hide and sets petOpen=false', async () => {
       useSettingsStore.setState({ petOpen: true });
       const user = userEvent.setup();
-      render(<PetSection />);
+      renderSection();
 
-      const toggle = screen.getByRole('switch');
-      await user.click(toggle);
+      await user.click(petSwitch());
 
       expect(invoke).toHaveBeenCalledWith('pet_hide');
       expect(useSettingsStore.getState().petOpen).toBe(false);
@@ -62,10 +68,9 @@ describe('PetSection', () => {
       useSettingsStore.setState({ petOpen: false });
       invoke.mockRejectedValueOnce(new Error('tauri error'));
       const user = userEvent.setup();
-      render(<PetSection />);
+      renderSection();
 
-      const toggle = screen.getByRole('switch');
-      await user.click(toggle);
+      await user.click(petSwitch());
 
       expect(invoke).toHaveBeenCalledWith('pet_show');
       expect(useSettingsStore.getState().petOpen).toBe(false);

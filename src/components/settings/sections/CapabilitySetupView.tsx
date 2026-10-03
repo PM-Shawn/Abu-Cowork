@@ -1,25 +1,23 @@
-import { useId, useState } from 'react';
+import { useState, type ComponentProps } from 'react';
 import type { ChromeExtensionInstallation } from '@/core/capabilityPlugins/chromeSetup';
-import {
-  ArrowLeft,
-  ChevronRight,
-  Chrome,
-  Eye,
-  MousePointer2,
-  FolderOpen,
-  LoaderCircle,
-  MonitorCog,
-  RefreshCw,
-} from 'lucide-react';
 import { useI18n, format } from '@/i18n';
-import { Button } from '@/components/ui/button';
-import { Toggle } from '@/components/ui/toggle';
-import { cn } from '@/lib/utils';
+import { Button } from '@/components/ds/button';
+import { Disclosure } from '@/components/ds/disclosure';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
 import type {
   ComputerUsePermission,
   ComputerUsePermissionRequirements,
   ComputerUsePermissions,
 } from '@/core/agent/computerUsePermission';
+
+type IconGlyph = ComponentProps<typeof Icon>['icon'];
 
 /**
  * The only three outcomes a capability reports. The five runtime status codes
@@ -32,30 +30,31 @@ import type {
  */
 export type StatusBadgeTone = 'ready' | 'neutral' | 'attention';
 
+const BADGE_TONE = { ready: 'success', attention: 'warning', neutral: 'neutral' } as const;
+
 export function StatusBadge({
   label,
   tone,
   checking = false,
+  spinning = false,
 }: {
   label: string;
   tone: StatusBadgeTone;
   checking?: boolean;
+  /** A page has one spinner: its status row passes this. The overview cards can
+   *  all be checking at once, so they leave it off and show a still icon. */
+  spinning?: boolean;
 }) {
-  return (
-    <span className={cn(
-      'inline-flex items-center gap-1 rounded px-2 py-0.5 text-caption font-medium',
-      checking
-        ? 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]'
-        : tone === 'ready'
-          ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
-          : tone === 'attention'
-            ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]'
-            : 'bg-[var(--abu-bg-active)] text-[var(--abu-text-muted)]',
-    )}>
-      {checking && <LoaderCircle className="h-3 w-3 animate-spin" />}
-      {label}
-    </span>
-  );
+  if (checking && spinning) return <Spinner size="sm" label={label} />;
+  if (checking) {
+    return (
+      <Tag>
+        <Icon icon={AppIcons.loading} size="sm" />
+        {label}
+      </Tag>
+    );
+  }
+  return <Tag tone={BADGE_TONE[tone]}>{label}</Tag>;
 }
 
 /**
@@ -84,9 +83,9 @@ export function CapabilityStatusRow({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-3 border-y border-[var(--abu-border)] py-4">
-      <StatusBadge label={label} tone={tone} checking={checking} />
-      <span className="min-w-0 flex-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+    <div className="flex flex-wrap items-center gap-3 border-y border-separator py-4">
+      <StatusBadge label={label} tone={tone} checking={checking} spinning />
+      <span className="min-w-0 flex-1 text-ui-sm text-label-secondary">
         {note}
       </span>
       {action && <div className="shrink-0">{action}</div>}
@@ -114,23 +113,24 @@ export function CapabilityBreadcrumb({
 }) {
   const { t } = useI18n();
   return (
-    <nav className="mb-5 flex flex-wrap items-center gap-1 text-minor font-medium text-[var(--abu-text-muted)]">
+    <nav className="mb-5 flex flex-wrap items-center gap-1 text-ui-sm text-label-secondary">
       {trail.map((segment, index) => {
         const isLeaf = index === trail.length - 1;
         return (
           <span key={`${segment}-${index}`} className="inline-flex items-center gap-1">
-            {index > 0 && <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+            {index > 0 && <Icon icon={AppIcons.disclose} size="sm" />}
             {isLeaf ? (
-              <span className="text-[var(--abu-text-secondary)]">{segment}</span>
+              <span className="text-label">{segment}</span>
             ) : (
-              <button
-                type="button"
+              <Pressable
                 onClick={() => onNavigate(index)}
+                // The link one step up is the page's way back: it takes the focus when the page opens.
+                data-capability-back={index === trail.length - 2 ? '' : undefined}
                 aria-label={index === 0 ? t.settings.capabilityBackToOverview : segment}
-                className="transition-colors hover:text-[var(--abu-text-primary)]"
+                className="rounded-control text-ui-sm text-label-secondary hover:text-label"
               >
                 {segment}
-              </button>
+              </Pressable>
             )}
           </span>
         );
@@ -140,7 +140,7 @@ export function CapabilityBreadcrumb({
 }
 
 export function SetupHeader({
-  icon: Icon,
+  icon,
   title,
   description,
   onBack,
@@ -148,7 +148,7 @@ export function SetupHeader({
   breadcrumb,
   action,
 }: {
-  icon: typeof Chrome;
+  icon: IconGlyph;
   title: string;
   description: string;
   onBack: () => void;
@@ -163,22 +163,19 @@ export function SetupHeader({
       {breadcrumb ? (
         <CapabilityBreadcrumb trail={breadcrumb} onNavigate={onBack} />
       ) : (
-        <button
-          type="button"
-          onClick={onBack}
-          className="mb-5 inline-flex items-center gap-1.5 text-minor font-medium text-[var(--abu-text-muted)] transition-colors hover:text-[var(--abu-text-primary)]"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          {backLabel ?? t.settings.capabilityBackToOverview}
-        </button>
+        <div className="mb-5">
+          <Button variant="plain" size="sm" icon={AppIcons.back} data-capability-back="" onClick={onBack}>
+            {backLabel ?? t.settings.capabilityBackToOverview}
+          </Button>
+        </div>
       )}
       <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]">
-          <Icon className="h-5 w-5" />
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-control bg-fill text-label-secondary">
+          <Icon icon={icon} />
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">{title}</h3>
-          <p className="mt-1 max-w-2xl text-minor leading-relaxed text-[var(--abu-text-muted)]">
+          <h3 className="text-title text-label">{title}</h3>
+          <p className="mt-1 max-w-2xl text-ui-sm text-label-secondary">
             {description}
           </p>
         </div>
@@ -188,24 +185,23 @@ export function SetupHeader({
   );
 }
 
-/** The neutral settings card every capability detail page is built out of. */
-export const settingsCardClass =
-  'rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4';
-
-function ChromeInstallationHelp({ children }: { children: React.ReactNode }) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const id = useId();
-  return <div>
-    <Button variant="ghost" size="sm" aria-expanded={open} aria-controls={id}
-      className="h-auto gap-1.5 p-0 text-minor text-[var(--abu-text-muted)] hover:bg-transparent hover:text-[var(--abu-text-primary)]"
-      onClick={() => setOpen(!open)}>
-      <ChevronRight aria-hidden="true" className={cn('size-4 transition-transform', open && 'rotate-90')} />
-      {t.settings.capabilityChromeSetupHelp}
-    </Button>
-    {open && <div id={id} className="mt-4">{children}</div>}
-  </div>;
+/**
+ * The mark in front of a state line. A state that works or needs attention gets
+ * its status shape; "off" and "not there yet" get a hollow dot. All of them fill
+ * the same box as the spinner that replaces them during a check, so the words
+ * beside it do not move.
+ */
+function StateMark({ tone }: { tone: 'off' | 'success' | 'warning' }) {
+  return (
+    <span aria-hidden="true" className="flex size-3.5 shrink-0 items-center justify-center">
+      {tone === 'off'
+        ? <span className="size-2 rounded-full border border-control-border" />
+        : <StatusIcon tone={tone} size="sm" />}
+    </span>
+  );
 }
+
+const stepNumberClass = 'flex size-6 shrink-0 items-center justify-center rounded-full bg-fill text-ui-sm text-label-secondary';
 
 export function ChromeSetupView({
   installation, capabilityEnabled, requestedByTask, runtimeReady, extensionConnected,
@@ -235,52 +231,48 @@ export function ChromeSetupView({
     : installation === 'not-installed' ? t.settings.capabilityChromeNotInstalled
     : installation === 'unknown' ? t.settings.capabilityChromeInstallationUnknown
     : t.settings.capabilityChromeExtension;
-  const guideButtonClass = 'border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] text-[var(--abu-text-primary)] text-minor shadow-none hover:bg-[var(--abu-bg-hover)]';
   const startInstallation = () => {
     setInstallGuideOpen(true);
     if ((!capabilityEnabled || !runtimeReady) && !connecting) onPrepare();
   };
 
   const guide = <section aria-label={t.settings.capabilityChromeSetupTitle} className="space-y-4">
-    <p className="text-minor text-[var(--abu-text-muted)]">{t.settings.capabilityChromeGuideIntro}</p>
-    <ol className="divide-y divide-[var(--abu-border)] rounded-xl border border-[var(--abu-border)] px-3">
-      <li className="flex items-center gap-3 py-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)]">1</span><div className="min-w-0 flex-1">
-        <p className="text-body text-[var(--abu-text-primary)]">{t.settings.capabilityChromeGuidePage}</p>
-      </div><Button variant="secondary" size="sm" className={guideButtonClass} disabled={openingInstaller} onClick={() => onOpenInstaller('page')}>{t.settings.capabilityChromeOpenExtensions}</Button></li>
-      <li className="flex items-start gap-3 py-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)]">2</span><p className="text-body text-[var(--abu-text-primary)]">{t.settings.capabilityChromeGuideDeveloper}</p></li>
-      <li className="flex items-center gap-3 py-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)]">3</span><div className="min-w-0 flex-1">
-        <p className="text-body text-[var(--abu-text-primary)]">{t.settings.capabilityChromeGuideFolder}</p>
-      </div><Button variant="secondary" size="sm" className={guideButtonClass} disabled={!extensionPath || openingInstaller} onClick={() => onOpenInstaller('folder')}>{t.settings.capabilityChromeOpenFolder}</Button></li>
+    <p className="text-ui-sm text-label-secondary">{t.settings.capabilityChromeGuideIntro}</p>
+    <ol className="divide-y divide-separator rounded-panel border border-separator px-3">
+      <li className="flex items-center gap-3 py-3"><span className={stepNumberClass}>1</span><div className="min-w-0 flex-1">
+        <p className="text-ui text-label">{t.settings.capabilityChromeGuidePage}</p>
+      </div><Button variant="secondary" size="sm" disabled={openingInstaller} onClick={() => onOpenInstaller('page')}>{t.settings.capabilityChromeOpenExtensions}</Button></li>
+      <li className="flex items-start gap-3 py-3"><span className={stepNumberClass}>2</span><p className="text-ui text-label">{t.settings.capabilityChromeGuideDeveloper}</p></li>
+      <li className="flex items-center gap-3 py-3"><span className={stepNumberClass}>3</span><div className="min-w-0 flex-1">
+        <p className="text-ui text-label">{t.settings.capabilityChromeGuideFolder}</p>
+      </div><Button variant="secondary" size="sm" disabled={!extensionPath || openingInstaller} onClick={() => onOpenInstaller('folder')}>{t.settings.capabilityChromeOpenFolder}</Button></li>
     </ol>
-    {extensionPath === null && <p role="alert" className="text-minor text-[var(--abu-warning)]">{t.settings.capabilityChromeResourceMissing}</p>}
+    {extensionPath === null && <InlineMessage tone="warning">{t.settings.capabilityChromeResourceMissing}</InlineMessage>}
   </section>;
 
-  return <div className="space-y-7">
-    <SetupHeader icon={Chrome} title={t.settings.capabilityMyChrome}
+  return <div className="space-y-6">
+    <SetupHeader icon={AppIcons.chrome} title={t.settings.capabilityMyChrome}
       description={t.settings.capabilityMyChromeSubtitle} onBack={onBack}
       backLabel={requestedByTask ? t.common.cancel : undefined}
       breadcrumb={requestedByTask ? undefined : breadcrumb} />
-    <section aria-label={t.settings.capabilityChromeExtension} className="rounded-2xl border border-[var(--abu-border)] p-4">
+    <section aria-label={t.settings.capabilityChromeExtension} className="rounded-panel border border-separator p-4">
       <div className="flex items-center gap-4">
-        <p role="status" className="flex min-w-0 flex-1 items-center gap-2 text-body font-medium text-[var(--abu-text-primary)]">
-          <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-full', installed ? 'bg-[var(--abu-success-solid)]' : 'bg-[var(--abu-text-muted)]')} />
+        <p role="status" className="flex min-w-0 flex-1 items-center gap-2 text-ui font-medium text-label">
+          <StateMark tone={installed ? 'success' : 'off'} />
           {statusLabel}
         </p>
-        {!installed && <Button variant="secondary" size="sm" className={guideButtonClass} disabled={openingInstaller} onClick={startInstallation}>{t.settings.capabilityChromeInstallExtension}</Button>}
+        {!installed && <Button variant="secondary" size="sm" disabled={openingInstaller} onClick={startInstallation}>{t.settings.capabilityChromeInstallExtension}</Button>}
       </div>
     </section>
-    {installed ? <ChromeInstallationHelp>{guide}</ChromeInstallationHelp> : installGuideOpen && guide}
-    {error && <p role="alert" className="text-minor text-[var(--abu-danger)]">{error}</p>}
+    {installed ? <Disclosure title={t.settings.capabilityChromeSetupHelp}>{guide}</Disclosure> : installGuideOpen && guide}
+    {error && <InlineMessage tone="danger">{error}</InlineMessage>}
     {requestedByTask && installed && !taskReady && <div className="space-y-3">
-      <p className="text-minor text-[var(--abu-text-muted)]">{t.settings.capabilityChromeWaitingForBrowser}</p>
-      {(!capabilityEnabled || !runtimeReady) && <Button disabled={connecting} onClick={onPrepare}>{t.settings.capabilityChromeConnect}</Button>}
+      <p className="text-ui-sm text-label-secondary">{t.settings.capabilityChromeWaitingForBrowser}</p>
+      {(!capabilityEnabled || !runtimeReady) && <Button variant="primary" disabled={connecting} onClick={onPrepare}>{t.settings.capabilityChromeConnect}</Button>}
     </div>}
-    {requestedByTask && taskReady && <Button onClick={onDone}>{t.settings.capabilityReturnToTask}</Button>}
+    {requestedByTask && taskReady && <Button variant="primary" onClick={onDone}>{t.settings.capabilityReturnToTask}</Button>}
   </div>;
 }
-
-const computerSetupButtonClass =
-  'h-8 rounded-md border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-3 text-minor text-[var(--abu-text-secondary)] shadow-none hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)] dark:border-[var(--abu-border)] dark:bg-[var(--abu-bg-muted)] dark:hover:bg-[var(--abu-bg-hover)]';
 
 export function ComputerUseSetupView({
   enabled,
@@ -334,9 +326,9 @@ export function ComputerUseSetupView({
     && (!required.uiControl || controlReady);
   const restartRequired = permissions?.restartRequired === true;
   const permissionRows = [
-    { icon: Eye, key: 'screenRead' as const, required: required.screenRead, ready: screenReady,
+    { icon: AppIcons.screenRead, key: 'screenRead' as const, required: required.screenRead, ready: screenReady,
       title: t.settings.capabilityScreenRead, instruction: t.settings.capabilityComputerScreenShort },
-    { icon: MousePointer2, key: 'uiControl' as const, required: required.uiControl, ready: controlReady,
+    { icon: AppIcons.uiControl, key: 'uiControl' as const, required: required.uiControl, ready: controlReady,
       title: t.settings.capabilityUIControl, instruction: t.settings.capabilityComputerControlShort },
   ].filter(row => row.required);
   const completed = permissionRows.filter(row => row.ready).length;
@@ -352,90 +344,93 @@ export function ComputerUseSetupView({
         : format(t.settings.capabilityComputerPermissionProgress, { completed, total: permissionRows.length });
 
   return (
-    <div className="space-y-7">
-      <SetupHeader icon={MonitorCog} title={t.settings.computerUse}
+    <div className="space-y-6">
+      <SetupHeader icon={AppIcons.computerUse} title={t.settings.computerUse}
         description={t.settings.capabilityComputerSubtitle} onBack={onBack}
         backLabel={requestedByTask ? t.common.cancel : undefined}
         breadcrumb={requestedByTask ? undefined : breadcrumb} />
 
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--abu-border)] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-panel border border-separator p-4">
         <div className="min-w-0 flex-1" aria-live="polite">
-          <div className="flex items-center gap-2">
-            <span aria-hidden="true" className={cn('h-2 w-2 shrink-0 rounded-full',
-              !enabled ? 'bg-[var(--abu-text-muted)]' : ready && !modelIssue ? 'bg-[var(--abu-success-solid)]' : 'bg-[var(--abu-warning-solid)]')} />
-            <p className="text-body font-medium text-[var(--abu-text-primary)]">
-              {checking ? t.settings.capabilityStatusChecking : statusLabel}
-            </p>
-          </div>
-          <p className="mt-1 text-minor text-[var(--abu-text-muted)]">{statusNote}</p>
+          {/* The page's one spinner: while a check runs it stands in for the state. */}
+          {checking ? (
+            <Spinner size="sm" label={t.settings.capabilityStatusChecking} />
+          ) : (
+            <div className="flex items-center gap-2">
+              <StateMark tone={!enabled ? 'off' : ready && !modelIssue ? 'success' : 'warning'} />
+              <p className="text-ui font-medium text-label">{statusLabel}</p>
+            </div>
+          )}
+          <p className="mt-1 text-ui-sm text-label-secondary">{statusNote}</p>
         </div>
         <div className="flex items-center gap-4">
           {enabled && restartRequired && onRelaunch ? (
-            <Button variant="outline" className={computerSetupButtonClass} onClick={onRelaunch}>{t.settings.capabilityPermissionGuideRestart}</Button>
+            <Button variant="secondary" onClick={onRelaunch}>{t.settings.capabilityPermissionGuideRestart}</Button>
           ) : enabled && ready && requestedByTask ? (
-            <Button variant="outline" className={computerSetupButtonClass} onClick={onDone}>{t.settings.capabilityReturnToTask}</Button>
+            <Button variant="secondary" onClick={onDone}>{t.settings.capabilityReturnToTask}</Button>
           ) : enabled && !ready && !restartRequired ? (
-            <Button variant="outline" className={computerSetupButtonClass} onClick={onRefresh} disabled={checking || requesting !== undefined}>
-              <RefreshCw className={cn('h-4 w-4', checking && 'animate-spin')} />
+            <Button variant="secondary" icon={AppIcons.retry} onClick={onRefresh} disabled={checking || requesting !== undefined}>
               {t.settings.capabilityCheckAgain}
             </Button>
           ) : null}
-          <label className="inline-flex items-center">
-            <span className="sr-only">{enabled ? t.settings.capabilityComputerDisable : t.settings.capabilityComputerSetupTitle}</span>
-            <Toggle checked={enabled} onChange={enabled ? onDisable : onEnable} size="md" />
-          </label>
+          <Switch
+            checked={enabled}
+            onCheckedChange={enabled ? onDisable : onEnable}
+            aria-label={enabled ? t.settings.capabilityComputerDisable : t.settings.capabilityComputerSetupTitle}
+          />
         </div>
       </div>
 
       {enabled && !restartRequired && (
         <div className="space-y-4">
-          {!ready && <p className="text-minor text-[var(--abu-text-muted)]">{t.settings.capabilityComputerSetupIntro}</p>}
+          {!ready && <p className="text-ui-sm text-label-secondary">{t.settings.capabilityComputerSetupIntro}</p>}
           <section aria-label={t.settings.capabilityComputerSystemPermissions}
-            className="divide-y divide-[var(--abu-border)] rounded-xl border border-[var(--abu-border)] px-3">
-            {permissionRows.map(row => {
-              const Icon = row.icon;
-              return (
-                <div key={row.key} className="py-3">
-                  <div className="flex items-center gap-3">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)]" aria-hidden="true">
-                      <Icon className="h-4 w-4" />
-                    </span>
-                    <h4 className="min-w-0 flex-1 text-body font-medium text-[var(--abu-text-primary)]">{row.title}</h4>
+            className="divide-y divide-separator rounded-panel border border-separator px-3">
+            {permissionRows.map(row => (
+              <div key={row.key} className="flex gap-3 py-3">
+                <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-fill text-label-secondary" aria-hidden="true">
+                  <Icon icon={row.icon} size="sm" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  {/* The title, its action and its state share this parent: readers find the
+                      action through the heading. */}
+                  <div className="flex min-h-6 items-center gap-3">
+                    <h4 className="min-w-0 flex-1 text-ui font-medium text-label">{row.title}</h4>
                     {!row.ready && canOpenSystemSettings ? (
-                      <Button variant="outline" className={computerSetupButtonClass} size="sm" onClick={() => onRequestPermission(row.key)} disabled={checking || requesting !== undefined}>
-                        {requesting === row.key && <LoaderCircle className="h-4 w-4 animate-spin" />}
+                      // Waiting for the user to answer the system's own prompt: a still icon.
+                      <Button variant="secondary" size="sm" icon={requesting === row.key ? AppIcons.loading : undefined}
+                        onClick={() => onRequestPermission(row.key)} disabled={checking || requesting !== undefined}>
                         {t.settings.capabilityComputerAuthorize}
                       </Button>
                     ) : (
-                      <span className="shrink-0 text-minor text-[var(--abu-text-muted)]">
+                      <span className="shrink-0 text-ui-sm text-label-secondary">
                         {row.ready ? t.diagnostic.computerGranted : t.settings.capabilityPermissionMissing}
                       </span>
                     )}
                   </div>
-                  {!row.ready && <p className="ml-9 mt-2 text-minor leading-relaxed text-[var(--abu-text-muted)]" aria-live="polite">
+                  {!row.ready && <p className="mt-2 text-ui-sm text-label-secondary" aria-live="polite">
                     {canOpenSystemSettings ? row.instruction : t.settings.capabilityComputerPlatformHint}
                   </p>}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </section>
         </div>
       )}
 
       {enabled && (
-        <details className="text-minor text-[var(--abu-text-muted)]">
-          <summary className="cursor-pointer">{t.settings.capabilityComputerViewHelp}</summary>
-          <div className="mt-3 space-y-3 pl-4">
+        <Disclosure title={t.settings.capabilityComputerViewHelp}>
+          <div className="space-y-3 text-ui-sm text-label-secondary">
             {permissionRows.map(row => <p key={row.key}>{row.instruction}</p>)}
             {canOpenSystemSettings && <>
               <p>{t.settings.capabilityComputerMissingApp}</p>
-              <Button variant="outline" className={computerSetupButtonClass} size="sm" onClick={onRevealApp} disabled={revealingApp}>
-                {revealingApp ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FolderOpen className="h-4 w-4" />}
+              <Button variant="secondary" size="sm" icon={revealingApp ? AppIcons.loading : AppIcons.folderOpen}
+                onClick={onRevealApp} disabled={revealingApp}>
                 {t.settings.capabilityShowAppInFinder}
               </Button>
             </>}
           </div>
-        </details>
+        </Disclosure>
       )}
       {children}
     </div>

@@ -89,6 +89,30 @@ describe('ComputerUseGrantsCard', () => {
     await screen.findByTitle(t().sandbox.computerUseGrantRevoke);
   });
 
+  it('offers each action as a button named by its words', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      available: true,
+      grants: [qq],
+      denied: [{ key: 'com.example.denied', displayName: 'Denied App', deniedAt: 1 }],
+    });
+    render(<ComputerUseGrantsCard />);
+    await screen.findByText('QQ');
+    expect(screen.getByRole('button', { name: t().sandbox.computerUseGrantDeny })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t().sandbox.computerUseGrantRevoke })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t().sandbox.computerUseGrantRestore })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 4, name: t().sandbox.computerUseGrantsTitle })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 5, name: t().sandbox.computerUseGrantsAlwaysTitle })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 5, name: t().sandbox.computerUseGrantsDeniedTitle })).toBeInTheDocument();
+  });
+
+  it('reports a failed read as an alert and shows no list', async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error('host unreachable'));
+    render(<ComputerUseGrantsCard />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(t().sandbox.computerUseGrantsLoadFailed);
+    expect(screen.queryByText(t().sandbox.computerUseGrantsEmpty)).not.toBeInTheDocument();
+    expect(screen.queryByText(t().sandbox.computerUseGrantsUnavailable)).not.toBeInTheDocument();
+  });
+
   it('explains when no Host store answers instead of pretending the list is empty', async () => {
     electronHost.current = false;
     render(<ComputerUseGrantsCard />);

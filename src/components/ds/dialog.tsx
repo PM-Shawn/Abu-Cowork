@@ -90,7 +90,7 @@ export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>)
 // One dialog at a time (LayerProvider). Escape, the scrim, the close button and DialogClose
 // all close it, except while `dirty`: then the user is asked whether to discard what they typed.
 // With `dismissible={false}` only the dialog's own buttons and DialogClose close it.
-// Content taller than the window scrolls inside the dialog; the title and the footer stay put.
+// Content taller than the window scrolls inside the dialog; the title, the header and the footer stay put.
 export function Dialog({
   title, description, header, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,

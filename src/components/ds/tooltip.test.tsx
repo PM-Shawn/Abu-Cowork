@@ -125,27 +125,35 @@ describe('Tooltip and Escape', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it('a tooltip shown by hover does not take the Escape pressed in a field of the dialog', async () => {
-    const user = userEvent.setup();
-    const onOpenChange = vi.fn();
-    render(
-      <DesignSystemProvider>
-        <Dialog open onOpenChange={onOpenChange} title="Detail">
-          <TextField aria-label="Name" />
-          <IconButton icon={AppIcons.more} label="More" />
-        </Dialog>
-      </DesignSystemProvider>,
-    );
-    screen.getByRole('textbox', { name: 'Name' }).focus();
-    await user.keyboard('a');
-    await user.hover(screen.getByRole('button', { name: 'More' }));
-    expect(await screen.findByRole('tooltip', undefined, { timeout: 2000 })).toHaveTextContent('More');
-    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus();
+  it('a tooltip shown by hover does not take the Escape pressed in a field of the dialog', () => {
+    vi.useFakeTimers();
+    try {
+      const onOpenChange = vi.fn();
+      render(
+        <DesignSystemProvider>
+          <Dialog open onOpenChange={onOpenChange} title="Detail">
+            <TextField aria-label="Name" />
+            <IconButton icon={AppIcons.more} label="More" />
+          </Dialog>
+        </DesignSystemProvider>,
+      );
+      const field = screen.getByRole('textbox', { name: 'Name' });
+      field.focus();
+      fireEvent.keyDown(field, { key: 'a' });
+      fireEvent.pointerMove(screen.getByRole('button', { name: 'More' }), { pointerType: 'mouse' });
+      act(() => { vi.advanceTimersByTime(499); });
+      expect(screen.queryByRole('tooltip')).toBeNull();
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(screen.getByRole('tooltip')).toHaveTextContent('More');
+      expect(field).toHaveFocus();
 
-    await user.keyboard('{Escape}');
+      fireEvent.keyDown(field, { key: 'Escape' });
 
-    expect(onOpenChange).toHaveBeenCalledTimes(1);
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+      expect(onOpenChange).toHaveBeenCalledTimes(1);
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('with no layer open, Escape hides the tooltip only, and keyboard focus shows it again', async () => {

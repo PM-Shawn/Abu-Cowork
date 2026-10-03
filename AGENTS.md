@@ -469,8 +469,8 @@ Keyboard focus in dialogs and settings pages: a dialog opens on its first contro
 `Dialog initialFocus` names (the settings window opens on the navigation row of the page in view);
 after a pointer press that first focus shows no ring (`ds/input-modality.ts`), after a key press it
 does. Tab from the dialog's own box goes to its first control and Shift+Tab to its last. A control
-never drops the focus onto the window: a button whose own action is running is `Button busy`
-(`aria-disabled`, focusable, takes no press) and not `disabled`; a page that replaces another moves
+never drops the focus onto the window: a button or a switch whose own action is running is
+`Button busy` / `Switch busy` (`aria-disabled`, focusable, takes no press) and not `disabled`; a page that replaces another moves
 the focus to its way back, and to the control that opened it when it is left (`CapabilitiesSection`,
 `data-capability-entry` / `data-capability-back`); after a row is removed the focus goes to the row
 that took its place, else the one before it, else the add button. An icon-only `Pressable` sits in
@@ -486,16 +486,40 @@ window chrome `ToolDetailModal` (a `Dialog` with a hidden title named after the 
 — avatar, name as a `div`, subtitle and actions — sits in the `Dialog` `header` slot, which stays
 above the scrolling content; the page's `h2` stays in the body.
 
+Windows: a window is closed (`open={false}`), never unmounted, so it fades out like every other
+ds window. It keeps what it showed while it fades: the owner or the window holds the last item in
+state (`held`), and every handler reachable from the fading window returns at once (`selectedRef`,
+`openRef` or the `open` prop), each with a test that uses the `getComputedStyle` stub recipe. Two
+windows never stack: the history window replaces the skill detail, the expert editor replaces the
+expert detail, and a new window replaces the detail that opened it. The connector edit form is the
+one nested case: it opens inside the connector detail, and Escape there closes the form alone. A
+detail window whose content is replaced while it is open (a plugin's detail, draft and preview; a
+connector's detail, logs and catalog entry) takes its content height from `toolbox/windowHeight.ts`
+(`DETAIL_WINDOW_CONTENT_HEIGHT`), so the windows of one page are one size and none scrolls an empty
+strip. `ToolDetailModal` keeps its props for the private repo: `maxWidth` maps to the dialog size,
+`panelClassName` gives only the content height, `disableEscape` is accepted and unused, `testId`
+goes on the dialog content through `contentProps`, and `onCloseAutoFocus` is the only addition.
+
 Menus: `InstalledItemMenu` and `ToolboxCreateMenu` are `Menu`s. A menu item that opens a window
 records the action in a ref; `onCloseAutoFocus` focuses the trigger, then runs it. `Menu
-contentProps` and `MenuItem testId` carry the test ids E2E reads.
+contentProps` and `MenuItem testId` carry the test ids E2E reads. A menu item that cannot be chosen
+stays in the menu, disabled, with its reason as `title` (`InstalledItemMenu disabledReason`); it
+never fires. The 「…」 trigger is the default `IconButton` size in every detail header.
 
 Buttons: a page's one `primary` is its 「添加」 button; card buttons are `secondary size="sm"`; a
 window's `primary` is its main action.
 
 Deletes: three deletes ask first through `useConfirm` and re-read their target by a stable identity
 at answer time — a skill (file path), a connector (store entry), an expert (file path through the
-registry; the "used by teams" question stays for that case).
+registry; the "used by teams" question stays for that case). A question asked from a detail
+window's menu runs after the menu has gone, over that window; the window ends it when it leaves.
+The handler keeps a `deleting` / `removing` ref so one target gets one delete.
+
+Focus: `toolbox/cardFocus.ts` is the one place that finds a card again after a delete, an uninstall
+or an editor: the focus goes to that card, else the card now at its index, else the last one, else
+the page's 「添加」 button (`focusByTestId`), and never to the window (`focusIsOnWindow`). A switch
+whose own action is running (connecting or disconnecting a connector, turning a plugin on) is
+`Switch busy`, so the focus stays on it; a switch whose feature is unavailable stays `disabled`.
 
 Rendering: pages that `App` re-renders per streamed piece (`ExtensionsView`, `TeamView`) are `memo`
 with no props and read stores through selectors. Cards in long grids are `memo` and mount no
@@ -504,7 +528,8 @@ Tooltip, Menu or Select root, so `IconButton` is not used on cards.
 Private repo: it renders `ToolCard`, `ToolGrid`, `ToolDetailModal`, `MarketplaceEntryRow`,
 `InstallDisclosureDialog` and `InstalledItemMenu`; their props only grow until batch 9
 (`EnterprisePluginTab` mounts one `InstalledItemMenu` per row — batch 9 moves it to one menu per
-list).
+list). The private tests `agent-tab` and `plugin-tab` render inside `DesignSystemProvider` from
+batch 9 on; until then they are red against the integration branch.
 
 Migration list: `src/components/toolbox/**` is on it; `customize/` and `common/` join file by file
 (unused legacy files there wait for batch 10).
@@ -525,10 +550,16 @@ and acts only on those that still exist at the answer. `Dialog` has a `header` s
 the scroll area. When a dialog leaves with a menu still fading in it, Radix leaves
 `pointer-events: none` on `body`; `ds/layer-context.ts` clears it once no `[data-ds-layer]`
 remains, and it is the only code that writes `pointer-events` on `body` — page code never
-does. `MultiCombobox` is the multi-select with a search box: chosen options carry
-`aria-checked`, Enter or a click toggles one and the list stays open, and Space types into
-the search box. In `Combobox` and `MultiCombobox` Tab closes the list and keeps focus on the
-trigger. Option objects are stable (`useMemo`), because the rows are `memo`. `Toaster` renders its own
+does. `Menu`, `ContextMenu`, `Popover`, `Combobox`, `MultiCombobox` and the discard question
+pass Escape on while they close (`useLayer().onEscapeKeyDown` → `registry.escapeTop()`);
+`Select` needs no such hook because its list unmounts when it closes. `MultiCombobox` is the
+multi-select with a search box: the choice is read from `aria-checked` (cmdk's
+`aria-selected` follows the highlight and is left alone), Enter or a click toggles one and
+the list stays open, and Space types into the search box. In `Combobox` and `MultiCombobox`
+Tab closes the list and keeps focus on the trigger. Option objects are stable (`useMemo`),
+and both pass one pick callback for the life of the list, because the rows are `memo`.
+`Switch busy` is to a switch what `Button busy` is to a button: `aria-disabled`, focusable,
+no press taken. `Toaster` renders its own
 notification list (a labelled region whose `aria-live="polite"` area holds the list, newest
 last) and
 does not use Radix Toast, so a toast never takes Escape from an open dialog. Every floating

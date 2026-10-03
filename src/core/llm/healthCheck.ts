@@ -3,6 +3,7 @@ import { ClaudeAdapter } from './claude';
 import { OpenAICompatibleAdapter } from './openai-compatible';
 import { LLMError, type LLMErrorCode } from './adapter';
 import { getTauriFetch } from './tauriFetch';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 
 export interface HealthCheckResult {
   success: boolean;
@@ -13,6 +14,17 @@ export interface HealthCheckResult {
   errorCode?: LLMErrorCode;
   /** HTTP status code when available. */
   statusCode?: number;
+}
+
+const FAILURE_TEXT_MAX_CHARS = 500;
+
+/**
+ * 失败文字来自服务端响应正文或网络异常，可能带有请求里的 key、Authorization
+ * 请求头或带 key 的 URL。这段文字会写入 settingsStore、显示在界面上并进入
+ * 诊断包，所以在这里统一脱敏并限制长度。
+ */
+function safeFailureText(raw: string, provider: ProviderInstance): string {
+  return redactFailureText(raw, [provider.apiKey]).slice(0, FAILURE_TEXT_MAX_CHARS);
 }
 
 /** Perform a basic connection test against a provider */
@@ -35,7 +47,7 @@ export async function checkProviderHealth(
       return {
         success: false,
         latencyMs: Math.round(performance.now() - start),
-        error: e instanceof Error ? e.message : 'Connection failed',
+        error: e instanceof Error ? safeFailureText(e.message, provider) : 'Connection failed',
       };
     }
   }
@@ -54,7 +66,7 @@ export async function checkProviderHealth(
       return {
         success: false,
         latencyMs: Math.round(performance.now() - start),
-        error: e instanceof Error ? e.message : 'Connection failed',
+        error: e instanceof Error ? safeFailureText(e.message, provider) : 'Connection failed',
       };
     }
   }
@@ -97,7 +109,7 @@ export async function checkProviderHealth(
       return {
         success: false,
         latencyMs,
-        error: e.message,
+        error: safeFailureText(e.message, provider),
         errorCode: e.code,
         statusCode: e.statusCode,
       };
@@ -105,7 +117,7 @@ export async function checkProviderHealth(
     return {
       success: false,
       latencyMs,
-      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+      error: safeFailureText(e instanceof Error ? `${e.name}: ${e.message}` : String(e), provider),
     };
   }
 }

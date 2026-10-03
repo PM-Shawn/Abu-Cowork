@@ -96,6 +96,14 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
 const SERIALIZED_SECRET_VALUE_PATTERN =
   /\b(api[_-]?key|access[_-]?token|token|password|secret|authorization)(["']?\s*[:=]\s*["']?)([^"',}\s]+)/gi;
 
+// An Authorization header value is `<scheme> <credential>` (Bearer, Basic, …).
+// The credential has no minimum length and Basic carries base64, so the whole
+// value goes, scheme included. Only a known scheme word may precede the
+// credential: an arbitrary first word would make a scheme-less value swallow
+// the token after it. `\\?` covers the header inside a JSON-escaped body.
+const AUTHORIZATION_HEADER_PATTERN =
+  /\b((?:proxy-)?authorization\\?["']?\s*[:=]\s*\\?["']?)(?:(?:Bearer|Basic|Digest|Token|Negotiate|NTLM)[ \t]+)?[^\s"',}\\]+/gi;
+
 // ════════════════════════════════════════════════════════════════════════
 // Browser fill values (v0.42.0 incident: a login password left the machine
 // in a diagnostic bundle via the abu-browser fill tool's echoed result)
@@ -213,13 +221,16 @@ function isSecretField(key: string): boolean {
 
 /** Redact secret-shaped substrings in one string. */
 export function redactStringValue(s: string): string {
-  let out = s.replace(
-    SERIALIZED_SECRET_VALUE_PATTERN,
-    (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`,
-  );
+  // Shape patterns run before the key/value pattern, which stops at whitespace:
+  // on `api_key: Bearer <token>` it would claim only the word `Bearer`.
+  let out = s.replace(AUTHORIZATION_HEADER_PATTERN, `$1${REDACTED}`);
   for (const re of SECRET_VALUE_PATTERNS) {
     out = out.replace(re, REDACTED);
   }
+  out = out.replace(
+    SERIALIZED_SECRET_VALUE_PATTERN,
+    (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`,
+  );
   // Browser-fill echo backstops — see the fill section above.
   out = out.replace(FILLED_ECHO_RE, `$1${REDACTED}$3`);
   out = out.replace(PREVIOUS_VALUE_RE, `$1${REDACTED}$3`);

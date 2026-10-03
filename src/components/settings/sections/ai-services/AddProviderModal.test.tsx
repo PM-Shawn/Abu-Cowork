@@ -32,6 +32,15 @@ vi.mock('@/core/llm/contextWindowProbe', () => ({
   fetchLmStudioContextWindows: vi.fn(async () => new Map<string, number>()),
   fetchOllamaLoadedContextWindows: vi.fn(async () => new Map<string, number>()),
 }));
+// 验证连接的测试只替换发出网络请求的 adapter；checkProviderHealth 运行真实实现
+const { mockAdapterChat } = vi.hoisted(() => ({ mockAdapterChat: vi.fn() }));
+vi.mock('@/core/llm/openai-compatible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/llm/openai-compatible')>()),
+  OpenAICompatibleAdapter: class {
+    chat = mockAdapterChat;
+  },
+}));
+import { classifyError } from '@/core/llm/adapter';
 
 // ── Tests ──────────────────────────────────────────────────────────
 
@@ -485,6 +494,29 @@ describe('AddProviderModal — Validate Connection gating', () => {
     fireEvent.click(screen.getByText('DeepSeek V4 Pro'));
 
     expect(validateButton).not.toBeDisabled();
+  });
+
+  it('shows a failed validation without the key the endpoint echoed back', async () => {
+    const fakeKey = 'sk-test-not-a-secret';
+    mockAdapterChat.mockRejectedValue(
+      classifyError(401, JSON.stringify({ error: { message: `Incorrect API key provided: ${fakeKey}` } })),
+    );
+    render(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek' }));
+    const apiKeyInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(apiKeyInput, { target: { value: fakeKey } });
+    fireEvent.click(screen.getByRole('button', { name: /select model/i }));
+    fireEvent.click(screen.getByText('DeepSeek V4 Pro'));
+    fireEvent.click(screen.getByRole('button', { name: /validate connection/i }));
+
+    expect(await screen.findByText('Incorrect API key provided: [REDACTED]')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(fakeKey);
+    for (const attribute of ['title', 'aria-label']) {
+      const values = Array.from(document.querySelectorAll(`[${attribute}]`), (el) => el.getAttribute(attribute));
+      expect(values.join('\n')).not.toContain(fakeKey);
+    }
   });
 });
 

@@ -120,6 +120,38 @@ describe('form controls', () => {
     expect(onCheckedChange).toHaveBeenCalledWith(false);
   });
 
+  it('a busy Switch keeps the focus and takes no press', async () => {
+    const user = userEvent.setup();
+    const onCheckedChange = vi.fn();
+    render(<Switch aria-label="Connect" busy checked={false} onCheckedChange={onCheckedChange} />);
+    const control = screen.getByRole('switch', { name: 'Connect' });
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    expect(control).not.toBeDisabled();
+
+    control.focus();
+    await user.keyboard(' ');
+    await user.keyboard('{Enter}');
+    fireEvent.click(control);
+
+    expect(onCheckedChange).not.toHaveBeenCalled();
+    expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(control).toHaveFocus();
+  });
+
+  it('a Switch that stops being busy takes the next press, with the focus still on it', async () => {
+    const user = userEvent.setup();
+    const onCheckedChange = vi.fn();
+    const view = render(<Switch aria-label="Connect" busy checked={false} onCheckedChange={onCheckedChange} />);
+    const control = screen.getByRole('switch', { name: 'Connect' });
+    control.focus();
+    view.rerender(<Switch aria-label="Connect" checked onCheckedChange={onCheckedChange} />);
+
+    expect(control).toHaveFocus();
+    expect(control).not.toHaveAttribute('aria-disabled');
+    await user.keyboard(' ');
+    expect(onCheckedChange).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
   it('SettingGroup puts its rows in one bordered box under a heading', () => {
     render(
       <SettingGroup title="Notifications" description="When Abu tells you about a task.">

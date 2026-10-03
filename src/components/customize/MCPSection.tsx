@@ -172,7 +172,7 @@ const ServerCard = memo(function ServerCard({ entry, owner, connecting, locked, 
             <span className="flex" title={entry.error || (entry.status === 'connected' ? t.toolbox.disconnect : t.toolbox.connect)} onClick={event => event.stopPropagation()}>
               <Switch
                 checked={entry.status === 'connected'}
-                disabled={locked || entry.status === 'connecting' || entry.status === 'reconnecting'}
+                busy={locked || entry.status === 'connecting' || entry.status === 'reconnecting'}
                 onCheckedChange={() => onToggle(entry)}
                 aria-label={c.name}
               />
@@ -1099,7 +1099,7 @@ function ServerHeaderActions({
     <>
       <span className="flex items-center" data-testid="mcp-server-toggle-connection" data-connected={isConnected ? 'true' : 'false'}
         title={action}>
-        <Switch checked={isConnected} disabled={busy} onCheckedChange={onToggleConnection} aria-label={action} />
+        <Switch checked={isConnected} busy={busy} onCheckedChange={onToggleConnection} aria-label={action} />
       </span>
       <InstalledItemMenu testId="mcp-detail-menu"
         ariaLabel={format(t.toolbox.itemMenuLabel, { name: entry.config.name })}

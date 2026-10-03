@@ -12,7 +12,6 @@ import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Switch } from '@/components/ds/switch';
 import { Tag } from '@/components/ds/tag';
-import { cn } from '@/lib/utils';
 import { usePluginActivation } from './usePluginActivation';
 import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
 import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
@@ -187,9 +186,9 @@ export default function InstalledPluginDetail({
         ? <IconButton ref={backRef} icon={AppIcons.back} label={tb.backToDetails} onClick={() => openSource(false)} />
         : <Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}
       headerActions={showSource ? undefined : <div ref={actionsRef} className="flex items-center gap-2">
-        {/* Dimmed while the plugin is being turned on; it stays enabled so the keyboard focus stays on it. */}
-        <span className={cn('flex', activation.busy && 'opacity-40')}>
-          <Switch checked={activation.enabled} disabled={!activation.available} aria-label={shown.name} onCheckedChange={() => {
+        {/* Busy while the plugin is being turned on: dimmed, and the keyboard focus stays on it. */}
+        <span className="flex">
+          <Switch checked={activation.enabled} disabled={!activation.available} busy={activation.busy} aria-label={shown.name} onCheckedChange={() => {
             if (!openRef.current) return;
             void activation.toggle().catch(error => addToast({ type: 'error', title: shown.name, message: String(error) }));
           }} />

@@ -675,10 +675,54 @@ describe('MCP card connection switch', () => {
     operation.mockRestore();
   });
 
-  it.each(['connecting', 'reconnecting'] as const)('disables the switch while %s', status => {
+  it.each(['connecting', 'reconnecting'] as const)('keeps the switch focusable and takes no press while %s', async status => {
+    const connect = vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
+    const disconnect = vi.spyOn(useMCPStore.getState(), 'disconnectServer').mockResolvedValue(undefined);
     useMCPStore.setState({ servers: { local: { ...serverEntry('local'), status } } });
     render(<MCPSection source="mine" />);
-    expect(screen.getByRole('switch')).toBeDisabled();
+    const toggle = screen.getByRole('switch');
+    // Busy, never disabled: a disabled control would drop the keyboard focus onto the window.
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).not.toBeDisabled();
+
+    toggle.focus();
+    fireEvent.click(toggle);
+    await userEvent.keyboard(' ');
+    await userEvent.keyboard('{Enter}');
+
+    expect(toggle).toHaveFocus();
+    expect(connect).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
+    connect.mockRestore();
+    disconnect.mockRestore();
+  });
+
+  it('keeps the focus on the detail window\'s switch while it disconnects, and takes no second press', async () => {
+    let finish!: () => void;
+    const disconnect = vi.spyOn(useMCPStore.getState(), 'disconnectServer').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const connect = vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
+    useMCPStore.setState({ servers: { local: { ...serverEntry('local'), status: 'connected' } } });
+    render(<MCPSection source="mine" />);
+    fireEvent.click(screen.getByTestId('mcp-card-local'));
+    const toggle = within(screen.getByTestId('mcp-server-toggle-connection')).getByRole('switch');
+
+    toggle.focus();
+    await userEvent.keyboard(' ');
+    await waitFor(() => expect(disconnect).toHaveBeenCalledTimes(1));
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).toHaveFocus();
+
+    // A second press while the first is running starts nothing.
+    await userEvent.keyboard(' ');
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled();
+
+    await act(async () => { finish(); });
+    await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled'));
+    expect(toggle).toHaveFocus();
+    disconnect.mockRestore();
+    connect.mockRestore();
   });
 });
 
@@ -812,10 +856,10 @@ describe('MCPSection · the connection switch and the keyboard', () => {
 
     await press(toggle, '{Enter}');
     await waitFor(() => expect(operation).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByRole('switch')).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('switch')).not.toHaveAttribute('aria-disabled'));
     await press(screen.getByRole('switch'), ' ');
     await waitFor(() => expect(operation).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByRole('switch')).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('switch')).not.toHaveAttribute('aria-disabled'));
     fireEvent.click(screen.getByRole('switch'));
     await waitFor(() => expect(operation).toHaveBeenCalledTimes(3));
 

@@ -6,7 +6,7 @@
  */
 
 import type { ReactElement } from 'react';
-import { fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -158,6 +158,28 @@ describe('InstalledPluginDetail: the window and its controls', () => {
     expect(toggle).toHaveAttribute('aria-checked', 'true');
     fireEvent.click(toggle);
     expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith(shop.key, false);
+  });
+
+  it('keeps the focus on the switch while the plugin is being turned on, and takes no second press', async () => {
+    let finish!: () => void;
+    const setPluginEnabled = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    usePluginStore.setState({ activationByKey: { [shop.key]: { ...enabledShop[shop.key], enabled: false } }, setPluginEnabled });
+    open();
+    const toggle = screen.getByRole('switch', { name: 'shop' });
+    toggle.focus();
+    await userEvent.keyboard(' ');
+    await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith(shop.key, true));
+
+    // Busy, never disabled: a disabled control would drop the keyboard focus onto the window.
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).toHaveFocus();
+    await userEvent.keyboard(' ');
+    expect(setPluginEnabled).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finish(); });
+    expect(toggle).not.toHaveAttribute('aria-disabled');
+    expect(toggle).toHaveFocus();
   });
 
   it('offers a trial only while the plugin is on', () => {

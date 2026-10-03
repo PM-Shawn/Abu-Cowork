@@ -6,8 +6,9 @@
  */
 
 import type { ReactElement } from 'react';
-import { render as renderBare, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 
 // The detail window is a design-system dialog, so it renders inside the provider like the app does.
@@ -24,7 +25,8 @@ import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import type { AppConfig } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
 import { useTeamStore } from '@/stores/teamStore';
-import { initLanguage } from '@/i18n';
+import { usePluginStore } from '@/stores/pluginStore';
+import { format, getI18n, initLanguage } from '@/i18n';
 import InstalledPluginDetail from './InstalledPluginDetail';
 
 const shop: InstalledPlugin = {
@@ -94,5 +96,128 @@ describe('InstalledPluginDetail', () => {
     initLanguage('zh-CN');
     renderDetail();
     expect(screen.queryByTestId('plugin-detail-app')).toBeNull();
+  });
+});
+
+describe('InstalledPluginDetail: the window and its controls', () => {
+  beforeAll(() => {
+    // happy-dom lacks the pointer-capture and scroll APIs Radix menus call.
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => {};
+    Element.prototype.scrollIntoView ??= () => {};
+  });
+  const tb = () => getI18n().toolbox;
+  const pinned: InstalledPlugin = { ...shop, sha: 'sha-pinned-0123456789abcdef' };
+  const enabledShop = { [shop.key]: { enabled: true, root: '/Users/tester/.abu/plugin-packages/official/shop/1.0.0', skillDirs: [], legacySkills: true, agentFiles: [], mcpServers: ['shop-api'] } };
+
+  function open(overrides: Partial<React.ComponentProps<typeof InstalledPluginDetail>> = {}) {
+    const props = { home: '/Users/tester', plugin: pinned, onClose: vi.fn(), onUninstall: vi.fn(), ...overrides };
+    render(<InstalledPluginDetail {...props} />);
+    return props;
+  }
+  const openMenuItem = async (testId: string) => {
+    await userEvent.click(screen.getByTestId('plugin-detail-menu'));
+    await userEvent.click(screen.getByTestId(testId));
+  };
+
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    usePluginStore.setState({ activationByKey: {}, installed: [] });
+  });
+
+  it('is a window named after the plugin, whose heading adds what it is', () => {
+    open();
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('shop');
+    expect(screen.getByRole('heading', { level: 2, name: `shop ${tb().plugins}` })).toBeInTheDocument();
+    // One heading says "shop" alone: the window's own hidden title.
+    expect(screen.getAllByRole('heading', { name: 'shop' })).toHaveLength(1);
+  });
+
+  it('lists what the plugin brought and renders nothing without a plugin', () => {
+    const view = renderBare(<InstalledPluginDetail home="/Users/tester" plugin={null} onClose={() => {}} onUninstall={() => {}} />, { wrapper: DesignSystemProvider });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    view.unmount();
+    open();
+    const detail = screen.getByTestId('plugin-manage-dialog');
+    expect(detail).toHaveTextContent('product-listing');
+    expect(detail).toHaveTextContent('shop-api');
+  });
+
+  it('hands the record to the uninstall confirmation and uninstalls nothing itself', () => {
+    const props = open();
+    fireEvent.click(screen.getByRole('button', { name: tb().pluginsUninstall }));
+    expect(props.onUninstall).toHaveBeenCalledExactlyOnceWith(pinned);
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it('names the switch after the plugin and turns the plugin off through the store', () => {
+    const setPluginEnabled = vi.fn().mockResolvedValue(undefined);
+    usePluginStore.setState({ activationByKey: enabledShop, setPluginEnabled });
+    open();
+    const toggle = screen.getByRole('switch', { name: 'shop' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
+    expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith(shop.key, false);
+  });
+
+  it('offers a trial only while the plugin is on', () => {
+    const off = renderBare(<InstalledPluginDetail home="/Users/tester" plugin={pinned} onClose={() => {}} onUninstall={() => {}} />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('button', { name: tb().menuTrial })).toBeDisabled();
+    off.unmount();
+    usePluginStore.setState({ activationByKey: enabledShop });
+    open();
+    expect(screen.getByRole('button', { name: tb().menuTrial })).toBeEnabled();
+  });
+
+  it('shows where the plugin came from on a page of its own, with the pinned revision in full', async () => {
+    open();
+    await openMenuItem('plugin-detail-menu-view');
+
+    const source = await screen.findByTestId('plugin-source-dialog');
+    expect(source).toHaveTextContent(format(tb().pluginsFromMarketplace, { name: 'official' }));
+    expect(source).toHaveTextContent('v1.0.0');
+    expect(source).toHaveTextContent('sha-pinned-0123456789abcdef');
+    expect(screen.queryByTestId('plugin-manage-dialog')).toBeNull();
+    // The page's own controls are gone with the details: no switch, no menu, no footer.
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByTestId('plugin-detail-menu')).toBeNull();
+    expect(screen.queryByRole('button', { name: tb().pluginsUninstall })).toBeNull();
+  });
+
+  it('moves the focus to the way back on the source page, and to the menu button when it is left', async () => {
+    open();
+    await openMenuItem('plugin-detail-menu-view');
+
+    const back = await screen.findByRole('button', { name: tb().backToDetails });
+    await waitFor(() => expect(back).toHaveFocus());
+    await userEvent.click(back);
+
+    expect(screen.getByTestId('plugin-manage-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('plugin-detail-menu')).toHaveFocus();
+  });
+
+  it('opens on the details again for another plugin', async () => {
+    const view = renderBare(<InstalledPluginDetail home="/Users/tester" plugin={pinned} onClose={() => {}} onUninstall={() => {}} />, { wrapper: DesignSystemProvider });
+    await openMenuItem('plugin-detail-menu-view');
+    await screen.findByTestId('plugin-source-dialog');
+
+    view.rerender(<InstalledPluginDetail home="/Users/tester" plugin={{ ...pinned, key: 'other@official', name: 'other' }} onClose={() => {}} onUninstall={() => {}} />);
+    expect(screen.getByTestId('plugin-manage-dialog')).toHaveTextContent('other');
+    expect(screen.queryByTestId('plugin-source-dialog')).toBeNull();
+  });
+
+  it('puts the author\'s own actions in the menu and marks an available update', async () => {
+    const onReview = vi.fn();
+    const onEdit = vi.fn();
+    open({
+      authorUpdate: { available: true, onReview },
+      authorActions: [{ id: 'edit', label: tb().pluginsContinueEditing, onSelect: onEdit }],
+    });
+    expect(screen.getByTestId('plugin-manage-dialog')).toHaveTextContent(tb().pluginsAuthorUpdateAvailable);
+    fireEvent.click(screen.getByRole('button', { name: tb().pluginsPreviewUpdate }));
+    expect(onReview).toHaveBeenCalledTimes(1);
+
+    await openMenuItem('plugin-detail-menu-edit');
+    await waitFor(() => expect(onEdit).toHaveBeenCalledTimes(1));
   });
 });

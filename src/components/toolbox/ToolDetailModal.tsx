@@ -28,6 +28,8 @@ export interface ToolDetailModalProps {
   panelClassName?: string;
   /** Accepted for callers written before the layer registry; one dialog is open at a time, so it has no effect. */
   disableEscape?: boolean;
+  /** Runs once the window has gone; `event.preventDefault()` there keeps the focus from returning to the control that opened it. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 const SIZE: Record<string, 'md' | 'lg' | 'xl'> = { 'max-w-lg': 'md', 'max-w-2xl': 'lg', 'max-w-4xl': 'xl' };
@@ -49,6 +51,7 @@ export default function ToolDetailModal({
   maxWidth = 'max-w-lg',
   panelClassName,
   disableEscape: _disableEscape,
+  onCloseAutoFocus,
 }: ToolDetailModalProps) {
   const name = ariaLabel ?? (typeof title === 'string' ? title : '');
   return (
@@ -60,6 +63,7 @@ export default function ToolDetailModal({
       size={SIZE[maxWidth] ?? 'lg'}
       closeButton
       contentProps={testId ? { 'data-testid': testId } : undefined}
+      onCloseAutoFocus={onCloseAutoFocus}
       footer={footer}
       header={(
         <div className="flex items-start justify-between gap-3">

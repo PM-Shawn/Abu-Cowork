@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { InlineMessage } from '@/components/ds/inline-message';
 import { bootstrapPluginUpdates, usePluginStore } from '@/stores/pluginStore';
 import { useI18n } from '@/i18n';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { archivePluginOperation } from '@/core/plugin/operationBridge';
 import AuthoredPluginList from './AuthoredPluginList';
 import InstalledPluginList from './InstalledPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
+import { focusAddButton, focusIsOnWindow } from './cardFocus';
 import type { ExtensionSource } from '../extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
@@ -24,13 +26,17 @@ interface PluginsTabProps {
 
 export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'market' }: PluginsTabProps) {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const [home, setHome] = useState<string | null>(null);
   const [requestedMarket, setRequestedMarket] = useState<{ name: string }>();
   const [addOpen, setAddOpen] = useState(false);
-  useEffect(() => { if (addTrigger > 0) setAddOpen(true); }, [addTrigger]);
+  // What had the focus when the add window was asked for: the page's 「添加」 button, or the
+  // empty market's own button, which is gone once a marketplace has been added.
+  const addOpener = useRef<Element | null>(null);
+  const openAdd = () => { addOpener.current = document.activeElement; setAddOpen(true); };
+  useEffect(() => { if (addTrigger > 0) { addOpener.current = document.activeElement; setAddOpen(true); } }, [addTrigger]);
   const [recovering, setRecovering] = useState(false);
-  const [archiveOpen, setArchiveOpen] = useState(false);
   const archiving = useRef(false);
   const [archiveResult, setArchiveResult] = useState<{ archivedPath: string; backupPaths: string[] } | null>(null);
   // How many cards the authored list is contributing to the shelf's one grid,
@@ -67,31 +73,56 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
     };
   }, [refreshInstalled, ensureBuiltinMarketplace]);
 
+  // Recovery succeeded: its message leaves with the button that was pressed. The focus goes to the page's 「添加」.
+  const hadRecoveryError = useRef(false);
+  useLayoutEffect(() => {
+    if (hadRecoveryError.current && !recoveryError && focusIsOnWindow()) focusAddButton();
+    hadRecoveryError.current = Boolean(recoveryError);
+  }, [recoveryError]);
+
+  // Archiving stops the automatic recovery of an operation record that cannot be read. It is
+  // asked first, with the backup paths the user has to keep; the answer acts on the record that
+  // is unreadable at that moment.
+  const archive = async () => {
+    const asked = usePluginStore.getState().unreadableOperation;
+    if (!asked || archiving.current) return;
+    const confirmed = await confirm({
+      title: t.toolbox.pluginsArchiveContinue,
+      message: `${t.toolbox.pluginsArchiveWarning} ${asked.backupPaths.join('、')}`,
+      confirmLabel: t.toolbox.pluginsArchiveContinue,
+    });
+    const current = usePluginStore.getState().unreadableOperation;
+    if (!confirmed || !current || current.fingerprint !== asked.fingerprint || archiving.current) return;
+    archiving.current = true; setRecovering(true);
+    void archivePluginOperation(current.fingerprint).then(async result => {
+      setArchiveResult(result); await bootstrapPluginUpdates();
+    }).catch(error => usePluginStore.setState({ recoveryError: String(error) }))
+      .finally(() => { archiving.current = false; setRecovering(false); });
+  };
+
   return (
     <div ref={setScrollParent} className="h-full overflow-y-auto overlay-scroll pb-6">
-      {recoveryError && <div role="alert" className="mx-8 mb-4 rounded-xl border border-[var(--abu-border)] p-4">
-        <p className="text-body text-[var(--abu-text-primary)]">{t.toolbox.pluginsRecoveryNeeded}</p>
-        <p className="mt-1 break-words text-minor text-[var(--abu-text-muted)]">{recoveryError}</p>
-        {unreadable && <ul className="mt-2 max-h-40 overflow-y-auto text-minor break-all">{unreadable.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>}
-        {unreadable ? <Button size="sm" className="mt-3" disabled={recovering} onClick={() => setArchiveOpen(true)}>{t.toolbox.pluginsArchiveContinue}</Button> : <Button size="sm" className="mt-3" disabled={recovering} onClick={() => {
-          setRecovering(true);
-          void bootstrapPluginUpdates().catch(() => {}).finally(() => setRecovering(false));
-        }}>{t.toolbox.pluginsRetryRecovery}</Button>}
+      {recoveryError && <div className="mx-8 mb-4">
+        <InlineMessage
+          tone="danger"
+          action={unreadable
+            ? <Button size="sm" busy={recovering} onClick={() => { void archive(); }}>{t.toolbox.pluginsArchiveContinue}</Button>
+            : <Button size="sm" busy={recovering} onClick={() => {
+              setRecovering(true);
+              void bootstrapPluginUpdates().catch(() => {}).finally(() => setRecovering(false));
+            }}>{t.toolbox.pluginsRetryRecovery}</Button>}
+        >
+          <p>{t.toolbox.pluginsRecoveryNeeded}</p>
+          <p className="mt-1 break-words text-ui-sm text-label-secondary">{recoveryError}</p>
+          {unreadable && <ul className="mt-2 max-h-40 overflow-y-auto break-all font-code text-ui-sm text-label-secondary">{unreadable.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>}
+        </InlineMessage>
       </div>}
-      <ConfirmDialog open={archiveOpen && unreadable !== null} title={t.toolbox.pluginsArchiveContinue}
-        message={<><p>{t.toolbox.pluginsArchiveWarning}</p><ul className="mt-2 max-h-40 overflow-y-auto break-all">{unreadable?.backupPaths.map(file => <li key={file}>{file}</li>)}</ul></>}
-        confirmText={t.toolbox.pluginsArchiveContinue} cancelText={t.common.cancel} confirmDisabled={recovering}
-        onCancel={() => { if (!archiving.current) setArchiveOpen(false); }} onConfirm={() => {
-          if (!unreadable || archiving.current) return;
-          archiving.current = true; setRecovering(true);
-          void archivePluginOperation(unreadable.fingerprint).then(async result => {
-            setArchiveResult(result); setArchiveOpen(false); await bootstrapPluginUpdates();
-          }).catch(error => usePluginStore.setState({ recoveryError: String(error) }))
-            .finally(() => { archiving.current = false; setRecovering(false); });
-        }} />
-      {archiveResult && <div role="status" className="mx-8 mb-4 rounded-xl border border-[var(--abu-border)] p-4 text-minor break-all">
-        <p>{t.toolbox.pluginsArchivedNotice}</p><p>{archiveResult.archivedPath}</p>
-        <ul className="max-h-40 overflow-y-auto">{archiveResult.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>
+      {archiveResult && <div className="mx-8 mb-4">
+        <InlineMessage tone="success">
+          <p>{t.toolbox.pluginsArchivedNotice}</p>
+          <p className="break-all font-code text-ui-sm text-label-secondary">{archiveResult.archivedPath}</p>
+          <ul className="max-h-40 overflow-y-auto break-all font-code text-ui-sm text-label-secondary">{archiveResult.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>
+        </InlineMessage>
       </div>}
       {/* One shelf at a time: 「我的」 is what this user has — the plugins they
           installed and the ones they created here, in one list — 「市场」 the
@@ -105,7 +136,7 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
               home={home}
               requestedMarket={requestedMarket}
               searchQuery={searchQuery}
-              onAddMarketplace={() => setAddOpen(true)}
+              onAddMarketplace={openAdd}
               scrollParent={scrollParent ?? undefined}
             />
           </section>)}
@@ -118,6 +149,14 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
         <AddMarketplaceDialog
           onAdded={name => { setSource('plugins', 'market'); setRequestedMarket({ name }); }}
           open={addOpen} home={home} onClose={() => setAddOpen(false)}
+          onCloseAutoFocus={(event) => {
+            const from = addOpener.current;
+            // Another layer took the focus, or the button that opened the window is still there and gets it back.
+            if (event.defaultPrevented || (from !== null && from !== document.body && from.isConnected)) return;
+            event.preventDefault();
+            (scrollParent?.querySelector<HTMLElement>('[data-marketplace-toolbar] button') ?? null)?.focus();
+            if (focusIsOnWindow()) focusAddButton();
+          }}
         />
       )}
     </div>

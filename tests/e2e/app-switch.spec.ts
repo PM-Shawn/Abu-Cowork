@@ -144,7 +144,7 @@ test.describe.serial('apps', () => {
     await page.getByLabel('Main navigation').getByRole('button', { name: EXTENSIONS }).click();
     await page.getByRole('main').getByRole('button', { name: /^(插件|Plugins)(\s.*)?$/ }).click();
     await page.getByTestId('plugin-create-trigger').click();
-    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /添加插件市场|Add marketplace/ }).click();
+    await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /添加插件市场|Add marketplace/ }).click();
     await page.getByTestId('plugin-marketplace-dir-input').fill(marketDir);
     await page.getByTestId('plugin-marketplace-submit').click();
     // The market holds one package and it is an app, so the plugin market

@@ -186,4 +186,23 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     expect(await messages(code, 'src/components/common/ConfirmDialog.tsx')).toEqual([]);
     expect(await messages(code, 'src/components/team/DialogShell.tsx')).toEqual([]);
   });
+
+  it('checks every file of the plugins page, tests and helpers included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/toolbox/plugins/PluginsTab.tsx',
+      'src/components/toolbox/plugins/MarketplaceBrowser.test.tsx',
+      'src/components/toolbox/plugins/InstallDisclosureDialog.tsx',
+      'src/components/toolbox/plugins/UninstallPluginDialog.tsx',
+      'src/components/toolbox/plugins/AddMarketplaceDialog.test.tsx',
+      'src/components/toolbox/plugins/AppMarketDialog.tsx',
+      'src/components/toolbox/plugins/NewFileOfThePage.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/toolbox/plugins/cardFocus.ts')).not.toEqual([]);
+    // The other toolbox folders migrate in later tasks.
+    expect(await messages(code, 'src/components/toolbox/skills/SkillDetailPanel.tsx')).toEqual([]);
+  });
 });

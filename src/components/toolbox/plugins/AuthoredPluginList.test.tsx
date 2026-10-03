@@ -10,13 +10,21 @@ const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvi
 import AuthoredPluginList from './AuthoredPluginList';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
-const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn(), remove: vi.fn() }));
-vi.mock('@/stores/pluginAuthorStore', () => ({ usePluginAuthorStore: Object.assign((selector: (value: unknown) => unknown) => selector({ ...state, error: null }), { getState: () => state }) }));
+const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], error: null as string | null, refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn(), remove: vi.fn(), toast: vi.fn() }));
+vi.mock('@/stores/pluginAuthorStore', () => ({ usePluginAuthorStore: Object.assign((selector: (value: unknown) => unknown) => selector({ ...state }), { getState: () => state }) }));
+vi.mock('@/stores/toastStore', () => ({ useToastStore: (selector: (value: unknown) => unknown) => selector({ addToast: state.toast }) }));
 vi.mock('@/stores/pluginStore', () => ({ cleanupPluginConfiguration: vi.fn().mockResolvedValue(undefined), usePluginStore: Object.assign((selector: (value: unknown) => unknown) => selector(state), { getState: () => state }) }));
 vi.mock('@/core/plugin/installer', () => ({ releasePreparedInstall: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('@/components/toolbox/plugins/InstalledPluginDetail', () => ({ default: ({ plugin, authorUpdate }: { plugin: unknown; authorUpdate?: { available: boolean; onReview: () => void } }) => plugin && authorUpdate ? <button onClick={authorUpdate.onReview}>{authorUpdate.available ? getI18n().toolbox.pluginsPreviewUpdate : getI18n().toolbox.pluginsCheckChanges}</button> : null }));
+vi.mock('@/components/toolbox/plugins/InstalledPluginDetail', async () => {
+  const { Button } = await import('@/components/ds/button');
+  return { default: ({ plugin, authorUpdate, authorActions }: { plugin: unknown; authorUpdate?: { available: boolean; onReview: () => void }; authorActions?: { id: string }[] }) => plugin && authorUpdate
+    ? <Button data-author-actions={authorActions?.map(action => action.id).join(',')} onClick={authorUpdate.onReview}>{authorUpdate.available ? getI18n().toolbox.pluginsPreviewUpdate : getI18n().toolbox.pluginsCheckChanges}</Button> : null };
+});
 vi.mock('@/components/toolbox/plugins/UninstallPluginDialog', () => ({ default: () => null }));
-vi.mock('@/components/toolbox/plugins/InstalledPluginCard', () => ({ default: ({ onClick, actions }: { onClick: () => void; actions?: ReactNode }) => <button data-testid="plugin-mine-row" onClick={onClick}>Installed{actions}</button> }));
+vi.mock('@/components/toolbox/plugins/InstalledPluginCard', async () => {
+  const { Button } = await import('@/components/ds/button');
+  return { default: ({ onClick, actions }: { onClick: () => void; actions?: ReactNode }) => <Button data-testid="plugin-mine-row" onClick={onClick}>Installed{actions}</Button> };
+});
 const author = { id: 'a'.repeat(32), name: null, key: null, sourceDir: '/home/Abu Plugins/a', marketplace: 'author-a', prepared: null };
 const disclosure: InstallDisclosure = { preparedToken: 'preview', key: 'demo@author-a', name: 'demo', version: '1', marketplace: 'author-a', manifest: { name: 'demo' }, sourceDir: author.sourceDir, skills: [], mcpServers: [], agents: [], ignoredPayloads: [] };
 beforeEach(() => {
@@ -103,9 +111,127 @@ it('requires an honest source-retention confirmation before deleting a draft', a
   await userEvent.click(screen.getByTestId('plugin-author-menu'));
   fireEvent.click(screen.getByTestId('plugin-author-menu-delete'));
   // The chosen action runs once the menu has gone.
-  expect(await screen.findByText(getI18n().toolbox.pluginsDeleteDraftWarning)).toBeVisible();
-  expect(screen.getByText(author.sourceDir)).toBeVisible();
+  const question = await screen.findByRole('alertdialog');
+  expect(question).toHaveAccessibleName(getI18n().toolbox.pluginsDeleteDraft);
+  expect(question).toHaveTextContent(getI18n().toolbox.pluginsDeleteDraftWarning);
+  expect(question).toHaveTextContent(author.sourceDir);
   expect(state.remove).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
-  await waitFor(() => expect(state.remove).toHaveBeenCalledWith(author.id));
+  fireEvent.click(within(question).getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
+  await waitFor(() => expect(state.remove).toHaveBeenCalledExactlyOnceWith(author.id));
+  // The draft is gone, so its window closes.
+  await waitFor(() => expect(screen.queryByTestId('plugin-author-detail')).toBeNull());
+});
+
+async function askToDeleteDraft() {
+  fireEvent.click(within(screen.getByTestId('plugin-mine-draft')).getByRole('button'));
+  await userEvent.click(screen.getByTestId('plugin-author-menu'));
+  fireEvent.click(screen.getByTestId('plugin-author-menu-delete'));
+  return screen.findByRole('alertdialog');
+}
+
+it('deletes nothing when the question is cancelled, and keeps the draft window open', async () => {
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  const question = await askToDeleteDraft();
+  fireEvent.click(within(question).getByRole('button', { name: getI18n().common.cancel }));
+  await act(async () => {});
+  expect(state.remove).not.toHaveBeenCalled();
+  expect(screen.getByTestId('plugin-author-detail')).toBeInTheDocument();
+});
+
+it('deletes nothing when the draft is gone by the time of the answer', async () => {
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  const question = await askToDeleteDraft();
+  // Removed from somewhere else while the question was on screen.
+  state.authors = [];
+  fireEvent.click(within(question).getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
+  await act(async () => {});
+  expect(state.remove).not.toHaveBeenCalled();
+});
+
+it('deletes nothing when the draft was installed by the time of the answer', async () => {
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  const question = await askToDeleteDraft();
+  state.installed = [{ key: 'demo@author-a', authoringId: author.id, checksum: 'new' }];
+  fireEvent.click(within(question).getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
+  await act(async () => {});
+  expect(state.remove).not.toHaveBeenCalled();
+});
+
+it('reports a failed delete once and lets the draft be deleted again', async () => {
+  state.remove.mockRejectedValueOnce(new Error('record locked')).mockResolvedValueOnce(undefined);
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  fireEvent.click(within(await askToDeleteDraft()).getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
+  await waitFor(() => expect(state.remove).toHaveBeenCalledTimes(1));
+  await act(async () => {});
+  expect(state.toast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: 'error', message: 'Error: record locked' }));
+  // The window is still open on the draft; the guard was released.
+  await userEvent.click(screen.getByTestId('plugin-author-menu'));
+  fireEvent.click(screen.getByTestId('plugin-author-menu-delete'));
+  fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
+  await waitFor(() => expect(state.remove).toHaveBeenCalledTimes(2));
+});
+
+it('offers delete for a draft only, never for a plugin that is installed', async () => {
+  const preparedAuthor = { ...author, name: 'demo', key: disclosure.key, prepared: { checksum: 'new' } };
+  state.authors = [preparedAuthor];
+  state.installed = [{ key: disclosure.key, authoringId: author.id, checksum: 'new' }];
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  fireEvent.click(screen.getByTestId('plugin-mine-row'));
+  expect(screen.getByRole('button', { name: getI18n().toolbox.pluginsCheckChanges })).toHaveAttribute('data-author-actions', 'edit,source');
+});
+
+it('shows a store error as an announced message in the grid', () => {
+  state.error = 'author records unreadable';
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  expect(screen.getByRole('alert')).toHaveTextContent('author records unreadable');
+  state.error = null;
+});
+
+it('gives the focus back to the draft card when the window that closes last was opened from another window', async () => {
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  const card = within(screen.getByTestId('plugin-mine-draft')).getByRole('button');
+  card.focus();
+  fireEvent.click(card);
+  // Detail → preview → cancel → detail: this second detail window opened from the preview's Cancel button, which is gone.
+  const review = screen.getByRole('button', { name: getI18n().toolbox.pluginsReviewChanges });
+  review.focus();
+  fireEvent.click(review);
+  await screen.findByTestId('plugin-install-confirm');
+  const cancel = screen.getByRole('button', { name: getI18n().common.cancel });
+  cancel.focus();
+  fireEvent.click(cancel);
+  expect(screen.getByTestId('plugin-author-detail')).toBeInTheDocument();
+
+  fireEvent.keyDown(screen.getByTestId('plugin-author-detail'), { key: 'Escape' });
+  expect(screen.queryByTestId('plugin-author-detail')).toBeNull();
+  await waitFor(() => expect(card).toHaveFocus());
+});
+
+it('gives the focus to the card that took the place of a deleted draft', async () => {
+  const other = { ...author, id: 'b'.repeat(32), name: 'other-draft', sourceDir: '/home/Abu Plugins/b', marketplace: 'author-b' };
+  state.authors = [author, other];
+  state.remove.mockImplementation(async (id: string) => { state.authors = state.authors.filter(item => (item as { id: string }).id !== id); });
+  const view = render(<AuthoredPluginList home="/home" searchQuery="" />);
+  const first = within(screen.getAllByTestId('plugin-mine-draft')[0]).getByRole('button');
+  first.focus();
+  fireEvent.click(first);
+  await userEvent.click(screen.getByTestId('plugin-author-menu'));
+  fireEvent.click(screen.getByTestId('plugin-author-menu-delete'));
+  fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
+  await waitFor(() => expect(state.remove).toHaveBeenCalledExactlyOnceWith(author.id));
+  // The store drops the draft; the list renders without it.
+  view.rerender(<AuthoredPluginList home="/home" searchQuery="" />);
+  await waitFor(() => expect(screen.queryByTestId('plugin-author-detail')).toBeNull());
+
+  expect(screen.getAllByTestId('plugin-mine-draft')).toHaveLength(1);
+  await waitFor(() => expect(within(screen.getByTestId('plugin-mine-draft')).getByRole('button')).toHaveFocus());
+});
+
+it('marks a draft as ready to install once it has been validated', () => {
+  state.authors = [{ ...author, name: 'demo', prepared: { checksum: 'new', description: 'A greeting plugin' } }];
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  const draft = screen.getByTestId('plugin-mine-draft');
+  expect(draft).toHaveTextContent('demo');
+  expect(draft).toHaveTextContent('A greeting plugin');
+  expect(draft).toHaveTextContent(getI18n().toolbox.pluginsReadyToInstall);
 });

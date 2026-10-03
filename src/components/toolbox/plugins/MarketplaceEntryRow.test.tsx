@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { Button } from '@/components/ds/button';
 import MarketplaceEntryRow from './MarketplaceEntryRow';
 
 /**
@@ -22,7 +23,7 @@ describe('MarketplaceEntryRow', () => {
         chips={[<span key="a">未签名</span>, <span key="b">组织审核</span>]}
         meta="1 个技能 · 0 个连接器 · 最新 v1.0.0"
         icon={<span data-testid="row-icon">📦</span>}
-        actions={<button type="button">安装</button>}
+        actions={<Button>安装</Button>}
       />,
     );
 
@@ -37,12 +38,29 @@ describe('MarketplaceEntryRow', () => {
   });
 
   it('uses the released card geometry and keeps the title readable with actions and chips', () => {
-    render(<MarketplaceEntryRow testId="card" nameTestId="name" name="long-plugin-name" chips={[<span key="s">未签名</span>]} actions={<button>安装</button>} />);
+    render(<MarketplaceEntryRow testId="card" nameTestId="name" name="long-plugin-name" chips={[<span key="s">未签名</span>]} actions={<Button>安装</Button>} />);
     const name = screen.getByTestId('name');
     expect(name).toHaveAttribute('title', 'long-plugin-name');
     expect(name.className).toContain('min-w-10');
     expect(screen.getByTestId('card').firstElementChild?.className).toContain('min-h-30');
     expect(screen.getByRole('button', { name: '安装' })).toBeVisible();
     expect(screen.getByText('未签名').closest('.line-clamp-2')).toBeNull();
+  });
+
+  it('shows the package icon when the caller gives none, and the caller\'s own when it does', () => {
+    const view = render(<MarketplaceEntryRow testId="card" name="plain" />);
+    expect(screen.getByTestId('card').querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    view.unmount();
+    render(<MarketplaceEntryRow testId="card" name="own" icon={<span data-testid="own-icon">📦</span>} />);
+    expect(screen.getByTestId('own-icon')).toBeInTheDocument();
+    expect(screen.getByTestId('card').querySelector('svg')).toBeNull();
+  });
+
+  it('is a card that opens only when the caller says what opening does', () => {
+    const view = render(<MarketplaceEntryRow testId="card" name="display-only" />);
+    expect(screen.queryByRole('button')).toBeNull();
+    view.unmount();
+    render(<MarketplaceEntryRow testId="card" name="opens" onClick={() => {}} />);
+    expect(screen.getByRole('button')).toHaveAttribute('tabindex', '0');
   });
 });

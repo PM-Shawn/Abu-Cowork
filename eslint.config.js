@@ -225,6 +225,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/toolbox/ToolDetailModal*.{ts,tsx}',
   'src/components/toolbox/InstalledItemMenu*.{ts,tsx}',
   'src/components/toolbox/ToolboxCreateMenu*.{ts,tsx}',
+  'src/components/toolbox/plugins/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

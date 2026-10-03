@@ -123,9 +123,16 @@ async function openPluginsTab(page: Page): Promise<void> {
   // one rendered at a time; the tab opens on 市场 and remembers the last pick.
 }
 
+/** A window's box once its opening animation has ended; while it scales in, the box is smaller. */
+async function settledBox(page: Page, testId: string) {
+  const dialog = page.getByTestId(testId);
+  await dialog.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+  return dialog.boundingBox();
+}
+
 async function openAddMarketplace(page: Page): Promise<void> {
   await page.getByTestId('plugin-create-trigger').click();
-  await page.getByTestId('plugin-create-menu').getByRole('button', { name: /添加插件市场|Add marketplace/ }).click();
+  await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /添加插件市场|Add marketplace/ }).click();
 }
 
 test('loads custom skill directories and standalone MCP configuration in Electron', async () => {
@@ -601,7 +608,7 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await page.getByTestId('plugin-create-trigger').click();
-    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /创建插件|Create plugin/ }).click();
+    await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /创建插件|Create plugin/ }).click();
     const authorsPath = path.join(launched.appDataDir, 'Home/.abu/plugin-authors/authors.json');
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
     const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
@@ -619,12 +626,13 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     fs.writeFileSync(sourceSkill, '---\nname: author-greeting\ndescription: A local author fixture\n---\nOriginal instructions.\n');
     await openPluginsTab(page);
     await page.getByTestId('plugin-mine-draft').click();
-    const detailBounds = await page.getByTestId('plugin-author-detail').boundingBox();
+    const detailBounds = await settledBox(page, 'plugin-author-detail');
     await page.getByRole('button', { name: /^(校验并预览|Validate and preview)$/ }).click();
     await expect(page.getByTestId('plugin-install-disclosure')).toContainText('author-greeting');
-    expect(await page.getByTestId('plugin-install-disclosure').boundingBox()).toEqual(detailBounds);
+    expect(await settledBox(page, 'plugin-install-disclosure')).toEqual(detailBounds);
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-author-preview.png'), animations: 'disabled' });
-    await page.getByTestId('plugin-install-disclosure').getByRole('button', { name: /^(取消|关闭|Cancel|Close)$/ }).click();
+    // The preview is ready, so its footer offers Cancel; 关闭 is the window's corner button.
+    await page.getByTestId('plugin-install-disclosure').getByRole('button', { name: /^(取消|Cancel)$/ }).click();
     await expect(page.getByTestId('plugin-install-disclosure')).toBeHidden();
     expect(fs.existsSync(path.join(installRoot(launched), `author-${author.id}/e2e-author/1.0.0`))).toBe(false);
     await page.keyboard.press('Escape');
@@ -714,7 +722,7 @@ test('configures an authored MCP without putting its credential in source or run
     await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await page.getByTestId('plugin-create-trigger').click();
-    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /创建插件|Create plugin/ }).click();
+    await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /创建插件|Create plugin/ }).click();
     const authorsPath = path.join(launched.appDataDir, 'Home/.abu/plugin-authors/authors.json');
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
     const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
@@ -859,7 +867,7 @@ test('deletes only draft metadata and explicitly archives an unreadable operatio
     await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await page.getByTestId('plugin-create-trigger').click();
-    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /创建插件|Create plugin/ }).click();
+    await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /创建插件|Create plugin/ }).click();
     const home = fs.realpathSync(path.join(launched.appDataDir, 'Home'));
     const authorsPath = path.join(home, '.abu/plugin-authors/authors.json');
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
@@ -872,7 +880,8 @@ test('deletes only draft metadata and explicitly archives an unreadable operatio
     await page.getByTestId('plugin-author-menu').click();
     await page.getByTestId('plugin-author-menu-delete').click();
     await expect(page.getByText(/本期无法重新接管该目录|This release cannot re-adopt/)).toBeVisible();
-    await expect(page.getByText(sourceDir, { exact: true })).toBeVisible();
+    // The question is one sentence followed by the directory that stays behind.
+    await expect(page.getByRole('alertdialog')).toContainText(sourceDir);
     await page.getByRole('button', { name: /^(删除草稿|Delete draft)$/ }).click();
     await expect(page.getByTestId('plugin-mine-draft')).toHaveCount(0);
     expect(JSON.parse(fs.readFileSync(authorsPath, 'utf8'))).toEqual([]);

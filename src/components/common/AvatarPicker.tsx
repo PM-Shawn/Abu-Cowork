@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type ComponentProps, type ReactNode } from 'react';
 import { AVATAR_ICONS, AVATAR_TINTS, AVATAR_TINT_MAP, buildAvatarValue, parseAvatarValue } from '@/core/team/avatarPresets';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { Button } from '@/components/ds/button';
@@ -6,16 +6,27 @@ import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Popover } from '@/components/ds/popover';
 import { Pressable } from '@/components/ds/pressable';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 
-// A cell of either grid. The chosen one carries the selected fill as well as the ring, so it
-// still reads as chosen while the keyboard ring (the same ring, without the fill) is on another
-// cell. Both rings are drawn inside the cell: the list scrolls in a short window and would cut
-// a ring drawn outside it.
-const CELL = 'flex w-full items-center justify-center rounded-control focus-visible:ring-inset';
-const CELL_CHOSEN = 'bg-fill-selected ring-2 ring-inset ring-focus';
+// A cell of either grid. The chosen one carries the selected fill and a check mark; the ring is
+// the keyboard focus alone, so focus can be seen on the chosen cell as well. The ring is drawn
+// inside the cell: the list scrolls in a short window and would cut a ring drawn outside it.
+const CELL = 'relative flex w-full items-center justify-center rounded-control focus-visible:ring-inset';
+const CELL_CHOSEN = 'bg-fill-selected';
 const CELL_IDLE = 'hover:bg-fill-hover';
+
+// The button that opens the picker shows only an avatar, so its name appears as a tooltip on
+// hover and on keyboard focus. The popover hands its trigger props (and the ref) to this
+// component, which passes them on to the button.
+function PickerTrigger({ tooltip, children, ...props }: ComponentProps<typeof Pressable> & { tooltip: string }) {
+  return (
+    <Tooltip content={tooltip}>
+      <Pressable {...props}>{children}</Pressable>
+    </Tooltip>
+  );
+}
 
 /** Shared by agent and team editors; only built-in references are newly authored. */
 export default function AvatarPicker({ value, onChange, children }: {
@@ -40,14 +51,14 @@ export default function AvatarPicker({ value, onChange, children }: {
       align="start"
       onOpenChange={(open) => { if (open) setPendingTint(AVATAR_TINTS[0]); }}
       trigger={(
-        <Pressable
+        <PickerTrigger
+          tooltip={t.avatarPicker.chooseAvatar}
           aria-label={selectionLabel ? format(t.avatarPicker.chooseAvatarWithSelection, { avatar: selectionLabel }) : t.avatarPicker.chooseAvatar}
-          title={t.avatarPicker.chooseAvatar}
           data-testid="avatar-picker-trigger"
           className="inline-flex shrink-0 rounded-control p-1 hover:bg-fill-hover"
         >
           {children ?? <AgentAvatar agent={{ name: 'avatar', avatar: value }} size="lg" />}
-        </Pressable>
+        </PickerTrigger>
       )}
     >
       {/* The popover offers no hook on its own box, so this one child carries the name and the
@@ -98,6 +109,12 @@ export default function AvatarPicker({ value, onChange, children }: {
                   onClick={() => onChange(avatar)}
                 >
                   <AgentAvatar agent={{ name: 'avatar', avatar }} size="lg" />
+                  {/* A check mark at the corner: the grey fill alone is faint around a tinted avatar. */}
+                  {selected && (
+                    <span data-avatar-chosen className="absolute right-0 top-0 flex size-4 items-center justify-center rounded-full bg-emphasis text-on-emphasis">
+                      <Icon icon={AppIcons.done} size="sm" />
+                    </span>
+                  )}
                 </Pressable>
               );
             })}

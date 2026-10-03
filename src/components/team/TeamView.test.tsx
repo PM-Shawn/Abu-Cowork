@@ -1,13 +1,18 @@
 // @vitest-environment happy-dom
 import { clearAllComposerDrafts, readComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { act, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { useTeamStore } from '@/stores/teamStore';
 import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
 import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 // TeamView reads/writes the real teamStore (zustand works fine in tests);
 // everything else is mocked at the boundary, mirroring ToolboxModal.test.tsx.
+
+// The team dialog's avatar picker uses a design-system tooltip, so the page renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const settingsState = {
   activeTeamTab: 'tasks' as 'inbox' | 'tasks' | 'members' | 'teams',

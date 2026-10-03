@@ -157,6 +157,10 @@ describe('Extensions retains the released capability pages', () => {
     usePluginStore.setState({ updateAvailableCount: 10 });
     render(<ExtensionsView />);
     expect(screen.getByTestId('plugins-tab-update-badge')).toHaveTextContent('9+');
+    // A count of available updates is information, not an error.
+    const tag = screen.getByTestId('plugins-tab-update-badge').firstElementChild!;
+    expect(tag.className.split(/\s+/)).toContain('bg-info-soft');
+    expect(tag.className.split(/\s+/)).not.toContain('bg-danger-soft');
     expect(tab('技能')).toBeVisible();
     expect(tab('连接器')).toBeVisible();
     expect(screen.queryByRole('button', { name: '专家' })).toBeNull();

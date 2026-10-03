@@ -99,6 +99,11 @@ describe('AvatarPicker', () => {
     expect(screen.queryByTestId('avatar-picker')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     expect(trigger).toHaveFocus();
+    // Focus is back on the trigger, so its name shows; that tooltip is the next layer Escape closes.
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -125,6 +130,11 @@ describe('AvatarPicker', () => {
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(screen.getByRole('dialog', { name: 'Edit expert' })).toBeInTheDocument();
     expect(trigger).toHaveFocus();
+    // One press, one layer: the trigger's tooltip (shown again with the focus), then the dialog.
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
     await user.keyboard('{Escape}');
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
@@ -141,34 +151,69 @@ describe('AvatarPicker', () => {
     expect(screen.getByRole('group', { name: getI18n().avatarPicker.icon })).toBeInTheDocument();
   });
 
-  it('names the trigger and every cell, and marks the chosen cells with a fill as well as a ring', async () => {
+  it('names every cell and marks the chosen cells with a fill and a check mark, never with the focus ring', async () => {
     const user = userEvent.setup();
     render(<AvatarPicker value="icon:code/purple" onChange={vi.fn()} />);
     const trigger = screen.getByTestId('avatar-picker-trigger');
-    expect(trigger).toHaveAttribute('title', getI18n().avatarPicker.chooseAvatar);
     expect(trigger.tagName).toBe('BUTTON');
     await user.click(trigger);
     const chosenTint = screen.getByTestId('avatar-tint-purple');
     const otherTint = screen.getByTestId('avatar-tint-blue');
     expect(chosenTint).toHaveAttribute('aria-label', getI18n().avatarPicker.tints.purple);
     expect(chosenTint).toHaveAttribute('title', getI18n().avatarPicker.tints.purple);
-    expect(classes(chosenTint)).toContain('ring-focus');
-    expect(classes(chosenTint)).toContain('ring-inset');
     expect(classes(chosenTint)).toContain('bg-fill-selected');
+    expect(classes(chosenTint)).not.toContain('ring-focus');
+    expect(classes(chosenTint)).not.toContain('ring-2');
     // The chosen color also shows the check mark; the others do not.
     expect(chosenTint.querySelector('svg')).not.toBeNull();
     expect(otherTint.querySelector('svg')).toBeNull();
     expect(classes(otherTint)).not.toContain('bg-fill-selected');
-    expect(classes(otherTint)).not.toContain('ring-focus');
     const chosenIcon = screen.getByTestId('avatar-icon-code');
     const otherIcon = screen.getByTestId('avatar-icon-shield');
     expect(chosenIcon).toHaveAttribute('title', chosenIcon.getAttribute('aria-label')!);
     expect(classes(chosenIcon)).toContain('bg-fill-selected');
-    expect(classes(chosenIcon)).toContain('ring-focus');
+    expect(classes(chosenIcon)).not.toContain('ring-focus');
+    expect(classes(chosenIcon)).not.toContain('ring-2');
+    // The chosen icon carries a check mark of its own, so the grey fill is not its only sign.
+    expect(chosenIcon.querySelector('[data-avatar-chosen]')).not.toBeNull();
+    expect(otherIcon.querySelector('[data-avatar-chosen]')).toBeNull();
     expect(classes(otherIcon)).not.toContain('bg-fill-selected');
-    // The keyboard ring of a cell that is not chosen: the same ring, without the fill.
-    expect(classes(otherIcon)).toContain('focus-visible:ring-focus');
-    expect(classes(otherIcon)).toContain('focus-visible:ring-inset');
     expect(screen.getByRole('button', { name: getI18n().avatarPicker.defaultAvatar })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('opened by keyboard with nothing chosen: the ring is the keyboard focus alone', async () => {
+    const user = userEvent.setup();
+    render(<AvatarPicker onChange={vi.fn()} />);
+    await user.tab();
+    expect(screen.getByTestId('avatar-picker-trigger')).toHaveFocus();
+    await user.keyboard('{Enter}');
+    const focused = document.activeElement as HTMLElement;
+    expect(screen.getByTestId('avatar-picker').contains(focused)).toBe(true);
+    // The cell the picker opens on is the pending color, so it is focused and pressed at once.
+    expect(focused).toBe(screen.getByTestId('avatar-tint-blue'));
+    expect(focused).toHaveAttribute('aria-pressed', 'true');
+    expect(classes(focused)).toContain('focus-visible:ring-2');
+    expect(classes(focused)).toContain('focus-visible:ring-focus');
+    expect(classes(focused)).toContain('focus-visible:ring-inset');
+    // Without focus the same cell has no ring: its ring classes all sit behind focus-visible.
+    expect(classes(focused)).not.toContain('ring-2');
+    expect(classes(focused)).not.toContain('ring-focus');
+    expect(classes(focused)).not.toContain('ring-inset');
+  });
+
+  it('shows the name of the trigger on keyboard focus and carries no native title', async () => {
+    const user = userEvent.setup();
+    render(<AvatarPicker value="icon:code/purple" onChange={vi.fn()} />);
+    const trigger = screen.getByTestId('avatar-picker-trigger');
+    expect(trigger).not.toHaveAttribute('title');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    await user.tab();
+    expect(trigger).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(getI18n().avatarPicker.chooseAvatar);
+    // The same button still opens the picker and says so.
+    await user.keyboard('{Enter}');
+    expect(screen.getByTestId('avatar-picker')).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(trigger.getAttribute('aria-label')).toContain(getI18n().avatarPicker.icons.code);
   });
 });

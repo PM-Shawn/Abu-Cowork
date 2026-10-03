@@ -35,7 +35,8 @@ export default function PluginUpdateBadge({ testId }: { testId: string }) {
       )}
       className="inline-flex shrink-0"
     >
-      <Tag tone="danger">{count > MAX_SHOWN ? `${MAX_SHOWN}+` : count}</Tag>
+      {/* A count of available updates is information, like the inbox count beside it. */}
+      <Tag tone="info">{count > MAX_SHOWN ? `${MAX_SHOWN}+` : count}</Tag>
     </span>
   );
 }

@@ -6,6 +6,7 @@
  */
 
 import { getTauriFetch } from './tauriFetch';
+import { safeFailureText } from './healthCheck';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -65,8 +66,8 @@ export async function checkOllamaHealth(baseUrl = DEFAULT_OLLAMA_URL): Promise<O
     const res = await withTimeout(fetchFn(baseUrl), HEALTH_CHECK_TIMEOUT);
     return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[Ollama] Health check failed:', err);
+    const msg = safeFailureText(err instanceof Error ? err.message : String(err), { apiKey: '', baseUrl });
+    console.warn('[Ollama] Health check failed:', msg);
     return { ok: false, error: msg };
   }
 }

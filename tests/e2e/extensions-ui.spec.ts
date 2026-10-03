@@ -89,7 +89,7 @@ test('released connector cards keep template install and connection actions', as
     await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-connectors-market.png' });
     await page.getByRole('button', { name: '添加', exact: true }).first().click();
     await page.getByPlaceholder('服务器名称').fill('ui-layout-fixture');
-    await page.getByRole('button', { name: '远程服务 (HTTP)', exact: true }).click();
+    await page.getByRole('radio', { name: '远程服务 (HTTP)', exact: true }).click();
     await page.getByPlaceholder('http://localhost:3000/mcp').fill(`http://127.0.0.1:${address.port}/mcp`);
     await page.getByRole('button', { name: '添加', exact: true }).last().click();
     await expect(page.getByRole('heading', { name: 'ui-layout-fixture 连接器', exact: true })).toBeVisible();

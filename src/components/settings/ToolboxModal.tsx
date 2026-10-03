@@ -177,7 +177,7 @@ function ExtensionsView() {
         />
       );
     } else if (activeTab === 'mcp' && canCreateHere) {
-      createControl = <ToolboxCreateMenu onClick={() => setMcpAddFormOpen(true)} />;
+      createControl = <ToolboxCreateMenu triggerTestId="connector-create-trigger" onClick={() => setMcpAddFormOpen(true)} />;
     }
     if (activeTab === 'plugins' && canCreateHere) {
       createControl = <ToolboxCreateMenu triggerTestId="plugin-create-trigger" menuTestId="plugin-create-menu" items={[

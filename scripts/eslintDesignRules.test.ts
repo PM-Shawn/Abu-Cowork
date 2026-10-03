@@ -227,8 +227,27 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     expect(await messages(icon, 'src/components/customize/skillHistoryTime.ts')).not.toEqual([]);
     expect(await messages(icon, 'src/components/toolbox/skills/isSystemSkill.ts')).not.toEqual([]);
     // customize/ has no directory entry: the pages that migrate in later tasks and the unused files stay on the old rules.
-    expect(await messages(code, 'src/components/customize/MCPSection.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/customize/AgentsSection.tsx')).toEqual([]);
     expect(await messages(code, 'src/components/customize/SkillDetailModal.tsx')).toEqual([]);
-    expect(await messages(code, 'src/components/toolbox/connectors/connectorPrefill.tsx')).toEqual([]);
+  });
+
+  it('checks every file of the connectors page, tests and helpers included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/customize/MCPSection.tsx',
+      'src/components/customize/MCPSection.test.tsx',
+      'src/components/customize/MCPServerFormDialog.tsx',
+      'src/components/customize/MCPServerFormDialog.test.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/customize/toolCountLabel.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/customize/toolCountLabel.test.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/connectors/connectorPrefill.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/windowHeight.ts')).not.toEqual([]);
+    // The pages that migrate in the next task and the unused files stay on the old rules.
+    expect(await messages(code, 'src/components/customize/AgentEditor.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/customize/ModelsSection.tsx')).toEqual([]);
   });
 });

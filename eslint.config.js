@@ -235,6 +235,11 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/customize/skillHistoryTime*.ts',
   'src/components/toolbox/skills/**/*.{ts,tsx}',
   'src/components/toolbox/cardFocus*.ts',
+  'src/components/customize/MCPSection*.{ts,tsx}',
+  'src/components/customize/MCPServerFormDialog*.{ts,tsx}',
+  'src/components/customize/toolCountLabel*.ts',
+  'src/components/toolbox/connectors/**/*.ts',
+  'src/components/toolbox/windowHeight.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

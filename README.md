@@ -134,7 +134,7 @@ Recent highlights: **Workspace file tree + code canvas** (browse / preview / edi
 
 ### AI Services & Models
 
-- **12+ Cloud Providers** — Anthropic Claude, OpenAI, DeepSeek, Qwen (Bailian), Doubao (Volcengine), Moonshot, Zhipu GLM, MiniMax, SiliconFlow, Qiniu, OpenRouter, and more
+- **12+ Cloud Providers** — Anthropic Claude, OpenAI, DeepSeek, Qwen (Bailian), Doubao (Volcengine), Moonshot, Zhipu GLM, MiniMax, SiliconFlow, Qiniu, OpenRouter, Requesty, and more
 - **Local Models** — Zero-config Ollama integration with automatic local model discovery
 - **Custom Endpoints** — Connect any OpenAI-compatible or Anthropic-compatible API
 - **Provider Management** — Add, edit, delete, reorder providers with connection health checks and latency detection

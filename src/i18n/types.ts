@@ -2490,6 +2490,7 @@ export interface TranslationDict {
     openaiCompatible: string;
     qiniuCloud: string;
     openrouter: string;
+    requesty: string;
     deepseek: string;
     anthropic: string;
     volcengine: string;

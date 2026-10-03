@@ -844,7 +844,7 @@ export interface ToolDefinition {
 
 // --- LLM ---
 
-export type LLMProvider = 'volcengine' | 'bailian' | 'anthropic' | 'openai' | 'deepseek' | 'moonshot' | 'zhipu' | 'minimax' | 'siliconflow' | 'qiniu' | 'openrouter' | 'xiaomi' | 'ollama' | 'lmstudio' | 'local' | 'custom';
+export type LLMProvider = 'volcengine' | 'bailian' | 'anthropic' | 'openai' | 'deepseek' | 'moonshot' | 'zhipu' | 'minimax' | 'siliconflow' | 'qiniu' | 'openrouter' | 'requesty' | 'xiaomi' | 'ollama' | 'lmstudio' | 'local' | 'custom';
 
 // --- Provider Capabilities ---
 

@@ -1987,6 +1987,7 @@ const zhCN: TranslationDict = {
     openaiCompatible: 'OpenAI / 兼容',
     qiniuCloud: '七牛云',
     openrouter: 'OpenRouter',
+    requesty: 'Requesty',
     deepseek: 'DeepSeek',
     anthropic: 'Anthropic',
     volcengine: '火山引擎',

@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import InstalledItemMenu from './InstalledItemMenu';
 import ToolDetailModal from './ToolDetailModal';
 
 function renderModal(props: Partial<ComponentProps<typeof ToolDetailModal>> = {}) {
@@ -62,6 +63,33 @@ describe('ToolDetailModal', () => {
     expect(dialog).toContainElement(screen.getByRole('button', { name: 'Header action' }));
     expect(dialog).toContainElement(screen.getByRole('button', { name: 'Footer action' }));
     expect(dialog).toHaveTextContent('Body text');
+  });
+
+  it('keeps the name row and its actions out of the scrolling area', () => {
+    renderModal({ title: 'Canva plugin', subtitle: 'Design tools', headerActions: <Button>Header action</Button> });
+    const scrolling = screen.getByTestId('detail').querySelector('.overflow-y-auto');
+    expect(scrolling).toContainElement(screen.getByText('Body text'));
+    expect(scrolling).not.toContainElement(screen.getByText('Canva plugin'));
+    expect(scrolling).not.toContainElement(screen.getByText('Design tools'));
+    expect(scrolling).not.toContainElement(screen.getByRole('button', { name: 'Header action' }));
+  });
+
+  it('with an item menu in the header: Escape closes the menu, the next Escape closes the window', async () => {
+    const user = userEvent.setup();
+    const { onClose } = renderModal({
+      title: 'Canva plugin',
+      headerActions: <InstalledItemMenu ariaLabel="Canva actions" testId="detail-menu" actions={[{ id: 'edit', label: 'Edit', onSelect: vi.fn() }]} />,
+    });
+    const trigger = screen.getByRole('button', { name: 'Canva actions' });
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('calls onClose from the close button', async () => {

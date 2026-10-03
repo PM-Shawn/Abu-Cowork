@@ -3,8 +3,8 @@ import { Dialog } from '@/components/ds/dialog';
 import { cn } from '@/lib/utils';
 
 /**
- * Detail window of the toolbox card grid: a design-system dialog with a header
- * (avatar, name, subtitle, actions) above the caller's content. Each tab injects
+ * Detail window of the toolbox card grid: a design-system dialog whose header
+ * (avatar, name, subtitle, actions) stays put above the caller's scrolling content. Each tab injects
  * its own detail JSX so business state stays in the owning section.
  */
 export interface ToolDetailModalProps {
@@ -61,28 +61,29 @@ export default function ToolDetailModal({
       closeButton
       contentProps={testId ? { 'data-testid': testId } : undefined}
       footer={footer}
-    >
-      {/* The right padding keeps the actions clear of the close button in the corner. */}
-      <div className="flex items-start justify-between gap-3 pr-8">
-        <div className="flex min-w-0 items-start gap-4">
-          {avatar && (
-            <div
-              className={cn(
-                'flex shrink-0 select-none items-center justify-center text-title-lg',
-                stackedHeader ? 'size-11 rounded-full border border-separator' : 'size-14 rounded-panel bg-fill',
-              )}
-            >
-              {avatar}
+      header={(
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-4">
+            {avatar && (
+              <div
+                className={cn(
+                  'flex shrink-0 select-none items-center justify-center text-title-lg',
+                  stackedHeader ? 'size-11 rounded-full border border-separator' : 'size-14 rounded-panel bg-fill',
+                )}
+              >
+                {avatar}
+              </div>
+            )}
+            <div className="min-w-0 pt-1">
+              {title && <div className="truncate text-title text-label">{title}</div>}
+              {subtitle && <div className="mt-1 text-ui text-label-secondary">{subtitle}</div>}
             </div>
-          )}
-          <div className="min-w-0 pt-1">
-            {title && <div className="truncate text-title text-label">{title}</div>}
-            {subtitle && <div className="mt-1 text-ui text-label-secondary">{subtitle}</div>}
           </div>
+          <div className="flex shrink-0 items-center gap-2">{headerActions}</div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">{headerActions}</div>
-      </div>
-      <div className={cn('mt-4', heightOf(panelClassName))}>{children}</div>
+      )}
+    >
+      <div className={heightOf(panelClassName)}>{children}</div>
     </Dialog>
   );
 }

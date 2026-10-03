@@ -92,7 +92,7 @@ export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>)
 // With `dismissible={false}` only the dialog's own buttons and DialogClose close it.
 // Content taller than the window scrolls inside the dialog; the title and the footer stay put.
 export function Dialog({
-  title, description, children, footer, trigger, open, defaultOpen = false, onOpenChange,
+  title, description, header, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
   closeButton: closeButtonAsked = false, dismissible = true, contentProps, onCloseAutoFocus: callerCloseAutoFocus,
   initialFocus,
@@ -101,6 +101,8 @@ export function Dialog({
   // Keeps the title as the accessible name without showing it.
   titleHidden?: boolean;
   description?: ReactNode;
+  // Stays put above the scrolling content: the name row of a detail window.
+  header?: ReactNode;
   children?: ReactNode;
   footer?: ReactNode;
   trigger?: ReactNode;
@@ -254,10 +256,12 @@ export function Dialog({
                 {description && (
                   <DialogPrimitive.Description className="mt-1 text-ui text-label-secondary">{description}</DialogPrimitive.Description>
                 )}
+                {/* With a hidden title the header is the top row: it stops short of the close button's corner. */}
+                {header && <div className={cn('shrink-0', !titleHidden && 'mt-4', titleHidden && closeButton && 'pr-8')}>{header}</div>}
                 {children && (page ? (
                   <div className="min-h-0 flex-1 text-ui text-label">{children}</div>
                 ) : (
-                  <div className={cn('flex min-h-0 flex-col', !titleHidden && 'mt-4')}>
+                  <div className={cn('flex min-h-0 flex-col', (!titleHidden || header) && 'mt-4')}>
                     {/* The 4px of padding keeps focus rings from being cut off by the scroll box. */}
                     <div className="-m-1 min-h-0 overflow-y-auto p-1 text-ui text-label">{children}</div>
                   </div>

@@ -993,3 +993,71 @@ describe('Dialog that only its buttons can close', () => {
     expect(screen.queryByRole('dialog', { hidden: true })).toBeNull();
   });
 });
+
+describe('Dialog header', () => {
+  const scrollArea = (dialog: HTMLElement) => dialog.querySelector<HTMLElement>('.overflow-y-auto')!;
+  // Tag and classes of each element the dialog box holds directly.
+  const outline = (dialog: HTMLElement) => Array.from(dialog.children).map((child) => `${child.tagName.toLowerCase()}.${child.className}`);
+
+  it('keeps the header above the scrolling content, and opens on the first control of the header', () => {
+    render(
+      <Dialog open title="Canva" titleHidden closeButton header={<Button>Header action</Button>} footer={<Button>Footer action</Button>}>
+        <Button>Body action</Button>
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Canva' });
+    const header = screen.getByRole('button', { name: 'Header action' });
+    const body = screen.getByRole('button', { name: 'Body action' });
+    expect(scrollArea(dialog)).toContainElement(body);
+    expect(scrollArea(dialog)).not.toContainElement(header);
+    expect(header.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(header).toHaveFocus();
+    // The header cannot shrink when the content is taller than the window.
+    expect(header.parentElement).toHaveClass('shrink-0');
+  });
+
+  it('with a hidden title, the header stops short of the close button in the corner', () => {
+    render(
+      <Dialog open title="Canva" titleHidden closeButton header={<Button>Header action</Button>}>Body</Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const box = screen.getByRole('button', { name: 'Header action' }).parentElement;
+    expect(box).toHaveClass('pr-8');
+    expect(box).not.toHaveClass('mt-4');
+  });
+
+  it('under a visible title, the header takes the full width and the content keeps its gap', () => {
+    render(
+      <Dialog open title="Canva" closeButton header={<Button>Header action</Button>}>Body</Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const box = screen.getByRole('button', { name: 'Header action' }).parentElement;
+    expect(box).toHaveClass('mt-4');
+    expect(box).not.toHaveClass('pr-8');
+    expect(screen.getByText('Canva')).toHaveClass('pr-8');
+    expect(scrollArea(screen.getByRole('dialog')).parentElement).toHaveClass('mt-4');
+  });
+
+  it('puts the gap between the header and the content when the title is hidden', () => {
+    render(
+      <Dialog open title="Canva" titleHidden header={<Button>Header action</Button>}>Body</Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    expect(scrollArea(screen.getByRole('dialog')).parentElement).toHaveClass('mt-4');
+  });
+
+  it('renders the same elements as before for a dialog without a header', () => {
+    const { unmount } = render(<Dialog open title="Plain" footer={<Button>Done</Button>}>Body</Dialog>, { wrapper: DesignSystemProvider });
+    expect(outline(screen.getByRole('dialog'))).toEqual([
+      'h2.text-title text-label',
+      'div.flex min-h-0 flex-col mt-4',
+      'div.mt-6 flex shrink-0 justify-end gap-2',
+    ]);
+    unmount();
+    render(<Dialog open title="Search" titleHidden>Body</Dialog>, { wrapper: DesignSystemProvider });
+    const hidden = screen.getByRole('dialog');
+    expect(outline(hidden).slice(1)).toEqual(['div.flex min-h-0 flex-col']);
+    expect(hidden.children).toHaveLength(2);
+  });
+});

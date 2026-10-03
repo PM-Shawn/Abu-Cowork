@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { createRef, useState } from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
@@ -206,6 +206,15 @@ const EXPERTS: ComboboxOption[] = [
 
 const COMBOBOX_TEXT = { placeholder: 'Choose experts', searchPlaceholder: 'Search experts', emptyText: 'No matching expert' };
 
+// A dialog that unmounts gives the focus back from a timer. Unmounting here, with the fake
+// clock still on, runs that timer now; left to the shared cleanup it would be a real timer
+// that fires in the next test and takes the focus out of the list that test has just opened.
+async function leaveNoFocusTimerBehind() {
+  cleanup();
+  await act(() => vi.runOnlyPendingTimersAsync());
+  vi.useRealTimers();
+}
+
 function Members({ initial = [] }: { initial?: string[] }) {
   const [values, setValues] = useState(initial);
   return <MultiCombobox label="Members" values={values} onValuesChange={setValues} options={EXPERTS} {...COMBOBOX_TEXT} />;
@@ -252,7 +261,7 @@ describe('Combobox options with a description and an icon', () => {
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 
-  it('closes on Tab without choosing, with the focus handed to the trigger', async () => {
+  it('closes on Tab without choosing and keeps the focus on the trigger', async () => {
     const user = userEvent.setup();
     const onValueChange = vi.fn();
     render(
@@ -261,7 +270,8 @@ describe('Combobox options with a description and an icon', () => {
     );
     const trigger = screen.getByRole('combobox', { name: 'Lead' });
     await user.click(trigger);
-    expect(fireEvent.keyDown(screen.getByRole('combobox', { name: 'Search experts' }), { key: 'Tab', shiftKey: true })).toBe(true);
+    // fireEvent returns false when the default action was prevented: the browser moves the focus nowhere.
+    expect(fireEvent.keyDown(screen.getByRole('combobox', { name: 'Search experts' }), { key: 'Tab', shiftKey: true })).toBe(false);
     expect(trigger).toHaveFocus();
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(onValueChange).not.toHaveBeenCalled();
@@ -400,7 +410,7 @@ describe('MultiCombobox', () => {
     expect(onValuesChange).not.toHaveBeenCalled();
   });
 
-  it('closes on Tab and hands the key to the trigger, so the focus moves on from there', async () => {
+  it('closes on Tab and keeps the focus on the trigger, like Escape', async () => {
     const user = userEvent.setup();
     const onValuesChange = vi.fn();
     render(
@@ -411,8 +421,8 @@ describe('MultiCombobox', () => {
     await user.click(trigger);
     const search = screen.getByRole('combobox', { name: 'Search experts' });
     expect(search).toHaveFocus();
-    // fireEvent returns false when the default action was prevented: the browser must still move the focus.
-    expect(fireEvent.keyDown(search, { key: 'Tab' })).toBe(true);
+    // fireEvent returns false when the default action was prevented: the browser moves the focus nowhere.
+    expect(fireEvent.keyDown(search, { key: 'Tab' })).toBe(false);
     expect(trigger).toHaveFocus();
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
@@ -462,7 +472,7 @@ describe('MultiCombobox', () => {
   describe('Escape', () => {
     // Radix restores focus from a timer once the closed list has unmounted.
     beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
-    afterEach(() => { vi.useRealTimers(); });
+    afterEach(leaveNoFocusTimerBehind);
 
     it('closes the list and returns the focus to the trigger', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -497,6 +507,48 @@ describe('MultiCombobox', () => {
       expect(screen.getByRole('dialog', { name: 'New team' })).toBeInTheDocument();
       expect(trigger).toHaveFocus();
       expect(trigger).toHaveTextContent('Ada');
+    });
+  });
+
+  describe('Tab inside a dialog', () => {
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(leaveNoFocusTimerBehind);
+
+    // A Tab the page does not prevent is the browser's to handle: it moves the focus on,
+    // here to the page behind the dialog, while the dialog's own focus trap is paused by the open list.
+    function pressTab(target: HTMLElement, shiftKey: boolean, browserDestination: HTMLElement) {
+      if (fireEvent.keyDown(target, { key: 'Tab', shiftKey })) browserDestination.focus();
+    }
+
+    it.each([
+      { place: 'first', shiftKey: true },
+      { place: 'last', shiftKey: false },
+    ])('keeps the focus on the trigger when it is the $place control of the dialog', async ({ place, shiftKey }) => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const onOpenChange = vi.fn();
+      render(
+        <>
+          <Button>Behind the dialog</Button>
+          <Dialog open onOpenChange={onOpenChange} title="New team">
+            {place === 'last' && <Button>Rename</Button>}
+            <Members />
+            {place === 'first' && <Button>Save</Button>}
+          </Dialog>
+        </>,
+        { wrapper: DesignSystemProvider },
+      );
+      const dialog = screen.getByRole('dialog', { name: 'New team' });
+      const trigger = screen.getByRole('combobox', { name: 'Members' });
+      await user.click(trigger);
+      const search = screen.getByRole('combobox', { name: 'Search experts' });
+      expect(search).toHaveFocus();
+      pressTab(search, shiftKey, screen.getByRole('button', { name: 'Behind the dialog', hidden: true }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(trigger).toHaveFocus();
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+      expect(screen.getByRole('dialog', { name: 'New team' })).toBeInTheDocument();
+      expect(onOpenChange).not.toHaveBeenCalled();
     });
   });
 });

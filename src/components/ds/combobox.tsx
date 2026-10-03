@@ -48,7 +48,9 @@ function ComboboxTrigger({ ref, label, open, disabled, text, placeholder }: {
   );
 }
 
-// memo: with many options, choosing one renders that row alone.
+// memo: with many options, choosing one renders that row alone. Rows are compared by the
+// identity of their option, and description and icon are React nodes, so callers pass the
+// same option objects between renders (a module constant or useMemo).
 const ComboboxRow = memo(function ComboboxRow({ option, selected, multiple, onPick }: {
   option: ComboboxOption;
   selected: boolean;
@@ -87,7 +89,7 @@ const ComboboxRow = memo(function ComboboxRow({ option, selected, multiple, onPi
 function ComboboxPanel({ layer, triggerRef, onLeave, options, isSelected, onPick, label, searchPlaceholder, emptyText, multiple = false }: {
   layer: LayerHandle;
   triggerRef: RefObject<HTMLButtonElement | null>;
-  // Closes the list when Tab takes the focus away.
+  // Closes the list when Tab is pressed in it.
   onLeave: () => void;
   options: ComboboxOption[];
   isSelected: (value: string) => boolean;
@@ -108,8 +110,10 @@ function ComboboxPanel({ layer, triggerRef, onLeave, options, isSelected, onPick
         onCloseAutoFocus={layer.onCloseAutoFocus}
         onKeyDown={(event) => {
           if (event.key !== 'Tab') return;
-          // The list lives outside the page's tab order. Tab continues from the trigger, so
-          // the focus lands on the control after it (or before it, with Shift) and the list closes.
+          // Tab and Shift+Tab end like Escape: the list closes and the focus is on the trigger.
+          // The key stops here, so the next Tab moves on from the trigger under the page's or
+          // the dialog's own rules.
+          event.preventDefault();
           triggerRef.current?.focus();
           onLeave();
         }}
@@ -178,7 +182,8 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
 }
 
 // A Combobox that holds several choices (the members of a team). Enter or a click turns
-// the highlighted option on or off and the list stays open; Escape or Tab closes it.
+// the highlighted option on or off and the list stays open; Escape or Tab closes it and
+// leaves the focus on the trigger.
 export function MultiCombobox({ values, onValuesChange, options, label, placeholder, searchPlaceholder, emptyText, disabled }: {
   values: string[];
   onValuesChange: (values: string[]) => void;

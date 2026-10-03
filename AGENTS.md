@@ -528,8 +528,8 @@ Tooltip, Menu or Select root, so `IconButton` is not used on cards.
 Private repo: it renders `ToolCard`, `ToolGrid`, `ToolDetailModal`, `MarketplaceEntryRow`,
 `InstallDisclosureDialog` and `InstalledItemMenu`; their props only grow until batch 9
 (`EnterprisePluginTab` mounts one `InstalledItemMenu` per row — batch 9 moves it to one menu per
-list). The private tests `agent-tab` and `plugin-tab` render inside `DesignSystemProvider` from
-batch 9 on; until then they are red against the integration branch.
+list). Private code that renders these components (and its tests) does so inside
+`DesignSystemProvider`, as the app root does.
 
 Migration list: `src/components/toolbox/**` is on it; `customize/` and `common/` join file by file
 (unused legacy files there wait for batch 10).

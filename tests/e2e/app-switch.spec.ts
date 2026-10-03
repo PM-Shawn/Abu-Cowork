@@ -230,12 +230,16 @@ test.describe.serial('apps', () => {
   test('the 专家 page opens on 本应用 and can widen to 全部', async () => {
     await showSidebar(page);
     await page.getByLabel('Main navigation').getByRole('button', { name: TEAM_NAV }).click();
-    await expect(page.getByTestId('team-app-scope-app')).toHaveAttribute('aria-selected', 'true');
+    // 本应用 | 全部 is one choice of two: each side is a radio, named by its words.
+    const scope = page.getByTestId('team-app-scope');
+    const thisApp = scope.getByRole('radio', { name: /^(本应用|This app)$/ });
+    const everything = scope.getByRole('radio', { name: /^(全部|All)$/ });
+    await expect(thisApp).toHaveAttribute('aria-checked', 'true');
     await page.getByTestId('team-source-mine').click();
     await expect(page.getByText('店铺客服顾问', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText('我的助手', { exact: true })).toHaveCount(0);
-    await page.getByTestId('team-app-scope-all').click();
-    await expect(page.getByTestId('team-app-scope-all')).toHaveAttribute('aria-selected', 'true');
+    await everything.click();
+    await expect(everything).toHaveAttribute('aria-checked', 'true');
     await page.getByLabel('Main navigation').getByRole('button', { name: /^(新任务|New task)$/ }).click();
   });
 

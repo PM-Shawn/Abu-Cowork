@@ -7,7 +7,7 @@
  * never ends up on the window.
  */
 
-export type CardKind = 'plugin-mine' | 'plugin-market' | 'plugin-orphan' | 'skill' | 'connector';
+export type CardKind = 'plugin-mine' | 'plugin-market' | 'plugin-orphan' | 'skill' | 'connector' | 'expert' | 'team';
 
 const ATTRIBUTE: Record<CardKind, string> = {
   'plugin-mine': 'data-plugin-mine-card',
@@ -15,6 +15,8 @@ const ATTRIBUTE: Record<CardKind, string> = {
   'plugin-orphan': 'data-plugin-orphan-card',
   skill: 'data-skill-entry',
   connector: 'data-connector-card',
+  expert: 'data-expert-card',
+  team: 'data-team-card',
 };
 
 export interface CardPlace {

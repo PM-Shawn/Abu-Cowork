@@ -240,6 +240,9 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/customize/toolCountLabel*.ts',
   'src/components/toolbox/connectors/**/*.ts',
   'src/components/toolbox/windowHeight.ts',
+  'src/components/team/TeamView*.{ts,tsx}',
+  'src/components/customize/AgentsSection*.{ts,tsx}',
+  'src/components/customize/AgentEditor*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

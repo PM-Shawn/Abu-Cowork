@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { getVisibleTeams, isReadOnlyTeam, selectVisibleTeams, useTeamStore, type Team } from '@/stores/teamStore';
@@ -20,28 +20,35 @@ import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
 import { useI18n, format } from '@/i18n';
-import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X, Check } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import SourceSubNav from '@/components/toolbox/SourceSubNav';
 import { sourceTabId } from '@/components/toolbox/extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
-import DialogShell from './DialogShell';
-import { cn } from '@/lib/utils';
 import TeamAvatar from './TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import AvatarPicker from '@/components/common/AvatarPicker';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
+import { cardOrNeighbour, cardPlace, cardProps, focusByTestId, type CardPlace } from '@/components/toolbox/cardFocus';
 import AgentsSection from '@/components/customize/AgentsSection';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Button } from '@/components/ui/button';
-import { Toggle } from '@/components/ui/toggle';
-import { SearchSelect, MultiSearchSelect, type SearchSelectOption } from '@/components/ui/search-select';
-import EmptyState from '@/components/common/EmptyState';
+import { Button, IconButton } from '@/components/ds/button';
+import { Combobox, MultiCombobox, type ComboboxOption } from '@/components/ds/combobox';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { EmptyState } from '@/components/ds/empty-state';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Menu, MenuItem } from '@/components/ds/menu';
+import { Pressable } from '@/components/ds/pressable';
+import { SegmentedControl } from '@/components/ds/segmented-control';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
+import { TextArea } from '@/components/ds/text-area';
+import { TextField } from '@/components/ds/text-field';
 import type { SubagentDefinition } from '@/types';
 
 /**
@@ -71,7 +78,7 @@ function matchesTeamSearch(team: Team, query: string): boolean {
  * says nothing about who may be picked into a team.
  */
 function useMemberPool(): SubagentDefinition[] {
-  const { agents } = useDiscoveryStore();
+  const agents = useDiscoveryStore((s) => s.agents);
   // getAgent hides every file-backed agent until plugin records are ready,
   // which at launch lands after discovery — so readiness is a dependency too.
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
@@ -98,7 +105,7 @@ function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: strin
   return agents.find((a) => effectiveRoleId(a) === roleId || a.roleId === roleId)?.name ?? fallback;
 }
 
-function memberOption(a: SubagentDefinition): SearchSelectOption {
+function memberOption(a: SubagentDefinition): ComboboxOption {
   return { value: a.name, label: a.name, description: a.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
 }
 
@@ -119,16 +126,63 @@ function invalidMemberLabels(roleIds: string[], named: string, numbered: string)
 function InvalidMemberText({ label, reason }: { label: string; reason: string }) {
   return (
     <span className="min-w-0 flex-1">
-      <span className="block truncate text-body text-[var(--abu-danger)]">{label}</span>
-      <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{reason}</span>
+      <span className="block truncate text-ui text-danger">{label}</span>
+      <span className="block truncate text-caption text-label-tertiary">{reason}</span>
     </span>
   );
 }
 
+/**
+ * Puts the focus on the team's card; once that card has gone, on the card that took its place,
+ * else the one before it, else the empty shelf's own button, else the page's 「添加」 button.
+ */
+function focusTeamCard(root: ParentNode | null, place: CardPlace | null): void {
+  const card = root && place ? cardOrNeighbour(root, 'team', place.id, place.index) : null;
+  if (card) card.focus();
+  else if (!root || !focusByTestId('teams-mine-create', root)) focusByTestId('team-create-trigger');
+}
+
+const FIELD_LABEL = 'block text-ui-sm font-medium text-label-secondary';
+const FIELD_HINT = 'mt-1 text-caption text-label-tertiary';
+const SECTION_LABEL = 'text-ui-sm text-label-tertiary';
+const GROUP_BOX = 'rounded-control bg-fill px-3 py-2';
+
 // ---------------------------------------------------------------- Team dialog
 
-function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
+/** What the form held when it was seeded. The window asks before closing once the form differs from it. */
+interface TeamDraft {
+  name: string;
+  leaderName: string;
+  memberNames: string[];
+  invalidMemberRoleIds: string[];
+  leaderNote: string;
+  requireApproval: boolean;
+  avatar: string;
+  description: string;
+  intro: string;
+  expertiseStr: string;
+  samplePromptsStr: string;
+}
+
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
+
+const sameDraft = (a: TeamDraft, b: TeamDraft) => a.name === b.name
+  && a.leaderName === b.leaderName
+  && sameList(a.memberNames, b.memberNames)
+  && sameList(a.invalidMemberRoleIds, b.invalidMemberRoleIds)
+  && a.leaderNote === b.leaderNote
+  && a.requireApproval === b.requireApproval
+  && a.avatar === b.avatar
+  && a.description === b.description
+  && a.intro === b.intro
+  && a.expertiseStr === b.expertiseStr
+  && a.samplePromptsStr === b.samplePromptsStr;
+
+function TeamEditDialog({ open, onClose, team, onSwitchToMembers, onSaved, onCloseAutoFocus }: {
   open: boolean; onClose: () => void; team: Team | null; onSwitchToMembers: () => void;
+  /** The team that was saved: the one edited, or the one just created. */
+  onSaved: (teamId: string) => void;
+  onCloseAutoFocus: (event: Event) => void;
 }) {
   const { t } = useI18n();
   const addToast = useToastStore((s) => s.addToast);
@@ -157,6 +211,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   //   action; kept on save unless the user removes it — never dropped silently.
   const [hiddenMemberRoleIds, setHiddenMemberRoleIds] = useState<string[]>([]);
   const [invalidMemberRoleIds, setInvalidMemberRoleIds] = useState<string[]>([]);
+  const [baseline, setBaseline] = useState<TeamDraft | null>(null);
   // The pool refreshes (new array identity) whenever discovery re-runs — including
   // ensureRoleId's own refresh during save. Seed from it once per open, via a ref,
   // so a refresh never wipes what the user has typed.
@@ -175,26 +230,55 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
     if (prev && prev.team === team && (prev.ready || !pluginRecordsReady)) return;
     seeded.current = { team, ready: pluginRecordsReady };
     const pool = agentsRef.current;
+    const blank: TeamDraft = {
+      name: '', leaderName: '', memberNames: [], invalidMemberRoleIds: [], leaderNote: '', requireApproval: false,
+      avatar: '', description: '', intro: '', expertiseStr: '', samplePromptsStr: '',
+    };
+    let hidden: string[] = [];
+    let draft = blank;
     if (team) {
-      setName(team.name);
-      setLeaderName(roleLabel(pool, team.leaderRoleId, ''));
       const members = team.memberRoleIds.filter((id) => id !== team.leaderRoleId);
-      setMemberNames(members.map((id) => roleLabel(pool, id, '')).filter(Boolean));
       const notInPicker = members.filter((id) => !roleLabel(pool, id, ''));
-      setHiddenMemberRoleIds(notInPicker.filter((id) => resolveRoleId(id) !== null));
-      setInvalidMemberRoleIds(notInPicker.filter((id) => resolveRoleId(id) === null));
-      setLeaderNote(team.leaderNote ?? '');
-      setRequireApproval(team.requirePlanApproval === true);
-      setAvatar(team.avatar ?? '');
-      setDescription(team.description ?? '');
-      setIntro(team.intro ?? '');
-      setExpertiseStr((team.expertise ?? []).join('\n'));
-      setSamplePromptsStr((team.samplePrompts ?? []).join('\n'));
-    } else {
-      setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setInvalidMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
-      setDescription(''); setIntro(''); setExpertiseStr(''); setSamplePromptsStr('');
+      hidden = notInPicker.filter((id) => resolveRoleId(id) !== null);
+      draft = {
+        name: team.name,
+        leaderName: roleLabel(pool, team.leaderRoleId, ''),
+        memberNames: members.map((id) => roleLabel(pool, id, '')).filter(Boolean),
+        invalidMemberRoleIds: notInPicker.filter((id) => resolveRoleId(id) === null),
+        leaderNote: team.leaderNote ?? '',
+        requireApproval: team.requirePlanApproval === true,
+        avatar: team.avatar ?? '',
+        description: team.description ?? '',
+        intro: team.intro ?? '',
+        expertiseStr: (team.expertise ?? []).join('\n'),
+        samplePromptsStr: (team.samplePrompts ?? []).join('\n'),
+      };
     }
+    setName(draft.name);
+    setLeaderName(draft.leaderName);
+    setMemberNames(draft.memberNames);
+    setHiddenMemberRoleIds(hidden);
+    setInvalidMemberRoleIds(draft.invalidMemberRoleIds);
+    setLeaderNote(draft.leaderNote);
+    setRequireApproval(draft.requireApproval);
+    setAvatar(draft.avatar);
+    setDescription(draft.description);
+    setIntro(draft.intro);
+    setExpertiseStr(draft.expertiseStr);
+    setSamplePromptsStr(draft.samplePromptsStr);
+    setBaseline(draft);
   }, [open, team, pluginRecordsReady]);
+
+  // The picker's options. Rows of the list are compared by the identity of their option, so the
+  // same objects are handed over between renders.
+  const options = useMemo(() => agents.map(memberOption), [agents]);
+  const memberOptions = useMemo(() => options.filter((option) => option.value !== leaderName), [options, leaderName]);
+  const pickedMembers = memberNames.filter((n) => n !== leaderName);
+
+  const dirty = open && baseline !== null && !sameDraft(
+    { name, leaderName, memberNames, invalidMemberRoleIds, leaderNote, requireApproval, avatar, description, intro, expertiseStr, samplePromptsStr },
+    baseline,
+  );
 
   // A leader whose agent is currently hidden keeps its roleId; the team stays editable.
   const leaderKept = !leaderName && !!team?.leaderRoleId;
@@ -203,6 +287,8 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   // store does would block names the user can save from anywhere else.
   const nameTaken = getVisibleTeams().some((other) => other.id !== team?.id && other.name === name.trim());
   const handleSave = async () => {
+    // The window stays on the page while it fades out; a key press there saves nothing.
+    if (!open) return;
     if (!name.trim() || nameTaken || (!leaderName && !leaderKept) || saving) return;
     setSaving(true);
     try {
@@ -231,12 +317,14 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
       if (team) {
         updateTeam(team.id, { name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined, ...display });
         addToast({ type: 'success', title: t.team.teamSaved });
+        onSaved(team.id);
       } else {
-        createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined, ...display });
+        const created = createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined, ...display });
         // The new team is on the other shelf: go there, or the create reads as
         // a create that did nothing.
         useExtensionSourceStore.getState().setSource('teams', 'mine');
         addToast({ type: 'success', title: t.team.teamCreated });
+        onSaved(created.id);
       }
       onClose();
     } catch (err) {
@@ -247,146 +335,355 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   };
 
   return (
-    <DialogShell open={open} onClose={onClose} title={team ? t.team.editTeam : t.team.newTeam} wide>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={team ? t.team.editTeam : t.team.newTeam}
+      size="lg"
+      closeButton
+      dirty={dirty}
+      // The window opens on the name, past the avatar button beside it.
+      initialFocus={(box) => box.querySelector<HTMLElement>('input')}
+      onCloseAutoFocus={onCloseAutoFocus}
+      footer={(
+        <>
+          <DialogClose asChild><Button variant="plain">{t.common.cancel}</Button></DialogClose>
+          <Button
+            variant="primary"
+            busy={saving}
+            disabled={!name.trim() || nameTaken || (!leaderName && !leaderKept)}
+            onClick={() => { void handleSave(); }}
+            data-testid="team-save"
+          >
+            {team ? t.common.save : t.team.createTeamAction}
+          </Button>
+        </>
+      )}
+    >
       <div className="space-y-4">
         <div>
-          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldName}</label>
+          <label htmlFor="team-name" className={FIELD_LABEL}>{t.team.fieldName}</label>
           <div className="mt-1 flex items-center gap-2">
             <AvatarPicker value={avatar} onChange={setAvatar}>
               <TeamAvatar avatar={avatar} size="lg" />
             </AvatarPicker>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className={cn('flex-1', nameTaken && 'border-[var(--abu-danger)]')} data-testid="team-name-input" />
+            <TextField
+              id="team-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={t.team.fieldNamePlaceholder}
+              invalid={nameTaken}
+              className="min-w-0 flex-1"
+              data-testid="team-name-input"
+            />
           </div>
           {nameTaken && (
-            <p className="mt-1 text-caption text-[var(--abu-danger)]" data-testid="team-name-taken">{t.team.nameTakenHint}</p>
+            <p className="mt-1 flex items-center gap-1 text-caption text-danger" data-testid="team-name-taken">
+              <StatusIcon tone="danger" size="sm" />
+              {t.team.nameTakenHint}
+            </p>
           )}
         </div>
 
         {agents.length === 0 ? (
-          <div className="rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 flex items-center justify-between">
-            <span className="text-caption text-[var(--abu-text-secondary)]">{t.team.noMembersYet}</span>
+          <div className={`flex items-center justify-between gap-3 ${GROUP_BOX}`}>
+            <span className="text-caption text-label-secondary">{t.team.noMembersYet}</span>
             {/* Never a dead end: creating the missing thing is one click away. */}
-            <Button size="sm" variant="outline" onClick={() => { onClose(); onSwitchToMembers(); }}>{t.team.createMemberNow}</Button>
+            <Button size="sm" variant="secondary" onClick={() => { onClose(); onSwitchToMembers(); }}>{t.team.createMemberNow}</Button>
           </div>
         ) : (
           <>
             {/* Two separate dropdowns (user feedback 2026-08-31): a single
                 crown-in-list picker made the leader choice easy to miss. */}
             <div>
-              <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldLeader}</label>
-              <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.team.fieldLeaderHint}</div>
-              <SearchSelect
-                className="mt-1.5"
-                value={leaderName || null}
-                onChange={(name) => {
-                  setLeaderName(name);
-                  setMemberNames((prev) => prev.filter((n) => n !== name));
-                }}
-                options={agents.map(memberOption)}
-                placeholder={t.team.leaderPlaceholder}
-                searchPlaceholder={t.team.searchPlaceholder}
-                emptyText={t.team.pickerEmpty}
-                testId="team-leader-select"
-              />
+              {/* The combobox carries this text as its name. */}
+              <div className={FIELD_LABEL}>{t.team.fieldLeader}</div>
+              <div className={FIELD_HINT}>{t.team.fieldLeaderHint}</div>
+              {/* A column stretches the combobox to the width of the form. */}
+              <div className="mt-2 flex flex-col" data-testid="team-leader-select">
+                <Combobox
+                  label={t.team.fieldLeader}
+                  value={leaderName}
+                  onValueChange={(picked) => {
+                    setLeaderName(picked);
+                    setMemberNames((prev) => prev.filter((n) => n !== picked));
+                  }}
+                  options={options}
+                  placeholder={t.team.leaderPlaceholder}
+                  searchPlaceholder={t.team.searchPlaceholder}
+                  emptyText={t.team.pickerEmpty}
+                />
+              </div>
             </div>
             <div>
-              <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldMembers}</label>
-              <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.team.fieldMembersHint}</div>
-              <MultiSearchSelect
-                className="mt-1.5"
-                values={memberNames.filter((n) => n !== leaderName)}
-                onChange={setMemberNames}
-                options={agents.filter((a) => a.name !== leaderName).map(memberOption)}
-                placeholder={t.team.membersPlaceholder}
-                searchPlaceholder={t.team.searchPlaceholder}
-                emptyText={t.team.pickerEmpty}
-                testId="team-members-select"
-              />
+              <div className={FIELD_LABEL}>{t.team.fieldMembers}</div>
+              <div className={FIELD_HINT}>{t.team.fieldMembersHint}</div>
+              <div className="mt-2 flex flex-col" data-testid="team-members-select">
+                <MultiCombobox
+                  label={t.team.fieldMembers}
+                  values={pickedMembers}
+                  onValuesChange={setMemberNames}
+                  options={memberOptions}
+                  placeholder={t.team.membersPlaceholder}
+                  searchPlaceholder={t.team.searchPlaceholder}
+                  emptyText={t.team.pickerEmpty}
+                />
+              </div>
             </div>
           </>
         )}
         {/* Outside the pool branch: a team whose every agent is gone still
             needs its ghosts listed — and removable — while the pool is empty. */}
         {invalidMemberRoleIds.length > 0 && (
-          <div className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 space-y-1.5">
-            <div className="text-caption text-[var(--abu-text-secondary)]">{t.team.editInvalidMembers}</div>
+          <div className={`space-y-2 ${GROUP_BOX}`}>
+            <div className="text-caption text-label-secondary">{t.team.editInvalidMembers}</div>
             {invalidMemberLabels(invalidMemberRoleIds, t.team.memberInvalidNamed, t.team.memberInvalidNumbered).map(({ id, label }) => {
               return (
                 <div key={id} className="flex items-center gap-2" data-testid={`team-edit-invalid-${id}`}>
-                  <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                  <Icon icon={AppIcons.agent} className="text-label-tertiary" />
                   <InvalidMemberText label={label} reason={t.team.memberInvalidReason} />
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label={t.team.memberInvalidRemove}
-                    title={t.team.memberInvalidRemove}
+                  <IconButton
+                    size="sm"
+                    icon={AppIcons.remove}
+                    label={t.team.memberInvalidRemove}
                     onClick={() => setInvalidMemberRoleIds((prev) => prev.filter((x) => x !== id))}
                     data-testid={`team-edit-invalid-remove-${id}`}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
+                  />
                 </div>
               );
             })}
           </div>
         )}
 
-        <div className="flex items-center justify-between rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5">
-          <div className="min-w-0 pr-3">
-            <div className="text-body text-[var(--abu-text-primary)]">{t.team.fieldPlanApproval}</div>
-            <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.fieldPlanApprovalHint}</div>
+        <div className={`flex items-center justify-between gap-3 ${GROUP_BOX}`}>
+          <div className="min-w-0">
+            <div className="text-ui text-label">{t.team.fieldPlanApproval}</div>
+            <div className="text-caption text-label-tertiary">{t.team.fieldPlanApprovalHint}</div>
           </div>
-          <Toggle checked={requireApproval} onChange={() => setRequireApproval((v) => !v)} size="md" />
+          <Switch checked={requireApproval} onCheckedChange={setRequireApproval} aria-label={t.team.fieldPlanApproval} />
         </div>
 
         <div>
-          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldLeaderNote}</label>
+          <label htmlFor="team-leader-note" className={FIELD_LABEL}>{t.team.fieldLeaderNote}</label>
           {/* Tell the user exactly how this text is used — mechanism, not mystery. */}
-          <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.team.fieldLeaderNoteHint}</div>
-          <Textarea value={leaderNote} onChange={(e) => setLeaderNote(e.target.value)} rows={2} className="mt-1" placeholder={t.team.fieldLeaderNotePlaceholder} />
+          <div className={FIELD_HINT}>{t.team.fieldLeaderNoteHint}</div>
+          <TextArea id="team-leader-note" value={leaderNote} onChange={(e) => setLeaderNote(e.target.value)} rows={2} className="mt-2" placeholder={t.team.fieldLeaderNotePlaceholder} />
         </div>
 
         <div>
-          <label htmlFor="team-description" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldDescription}</label>
-          <Input id="team-description" value={description} onChange={(e) => setDescription(e.target.value)} className="mt-1" placeholder={t.team.fieldDescriptionPlaceholder} />
+          <label htmlFor="team-description" className={FIELD_LABEL}>{t.team.fieldDescription}</label>
+          <TextField id="team-description" value={description} onChange={(e) => setDescription(e.target.value)} className="mt-1" placeholder={t.team.fieldDescriptionPlaceholder} />
         </div>
         <div>
-          <label htmlFor="team-intro" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldIntro}</label>
-          <Textarea id="team-intro" value={intro} onChange={(e) => setIntro(e.target.value)} placeholder={t.toolbox.agentIntroPlaceholder} rows={3} className="mt-1" />
+          <label htmlFor="team-intro" className={FIELD_LABEL}>{t.team.fieldIntro}</label>
+          <TextArea id="team-intro" value={intro} onChange={(e) => setIntro(e.target.value)} placeholder={t.toolbox.agentIntroPlaceholder} rows={3} className="mt-1" />
         </div>
         <div>
-          <label htmlFor="team-expertise" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldExpertise}</label>
-          <Textarea id="team-expertise" value={expertiseStr} onChange={(e) => setExpertiseStr(e.target.value)} rows={3} className="mt-1" placeholder={t.team.fieldLinesHint} />
+          <label htmlFor="team-expertise" className={FIELD_LABEL}>{t.team.fieldExpertise}</label>
+          <TextArea id="team-expertise" value={expertiseStr} onChange={(e) => setExpertiseStr(e.target.value)} rows={3} className="mt-1" placeholder={t.team.fieldLinesHint} />
         </div>
         <div>
-          <label htmlFor="team-sample-prompts" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldSamplePrompts}</label>
-          <Textarea id="team-sample-prompts" value={samplePromptsStr} onChange={(e) => setSamplePromptsStr(e.target.value)} rows={3} className="mt-1" placeholder={t.team.fieldSamplePromptsHint} />
-        </div>
-
-        <div className="flex items-center gap-2 pt-1">
-          <div className="flex-1" />
-          <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
-          <Button onClick={handleSave} disabled={!name.trim() || nameTaken || (!leaderName && !leaderKept) || saving} data-testid="team-save">
-            {team ? t.common.save : t.team.createTeamAction}
-          </Button>
+          <label htmlFor="team-sample-prompts" className={FIELD_LABEL}>{t.team.fieldSamplePrompts}</label>
+          <TextArea id="team-sample-prompts" value={samplePromptsStr} onChange={(e) => setSamplePromptsStr(e.target.value)} rows={3} className="mt-1" placeholder={t.team.fieldSamplePromptsHint} />
         </div>
       </div>
-    </DialogShell>
+    </Dialog>
   );
 }
 
-// ---------------------------------------------------------------- Task dialog
+// ---------------------------------------------------------------- Team card
+
+/**
+ * One card of the shelf, the same grid and card the 专家 tab uses: a team and a
+ * member are peers in this surface. `memo` with stable props: the page renders
+ * for every window it opens and every character typed in its search box, and
+ * the cards do not render with it.
+ */
+const TeamCard = memo(function TeamCard({ team, description, pluginName, onOpen }: {
+  team: Team;
+  description: string;
+  /** The display name of the plugin that brought the team in, when one did. */
+  pluginName: string | undefined;
+  onOpen: (teamId: string) => void;
+}) {
+  return (
+    <div className="h-full" {...cardProps('team', team.id)}>
+      <ToolCard
+        item={{
+          id: team.id,
+          testId: `team-row-${team.name}`,
+          name: team.name,
+          description,
+          avatar: <TeamAvatar avatar={team.avatar} size="xl" />,
+          badge: pluginName !== undefined ? <SourceBadge source={{ kind: 'plugin', plugin: pluginName }} /> : undefined,
+        }}
+        onClick={() => onOpen(team.id)}
+      />
+    </div>
+  );
+});
+
+// ---------------------------------------------------------------- Team detail
+
+/**
+ * What the team's window shows: read-only, apart from removing a member no
+ * expert answers to. It resolves the team's roles each time the page renders,
+ * and the page renders when the roster or the plugin records change.
+ */
+function TeamDetailBody({ team, pluginName, onStartChat }: {
+  team: Team;
+  /** The display name of the plugin that brought the team in, when one did. */
+  pluginName: string | undefined;
+  onStartChat: (prompt: string) => void;
+}) {
+  const { t } = useI18n();
+  const memberIds = team.memberRoleIds.filter((id) => id !== team.leaderRoleId);
+  // Same predicate the run uses (resolveRoleId), so the count here never
+  // disagrees with the "队员 · N" the workspace tab shows mid-run.
+  const leader = resolveRoleId(team.leaderRoleId) ?? undefined;
+  const leaderGhostName = leader ? undefined : roleIdAgentName(team.leaderRoleId);
+  const members = memberIds.map((id) => ({ id, agent: resolveRoleId(id) ?? undefined }));
+  const validMembers = members.filter((m) => m.agent);
+  const invalidMembers = invalidMemberLabels(members.filter((m) => !m.agent).map((m) => m.id), t.team.memberInvalidNamed, t.team.memberInvalidNumbered);
+  // The window shows the team as the store holds it, so the row leaves the list with the store's change.
+  const removeInvalid = (roleId: string) => {
+    useTeamStore.getState().updateTeam(team.id, { memberRoleIds: team.memberRoleIds.filter((id) => id !== roleId) });
+  };
+  // Skills live on each member, not on the team — the union answers
+  // "what can this team actually do" without opening every member.
+  const skills = [...new Set([leader, ...members.map((m) => m.agent)]
+    .flatMap((a) => a?.skills ?? []))].sort();
+  const row = (agent: SubagentDefinition | undefined, fallback: string, onPick?: () => void) => {
+    return (
+      <Pressable
+        disabled={!agent}
+        onClick={onPick}
+        className="flex w-full items-center gap-2 rounded-control px-2 py-1 text-left hover:bg-fill-hover"
+      >
+        {agent ? <AgentAvatar agent={agent} size="sm" /> : <Icon icon={AppIcons.agent} className="text-label-tertiary" />}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-ui text-label">{agent?.name ?? fallback}</span>
+          {agent?.description && <span className="block truncate text-caption text-label-tertiary">{agent.description}</span>}
+        </span>
+      </Pressable>
+    );
+  };
+  return (
+    <div className="space-y-5">
+      {pluginName !== undefined && (
+        <div className="text-caption text-label-tertiary" data-testid="team-plugin-origin">
+          {format(t.toolbox.itemFromPluginRemoveHint, { plugin: pluginName })}
+        </div>
+      )}
+      {team.managed?.ready === false && (
+        <div data-testid="team-managed-unavailable">
+          <InlineMessage tone="danger">
+            <div className="font-medium">{t.team.detailUnavailable}</div>
+            {team.managed.unavailableReason && <div className="mt-1 text-ui-sm">{team.managed.unavailableReason}</div>}
+          </InlineMessage>
+        </div>
+      )}
+      <div>
+        <div className={`mb-1 ${SECTION_LABEL}`}>{t.team.detailLeader}</div>
+        {leader
+          ? row(leader, t.team.memberInvalid)
+          : (
+            // Same two-line ghost as the members below, named when the id
+            // carries a name. No 移除: a leader is replaced via 编辑.
+            <div className="flex w-full items-center gap-2 rounded-control px-2 py-1" data-testid="team-leader-invalid">
+              <Icon icon={AppIcons.agent} className="text-label-tertiary" />
+              <InvalidMemberText
+                label={leaderGhostName ? format(t.team.memberInvalidNamed, { name: leaderGhostName }) : t.team.memberInvalidShort}
+                reason={t.team.memberInvalidReason}
+              />
+            </div>
+          )}
+      </div>
+      <div>
+        <div className={`mb-1 ${SECTION_LABEL}`}>{format(t.team.detailMembers, { count: String(validMembers.length) })}</div>
+        {validMembers.length === 0 && invalidMembers.length === 0
+          ? <div className="text-caption text-label-tertiary">{t.team.detailNoMembers}</div>
+          : <div className="space-y-1">
+              {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.memberInvalid)}</div>)}
+              {invalidMembers.map((m) => (
+                <div key={m.id} className="flex w-full items-center gap-2 rounded-control px-2 py-1" data-testid={`team-member-invalid-${m.id}`}>
+                  <Icon icon={AppIcons.agent} className="text-label-tertiary" />
+                  <InvalidMemberText label={m.label} reason={t.team.memberInvalidReason} />
+                  {!isReadOnlyTeam(team) && <Button size="sm" variant="plain" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>}
+                </div>
+              ))}
+            </div>}
+      </div>
+      <div>
+        <div className={`mb-1 ${SECTION_LABEL}`}>{t.team.detailPlanApproval}</div>
+        <div className="text-ui text-label-secondary">
+          {team.requirePlanApproval ? t.team.detailPlanApprovalOn : t.team.detailPlanApprovalOff}
+        </div>
+      </div>
+      {team.leaderNote?.trim() && (
+        <div>
+          <div className={`mb-1 ${SECTION_LABEL}`}>{t.team.detailLeaderNote}</div>
+          <div className="whitespace-pre-wrap text-ui text-label-secondary">{team.leaderNote.trim()}</div>
+        </div>
+      )}
+      {!!team.expertise?.length && (
+        <div>
+          <div className={SECTION_LABEL}>{t.team.detailExpertise}</div>
+          <ul className="mt-2 space-y-1">
+            {team.expertise.map((item, index) => (
+              <li key={index} className="flex items-start gap-2 text-ui text-label">
+                <span className="flex h-5 shrink-0 items-center"><Icon icon={AppIcons.done} size="sm" className="text-label-tertiary" /></span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!!team.samplePrompts?.length && (
+        <div>
+          <div className={SECTION_LABEL}>{t.team.detailSamplePrompts}</div>
+          <ul className="mt-2 space-y-2">
+            {team.samplePrompts.map((prompt, index) => (
+              <li key={index}>
+                <Pressable
+                  onClick={() => onStartChat(prompt)}
+                  className="flex w-full items-center gap-2 rounded-control border border-separator px-3 py-2 text-left text-ui text-label-secondary hover:bg-fill-hover"
+                >
+                  {prompt}
+                </Pressable>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div>
+        <div className={SECTION_LABEL}>{t.team.detailSkills}</div>
+        <div className="mb-2 text-caption text-label-tertiary">{t.team.detailSkillsHint}</div>
+        {skills.length === 0
+          ? <div className="text-caption text-label-tertiary">{t.team.detailNoSkills}</div>
+          : <div className="flex flex-wrap gap-1">{skills.map((name) => <Tag key={name}>{name}</Tag>)}</div>}
+      </div>
+    </div>
+  );
+}
 
 /** The element the source sub-nav switches between — one pane here, since the
  *  两 tabs swap their content rather than keeping a panel each. */
 const TEAM_PANEL_ID = 'team-source-panel';
 
-export default function TeamView() {
-  const { activeTeamTab: persistedTeamTab, setActiveTeamTab } = useSettingsStore();
+/**
+ * The page takes no props and reads each store one field at a time: the shell
+ * renders for every piece of a streamed reply, and this page, with the menus,
+ * windows and tooltips it mounts, does not render with it.
+ */
+function TeamView() {
+  const persistedTeamTab = useSettingsStore((s) => s.activeTeamTab);
+  const setActiveTeamTab = useSettingsStore((s) => s.setActiveTeamTab);
   // A stale persisted value (e.g. the removed 'pipelines' tab) falls back to
   // the default tab instead of rendering an empty pane.
   const activeTeamTab: TeamTab = persistedTeamTab === 'teams' ? 'teams' : 'members';
   const { t } = useI18n();
+  const confirm = useConfirm();
   // 市场 | 我的 per tab, remembered across restarts (shared with 扩展's store —
   // the two pages show the same pair over different rosters).
   const sources = useExtensionSourceStore((s) => s.sources);
@@ -415,23 +712,14 @@ export default function TeamView() {
       : null;
   const OrganizationAgents = getEnterpriseMount('agentMarket');
 
-  // Prepare a draft; opening an expert never creates an empty history entry.
-  const startChatWithTeam = (team: Team, prompt?: string) => {
-    prepareExpertEntry({ identity: teamIdentity(team), introduction: team.intro }, prompt);
-    setDetailTeam(null);
-    setDetailMenuOpen(false);
-    closeTeam();
-  };
-
   // One local box for both tabs. It used to write into the toolbox's shared
   // query so AgentsSection would filter; that surface is now Extensions, whose
   // query belongs to another view — AgentsSection takes ours as a prop instead.
   const [search, setSearch] = useState('');
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
+  // The edit window keeps the team it held while it fades out; the next opening says which team it is for.
   const [teamDialog, setTeamDialog] = useState<{ open: boolean; team: Team | null }>({ open: false, team: null });
-  const [detailTeam, setDetailTeam] = useState<Team | null>(null);
-  const [detailMenuOpen, setDetailMenuOpen] = useState(false);
-  const [confirmDeleteTeam, setConfirmDeleteTeam] = useState<Team | null>(null);
+  const [detailTeamId, setDetailTeamId] = useState<string | null>(null);
 
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
@@ -453,11 +741,103 @@ export default function TeamView() {
   const inApp = selectedApp.appId !== GENERAL_APP_ID;
   const [appScope, setAppScope] = useState<'app' | 'all'>('app');
   const scopedToApp = inApp && appScope === 'app';
-  const activeTeams = useMemo(() => {
-    const visible = selectVisibleTeams({ teams, managedTeamSources });
-    return scopedToApp ? visible.filter((team) => teamBelongsToApp(selectedApp, team.id)) : visible;
-  }, [teams, managedTeamSources, scopedToApp, selectedApp]);
+  const visibleTeams = useMemo(() => selectVisibleTeams({ teams, managedTeamSources }), [teams, managedTeamSources]);
+  const activeTeams = useMemo(
+    () => (scopedToApp ? visibleTeams.filter((team) => teamBelongsToApp(selectedApp, team.id)) : visibleTeams),
+    [visibleTeams, scopedToApp, selectedApp],
+  );
   const agentFilter = useMemo(() => (scopedToApp ? (agent: SubagentDefinition) => agentBelongsToApp(selectedApp, agent) : undefined), [scopedToApp, selectedApp]);
+  const scopeOptions = useMemo(() => [
+    { value: 'app', label: t.team.appScopeThis },
+    { value: 'all', label: t.team.appScopeAll },
+  ], [t]);
+
+  // The team whose window is open, as the store holds it now: an edit made elsewhere shows in the
+  // open window, and a team that leaves the store takes its window with it.
+  const detailTeam = detailTeamId === null ? null : visibleTeams.find((team) => team.id === detailTeamId) ?? null;
+  // The detail window keeps showing the team it held while it fades out.
+  const [held, setHeld] = useState<Team | null>(null);
+  if (detailTeam && detailTeam !== held) setHeld(detailTeam);
+  const shown = detailTeam ?? held;
+  const shownOwner = shown ? pluginTeamOwner(shown) : undefined;
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  // What the handlers read: the team whose window is open, and whether one of the page's windows is open.
+  const detailRef = useRef<string | null>(null);
+  const windowOpen = useRef(false);
+  useLayoutEffect(() => {
+    detailRef.current = detailTeam ? detailTeam.id : null;
+    windowOpen.current = detailTeam !== null || teamDialog.open;
+  });
+
+  // The card whose windows are open (detail, then the edit window). The window that closes last
+  // may have opened from a control that is gone: the focus then goes back to the card, or to what
+  // took its place once it has gone.
+  const opener = useRef<CardPlace | null>(null);
+  const openDetail = useCallback((teamId: string) => {
+    opener.current = cardPlace(rootRef.current, 'team', teamId);
+    setDetailTeamId(teamId);
+  }, []);
+  const afterWindowClosed = (event: Event) => {
+    // Another layer took the focus, or no card opened this window: the control that opened it gets the focus back.
+    if (event.defaultPrevented || !opener.current) return;
+    event.preventDefault();
+    // Another window of the page is open: the focus is its own.
+    if (windowOpen.current) return;
+    focusTeamCard(rootRef.current, opener.current);
+  };
+
+  // The control a new team's window was opened from. The empty shelf's button leaves the page
+  // with the first team: the focus then goes to that team's card.
+  const editorEntry = useRef<Element | null>(null);
+  const openTeamEditor = (team: Team | null) => {
+    if (team === null) {
+      opener.current = null;
+      editorEntry.current = document.activeElement;
+    }
+    setTeamDialog({ open: true, team });
+  };
+  const afterEditorClosed = (event: Event) => {
+    if (opener.current) { afterWindowClosed(event); return; }
+    const from = editorEntry.current;
+    editorEntry.current = null;
+    if (event.defaultPrevented || windowOpen.current) return;
+    if (from instanceof HTMLElement && from !== document.body && from.isConnected) return;
+    event.preventDefault();
+    focusTeamCard(rootRef.current, null);
+  };
+
+  // Prepare a draft; opening an expert never creates an empty history entry.
+  const startChatWithTeam = (team: Team, prompt?: string) => {
+    // The window stays on the page while it fades out; a key press there starts nothing.
+    if (detailRef.current !== team.id) return;
+    prepareExpertEntry({ identity: teamIdentity(team), introduction: team.intro }, prompt);
+    setDetailTeamId(null);
+    closeTeam();
+  };
+
+  // Deleting a team cannot be taken back, so it is asked first, naming the team. The question is
+  // asked over the open window, which answers it "no" when it goes. The answer acts on the store
+  // as it is at that moment: nothing is deleted once the team has left it.
+  const requestDelete = async (team: Team) => {
+    // The window stays on the page while it fades out; a choice made there asks nothing.
+    if (detailRef.current !== team.id) return;
+    const confirmed = await confirm({
+      title: t.team.deleteTeamTitle,
+      message: format(t.team.deleteTeamMessage, { name: team.name }),
+      confirmLabel: t.team.deleteTeamAction,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    if (!useTeamStore.getState().teams.some((candidate) => candidate.id === team.id)) return;
+    useTeamStore.getState().deleteTeam(team.id);
+    setDetailTeamId(null);
+  };
+
+  // The detail window's 「…」 menu. Both entries lead to something that takes the focus, so each
+  // runs once the menu has gone; opening the menu forgets a choice its close hook never ran for.
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+  const pendingMenuAction = useRef<(() => void) | null>(null);
 
   // `_agents` / `_ready` are unused by value — they exist only to make
   // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
@@ -473,8 +853,8 @@ export default function TeamView() {
   };
 
   const navItems = [
-    { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
-    { id: 'teams' as TeamTab, label: t.team.tabTeams, icon: UsersRound },
+    { id: 'members' as TeamTab, label: t.team.tabMembers, icon: AppIcons.agent },
+    { id: 'teams' as TeamTab, label: t.team.tabTeams, icon: AppIcons.team },
   ];
 
   // AI-create for 队员 reuses the toolbox idiom: jump to chat with a crafted prompt.
@@ -493,13 +873,13 @@ export default function TeamView() {
   const renderHeaderRight = () => {
     const searchBox = (
       <div className="relative w-52 shrink-0">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
-        <Input
-          type="text"
+        <Icon icon={AppIcons.search} size="sm" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-label-tertiary" />
+        <TextField
+          aria-label={t.team.searchPlaceholder}
           placeholder={t.team.searchPlaceholder}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-8 pl-8 pr-3 text-body"
+          className="pl-7"
         />
       </div>
     );
@@ -521,7 +901,7 @@ export default function TeamView() {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateTeam}
-          onManualCreate={() => setTeamDialog({ open: true, team: null })}
+          onManualCreate={() => openTeamEditor(null)}
           triggerTestId="team-create-trigger"
           menuTestId="team-create-menu"
         />
@@ -563,44 +943,32 @@ export default function TeamView() {
           : enterpriseBinding
             ? activeTeams.filter((team) => !!team.managed)
             : activeTeams.filter(isBuiltinTeam);
-        // Same grid + card the 专家 tab uses (ToolGrid/ToolCard), not a
-        // hand-rolled row: a team and a member are peers in this surface.
         const card = (team: Team) => {
           const owner = pluginTeamOwner(team);
           return (
-            <ToolCard
+            <TeamCard
               key={team.id}
-              item={{
-                id: team.id,
-                testId: `team-row-${team.name}`,
-                name: team.name,
-                description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
-                avatar: <TeamAvatar avatar={team.avatar} size="xl" className="bg-[var(--abu-bg-active)]" />,
-                badge: owner ? <SourceBadge source={{ kind: 'plugin', plugin: pluginDisplayName(installedPlugins, owner) }} /> : undefined,
-              }}
-              onClick={() => setDetailTeam(team)}
+              team={team}
+              description={team.description || cardSummary(team, discoveredAgents, pluginRecordsReady)}
+              pluginName={owner ? pluginDisplayName(installedPlugins, owner) : undefined}
+              onOpen={openDetail}
             />
           );
         };
-        if (source === 'mine' && list.length === 0) {
-          return (
-            <div className="h-full flex flex-col">
-              <div className="flex-1 min-h-0">
-                <EmptyState
-                  icon={UsersRound}
-                  title={t.team.teamsEmpty}
-                  hint={t.team.teamsEmptyHint}
-                  action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
-                />
-              </div>
-            </div>
-          );
-        }
         const shown = list.filter((team) => matchesTeamSearch(team, search));
         return (
-          <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6 h-full">
-            {shown.length === 0 && search.trim() ? (
-              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.team.teamsNotFound}</div>
+          <div className="h-full overflow-y-scroll overlay-scroll px-8 pt-3 pb-6">
+            {source === 'mine' && list.length === 0 ? (
+              <div className="py-8">
+                <EmptyState
+                  icon={AppIcons.team}
+                  title={t.team.teamsEmpty}
+                  description={t.team.teamsEmptyHint}
+                  action={<Button variant="secondary" data-testid="teams-mine-create" onClick={() => openTeamEditor(null)}>{t.team.newTeam}</Button>}
+                />
+              </div>
+            ) : shown.length === 0 && search.trim() ? (
+              <div className="py-8"><EmptyState icon={AppIcons.team} title={t.team.teamsNotFound} /></div>
             ) : (
               <div className="max-w-5xl mx-auto">
                 <ToolGrid>{shown.map(card)}</ToolGrid>
@@ -613,11 +981,12 @@ export default function TeamView() {
   };
 
   return (
-    <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
+    // No fill of its own: the page shows the surface of the card the shell puts it on.
+    <div ref={rootRef} className="flex h-full flex-col">
       <TopTabNav items={navItems} activeId={activeTeamTab} onSelect={setActiveTeamTab} belowChrome right={renderHeaderRight()} />
       {/* 市场 | 我的 — one row, directly under the tabs and inset to the same
           grid the cards use, exactly as on 扩展. */}
-      <div className="px-8"><div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+      <div className="px-8"><div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
         <SourceSubNav
           value={sources[activeTeamTab]}
           onChange={(next) => setSource(activeTeamTab, next)}
@@ -627,21 +996,14 @@ export default function TeamView() {
           panelId={TEAM_PANEL_ID}
         />
         {inApp && (
-          <div role="tablist" aria-label={selectedApp.name} data-testid="team-app-scope" className="inline-flex shrink-0 rounded-lg bg-[var(--abu-bg-muted)] p-0.5">
-            {(['app', 'all'] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                role="tab"
-                aria-selected={appScope === value}
-                data-testid={`team-app-scope-${value}`}
-                onClick={() => setAppScope(value)}
-                className={cn('rounded-md px-2.5 py-1 text-minor transition-colors', appScope === value ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}
-              >
-                {value === 'app' ? t.team.appScopeThis : t.team.appScopeAll}
-              </button>
-            ))}
-          </div>
+          <span data-testid="team-app-scope" className="flex shrink-0">
+            <SegmentedControl
+              label={selectedApp.name}
+              value={appScope}
+              onValueChange={(next) => setAppScope(next === 'all' ? 'all' : 'app')}
+              options={scopeOptions}
+            />
+          </span>
         )}
       </div></div>
       <div
@@ -651,225 +1013,92 @@ export default function TeamView() {
         className="flex-1 overflow-hidden"
       >{renderContent()}</div>
       {/* Team detail — same shell and header grammar as the 队员 detail:
-          read-only body, primary CTA + "…" (edit / archive) in the header.
-          Opening a team used to jump straight into the edit form, which is
-          why 团队 felt unlike every other list in the app. */}
+          read-only body, the primary action in the footer, "…" (edit / delete)
+          in the header. Opening a team used to jump straight into the edit form,
+          which is why 团队 felt unlike every other list in the app. */}
       <ToolDetailModal
         open={!!detailTeam}
-        onClose={() => { setDetailTeam(null); setDetailMenuOpen(false); }}
+        ariaLabel={shown?.name}
+        onClose={() => setDetailTeamId(null)}
+        onCloseAutoFocus={afterWindowClosed}
         maxWidth="max-w-2xl"
-        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="2xl" className="bg-[var(--abu-bg-active)]" /> : undefined}
-        title={detailTeam?.name}
-        subtitle={detailTeam?.description?.trim()}
-        // Primary action in the sticky footer, solid — the same place and
-        // weight as on the plugin and connector details. The header keeps
-        // only the 「…」 menu.
-        footer={detailTeam ? (
-          <div className="flex items-center justify-end gap-3">
-            <Button
-              size="sm"
-              className="rounded-xl"
-              onClick={() => startChatWithTeam(detailTeam)}
-              disabled={detailTeam.managed?.ready === false}
-              data-testid="team-detail-start-chat"
-            >
-              <MessageCircle className="h-3.5 w-3.5" />
-              {t.team.detailStartChat}
-            </Button>
-          </div>
+        avatar={shown ? <TeamAvatar avatar={shown.avatar} size="2xl" /> : undefined}
+        title={shown?.name}
+        subtitle={shown?.description?.trim()}
+        // Primary action in the footer — the same place and weight as on the
+        // plugin and connector details. The header keeps only the 「…」 menu.
+        footer={shown ? (
+          <Button
+            variant="primary"
+            size="sm"
+            icon={AppIcons.startChat}
+            onClick={() => startChatWithTeam(shown)}
+            disabled={shown.managed?.ready === false}
+            data-testid="team-detail-start-chat"
+          >
+            {t.team.detailStartChat}
+          </Button>
         ) : undefined}
-        headerActions={detailTeam ? (() => {
-          const readOnly = isReadOnlyTeam(detailTeam);
-          return (
-            <>
-              {!readOnly && (
-                <div className="relative">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setDetailMenuOpen((v) => !v); }}
-                    className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                    data-testid="team-detail-menu"
-                  >
-                    <MoreHorizontal className="h-4 w-4" />
-                  </button>
-                  {detailMenuOpen && (
-                    <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
-                      <button
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                        onClick={() => { setTeamDialog({ open: true, team: detailTeam }); setDetailMenuOpen(false); setDetailTeam(null); }}
-                        data-testid="team-detail-edit"
-                      >
-                        <Pencil className="h-3 w-3" />
-                        {t.team.detailEdit}
-                      </button>
-                      <button
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-                        onClick={() => { setConfirmDeleteTeam(detailTeam); setDetailMenuOpen(false); }}
-                        data-testid="team-detail-delete"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                        {t.team.deleteTeamAction}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          );
-        })() : undefined}
+        headerActions={shown && !isReadOnlyTeam(shown) ? (
+          <Menu
+            align="end"
+            onOpenChange={(open) => { if (open) pendingMenuAction.current = null; }}
+            onCloseAutoFocus={(event) => {
+              const pending = pendingMenuAction.current;
+              pendingMenuAction.current = null;
+              if (!pending) return;
+              event.preventDefault();
+              menuTrigger.current?.focus();
+              pending();
+            }}
+            trigger={(
+              <IconButton
+                ref={menuTrigger}
+                icon={AppIcons.more}
+                label={format(t.toolbox.itemMenuLabel, { name: shown.name })}
+                data-testid="team-detail-menu"
+              />
+            )}
+          >
+            <MenuItem
+              icon={AppIcons.rename}
+              testId="team-detail-edit"
+              onSelect={() => {
+                pendingMenuAction.current = () => {
+                  // The window stays on the page while it fades out; a choice made there opens nothing.
+                  if (detailRef.current !== shown.id) return;
+                  // One window at a time: the edit window takes the place of the detail window.
+                  openTeamEditor(shown);
+                  setDetailTeamId(null);
+                };
+              }}
+            >
+              {t.team.detailEdit}
+            </MenuItem>
+            <MenuItem
+              tone="danger"
+              icon={AppIcons.delete}
+              testId="team-detail-delete"
+              onSelect={() => { pendingMenuAction.current = () => { void requestDelete(shown); }; }}
+            >
+              {t.team.deleteTeamAction}
+            </MenuItem>
+          </Menu>
+        ) : undefined}
       >
-        {detailTeam && (() => {
-          const memberIds = detailTeam.memberRoleIds.filter((id) => id !== detailTeam.leaderRoleId);
-          // Same predicate the run uses (resolveRoleId), so the count here never
-          // disagrees with the "队员 · N" the workspace tab shows mid-run.
-          const leader = resolveRoleId(detailTeam.leaderRoleId) ?? undefined;
-          const leaderGhostName = leader ? undefined : roleIdAgentName(detailTeam.leaderRoleId);
-          const members = memberIds.map((id) => ({ id, agent: resolveRoleId(id) ?? undefined }));
-          const validMembers = members.filter((m) => m.agent);
-          const invalidMembers = invalidMemberLabels(members.filter((m) => !m.agent).map((m) => m.id), t.team.memberInvalidNamed, t.team.memberInvalidNumbered);
-          const removeInvalid = (roleId: string) => {
-            useTeamStore.getState().updateTeam(detailTeam.id, { memberRoleIds: detailTeam.memberRoleIds.filter((id) => id !== roleId) });
-            setDetailTeam(useTeamStore.getState().teams.find((team) => team.id === detailTeam.id) ?? null);
-          };
-          // Skills live on each member, not on the team — the union answers
-          // "what can this team actually do" without opening every member.
-          const skills = [...new Set([leader, ...members.map((m) => m.agent)]
-            .flatMap((a) => a?.skills ?? []))].sort();
-          const row = (agent: SubagentDefinition | undefined, fallback: string, onPick?: () => void) => {
-            return (
-              <button
-                type="button"
-                disabled={!agent}
-                onClick={onPick}
-                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--abu-bg-muted)] disabled:cursor-default disabled:hover:bg-transparent"
-              >
-                {agent ? <AgentAvatar agent={agent} size="sm" /> : <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-body text-[var(--abu-text-primary)]">{agent?.name ?? fallback}</span>
-                  {agent?.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{agent.description}</span>}
-                </span>
-              </button>
-            );
-          };
-          const owner = pluginTeamOwner(detailTeam);
-          return (
-            <div className="space-y-5">
-              {owner && (
-                <div className="text-caption text-[var(--abu-text-muted)]" data-testid="team-plugin-origin">
-                  {format(t.toolbox.itemFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, owner) })}
-                </div>
-              )}
-              {detailTeam.managed?.ready === false && (
-                <div
-                  className="rounded-lg border border-[var(--abu-danger)]/30 bg-[var(--abu-danger-bg)] px-3 py-2 text-caption text-[var(--abu-danger)]"
-                  data-testid="team-managed-unavailable"
-                >
-                  <div className="font-medium">{t.team.detailUnavailable}</div>
-                  {detailTeam.managed.unavailableReason && <div className="mt-0.5">{detailTeam.managed.unavailableReason}</div>}
-                </div>
-              )}
-              <div>
-                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
-                {leader
-                  ? row(leader, t.team.memberInvalid)
-                  : (
-                    // Same two-line ghost as the members below, named when the id
-                    // carries a name. No 移除: a leader is replaced via 编辑.
-                    <div className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid="team-leader-invalid">
-                      <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-                      <InvalidMemberText
-                        label={leaderGhostName ? format(t.team.memberInvalidNamed, { name: leaderGhostName }) : t.team.memberInvalidShort}
-                        reason={t.team.memberInvalidReason}
-                      />
-                    </div>
-                  )}
-              </div>
-              <div>
-                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{format(t.team.detailMembers, { count: String(validMembers.length) })}</div>
-                {validMembers.length === 0 && invalidMembers.length === 0
-                  ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoMembers}</div>
-                  : <div className="space-y-0.5">
-                      {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.memberInvalid)}</div>)}
-                      {invalidMembers.map((m) => (
-                        <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
-                          <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-                          <InvalidMemberText label={m.label} reason={t.team.memberInvalidReason} />
-                          {!isReadOnlyTeam(detailTeam) && <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>}
-                        </div>
-                      ))}
-                    </div>}
-              </div>
-              <div>
-                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailPlanApproval}</div>
-                <div className="text-body text-[var(--abu-text-secondary)]">
-                  {detailTeam.requirePlanApproval ? t.team.detailPlanApprovalOn : t.team.detailPlanApprovalOff}
-                </div>
-              </div>
-              {detailTeam.leaderNote?.trim() && (
-                <div>
-                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeaderNote}</div>
-                  <div className="whitespace-pre-wrap text-body text-[var(--abu-text-secondary)]">{detailTeam.leaderNote.trim()}</div>
-                </div>
-              )}
-              {!!detailTeam.expertise?.length && (
-                <div>
-                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailExpertise}</div>
-                  <ul className="space-y-1.5 mt-1.5">
-                    {detailTeam.expertise.map((item, index) => (
-                      <li key={index} className="flex items-start gap-2 text-body text-[var(--abu-text-primary)] leading-relaxed">
-                        <Check className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0 mt-0.5" />
-                        <span>{item}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {!!detailTeam.samplePrompts?.length && (
-                <div>
-                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailSamplePrompts}</div>
-                  <ul className="space-y-1.5 mt-1.5">
-                    {detailTeam.samplePrompts.map((prompt, index) => (
-                      <li key={index}>
-                        <Button type="button" variant="ghost" onClick={() => startChatWithTeam(detailTeam, prompt)} className="w-full h-auto justify-start whitespace-normal text-left text-body font-normal text-[var(--abu-text-secondary)] bg-[var(--abu-bg-subtle)] hover:bg-[var(--abu-bg-active)] border border-[var(--abu-border)] rounded-lg px-3 py-2">
-                          {prompt}
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div>
-                <div className="text-minor text-[var(--abu-text-muted)]">{t.team.detailSkills}</div>
-                <div className="text-caption text-[var(--abu-text-tertiary)] mb-1.5">{t.team.detailSkillsHint}</div>
-                {skills.length === 0
-                  ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoSkills}</div>
-                  : <div className="flex flex-wrap gap-1">{skills.map((name) => (
-                      <span key={name} className="rounded-md bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-secondary)]">{name}</span>
-                    ))}</div>}
-              </div>
-            </div>
-          );
-        })()}
+        {shown && <TeamDetailBody team={shown} pluginName={shownOwner ? pluginDisplayName(installedPlugins, shownOwner) : undefined} onStartChat={(prompt) => startChatWithTeam(shown, prompt)} />}
       </ToolDetailModal>
-      <ConfirmDialog
-        open={!!confirmDeleteTeam}
-        title={t.team.deleteTeamTitle}
-        message={format(t.team.deleteTeamMessage, { name: confirmDeleteTeam?.name ?? '' })}
-        confirmText={t.team.deleteTeamAction}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onCancel={() => setConfirmDeleteTeam(null)}
-        onConfirm={() => {
-          if (confirmDeleteTeam) useTeamStore.getState().deleteTeam(confirmDeleteTeam.id);
-          setConfirmDeleteTeam(null);
-          setDetailTeam(null);
-        }}
-      />
       <TeamEditDialog
         open={teamDialog.open}
         team={teamDialog.team}
-        onClose={() => setTeamDialog({ open: false, team: null })}
+        onClose={() => setTeamDialog((current) => ({ ...current, open: false }))}
         onSwitchToMembers={() => { setActiveTeamTab('members'); setManualCreateTrigger((c) => c + 1); }}
+        // The saved team's card is where the focus goes once the window has closed.
+        onSaved={(teamId) => { if (!opener.current) opener.current = { id: teamId, index: -1 }; }}
+        onCloseAutoFocus={afterEditorClosed}
       />
     </div>
   );
 }
+
+export default memo(TeamView);

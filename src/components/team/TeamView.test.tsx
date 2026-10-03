@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 import { clearAllComposerDrafts, readComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
 import type { ReactElement } from 'react';
-import { act, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useTeamStore } from '@/stores/teamStore';
 import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
@@ -15,6 +16,9 @@ import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSour
 // The team dialog's avatar picker uses a design-system tooltip, so the page renders inside the provider like the app does.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
+// The page takes no props and reads the settings store one field at a time, so the stand-in
+// tells its readers when the tab changes, as the real store does.
+const settingsListeners = new Set<() => void>();
 const settingsState = {
   activeTeamTab: 'tasks' as 'inbox' | 'tasks' | 'members' | 'teams',
   toolboxSearchQuery: '',
@@ -22,6 +26,7 @@ const settingsState = {
   disabledAgents: [] as string[],
   setActiveTeamTab: vi.fn((tab: 'inbox' | 'tasks' | 'members' | 'teams') => {
     settingsState.activeTeamTab = tab;
+    settingsListeners.forEach((listener) => listener());
   }),
   closeTeam: vi.fn(),
 };
@@ -31,10 +36,17 @@ const enterpriseState = vi.hoisted(() => ({
   hasAgentMarket: false,
 }));
 
-vi.mock('@/stores/settingsStore', () => ({
-  useSettingsStore: (selector?: (state: Record<string, unknown>) => unknown) =>
-    selector ? selector(settingsState) : settingsState,
-}));
+vi.mock('@/stores/settingsStore', async () => {
+  const { useSyncExternalStore } = await import('react');
+  const subscribe = (listener: () => void) => {
+    settingsListeners.add(listener);
+    return () => { settingsListeners.delete(listener); };
+  };
+  return {
+    useSettingsStore: (selector?: (state: Record<string, unknown>) => unknown) =>
+      useSyncExternalStore(subscribe, () => (selector ? selector(settingsState) : settingsState)),
+  };
+});
 
 vi.mock('@/stores/enterpriseStore', () => ({
   useEnterpriseStore: Object.assign(
@@ -47,7 +59,7 @@ vi.mock('@/core/enterprise/mounts-registry', () => ({
   getEnterpriseMount: (key: string) => key === 'agentMarket' && enterpriseState.hasAgentMarket
     ? ({ searchQuery, onClose }: { searchQuery?: string; onClose?: () => void }) => (
       <div data-testid="organization-agents" data-query={searchQuery}>
-        <button onClick={onClose}>Open organization expert</button>
+        <Button onClick={onClose}>Open organization expert</Button>
       </div>
     )
     : undefined,
@@ -150,14 +162,43 @@ vi.mock('@/core/team/roleIdentity', () => ({
 // effect whenever it sees `manualCreateTrigger > 0` (counted in `editorOpens`),
 // and exposes the value it received as `data-trigger`.
 const editorOpens = vi.fn();
+// Called each time the stub renders: the page renders it on every render of its own.
+const sectionRenders = vi.fn();
 vi.mock('@/components/customize/AgentsSection', async () => {
   const { useEffect } = await import('react');
   return {
     default: function AgentsSectionStub({ manualCreateTrigger }: { manualCreateTrigger?: number }) {
+      sectionRenders();
       useEffect(() => {
         if (manualCreateTrigger && manualCreateTrigger > 0) editorOpens();
       }, [manualCreateTrigger]);
       return <div data-testid="agents-section" data-trigger={String(manualCreateTrigger ?? 0)} />;
+    },
+  };
+});
+
+// How many times each team card has rendered, by the id of its item.
+const cardRenders = vi.hoisted(() => ({ byId: {} as Record<string, number> }));
+vi.mock('@/components/toolbox/ToolCard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/toolbox/ToolCard')>();
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      cardRenders.byId[props.item.id] = (cardRenders.byId[props.item.id] ?? 0) + 1;
+      return actual.default(props);
+    },
+  };
+});
+
+// The app the shell shows: the general shell unless a test puts the page inside an app.
+const appState = vi.hoisted(() => ({ selected: null as unknown }));
+vi.mock('@/stores/appStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/stores/appStore')>();
+  return {
+    ...actual,
+    useSelectedApp: () => {
+      const general = actual.useSelectedApp();
+      return (appState.selected as typeof general | null) ?? general;
     },
   };
 });
@@ -173,6 +214,92 @@ function seedAgent(name: string, extra?: string | SeedExtra) {
   const agent = { name, description: `${name} desc`, roleId, skills, source, filePath: `/agents/${name}/AGENT.md`, systemPrompt: '' };
   registryAgents[name] = agent;
   return agent;
+}
+
+// How the tests reach the page's controls. Kept in one place so the assertions below read the same
+// whatever the controls are made of.
+const card = (name: string) => screen.getByTestId(`team-row-${name}`);
+/** Opens the team's window from its card, the way a key press on the card does: the card has the focus. */
+function openDetail(name: string) {
+  card(name).focus();
+  fireEvent.click(card(name));
+}
+/** Chooses an entry of the open window's 「…」 menu. What the entry does runs once the menu has gone. */
+async function chooseInDetail(entry: 'team-detail-edit' | 'team-detail-delete') {
+  await userEvent.click(screen.getByTestId('team-detail-menu'));
+  fireEvent.click(await screen.findByTestId(entry));
+}
+async function askToDeleteTeam(name: string) {
+  openDetail(name);
+  await chooseInDetail('team-detail-delete');
+  return screen.findByRole('alertdialog');
+}
+async function answerDelete() {
+  fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '删除' }));
+}
+/** From the open window: 「…」 → 编辑. The edit window takes the place of the detail window. */
+async function editFromDetail() {
+  await chooseInDetail('team-detail-edit');
+  await screen.findByTestId('team-name-input');
+}
+async function openTeamEditor(name: string) {
+  openDetail(name);
+  await editFromDetail();
+}
+const leaderBox = () => screen.getByRole('combobox', { name: '队长' });
+const membersBox = () => screen.getByRole('combobox', { name: '成员' });
+async function pickLeader(name: string) {
+  await userEvent.click(leaderBox());
+  fireEvent.click(await screen.findByRole('option', { name }));
+}
+async function pickMembers(names: string[]) {
+  await userEvent.click(membersBox());
+  for (const name of names) fireEvent.click(await screen.findByRole('option', { name }));
+  // The list stays open after a choice; Escape closes it alone.
+  fireEvent.keyDown(document, { key: 'Escape' });
+  await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+}
+/** The first line of each option of the open list: its name, without its description. */
+async function leaderOptionNames(): Promise<string[]> {
+  await userEvent.click(leaderBox());
+  const options = await screen.findAllByRole('option');
+  return options.map((option) => option.querySelector('span.truncate')!.textContent ?? '');
+}
+
+// happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+// layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+function keepClosingLayersOnScreen() {
+  const real = window.getComputedStyle.bind(window);
+  return vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+    const styles = real(element, pseudo);
+    return new Proxy(styles, {
+      get(target, prop) {
+        if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+        const value = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  });
+}
+const closingWindow = () => document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]')!;
+// Ends the fade of a closed layer: it leaves the page, and what it does once it has gone runs (one timer tick later).
+function endFade(layer: HTMLElement) {
+  vi.useFakeTimers();
+  try {
+    const ended = new Event('animationend', { bubbles: true });
+    Object.defineProperty(ended, 'animationName', { value: 'exit' });
+    act(() => { layer.dispatchEvent(ended); });
+    act(() => { vi.runOnlyPendingTimers(); });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+const finishClosing = () => endFade(closingWindow());
+/** The page's 「添加」 → 手动创建: a blank window for a new team. */
+async function openNewTeam() {
+  await userEvent.click(screen.getByTestId('team-create-trigger'));
+  fireEvent.click(await screen.findByRole('menuitem', { name: '手动创建' }));
+  await screen.findByTestId('team-name-input');
 }
 
 describe('TeamView', () => {
@@ -191,7 +318,13 @@ describe('TeamView', () => {
     localeRef.current = 'zh-CN';
     enterpriseState.mode = { kind: 'personal' };
     enterpriseState.hasAgentMarket = false;
+    appState.selected = null;
+    cardRenders.byId = {};
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   // P1: at launch discovery publishes BEFORE the first installed.json read, and
@@ -216,7 +349,7 @@ describe('TeamView', () => {
     expect(screen.queryByTestId('team-member-invalid-r-mem')).toBeNull();
   });
 
-  it('team dialog: opened before plugin records are ready, it re-seeds once they are — real members back in the picker', () => {
+  it('team dialog: opened before plugin records are ready, it re-seeds once they are — real members back in the picker', async () => {
     usePluginStore.setState({ activationReady: false });
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });
@@ -224,9 +357,7 @@ describe('TeamView', () => {
     discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem'], createdAt: 1 }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     expect(screen.getByTestId('team-edit-invalid-r-mem')).toBeTruthy();
 
     act(() => { usePluginStore.setState({ activationReady: true }); });
@@ -236,15 +367,13 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-leader-select').textContent).toContain('分析师');
   });
 
-  it('team dialog: a later ready→not-ready blip (a plugin install) does not wipe what the user typed', () => {
+  it('team dialog: a later ready→not-ready blip (a plugin install) does not wipe what the user typed', async () => {
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '新名字' } });
 
     act(() => { usePluginStore.setState({ activationReady: false }); });
@@ -253,7 +382,7 @@ describe('TeamView', () => {
     expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
   });
 
-  it('team dialog: renaming onto another team\u2019s name is refused before it can be saved', () => {
+  it('team dialog: renaming onto another team\u2019s name is refused before it can be saved', async () => {
     settingsState.activeTeamTab = 'teams';
     seedAgent('\u5206\u6790\u5e08', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '\u5206\u6790\u5e08' }];
@@ -262,9 +391,7 @@ describe('TeamView', () => {
       { id: 't2', name: '\u589e\u957f\u5c0f\u961f', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
     ] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-\u589e\u957f\u5c0f\u961f'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('\u589e\u957f\u5c0f\u961f');
     // Its own name is fine — re-saving a dialog untouched must not be blocked.
     expect(screen.queryByTestId('team-name-taken')).toBeNull();
     expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(false);
@@ -338,35 +465,34 @@ describe('TeamView', () => {
   });
 
   it('teams tab: a team that picked no icon keeps a visible grey plate on its card', () => {
-    // Same reason as the expert card: the avatar fills the 40px slot, so its
-    // own `--abu-bg-muted` would sit invisibly on the card's `--abu-bg-subtle`
-    // ground. The card asks for the slot's `--abu-bg-active` plate back.
+    // Same reason as the expert card: the avatar fills the 40px slot, so the
+    // avatar itself paints the plate the group mark sits on: the neutral fill,
+    // which shows on the card's surface. No identity colour replaces it.
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
     render(<TeamView />);
     const avatar = screen.getByTestId('team-row-数据小队').querySelector('[data-testid="team-avatar"]')!;
-    expect(avatar.className).toContain('bg-[var(--abu-bg-active)]');
-    expect(avatar.className).not.toContain('bg-[var(--abu-bg-muted)]');
+    expect(avatar).toHaveClass('size-10');
+    expect(avatar).toHaveClass('bg-fill');
+    expect(avatar).not.toHaveAttribute('style');
   });
 
   it('teams tab: the opened detail keeps that grey plate too', () => {
     // The detail header's plate is the 56px slot, and a `2xl` avatar covers it
-    // exactly — the same defect as on the card. The card's avatar stays in the
-    // DOM behind the modal, so pick the 56px (`size-14`) one.
+    // exactly, so the avatar paints the plate there too. The card's avatar stays
+    // in the DOM behind the window, so pick the one inside the window.
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
     render(<TeamView />);
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    expect(screen.getByTestId('team-detail-start-chat')).toBeTruthy();
-    const avatar = [...document.querySelectorAll('[data-testid="team-avatar"]')]
-      .find((el) => el.className.includes('size-14'));
-    expect(avatar).toBeDefined();
-    expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
-    expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');
+    const avatar = within(screen.getByRole('dialog', { name: '数据小队' })).getByTestId('team-avatar');
+    expect(avatar).toHaveClass('size-14');
+    expect(avatar).toHaveClass('bg-fill');
+    expect(avatar).not.toHaveAttribute('style');
   });
 
   it('shows why an unavailable organization team cannot start', () => {
@@ -428,7 +554,7 @@ describe('TeamView', () => {
       createdAt: 1,
       managed: { source: 'enterprise', id: 'org-team', version: '1', readOnly: true, ready: true },
     }]);
-    const { rerender } = render(<TeamView />);
+    render(<TeamView />);
 
     expect(screen.getByTestId('team-row-组织数据小队')).toBeTruthy();
     expect(screen.queryByTestId('team-row-我的小队')).toBeNull();
@@ -436,7 +562,6 @@ describe('TeamView', () => {
     expect(screen.queryByTestId('team-create-trigger')).toBeNull();
 
     fireEvent.click(screen.getByTestId('team-source-mine'));
-    rerender(<TeamView />);
     expect(screen.getByTestId('team-row-我的小队')).toBeTruthy();
     expect(screen.queryByTestId('team-row-组织数据小队')).toBeNull();
     expect(screen.getByTestId('team-create-trigger')).toBeVisible();
@@ -536,24 +661,21 @@ describe('TeamView', () => {
     discoveryState.agents = [{ name: '分析师' }];
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-gone'], createdAt: 1 }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     expect(screen.getByTestId('team-edit-invalid-r-gone')).toBeTruthy();
     // Save without touching it: the ghost is preserved (never silently dropped).
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead', 'r-gone']));
+    await waitFor(() => expect(screen.queryByTestId('team-name-input')).toBeNull());
     // Reopen, remove, save: now it is gone.
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     fireEvent.click(screen.getByTestId('team-edit-invalid-remove-r-gone'));
     expect(screen.queryByTestId('team-edit-invalid-r-gone')).toBeNull();
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead']));
   });
 
-  it('team dialog: a plugin member stored under its legacy role- id stays in the picker', () => {
+  it('team dialog: a plugin member stored under its legacy role- id stays in the picker', async () => {
     // Teams saved before plugin agents got synthetic `plugin:<name>` ids hold
     // the frontmatter `role-…` id. It must still resolve to the picker chip —
     // otherwise the member silently drops out and can be re-added as a duplicate.
@@ -563,9 +685,7 @@ describe('TeamView', () => {
     discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'role-legacy'], createdAt: 1 }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     expect(screen.getByTestId('team-members-select').textContent).toContain('校对');
     expect(screen.queryByTestId('team-edit-invalid-role-legacy')).toBeNull();
   });
@@ -585,13 +705,11 @@ describe('TeamView', () => {
     expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');
   });
 
-  it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 专家 detail', () => {
+  it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 专家 detail', async () => {
     settingsState.activeTeamTab = 'teams';
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     expect(screen.getByTestId('team-name-input')).toBeTruthy();
   });
 
@@ -631,8 +749,7 @@ describe('TeamView', () => {
     expect(save.disabled).toBe(true); // still no leader
 
     // Leader is its own searchable dropdown (user feedback 2026-08-31).
-    fireEvent.click(screen.getByTestId('team-leader-select'));
-    fireEvent.click(screen.getByTestId('search-select-option-writer'));
+    await pickLeader('writer');
     expect(save.disabled).toBe(false);
 
     fireEvent.click(screen.getByTestId('avatar-picker-trigger'));
@@ -696,8 +813,7 @@ describe('TeamView', () => {
 
   it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', async () => {
     settingsState.activeTeamTab = 'members';
-    // The settings mock is a plain object, so a tab click needs a rerender to show.
-    const { rerender } = render(<TeamView />);
+    render(<TeamView />);
     await userEvent.click(screen.getByTestId('member-create-trigger'));
     fireEvent.click(screen.getByText('手动创建'));
     // The chosen entry runs once the menu has gone.
@@ -705,9 +821,8 @@ describe('TeamView', () => {
     expect(editorOpens).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText('专家团'));
-    rerender(<TeamView />);
+    expect(screen.queryByTestId('agents-section')).toBeNull();
     fireEvent.click(screen.getByText('专家'));
-    rerender(<TeamView />);
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
     expect(editorOpens).toHaveBeenCalledTimes(1);
   });
@@ -716,21 +831,20 @@ describe('TeamView', () => {
     // The tab switch and the trigger bump land in one commit: the section mounts
     // with the bumped value and opens the editor before the tab-change reset runs.
     settingsState.activeTeamTab = 'teams';
-    const { rerender } = render(<TeamView />);
+    render(<TeamView />);
     fireEvent.click(screen.getAllByText('新建专家团')[0]);
     fireEvent.click(screen.getByText('新建专家'));
     expect(screen.getByTestId('agents-section')).toBeTruthy();
     expect(editorOpens).toHaveBeenCalledTimes(1);
     // …and the reset means a later return to 专家 does not open it again.
     fireEvent.click(screen.getByText('专家团'));
-    rerender(<TeamView />);
+    expect(screen.queryByTestId('agents-section')).toBeNull();
     fireEvent.click(screen.getByText('专家'));
-    rerender(<TeamView />);
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
     expect(editorOpens).toHaveBeenCalledTimes(1);
   });
 
-  it('teams tab: two unnamed invalid members are numbered apart, with the reason as a caption', () => {
+  it('teams tab: two unnamed invalid members are numbered apart, with the reason as a caption', async () => {
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
@@ -743,14 +857,13 @@ describe('TeamView', () => {
     expect(second.textContent).toContain('已失效成员 2');
     for (const row of [first, second]) expect(row.textContent).toContain('专家已删除、修改，或所属插件已停用');
     // Same labels in the edit dialog.
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await editFromDetail();
     expect(screen.getByTestId('team-edit-invalid-role-a').textContent).toContain('已失效成员 1');
     expect(screen.getByTestId('team-edit-invalid-role-b').textContent).toContain('已失效成员 2');
     expect(screen.getByTestId('team-edit-invalid-role-b').textContent).toContain('专家已删除、修改，或所属插件已停用');
   });
 
-  it('teams tab: an invalid member whose id carries a name is shown by that name', () => {
+  it('teams tab: an invalid member whose id carries a name is shown by that name', async () => {
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
@@ -760,8 +873,7 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-member-invalid-plugin:x').textContent).toContain('「x」已失效');
     // Numbering counts only the unnamed ones.
     expect(screen.getByTestId('team-member-invalid-role-a').textContent).toContain('已失效成员 1');
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await editFromDetail();
     expect(screen.getByTestId('team-edit-invalid-plugin:x').textContent).toContain('「x」已失效');
   });
 
@@ -770,9 +882,7 @@ describe('TeamView', () => {
     // No live agent at all: the leader and the member are both gone.
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-gone-lead', memberRoleIds: ['r-gone-lead', 'role-a'], createdAt: 1 }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     expect(screen.getByText('新建专家')).toBeTruthy();
     expect(screen.getByTestId('team-edit-invalid-role-a').textContent).toContain('已失效成员 1');
     fireEvent.click(screen.getByTestId('team-edit-invalid-remove-role-a'));
@@ -819,9 +929,7 @@ describe('TeamView', () => {
     settingsState.activeTeamTab = 'teams';
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1, description: '旧介绍', intro: '旧开场白', expertise: ['旧擅长'], samplePrompts: ['旧问题'] }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-row-数据小队'));
-    fireEvent.click(screen.getByTestId('team-detail-menu'));
-    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    await openTeamEditor('数据小队');
     expect(screen.getByLabelText('开场白（可选）')).toHaveValue('旧开场白');
     fireEvent.change(screen.getByLabelText('介绍（可选）'), { target: { value: '新介绍' } });
     fireEvent.change(screen.getByLabelText('开场白（可选）'), { target: { value: '' } });
@@ -830,6 +938,484 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0]).toMatchObject({ description: '新介绍', intro: undefined, expertise: ['取数', '出图'], samplePrompts: ['问题一', '问题二'] }));
   });
+
+  // What the page does to the team store and to the member list. Pinned before the page moved
+  // onto the design system: the calls, their arguments and their conditions stay as they were.
+  describe('the calls behind the page', () => {
+    beforeEach(() => {
+      settingsState.activeTeamTab = 'teams';
+    });
+
+    it('deletes exactly the team whose detail is open, and only after the confirmation', async () => {
+      useTeamStore.setState({ teams: [
+        { id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 },
+        { id: 't2', name: '增长小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 2 },
+      ] });
+      const deleteTeam = vi.spyOn(useTeamStore.getState(), 'deleteTeam');
+      render(<TeamView />);
+      await askToDeleteTeam('数据小队');
+      expect(deleteTeam).not.toHaveBeenCalled();
+      await answerDelete();
+      expect(deleteTeam).toHaveBeenCalledTimes(1);
+      expect(deleteTeam).toHaveBeenCalledWith('t1');
+      expect(useTeamStore.getState().teams.map((team) => team.id)).toEqual(['t2']);
+    });
+
+    it('keeps the team when the confirmation is cancelled', async () => {
+      useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
+      const deleteTeam = vi.spyOn(useTeamStore.getState(), 'deleteTeam');
+      render(<TeamView />);
+      const question = await askToDeleteTeam('数据小队');
+      fireEvent.click(within(question).getByRole('button', { name: '取消' }));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(deleteTeam).not.toHaveBeenCalled();
+      expect(useTeamStore.getState().teams).toHaveLength(1);
+      // The team's window is still there.
+      expect(screen.getByRole('dialog', { name: '数据小队' })).toBeInTheDocument();
+    });
+
+    it('saves an edit with the hidden and the invalid members still in the list, before the picked ones', async () => {
+      seedAgent('分析师', { roleId: 'r-lead' });
+      seedAgent('校对', { roleId: 'r-mem' });
+      // A managed expert is a real member the picker does not offer.
+      registryAgents['组织审阅'] = { name: '组织审阅', description: '', roleId: 'r-hidden', filePath: '/agents/org/AGENT.md', systemPrompt: '', managed: true };
+      discoveryState.agents = [{ name: '分析师' }, { name: '校对' }, { name: '组织审阅' }];
+      useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem', 'r-hidden', 'r-gone'], createdAt: 1 }] });
+      const updateTeam = vi.spyOn(useTeamStore.getState(), 'updateTeam');
+      render(<TeamView />);
+      await openTeamEditor('数据小队');
+      fireEvent.click(screen.getByTestId('team-save'));
+      await waitFor(() => expect(updateTeam).toHaveBeenCalledTimes(1));
+      expect(updateTeam).toHaveBeenCalledWith('t1', {
+        name: '数据小队',
+        leaderRoleId: 'r-lead',
+        memberRoleIds: ['r-hidden', 'r-gone', 'r-mem'],
+        leaderNote: undefined,
+        requirePlanApproval: false,
+        avatar: undefined,
+        description: undefined,
+        intro: undefined,
+        expertise: undefined,
+        samplePrompts: undefined,
+      });
+    });
+
+    it('creates a team with the leader and the picked members, each by its role id', async () => {
+      seedAgent('分析师', { roleId: 'r-lead' });
+      seedAgent('校对', { roleId: 'r-mem' });
+      seedAgent('画图', { roleId: 'r-draw' });
+      discoveryState.agents = [{ name: '分析师' }, { name: '校对' }, { name: '画图' }];
+      const createTeam = vi.spyOn(useTeamStore.getState(), 'createTeam');
+      render(<TeamView />);
+      fireEvent.click(screen.getAllByText('新建专家团')[0]);
+      fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '数据小队' } });
+      await pickLeader('分析师');
+      await pickMembers(['校对', '画图']);
+      fireEvent.click(screen.getByTestId('team-save'));
+      await waitFor(() => expect(createTeam).toHaveBeenCalledTimes(1));
+      expect(createTeam).toHaveBeenCalledWith({
+        name: '数据小队',
+        leaderRoleId: 'r-lead',
+        memberRoleIds: ['r-mem', 'r-draw'],
+        leaderNote: undefined,
+        requirePlanApproval: false,
+        avatar: undefined,
+        description: undefined,
+        intro: undefined,
+        expertise: undefined,
+        samplePrompts: undefined,
+      });
+    });
+
+    it('removes an invalid member from the detail with one store call, and the row leaves the list', () => {
+      seedAgent('分析师', { roleId: 'r-lead' });
+      seedAgent('校对', { roleId: 'r-mem' });
+      discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
+      useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem', 'r-gone'], createdAt: 1 }] });
+      const updateTeam = vi.spyOn(useTeamStore.getState(), 'updateTeam');
+      render(<TeamView />);
+      fireEvent.click(screen.getByTestId('team-row-数据小队'));
+      fireEvent.click(screen.getByText('移除'));
+      expect(updateTeam).toHaveBeenCalledTimes(1);
+      expect(updateTeam).toHaveBeenCalledWith('t1', { memberRoleIds: ['r-lead', 'r-mem'] });
+      expect(screen.queryByTestId('team-member-invalid-r-gone')).toBeNull();
+    });
+
+    it('offers as leader exactly the experts of the member pool: no Abu, no managed expert', async () => {
+      seedAgent('分析师', { roleId: 'r-lead' });
+      seedAgent('校对', { roleId: 'r-mem' });
+      seedAgent('abu');
+      registryAgents['组织审阅'] = { name: '组织审阅', description: '', roleId: 'r-hidden', filePath: '/agents/org/AGENT.md', systemPrompt: '', managed: true };
+      discoveryState.agents = [{ name: '分析师' }, { name: '校对' }, { name: 'abu' }, { name: '组织审阅' }, { name: '不在注册表' }];
+      render(<TeamView />);
+      fireEvent.click(screen.getAllByText('新建专家团')[0]);
+      expect(await leaderOptionNames()).toEqual(['分析师', '校对']);
+    });
+  });
+
+  describe('the page on the design system', () => {
+    const team = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem'], createdAt: 1 };
+    const other = { id: 't2', name: '增长小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 };
+
+    beforeEach(() => {
+      settingsState.activeTeamTab = 'teams';
+      seedAgent('分析师', { roleId: 'r-lead' });
+      seedAgent('校对', { roleId: 'r-mem' });
+      seedAgent('画图', { roleId: 'r-draw' });
+      discoveryState.agents = [{ name: '分析师' }, { name: '校对' }, { name: '画图' }];
+      useTeamStore.setState({ teams: [team, other] });
+    });
+
+    it('does not render again when the app around it does', () => {
+      settingsState.activeTeamTab = 'members';
+      // The shell renders for every piece of a streamed reply; the page takes no props.
+      function Shell({ tick }: { tick: number }) {
+        return <div data-tick={tick}><TeamView /></div>;
+      }
+      const view = render(<Shell tick={0} />);
+      const before = sectionRenders.mock.calls.length;
+      expect(before).toBeGreaterThan(0);
+      view.rerender(<Shell tick={1} />);
+      view.rerender(<Shell tick={2} />);
+      expect(sectionRenders.mock.calls.length).toBe(before);
+    });
+
+    it('renders no card again when a detail window opens and closes', async () => {
+      render(<TeamView />);
+      const total = () => Object.values(cardRenders.byId).reduce((sum, count) => sum + count, 0);
+      const before = total();
+      expect(before).toBe(2);
+      openDetail('数据小队');
+      expect(screen.getByRole('dialog', { name: '数据小队' })).toBeInTheDocument();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(total()).toBe(before);
+    });
+
+    it('names the detail window after the team, and the edit window after what it does', async () => {
+      render(<TeamView />);
+      await openTeamEditor('数据小队');
+      expect(screen.getByRole('dialog', { name: '编辑专家团' })).toBeInTheDocument();
+      // The edit window took the place of the detail window.
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '数据小队' })).toBeNull());
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+      await userEvent.click(screen.getByTestId('team-create-trigger'));
+      fireEvent.click(await screen.findByRole('menuitem', { name: '手动创建' }));
+      expect(await screen.findByRole('dialog', { name: '新建专家团' })).toBeInTheDocument();
+    });
+
+    it('offers 编辑 and 删除 as the entries of a menu', async () => {
+      render(<TeamView />);
+      openDetail('数据小队');
+      await userEvent.click(screen.getByRole('button', { name: '数据小队 的操作' }));
+      const menu = await screen.findByRole('menu');
+      expect(within(menu).getAllByRole('menuitem').map((item) => item.getAttribute('data-testid'))).toEqual(['team-detail-edit', 'team-detail-delete']);
+      expect(within(menu).getByRole('menuitem', { name: '编辑' })).toBeInTheDocument();
+      expect(within(menu).getByRole('menuitem', { name: '删除' })).toBeInTheDocument();
+    });
+
+    it('asks in a question that names the team', async () => {
+      render(<TeamView />);
+      const question = await askToDeleteTeam('数据小队');
+      expect(question).toHaveAccessibleName('删除这个专家团？');
+      expect(question).toHaveTextContent('「数据小队」会被删掉，无法恢复。');
+      expect(within(question).getByRole('button', { name: '删除' })).toBeInTheDocument();
+    });
+
+    it('deletes nothing when the team has left the store by the time the question is answered', async () => {
+      const deleteTeam = vi.spyOn(useTeamStore.getState(), 'deleteTeam');
+      render(<TeamView />);
+      await askToDeleteTeam('数据小队');
+      // The store no longer holds the team; the page has not shown that yet.
+      useTeamStore.getState().teams.splice(0, 1);
+      await answerDelete();
+      await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+      expect(deleteTeam).not.toHaveBeenCalled();
+    });
+
+    it('answers the question with no when the team’s window leaves, and deletes nothing', async () => {
+      const deleteTeam = vi.spyOn(useTeamStore.getState(), 'deleteTeam');
+      render(<TeamView />);
+      await askToDeleteTeam('数据小队');
+      // The team leaves the store (a sync from elsewhere): its window goes, and the question with it.
+      act(() => { useTeamStore.setState({ teams: [other] }); });
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(deleteTeam).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['deletes nothing', 'team-detail-delete'],
+      ['opens no edit window', 'team-detail-edit'],
+    ] as const)('%s from a window that is closing', async (_what, entry) => {
+      const user = userEvent.setup();
+      const deleteTeam = vi.spyOn(useTeamStore.getState(), 'deleteTeam');
+      render(<TeamView />);
+      openDetail('数据小队');
+      keepClosingLayersOnScreen();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(closingWindow()).not.toBeNull();
+      // The window takes no pointer input while it fades out; the keyboard still reaches it.
+      within(closingWindow()).getByTestId('team-detail-menu').focus();
+      await user.keyboard('{Enter}');
+      fireEvent.click(await screen.findByTestId(entry));
+      // The entry runs once the menu has gone.
+      endFade(document.querySelector<HTMLElement>('[role="menu"][data-state="closed"]')!);
+      expect(document.querySelector('[role="menu"]')).toBeNull();
+      await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(screen.queryByTestId('team-name-input')).toBeNull();
+      expect(deleteTeam).not.toHaveBeenCalled();
+      finishClosing();
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+    });
+
+    it('starts no conversation from a window that is closing', () => {
+      render(<TeamView />);
+      openDetail('数据小队');
+      keepClosingLayersOnScreen();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      fireEvent.click(within(closingWindow()).getByTestId('team-detail-start-chat'));
+      expect(settingsState.closeTeam).not.toHaveBeenCalled();
+      expect(chatState.startNewConversation).not.toHaveBeenCalled();
+      finishClosing();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('moves the focus to the card that took the place of a deleted team', async () => {
+      render(<TeamView />);
+      await askToDeleteTeam('数据小队');
+      await answerDelete();
+      await waitFor(() => expect(screen.queryByTestId('team-row-数据小队')).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(card('增长小队')));
+    });
+
+    it('gives the focus back to the team’s card once the edit window has closed', async () => {
+      render(<TeamView />);
+      await openTeamEditor('数据小队');
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(card('数据小队')));
+    });
+
+    it('says an unavailable team in a message with a shape, not in colour alone', () => {
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [{
+        id: 'org-team', name: '组织数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1,
+        managed: { source: 'enterprise', id: 'org-team', version: '1', readOnly: true, ready: false, unavailableReason: '成员不可用：分析师' },
+      }]);
+      enterpriseState.mode = { kind: 'enterprise', binding: { serverUrl: 'https://enterprise.example' }, config: null };
+      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+      render(<TeamView />);
+      openDetail('组织数据小队');
+      const message = within(screen.getByTestId('team-managed-unavailable')).getByRole('alert');
+      expect(message).toHaveTextContent('成员不可用：分析师');
+      expect(message.querySelector('svg')).not.toBeNull();
+    });
+
+    it('shows the empty shelf with a title and the button that creates a team', () => {
+      useTeamStore.setState({ teams: [] });
+      render(<TeamView />);
+      expect(screen.getByText('还没有专家团')).toHaveClass('text-title');
+      expect(screen.getByRole('button', { name: '新建专家团' })).toBeInTheDocument();
+    });
+
+    describe('the edit window', () => {
+      it('picks the leader in a combobox whose options carry each expert’s description', async () => {
+        render(<TeamView />);
+        await openNewTeam();
+        await userEvent.click(leaderBox());
+        const option = await screen.findByRole('option', { name: '校对' });
+        expect(option).toHaveAccessibleDescription('校对 desc');
+        fireEvent.click(option);
+        // A single choice closes the list.
+        await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+        expect(leaderBox()).toHaveTextContent('校对');
+      });
+
+      it('turns a member on and off with Enter and keeps the list open', async () => {
+        const user = userEvent.setup();
+        render(<TeamView />);
+        await openNewTeam();
+        await user.click(membersBox());
+        const first = (await screen.findAllByRole('option'))[0];
+        expect(first).toHaveAttribute('aria-checked', 'false');
+        await user.keyboard('{Enter}');
+        expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+        expect(membersBox()).toHaveTextContent('分析师');
+        await user.keyboard('{Enter}');
+        expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-checked', 'false');
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+      });
+
+      it('leaves the chosen leader out of the members', async () => {
+        render(<TeamView />);
+        await openNewTeam();
+        await pickLeader('分析师');
+        await userEvent.click(membersBox());
+        const names = (await screen.findAllByRole('option')).map((option) => option.querySelector('span.truncate')!.textContent);
+        expect(names).toEqual(['校对', '画图']);
+      });
+
+      it('marks a name another team uses on the field and says so with a mark beside the words', async () => {
+        render(<TeamView />);
+        await openNewTeam();
+        fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '增长小队' } });
+        expect(screen.getByTestId('team-name-input')).toHaveAttribute('aria-invalid', 'true');
+        const hint = screen.getByTestId('team-name-taken');
+        expect(hint).toHaveTextContent('已有同名专家团，换个名字吧');
+        expect(hint.querySelector('svg')).not.toBeNull();
+      });
+
+      it('has a switch for plan approval; an arrow key changes nothing, Space does', async () => {
+        const user = userEvent.setup();
+        const updateTeam = vi.spyOn(useTeamStore.getState(), 'updateTeam');
+        render(<TeamView />);
+        await openTeamEditor('数据小队');
+        const approval = screen.getByRole('switch', { name: '分工先经我确认' });
+        expect(approval).toHaveAttribute('aria-checked', 'false');
+        approval.focus();
+        await user.keyboard('{ArrowRight}{ArrowLeft}');
+        expect(approval).toHaveAttribute('aria-checked', 'false');
+        await user.keyboard(' ');
+        expect(approval).toHaveAttribute('aria-checked', 'true');
+        fireEvent.click(screen.getByTestId('team-save'));
+        await waitFor(() => expect(updateTeam).toHaveBeenCalledWith('t1', expect.objectContaining({ requirePlanApproval: true })));
+      });
+
+      it('removes an invalid member with a named button', async () => {
+        useTeamStore.setState({ teams: [{ ...team, memberRoleIds: ['r-lead', 'r-gone'] }] });
+        render(<TeamView />);
+        await openTeamEditor('数据小队');
+        const remove = within(screen.getByTestId('team-edit-invalid-r-gone')).getByRole('button', { name: '移除' });
+        expect(remove).toHaveAttribute('data-testid', 'team-edit-invalid-remove-r-gone');
+        fireEvent.click(remove);
+        expect(screen.queryByTestId('team-edit-invalid-r-gone')).toBeNull();
+      });
+
+      it('asks before discarding what was typed, on Escape and on 取消', async () => {
+        render(<TeamView />);
+        await openNewTeam();
+        fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '新的小队' } });
+        fireEvent.keyDown(document, { key: 'Escape' });
+        const question = await screen.findByRole('alertdialog', { name: '放弃这些内容？' });
+        fireEvent.click(within(question).getByRole('button', { name: '继续填写' }));
+        await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+        expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新的小队');
+
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }));
+        const again = await screen.findByRole('alertdialog', { name: '放弃这些内容？' });
+        fireEvent.click(within(again).getByRole('button', { name: '放弃' }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        expect(useTeamStore.getState().teams).toHaveLength(2);
+      });
+
+      it('closes at once when nothing was changed, for a new team and for an edit', async () => {
+        render(<TeamView />);
+        await openNewTeam();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+        await openTeamEditor('数据小队');
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+      });
+
+      it('opens blank after an edit window was closed', async () => {
+        render(<TeamView />);
+        await openTeamEditor('数据小队');
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await openNewTeam();
+        expect(screen.getByRole('dialog', { name: '新建专家团' })).toBeInTheDocument();
+        expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('');
+        expect(leaderBox()).toHaveTextContent('选择一名队长');
+      });
+
+      it('saves nothing from a window that is closing', async () => {
+        const updateTeam = vi.spyOn(useTeamStore.getState(), 'updateTeam');
+        render(<TeamView />);
+        await openTeamEditor('数据小队');
+        keepClosingLayersOnScreen();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        const closing = closingWindow();
+        // The window still shows the team it held.
+        expect((within(closing).getByTestId('team-name-input') as HTMLInputElement).value).toBe('数据小队');
+        expect(closing).toHaveAccessibleName('编辑专家团');
+        fireEvent.click(within(closing).getByTestId('team-save'));
+        await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+        expect(updateTeam).not.toHaveBeenCalled();
+        expect(addToast).not.toHaveBeenCalled();
+        finishClosing();
+        expect(screen.queryByRole('dialog')).toBeNull();
+      });
+
+      it('saves once: the button stays focusable and takes no second press while the save runs', async () => {
+        const { ensureRoleId } = await import('@/core/team/roleIdentity');
+        let finish: (value: { roleId: string; wrote: boolean }) => void = () => {};
+        vi.mocked(ensureRoleId).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+        const updateTeam = vi.spyOn(useTeamStore.getState(), 'updateTeam');
+        render(<TeamView />);
+        await openTeamEditor('数据小队');
+        const save = screen.getByTestId('team-save');
+        fireEvent.click(save);
+        await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'));
+        expect(save).not.toBeDisabled();
+        fireEvent.click(save);
+        await act(async () => { finish({ roleId: 'r-lead', wrote: false }); });
+        await waitFor(() => expect(updateTeam).toHaveBeenCalledTimes(1));
+        expect(vi.mocked(ensureRoleId).mock.calls.filter(([agent]) => (agent as { name: string }).name === '分析师')).toHaveLength(1);
+      });
+    });
+
+    describe('inside an app', () => {
+      const shop = {
+        appId: 'shop', name: '店铺运营', pluginKey: 'shop@market', pluginVersion: '1.0.0',
+        config: { version: 1, home: { modes: { items: [] } } },
+      };
+      const shopTeam = { id: 'plugin-team:shop@market/crew', name: '店铺小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 3 };
+
+      beforeEach(() => {
+        appState.selected = shop;
+        useTeamStore.setState({ teams: [team, shopTeam] });
+      });
+
+      it('offers 本应用 and 全部 as one choice named after the app, on 本应用', () => {
+        render(<TeamView />);
+        const scope = within(screen.getByTestId('team-app-scope')).getByRole('group', { name: '店铺运营' });
+        expect(within(scope).getByRole('radio', { name: '本应用' })).toHaveAttribute('aria-checked', 'true');
+        expect(within(scope).getByRole('radio', { name: '全部' })).toHaveAttribute('aria-checked', 'false');
+        expect(screen.getByTestId('team-row-店铺小队')).toBeInTheDocument();
+        expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+      });
+
+      it('moves between the two on an arrow key and widens only on Space or a click', async () => {
+        const user = userEvent.setup();
+        render(<TeamView />);
+        screen.getByRole('radio', { name: '本应用' }).focus();
+        await user.keyboard('{ArrowRight}');
+        expect(screen.getByRole('radio', { name: '全部' })).toHaveFocus();
+        expect(screen.getByRole('radio', { name: '全部' })).toHaveAttribute('aria-checked', 'false');
+        expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+        await user.keyboard(' ');
+        expect(screen.getByRole('radio', { name: '全部' })).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByTestId('team-row-数据小队')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('radio', { name: '本应用' }));
+        expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+      });
+
+      it('shows no such choice in the general shell', () => {
+        appState.selected = null;
+        render(<TeamView />);
+        expect(screen.queryByTestId('team-app-scope')).toBeNull();
+      });
+    });
+  });
+
   describe('built-in teams · 市场 | 我的', () => {
     const userTeam = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 };
 

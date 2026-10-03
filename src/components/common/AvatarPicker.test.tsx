@@ -4,7 +4,6 @@ import { describe, it, expect, vi } from 'vitest';
 import { render as renderBare, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AvatarPicker from './AvatarPicker';
-import DialogShell from '@/components/team/DialogShell';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { AVATAR_ICONS, AVATAR_TINTS, buildAvatarValue } from '@/core/team/avatarPresets';
@@ -89,29 +88,28 @@ describe('AvatarPicker', () => {
     expect(screen.getByTestId('avatar-tint-purple')).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('closes only the picker on Escape, returns focus, and leaves the parent dialog open', async () => {
+  it('inside a design-system dialog: joins the page after the dialog, so it is painted over it', async () => {
     const user = userEvent.setup();
-    const onClose = vi.fn();
-    render(<DialogShell open onClose={onClose} title="Edit team"><AvatarPicker onChange={vi.fn()} /></DialogShell>);
-    const trigger = screen.getByTestId('avatar-picker-trigger');
-    await user.click(trigger);
-    await user.keyboard('{Escape}');
-    expect(screen.queryByTestId('avatar-picker')).toBeNull();
-    expect(onClose).not.toHaveBeenCalled();
-    expect(trigger).toHaveFocus();
-    // Focus is back on the trigger, so its name shows; the next Escape hides it and closes the shell.
-    expect(await screen.findByRole('tooltip')).toBeInTheDocument();
-    await user.keyboard('{Escape}');
-    expect(screen.queryByRole('tooltip')).toBeNull();
-    expect(onClose).toHaveBeenCalledOnce();
+    render(<Dialog open onOpenChange={vi.fn()} title="Edit team"><AvatarPicker onChange={vi.fn()} /></Dialog>);
+    await user.click(screen.getByTestId('avatar-picker-trigger'));
+    const dialog = screen.getByRole('dialog', { name: 'Edit team' });
+    const layer = screen.getByTestId('avatar-picker').closest('[data-ds-layer]')!;
+    // Both sit on the dialog level; the one later in the page is the one on top.
+    expect(dialog.contains(layer)).toBe(false);
+    expect(dialog.compareDocumentPosition(layer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('opens inside that shell on its own overlay, so it is not painted under it', async () => {
+  it('inside a design-system dialog with typed input: Escape closes the picker, the next one asks before the dialog closes', async () => {
     const user = userEvent.setup();
-    render(<DialogShell open onClose={vi.fn()} title="Edit team"><AvatarPicker onChange={vi.fn()} /></DialogShell>);
+    const onOpenChange = vi.fn();
+    render(<Dialog open onOpenChange={onOpenChange} title="Edit team" dirty><AvatarPicker onChange={vi.fn()} /></Dialog>);
     await user.click(screen.getByTestId('avatar-picker-trigger'));
-    const overlay = screen.getByRole('heading', { name: 'Edit team' }).closest('[data-electron-no-drag]')!;
-    expect(overlay.contains(screen.getByTestId('avatar-picker'))).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('avatar-picker')).toBeNull();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await user.keyboard('{Escape}');
+    expect(await screen.findByRole('alertdialog', { name: getI18n().designSystem.discardTitle })).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 
   it('inside a design-system dialog: sits on the dialog level, and Escape closes the picker alone', async () => {

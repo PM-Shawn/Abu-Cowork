@@ -30,6 +30,8 @@ describe('cardFocus', () => {
     expect(cardProps('plugin-orphan', 'a')).toEqual({ 'data-plugin-orphan-card': 'a' });
     expect(cardProps('skill', 'a')).toEqual({ 'data-skill-entry': 'a' });
     expect(cardProps('connector', 'a')).toEqual({ 'data-connector-card': 'a' });
+    expect(cardProps('expert', 'a')).toEqual({ 'data-expert-card': 'a' });
+    expect(cardProps('team', 'a')).toEqual({ 'data-team-card': 'a' });
   });
 
   it('finds a card among the cards of its own kind only', () => {

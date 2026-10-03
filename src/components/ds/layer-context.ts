@@ -87,6 +87,18 @@ export interface LayerHandle {
   onEscapeKeyDown: (event: Event) => void;
 }
 
+// Radix turns pointer input off on <body> while a modal layer is on the page and turns it back on
+// when the last one leaves. It still counts a menu that is fading out inside a dialog, and when
+// the dialog leaves the page first (two Escapes within one frame end both fades together) nothing
+// turns it back on: the page takes no click until it is reloaded. Every layer of the design system
+// carries data-ds-layer, and no other code holds this lock, so once none is left on the page the
+// lock has no owner and is released.
+function releaseOwnerlessPointerLock() {
+  if (document.body.style.pointerEvents !== 'none') return;
+  if (document.querySelector('[data-ds-layer]')) return;
+  document.body.style.pointerEvents = '';
+}
+
 // Registers an open layer with the nearest LayerProvider.
 export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean) => void, guard?: DialogGuard): LayerHandle {
   const registry = useLayerRegistry();
@@ -126,6 +138,8 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
   const onCloseAutoFocus = useCallback((event: Event) => {
     if (closedByRegistry.current) event.preventDefault();
     closedByRegistry.current = false;
+    // This layer has left the page.
+    releaseOwnerlessPointerLock();
   }, []);
   const onEscapeKeyDown = useCallback((event: Event) => {
     if (latest.current.open) return;

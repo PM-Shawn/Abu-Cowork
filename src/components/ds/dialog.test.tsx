@@ -1253,4 +1253,60 @@ describe('Escape while the layer above fades out', () => {
 
     expect(onOpenChange.mock.calls).toEqual([[false]]);
   });
+
+  // Radix turns pointer input off on <body> under a modal layer and counts a menu that is fading
+  // out as one. Two Escapes within one frame end both fades together, the dialog first: its menu
+  // leaves the page still counted, and Radix never turns pointer input back on.
+  it('gives the page its pointer input back when the dialog leaves before the menu that was fading in it', async () => {
+    const user = userEvent.setup();
+    render(<Window onOpenChange={() => {}}>{more}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect(document.body.style.pointerEvents).toBe('none');
+    keepClosingLayersOnScreen();
+    escape();
+    escape();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]');
+    expect(dialog).not.toBeNull();
+    expect(document.querySelector('[role="menu"][data-state="closed"]')).not.toBeNull();
+
+    // The dialog's fade ends first; what the layers do once they have gone runs one timer tick later.
+    vi.useFakeTimers();
+    try {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { dialog!.dispatchEvent(ended); });
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+  });
+
+  it('leaves pointer input off while a layer is still on the page', async () => {
+    const user = userEvent.setup();
+    render(<Window onOpenChange={() => {}}>{more}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    keepClosingLayersOnScreen();
+    escape();
+    const menu = document.querySelector<HTMLElement>('[role="menu"][data-state="closed"]');
+    expect(menu).not.toBeNull();
+
+    // The menu has gone; its dialog is still open over the page.
+    vi.useFakeTimers();
+    try {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { menu!.dispatchEvent(ended); });
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(screen.getByRole('dialog')).toHaveAttribute('data-state', 'open');
+    expect(document.body.style.pointerEvents).toBe('none');
+  });
 });

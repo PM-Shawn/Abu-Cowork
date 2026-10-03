@@ -183,11 +183,11 @@ describe('AgentsSection — what the card row carries', () => {
     // Same defect, the other slot: the detail header's plate is 56px, and a
     // `2xl` avatar covers it exactly, so the header needs the same ask as the
     // card. The card's own avatar stays in the DOM behind the modal, so pick
-    // the 56px (`h-14`) one.
+    // the 56px (`size-14`) one.
     renderShelf('market', [builtinMeta]);
     fireEvent.click(screen.getByText('产品经理'));
     const avatar = [...document.querySelectorAll('[data-testid="agent-avatar"]')]
-      .find((el) => el.className.includes('h-14'));
+      .find((el) => el.className.includes('size-14'));
     expect(avatar).toBeDefined();
     expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
     expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');

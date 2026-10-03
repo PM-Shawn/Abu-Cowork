@@ -11,8 +11,13 @@
  * Skills keep the slug rule, so the two editors are pinned together here.
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The editor's avatar picker is a design-system popover, so it renders inside the provider.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/utils/itemStorage', () => ({
   ITEM_EXISTS_CODE: 'ITEM_EXISTS',

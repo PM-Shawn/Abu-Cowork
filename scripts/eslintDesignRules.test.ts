@@ -162,4 +162,28 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const reexport = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(reexport, 'src/components/settings/sections/index.ts')).not.toEqual([]);
   });
+
+  it('checks the shell shared by the extensions and experts pages', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/toolbox/TopTabNav.tsx',
+      'src/components/toolbox/SourceSubNav.test.tsx',
+      'src/components/toolbox/ToolCard.tsx',
+      'src/components/toolbox/ToolGrid.test.tsx',
+      'src/components/toolbox/SourceBadge.tsx',
+      'src/components/common/AgentAvatar.tsx',
+      'src/components/common/AvatarPicker.test.tsx',
+      'src/components/common/PluginUpdateBadge.tsx',
+      'src/components/team/TeamAvatar.tsx',
+      'src/components/settings/ToolboxModal.tsx',
+      'src/components/settings/ToolboxModal.sources.test.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/toolbox/extensionSource.ts')).not.toEqual([]);
+    // common/ and team/ have no directory entry: files that have not migrated stay on the old rules.
+    expect(await messages(code, 'src/components/common/ConfirmDialog.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/team/DialogShell.tsx')).toEqual([]);
+  });
 });

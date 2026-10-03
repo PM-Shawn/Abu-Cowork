@@ -41,7 +41,7 @@ describe('MarketplaceEntryRow', () => {
     const name = screen.getByTestId('name');
     expect(name).toHaveAttribute('title', 'long-plugin-name');
     expect(name.className).toContain('min-w-10');
-    expect(screen.getByTestId('card').firstElementChild?.className).toContain('min-h-[120px]');
+    expect(screen.getByTestId('card').firstElementChild?.className).toContain('min-h-30');
     expect(screen.getByRole('button', { name: '安装' })).toBeVisible();
     expect(screen.getByText('未签名').closest('.line-clamp-2')).toBeNull();
   });

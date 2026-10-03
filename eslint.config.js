@@ -210,6 +210,18 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/AboutSection*.{ts,tsx}',
   'src/components/settings/sections/AuthorSection*.{ts,tsx}',
   'src/components/settings/sections/index.ts',
+  // Other pages, file by file (batch 7). customize/ and common/ keep legacy files, so no directory glob there.
+  'src/components/toolbox/TopTabNav*.{ts,tsx}',
+  'src/components/toolbox/SourceSubNav*.{ts,tsx}',
+  'src/components/toolbox/ToolCard*.{ts,tsx}',
+  'src/components/toolbox/ToolGrid*.{ts,tsx}',
+  'src/components/toolbox/SourceBadge.tsx',
+  'src/components/toolbox/extensionSource.ts',
+  'src/components/common/AgentAvatar*.{ts,tsx}',
+  'src/components/common/AvatarPicker*.{ts,tsx}',
+  'src/components/common/PluginUpdateBadge.tsx',
+  'src/components/team/TeamAvatar*.{ts,tsx}',
+  'src/components/settings/ToolboxModal*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

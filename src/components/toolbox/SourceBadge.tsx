@@ -1,3 +1,4 @@
+import { Tag } from '@/components/ds/tag';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 
@@ -21,13 +22,11 @@ export default function SourceBadge({ source, className }: { source: ItemSource;
     ? (source.plugin ? format(t.toolbox.sourceFromPlugin, { plugin: source.plugin }) : t.toolbox.sourcePlugin)
     : t.toolbox.sourceEnterprise;
   return (
-    <span
-      data-testid="source-badge"
-      data-source-kind={source.kind}
-      title={label}
-      className={cn('shrink-0 max-w-[12rem] truncate rounded px-1.5 py-0.5 text-caption font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-muted)]', className)}
-    >
-      {label}
+    <span data-testid="source-badge" data-source-kind={source.kind} className={cn('inline-flex shrink-0', className)}>
+      <Tag>
+        {/* A long plugin name is cut at 12rem; the native title keeps it readable. */}
+        <span className="max-w-48 truncate" title={label}>{label}</span>
+      </Tag>
     </span>
   );
 }

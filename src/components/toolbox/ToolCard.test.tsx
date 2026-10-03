@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Button } from '@/components/ds/button';
+import SourceBadge from './SourceBadge';
 import ToolCard from './ToolCard';
 
 /**
@@ -38,7 +40,7 @@ describe('ToolCard name row width priority', () => {
   it('makes the badge the item that yields, and never the action', () => {
     render(
       <ToolCard
-        item={{ ...item, badge: <span>未签名</span>, toggle: <button>安装</button> }}
+        item={{ ...item, badge: <span>未签名</span>, toggle: <Button>安装</Button> }}
       />,
     );
 
@@ -80,5 +82,79 @@ describe('ToolCard name row width priority', () => {
     screen.getByTestId('switch').focus();
     await userEvent.keyboard('{Enter}');
     expect(onClick).toHaveBeenCalledTimes(2);
+
+    // Space opens it as well, like any button.
+    card.focus();
+    await userEvent.keyboard(' ');
+    expect(onClick).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('ToolCard shell', () => {
+  const item = { id: 'p', name: 'abu-prd-doctor', description: 'd', testId: 'card' };
+  const classes = (el: HTMLElement) => el.className.split(/\s+/);
+
+  it('is a flat card: panel corners, a separator line, the surface fill, one fixed height', () => {
+    render(<ToolCard item={item} />);
+    const card = screen.getByTestId('card');
+    expect(classes(card)).toContain('rounded-panel');
+    expect(classes(card)).toContain('border-separator');
+    expect(classes(card)).toContain('bg-surface');
+    expect(classes(card)).toContain('h-30');
+    expect(card.className).not.toContain('clay');
+  });
+
+  it('is a keyboard target with a focus ring and a hover fill when it opens something', () => {
+    render(<ToolCard item={item} onClick={vi.fn()} />);
+    const card = screen.getByTestId('card');
+    expect(card).toHaveAttribute('role', 'button');
+    expect(card).toHaveAttribute('tabindex', '0');
+    expect(card.tagName).toBe('DIV');
+    expect(classes(card)).toContain('rounded-panel');
+    expect(classes(card)).toContain('focus-visible:ring-focus');
+    expect(classes(card)).toContain('hover:bg-fill-hover');
+  });
+
+  it('has no role, no tab stop and no hover fill when it opens nothing', () => {
+    render(<ToolCard item={item} />);
+    const card = screen.getByTestId('card');
+    expect(card).not.toHaveAttribute('role');
+    expect(card).not.toHaveAttribute('tabindex');
+    expect(classes(card)).not.toContain('hover:bg-fill-hover');
+  });
+
+  it('grows with a footer and keeps the footer at the bottom', () => {
+    render(<ToolCard item={{ ...item, footer: <span>Footer line</span> }} />);
+    const card = screen.getByTestId('card');
+    expect(classes(card)).toContain('min-h-30');
+    expect(classes(card)).not.toContain('h-30');
+    expect(classes(screen.getByText('Footer line').parentElement!)).toContain('mt-auto');
+  });
+
+  it('shows the default mark when the caller gives no avatar', () => {
+    render(<ToolCard item={item} />);
+    expect(screen.getByTestId('card')).toHaveTextContent('🤖');
+  });
+});
+
+describe('SourceBadge', () => {
+  it('shows a plugin source as a neutral tag whose full text is readable on hover', () => {
+    render(<SourceBadge source={{ kind: 'plugin', plugin: 'Weather Pack' }} />);
+    const badge = screen.getByTestId('source-badge');
+    expect(badge).toHaveAttribute('data-source-kind', 'plugin');
+    const text = badge.querySelector('[title]')!;
+    expect(text.getAttribute('title')).toBe(badge.textContent);
+    expect(badge.textContent).toContain('Weather Pack');
+    expect(text.className.split(/\s+/)).toContain('truncate');
+    // The design-system tag: neutral fill, control corners.
+    expect(text.parentElement!.className.split(/\s+/)).toContain('bg-fill');
+    expect(text.parentElement!.className.split(/\s+/)).toContain('rounded-control');
+  });
+
+  it('labels the organization source and draws nothing for the user\'s own items', () => {
+    const { rerender } = render(<SourceBadge source={{ kind: 'enterprise' }} />);
+    expect(screen.getByTestId('source-badge')).toHaveAttribute('data-source-kind', 'enterprise');
+    rerender(<SourceBadge source={{ kind: 'user' }} />);
+    expect(screen.queryByTestId('source-badge')).toBeNull();
   });
 });

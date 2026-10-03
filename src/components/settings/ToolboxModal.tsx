@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useExtensionsSearchQuery, useSettingsStore, type ExtensionsTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
-import { Sparkles, Server, Search, Puzzle } from 'lucide-react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { TextField } from '@/components/ds/text-field';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import SkillsSection from '../customize/SkillsSection';
@@ -13,7 +15,6 @@ import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { useToastStore } from '@/stores/toastStore';
-import { Input } from '@/components/ui/input';
 import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import SourceSubNav from '@/components/toolbox/SourceSubNav';
 import { sourceTabId } from '@/components/toolbox/extensionSource';
@@ -29,16 +30,16 @@ import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
  *  as tabs over it. Per tab, since each tab keeps its own mounted panel. */
 const sourcePanelId = (tab: ExtensionsTab) => `extensions-panel-${tab}`;
 
-/** Plugins add their own market navigation; skills and connectors retain the released toolbox. */
-export default function ExtensionsView() {
-  const {
-    activeExtensionsTab: activeTab,
-    closeExtensions,
-    setActiveExtensionsTab,
-    setExtensionsSearchQuery,
-    pendingExtensionsSource,
-    clearPendingExtensionsSource,
-  } = useSettingsStore();
+/** Plugins add their own market navigation; skills and connectors retain the released toolbox.
+ *  `memo` with no props and one store field per selector: `App` renders for every piece of a
+ *  streamed reply, and this page holds the add menu and the tooltips of its tab row. */
+function ExtensionsView() {
+  const activeTab = useSettingsStore((s) => s.activeExtensionsTab);
+  const closeExtensions = useSettingsStore((s) => s.closeExtensions);
+  const setActiveExtensionsTab = useSettingsStore((s) => s.setActiveExtensionsTab);
+  const setExtensionsSearchQuery = useSettingsStore((s) => s.setExtensionsSearchQuery);
+  const pendingExtensionsSource = useSettingsStore((s) => s.pendingExtensionsSource);
+  const clearPendingExtensionsSource = useSettingsStore((s) => s.clearPendingExtensionsSource);
   // Per tab: 插件's words survive a trip to 技能 and are still there on return.
   const extensionsSearchQuery = useExtensionsSearchQuery(activeTab);
   const pluginSearchQuery = useExtensionsSearchQuery('plugins');
@@ -93,11 +94,11 @@ export default function ExtensionsView() {
     {
       id: 'plugins',
       label: t.toolbox.plugins,
-      icon: Puzzle,
+      icon: AppIcons.extensions,
       badge: <PluginUpdateBadge testId="plugins-tab-update-badge" />,
     },
-    { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
-    { id: 'mcp', label: t.toolbox.connectors, icon: Server },
+    { id: 'skills', label: t.toolbox.skills, icon: AppIcons.sparkles },
+    { id: 'mcp', label: t.toolbox.connectors, icon: AppIcons.connector },
   ];
 
   const binding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
@@ -148,13 +149,13 @@ export default function ExtensionsView() {
   const renderHeaderRight = () => {
     const searchBox = (
       <div className="relative w-52 shrink-0">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
-        <Input
-          type="text"
+        <Icon icon={AppIcons.search} size="sm" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-label-tertiary" />
+        <TextField
+          aria-label={t.toolbox.searchPlaceholder}
           placeholder={t.toolbox.searchPlaceholder}
           value={extensionsSearchQuery}
           onChange={(e) => setExtensionsSearchQuery(activeTab, e.target.value)}
-          className="h-8 pl-8 pr-3 text-body"
+          className="pl-7"
         />
       </div>
     );
@@ -191,7 +192,8 @@ export default function ExtensionsView() {
   };
 
   return (
-    <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
+    // No fill of its own: the page shows the surface of the card the shell puts it on.
+    <div className="flex h-full flex-col">
       {/* Content-area header row — tabs left, search + create right. Sits below
           the window's floating title-bar controls (traffic lights / sidebar
           toggle / search / new-task) via belowChrome's top clearance. There is
@@ -208,7 +210,7 @@ export default function ExtensionsView() {
       {/* 市场 | 我的 — one row, directly under the tabs and inset to the same
           grid the cards use. A bound client's 「市场」 is the organization
           catalog, so the same two shelves serve OSS and enterprise alike. */}
-      <div className="px-8"><div className="max-w-5xl mx-auto">
+      <div className="px-8"><div className="mx-auto max-w-5xl">
         <SourceSubNav
           value={sources[activeTab]}
           onChange={(next) => setSource(activeTab, next)}
@@ -236,3 +238,5 @@ export default function ExtensionsView() {
     </div>
   );
 }
+
+export default memo(ExtensionsView);

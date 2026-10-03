@@ -348,7 +348,7 @@ describe('TeamView', () => {
   it('teams tab: the opened detail keeps that grey plate too', () => {
     // The detail header's plate is the 56px slot, and a `2xl` avatar covers it
     // exactly — the same defect as on the card. The card's avatar stays in the
-    // DOM behind the modal, so pick the 56px (`h-14`) one.
+    // DOM behind the modal, so pick the 56px (`size-14`) one.
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });
     discoveryState.agents = [{ name: '分析师' }];
@@ -357,7 +357,7 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
     expect(screen.getByTestId('team-detail-start-chat')).toBeTruthy();
     const avatar = [...document.querySelectorAll('[data-testid="team-avatar"]')]
-      .find((el) => el.className.includes('h-14'));
+      .find((el) => el.className.includes('size-14'));
     expect(avatar).toBeDefined();
     expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
     expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');

@@ -17,7 +17,7 @@ export function Popover({ trigger, children, open, defaultOpen = false, onOpenCh
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
+  const { id, onCloseAutoFocus, onEscapeKeyDown } = useLayer('popover', isOpen, setOpen);
   const level = useFloatingLevel();
   return (
     <PopoverPrimitive.Root open={isOpen} onOpenChange={setOpen}>
@@ -29,6 +29,7 @@ export function Popover({ trigger, children, open, defaultOpen = false, onOpenCh
           sideOffset={6}
           collisionPadding={EDGE_GAP}
           onCloseAutoFocus={onCloseAutoFocus}
+          onEscapeKeyDown={onEscapeKeyDown}
           data-ds-layer
           data-ds-motion
           data-electron-no-drag

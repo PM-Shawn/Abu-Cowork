@@ -6,8 +6,14 @@
  * single click, with the disclosure reduced to decoration.
  */
 
-import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { ReactElement } from 'react';
+import { cleanup, render as renderBare, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeAll, describe, expect, it, vi, beforeEach, type MockInstance } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail and install windows are design-system dialogs, so the browser renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 /** A promise whose resolution this test controls, to drive plan ordering. */
 function makeDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -39,7 +45,24 @@ vi.mock('@/core/plugin/installedStore', () => ({
   upsertInstalled: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('@/core/plugin/uninstaller', () => ({ uninstallPlugin: vi.fn() }));
+// Real behaviour, observed: the install window reads the configuration fields once per render.
+vi.mock('@/core/plugin/configuration', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/core/plugin/configuration')>();
+  return { ...original, pluginConfigFields: vi.fn(original.pluginConfigFields) };
+});
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
+// How many times each card has rendered, by the id of its item.
+const cardRenders = vi.hoisted(() => ({ byId: {} as Record<string, number> }));
+vi.mock('@/components/toolbox/ToolCard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/toolbox/ToolCard')>();
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      cardRenders.byId[props.item.id] = (cardRenders.byId[props.item.id] ?? 0) + 1;
+      return actual.default(props);
+    },
+  };
+});
 // happy-dom gives Virtuoso a zero-size viewport and its ResizeObserver never
 // fires, so the real component mounts no rows at all. Mock it as a plain list
 // (the same shape ChatView's tests use) so the row markup and the wiring —
@@ -78,9 +101,10 @@ import {
   UnsupportedSourceError,
   type InstallDisclosure,
 } from '@/core/plugin/installer';
+import { pluginConfigFields } from '@/core/plugin/configuration';
 import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
-import type { InstalledPlugin } from '@/core/plugin/installedStore';
+import { readInstalledResult, type InstalledPlugin } from '@/core/plugin/installedStore';
 import { format, getI18n } from '@/i18n';
 import type { Marketplace, MarketplaceEntry } from '@/core/plugin/marketplace';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -141,6 +165,7 @@ function renderBrowser() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cardRenders.byId = {};
   usePluginStore.setState({
     marketplaces: [{ name: 'official', dir: '/m/official' }],
     installed: [],
@@ -245,7 +270,7 @@ describe('MarketplaceBrowser', () => {
 
     // Plan weather, then abandon it before it resolves.
     fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
-    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull());
 
     // Now plan cloud-thing and let *its* plan resolve.
@@ -309,7 +334,7 @@ describe('MarketplaceBrowser', () => {
     fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
     await waitFor(() => expect(screen.getByTestId('plugin-install-confirm')).toBeInTheDocument());
 
-    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull());
     expect(installPlugin).not.toHaveBeenCalled();
     expect(releasePreparedInstall).toHaveBeenCalledWith('test-prepared-token');
@@ -409,7 +434,7 @@ describe('MarketplaceBrowser', () => {
     fireEvent.click(screen.getByText('weather'));
     expect(screen.getByRole('button', { name: tb().menuTrial })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: tb().pluginsUninstall })).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('plugin-detail-menu'));
+    await userEvent.click(screen.getByTestId('plugin-detail-menu'));
     expect(screen.getByRole('menuitem', { name: tb().pluginsDisclosureSource })).toBeInTheDocument();
   });
 
@@ -430,6 +455,21 @@ describe('MarketplaceBrowser', () => {
       home: '/Users/tester',
       key: 'weather@official',
     });
+  });
+
+  it('renders no card again when a detail window opens and closes', async () => {
+    usePluginStore.setState({ installed: [installedWeather] });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    const before = { ...cardRenders.byId };
+    expect(Object.keys(before).sort()).toEqual(['cloud-thing', 'weather']);
+
+    fireEvent.click(screen.getByText('weather'));
+    expect(screen.getByTestId('plugin-manage-dialog')).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByTestId('plugin-manage-dialog'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('plugin-manage-dialog')).toBeNull());
+
+    expect(cardRenders.byId).toEqual(before);
   });
 
   it('opens the installed record in a manage dialog', async () => {
@@ -657,6 +697,338 @@ describe('MarketplaceBrowser', () => {
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry').length).toBeGreaterThan(0));
     expect(screen.queryByTestId('plugin-update-button')).toBeNull();
+  });
+});
+
+describe('MarketplaceBrowser: controls, messages and where the focus goes', () => {
+  beforeAll(() => {
+    // happy-dom lacks the pointer-capture and scroll APIs Radix menus and selects call.
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => {};
+    Element.prototype.scrollIntoView ??= () => {};
+  });
+  // A question asked right after its window has gone opens with nothing focused, and hands the
+  // focus back to the page body when it closes. A browser ignores focus() on the body; happy-dom
+  // moves the focus there.
+  let bodyFocus: MockInstance<typeof document.body.focus>;
+  beforeEach(() => { bodyFocus = vi.spyOn(document.body, 'focus').mockImplementation(() => {}); });
+  // A window still open when a test ends hands its focus back one tick after it is unmounted;
+  // that tick must not land in the next test.
+  afterEach(async () => {
+    cleanup();
+    await act(async () => {});
+    bodyFocus.mockRestore();
+    vi.mocked(readInstalledResult).mockResolvedValue({ ok: true, plugins: [] });
+  });
+
+  const twoMarkets = [{ name: 'official', dir: '/m/official' }, { name: 'second', dir: '/m/second' }];
+  const second: Marketplace = { name: 'second', plugins: [{ name: 'only-here', source: { kind: 'relative', path: './only-here' } }] };
+  const loadBoth = () => vi.mocked(loadMarketplaceFromDir).mockImplementation(async (dir) => (dir === '/m/second' ? second : marketplace));
+  const removeButton = () => screen.getByRole('button', { name: tb().pluginsRemoveMarketplace });
+  const refreshButton = () => screen.getByRole('button', { name: tb().pluginsRefreshMarketplace });
+  const answer = async (name: string) => {
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name }));
+    await act(async () => {});
+  };
+  const cardOf = (name: string) => within(screen.getAllByTestId('plugin-marketplace-entry').find((row) => row.textContent?.includes(name))!).getAllByRole('button')[0];
+
+  it('offers the marketplaces in a select: a combobox whose list holds one option per marketplace', async () => {
+    loadBoth();
+    usePluginStore.setState({ marketplaces: twoMarkets });
+    const user = userEvent.setup();
+    renderBrowser();
+    const select = await screen.findByRole('combobox', { name: tb().pluginsMarketplaceTab });
+    // The marketplace added last is the one shown.
+    expect(select).toHaveTextContent('second');
+    expect(select.parentElement).toHaveClass('w-56');
+    await screen.findByText('only-here');
+
+    await user.click(select);
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['official', 'second']);
+    await user.click(screen.getByRole('option', { name: 'official' }));
+
+    expect(await screen.findByText('weather')).toBeInTheDocument();
+    expect(screen.queryByText('only-here')).toBeNull();
+  });
+
+  it('shows the one marketplace by name, with no select', async () => {
+    renderBrowser();
+    await screen.findByText('weather');
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(screen.getByText('official')).toBeInTheDocument();
+  });
+
+  it('announces a marketplace that cannot be read, with the reason', async () => {
+    vi.mocked(loadMarketplaceFromDir).mockRejectedValue(new Error('No marketplace manifest in /m/official'));
+    renderBrowser();
+    const message = await screen.findByRole('alert');
+    expect(message).toHaveTextContent(tb().pluginsMarketplaceReadFailed);
+    expect(message).toHaveTextContent('No marketplace manifest in /m/official');
+  });
+
+  it('announces a failed refresh above the list it keeps showing', async () => {
+    renderBrowser();
+    await screen.findByText('weather');
+    vi.mocked(loadMarketplaceFromDir).mockRejectedValueOnce(new Error('market unavailable'));
+    fireEvent.click(refreshButton());
+    const message = await screen.findByRole('alert');
+    expect(message).toHaveTextContent('market unavailable');
+    expect(message).toHaveTextContent(tb().pluginsCachedMarketplace);
+    expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2);
+  });
+
+  it('shows one spinner that says it is loading while the first listing is read', async () => {
+    const reading = makeDeferred<Marketplace>();
+    vi.mocked(loadMarketplaceFromDir).mockReturnValue(reading.promise);
+    renderBrowser();
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent(getI18n().common.loading);
+    await act(async () => { reading.resolve(marketplace); });
+    expect(document.querySelector('[data-ds-spinner]')).toBeNull();
+  });
+
+  it('says nothing matches when the search hides every entry', async () => {
+    render(<MarketplaceBrowser home="/Users/tester" searchQuery="zzz-no-such-plugin" onAddMarketplace={vi.fn()} />);
+    expect(await screen.findByText(tb().pluginsNoMatches)).toHaveClass('text-title');
+  });
+
+  it('with no marketplace, says so and offers to add one; the app market offers no button', () => {
+    usePluginStore.setState({ marketplaces: [] });
+    const onAdd = vi.fn();
+    const page = render(<MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={onAdd} />);
+    expect(screen.getByText(tb().pluginsNoMarketplaces)).toHaveClass('text-title');
+    expect(screen.getByText(tb().pluginsNoMarketplacesHint)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('plugin-add-marketplace-cta'));
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    page.unmount();
+
+    render(<MarketplaceBrowser home="/Users/tester" mode="apps" searchQuery="" onAddMarketplace={onAdd} />);
+    expect(screen.getByText(getI18n().appMarket.emptyTitle)).toBeInTheDocument();
+    expect(screen.queryByTestId('plugin-add-marketplace-cta')).toBeNull();
+  });
+
+  it('names the refresh and remove buttons, and keeps refresh focusable while the listing is read', async () => {
+    renderBrowser();
+    await screen.findByText('weather');
+    expect(refreshButton()).not.toHaveAttribute('aria-disabled');
+    expect(removeButton()).toBeInTheDocument();
+
+    const reading = makeDeferred<Marketplace>();
+    vi.mocked(loadMarketplaceFromDir).mockReturnValue(reading.promise);
+    refreshButton().focus();
+    fireEvent.click(refreshButton());
+    // Working, not disabled: the focus stays on it. A second press starts no second read.
+    expect(refreshButton()).toHaveAttribute('aria-disabled', 'true');
+    expect(refreshButton()).not.toBeDisabled();
+    expect(refreshButton()).toHaveFocus();
+    const reads = vi.mocked(loadMarketplaceFromDir).mock.calls.length;
+    fireEvent.click(refreshButton());
+    expect(vi.mocked(loadMarketplaceFromDir).mock.calls.length).toBe(reads);
+    await act(async () => { reading.resolve(marketplace); });
+    expect(refreshButton()).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('asks before removing a marketplace, by name, and keeps it when the answer is cancel', async () => {
+    renderBrowser();
+    await screen.findByText('weather');
+    fireEvent.click(removeButton());
+    const question = screen.getByRole('alertdialog');
+    expect(question).toHaveAccessibleName(tb().pluginsRemoveMarketplaceTitle);
+    expect(question).toHaveTextContent(format(tb().pluginsRemoveMarketplaceMessage, { name: 'official' }));
+    expect(within(question).getByRole('button', { name: tb().pluginsRemoveMarketplace }).className).toContain('text-danger');
+
+    await answer(getI18n().common.cancel);
+    expect(usePluginStore.getState().marketplaces).toEqual([{ name: 'official', dir: '/m/official' }]);
+  });
+
+  it('removes nothing when the marketplace has gone from the list by the time of the answer', async () => {
+    loadBoth();
+    usePluginStore.setState({ marketplaces: twoMarkets });
+    const removeMarketplace = vi.fn();
+    usePluginStore.setState({ removeMarketplace });
+    renderBrowser();
+    await screen.findByText('only-here');
+    fireEvent.click(removeButton());
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('second');
+    // Removed from somewhere else while the question was on screen.
+    act(() => { usePluginStore.setState({ marketplaces: [twoMarkets[0]] }); });
+
+    await answer(tb().pluginsRemoveMarketplace);
+    expect(removeMarketplace).not.toHaveBeenCalled();
+    usePluginStore.setState(usePluginStore.getInitialState());
+  });
+
+  it('renders the open install window once per render of the page', async () => {
+    const view = render(<MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: `${tb().pluginsInstall}: weather` }));
+    await screen.findByTestId('plugin-install-confirm');
+    await act(async () => {});
+    vi.mocked(pluginConfigFields).mockClear();
+
+    // The page renders again for a reason of its own; the window is handed the same plan.
+    view.rerender(<MarketplaceBrowser home="/Users/tester" searchQuery="wea" onAddMarketplace={vi.fn()} />);
+
+    expect(pluginConfigFields).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes nothing when the question is answered after the page has left the screen', async () => {
+    const removeMarketplace = vi.fn();
+    usePluginStore.setState({ removeMarketplace });
+    function Shell({ page }: { page: boolean }) {
+      return page ? <MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={vi.fn()} /> : <p>another view</p>;
+    }
+    const view = render(<Shell page />);
+    await screen.findByText('weather');
+    fireEvent.click(removeButton());
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    view.rerender(<Shell page={false} />);
+
+    await answer(tb().pluginsRemoveMarketplace);
+    // The marketplace is still in the store, so only the "page has gone" check stops the removal.
+    expect(usePluginStore.getState().marketplaces.map((m) => m.name)).toEqual(['official']);
+    expect(removeMarketplace).not.toHaveBeenCalled();
+    usePluginStore.setState(usePluginStore.getInitialState());
+  });
+
+  it('removes the marketplace that was asked about, once', async () => {
+    loadBoth();
+    const removeMarketplace = vi.fn();
+    usePluginStore.setState({ marketplaces: twoMarkets, removeMarketplace });
+    renderBrowser();
+    await screen.findByText('only-here');
+    fireEvent.click(removeButton());
+    await answer(tb().pluginsRemoveMarketplace);
+    expect(removeMarketplace).toHaveBeenCalledExactlyOnceWith('second');
+    usePluginStore.setState(usePluginStore.getInitialState());
+  });
+
+  it('after a marketplace is removed the focus goes to the toolbar, not to the next marketplace\'s Remove button', async () => {
+    loadBoth();
+    usePluginStore.setState({ marketplaces: [...twoMarkets, { name: 'third', dir: '/m/official' }] });
+    vi.mocked(loadMarketplaceFromDir).mockImplementation(async (dir) => (dir === '/m/second' ? second : { ...marketplace, name: 'third' }));
+    renderBrowser();
+    await screen.findByText('weather');
+    removeButton().focus();
+    fireEvent.click(removeButton());
+    await answer(tb().pluginsRemoveMarketplace);
+
+    expect(usePluginStore.getState().marketplaces.map((m) => m.name)).toEqual(['official', 'second']);
+    expect(screen.getByRole('combobox', { name: tb().pluginsMarketplaceTab })).toHaveFocus();
+  });
+
+  it('after the last marketplace is removed the focus goes to the button that adds one', async () => {
+    renderBrowser();
+    await screen.findByText('weather');
+    removeButton().focus();
+    fireEvent.click(removeButton());
+    await answer(tb().pluginsRemoveMarketplace);
+
+    expect(screen.getByTestId('plugin-add-marketplace-cta')).toHaveFocus();
+  });
+
+  it('the card buttons carry the entry name and a press on them does not also open the card', async () => {
+    usePluginStore.setState({ installed: [{ ...installedWeather, version: '0.9.0' }] });
+    renderBrowser();
+    const update = await screen.findByTestId('plugin-update-button');
+    expect(update).toHaveAccessibleName(`${tb().pluginsUpdate}: weather`);
+    fireEvent.click(update);
+    await screen.findByTestId('plugin-install-confirm');
+    // The update preview, not the detail window the card itself opens.
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(tb().pluginsDisclosureTitle);
+    expect(screen.queryByTestId('plugin-manage-dialog')).toBeNull();
+    expect(planInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('after an install the focus goes to the card, whose Install button is gone', async () => {
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    // The install writes the record; the store reads it back before the install is reported done.
+    vi.mocked(readInstalledResult).mockResolvedValue({ ok: true, plugins: [installedWeather] });
+    const install = screen.getByRole('button', { name: `${tb().pluginsInstall}: weather` });
+    install.focus();
+    fireEvent.click(install);
+    fireEvent.click(await screen.findByTestId('plugin-install-confirm'));
+    await waitFor(() => expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull());
+
+    expect(screen.queryByRole('button', { name: `${tb().pluginsInstall}: weather` })).toBeNull();
+    // The window hands the focus on one tick after it has gone.
+    await waitFor(() => expect(cardOf('weather')).toHaveFocus());
+  });
+
+  it('after a cancelled install preview the focus is back on the Install button', async () => {
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    const install = screen.getByRole('button', { name: `${tb().pluginsInstall}: weather` });
+    install.focus();
+    fireEvent.click(install);
+    await screen.findByTestId('plugin-install-confirm');
+    fireEvent.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+
+    // The window hands the focus back one tick after it has gone.
+    await waitFor(() => expect(install).toHaveFocus());
+  });
+
+  it('after an uninstall from the detail window the focus goes to the card that replaced the installed one', async () => {
+    usePluginStore.setState({ installed: [installedWeather] });
+    vi.mocked(uninstallPlugin).mockReturnValue(new Promise(() => {}));
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    cardOf('weather').focus();
+    fireEvent.click(cardOf('weather'));
+    const uninstall = within(screen.getByRole('dialog')).getByRole('button', { name: tb().pluginsUninstall });
+    uninstall.focus();
+    fireEvent.click(uninstall);
+    await answer(tb().pluginsUninstall);
+    await act(async () => { usePluginStore.setState({ installed: [] }); });
+
+    expect(screen.getByRole('button', { name: `${tb().pluginsInstall}: weather` })).toBeInTheDocument();
+    expect(cardOf('weather')).toHaveFocus();
+    // Still there after the closed layers have handed their focus back.
+    await act(async () => {});
+    expect(cardOf('weather')).toHaveFocus();
+  });
+
+  it('after an install whose marketplace is gone is uninstalled, the focus goes to the next such card', async () => {
+    usePluginStore.setState({
+      marketplaces: [{ name: 'abu-official', dir: '/m/abu', builtin: true }, { name: 'official', dir: '/m/official' }],
+      installed: [
+        { ...installedWeather, key: 'stale@removed', marketplace: 'removed', name: 'stale' },
+        { ...installedWeather, key: 'older@removed', marketplace: 'removed', name: 'older' },
+      ],
+    });
+    vi.mocked(uninstallPlugin).mockReturnValue(new Promise(() => {}));
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-orphan-row')).toHaveLength(2));
+    const orphan = (name: string) => within(screen.getAllByTestId('plugin-orphan-row').find((row) => row.textContent?.includes(name))!).getByRole('button');
+    orphan('stale').focus();
+    fireEvent.click(orphan('stale'));
+    const uninstall = within(screen.getByRole('dialog')).getByRole('button', { name: tb().pluginsUninstall });
+    uninstall.focus();
+    fireEvent.click(uninstall);
+    await answer(tb().pluginsUninstall);
+    await act(async () => { usePluginStore.setState({ installed: usePluginStore.getState().installed.filter((plugin) => plugin.key !== 'stale@removed') }); });
+
+    expect(screen.getAllByTestId('plugin-orphan-row')).toHaveLength(1);
+    expect(orphan('older')).toHaveFocus();
+  });
+
+  it('lists only apps in the app market, with 使用 for one that is not installed and 进入 for one that is', async () => {
+    const appEntry: MarketplaceEntry = { name: 'shop', displayName: '店铺运营', providesApp: true, source: { kind: 'relative', path: './shop' } };
+    vi.mocked(loadMarketplaceFromDir).mockResolvedValue({ name: 'official', plugins: [localEntry, appEntry] });
+    const apps = render(<MarketplaceBrowser home="/Users/tester" mode="apps" searchQuery="" onAddMarketplace={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(1));
+    expect(screen.getByRole('button', { name: `${tb().pluginsUse}: 店铺运营` })).toBeInTheDocument();
+    // Managing marketplaces belongs to the plugins page.
+    expect(screen.queryByRole('button', { name: tb().pluginsRemoveMarketplace })).toBeNull();
+    apps.unmount();
+
+    usePluginStore.setState({ installed: [{ ...installedWeather, key: 'shop@official', name: 'shop' }] });
+    render(<MarketplaceBrowser home="/Users/tester" mode="apps" searchQuery="" onAddMarketplace={vi.fn()} />);
+    const enter = await screen.findByTestId('plugin-enter-app');
+    expect(enter).toHaveAccessibleName(`${tb().pluginsEnter}: 店铺运营`);
+    expect(screen.queryByTestId('plugin-installed-badge')).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
   });
 });
 

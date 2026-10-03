@@ -22,7 +22,7 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
   // close through onOpenChange. The trigger's Radix data-state may stay "open" until
   // that next right-click, so callers style an open menu from onOpenChange.
   const [dismissed, setDismissed] = useState(false);
-  const { id, onCloseAutoFocus: layerCloseAutoFocus } = useLayer('popover', isOpen && !dismissed, () => {
+  const { id, onCloseAutoFocus: layerCloseAutoFocus, onEscapeKeyDown } = useLayer('popover', isOpen && !dismissed, () => {
     setDismissed(true);
     setOpen(false);
   });
@@ -62,6 +62,7 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
+            onEscapeKeyDown={onEscapeKeyDown}
             onCloseAutoFocus={(event) => {
               closingContents.current = Math.max(0, closingContents.current - 1);
               layerCloseAutoFocus(event);

@@ -69,9 +69,11 @@ test.describe('team management surface', () => {
       const save = page.getByTestId('team-save');
       await expect(save).toBeDisabled(); // no leader yet
 
-      await page.getByTestId('team-leader-select').click();
-      await page.getByTestId('search-select-query').fill('产品');
-      await page.getByTestId('search-select-option-产品经理').click();
+      // The leader is picked in a combobox: its list opens on the search box, and a choice closes it.
+      await page.getByRole('combobox', { name: '队长', exact: true }).click();
+      await page.keyboard.type('产品');
+      await page.getByRole('option', { name: '产品经理', exact: true }).click();
+      await expect(page.getByRole('combobox', { name: '队长', exact: true })).toContainText('产品经理');
       await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
       await page.getByTestId('avatar-picker-trigger').click();
       await expect(page.getByTestId('avatar-picker')).toBeVisible();
@@ -157,7 +159,7 @@ test.describe('team management surface', () => {
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
       await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-delete').click();
-      // The "…" menu closes on click, so the ConfirmDialog's is the only 删除 left.
+      // The "…" menu closes on click, so the confirmation's is the only 删除 button left.
       await page.getByRole('button', { name: '删除', exact: true }).last().click();
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toHaveCount(0);
       await expect(page.getByText('还没有专家团')).toBeVisible();

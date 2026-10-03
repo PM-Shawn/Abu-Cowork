@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Checkbox } from '@/components/ds/checkbox';
-import { Combobox } from '@/components/ds/combobox';
+import { Combobox, MultiCombobox, type ComboboxOption } from '@/components/ds/combobox';
 import { AppIcons } from '@/components/ds/icons';
 import { RadioGroup } from '@/components/ds/radio-group';
 import { SegmentedControl } from '@/components/ds/segmented-control';
@@ -17,6 +17,12 @@ const SITE_ACCESS: SelectOption[] = [
   { value: 'allow', label: 'Allow', tone: 'success', description: 'Abu opens the site without asking.' },
   { value: 'ask', label: 'Ask every time', icon: AppIcons.settings, description: 'Abu asks before it opens the site, each time a task needs it.' },
   { value: 'block', label: 'Block', tone: 'danger', description: 'Abu never opens the site.' },
+];
+
+const TEAM_MEMBERS: ComboboxOption[] = [
+  { value: 'researcher', label: 'Researcher', description: 'Finds and reads the sources.' },
+  { value: 'writer', label: 'Writer', description: 'Drafts the report from the notes.' },
+  { value: 'reviewer', label: 'Reviewer', description: 'Checks the draft against the sources.' },
 ];
 
 export function FormSection() {
@@ -37,6 +43,7 @@ export function FormSection() {
   const [groupModel, setGroupModel] = useState('sonnet');
   const [groupAccess, setGroupAccess] = useState('allow');
   const [groupNotify, setGroupNotify] = useState(true);
+  const [members, setMembers] = useState(['researcher', 'writer']);
   return (
     <Section id="forms" title="Form controls">
       <div className="grid max-w-3xl grid-cols-2 gap-4">
@@ -79,6 +86,15 @@ export function FormSection() {
           placeholder="Choose a model"
           searchPlaceholder="Filter models"
           emptyText="No matching model"
+        />
+        <MultiCombobox
+          label="Team members"
+          values={members}
+          onValuesChange={setMembers}
+          options={TEAM_MEMBERS}
+          placeholder="Choose members"
+          searchPlaceholder="Filter experts"
+          emptyText="No matching expert"
         />
       </div>
       <h3 className="mt-6 mb-3 text-ui font-medium text-label-secondary">Disabled and invalid</h3>

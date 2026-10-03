@@ -1,30 +1,18 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
 import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
+import { useSettingsStore, type ExtensionsTab } from '@/stores/settingsStore';
 
 // Every tab is split by SOURCE: 「市场」 is what is on offer, 「我的」 what this
 // user has. A bound client's 「市场」 is its organization catalog, so the same
 // two shelves serve OSS and enterprise alike.
 
-type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
-
-const settingsState = {
-  activeExtensionsTab: 'skills' as ExtensionsTab,
-  closeExtensions: vi.fn(),
-  setActiveExtensionsTab: vi.fn(),
-  extensionsSearchQueries: { plugins: '', skills: '', mcp: '' } as Record<ExtensionsTab, string>,
-  setExtensionsSearchQuery: vi.fn((tab: ExtensionsTab, value: string) => {
-    settingsState.extensionsSearchQueries[tab] = value;
-  }),
-};
-
-vi.mock('@/stores/settingsStore', () => ({
-  useSettingsStore: () => settingsState,
-  useExtensionsSearchQuery: (tab?: ExtensionsTab) =>
-    settingsState.extensionsSearchQueries[tab ?? settingsState.activeExtensionsTab] ?? '',
-}));
+// The page takes no props and reads the real settings store one field at a time, so a
+// test changes what it shows by changing the store.
+const showTab = (activeExtensionsTab: ExtensionsTab) => act(() => useSettingsStore.setState({ activeExtensionsTab }));
 
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
@@ -74,20 +62,22 @@ vi.mock('@/components/toolbox/plugins/PluginsTab', () => ({ default: () => <div>
 
 vi.mock('@/components/toolbox/TopTabNav', () => ({
   default: ({ items, right }: { items: Array<{ id: string; label: string }>; right: ReactNode }) => (
-    <div>{items.map(item => <button key={item.id}>{item.label}</button>)}{right}</div>
+    <div>{items.map(item => <Button key={item.id}>{item.label}</Button>)}{right}</div>
   ),
 }));
 vi.mock('@/components/toolbox/ToolboxCreateMenu', () => ({
-  default: () => <button data-testid="create-control">Add</button>,
+  default: () => <Button data-testid="create-control">Add</Button>,
 }));
 
 import ExtensionsView from './ToolboxModal';
 
+const resetSettings = (activeExtensionsTab: ExtensionsTab) => useSettingsStore.setState({
+  viewMode: 'chat', activeExtensionsTab, extensionsSearchQueries: { plugins: '', skills: '', mcp: '' }, pendingExtensionsSource: null,
+});
 
 describe('Extensions capability sources (bound enterprise client)', () => {
   beforeEach(() => {
-    settingsState.activeExtensionsTab = 'skills';
-    settingsState.extensionsSearchQueries = { plugins: '', skills: '', mcp: '' };
+    resetSettings('skills');
     // The shelf each tab sits on persists, so every case starts from the
     // default shelf.
     useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
@@ -95,7 +85,7 @@ describe('Extensions capability sources (bound enterprise client)', () => {
   });
 
   it.each(['skills', 'mcp'] as const)('opens %s on the organization catalog and keeps 我的 for this user', (activeTab) => {
-    settingsState.activeExtensionsTab = activeTab;
+    resetSettings(activeTab);
     render(<ExtensionsView />);
     // 「市场」 is what is on offer, and for a bound client that IS the
     // organization catalog — reached without a scope control of its own.
@@ -110,7 +100,7 @@ describe('Extensions capability sources (bound enterprise client)', () => {
   });
 
   it('opens plugins on the organization catalog and keeps authored plugins under 我的', () => {
-    settingsState.activeExtensionsTab = 'plugins';
+    resetSettings('plugins');
     render(<ExtensionsView />);
     expect(screen.getByTestId('organization-catalog')).toHaveAttribute('data-slot', 'pluginTab');
     expect(screen.queryByTestId('create-control')).toBeNull();
@@ -120,11 +110,11 @@ describe('Extensions capability sources (bound enterprise client)', () => {
     expect(screen.getByTestId('create-control')).toBeVisible();
   });
 
-  it('passes the current search to the organization capability slot', async () => {
-    const { rerender } = render(<ExtensionsView />);
+  it('passes the current search to the organization capability slot', () => {
+    render(<ExtensionsView />);
     fireEvent.change(screen.getByPlaceholderText('Search'), { target: { value: 'finance' } });
-    rerender(<ExtensionsView />);
-    await waitFor(() => expect(screen.getByTestId('organization-catalog')).toHaveTextContent('finance'));
+    expect(screen.getByTestId('organization-catalog')).toHaveTextContent('finance');
+    expect(useSettingsStore.getState().extensionsSearchQueries.skills).toBe('finance');
   });
 });
 
@@ -132,18 +122,15 @@ it('retains visited personal panels and hides inactive content across tab switch
   useExtensionSourceStore.setState({
     sources: { plugins: 'mine', skills: 'mine', mcp: 'mine', members: 'mine', teams: 'mine' },
   });
-  settingsState.activeExtensionsTab = 'skills';
-  const { rerender } = render(<ExtensionsView />);
+  resetSettings('skills');
+  render(<ExtensionsView />);
   const skills = screen.getByText('Personal skills');
-  settingsState.activeExtensionsTab = 'mcp';
-  rerender(<ExtensionsView />);
+  showTab('mcp');
   expect(skills).not.toBeVisible();
   expect(screen.getByText('Personal MCP')).toBeVisible();
-  settingsState.activeExtensionsTab = 'plugins';
-  rerender(<ExtensionsView />);
+  showTab('plugins');
   const plugins = screen.getByText('Personal plugins');
-  settingsState.activeExtensionsTab = 'skills';
-  rerender(<ExtensionsView />);
+  showTab('skills');
   expect(screen.getByText('Personal skills')).toBe(skills);
   expect(skills).toBeVisible();
   expect(plugins).not.toBeVisible();

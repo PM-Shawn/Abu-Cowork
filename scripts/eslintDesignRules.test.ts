@@ -162,4 +162,123 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const reexport = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(reexport, 'src/components/settings/sections/index.ts')).not.toEqual([]);
   });
+
+  it('checks the shell shared by the extensions and experts pages', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/toolbox/TopTabNav.tsx',
+      'src/components/toolbox/SourceSubNav.test.tsx',
+      'src/components/toolbox/ToolCard.tsx',
+      'src/components/toolbox/ToolGrid.test.tsx',
+      'src/components/toolbox/SourceBadge.tsx',
+      'src/components/common/AgentAvatar.tsx',
+      'src/components/common/AvatarPicker.test.tsx',
+      'src/components/common/PluginUpdateBadge.tsx',
+      'src/components/team/TeamAvatar.tsx',
+      'src/components/settings/ToolboxModal.tsx',
+      'src/components/settings/ToolboxModal.sources.test.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/toolbox/extensionSource.ts')).not.toEqual([]);
+    // common/ and team/ have no directory entry: files that have not migrated stay on the old rules.
+    expect(await messages(code, 'src/components/common/ConfirmDialog.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/team/useConversationTeam.test.tsx')).toEqual([]);
+  });
+
+  it('checks every file of the plugins page, tests and helpers included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/toolbox/plugins/PluginsTab.tsx',
+      'src/components/toolbox/plugins/MarketplaceBrowser.test.tsx',
+      'src/components/toolbox/plugins/InstallDisclosureDialog.tsx',
+      'src/components/toolbox/plugins/UninstallPluginDialog.tsx',
+      'src/components/toolbox/plugins/AddMarketplaceDialog.test.tsx',
+      'src/components/toolbox/plugins/AppMarketDialog.tsx',
+      'src/components/toolbox/plugins/NewFileOfThePage.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/toolbox/plugins/serverCommand.ts')).not.toEqual([]);
+    // The focus helper the card grids of the page share.
+    expect(await messages(icon, 'src/components/toolbox/cardFocus.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/cardFocus.test.ts')).not.toEqual([]);
+  });
+
+  it('checks every file of the skills page, tests and helpers included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/customize/SkillsSection.tsx',
+      'src/components/customize/SkillsSection.test.tsx',
+      'src/components/customize/SkillEditor.tsx',
+      'src/components/customize/SkillEditor.nameCollision.test.tsx',
+      'src/components/customize/SkillUploadModal.tsx',
+      'src/components/customize/SkillHistoryModal.test.tsx',
+      'src/components/customize/SkillDraftsPanel.tsx',
+      'src/components/customize/SkillCategoryBlocksPanel.tsx',
+      'src/components/toolbox/skills/SkillDetailPanel.tsx',
+      'src/components/toolbox/skills/NewFileOfThePage.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/customize/skillHistoryTime.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/skills/isSystemSkill.ts')).not.toEqual([]);
+    // customize/ has no directory entry: the unused files stay on the old rules.
+    expect(await messages(code, 'src/components/customize/SkillDetailModal.tsx')).toEqual([]);
+  });
+
+  it('checks every file of the connectors page, tests and helpers included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/customize/MCPSection.tsx',
+      'src/components/customize/MCPSection.test.tsx',
+      'src/components/customize/MCPServerFormDialog.tsx',
+      'src/components/customize/MCPServerFormDialog.test.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/customize/toolCountLabel.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/customize/toolCountLabel.test.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/connectors/connectorPrefill.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/windowHeight.ts')).not.toEqual([]);
+    // The unused files stay on the old rules.
+    expect(await messages(code, 'src/components/customize/ModelsSection.tsx')).toEqual([]);
+  });
+
+  it('checks every file of the experts and expert teams page, tests included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/team/TeamView.tsx',
+      'src/components/team/TeamView.test.tsx',
+      'src/components/customize/AgentsSection.tsx',
+      'src/components/customize/AgentsSection.source.test.tsx',
+      'src/components/customize/AgentsSection.deleteInTeams.test.tsx',
+      'src/components/customize/AgentsSection.pluginSource.test.tsx',
+      'src/components/customize/AgentEditor.tsx',
+      'src/components/customize/AgentEditor.identity.test.tsx',
+      'src/components/customize/AgentEditor.nameCollision.test.tsx',
+      'src/components/customize/AgentEditor.nameMode.test.tsx',
+      'src/components/customize/AgentEditor.pluginGuard.test.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    // customize/ has no directory entry: the files nothing renders stay on the old rules.
+    expect(await messages(code, 'src/components/customize/AgentDetailModal.tsx')).toEqual([]);
+  });
+
+  it('checks the extensions and experts files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/toolbox/ToolCard.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/toolbox/plugins/MarketplaceBrowser.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/customize/MCPSection.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/team/TeamView.tsx')).not.toEqual([]);
+    // The directory entry: a toolbox file no file-by-file entry names is checked as well.
+    expect(await messages(code, 'src/components/toolbox/NewFileOfTheDirectory.tsx')).not.toEqual([]);
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/toolbox/useTrialLauncher.ts')).not.toEqual([]);
+  });
 });

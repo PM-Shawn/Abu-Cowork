@@ -1,12 +1,14 @@
-import type { LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
+import { Icon } from '@/components/ds/icon';
+import { Pressable } from '@/components/ds/pressable';
 import { cn } from '@/lib/utils';
 import { windowDragRowProps } from '@/utils/windowDrag';
 
 export interface TopTabNavItem<T extends string = string> {
   id: T;
   label: string;
-  icon: LucideIcon;
+  /** A design-system icon: callers pass `AppIcons.*`. */
+  icon: ComponentProps<typeof Icon>['icon'];
   /** Optional trailing adornment (e.g. an update-count badge). Rendered after
    *  the label, inside the tab button, so it moves with the tab. */
   badge?: ReactNode;
@@ -31,8 +33,9 @@ interface TopTabNavProps<T extends string> {
 }
 
 /**
- * Shared horizontal tab-nav (ToolboxModal / AutomationView) with a filled-pill
- * active state (no underline, no bottom border line).
+ * Shared horizontal tab-nav (ToolboxModal / TeamView / AutomationView) with a
+ * filled-pill active state (no underline, no bottom border line). The tabs stay
+ * plain buttons: both E2E suites find them by that role.
  *
  * Two positioning modes:
  *  - default: sits flush at the card top — when the sidebar is collapsed the
@@ -46,34 +49,28 @@ export default function TopTabNav<T extends string>({
 }: TopTabNavProps<T>) {
   const content = (
     <>
-      <div className="flex items-center gap-1 min-w-0">
+      <div className="flex min-w-0 items-center gap-1">
         {items.map((item) => {
-          const Icon = item.icon;
           const isActive = activeId === item.id;
           return (
-            <button
+            <Pressable
               key={item.id}
               onClick={() => onSelect(item.id)}
               className={cn(
-                'flex items-center gap-2 px-3 py-1.5 rounded-lg text-body font-medium transition-colors shrink-0',
-                isActive
-                  // Clay tint (same pill as 「开始对话」) so the active tab does not
-                  // read identically to whatever tab the pointer happens to hover.
-                  ? 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]'
-                  : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
+                'flex h-7 shrink-0 items-center gap-2 rounded-control px-3 text-ui font-medium',
+                // The selected fill is a step darker than the hover fill, so the tab
+                // in view never reads like a tab the pointer happens to be over.
+                isActive ? 'bg-fill-selected text-label' : 'text-label-secondary hover:bg-fill-hover hover:text-label',
               )}
             >
-              <Icon className={cn(
-                'h-4 w-4 shrink-0',
-                isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
-              )} />
+              <Icon icon={item.icon} size="md" />
               <span>{item.label}</span>
               {item.badge}
-            </button>
+            </Pressable>
           );
         })}
       </div>
-      {right && <div className="flex items-center gap-2 shrink-0">{right}</div>}
+      {right && <div className="flex shrink-0 items-center gap-2">{right}</div>}
     </>
   );
 
@@ -82,8 +79,8 @@ export default function TopTabNav<T extends string>({
   // the cards below.
   if (belowChrome) {
     return (
-      <nav {...windowDragRowProps()} data-testid="top-tab-nav" className="shrink-0 pt-12 pb-3 px-8">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+      <nav {...windowDragRowProps()} data-testid="top-tab-nav" className="shrink-0 px-8 pt-12 pb-3">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
           {content}
         </div>
       </nav>

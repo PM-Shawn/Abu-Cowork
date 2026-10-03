@@ -266,6 +266,45 @@ describe('Menu', () => {
     expect(screen.getByRole('menuitem', { name: 'Copy' })).toHaveAttribute('title', 'Copy the text');
   });
 
+  it('puts the caller\'s data attributes on its content, and none of its own can be replaced', async () => {
+    const user = userEvent.setup();
+    render(
+      <Menu trigger={<Button>Actions</Button>} contentProps={{ 'data-testid': 'row-menu', 'data-ds-layer': 'mine' }}>
+        <MenuItem>Rename</MenuItem>
+      </Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const menu = screen.getByTestId('row-menu');
+    expect(menu).toHaveAttribute('role', 'menu');
+    expect(menu).toHaveAttribute('data-ds-layer', 'true');
+  });
+
+  it('puts a test id on the item that asks for one, in both kinds of menu, and nothing on the others', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <Menu trigger={<Button>Actions</Button>}>
+          <MenuItem testId="row-menu-delete">删除</MenuItem>
+          <MenuItem>Rename</MenuItem>
+        </Menu>
+        <ContextMenu content={<MenuItem testId="message-copy">Copy</MenuItem>}>
+          <div>Message body</div>
+        </ContextMenu>
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const item = screen.getByTestId('row-menu-delete');
+    expect(item).toHaveAttribute('role', 'menuitem');
+    expect(screen.getByRole('menuitem', { name: '删除' })).toBe(item);
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).not.toHaveAttribute('data-testid');
+    expect(screen.getByRole('menu')).not.toHaveAttribute('data-testid');
+    await user.keyboard('{Escape}');
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(screen.getByTestId('message-copy')).toBe(screen.getByRole('menuitem', { name: 'Copy' }));
+  });
+
   it('refuses items outside a menu', () => {
     expect(() => render(<MenuItem>Orphan</MenuItem>)).toThrow(/inside <Menu> or <ContextMenu>/);
   });

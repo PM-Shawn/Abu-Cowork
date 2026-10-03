@@ -1378,7 +1378,7 @@ export default function ChatView({
                 </>
               ) : welcomeTeam ? (
                 <div data-testid="team-welcome">
-                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="h-20 w-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-title-lg" />
+                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="size-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-title-lg" />
                   <h1 className="mb-2 text-title-lg text-label">{welcomeTeam.name}</h1>
                   {welcomeTeam.description && <p className="mb-3 text-ui text-label-secondary">{welcomeTeam.description}</p>}
                   <div data-testid="team-welcome-members" className="mt-3 flex flex-wrap items-center justify-center gap-2 text-ui-sm text-label-secondary">

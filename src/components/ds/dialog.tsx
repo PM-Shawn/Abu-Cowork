@@ -7,7 +7,7 @@ import { Button, IconButton } from './button';
 import { AppIcons } from './icons';
 import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
-import { InDialogContext, useLayer, useLayerContainer, useOpenState } from './layer-context';
+import { InDialogContext, useLayer, useLayerContainer, useLayerRegistry, useOpenState } from './layer-context';
 import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
 
 const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
@@ -90,9 +90,9 @@ export function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>)
 // One dialog at a time (LayerProvider). Escape, the scrim, the close button and DialogClose
 // all close it, except while `dirty`: then the user is asked whether to discard what they typed.
 // With `dismissible={false}` only the dialog's own buttons and DialogClose close it.
-// Content taller than the window scrolls inside the dialog; the title and the footer stay put.
+// Content taller than the window scrolls inside the dialog; the title, the header and the footer stay put.
 export function Dialog({
-  title, description, children, footer, trigger, open, defaultOpen = false, onOpenChange,
+  title, description, header, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
   closeButton: closeButtonAsked = false, dismissible = true, contentProps, onCloseAutoFocus: callerCloseAutoFocus,
   initialFocus,
@@ -101,6 +101,8 @@ export function Dialog({
   // Keeps the title as the accessible name without showing it.
   titleHidden?: boolean;
   description?: ReactNode;
+  // Stays put above the scrolling content: the name row of a detail window.
+  header?: ReactNode;
   children?: ReactNode;
   footer?: ReactNode;
   trigger?: ReactNode;
@@ -160,7 +162,12 @@ export function Dialog({
   // Keep editing, Escape, or anything else that closes the question without discarding.
   const keep = () => { takePendingDiscard()?.onKeep?.(); };
 
-  const { id, onCloseAutoFocus, held } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  const registry = useLayerRegistry();
+  const { id, onCloseAutoFocus, held, onEscapeKeyDown: passEscapeWhileClosing } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, {
+    isDirty: () => dirtyRef.current,
+    confirmDiscard: askToDiscard,
+    escape: () => { if (dismissible) requestClose(); },
+  });
   // The owner closed the dialog while the discard question was on screen (a save that was in
   // flight landed): nothing is left to discard, so the question goes unanswered.
   useLayoutEffect(() => {
@@ -206,7 +213,7 @@ export function Dialog({
             data-ds-motion
             data-electron-no-drag
             role={role}
-            onEscapeKeyDown={stay}
+            onEscapeKeyDown={(event) => { passEscapeWhileClosing(event); stay?.(event); }}
             onInteractOutside={stay}
             onKeyDown={tabFromBox}
             onOpenAutoFocus={(event) => {
@@ -214,8 +221,8 @@ export function Dialog({
               const content = event.currentTarget;
               if (!(content instanceof HTMLElement)) return;
               // The close button is the only control (an enlarged image): focus goes to the box.
-              // On the button it would show the button's tooltip at once, and the first Escape
-              // would close the tooltip, not the dialog. Tab still reaches the button.
+              // On the button it would show the button's tooltip the moment the dialog opens.
+              // Tab still reaches the button.
               if (hasOnlyCloseButton(content)) {
                 event.preventDefault();
                 content.focus();
@@ -254,10 +261,12 @@ export function Dialog({
                 {description && (
                   <DialogPrimitive.Description className="mt-1 text-ui text-label-secondary">{description}</DialogPrimitive.Description>
                 )}
+                {/* With a hidden title the header is the top row: it stops short of the close button's corner. */}
+                {header && <div className={cn('shrink-0', !titleHidden && 'mt-4', titleHidden && closeButton && 'pr-8')}>{header}</div>}
                 {children && (page ? (
                   <div className="min-h-0 flex-1 text-ui text-label">{children}</div>
                 ) : (
-                  <div className={cn('flex min-h-0 flex-col', !titleHidden && 'mt-4')}>
+                  <div className={cn('flex min-h-0 flex-col', (!titleHidden || header) && 'mt-4')}>
                     {/* The 4px of padding keeps focus rings from being cut off by the scroll box. */}
                     <div className="-m-1 min-h-0 overflow-y-auto p-1 text-ui text-label">{children}</div>
                   </div>
@@ -282,6 +291,12 @@ export function Dialog({
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
+            // The question is fading out: the key goes to the top open layer, as for any closing layer.
+            onEscapeKeyDown={(event) => {
+              if (discardAsked) return;
+              event.preventDefault();
+              registry.escapeTop();
+            }}
             onOpenAutoFocus={(event) => {
               remember(discardReturnTo);
               // The first button is the one that keeps editing, which Radix focuses too.

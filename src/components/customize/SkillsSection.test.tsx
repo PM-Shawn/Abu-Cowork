@@ -10,19 +10,56 @@
  * through SkillDraftsPanel, which reads the drafts store, not discovery.
  */
 
-import { render, screen, fireEvent, within } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { useState, type ReactElement } from 'react';
+import { act, render as renderBare, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail window is a design-system dialog, so the section renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/components/chat/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div data-testid="markdown">{content}</div>,
 }));
 
+vi.mock('@/core/skill/packager', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/skill/packager')>()),
+  packSkill: vi.fn(),
+}));
+
+// How many times each card has rendered, by the id of its item.
+const cardRenders = vi.hoisted(() => ({ byId: {} as Record<string, number> }));
+vi.mock('@/components/toolbox/ToolCard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/toolbox/ToolCard')>();
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      cardRenders.byId[props.item.id] = (cardRenders.byId[props.item.id] ?? 0) + 1;
+      return actual.default(props);
+    },
+  };
+});
+
+// The history window reads the skill's change log; these tests only open it.
+vi.mock('@/core/skill/history', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/skill/history')>()),
+  readHistory: vi.fn(async () => []),
+}));
+
+import { Button } from '@/components/ds/button';
+import { readHistory } from '@/core/skill/history';
+import { remove, writeFile } from '@tauri-apps/plugin-fs';
+import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { packSkill } from '@/core/skill/packager';
+import { useToastStore } from '@/stores/toastStore';
 import { getI18n } from '@/i18n';
 import type { Skill, SkillMetadata } from '@/types';
 import { skillLoader } from '@/core/skill/loader';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import type { DraftRecord } from '@/core/skill/drafts';
 import SkillsSection from './SkillsSection';
@@ -65,6 +102,7 @@ const full = (m: SkillMetadata): Skill => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cardRenders.byId = {};
   useDiscoveryStore.setState({ skills: CATALOG });
   useSkillDraftsStore.setState({ drafts: [] });
   // Past the one-time onboarding card, so the drafts list itself renders.
@@ -142,7 +180,7 @@ describe('SkillsSection · source="mine"', () => {
     const detail = screen.getByTestId('skill-detail');
     expect(within(detail).getByText('my-notes does things')).toBeTruthy();
     // Escape closes it — the panel still owns the modal chrome after the split.
-    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByTestId('skill-detail')).toBeNull();
   });
 
@@ -157,10 +195,11 @@ describe('SkillsSection · source="mine"', () => {
   });
   it.each(['pdf-fill', 'weather-report', 'expense-policy'])('retains detail actions but not independent removal for %s', async (name) => {
     // Plugin and 企业下发 skills live on the 我的 shelf; bundled skills on 市场.
+    const user = userEvent.setup();
     render(<SkillsSection source={name === 'pdf-fill' ? 'market' : 'mine'} />);
     fireEvent.click(await screen.findByText(name));
     expect(screen.getByTestId('skill-detail')).toBeVisible();
-    fireEvent.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(screen.getByTestId('skill-detail-menu'));
     expect(screen.getByText(tb().exportSkill)).toBeVisible();
     expect(screen.getByText(tb().historyMenuLabel)).toBeVisible();
     expect(screen.queryByText(tb().skillEdit)).toBeNull();
@@ -237,9 +276,10 @@ describe('SkillsSection · disabled plugin ownership', () => {
 describe('SkillsSection · system skill protection', () => {
   const openMenu = async (name: string) => {
     // Both skills here are the user's own — the 我的 shelf.
+    const user = userEvent.setup();
     render(<SkillsSection source="mine" />);
     fireEvent.click(await screen.findByText(name));
-    fireEvent.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(screen.getByTestId('skill-detail-menu'));
   };
 
   it('withholds edit and delete from a user skill that shares a builtin template name', async () => {
@@ -253,6 +293,236 @@ describe('SkillsSection · system skill protection', () => {
     await openMenu('my-notes');
     expect(screen.getByText(tb().skillEdit)).toBeVisible();
     expect(screen.getByText(tb().deleteItem)).toBeVisible();
+  });
+});
+
+/**
+ * A skill is a folder on the user's disk. These hold what the page does to it:
+ * which folder a delete removes, what an export writes and where.
+ */
+describe('SkillsSection · files on disk', () => {
+  const refresh = vi.fn(async () => undefined);
+  const addToast = vi.fn();
+  const order: string[] = [];
+  // The stores' own actions, put back after each test: the other groups use the real ones.
+  const real = {
+    discovery: useDiscoveryStore.getState().refresh,
+    toast: useToastStore.getState().addToast,
+    chat: { startNewConversation: useChatStore.getState().startNewConversation, setPendingInput: useChatStore.getState().setPendingInput },
+    settings: { closeExtensions: useSettingsStore.getState().closeExtensions, toggleSkillEnabled: useSettingsStore.getState().toggleSkillEnabled },
+  };
+
+  afterEach(() => {
+    useDiscoveryStore.setState({ refresh: real.discovery });
+    useToastStore.setState({ addToast: real.toast });
+    useChatStore.setState(real.chat);
+    useSettingsStore.setState({ ...real.settings, disabledSkills: [] });
+    usePluginStore.setState({ activationByKey: {}, activationReady: false });
+    vi.mocked(remove).mockReset().mockResolvedValue(undefined);
+    vi.mocked(writeFile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(saveDialog).mockReset().mockResolvedValue(null);
+  });
+
+  beforeEach(() => {
+    order.length = 0;
+    refresh.mockImplementation(async () => { order.push('refresh'); });
+    vi.mocked(remove).mockImplementation(async () => { order.push('remove'); });
+    vi.mocked(writeFile).mockImplementation(async () => { order.push('writeFile'); });
+    vi.mocked(packSkill).mockImplementation(async () => { order.push('packSkill'); return new Uint8Array([1, 2, 3]); });
+    vi.mocked(saveDialog).mockResolvedValue(null);
+    useDiscoveryStore.setState({ refresh });
+    useToastStore.setState({ addToast });
+  });
+
+  const openDetail = async (name: string) => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText(name));
+    return screen.getByTestId('skill-detail');
+  };
+  // The window's own delete button, and the question's button that says yes.
+  const deleteButton = () => within(screen.getByRole('dialog')).getByRole('button', { name: tb().deleteItem });
+  const question = () => screen.getByRole('alertdialog');
+  const answerDelete = () => fireEvent.click(within(question()).getByRole('button', { name: getI18n().common.delete }));
+
+  it('asks first, naming the skill, and removes nothing until the answer', async () => {
+    await openDetail('my-notes');
+    fireEvent.click(deleteButton());
+
+    const asked = await screen.findByRole('alertdialog');
+    expect(asked).toHaveTextContent(tb().deleteItem);
+    expect(asked).toHaveTextContent('my-notes');
+    expect(remove).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('deletes the folder of the skill on screen, then reads the skills again and closes the window', async () => {
+    await openDetail('my-notes');
+    fireEvent.click(deleteButton());
+    await screen.findByRole('alertdialog');
+    answerDelete();
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith('/skills/my-notes', { recursive: true });
+    expect(order).toEqual(['remove', 'refresh']);
+    await waitFor(() => expect(screen.queryByTestId('skill-detail')).toBeNull());
+  });
+
+  it('removes nothing when the question is cancelled, and keeps the window', async () => {
+    await openDetail('my-notes');
+    fireEvent.click(deleteButton());
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: getI18n().common.cancel }));
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(remove).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByTestId('skill-detail')).toBeInTheDocument();
+  });
+
+  it('removes nothing when the skill is gone by the time the question is answered', async () => {
+    await openDetail('my-notes');
+    fireEvent.click(deleteButton());
+    await screen.findByRole('alertdialog');
+    // Removed from the file manager, or by Abu in a task, while the question was open.
+    vi.mocked(skillLoader.getSkill).mockImplementation((name: string) => {
+      const m = CATALOG.find((s) => s.name === name && s.name !== 'my-notes');
+      return m ? full(m) : undefined;
+    });
+    answerDelete();
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(remove).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('removes nothing when the name leads to another file by the time the question is answered', async () => {
+    await openDetail('my-notes');
+    fireEvent.click(deleteButton());
+    await screen.findByRole('alertdialog');
+    // The user's file went away and a plugin's skill of the same name answers to it now.
+    vi.mocked(skillLoader.getSkill).mockImplementation((name: string) => {
+      const m = CATALOG.find((s) => s.name === name);
+      if (!m) return undefined;
+      return name === 'my-notes' ? { ...full(m), source: 'plugin', filePath: '/plugins/notes/skills/my-notes/SKILL.md', skillDir: '/plugins/notes/skills/my-notes' } : full(m);
+    });
+    answerDelete();
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('ends the question with the page: nothing is removed once the page has left', async () => {
+    const view = render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    fireEvent.click(deleteButton());
+    await screen.findByRole('alertdialog');
+
+    view.unmount();
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(remove).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('keeps the window and reads nothing again when the delete fails', async () => {
+    vi.mocked(remove).mockRejectedValue(new Error('busy'));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await openDetail('my-notes');
+    fireEvent.click(deleteButton());
+    await screen.findByRole('alertdialog');
+    answerDelete();
+
+    await waitFor(() => expect(logged).toHaveBeenCalled());
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByTestId('skill-detail')).toBeInTheDocument();
+    logged.mockRestore();
+  });
+
+  it('exports the skill folder to the file the user picked', async () => {
+    const user = userEvent.setup();
+    vi.mocked(saveDialog).mockResolvedValue('/exports/my-notes.askill');
+    await openDetail('my-notes');
+    await user.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(await screen.findByRole('menuitem', { name: tb().exportSkill }));
+
+    await waitFor(() => expect(addToast).toHaveBeenCalledTimes(1));
+    expect(saveDialog).toHaveBeenCalledWith({
+      defaultPath: 'my-notes.askill',
+      filters: [{ name: 'Skill Package', extensions: ['askill'] }],
+    });
+    expect(packSkill).toHaveBeenCalledTimes(1);
+    expect(packSkill).toHaveBeenCalledWith('/skills/my-notes');
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    expect(writeFile).toHaveBeenCalledWith('/exports/my-notes.askill', new Uint8Array([1, 2, 3]));
+    expect(order).toEqual(['packSkill', 'writeFile']);
+    expect(addToast).toHaveBeenCalledWith({ type: 'success', title: tb().exportSuccess, message: '"my-notes"' });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when the user cancels the file picker', async () => {
+    const user = userEvent.setup();
+    await openDetail('my-notes');
+    await user.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(await screen.findByRole('menuitem', { name: tb().exportSkill }));
+
+    await waitFor(() => expect(saveDialog).toHaveBeenCalledTimes(1));
+    expect(packSkill).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed export and leaves the skill alone', async () => {
+    vi.mocked(saveDialog).mockResolvedValue('/exports/my-notes.askill');
+    vi.mocked(writeFile).mockRejectedValue(new Error('read-only'));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const user = userEvent.setup();
+    await openDetail('my-notes');
+    await user.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(await screen.findByRole('menuitem', { name: tb().exportSkill }));
+
+    await waitFor(() => expect(addToast).toHaveBeenCalledTimes(1));
+    expect(addToast).toHaveBeenCalledWith({ type: 'error', title: tb().exportFailed, message: 'Error: read-only' });
+    expect(remove).not.toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it('starts a task with the skill from the window and leaves the page', async () => {
+    const startNewConversation = vi.fn();
+    const setPendingInput = vi.fn();
+    const closeExtensions = vi.fn();
+    useChatStore.setState({ startNewConversation, setPendingInput });
+    useSettingsStore.setState({ closeExtensions });
+    await openDetail('my-notes');
+    fireEvent.click(screen.getByText(tb().menuTrial).closest('button') as HTMLButtonElement);
+
+    expect(startNewConversation).toHaveBeenCalledTimes(1);
+    expect(setPendingInput).toHaveBeenCalledWith('/my-notes ', { startsTask: true });
+    expect(closeExtensions).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByTestId('skill-detail')).toBeNull());
+  });
+
+  it('switches a skill off and on from its card without opening the window', async () => {
+    const toggleSkillEnabled = vi.fn();
+    useSettingsStore.setState({ toggleSkillEnabled, disabledSkills: [] });
+    render(<SkillsSection source="mine" />);
+    const card = (await screen.findByText('my-notes')).closest('[role="button"]') as HTMLElement;
+    fireEvent.click(within(card).getByRole('switch'));
+
+    expect(toggleSkillEnabled).toHaveBeenCalledTimes(1);
+    expect(toggleSkillEnabled).toHaveBeenCalledWith('my-notes');
+    expect(screen.queryByTestId('skill-detail')).toBeNull();
+  });
+
+  it('says why the switch of a disabled plugin\'s skill cannot be used', async () => {
+    usePluginStore.setState({
+      activationByKey: { 'weather@market': { enabled: false, root: '/skills/weather-report', skillDirs: ['/skills/weather-report'], legacySkills: false, agentFiles: [], mcpServers: [] } },
+      activationReady: true,
+    });
+    render(<SkillsSection source="mine" />);
+    const card = (await screen.findByText('weather-report')).closest('[role="button"]') as HTMLElement;
+    const toggle = within(card).getByRole('switch') as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.closest('[title]')?.getAttribute('title')).toBe(tb().skillPluginDisabled);
   });
 });
 
@@ -271,5 +541,433 @@ describe('SkillsSection · shadowed built-ins on 市场', () => {
     }
     // The live copies are not on this shelf.
     expect(screen.getAllByText('weather-report')).toHaveLength(1);
+  });
+
+  it('shows the covered mark as a neutral label with the reason on hover, and a switch that cannot be used', () => {
+    vi.spyOn(skillLoader, 'getShadowedSkills').mockReturnValue([full(meta('docx', 'builtin'))]);
+    render(<SkillsSection source="market" />);
+    const covered = screen.getByTestId('skill-shadowed-docx');
+    const mark = within(covered).getByText(tb().skillShadowedBadge);
+    expect(mark).toHaveClass('bg-fill');
+    expect(mark.closest('[title]')?.getAttribute('title')).toBe(tb().skillShadowedHint);
+    const toggle = within(covered).getByRole('switch', { name: 'docx' }) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+  });
+});
+
+describe('SkillsSection · design-system controls', () => {
+  const card = (name: string) => screen.getByText(name).closest('[role="button"]') as HTMLElement;
+
+  it.each([
+    ['auto-thing', 'skillSourceWorkspaceAuto'],
+    ['team-rules', 'skillSourceProject'],
+    ['cross-client', 'skillSourceStandard'],
+  ] as const)('labels the source of %s with a neutral tag', async (name, key) => {
+    render(<SkillsSection source="mine" />);
+    await screen.findByText(name);
+    const label = within(card(name)).getByText(tb()[key]);
+    expect(label).toHaveClass('bg-fill');
+    expect(label).toHaveClass('text-label-secondary');
+  });
+
+  it('carries no clay colour on a source label', async () => {
+    render(<SkillsSection source="mine" />);
+    await screen.findByText('auto-thing');
+    expect(within(card('auto-thing')).getByText(tb().skillSourceWorkspaceAuto).className).not.toContain('clay');
+  });
+
+  it('carries no slate colour on a source label', async () => {
+    render(<SkillsSection source="mine" />);
+    await screen.findByText('cross-client');
+    expect(within(card('cross-client')).getByText(tb().skillSourceStandard).className).not.toContain('slate');
+  });
+
+  it('carries no purple colour on the label beside the drafts heading', async () => {
+    // No accepted skill of Abu's on the shelf: its card carries a label with the same words.
+    useDiscoveryStore.setState({ skills: [meta('my-notes', 'user')] });
+    useSkillDraftsStore.setState({ drafts: [draft('meeting-notes')] });
+    render(<SkillsSection source="mine" />);
+    const label = await screen.findByText(tb().categoryAgentEvolvedBadge);
+    expect(label.className).not.toContain('purple');
+    expect(label).toHaveClass('bg-fill');
+  });
+
+  it('names each card switch after its skill', async () => {
+    render(<SkillsSection source="mine" />);
+    await screen.findByText('my-notes');
+    expect(within(card('my-notes')).getByRole('switch', { name: 'my-notes' })).toBeInTheDocument();
+    expect(within(card('team-rules')).getByRole('switch', { name: 'team-rules' })).toBeInTheDocument();
+  });
+
+  it('says nothing was found when a search matches no skill', async () => {
+    useSettingsStore.getState().setExtensionsSearchQuery('skills', 'no-such-skill');
+    render(<SkillsSection source="mine" />);
+    expect(await screen.findByText(tb().noSkillsFound)).toBeInTheDocument();
+    expect(screen.queryByTestId('skills-mine-create')).toBeNull();
+    useSettingsStore.getState().setExtensionsSearchQuery('skills', '');
+  });
+
+  it('names the detail window after the skill, with a switch and a delete button of their own names', async () => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    const detail = screen.getByRole('dialog', { name: 'my-notes' });
+    expect(within(detail).getByRole('switch', { name: 'my-notes' })).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: tb().deleteItem })).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: tb().menuTrial })).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: getI18n().common.close })).toBeInTheDocument();
+  });
+
+  it('opens a menu of export and history from the window; the user\'s own skill adds edit', async () => {
+    const user = userEvent.setup();
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    const trigger = screen.getByTestId('skill-detail-menu');
+    expect(trigger).toHaveAccessibleName('Actions for my-notes');
+    await user.click(trigger);
+
+    const menu = screen.getByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      tb().exportSkill, tb().historyMenuLabel, tb().skillEdit,
+    ]);
+  });
+
+  it('offers export and history only for a skill that is not the user\'s own', async () => {
+    const user = userEvent.setup();
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('pdf-fill'));
+    await user.click(screen.getByTestId('skill-detail-menu'));
+
+    expect(within(screen.getByRole('menu')).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      tb().exportSkill, tb().historyMenuLabel,
+    ]);
+  });
+
+  it('closes only the menu on the first Escape, the window on the second', async () => {
+    const user = userEvent.setup();
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    await user.click(screen.getByTestId('skill-detail-menu'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(screen.getByTestId('skill-detail')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('skill-detail')).toBeNull());
+  });
+
+  it('replaces the detail window with the history window', async () => {
+    const user = userEvent.setup();
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    await user.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(screen.getByRole('menuitem', { name: tb().historyMenuLabel }));
+
+    const history = await screen.findByRole('dialog', { name: `${tb().historyModalTitle} — my-notes` });
+    expect(history).toBeInTheDocument();
+    expect(screen.queryByTestId('skill-detail')).toBeNull();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(readHistory).toHaveBeenCalledWith('/skills/my-notes');
+  });
+
+  it('puts the focus on the card when the history window closes', async () => {
+    const user = userEvent.setup();
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    await user.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(screen.getByRole('menuitem', { name: tb().historyMenuLabel }));
+    await screen.findByRole('dialog', { name: `${tb().historyModalTitle} — my-notes` });
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(card('my-notes')).toHaveFocus());
+  });
+});
+
+describe('SkillsSection · the editor takes the place of the list', () => {
+  const card = (name: string) => screen.getByText(name).closest('[role="button"]') as HTMLElement;
+  const back = () => screen.getByRole('button', { name: getI18n().schedule.backToList });
+
+  it('opens the editor from the window\'s menu with the focus on its way back, and returns it to the card', async () => {
+    const user = userEvent.setup();
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    await user.click(screen.getByTestId('skill-detail-menu'));
+    await user.click(screen.getByRole('menuitem', { name: tb().skillEdit }));
+
+    await waitFor(() => expect(screen.getByPlaceholderText('my-skill')).toHaveValue('my-notes'));
+    expect(screen.queryByTestId('skill-detail')).toBeNull();
+    await waitFor(() => expect(back()).toHaveFocus());
+
+    await user.click(back());
+
+    await screen.findByText('team-rules');
+    await waitFor(() => expect(card('my-notes')).toHaveFocus());
+  });
+
+  it('keeps the focus on the way back once the window that opened the editor has gone', async () => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    vi.useFakeTimers();
+    try {
+      fireEvent.pointerDown(screen.getByTestId('skill-detail-menu'), { button: 0, ctrlKey: false });
+      fireEvent.click(screen.getByRole('menuitem', { name: tb().skillEdit }));
+      // The menu goes, the editor opens, and the window it replaced hands its focus back last.
+      await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+
+      expect(screen.getByPlaceholderText('my-skill')).toHaveValue('my-notes');
+      expect(back()).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens a blank editor from the page\'s create entry and returns the focus to the control that asked', async () => {
+    const user = userEvent.setup();
+    function Page() {
+      const [trigger, setTrigger] = useState(0);
+      return (
+        <>
+          <Button data-testid="skill-create-trigger" onClick={() => setTrigger((count) => count + 1)}>add</Button>
+          <SkillsSection source="mine" manualCreateTrigger={trigger} />
+        </>
+      );
+    }
+    render(<Page />);
+    await screen.findByText('my-notes');
+    await user.click(screen.getByTestId('skill-create-trigger'));
+
+    await waitFor(() => expect(screen.getByPlaceholderText('my-skill')).toHaveValue(''));
+    await waitFor(() => expect(back()).toHaveFocus());
+
+    await user.click(back());
+
+    await screen.findByText('my-notes');
+    expect(screen.getByTestId('skill-create-trigger')).toHaveFocus();
+  });
+
+  it('opens a blank editor from the empty shelf and returns the focus to its button', async () => {
+    const user = userEvent.setup();
+    useDiscoveryStore.setState({ skills: [] });
+    render(<SkillsSection source="mine" />);
+    await user.click(await screen.findByTestId('skills-mine-create'));
+
+    await waitFor(() => expect(back()).toHaveFocus());
+    await user.click(back());
+
+    await waitFor(() => expect(screen.getByTestId('skills-mine-create')).toHaveFocus());
+  });
+});
+
+describe('SkillsSection · after a skill is deleted', () => {
+  const card = (name: string) => screen.getByText(name).closest('[role="button"]') as HTMLElement;
+  const realRefresh = useDiscoveryStore.getState().refresh;
+
+  afterEach(() => {
+    useDiscoveryStore.setState({ refresh: realRefresh });
+    vi.mocked(remove).mockReset().mockResolvedValue(undefined);
+  });
+
+  // The skill's folder is removed and the next reading of the skills no longer lists it.
+  function deletable(catalog: SkillMetadata[], name: string) {
+    let gone = false;
+    vi.mocked(skillLoader.getSkill).mockImplementation((asked: string) => {
+      const m = catalog.find((s) => s.name === asked);
+      return m && !(gone && asked === name) ? full(m) : undefined;
+    });
+    useDiscoveryStore.setState({
+      skills: catalog,
+      refresh: async () => {
+        gone = true;
+        useDiscoveryStore.setState({ skills: catalog.filter((s) => s.name !== name) });
+      },
+    });
+  }
+
+  const deleteFromWindow = async (name: string) => {
+    fireEvent.click(await screen.findByText(name));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: tb().deleteItem }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: getI18n().common.delete }));
+  };
+
+  it('puts the focus on the card that took its place', async () => {
+    deletable(CATALOG, 'my-notes');
+    render(<SkillsSection source="mine" />);
+    await deleteFromWindow('my-notes');
+
+    await waitFor(() => expect(screen.queryByText('my-notes')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // docx was the second card and is the first now.
+    await waitFor(() => expect(card('docx')).toHaveFocus());
+  });
+
+  it('puts the focus on the card before it when it was the last one', async () => {
+    const catalog = [meta('first-skill', 'user'), meta('last-skill', 'user')];
+    deletable(catalog, 'last-skill');
+    render(<SkillsSection source="mine" />);
+    await deleteFromWindow('last-skill');
+
+    await waitFor(() => expect(screen.queryByText('last-skill')).toBeNull());
+    await waitFor(() => expect(card('first-skill')).toHaveFocus());
+  });
+
+  it('puts the focus on the empty shelf\'s button when no card is left', async () => {
+    const catalog = [meta('only-skill', 'user')];
+    deletable(catalog, 'only-skill');
+    render(<SkillsSection source="mine" />);
+    await deleteFromWindow('only-skill');
+
+    await waitFor(() => expect(screen.getByTestId('skills-mine-create')).toHaveFocus());
+  });
+});
+
+/**
+ * A design-system window stays on the page while it fades out, and keys still reach it.
+ * What the window started must not start again from there.
+ */
+describe('SkillsSection · a window that is closing', () => {
+  // happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+  // layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+  let restoreStyles: (() => void) | null = null;
+  function keepClosingLayersOnScreen() {
+    const real = window.getComputedStyle.bind(window);
+    const spy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const styles = real(element, pseudo);
+      return new Proxy(styles, {
+        get(target, prop) {
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    restoreStyles = () => spy.mockRestore();
+  }
+  const closingWindow = () => {
+    const closing = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]');
+    if (!closing) throw new Error('No window is closing');
+    return closing;
+  };
+
+  const startNewConversation = vi.fn();
+  const setPendingInput = vi.fn();
+  const closeExtensions = vi.fn();
+  const real = {
+    chat: { startNewConversation: useChatStore.getState().startNewConversation, setPendingInput: useChatStore.getState().setPendingInput },
+    closeExtensions: useSettingsStore.getState().closeExtensions,
+  };
+
+  beforeEach(() => {
+    useChatStore.setState({ startNewConversation, setPendingInput });
+    useSettingsStore.setState({ closeExtensions });
+  });
+  afterEach(() => {
+    useChatStore.setState(real.chat);
+    useSettingsStore.setState({ closeExtensions: real.closeExtensions });
+    restoreStyles?.();
+    restoreStyles = null;
+  });
+
+  it('keeps showing the skill while it fades out', async () => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    keepClosingLayersOnScreen();
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    const closing = closingWindow();
+    expect(within(closing).getByTestId('skill-detail')).toHaveTextContent('my-notes does things');
+    expect(within(closing).getByText(tb().menuTrial)).toBeInTheDocument();
+  });
+
+  it('starts one task when the trial button is pressed again during the fade', async () => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    keepClosingLayersOnScreen();
+    const trial = screen.getByText(tb().menuTrial).closest('button') as HTMLButtonElement;
+    fireEvent.click(trial);
+    expect(closingWindow()).toBeInTheDocument();
+
+    fireEvent.click(within(closingWindow()).getByText(tb().menuTrial).closest('button') as HTMLButtonElement);
+
+    expect(startNewConversation).toHaveBeenCalledTimes(1);
+    expect(setPendingInput).toHaveBeenCalledTimes(1);
+    expect(closeExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks nothing when delete is pressed during the fade', async () => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    keepClosingLayersOnScreen();
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    fireEvent.click(within(closingWindow()).getByText(tb().deleteItem).closest('button') as HTMLButtonElement);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing and starts nothing from a window that fades out because its skill left the list', async () => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    keepClosingLayersOnScreen();
+    // Removed in a task or from the file manager: the next reading of the skills no longer lists it.
+    vi.mocked(skillLoader.getSkill).mockImplementation((name: string) => {
+      const m = CATALOG.find((s) => s.name === name && s.name !== 'my-notes');
+      return m ? full(m) : undefined;
+    });
+    act(() => { useDiscoveryStore.setState({ skills: CATALOG.filter((s) => s.name !== 'my-notes') }); });
+    const closing = closingWindow();
+    expect(within(closing).getByTestId('skill-detail')).toHaveTextContent('my-notes does things');
+
+    fireEvent.click(within(closing).getByText(tb().deleteItem).closest('button') as HTMLButtonElement);
+    fireEvent.click(within(closing).getByText(tb().menuTrial).closest('button') as HTMLButtonElement);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
+    expect(startNewConversation).not.toHaveBeenCalled();
+    expect(setPendingInput).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A shelf holds up to a hundred cards and each holds a switch. Opening a window or
+ * flipping one switch must not render the other cards again.
+ */
+describe('SkillsSection · cards render once', () => {
+  const card = (name: string) => screen.getByText(name).closest('[role="button"]') as HTMLElement;
+  const total = () => Object.values(cardRenders.byId).reduce((sum, count) => sum + count, 0);
+
+  it('renders no card again when a detail window opens and closes', async () => {
+    render(<SkillsSection source="mine" />);
+    await screen.findByText('my-notes');
+    const before = total();
+    expect(before).toBe(CATALOG.length);
+
+    fireEvent.click(card('my-notes'));
+    expect(screen.getByTestId('skill-detail')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('skill-detail')).toBeNull());
+
+    expect(total()).toBe(before);
+  });
+
+  it('renders only the card whose switch was flipped', async () => {
+    useSettingsStore.setState({ disabledSkills: [] });
+    render(<SkillsSection source="mine" />);
+    await screen.findByText('my-notes');
+    const before = { ...cardRenders.byId };
+
+    fireEvent.click(within(card('team-rules')).getByRole('switch'));
+
+    await waitFor(() => expect(within(card('team-rules')).getByRole('switch')).toHaveAttribute('aria-checked', 'false'));
+    expect(cardRenders.byId['team-rules']).toBe(before['team-rules'] + 1);
+    expect(cardRenders.byId['my-notes']).toBe(before['my-notes']);
+    expect(cardRenders.byId['docx']).toBe(before['docx']);
+    useSettingsStore.setState({ disabledSkills: [] });
   });
 });

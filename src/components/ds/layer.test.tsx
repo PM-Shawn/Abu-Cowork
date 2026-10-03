@@ -5,7 +5,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { LayerProvider, LayerScope } from './layer';
-import { useLayer, useLayerContainer, useOpenState, type LayerKind } from './layer-context';
+import { useLayer, useLayerContainer, useLayerRegistry, useOpenState, type LayerKind } from './layer-context';
 
 interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
 
@@ -31,6 +31,7 @@ function FakeLayer({ name, kind, dirty = false, defaultOpen = false, onOpenChang
           setPendingDiscard(pending);
           return () => setPendingDiscard((current) => (current === pending ? null : current));
         },
+        escape: () => setOpen(false),
       }
     : undefined);
   return (
@@ -544,6 +545,33 @@ describe('LayerProvider', () => {
       await user.click(screen.getByText('close draft'));
       expect(onModalChange.mock.calls).toEqual([[true], [false]]);
     });
+  });
+
+  it('applies Escape to the layer opened inside another when both registered in one commit', async () => {
+    const user = userEvent.setup();
+    const parentChange = vi.fn();
+    const childChange = vi.fn();
+    function EscapeTop() {
+      const registry = useLayerRegistry();
+      return <button type="button" onClick={() => registry.escapeTop()}>escape top</button>;
+    }
+    render(
+      <LayerProvider>
+        <EscapeTop />
+        {/* The child's effect runs first, so the child registers before its parent. */}
+        <FakeLayer name="parent" kind="popover" defaultOpen onOpenChange={parentChange}>
+          <FakeLayer name="child" kind="popover" defaultOpen onOpenChange={childChange} />
+        </FakeLayer>
+      </LayerProvider>,
+    );
+    await user.click(screen.getByText('escape top'));
+    expect(childChange.mock.calls).toEqual([[false]]);
+    expect(parentChange).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('child')).toBeNull();
+    expect(screen.getByTestId('parent')).toBeInTheDocument();
+
+    await user.click(screen.getByText('escape top'));
+    expect(parentChange.mock.calls).toEqual([[false]]);
   });
 
   it('portals into the container it was given', () => {

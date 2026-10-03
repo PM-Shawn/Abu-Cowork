@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { FOCUS_RING } from '@/components/ds/styles';
 import { cn } from '@/lib/utils';
 
 /**
@@ -31,7 +32,7 @@ export interface ToolItem {
  * Short landscape card (WorkBuddy-style): (1) avatar + name on one row (vertically
  * centered so they line up) + an optional top-right badge, (2) the description
  * clamped to two lines. No tag row — it made cards look lopsided and too tall.
- * Height is FIXED (`h-[120px]`) and the description always reserves two lines, so
+ * Height is FIXED (`h-30`, 120px) and the description always reserves two lines, so
  * every card is the same height whether its description is one line or two (grid
  * `stretch` only equalizes within a row, not across rows — hence a fixed height).
  */
@@ -59,14 +60,11 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
         }
       }}
       className={cn(
-        'group flex flex-col gap-2 w-full overflow-hidden rounded-xl p-4 text-left',
-        item.footer ? 'min-h-[120px] h-full' : 'h-[120px]',
-        'bg-[var(--abu-bg-subtle)] border border-[var(--abu-border)]',
-        // A 40% clay border on hover: enough to say "this opens", not so much
-        // that every card the pointer crosses flashes the full brand colour.
-        interactive && 'cursor-pointer hover:border-[var(--abu-clay-40)] hover:shadow-sm',
-        !interactive && 'cursor-default',
-        'transition-all duration-150'
+        // A flat card: one line around the surface, nothing floating above it.
+        'group flex w-full flex-col gap-2 overflow-hidden rounded-panel border border-separator bg-surface p-4 text-left',
+        item.footer ? 'min-h-30 h-full' : 'h-30',
+        // The hover fill says "this opens"; the ring shows where the keyboard is.
+        interactive ? cn('cursor-pointer hover:bg-fill-hover', FOCUS_RING) : 'cursor-default',
       )}
     >
       {/* Row 1: avatar + name (centered so they align), optional badge + toggle.
@@ -85,11 +83,11 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
           hit once its console stopped advertising a signing key and every row
           grew a second 未签名 chip. */}
       <div className="flex items-center gap-3 w-full shrink-0">
-        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[var(--abu-bg-active)] text-h-md select-none shrink-0 overflow-hidden">
+        <div className="flex size-10 shrink-0 select-none items-center justify-center overflow-hidden rounded-control bg-fill text-title">
           {item.avatar ?? '🤖'}
         </div>
         <p
-          className="flex-1 min-w-10 text-body font-semibold leading-snug truncate text-[var(--abu-text-primary)]"
+          className="min-w-10 flex-1 truncate text-ui font-medium text-label"
           title={item.name}
           data-testid={item.nameTestId}
         >
@@ -101,10 +99,10 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
 
       {/* Row 2: description — up to two lines. break-words so long unbreakable
           strings (e.g. URLs) wrap instead of overflowing. */}
-      <p className="w-full text-minor text-[var(--abu-text-secondary)] leading-relaxed line-clamp-2 break-words">
+      <p className="w-full text-ui-sm text-label-secondary line-clamp-2 break-words">
         {item.description}
       </p>
-      {item.footer && <div className="mt-auto text-caption text-[var(--abu-text-muted)]">{item.footer}</div>}
+      {item.footer && <div className="mt-auto text-caption text-label-tertiary">{item.footer}</div>}
     </div>
   );
 }

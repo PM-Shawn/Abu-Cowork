@@ -352,7 +352,8 @@ describe('MultiCombobox', () => {
     const user = userEvent.setup();
     render(<Members initial={['lin']} />, { wrapper: DesignSystemProvider });
     await user.click(screen.getByRole('combobox', { name: 'Members' }));
-    expect(screen.getByRole('listbox', { name: 'Members' })).toHaveAttribute('aria-multiselectable', 'true');
+    // cmdk's aria-selected follows the highlight; a list marked multiselectable would read it as the choice.
+    expect(screen.getByRole('listbox', { name: 'Members' })).not.toHaveAttribute('aria-multiselectable');
     const lin = screen.getByRole('option', { name: 'Lin' });
     const ada = screen.getByRole('option', { name: 'Ada' });
     expect(lin).toHaveAttribute('aria-checked', 'true');
@@ -366,6 +367,20 @@ describe('MultiCombobox', () => {
     await user.click(ada);
     expect(ada).toHaveAttribute('aria-checked', 'true');
     expect(ada.firstElementChild?.querySelector('svg')).not.toBeNull();
+  });
+
+  it('says a highlighted option that is not chosen is not checked, and the chosen one is', async () => {
+    const user = userEvent.setup();
+    render(<Members initial={['lin']} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('combobox', { name: 'Members' }));
+    const ada = screen.getByRole('option', { name: 'Ada' });
+    const lin = screen.getByRole('option', { name: 'Lin' });
+    // Move the highlight onto Ada, wherever the list opened.
+    for (let press = 0; press < 5 && ada.getAttribute('aria-selected') !== 'true'; press += 1) await user.keyboard('{ArrowDown}');
+    expect(ada).toHaveAttribute('aria-selected', 'true');
+    expect(ada).toHaveAttribute('aria-checked', 'false');
+    expect(lin).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('listbox', { name: 'Members' })).not.toHaveAttribute('aria-multiselectable');
   });
 
   it('leaves only the options that match what is typed, and says when none does', async () => {

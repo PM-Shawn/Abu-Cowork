@@ -66,7 +66,7 @@ const ComboboxRow = memo(function ComboboxRow({ option, selected, multiple, onPi
       disabled={option.disabled}
       onSelect={() => onPick(option.value)}
       aria-describedby={option.description ? descriptionId : undefined}
-      // cmdk's aria-selected follows the highlight; the choice itself is aria-checked.
+      // cmdk's aria-selected follows the highlight, so the list is not marked multiselectable; the choice itself is aria-checked.
       aria-checked={multiple ? selected : undefined}
       className={cn(MENU_ITEM, 'data-[disabled=true]:opacity-40 data-[selected=true]:bg-fill-selected', option.description && 'h-auto py-1')}
     >
@@ -133,7 +133,7 @@ function ComboboxPanel({ layer, triggerRef, onLeave, options, isSelected, onPick
                 className="h-7 w-full bg-transparent text-ui text-label outline-none placeholder:text-label-placeholder"
               />
             </div>
-            <Command.List label={label} aria-multiselectable={multiple || undefined} className="max-h-64 overflow-y-auto pt-1">
+            <Command.List label={label} className="max-h-64 overflow-y-auto pt-1">
               <Command.Empty className="px-2 py-3 text-ui text-label-secondary">{emptyText}</Command.Empty>
               {options.map((option) => (
                 <ComboboxRow key={option.value} option={option} selected={isSelected(option.value)} multiple={multiple} onPick={onPick} />

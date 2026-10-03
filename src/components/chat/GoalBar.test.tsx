@@ -144,4 +144,19 @@ describe('GoalRoundMarker', () => {
     const { container } = render(<GoalRoundMarker message={{ ...round, goalRound: undefined }} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('says when the round was stopped or failed, since it replaces the bubble that would', () => {
+    const round: Message = {
+      id: 'm', role: 'user', content: '<goal_round/>', timestamp: 1, isSystem: true,
+      goalRound: { goalId: 'g1', revision: 2, round: 1 },
+    };
+    render(<GoalRoundMarker message={{ ...round, runState: 'completed' }} maxRounds={10} />);
+    expect(screen.queryByTestId('goal-round-outcome')).not.toBeInTheDocument();
+    cleanup();
+    render(<GoalRoundMarker message={{ ...round, runState: 'interrupted' }} maxRounds={10} />);
+    expect(screen.getByTestId('goal-round-outcome')).toHaveTextContent('stopped');
+    cleanup();
+    render(<GoalRoundMarker message={{ ...round, runState: 'connection-failed' }} maxRounds={10} />);
+    expect(screen.getByTestId('goal-round-outcome')).toHaveTextContent('failed');
+  });
 });

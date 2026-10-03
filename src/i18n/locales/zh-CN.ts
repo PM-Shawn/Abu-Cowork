@@ -614,6 +614,8 @@ const zhCN: TranslationDict = {
       clearConfirmTitle: '清除这个目标？',
       clearConfirmBody: '清除后不会再自动推进，已完成的工作不受影响。',
       roundMarker: '目标续跑 · 第 {round} / {maxRounds} 轮',
+      roundInterrupted: '已中断',
+      roundFailed: '运行出错',
       completedTitle: '目标已完成',
       evidenceLabel: '完成依据',
       notifyBlockedTitle: '目标卡住了：{objective}',

@@ -741,6 +741,10 @@ export interface TranslationDict {
       clearConfirmBody: string;
       /** Round marker in the transcript. {round} {maxRounds} */
       roundMarker: string;
+      /** Suffix on a round marker whose run was stopped before it finished. */
+      roundInterrupted: string;
+      /** Suffix on a round marker whose run failed. */
+      roundFailed: string;
       completedTitle: string;
       evidenceLabel: string;
       /** OS notification when the round driver stops a goal. {objective} */

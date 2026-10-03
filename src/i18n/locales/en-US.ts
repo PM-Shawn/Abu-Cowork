@@ -613,6 +613,8 @@ const enUS: TranslationDict = {
       clearConfirmTitle: 'Clear this goal?',
       clearConfirmBody: 'Automatic rounds stop. Work already done is kept.',
       roundMarker: 'Goal round {round} of {maxRounds}',
+      roundInterrupted: 'stopped',
+      roundFailed: 'failed',
       completedTitle: 'Goal complete',
       evidenceLabel: 'Evidence',
       notifyBlockedTitle: 'Goal blocked: {objective}',

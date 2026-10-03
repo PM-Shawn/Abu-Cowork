@@ -374,7 +374,7 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   // Every upload/export performs a bounded fresh run; fallback rows carry
   // explicit stale/unknown freshness metadata.
   const snapshot = await collectLiveDiagnosticSnapshot({ bundleId: meta.bundleId, os: meta.os });
-  files['diagnostic-snapshot.json'] = JSON.stringify(snapshot, null, 2);
+  files['diagnostic-snapshot.json'] = JSON.stringify(scrubSecrets(snapshot), null, 2);
 
   // ── conversations/<shortId>/* ────────────────────────────────────────
   // Multi-select: opts.conversationIds takes priority over the legacy

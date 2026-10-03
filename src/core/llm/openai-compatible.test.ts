@@ -202,6 +202,50 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
   });
 });
 
+describe('OpenAICompatibleAdapter — request key echoed in an error body', () => {
+  const apiKey = 'abu-test-not-a-secret';
+  const echo = () => new Response(
+    JSON.stringify({ error: { message: `Incorrect API key provided: ${apiKey}` } }),
+    { status: 401 },
+  );
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  async function failure(): Promise<LLMError> {
+    const thrown = await new OpenAICompatibleAdapter()
+      .chat([userMessage], makeOptions({ apiKey }), () => {})
+      .catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(LLMError);
+    return thrown as LLMError;
+  }
+
+  it('erases the key from the error thrown for a failed request', async () => {
+    mockFetch.mockResolvedValueOnce(echo());
+
+    const err = await failure();
+
+    expect(err.code).toBe('authentication');
+    expect(err.upstream?.summary).toBe('Incorrect API key provided: [REDACTED]');
+    expect(JSON.stringify([err.message, err.rawBody, err.upstream])).not.toContain(apiKey);
+  });
+
+  it('erases the key from the error thrown after the max_tokens retry', async () => {
+    mockFetch
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: { param: 'max_tokens', message: 'max_tokens supports at most 4096' } }),
+        { status: 400 },
+      ))
+      .mockResolvedValueOnce(echo());
+
+    const err = await failure();
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify([err.message, err.rawBody, err.upstream])).not.toContain(apiKey);
+  });
+});
+
 describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
   beforeEach(() => {
     mockFetch.mockReset();

@@ -106,20 +106,38 @@ function childrenForTask(children: readonly ExecutionStep[], taskIndex: number):
   return tagged ? children.filter((child) => child.batchTask?.index === taskIndex) : (taskIndex === 0 ? [...children] : []);
 }
 
+function ownsCall(message: Message, toolCallId: string): boolean {
+  return message.role === 'assistant' && !!message.toolCalls?.some((call) => call.id === toolCallId);
+}
+
+/**
+ * The member's own terminal record. A run_agent_batch call's summary gains a
+ * row each time one of its tasks ends, so it is there while the batch still runs.
+ */
+function terminalRow(message: Message | undefined, identity: BatchIdentity, taskIndex: number, t: TranslationDict): BatchTaskRow | undefined {
+  const toolCall = message?.toolCalls?.find((call) => call.id === identity.batchToolCallId);
+  return toolCall ? rowsFromPersistedSummary(identity, toolCall, t)?.[taskIndex] : undefined;
+}
+
 /** Live fallback for dispatches without a batch-store entry (serial delegate_to_agent). */
 function findLiveDispatch(
   executions: Record<string, TaskExecution>,
+  messages: readonly Message[] | undefined,
   identity: BatchIdentity,
   taskIndex: number,
   locale: string,
+  t: TranslationDict,
 ): PersistedBatchTask | null {
   for (const exec of Object.values(executions)) {
     if (exec.conversationId !== identity.conversationId) continue;
     const step = exec.steps.find((candidate) => candidate.toolCallId === identity.batchToolCallId);
     if (!step) continue;
+    // Provider tool-call ids can repeat across loops, so an unnamed message must belong to this loop.
+    const dispatchMessage = messages?.find((m) => ownsCall(m, identity.batchToolCallId)
+      && (identity.assistantMessageId ? m.id === identity.assistantMessageId : m.loopId === exec.loopId));
     return {
       steps: childrenForTask(step.childSteps ?? [], taskIndex).map((child) => convertExecutionStep(child, locale)),
-      row: undefined,
+      row: terminalRow(dispatchMessage, identity, taskIndex, t),
       liveStatus: step.status,
     };
   }
@@ -145,10 +163,9 @@ function findPersistedBatchTask(
   t: TranslationDict,
 ): PersistedBatchTask | null {
   if (!messages) return null;
-  const ownsCall = (m: Message) => m.role === 'assistant' && !!m.toolCalls?.some((call) => call.id === identity.batchToolCallId);
   const dispatchMessage = identity.assistantMessageId
     ? messages.find((m) => m.id === identity.assistantMessageId)
-    : messages.find(ownsCall);
+    : messages.find((m) => ownsCall(m, identity.batchToolCallId));
   if (identity.assistantMessageId && !dispatchMessage) return null;
   const loopId = dispatchMessage?.loopId;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -157,11 +174,25 @@ function findPersistedBatchTask(
     const batchStep = message.executionSteps?.find((step) => step.toolCallId === identity.batchToolCallId);
     if (!batchStep) continue;
     const children = childrenForTask(snapshotToExecutionSteps(batchStep.childSteps ?? []), taskIndex);
-    const toolCall = (dispatchMessage ?? message).toolCalls?.find((call) => call.id === identity.batchToolCallId);
-    const row = toolCall ? rowsFromPersistedSummary(identity, toolCall, t)?.[taskIndex] : undefined;
+    const row = terminalRow(dispatchMessage ?? message, identity, taskIndex, t);
     return { steps: children.map((child) => convertExecutionStep(child, locale)), row };
   }
   return null;
+}
+
+/** Stops this one hand-off; shown only while its member is running. */
+function StopDispatchButton({ dispatchKey, member, t }: { dispatchKey: string; member: string; t: TranslationDict }) {
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      icon={AppIcons.stop}
+      onClick={() => requestDispatchCancel(dispatchKey)}
+      aria-label={format(t.workspace.teamStopDispatch, { member })}
+    >
+      {t.workspace.teamStopDispatchShort}
+    </Button>
+  );
 }
 
 function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title: string; persisted: PersistedBatchTask; locale: string; t: TranslationDict; dispatchKey?: string }) {
@@ -172,10 +203,15 @@ function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title
     seen = seen || steps[i + 1].type !== 'thinking';
     laterTool[i] = seen;
   }
-  const rowStatus = row?.status ?? (liveStatus === 'running' ? 'running' : liveStatus === 'error' ? 'failed' : liveStatus === 'completed' ? 'succeeded' : undefined);
-  const statusText = rowStatus && rowStatus !== 'unknown' ? batchRowStatusLabel(rowStatus, t) : null;
+  // A batch step's status is the whole batch's, so the member's own terminal record
+  // comes first; the step speaks only for a member that has no record yet.
+  const rowStatus = row && row.status !== 'unknown'
+    ? row.status
+    : liveStatus === 'running' ? 'running' : liveStatus === 'error' ? 'failed' : liveStatus === 'completed' ? 'succeeded' : undefined;
+  const running = rowStatus === 'running';
+  const statusText = rowStatus ? batchRowStatusLabel(rowStatus, t) : null;
   // Persisted rows are terminal; a stale live status maps to the warning icon.
-  const iconStatus: BatchTaskProgress['status'] | null = !rowStatus || rowStatus === 'unknown'
+  const iconStatus: BatchTaskProgress['status'] | null = !rowStatus
     ? null
     : rowStatus === 'queued' ? 'incomplete' : rowStatus;
   return (
@@ -189,18 +225,8 @@ function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title
           <div className={META_ROW}>
             {statusText && iconStatus && <TaskStatusTag status={iconStatus} label={statusText} />}
             <span>{format(t.workspace.agentTools, { count: steps.length })}</span>
-            <span>{liveStatus === 'running' ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
-            {liveStatus === 'running' && dispatchKey && (
-              <Button
-                variant="secondary"
-                size="sm"
-                icon={AppIcons.stop}
-                onClick={() => requestDispatchCancel(dispatchKey)}
-                aria-label={format(t.workspace.teamStopDispatch, { member: title })}
-              >
-                {t.workspace.teamStopDispatchShort}
-              </Button>
-            )}
+            <span>{running ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
+            {running && dispatchKey && <StopDispatchButton dispatchKey={dispatchKey} member={title} t={t} />}
           </div>
         </header>
         {steps.length === 0 ? (
@@ -247,15 +273,16 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
     () => {
       if (batch && task) return null;
       return preferRicherDispatch(
-        findLiveDispatch(liveExecutions, identity, taskIndex, locale),
+        findLiveDispatch(liveExecutions, persistedMessages, identity, taskIndex, locale, t),
         findPersistedBatchTask(persistedMessages, identity, taskIndex, locale, t),
       );
     },
     [batch, task, liveExecutions, persistedMessages, identity, taskIndex, locale, t],
   );
+  const dispatchKey = `${identity.batchToolCallId}:${taskIndex}`;
 
   if (persisted) {
-    return <PersistedTaskView title={title} persisted={persisted} locale={locale} t={t} dispatchKey={`${identity.batchToolCallId}:${taskIndex}`} />;
+    return <PersistedTaskView title={title} persisted={persisted} locale={locale} t={t} dispatchKey={dispatchKey} />;
   }
 
   if (!batch || !task) {
@@ -300,6 +327,7 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
             {tokens !== null && <span>{format(t.workspace.agentTokens, { count: tokens })}</span>}
             {elapsed !== null && <span>{formatElapsed(elapsed)}</span>}
             {task.activity && <span>{task.activity}</span>}
+            {task.status === 'running' && <StopDispatchButton dispatchKey={dispatchKey} member={title || task.label} t={t} />}
           </div>
         </header>
 

@@ -54,7 +54,7 @@ describe('DesignPreview', () => {
     root.style.setProperty('--ds-focus', '#111111');
     try {
       render(<DesignPreview />);
-      for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft', 'page-canvas']) {
+      for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft', 'page-canvas', 'heat-1', 'heat-2', 'heat-3', 'heat-4']) {
         expect(document.querySelector(`[data-token="${name}"]`), name).not.toBeNull();
       }
       for (const name of ['selection', 'page-selection']) {
@@ -101,6 +101,13 @@ describe('DesignPreview', () => {
     expect(screen.getByRole('button', { name: 'Small dialog' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Large dialog' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirm (default tone)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dialog with a select inside' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Settings-size dialog' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Site access' })).toHaveTextContent('Ask every time');
+    const group = screen.getByRole('heading', { level: 4, name: 'Tasks' }).parentElement as HTMLElement;
+    expect(within(group).getByRole('combobox', { name: 'Default model' })).toHaveClass('w-full');
+    expect(within(group).getByRole('combobox', { name: 'Site access in tasks' })).toHaveClass('w-full');
+    expect(within(group).getByRole('switch', { name: 'Notify when done' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Renew' })).toBeInTheDocument();
     const basics = within(document.querySelector('[data-preview-section="basics"]') as HTMLElement);
     expect(basics.getAllByRole('separator').map((node) => node.getAttribute('aria-orientation') ?? 'horizontal').sort()).toEqual(['horizontal', 'vertical']);

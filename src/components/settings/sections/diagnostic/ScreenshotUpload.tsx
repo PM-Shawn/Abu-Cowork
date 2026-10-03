@@ -1,11 +1,15 @@
 import { useCallback, useRef, useState } from 'react';
-import { ImagePlus, X } from 'lucide-react';
+import { IconButton } from '@/components/ds/button';
+import { HiddenFileInput } from '@/components/ds/file-input';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { compressImage } from '@/utils/imageCompress';
 import { generateAttachmentId } from '@/utils/imageUtils';
 import { useToastStore } from '@/stores/toastStore';
-import { Button } from '@/components/ui/button';
 import type { ScreenshotDraft } from '@/stores/feedbackDraftStore';
 
 const MAX_SHOTS = 5;
@@ -122,8 +126,10 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
 
   return (
     <section>
+      {/* Focusable by a press, for a paste; the Tab key goes to the add button inside it, and a
+          paste there arrives here as well. */}
       <div
-        tabIndex={0}
+        tabIndex={-1}
         onPaste={onPaste}
         onDragOver={(e) => {
           e.preventDefault();
@@ -137,22 +143,15 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
           void addFiles(Array.from(e.dataTransfer.files));
         }}
         className={cn(
-          'rounded-lg border p-2 outline-none transition-colors',
-          dragOver
-            ? 'border-dashed border-[var(--abu-clay)] bg-[var(--abu-clay)]/5'
-            : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]',
-          disabled && 'opacity-50 pointer-events-none',
+          'rounded-control border p-2 outline-none transition-colors duration-fast focus-visible:ring-2 focus-visible:ring-focus',
+          dragOver ? 'border-dashed border-control-border bg-fill-hover' : 'border-separator',
+          disabled && 'pointer-events-none opacity-40',
         )}
       >
-        {/* Hidden native file input — ui/ has no equivalent (it's not a
-            visible form control, just an OS file-picker trigger), so a raw
-            <input type="file"> is the documented exception to §4.1. */}
-        <input
+        <HiddenFileInput
           ref={fileInputRef}
-          type="file"
           accept="image/*"
           multiple
-          className="hidden"
           onChange={(e) => {
             const files = Array.from(e.target.files ?? []);
             void addFiles(files);
@@ -164,36 +163,37 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
           {screenshots.map((s) => (
             <div
               key={s.id}
-              className="relative group h-16 w-16 rounded-md overflow-hidden border border-[var(--abu-border)]"
+              className="group relative size-16 overflow-hidden rounded-control border border-separator"
             >
               <img src={s.previewUrl} alt={s.name} className="h-full w-full object-cover" />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => removeShot(s.id)}
-                aria-label={t.diagnostic.screenshotRemoveAria}
-                className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 hover:bg-black/60 hover:text-white transition-opacity"
-              >
-                <X className="h-2.5 w-2.5" />
-              </Button>
+              {/* Shown under the pointer and when the keyboard reaches it. */}
+              <span className="absolute right-1 top-1 flex rounded-control bg-raised opacity-0 transition-opacity duration-fast group-hover:opacity-100 group-focus-within:opacity-100">
+                <IconButton
+                  size="sm"
+                  variant="secondary"
+                  icon={AppIcons.close}
+                  label={t.diagnostic.screenshotRemoveAria}
+                  onClick={() => removeShot(s.id)}
+                />
+              </span>
             </div>
           ))}
 
           {screenshots.length < MAX_SHOTS && (
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled}
-              className="h-16 w-16 flex-col gap-0.5 rounded-md border border-dashed border-[var(--abu-border)] text-[var(--abu-text-tertiary)] hover:bg-transparent hover:text-[var(--abu-text-primary)] hover:border-[var(--abu-clay)] transition-colors"
-            >
-              <ImagePlus className="h-4 w-4" />
-            </Button>
+            <Tooltip content={t.diagnostic.screenshotTitle}>
+              <Pressable
+                onClick={() => fileInputRef.current?.click()}
+                disabled={disabled}
+                aria-label={t.diagnostic.screenshotTitle}
+                className="flex size-16 flex-col items-center justify-center gap-1 rounded-control border border-dashed border-control-border text-label-tertiary hover:text-label"
+              >
+                <Icon icon={AppIcons.addImage} />
+              </Pressable>
+            </Tooltip>
           )}
         </div>
 
-        <div className="mt-1.5 text-caption text-[var(--abu-text-muted)]">{t.diagnostic.screenshotAddHint}</div>
+        <div className="mt-2 text-caption text-label-tertiary">{t.diagnostic.screenshotAddHint}</div>
       </div>
     </section>
   );

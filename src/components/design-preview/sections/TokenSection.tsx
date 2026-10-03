@@ -27,6 +27,7 @@ const COLOR_CLASS: Record<string, string> = {
   separator: 'bg-separator', 'control-border': 'bg-control-border', focus: 'bg-focus',
   success: 'bg-success', 'success-soft': 'bg-success-soft', warning: 'bg-warning', 'warning-soft': 'bg-warning-soft',
   danger: 'bg-danger', 'danger-soft': 'bg-danger-soft', info: 'bg-info', 'info-soft': 'bg-info-soft',
+  'heat-1': 'bg-heat-1', 'heat-2': 'bg-heat-2', 'heat-3': 'bg-heat-3', 'heat-4': 'bg-heat-4',
 };
 const TEXT_CLASS: Record<string, string> = {
   label: 'text-label', 'label-secondary': 'text-label-secondary', 'label-tertiary': 'text-label-tertiary',

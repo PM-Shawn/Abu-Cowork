@@ -229,6 +229,16 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
     expect(wcagContrast(color(values, text), stack(values, ...layers))).toBeGreaterThanOrEqual(3);
   });
 
+  // The usage heatmap: an empty day, then four steps that must be told apart without color.
+  it.each([
+    ['heat-1', 'fill', 1.15],
+    ['heat-2', 'heat-1', 1.3],
+    ['heat-3', 'heat-2', 1.3],
+    ['heat-4', 'heat-3', 1.3],
+  ] as const)('%s stands out from %s on a dialog', (step, previous, ratio) => {
+    expect(wcagContrast(over(values, step, 'raised'), over(values, previous, 'raised'))).toBeGreaterThanOrEqual(ratio);
+  });
+
   // The editor's completion list is a floating layer; its current row is a selected fill.
   it('label on the selected row of a floating list is at least 4.5:1', () => {
     expect(wcagContrast(color(values, 'label'), stack(values, 'raised', 'fill-selected'))).toBeGreaterThanOrEqual(4.5);

@@ -104,6 +104,9 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // App-global modals (close-window dialog) sit above the chat column but the
   // native webview would still paint over them — treat like a blocking approval.
   const appModalOpen = usePreviewStore((s) => s.appModalOpen);
+  // A design-system dialog or question (search, sign-in, a delete question) is centred in
+  // the window, so part of it lies over this panel: the same treatment as an app modal.
+  const dsModalOpen = usePreviewStore((s) => s.dsModalOpen);
   const lightboxOpen = useImageLightboxStore((s) => s.isOpen);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const commandApproval = useSyncExternalStore(
@@ -125,7 +128,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const blockingApprovalOpen = hasVisibleBlockingApproval(
     activeConversationId,
     [commandApproval, fileApproval, workspaceApproval],
-    capabilitySetup !== null || appModalOpen,
+    capabilitySetup !== null || appModalOpen || dsModalOpen,
   );
 
   const [addressInput, setAddressInput] = useState(url);
@@ -665,7 +668,10 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
               setAddressInput(e.target.value);
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') commit(addressInput);
+              // An Enter inside a composition picks the input method's candidate.
+              // Windows input methods may report only keyCode 229.
+              const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+              if (e.key === 'Enter' && !composing) commit(addressInput);
               if (e.key === 'Escape') {
                 // Standard browser behavior — and the only way out of a held
                 // draft without committing it: show the page's real URL again.

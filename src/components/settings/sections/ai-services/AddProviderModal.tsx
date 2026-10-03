@@ -1,18 +1,23 @@
-import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, type SetStateAction, type CSSProperties } from 'react';
-import { createPortal } from 'react-dom';
-import {
-  X, Search, ExternalLink, Eye, EyeOff, Check, Plus, Loader2,
-  CircleCheck, CircleX, RefreshCw, ChevronDown, AlertTriangle, Trash2,
-} from 'lucide-react';
+import { memo, useState, useCallback, useEffect, useId, useLayoutEffect, useRef, useMemo, type ReactNode, type SetStateAction } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
 import { useI18n } from '@/i18n';
 import type { TranslationDict } from '@/i18n/types';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
-import { Toggle } from '@/components/ui/toggle';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button, IconButton } from '@/components/ds/button';
+import { Checkbox } from '@/components/ds/checkbox';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Popover } from '@/components/ds/popover';
+import { Pressable } from '@/components/ds/pressable';
+import { Select } from '@/components/ds/select';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { TextField } from '@/components/ds/text-field';
+import SecretField from '@/components/settings/SecretField';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { isKnownModel } from '@/core/llm/modelCapabilities';
@@ -166,27 +171,108 @@ function isCustomId(id: string): boolean {
 // Display order for a provider's config plans: recommended first, paygo last.
 const PLAN_ORDER: Record<string, number> = { agent: 0, tokenplan: 1, coding: 2, paygo: 3 };
 
+const FIELD_LABEL = 'text-ui-sm font-medium text-label';
+// Looks like the closed design-system select; opens a panel instead of a list.
+const PANEL_TRIGGER = 'flex h-7 w-full items-center justify-between gap-2 rounded-control border border-control-border bg-field px-2 text-ui text-label';
+// A row that states a fact where another provider would have a field.
+const FIXED_VALUE = 'flex h-7 items-center rounded-control bg-fill px-2 text-ui text-label-tertiary';
+const TEXT_LINK = 'inline-flex items-center gap-1 rounded-control text-ui-sm text-link hover:underline';
+
+// ── Model rows ───────────────────────────────────────────────────
+// Both are memo with primitive props and stable callbacks: a fetched catalog can hold hundreds
+// of models, and a keystroke in the search box must not render the rows that stay.
+
+/** One model in the panel of a built-in provider. */
+const PanelModelRow = memo(function PanelModelRow({ id, label, checked, onToggle }: {
+  id: string;
+  label: string;
+  checked: boolean;
+  onToggle: (id: string) => void;
+}) {
+  const boxId = useId();
+  return (
+    // A press on the row's own space (its padding, the gap beside the box) ticks it too.
+    <div
+      className="flex h-7 items-center gap-2 rounded-control px-2 hover:bg-fill-hover"
+      onClick={(event) => { if (event.target === event.currentTarget) onToggle(id); }}
+    >
+      <Checkbox id={boxId} checked={checked} onCheckedChange={() => onToggle(id)} />
+      <label htmlFor={boxId} className="min-w-0 flex-1 truncate text-ui text-label">{label}</label>
+    </div>
+  );
+});
+
+/** One model in the list inside the window. `choice` is a fetched model the user ticks;
+ *  `added` is a model the user typed, removed with its own button; `detected` is a model a
+ *  local server reported, which the window selects by itself. */
+const ModelRow = memo(function ModelRow({ id, label, kind, selected, expandable, expanded, expandLabel, removeLabel, onToggle, onToggleExpand, children }: {
+  id: string;
+  label: string;
+  kind: 'choice' | 'added' | 'detected';
+  selected: boolean;
+  expandable: boolean;
+  expanded: boolean;
+  expandLabel: string;
+  removeLabel: string;
+  onToggle: (id: string) => void;
+  onToggleExpand: (id: string) => void;
+  children?: ReactNode;
+}) {
+  const boxId = useId();
+  return (
+    <div className="rounded-control border border-separator p-2">
+      {/* A press on the row's own space (the gaps between its parts) ticks a fetched model too. */}
+      <div
+        className="flex items-center gap-2"
+        onClick={kind === 'choice' ? (event) => { if (event.target === event.currentTarget) onToggle(id); } : undefined}
+      >
+        {expandable && (
+          <IconButton
+            size="sm"
+            icon={expanded ? AppIcons.collapse : AppIcons.expand}
+            label={expandLabel}
+            aria-expanded={expanded}
+            onClick={() => onToggleExpand(id)}
+          />
+        )}
+        <Checkbox id={boxId} checked={selected} disabled={kind !== 'choice'} onCheckedChange={() => onToggle(id)} />
+        <label htmlFor={boxId} className="min-w-0 flex-1 truncate text-ui text-label">{label}</label>
+        {kind === 'added' && (
+          <IconButton size="sm" icon={AppIcons.close} label={removeLabel} onClick={() => onToggle(id)} />
+        )}
+      </div>
+      {children}
+    </div>
+  );
+});
+
 // ── Component ────────────────────────────────────────────────────
 
 export default function AddProviderModal({ open: isOpen, onClose, editProvider }: AddProviderModalProps) {
   const { t } = useI18n();
+  const confirm = useConfirm();
+  const fieldId = useId();
   const providers = useSettingsStore((s) => s.providers);
-  const activeModel = useSettingsStore((s) => s.activeModel);
   const addProvider = useSettingsStore((s) => s.addProvider);
   const updateProvider = useSettingsStore((s) => s.updateProvider);
   const removeProvider = useSettingsStore((s) => s.removeProvider);
   const selectModel = useSettingsStore((s) => s.selectModel);
+  // The page clears `editProvider` in the same update that closes the window. While the window
+  // fades out it keeps showing the provider it was opened for.
+  const [heldProvider, setHeldProvider] = useState(editProvider);
+  if (isOpen && heldProvider !== editProvider) setHeldProvider(editProvider);
+  const shownProvider = isOpen ? editProvider : heldProvider;
   // True when bootstrapSecrets detected a prior ciphertext for the provider
   // being edited but couldn't decrypt it (typical cause: hardware/UUID
   // change). Mirrors the same check ProviderCard's retired inline edit form
   // used to make — must not be lost in the unification (see design doc §6).
   const keyDecryptFailed = useSettingsStore((s) =>
-    !!editProvider && s.failedSecretKeys.includes(SECRET_KEYS.provider(editProvider.id)),
+    !!shownProvider && s.failedSecretKeys.includes(SECRET_KEYS.provider(shownProvider.id)),
   );
   // Most recent secret write for the edited provider failed (broken OS
   // keychain) — key works via plaintext fallback but is not stored securely.
   const keySaveFailed = useSettingsStore((s) =>
-    !!editProvider && s.secretWriteFailedKeys.includes(SECRET_KEYS.provider(editProvider.id)),
+    !!shownProvider && s.secretWriteFailedKeys.includes(SECRET_KEYS.provider(shownProvider.id)),
   );
 
   // ── Form state ──
@@ -194,7 +280,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   const [serviceName, setServiceName] = useState('');
   const [nameManuallyEdited, setNameManuallyEdited] = useState(false);
   const [apiKey, setApiKey] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
   const [baseUrl, setBaseUrl] = useState('');
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
@@ -206,77 +291,10 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   const [showCuratedAddInput, setShowCuratedAddInput] = useState(false);
   const addModelInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  // The provider panel and the model panel of a built-in provider are popovers: they float over
+  // the window, so opening one neither grows the window nor is cut off by its scrolling column.
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const providerPanelRef = useRef<HTMLDivElement>(null);
-  const [providerPanelStyle, setProviderPanelStyle] = useState<CSSProperties | null>(null);
-  // The provider dropdown now lives inside the single scrolling field column
-  // (see design doc §4.1/§4.2), so — like the model multi-select panel below
-  // — it's portaled to <body> with fixed positioning: opening it can't grow
-  // the modal or get clipped by the column's overflow-y-auto.
-  const computeProviderPanel = useCallback(() => {
-    const el = dropdownRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const gap = 4, margin = 12;
-    const spaceBelow = window.innerHeight - r.bottom - margin;
-    const spaceAbove = r.top - margin;
-    const openUp = spaceBelow < 280 && spaceAbove > spaceBelow;
-    const maxHeight = Math.max(180, Math.floor(openUp ? spaceAbove : spaceBelow));
-    setProviderPanelStyle({
-      position: 'fixed', left: r.left, width: r.width, maxHeight, zIndex: 10000,
-      ...(openUp ? { bottom: window.innerHeight - r.top + gap } : { top: r.bottom + gap }),
-    });
-  }, []);
-  const toggleProviderDropdown = useCallback(() => {
-    computeProviderPanel();
-    setDropdownOpen((o) => !o);
-  }, [computeProviderPanel]);
-  // Built-in cloud providers pick models from a multi-select dropdown. The panel
-  // is portaled to <body> with fixed positioning so opening it neither grows nor
-  // re-centers the modal (in-flow made the modal "jump"), and isn't clipped by
-  // the modal's overflow-y-auto content area.
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const modelDropdownRef = useRef<HTMLDivElement>(null);
-  const modelPanelRef = useRef<HTMLDivElement>(null);
-  const [modelPanelStyle, setModelPanelStyle] = useState<CSSProperties | null>(null);
-  // Position the fixed panel relative to the trigger. This panel prefers to
-  // open DOWNWARD even when the space is tight — the model field is the last
-  // field in the modal, and an unbounded flip-up panel covered the whole modal,
-  // which looked wrong.
-  //
-  // It flips up only when downward space cannot host a usable list, and even
-  // then it is capped so it still cannot blanket the modal. The narrow escape
-  // hatch exists because the panel is no longer just a list: it grew a
-  // search + selection-count header, and "cap to whatever is below" then left
-  // roughly one visible row when the trigger sat low in the modal.
-  const computeModelPanel = useCallback(() => {
-    const el = modelDropdownRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const gap = 4, margin = 12;
-    // Header + one row + the add-model row: below this the panel is unusable.
-    const MIN_USABLE = 240;
-    // Bounded so a flipped panel never covers the modal top-to-bottom.
-    const FLIP_MAX = 320;
-    const spaceBelow = window.innerHeight - r.bottom - margin;
-    const spaceAbove = r.top - margin;
-    // Flip only when the space above can actually host a usable list —
-    // "above > below" alone could flip into a sliver smaller than the 120px
-    // floor the stay-down branch guarantees.
-    const openUp = spaceBelow < MIN_USABLE && spaceAbove >= MIN_USABLE;
-    const maxHeight = openUp
-      ? Math.min(FLIP_MAX, Math.floor(spaceAbove))
-      : Math.max(120, Math.floor(spaceBelow));
-    setModelPanelStyle({
-      position: 'fixed', left: r.left, width: r.width, maxHeight, zIndex: 10000,
-      ...(openUp ? { bottom: window.innerHeight - r.top + gap } : { top: r.bottom + gap }),
-    });
-  }, []);
-  const toggleModelDropdown = useCallback(() => {
-    computeModelPanel();
-    setModelDropdownOpen((o) => !o);
-  }, [computeModelPanel]);
 
   // ── Ollama-specific state ──
   const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus>('idle');
@@ -302,9 +320,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // ── Validate state ──
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<{ success: boolean; message: string } | null>(null);
-
-  // ── Delete (edit mode only) ──
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // ── Derived ──
   const groups = useMemo(() => buildProviderGroups(t), [t]);
@@ -477,7 +492,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       setFetchModelsError('');
       setModelListFilter('');
       setApiKey('');
-      setShowApiKey(false);
       // (fetch removed)
       // (fetch removed)
       setManualModelInput('');
@@ -543,8 +557,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     });
   }, []);
 
+  // Read through a ref so the handler keeps one identity: every model row receives it.
+  const selectedModelsRef = useRef(selectedModels);
+  useLayoutEffect(() => { selectedModelsRef.current = selectedModels; });
   const handleToggleModel = useCallback((modelId: string) => {
-    const isSelecting = !selectedModels.has(modelId);
+    const isSelecting = !selectedModelsRef.current.has(modelId);
     setSelectedModels((prev) => {
       const next = new Set(prev);
       if (next.has(modelId)) {
@@ -557,7 +574,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     if (isSelecting && showAdvanced) {
       seedDeclaredDefaults([modelId]);
     }
-  }, [selectedModels, showAdvanced, seedDeclaredDefaults]);
+  }, [showAdvanced, seedDeclaredDefaults]);
 
   // Bulk selection over the fetched checklist. Both act on the list the user is
   // actually looking at (the search-filtered subset), so "select all" after
@@ -616,86 +633,13 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     if (showAddModelInput) addModelInputRef.current?.focus();
   }, [showAddModelInput]);
 
-  // Close the provider dropdown when clicking outside it (trigger or portaled
-  // panel) or pressing Escape. Capture phase: the modal backdrop
-  // stopPropagation()s mousedown in the bubble phase, so a bubble-phase
-  // document listener here never fires (the 91e0be5 fix this must not
-  // regress). Also reposition on scroll/resize so the fixed panel can't
-  // detach from its trigger while the field column scrolls.
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      const inTrigger = dropdownRef.current?.contains(target);
-      const inPanel = providerPanelRef.current?.contains(target);
-      if (!inTrigger && !inPanel) setDropdownOpen(false);
-    };
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDropdownOpen(false);
-    };
-    document.addEventListener('mousedown', handleClickOutside, true);
-    document.addEventListener('keydown', handleEscape);
-    window.addEventListener('resize', computeProviderPanel);
-    window.addEventListener('scroll', computeProviderPanel, true);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside, true);
-      document.removeEventListener('keydown', handleEscape);
-      window.removeEventListener('resize', computeProviderPanel);
-      window.removeEventListener('scroll', computeProviderPanel, true);
-    };
-  }, [dropdownOpen, computeProviderPanel]);
-
-  // Same capture-phase outside-click/Escape close for the built-in model
-  // multi-select dropdown (see the provider dropdown effect above).
-  useEffect(() => {
-    if (!modelDropdownOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      const t = e.target as Node;
-      // The panel is portaled outside modelDropdownRef, so check it too.
-      const inTrigger = modelDropdownRef.current?.contains(t);
-      const inPanel = modelPanelRef.current?.contains(t);
-      if (!inTrigger && !inPanel) { setModelDropdownOpen(false); setShowCuratedAddInput(false); }
-    };
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setModelDropdownOpen(false); setShowCuratedAddInput(false); }
-    };
-    // Reposition if the layout shifts while open (window resize, or the modal's
-    // content area scrolling), so the fixed panel can't detach.
-    document.addEventListener('mousedown', handleClickOutside, true);
-    document.addEventListener('keydown', handleEscape);
-    window.addEventListener('resize', computeModelPanel);
-    window.addEventListener('scroll', computeModelPanel, true);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside, true);
-      document.removeEventListener('keydown', handleEscape);
-      window.removeEventListener('resize', computeModelPanel);
-      window.removeEventListener('scroll', computeModelPanel, true);
-    };
-  }, [modelDropdownOpen, computeModelPanel]);
-
-  // ── Fix 3 dedup: shared per-model "advanced caps" expand affordance ──
-  // Used by all three model-list branches (fetched checklist / manual no-fetch
-  // list / Ollama list) so the chevron toggle + expanded panel isn't
-  // triplicated. Gated identically everywhere: showAdvanced && isSelected.
-  const renderModelExpandToggle = (modelId: string, isSelected: boolean) => {
-    if (!showAdvanced || !isSelected) return null;
-    const isExpanded = expandedModelIds.has(modelId);
+  // ── Shared row of the three model lists inside the window (fetched checklist / models the
+  // user typed / models Ollama reported): the expand button and the abilities under it are
+  // gated identically everywhere: showAdvanced && isSelected. ──
+  const renderModelCapsPanel = (modelId: string) => {
     return (
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); toggleModelExpand(modelId); }}
-        className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
-      >
-        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-180')} />
-      </button>
-    );
-  };
-
-  const renderModelCapsPanel = (modelId: string, isSelected: boolean) => {
-    if (!showAdvanced || !isSelected || !expandedModelIds.has(modelId)) return null;
-    return (
-      <div className="pl-2 pt-2 pb-1 border-l-2 border-[var(--abu-border)] ml-1 space-y-1.5">
-        <p className="text-caption text-[var(--abu-text-tertiary)]">{t.settings.capPerModelHint}</p>
+      <div className="mt-2 space-y-2 border-l border-separator pl-3">
+        <p className="text-caption text-label-tertiary">{t.settings.capPerModelHint}</p>
         <AdvancedCapabilitiesFields
           declared={perModelDeclared[modelId] ?? {}}
           setDeclared={(u) => updateModelDeclared(modelId, u)}
@@ -706,6 +650,28 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           apiFormat={effectiveFormat}
         />
       </div>
+    );
+  };
+
+  const renderModelRow = (model: { id: string; label: string }, kind: 'choice' | 'added' | 'detected', isSelected: boolean) => {
+    const expandable = showAdvanced && isSelected;
+    const expanded = expandable && expandedModelIds.has(model.id);
+    return (
+      <ModelRow
+        key={model.id}
+        id={model.id}
+        label={model.label}
+        kind={kind}
+        selected={isSelected}
+        expandable={expandable}
+        expanded={expanded}
+        expandLabel={t.settings.advancedConfig}
+        removeLabel={t.common.delete}
+        onToggle={handleToggleModel}
+        onToggleExpand={toggleModelExpand}
+      >
+        {expanded ? renderModelCapsPanel(model.id) : null}
+      </ModelRow>
     );
   };
 
@@ -740,7 +706,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       // A curated provider's models live behind a closed dropdown, so a fetch
       // would otherwise look like nothing happened. Open it on the result.
       if (isBuiltinCurated) {
-        computeModelPanel();
         setModelDropdownOpen(true);
       }
       if (showAdvanced) {
@@ -754,7 +719,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       setFetchModelsStatus('error');
       setFetchModelsError(describeFetchFailure(result, t));
     }
-  }, [baseUrl, apiKey, effectiveFormat, isLMStudio, isBuiltinCurated, computeModelPanel, t, showAdvanced, seedDeclaredDefaults]);
+  }, [baseUrl, apiKey, effectiveFormat, isLMStudio, isBuiltinCurated, t, showAdvanced, seedDeclaredDefaults]);
 
   // ── Ollama handlers ──
 
@@ -832,9 +797,26 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     }
   }, [baseUrl, apiKey, selectedModels, effectiveFormat, t]);
 
+  // ── Unsaved input ──
+  // Everything the user can fill in, as one string. The window has something to lose once this
+  // differs from what the form held when it opened (or when it was last saved). The string
+  // holds the key: it stays in memory, and is never logged or rendered.
+  // A model without declared abilities counts as holding its defaults, which is what the form
+  // shows for it: a fetch or a detection that only fills those defaults in is no change.
+  const formSnapshot = JSON.stringify([
+    selectedId, serviceName, apiKey, baseUrl, selectedPlanId, useRawUrl, manualModelInput,
+    [...selectedModels].map((id) => [id, showAdvanced ? perModelDeclared[id] ?? defaultModelDeclaredCapabilities(id) : null]),
+  ]);
+  // null until the form has been reset or prefilled for this opening (the layout effect below).
+  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
+  if (isOpen && savedSnapshot === null) setSavedSnapshot(formSnapshot);
+  const dirty = isOpen && savedSnapshot !== null && formSnapshot !== savedSnapshot;
+
   // ── Save ──
 
   const handleSave = useCallback(() => {
+    // The window stays on screen while it fades out; a second click then must not save again.
+    if (!isOpen) return;
     if (!serviceName.trim()) return;
     if (selectedModels.size === 0) return;
 
@@ -942,40 +924,54 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       }
     }
 
+    // What the form holds is saved now: nothing is left to discard.
+    setSavedSnapshot(formSnapshot);
     onClose();
   }, [
+    isOpen, formSnapshot,
     serviceName, selectedModels, ollamaModels, selectedOption,
     isCustom, showAdvanced, perModelDeclared, useRawUrl, baseUrl, apiKey, providers,
     effectiveFormat, activePlan, editProvider,
     addProvider, updateProvider, selectModel, onClose,
   ]);
 
-  // ── Delete (edit mode only) — mirrors ProviderCard's retired
-  // handleDeleteConfirm exactly: custom providers are removed outright,
+  // ── Delete (edit mode only) — the same question and the same calls as the
+  // delete button on the provider's card: custom providers are removed outright,
   // builtin providers are disabled + cleared (they can't leave the array,
   // they're reseeded by createDefaultProviders) so they simply drop out of
   // the visible list. ──
-  const handleDeleteProvider = useCallback(() => {
-    if (!editProvider) return;
-    const wasActive = activeModel.providerId === editProvider.id;
+  const handleDeleteProvider = useCallback(async () => {
+    if (!isOpen || !editProvider) return;
+    const confirmed = await confirm({
+      title: t.settings.deleteProviderConfirm,
+      message: editProvider.name,
+      confirmLabel: t.common.confirm,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    // The answer is about the provider as it is now: it may have gone, or become the one in
+    // use, while the question was open.
+    const answered = useSettingsStore.getState();
+    const current = answered.providers.find((p) => p.id === editProvider.id);
+    if (!current) return;
+    const wasActive = answered.activeModel.providerId === current.id;
 
-    if (editProvider.source === 'custom') {
-      removeProvider(editProvider.id);
+    if (current.source === 'custom') {
+      removeProvider(current.id);
     } else {
-      updateProvider(editProvider.id, { enabled: false, apiKey: '', status: 'unchecked', userAdded: false });
+      updateProvider(current.id, { enabled: false, apiKey: '', status: 'unchecked', userAdded: false });
     }
 
     if (wasActive) {
       const state = useSettingsStore.getState();
-      const next = state.providers.find(p => p.enabled && p.id !== editProvider.id);
+      const next = state.providers.find(p => p.enabled && p.id !== current.id);
       if (next && next.models.length > 0) {
         selectModel(next.id, next.models[0].id);
       }
     }
 
-    setShowDeleteConfirm(false);
     onClose();
-  }, [editProvider, activeModel, removeProvider, updateProvider, selectModel, onClose]);
+  }, [isOpen, editProvider, confirm, t, removeProvider, updateProvider, selectModel, onClose]);
 
   // ── Reset / prefill on open ──
   // All state resets to blank whenever the modal opens fresh (add mode), or
@@ -988,7 +984,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     setServiceName('');
     setNameManuallyEdited(false);
     setApiKey('');
-    setShowApiKey(false);
     setBaseUrl('');
     setSelectedPlanId(null);
     setSelectedModels(new Set());
@@ -1010,7 +1005,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     setUseRawUrl(false);
     setValidating(false);
     setValidateResult(null);
-    setShowDeleteConfirm(false);
   }, []);
 
   const prefillFromEditProvider = useCallback((p: ProviderInstance) => {
@@ -1019,7 +1013,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     setServiceName(p.name);
     setNameManuallyEdited(true);
     setApiKey(p.apiKey);
-    setShowApiKey(false);
     setBaseUrl(p.baseUrl);
     setSelectedModels(new Set(p.models.map(m => m.id)));
     setManualModelInput('');
@@ -1067,7 +1060,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     setModelListFilter('');
     setValidating(false);
     setValidateResult(null);
-    setShowDeleteConfirm(false);
   }, []);
 
   // useLayoutEffect (not useEffect) so prefill/reset runs synchronously BEFORE
@@ -1082,172 +1074,171 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     } else {
       resetFormState();
     }
+    // The next render holds the form as it opens: that is what "nothing typed yet" means.
+    setSavedSnapshot(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, editProvider?.id]);
-
-  const handleClose = useCallback(() => {
-    resetFormState();
-    onClose();
-  }, [resetFormState, onClose]);
-
-  if (!isOpen) return null;
 
   // ── Render helpers ──
 
   const canSave = serviceName.trim() && selectedModels.size > 0;
+  // One spinner for the model list; the button that started the work keeps its icon still.
+  const modelsBusy = fetchModelsStatus === 'fetching' || ollamaStatus === 'checking';
+  const searchIcon = (
+    <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-label-tertiary">
+      <Icon icon={AppIcons.search} size="sm" />
+    </span>
+  );
+  const docsLink = guide && (
+    <Pressable onClick={() => open(guide.url)} className={TEXT_LINK}>
+      {t.settings.viewDocs}
+      <Icon icon={AppIcons.openExternal} size="sm" />
+    </Pressable>
+  );
 
-  return createPortal(
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50"
-      onMouseDown={(e) => { e.stopPropagation(); }}
-    >
-      <div
-        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-150"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
-          <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">
-            {editProvider ? t.settings.editService : t.settings.addService}
-          </h2>
-          <Button variant="ghost" size="icon-sm" onClick={handleClose}>
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {/* Single scrolling field column — every field lives here (design doc
-            §4.1). Nothing is pinned above it except the header/footer chrome,
-            which are structural (not fields). */}
-        <div className="flex-1 overflow-y-auto px-6 pt-4 pb-5 space-y-2.5">
-          {keyDecryptFailed && (
-            <div className="flex items-start gap-2 rounded-md border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2 text-caption text-[var(--abu-danger)]">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              <span>{t.settings.apiKeyDecryptFailed}</span>
-            </div>
-          )}
-          {!keyDecryptFailed && keySaveFailed && (
-            <div className="flex items-start gap-2 rounded-md border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] px-3 py-2 text-caption text-[var(--abu-warning)]">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              <span>{t.settings.apiKeySaveFailed}</span>
-            </div>
-          )}
-
-          {/* 1. Provider selector — above service name (design doc §4.1). Locked
-              into a read-only chip in edit mode: the provider identity can't
-              change (that would be a different service). */}
-          <div className="space-y-1">
-            <label className="text-minor font-medium text-[var(--abu-text-primary)]">
-              {t.settings.selectProviderType}
-            </label>
-            {editProvider ? (
-              <div className="w-full h-9 px-3 flex items-center bg-[var(--abu-bg-hover)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-secondary)]">
-                {selectedOption?.label ?? editProvider.name}
-              </div>
-            ) : (
-              <div className="relative" ref={dropdownRef}>
-                <button
-                  type="button"
-                  onClick={toggleProviderDropdown}
-                  className={cn(
-                    'w-full h-9 px-3 flex items-center justify-between',
-                    'bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] rounded-lg',
-                    'text-body text-[var(--abu-text-primary)]',
-                    'hover:border-[var(--abu-clay)] transition-colors',
-                  )}
-                >
-                  <span className={selectedOption ? '' : 'text-[var(--abu-text-placeholder)]'}>
-                    {selectedOption ? selectedOption.label : t.settings.selectProviderType}
-                  </span>
-                  <ChevronDown className={cn('h-4 w-4 text-[var(--abu-text-secondary)] transition-transform', dropdownOpen && 'rotate-180')} />
-                </button>
-
-                {dropdownOpen && providerPanelStyle && createPortal(
-                  <div
-                    ref={providerPanelRef}
-                    style={providerPanelStyle}
-                    className="flex flex-col rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg overflow-hidden"
-                  >
-                    {/* Search */}
-                    <div className="shrink-0 p-2 border-b border-[var(--abu-border)]">
-                      <div className="relative">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
-                        <Input
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                          placeholder={t.settings.searchProvider}
-                          className="pl-8 h-8 text-minor"
-                          autoFocus
-                        />
-                      </div>
-                    </div>
-
-                    {/* Options */}
-                    <div className="flex-1 min-h-0 overflow-y-auto py-1">
-                      {filteredGroups.map((group) => (
-                        <div key={group.key}>
-                          <div className="px-3 py-1.5 text-minor font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">
-                            {group.label}
-                          </div>
-                          {group.options.map((option) => (
-                            <button
-                              key={option.id}
-                              type="button"
-                              onClick={() => handleSelectProvider(option)}
-                              className={cn(
-                                'w-full px-3 py-2 flex items-center justify-between text-body',
-                                'hover:bg-[var(--abu-bg-hover)] transition-colors',
-                                selectedId === option.id && 'bg-[var(--abu-bg-hover)]',
-                              )}
-                            >
-                              <span className="text-[var(--abu-text-primary)]">{option.label}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  </div>,
-                  document.body
-                )}
-              </div>
+  return (
+    <Dialog
+      open={isOpen}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      // Once the window has gone it forgets the form, the baseline it compared the form with and
+      // the provider it showed (each holds the key). Not earlier: the form must not empty while it fades out.
+      onCloseAutoFocus={() => {
+        if (isOpen) return;
+        resetFormState();
+        setSavedSnapshot(null);
+        setHeldProvider(undefined);
+      }}
+      title={shownProvider ? t.settings.editService : t.settings.addService}
+      size="lg"
+      closeButton
+      dirty={dirty}
+      footer={(
+        <>
+          {/* Left: delete (edit mode only), validate connection and its result */}
+          <div className="mr-auto flex min-w-0 items-center gap-2">
+            {shownProvider && (
+              <Button variant="danger" size="sm" icon={AppIcons.delete} onClick={() => { void handleDeleteProvider(); }}>
+                {t.settings.deleteService}
+              </Button>
+            )}
+            {selectedId && !isOllama && !isLMStudio && (
+              <Button
+                variant="plain"
+                size="sm"
+                onClick={handleValidate}
+                busy={validating}
+                disabled={!apiKey.trim() || !baseUrl.trim() || selectedModels.size === 0}
+              >
+                {t.settings.validateConnection}
+              </Button>
+            )}
+            {/* The one spinner of this area; it gives its place to the result. */}
+            {validating && <Spinner size="sm" label={t.settings.validating} />}
+            {validateResult && (
+              <span className={cn('inline-flex min-w-0 items-center gap-1 text-ui-sm', validateResult.success ? 'text-success' : 'text-danger')}>
+                <StatusIcon tone={validateResult.success ? 'success' : 'danger'} size="sm" />
+                <span className="max-w-70 truncate">{validateResult.message}</span>
+              </span>
             )}
           </div>
+          {/* Cancel closes the way Escape does: typed input is asked about first. */}
+          <DialogClose asChild><Button variant="secondary">{t.common.cancel}</Button></DialogClose>
+          <Button variant="primary" onClick={handleSave} disabled={!canSave}>{t.settings.save}</Button>
+        </>
+      )}
+    >
+      {/* Single field column — every field lives here (design doc §4.1); the
+          dialog scrolls it and keeps the title and the buttons in place. */}
+      <div className="space-y-3">
+        {keyDecryptFailed && <InlineMessage tone="danger">{t.settings.apiKeyDecryptFailed}</InlineMessage>}
+        {!keyDecryptFailed && keySaveFailed && <InlineMessage tone="warning">{t.settings.apiKeySaveFailed}</InlineMessage>}
 
-          {/* 2. Service Name */}
-          <div className="space-y-1">
-            <label className="text-minor font-medium text-[var(--abu-text-primary)]">
-              {t.settings.serviceName}
-            </label>
-            <Input
-              value={serviceName}
-              onChange={handleNameChange}
-              placeholder={t.settings.serviceNameAuto}
-              className="h-8"
-            />
-          </div>
-
-          {/* 3. Config Plan — always rendered (design doc §4.3): multi-plan
-              builtins get the dropdown as before; everything else (single-plan
-              builtin, custom, local) shows a greyed read-only placeholder so
-              the row never disappears. */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <label className="text-minor font-medium text-[var(--abu-text-primary)]">
-                {t.settings.configPlan}
-              </label>
-              {hasPlanRow && guide && (
-                <button
-                  type="button"
-                  onClick={() => open(guide.url)}
-                  className="inline-flex items-center gap-1 text-minor text-[var(--abu-clay)] hover:underline"
-                >
-                  {t.settings.viewDocs}
-                  <ExternalLink className="h-3 w-3" />
-                </button>
-              )}
+        {/* 1. Provider selector — above service name (design doc §4.1). Locked
+            into a read-only chip in edit mode: the provider identity can't
+            change (that would be a different service). */}
+        <div className="space-y-1">
+          <label className={FIELD_LABEL}>{t.settings.selectProviderType}</label>
+          {shownProvider ? (
+            <div className="flex h-7 items-center rounded-control bg-fill px-2 text-ui text-label-secondary">
+              {selectedOption?.label ?? shownProvider.name}
             </div>
-            {hasPlanRow ? (
+          ) : (
+            <Popover
+              open={dropdownOpen}
+              onOpenChange={setDropdownOpen}
+              align="start"
+              className="w-(--radix-popover-trigger-width) p-1"
+              trigger={(
+                <Pressable aria-expanded={dropdownOpen} className={PANEL_TRIGGER}>
+                  <span className={cn('min-w-0 truncate', !selectedOption && 'text-label-placeholder')}>
+                    {selectedOption ? selectedOption.label : t.settings.selectProviderType}
+                  </span>
+                  <Icon icon={AppIcons.selectorChevrons} size="sm" className="text-label-secondary" />
+                </Pressable>
+              )}
+            >
+              <div className="relative">
+                {searchIcon}
+                <TextField
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={t.settings.searchProvider}
+                  className="pl-7"
+                />
+              </div>
+              {/* Picking a provider only fills the form; nothing happens until Save.
+                  The padding keeps the focus ring of a row inside the scroll box. */}
+              <div className="-mx-1 -mb-1 mt-1 max-h-64 overflow-y-auto px-1 pb-1">
+                {filteredGroups.map((group) => (
+                  <div key={group.key}>
+                    <div className="px-2 py-1 text-ui-sm text-label-tertiary">{group.label}</div>
+                    {group.options.map((option) => {
+                      const current = selectedId === option.id;
+                      return (
+                        <Pressable
+                          key={option.id}
+                          onClick={() => handleSelectProvider(option)}
+                          className={cn(
+                            'flex h-7 w-full items-center gap-2 rounded-control px-2 text-left text-ui hover:bg-fill-hover',
+                            current && 'bg-fill-selected',
+                          )}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                          {current && <Icon icon={AppIcons.done} size="sm" />}
+                        </Pressable>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </Popover>
+          )}
+        </div>
+
+        {/* 2. Service Name */}
+        <div className="space-y-1">
+          <label htmlFor={`${fieldId}-name`} className={FIELD_LABEL}>{t.settings.serviceName}</label>
+          <TextField
+            id={`${fieldId}-name`}
+            value={serviceName}
+            onChange={handleNameChange}
+            placeholder={t.settings.serviceNameAuto}
+          />
+        </div>
+
+        {/* 3. Config Plan — always rendered (design doc §4.3): multi-plan
+            builtins get the dropdown as before; everything else (single-plan
+            builtin, custom, local) shows a greyed read-only placeholder so
+            the row never disappears. */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <label className={FIELD_LABEL}>{t.settings.configPlan}</label>
+            {hasPlanRow && docsLink}
+          </div>
+          {hasPlanRow ? (
               <Select
+                fullWidth
+                label={t.settings.configPlan}
                 value={selectedPlanId ?? ''}
                 options={[...providerPlans!]
                   .sort((a, b) => (PLAN_ORDER[a.id] ?? 99) - (PLAN_ORDER[b.id] ?? 99))
@@ -1266,386 +1257,319 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                       : p.id === 'anthropic' ? t.settings.customApiAnthropic
                       : t.settings.billingAgent),
                   }))}
-                onChange={handleSelectPlan}
+                onValueChange={handleSelectPlan}
               />
-            ) : (
-              <div className="h-9 px-3 flex items-center bg-[var(--abu-bg-hover)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-tertiary)]">
-                {configMethodPlaceholder}
-              </div>
-            )}
-          </div>
+          ) : (
+            <div className={FIXED_VALUE}>{configMethodPlaceholder}</div>
+          )}
+        </div>
 
-          {/* 4. API Key — read-only "no key needed" for keyless local providers,
-              disabled placeholder before a provider is picked. */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <label className="text-minor font-medium text-[var(--abu-text-primary)]">
-                  {t.settings.apiKey}
-                </label>
-                {selectedId && !isOllama && !isLMStudio && (
-                  <span className="text-minor text-[var(--abu-text-tertiary)]">
-                    {isCustom ? t.settings.apiKeyOptional : t.settings.apiKeyRequired}
-                  </span>
-                )}
-              </div>
-              {selectedId && !hasPlanRow && guide && (
-                <button
-                  type="button"
-                  onClick={() => open(guide.url)}
-                  className="inline-flex items-center gap-1 text-minor text-[var(--abu-clay)] hover:underline"
-                >
-                  {t.settings.viewDocs}
-                  <ExternalLink className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-            {isOllama || isLMStudio ? (
-              <div className="h-8 px-3 flex items-center bg-[var(--abu-bg-hover)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-tertiary)]">
-                {t.settings.localNoKeyNeeded}
-              </div>
-            ) : (
-              <>
-                <div className="relative">
-                  <Input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="sk-..."
-                    disabled={!selectedId}
-                    className="pr-9 h-8"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    disabled={!selectedId}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-secondary)] disabled:opacity-50 disabled:pointer-events-none"
-                  >
-                    {showApiKey
-                      ? <EyeOff className="h-4 w-4" />
-                      : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-                {selectedOption?.provider === 'bailian' && activePlan && (
-                  <p className="text-caption text-[var(--abu-text-tertiary)]">
-                    {t.settings.bailianBillingKeyHint}
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* 5. API Address — read-only fixed endpoint for built-in cloud
-              providers (shown, not hidden, per design doc §4.3), editable for
-              custom/local, disabled placeholder before a provider is picked. */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <label className="text-minor font-medium text-[var(--abu-text-primary)]">
-                {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
+        {/* 4. API Key — read-only "no key needed" for keyless local providers,
+            disabled placeholder before a provider is picked. */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <label htmlFor={isOllama || isLMStudio ? undefined : `${fieldId}-key`} className={FIELD_LABEL}>
+                {t.settings.apiKey}
               </label>
-              {showAdvanced && effectiveFormat !== 'anthropic' && (
-                <div className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
-                  <span className="text-minor text-[var(--abu-text-secondary)]">{t.settings.capRawUrl}</span>
-                  <Toggle checked={useRawUrl} onChange={() => setUseRawUrl(v => !v)} size="sm" />
-                </div>
+              {selectedId && !isOllama && !isLMStudio && (
+                <span className="text-ui-sm text-label-tertiary">
+                  {isCustom ? t.settings.apiKeyOptional : t.settings.apiKeyRequired}
+                </span>
               )}
             </div>
-            {isBuiltinCloud ? (
-              <p className="text-minor text-[var(--abu-text-secondary)] font-mono bg-[var(--abu-bg-hover)] rounded-lg px-3 py-2 break-all select-all">
-                {baseUrl}
-              </p>
-            ) : (
-              <Input
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder={isOllama ? 'http://127.0.0.1:11434' : isLMStudio ? 'http://127.0.0.1:1234/v1' : 'https://...'}
-                onBlur={isOllama ? handleCheckOllama : isLMStudio ? handleFetchModels : undefined}
+            {selectedId && !hasPlanRow && docsLink}
+          </div>
+          {isOllama || isLMStudio ? (
+            <div className={FIXED_VALUE}>{t.settings.localNoKeyNeeded}</div>
+          ) : (
+            <>
+              {/* Keyed by provider: the key of another provider starts masked again. */}
+              <SecretField
+                key={selectedId}
+                id={`${fieldId}-key`}
+                value={apiKey}
+                onChange={setApiKey}
+                placeholder="sk-..."
                 disabled={!selectedId}
-                className="h-8"
               />
-            )}
-            {(isOllama || isLMStudio) && (
-              <p className="text-minor text-[var(--abu-text-tertiary)]">
-                {isOllama ? t.settings.ollamaUrlHint : t.settings.lmstudioUrlHint}
-              </p>
-            )}
+              {selectedOption?.provider === 'bailian' && activePlan && (
+                <p className="text-caption text-label-tertiary">{t.settings.bailianBillingKeyHint}</p>
+              )}
+            </>
+          )}
+        </div>
 
-            {/* Final request URL preview — hidden for local providers which have their own status UI */}
-            {!isOllama && !isLMStudio && baseUrl.trim() && selectedOption && (
-              <p className="text-caption font-mono text-[var(--abu-text-muted)] break-all">
-                ↳ {t.settings.apiUrlPreview}: POST {buildFullChatUrl(baseUrl, effectiveFormat, { useRawUrl })}
-              </p>
-            )}
-
-            {/* Ollama connection status */}
-            {isOllama && ollamaStatus !== 'idle' && ollamaStatus !== 'checking' && (
-              <div className="mt-1 space-y-0.5">
-                <div className={cn(
-                  'flex items-center gap-1.5 text-minor',
-                  ollamaStatus === 'online' ? 'text-[var(--abu-success)]' : 'text-[var(--abu-danger)]',
-                )}>
-                  {ollamaStatus === 'online'
-                    ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.ollamaOnline}</>
-                    : <><CircleX className="h-3.5 w-3.5" /> {t.settings.ollamaOffline}</>}
-                </div>
-                {ollamaStatus === 'offline' && ollamaError && (
-                  <p className="text-caption font-mono text-[var(--abu-danger)] break-all pl-5">{ollamaError}</p>
-                )}
-              </div>
-            )}
-
-            {/* LM Studio connection status */}
-            {isLMStudio && fetchModelsStatus !== 'idle' && fetchModelsStatus !== 'fetching' && (
-              <div className={cn(
-                'flex items-center gap-1.5 text-minor mt-1',
-                fetchModelsStatus === 'success' ? 'text-[var(--abu-success)]' : 'text-[var(--abu-danger)]',
-              )}>
-                {fetchModelsStatus === 'success'
-                  ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.lmstudioOnline}</>
-                  : <><CircleX className="h-3.5 w-3.5" /> {t.settings.lmstudioOffline}</>}
-              </div>
+        {/* 5. API Address — read-only fixed endpoint for built-in cloud
+            providers (shown, not hidden, per design doc §4.3), editable for
+            custom/local, disabled placeholder before a provider is picked. */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor={isBuiltinCloud ? undefined : `${fieldId}-url`} className={FIELD_LABEL}>
+              {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
+            </label>
+            {showAdvanced && effectiveFormat !== 'anthropic' && (
+              <span className="inline-flex items-center gap-2" title={t.settings.capRawUrlHint}>
+                <label htmlFor={`${fieldId}-raw-url`} className="text-ui-sm text-label-secondary">{t.settings.capRawUrl}</label>
+                <Switch id={`${fieldId}-raw-url`} checked={useRawUrl} onCheckedChange={() => setUseRawUrl(v => !v)} />
+              </span>
             )}
           </div>
+          {isBuiltinCloud ? (
+            // Text in the box of a field: a long address wraps and shows in full, and one press selects it all.
+            <p className="select-all break-all rounded-control border border-control-border bg-field px-2 py-1 font-code text-ui text-label">{baseUrl}</p>
+          ) : (
+            <TextField
+              id={`${fieldId}-url`}
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={isOllama ? 'http://127.0.0.1:11434' : isLMStudio ? 'http://127.0.0.1:1234/v1' : 'https://...'}
+              onBlur={isOllama ? handleCheckOllama : isLMStudio ? handleFetchModels : undefined}
+              disabled={!selectedId}
+            />
+          )}
+          {(isOllama || isLMStudio) && (
+            <p className="text-ui-sm text-label-tertiary">
+              {isOllama ? t.settings.ollamaUrlHint : t.settings.lmstudioUrlHint}
+            </p>
+          )}
 
-          {/* 6. Model Selection — row always present; content is a disabled
-              placeholder before a provider is picked. */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-minor font-medium text-[var(--abu-text-primary)]">
-                {t.settings.models}
-              </label>
-              <div className="flex items-center gap-3">
-                {/* Fetch/refresh models button — every non-Ollama provider
-                    (Ollama has its own probe button below). Curated built-ins
-                    get it too: their model list is a hand-maintained static
-                    table that goes stale between releases, so "fetch" is how a
-                    user reaches a model we haven't shipped yet. The anthropic
-                    format is no longer excluded — modelFetcher routes it
-                    through the Anthropic Models API. */}
-                {!isOllama && supportsModelListForSelection && baseUrl.trim() && (
-                  <button
-                    type="button"
-                    onClick={handleFetchModels}
-                    disabled={fetchModelsStatus === 'fetching' || !baseUrl.trim()}
-                    className="flex items-center gap-1 text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
-                  >
-                    {fetchModelsStatus === 'fetching'
-                      ? <Loader2 className="h-3 w-3 animate-spin" />
-                      : <RefreshCw className="h-3 w-3" />}
-                    {fetchModelsStatus === 'fetching' ? t.settings.fetchingModels : t.settings.fetchModels}
-                  </button>
-                )}
-                {isOllama && (
-                  <button
-                    type="button"
-                    onClick={handleCheckOllama}
-                    disabled={ollamaStatus === 'checking'}
-                    className="flex items-center gap-1 text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
-                  >
-                    {ollamaStatus === 'checking'
-                      ? <Loader2 className="h-3 w-3 animate-spin" />
-                      : <RefreshCw className="h-3 w-3" />}
-                    {ollamaStatus === 'checking' ? t.settings.fetchingModels : t.settings.fetchModels}
-                  </button>
-                )}
-                {(isCustom || isLMStudio || usesFetchedModels) && (
-                  <button
-                    type="button"
-                    onClick={toggleAddModelInput}
-                    className="flex items-center gap-1 text-minor text-[var(--abu-clay)] hover:underline"
-                  >
-                    <Plus className="h-3 w-3" />
-                    {t.settings.addModel}
-                  </button>
-                )}
+          {/* Final request URL preview — hidden for local providers which have their own status UI */}
+          {!isOllama && !isLMStudio && baseUrl.trim() && selectedOption && (
+            <p className="break-all font-code text-caption text-label-tertiary">
+              ↳ {t.settings.apiUrlPreview}: POST {buildFullChatUrl(baseUrl, effectiveFormat, { useRawUrl })}
+            </p>
+          )}
+
+          {/* Ollama connection status */}
+          {isOllama && ollamaStatus !== 'idle' && ollamaStatus !== 'checking' && (
+            <div className="space-y-1">
+              <div className={cn('flex items-center gap-1 text-ui-sm', ollamaStatus === 'online' ? 'text-success' : 'text-danger')}>
+                <StatusIcon tone={ollamaStatus === 'online' ? 'success' : 'danger'} size="sm" />
+                <span>{ollamaStatus === 'online' ? t.settings.ollamaOnline : t.settings.ollamaOffline}</span>
               </div>
+              {ollamaStatus === 'offline' && ollamaError && (
+                <p className="break-all pl-5 font-code text-caption text-danger">{ollamaError}</p>
+              )}
             </div>
+          )}
 
-            {!selectedId ? (
-              <div className="h-9 px-3 flex items-center bg-[var(--abu-bg-hover)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-placeholder)]">
-                {t.settings.selectProviderFirst}
-              </div>
-            ) : (
-              <>
-                {/* Fetch status messages */}
-                {fetchModelsStatus === 'success' && (
-                  <p className="text-minor text-[var(--abu-success)]">
-                    {t.settings.fetchModelsSuccess.replace('{count}', String(fetchedModels.length))}
-                  </p>
-                )}
-                {fetchModelsStatus === 'error' && (
-                  <p className="text-minor text-[var(--abu-danger)]">
-                    {fetchModelsError || t.settings.fetchModelsError}
-                  </p>
-                )}
+          {/* LM Studio connection status */}
+          {isLMStudio && fetchModelsStatus !== 'idle' && fetchModelsStatus !== 'fetching' && (
+            <div className={cn('flex items-center gap-1 text-ui-sm', fetchModelsStatus === 'success' ? 'text-success' : 'text-danger')}>
+              <StatusIcon tone={fetchModelsStatus === 'success' ? 'success' : 'danger'} size="sm" />
+              <span>{fetchModelsStatus === 'success' ? t.settings.lmstudioOnline : t.settings.lmstudioOffline}</span>
+            </div>
+          )}
+        </div>
 
-                {/* Curated built-in providers — multi-select dropdown over the
-                    curated model list, plus an add-model input for ids not listed.
-                    Nothing is pre-selected; the user checks what to add. */}
-                {isBuiltinCurated && (
-                  <div className="relative" ref={modelDropdownRef}>
-                    <button
-                      type="button"
-                      onClick={toggleModelDropdown}
-                      className={cn(
-                        'w-full min-h-9 px-3 py-1.5 flex items-center justify-between gap-2',
-                        'bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] rounded-lg',
-                        'text-body text-[var(--abu-text-primary)]',
-                        'hover:border-[var(--abu-clay)] transition-colors',
-                      )}
-                    >
-                      <span className={cn('text-left truncate', selectedModels.size === 0 && 'text-[var(--abu-text-placeholder)]')}>
+        {/* 6. Model Selection — row always present; content is a disabled
+            placeholder before a provider is picked. */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <label className={FIELD_LABEL}>{t.settings.models}</label>
+            <div className="flex items-center gap-1">
+              {/* The one spinner of the model list. It sits before the buttons, which keep their place. */}
+              {modelsBusy && <Spinner size="sm" label={t.settings.fetchingModels} />}
+              {/* Fetch/refresh models button — every non-Ollama provider
+                  (Ollama has its own probe button below). Curated built-ins
+                  get it too: their model list is a hand-maintained static
+                  table that goes stale between releases, so "fetch" is how a
+                  user reaches a model we haven't shipped yet. The anthropic
+                  format is no longer excluded — modelFetcher routes it
+                  through the Anthropic Models API. */}
+              {!isOllama && supportsModelListForSelection && baseUrl.trim() && (
+                <Button
+                  variant="plain"
+                  size="sm"
+                  icon={AppIcons.retry}
+                  onClick={handleFetchModels}
+                  disabled={fetchModelsStatus === 'fetching' || !baseUrl.trim()}
+                >
+                  {t.settings.fetchModels}
+                </Button>
+              )}
+              {isOllama && (
+                <Button
+                  variant="plain"
+                  size="sm"
+                  icon={AppIcons.retry}
+                  onClick={handleCheckOllama}
+                  disabled={ollamaStatus === 'checking'}
+                >
+                  {t.settings.fetchModels}
+                </Button>
+              )}
+              {(isCustom || isLMStudio || usesFetchedModels) && (
+                <Button variant="plain" size="sm" icon={AppIcons.add} onClick={toggleAddModelInput}>
+                  {t.settings.addModel}
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {!selectedId ? (
+            <div className={FIXED_VALUE}>{t.settings.selectProviderFirst}</div>
+          ) : (
+            <>
+              {/* Fetch status messages */}
+              {fetchModelsStatus === 'success' && (
+                <p className="flex items-center gap-1 text-ui-sm text-success">
+                  <StatusIcon tone="success" size="sm" />
+                  <span>{t.settings.fetchModelsSuccess.replace('{count}', String(fetchedModels.length))}</span>
+                </p>
+              )}
+              {fetchModelsStatus === 'error' && (
+                <p className="flex items-center gap-1 text-ui-sm text-danger">
+                  <StatusIcon tone="danger" size="sm" />
+                  <span>{fetchModelsError || t.settings.fetchModelsError}</span>
+                </p>
+              )}
+
+              {/* Curated built-in providers — a panel over the curated model
+                  list, plus an add-model input for ids not listed.
+                  Nothing is pre-selected; the user checks what to add. */}
+              {isBuiltinCurated && (
+                <Popover
+                  open={modelDropdownOpen}
+                  onOpenChange={(next) => {
+                    setModelDropdownOpen(next);
+                    if (!next) setShowCuratedAddInput(false);
+                  }}
+                  align="start"
+                  className="w-(--radix-popover-trigger-width) p-1"
+                  trigger={(
+                    <Pressable aria-expanded={modelDropdownOpen} className={PANEL_TRIGGER}>
+                      <span className={cn('min-w-0 truncate text-left', selectedModels.size === 0 && 'text-label-placeholder')}>
                         {selectedModels.size === 0
                           ? t.settings.selectModel
                           : builtinModelList.filter((m) => selectedModels.has(m.id)).map((m) => m.label).join('、')}
                       </span>
-                      <ChevronDown className={cn('h-4 w-4 text-[var(--abu-text-secondary)] shrink-0 transition-transform', modelDropdownOpen && 'rotate-180')} />
-                    </button>
-
-                    {modelDropdownOpen && modelPanelStyle && createPortal(
-                      <div
-                        ref={modelPanelRef}
-                        style={modelPanelStyle}
-                        className="flex flex-col rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg overflow-hidden"
-                      >
-                        {(() => {
-                          // Same "search + counter + bulk" affordances as the
-                          // fetched checklist below, scoped to this dropdown —
-                          // a fetch can turn a 4-row curated list into a
-                          // 300-row catalog, and scrolling that is unusable.
-                          const showFilter = builtinModelList.length >= MODEL_FILTER_MIN_ITEMS;
-                          const visible = showFilter
-                            ? filterModels(builtinModelList, modelListFilter)
-                            : builtinModelList;
-                          const visibleIds = visible.map((m) => m.id);
-                          const visibleSelected = visibleIds.filter((id) => selectedModels.has(id)).length;
-                          return (
-                            <>
-                              {showFilter && (
-                                <div className="shrink-0 p-2 space-y-2 border-b border-[var(--abu-border)]">
-                                  <div className="relative">
-                                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
-                                    <Input
-                                      value={modelListFilter}
-                                      onChange={(e) => setModelListFilter(e.target.value)}
-                                      placeholder={t.settings.filterModelsPlaceholder}
-                                      className="pl-8 h-7 text-minor"
-                                    />
-                                  </div>
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="text-minor text-[var(--abu-text-tertiary)] truncate">
-                                      {t.settings.modelsSelectedCount
-                                        .replace('{selected}', String(selectedModels.size))
-                                        .replace('{total}', String(builtinModelList.length))}
-                                    </span>
-                                    <div className="flex items-center gap-3 shrink-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleSelectModels(visibleIds)}
-                                        disabled={visibleIds.length === 0 || visibleSelected === visibleIds.length}
-                                        className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
-                                      >
-                                        {t.settings.selectAllModels}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleDeselectModels(visibleIds)}
-                                        disabled={visibleSelected === 0}
-                                        className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
-                                      >
-                                        {t.settings.clearSelectedModels}
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              <div className="flex-1 min-h-0 overflow-y-auto py-1">
-                                {showFilter && visible.length === 0 && (
-                                  <p className="text-minor text-[var(--abu-text-tertiary)] px-3 py-2">
-                                    {t.settings.filterModelsNoResults}
-                                  </p>
-                                )}
-                                {visible.map((model) => {
-                                  const checked = selectedModels.has(model.id);
-                                  return (
-                                    <button
-                                      key={model.id}
-                                      type="button"
-                                      onClick={() => handleToggleModel(model.id)}
-                                      className="w-full px-3 py-2 flex items-center gap-2.5 text-body hover:bg-[var(--abu-bg-hover)] transition-colors"
-                                    >
-                                      <span className={cn('flex-1 text-left truncate', checked ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-primary)]')}>{model.label}</span>
-                                      {checked && <Check className="h-4 w-4 text-[var(--abu-clay)] shrink-0" />}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </>
-                          );
-                        })()}
-                        {/* Add a model id the curated list doesn't have — a
-                            "使用其他模型" menu row by default that reveals the
-                            model-id input on click, collapsing back after add.
-                            Stays pinned: in a long merged list an escape hatch
-                            parked after the last row is unfindable. The panel
-                            earns the room by flipping up when space is short
-                            (see computeModelPanel), not by unpinning this. */}
-                        <div className="shrink-0 border-t border-[var(--abu-border)]">
-                          {showCuratedAddInput ? (
-                            <div className="flex items-center gap-1.5 p-2">
-                              <Input
-                                ref={addModelInputRef}
-                                value={manualModelInput}
-                                onChange={(e) => setManualModelInput(e.target.value)}
-                                placeholder={t.settings.addModelPlaceholder}
-                                className="h-7 px-2 text-minor flex-1"
-                                autoFocus
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    if (manualModelInput.trim()) { handleAddManualModel(); setShowCuratedAddInput(false); }
-                                  }
-                                }}
+                      <Icon icon={AppIcons.selectorChevrons} size="sm" className="text-label-secondary" />
+                    </Pressable>
+                  )}
+                >
+                  {(() => {
+                    // Same "search + counter + bulk" affordances as the
+                    // fetched checklist below, scoped to this panel —
+                    // a fetch can turn a 4-row curated list into a
+                    // 300-row catalog, and scrolling that is unusable.
+                    const showFilter = builtinModelList.length >= MODEL_FILTER_MIN_ITEMS;
+                    const visible = showFilter
+                      ? filterModels(builtinModelList, modelListFilter)
+                      : builtinModelList;
+                    const visibleIds = visible.map((m) => m.id);
+                    const visibleSelected = visibleIds.filter((id) => selectedModels.has(id)).length;
+                    return (
+                      <>
+                        {showFilter && (
+                          <div className="mb-1 space-y-1 border-b border-separator pb-1">
+                            <div className="relative">
+                              {searchIcon}
+                              <TextField
+                                value={modelListFilter}
+                                onChange={(e) => setModelListFilter(e.target.value)}
+                                placeholder={t.settings.filterModelsPlaceholder}
+                                className="pl-7"
                               />
-                              <Button
-                                type="button"
-                                size="icon-xs"
-                                variant="outline"
-                                onClick={() => { handleAddManualModel(); setShowCuratedAddInput(false); }}
-                                disabled={!manualModelInput.trim()}
-                              >
-                                <Plus className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                type="button"
-                                size="icon-xs"
-                                variant="ghost"
-                                onClick={() => { setManualModelInput(''); setShowCuratedAddInput(false); }}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
                             </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setShowCuratedAddInput(true)}
-                              className="w-full px-3 py-2 flex flex-col items-start gap-0.5 text-left hover:bg-[var(--abu-bg-hover)] transition-colors"
-                            >
-                              <span className="flex items-center gap-1.5 text-body text-[var(--abu-text-primary)]">
-                                <Plus className="h-3.5 w-3.5 shrink-0" />
-                                {t.settings.useOtherModel}
+                            <div className="flex items-center justify-between gap-2 pl-2">
+                              <span className="truncate text-ui-sm text-label-tertiary">
+                                {t.settings.modelsSelectedCount
+                                  .replace('{selected}', String(selectedModels.size))
+                                  .replace('{total}', String(builtinModelList.length))}
                               </span>
-                              <span className="text-caption text-[var(--abu-text-tertiary)] pl-5">
-                                {t.settings.useOtherModelDesc}
-                              </span>
-                            </button>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <Button
+                                  variant="plain"
+                                  size="sm"
+                                  onClick={() => handleSelectModels(visibleIds)}
+                                  disabled={visibleIds.length === 0 || visibleSelected === visibleIds.length}
+                                >
+                                  {t.settings.selectAllModels}
+                                </Button>
+                                <Button
+                                  variant="plain"
+                                  size="sm"
+                                  onClick={() => handleDeselectModels(visibleIds)}
+                                  disabled={visibleSelected === 0}
+                                >
+                                  {t.settings.clearSelectedModels}
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {/* One panel for the whole list: a row is a checkbox and its name, nothing floats per row. */}
+                        <div className="max-h-64 overflow-y-auto">
+                          {showFilter && visible.length === 0 && (
+                            <p className="px-2 py-1 text-ui-sm text-label-tertiary">{t.settings.filterModelsNoResults}</p>
                           )}
+                          {visible.map((model) => (
+                            <PanelModelRow
+                              key={model.id}
+                              id={model.id}
+                              label={model.label}
+                              checked={selectedModels.has(model.id)}
+                              onToggle={handleToggleModel}
+                            />
+                          ))}
                         </div>
-                      </div>,
-                      document.body
+                      </>
+                    );
+                  })()}
+                  {/* Add a model id the curated list doesn't have — a
+                      "使用其他模型" row by default that reveals the
+                      model-id input on click, collapsing back after add.
+                      Stays pinned: in a long merged list an escape hatch
+                      parked after the last row is unfindable. */}
+                  <div className="mt-1 border-t border-separator pt-1">
+                    {showCuratedAddInput ? (
+                      <div className="flex items-center gap-1">
+                        <div className="min-w-0 flex-1">
+                          <TextField
+                            ref={addModelInputRef}
+                            value={manualModelInput}
+                            onChange={(e) => setManualModelInput(e.target.value)}
+                            placeholder={t.settings.addModelPlaceholder}
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (manualModelInput.trim()) { handleAddManualModel(); setShowCuratedAddInput(false); }
+                              }
+                            }}
+                          />
+                        </div>
+                        <IconButton
+                          size="sm"
+                          icon={AppIcons.add}
+                          label={t.settings.add}
+                          onClick={() => { handleAddManualModel(); setShowCuratedAddInput(false); }}
+                          disabled={!manualModelInput.trim()}
+                        />
+                        <IconButton
+                          size="sm"
+                          icon={AppIcons.close}
+                          label={t.common.cancel}
+                          onClick={() => { setManualModelInput(''); setShowCuratedAddInput(false); }}
+                        />
+                      </div>
+                    ) : (
+                      <Pressable
+                        onClick={() => setShowCuratedAddInput(true)}
+                        className="flex w-full items-start gap-2 rounded-control px-2 py-1 text-left hover:bg-fill-hover"
+                      >
+                        <span className="flex h-5 items-center text-label-secondary"><Icon icon={AppIcons.add} size="sm" /></span>
+                        <span className="flex min-w-0 flex-col">
+                          <span className="text-ui text-label">{t.settings.useOtherModel}</span>
+                          <span className="text-ui-sm text-label-tertiary">{t.settings.useOtherModelDesc}</span>
+                        </span>
+                      </Pressable>
                     )}
                   </div>
-                )}
+                </Popover>
+              )}
 
                 {/* Non-Ollama models — fetched checklist (checkbox select/deselect) merged
                     with manually-added ids (remove via X); one card per model. */}
@@ -1677,12 +1601,12 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                     <div className="space-y-2">
                       {showModelListFilter && (
                         <div className="relative">
-                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
-                          <Input
+                          {searchIcon}
+                          <TextField
                             value={modelListFilter}
                             onChange={(e) => setModelListFilter(e.target.value)}
                             placeholder={t.settings.filterModelsPlaceholder}
-                            className="pl-8 h-7 text-minor"
+                            className="pl-7"
                           />
                         </div>
                       )}
@@ -1691,208 +1615,87 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                           construction, with per-row X to remove). */}
                       {hasFetched && (
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-minor text-[var(--abu-text-tertiary)] truncate">
+                          <span className="truncate text-ui-sm text-label-tertiary">
                             {selectedModels.size === 0
                               ? t.settings.modelsPickHint
                               : t.settings.modelsSelectedCount
                                   .replace('{selected}', String(selectedModels.size))
                                   .replace('{total}', String(displayList.length))}
                           </span>
-                          <div className="flex items-center gap-3 shrink-0">
-                            <button
-                              type="button"
+                          <div className="flex shrink-0 items-center gap-1">
+                            <Button
+                              variant="plain"
+                              size="sm"
                               onClick={() => handleSelectModels(visibleIds)}
                               disabled={visibleIds.length === 0 || visibleSelectedCount === visibleIds.length}
-                              className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
                             >
                               {t.settings.selectAllModels}
-                            </button>
-                            <button
-                              type="button"
+                            </Button>
+                            <Button
+                              variant="plain"
+                              size="sm"
                               onClick={() => handleDeselectModels(visibleIds)}
                               disabled={visibleSelectedCount === 0}
-                              className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
                             >
                               {t.settings.clearSelectedModels}
-                            </button>
+                            </Button>
                           </div>
                         </div>
                       )}
-                      <div className="max-h-72 overflow-y-auto space-y-2">
+                      {/* The padding keeps the focus ring of a row's controls inside the scroll box. */}
+                      <div className="-m-1 max-h-72 space-y-2 overflow-y-auto p-1">
                       {/* Inline add-model input, revealed at the top of the model list */}
                       {showAddModelInput && (
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            ref={addModelInputRef}
-                            value={manualModelInput}
-                            onChange={(e) => setManualModelInput(e.target.value)}
-                            placeholder={t.settings.addModelPlaceholder}
-                            className="h-7 px-2 text-minor flex-1"
-                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddManualModel(); } }}
-                          />
-                          <Button
-                            type="button"
-                            size="icon-xs"
-                            variant="outline"
+                        <div className="flex items-center gap-1">
+                          <div className="min-w-0 flex-1">
+                            <TextField
+                              ref={addModelInputRef}
+                              value={manualModelInput}
+                              onChange={(e) => setManualModelInput(e.target.value)}
+                              placeholder={t.settings.addModelPlaceholder}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddManualModel(); } }}
+                            />
+                          </div>
+                          <IconButton
+                            size="sm"
+                            icon={AppIcons.add}
+                            label={t.settings.add}
                             onClick={() => { handleAddManualModel(); addModelInputRef.current?.focus(); }}
                             disabled={!manualModelInput.trim()}
-                          >
-                            <Plus className="h-3 w-3" />
-                          </Button>
-                          <Button type="button" size="icon-xs" variant="ghost" onClick={toggleAddModelInput}>
-                            <X className="h-3 w-3" />
-                          </Button>
+                          />
+                          <IconButton size="sm" icon={AppIcons.close} label={t.common.cancel} onClick={toggleAddModelInput} />
                         </div>
                       )}
 
                       {showModelListFilter && filteredList.length === 0 && (
-                        <p className="text-minor text-[var(--abu-text-tertiary)] px-1 py-2">
-                          {t.settings.filterModelsNoResults}
-                        </p>
+                        <p className="px-1 py-2 text-ui-sm text-label-tertiary">{t.settings.filterModelsNoResults}</p>
                       )}
-                      {filteredList.map((model) => {
-                        const isSelected = hasFetched ? selectedModels.has(model.id) : true;
-                        return (
-                          <div key={model.id} className="rounded-lg border border-[var(--abu-border)] p-2">
-                            <div
-                              className={cn('flex items-center gap-2.5', hasFetched && 'cursor-pointer')}
-                              onClick={hasFetched ? () => handleToggleModel(model.id) : undefined}
-                            >
-                              {renderModelExpandToggle(model.id, isSelected)}
-                              <div className={cn(
-                                'flex items-center justify-center h-4 w-4 rounded border transition-colors shrink-0',
-                                isSelected
-                                  ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)]'
-                                  : 'border-[var(--abu-border)]',
-                              )}>
-                                {isSelected && <Check className="h-3 w-3 text-white" />}
-                              </div>
-                              <span className="text-body text-[var(--abu-text-primary)] flex-1 truncate">{model.label}</span>
-                              {!hasFetched && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleModel(model.id)}
-                                  className="text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] shrink-0"
-                                >
-                                  <X className="h-3 w-3" />
-                                </button>
-                              )}
-                            </div>
-                            {renderModelCapsPanel(model.id, isSelected)}
-                          </div>
-                        );
-                      })}
+                      {filteredList.map((model) => (
+                        renderModelRow(model, hasFetched ? 'choice' : 'added', hasFetched ? selectedModels.has(model.id) : true)
+                      ))}
                       </div>
                     </div>
                   );
                 })()}
 
-                {/* Ollama models — checkbox list with size, one card per model */}
-                {isOllama && ollamaStatus === 'online' && ollamaModels.length > 0 && (
-                  <div className="max-h-48 overflow-y-auto space-y-2">
-                    {ollamaModels.map((model) => {
-                      const isSelected = selectedModels.has(model.id);
-                      return (
-                        <div key={model.id} className="rounded-lg border border-[var(--abu-border)] p-2">
-                          <label className="flex items-center gap-2.5 cursor-pointer">
-                            {renderModelExpandToggle(model.id, isSelected)}
-                            <div className={cn(
-                              'flex items-center justify-center h-4 w-4 rounded border transition-colors shrink-0',
-                              isSelected
-                                ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)]'
-                                : 'border-[var(--abu-border)]',
-                            )}>
-                              {isSelected && <Check className="h-3 w-3 text-white" />}
-                            </div>
-                            <span className="text-body text-[var(--abu-text-primary)] flex-1">{model.label}</span>
-                          </label>
-                          {renderModelCapsPanel(model.id, isSelected)}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Ollama — no models detected */}
-                {isOllama && ollamaStatus === 'online' && ollamaModels.length === 0 && (
-                  <div className="text-body text-[var(--abu-text-tertiary)] px-1">
-                    <p>{t.settings.ollamaNoModels}</p>
-                    <p className="text-minor mt-1">{t.settings.ollamaNoModelsHint}</p>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-        </div>
-
-        {/* Footer */}
-        <div className="shrink-0 px-6 py-4 border-t border-[var(--abu-border)] flex items-center justify-between gap-3">
-          {/* Left: delete (edit mode only) + validate connection + inline result */}
-          <div className="flex items-center gap-3 min-w-0">
-            {editProvider && (
-              <button
-                type="button"
-                onClick={() => setShowDeleteConfirm(true)}
-                className="shrink-0 flex items-center gap-1 text-minor text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:underline"
-              >
-                <Trash2 className="h-3 w-3" />
-                {t.settings.deleteService}
-              </button>
-            )}
-            <div className="flex items-center gap-2 min-w-0">
-              {selectedId && !isOllama && !isLMStudio && (
-                <button
-                  type="button"
-                  onClick={handleValidate}
-                  disabled={validating || !apiKey.trim() || !baseUrl.trim() || selectedModels.size === 0}
-                  className="shrink-0 text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline flex items-center gap-1"
-                >
-                  {validating && <Loader2 className="h-3 w-3 animate-spin" />}
-                  {validating ? t.settings.validating : t.settings.validateConnection}
-                </button>
-              )}
-              {validateResult && (
-                <div className="flex items-center gap-1 min-w-0">
-                  {validateResult.success
-                    ? <CircleCheck className="h-3.5 w-3.5 text-[var(--abu-success)] shrink-0" />
-                    : <CircleX className="h-3.5 w-3.5 text-[var(--abu-danger)] shrink-0" />}
-                  <span className={cn('text-minor truncate max-w-[280px]', validateResult.success ? 'text-[var(--abu-success)]' : 'text-[var(--abu-danger)]')}>
-                    {validateResult.message}
-                  </span>
+              {/* Ollama models — the models the local server reported, one card per model */}
+              {isOllama && ollamaStatus === 'online' && ollamaModels.length > 0 && (
+                <div className="-m-1 max-h-48 space-y-2 overflow-y-auto p-1">
+                  {ollamaModels.map((model) => renderModelRow(model, 'detected', selectedModels.has(model.id)))}
                 </div>
               )}
-            </div>
-          </div>
-          {/* Right: cancel + save */}
-          <div className="flex items-center gap-3 shrink-0">
-            <Button variant="ghost" onClick={handleClose}>
-              {t.common.cancel}
-            </Button>
-            <Button
-              onClick={handleSave}
-              disabled={!canSave}
-            >
-              {t.settings.save}
-            </Button>
-          </div>
+
+              {/* Ollama — no models detected */}
+              {isOllama && ollamaStatus === 'online' && ollamaModels.length === 0 && (
+                <div className="px-1 text-ui text-label-tertiary">
+                  <p>{t.settings.ollamaNoModels}</p>
+                  <p className="mt-1 text-ui-sm">{t.settings.ollamaNoModelsHint}</p>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
-
-      {/* Delete confirmation dialog (edit mode only) */}
-      {editProvider && (
-        <ConfirmDialog
-          open={showDeleteConfirm}
-          title={t.settings.deleteProvider}
-          message={t.settings.deleteProviderConfirm}
-          confirmText={t.common.confirm}
-          cancelText={t.common.cancel}
-          variant="danger"
-          onConfirm={handleDeleteProvider}
-          onCancel={() => setShowDeleteConfirm(false)}
-        />
-      )}
-    </div>,
-    document.body
+    </Dialog>
   );
 }

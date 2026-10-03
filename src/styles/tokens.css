@@ -72,6 +72,11 @@
   --ds-page-canvas: #ffffff;
   /* Selected text on that white paper; dark in every appearance, because the paper never turns dark. */
   --ds-page-selection: rgba(0, 0, 0, 0.12);
+  /* The usage heatmap: four neutral steps (brief P1-3: color is for status only). */
+  --ds-heat-1: rgba(0, 0, 0, 0.14);
+  --ds-heat-2: rgba(0, 0, 0, 0.32);
+  --ds-heat-3: rgba(0, 0, 0, 0.55);
+  --ds-heat-4: rgba(0, 0, 0, 0.85);
 
   --ds-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.09), 0 2px 8px rgba(0, 0, 0, 0.05);
   --ds-shadow-float: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 18px 40px rgba(0, 0, 0, 0.22);
@@ -126,6 +131,10 @@
   --ds-selection: rgba(255, 255, 255, 0.12);
   --ds-page-canvas: #ffffff;
   --ds-page-selection: rgba(0, 0, 0, 0.12);
+  --ds-heat-1: rgba(255, 255, 255, 0.14);
+  --ds-heat-2: rgba(255, 255, 255, 0.32);
+  --ds-heat-3: rgba(255, 255, 255, 0.55);
+  --ds-heat-4: rgba(255, 255, 255, 0.85);
 
   --ds-shadow-panel: 0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 2px 8px rgba(0, 0, 0, 0.30);
   --ds-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 18px 40px rgba(0, 0, 0, 0.45);
@@ -163,6 +172,10 @@
   --ds-selection: rgba(0, 0, 0, 0.18);
   --ds-page-canvas: #ffffff;
   --ds-page-selection: rgba(0, 0, 0, 0.18);
+  --ds-heat-1: rgba(0, 0, 0, 0.20);
+  --ds-heat-2: rgba(0, 0, 0, 0.40);
+  --ds-heat-3: rgba(0, 0, 0, 0.65);
+  --ds-heat-4: rgba(0, 0, 0, 0.95);
 }
 :root[data-contrast="more"].dark {
   --ds-desk: #000000;
@@ -192,6 +205,10 @@
   --ds-selection: rgba(255, 255, 255, 0.18);
   --ds-page-canvas: #ffffff;
   --ds-page-selection: rgba(0, 0, 0, 0.18);
+  --ds-heat-1: rgba(255, 255, 255, 0.20);
+  --ds-heat-2: rgba(255, 255, 255, 0.40);
+  --ds-heat-3: rgba(255, 255, 255, 0.65);
+  --ds-heat-4: rgba(255, 255, 255, 0.95);
 }
 
 /* Reduced transparency (data-transparency="reduced"): desk, the only translucent surface, is opaque. */
@@ -213,6 +230,10 @@
   --color-code: var(--ds-code);
   --color-diagram-canvas: var(--ds-diagram-canvas);
   --color-page-canvas: var(--ds-page-canvas);
+  --color-heat-1: var(--ds-heat-1);
+  --color-heat-2: var(--ds-heat-2);
+  --color-heat-3: var(--ds-heat-3);
+  --color-heat-4: var(--ds-heat-4);
   --color-field: var(--ds-field);
   --color-fill: var(--ds-fill);
   --color-fill-hover: var(--ds-fill-hover);

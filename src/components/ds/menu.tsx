@@ -5,12 +5,12 @@ import { cn } from '@/lib/utils';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
-import { useLayer, useLayerContainer, useOpenState } from './layer-context';
+import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
-import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
+import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
 
 // The panel never grows past the room Radix measures between the trigger and the window edge; a longer list scrolls.
-const MENU_PANEL = 'z-popover max-h-(--radix-dropdown-menu-content-available-height) min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto p-1';
+const MENU_PANEL = 'max-h-(--radix-dropdown-menu-content-available-height) min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto p-1';
 
 // onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
 // event.preventDefault() there to keep focus off the trigger (e.g. to focus a field).
@@ -27,6 +27,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
   const { id, onCloseAutoFocus: layerCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
+  const level = useFloatingLevel();
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
       <DropdownMenuPrimitive.Trigger asChild>{trigger}</DropdownMenuPrimitive.Trigger>
@@ -35,11 +36,12 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
           align={align}
           side={side}
           sideOffset={4}
+          collisionPadding={EDGE_GAP}
           onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
           data-ds-layer
           data-ds-motion
           data-electron-no-drag
-          className={cn(MENU_PANEL, FLOAT_SURFACE, FLOAT_MOTION)}
+          className={cn(level, MENU_PANEL, FLOAT_SURFACE, FLOAT_MOTION)}
         >
           <LayerScope id={id}>
             <MenuKindContext.Provider value="dropdown">{children}</MenuKindContext.Provider>
@@ -93,6 +95,7 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
 export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: LucideIcon; children: ReactNode }) {
   const kind = useMenuKind();
   const container = useLayerContainer();
+  const level = useFloatingLevel();
   const triggerBody = (
     <>
       {icon && <Icon icon={icon} size="sm" className="text-label-secondary" />}
@@ -101,7 +104,7 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
     </>
   );
   const triggerClass = cn(MENU_ITEM, 'data-[state=open]:bg-fill-selected');
-  const contentClass = cn('z-popover min-w-40 p-1', FLOAT_SURFACE, FLOAT_MOTION);
+  const contentClass = cn(level, 'min-w-40 p-1', FLOAT_SURFACE, FLOAT_MOTION);
   if (kind === 'dropdown') {
     return (
       <DropdownMenuPrimitive.Sub>
@@ -109,6 +112,7 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
         <DropdownMenuPrimitive.Portal container={container}>
           <DropdownMenuPrimitive.SubContent
             sideOffset={4}
+            collisionPadding={EDGE_GAP}
             data-ds-motion
             data-electron-no-drag
             className={cn('origin-(--radix-dropdown-menu-content-transform-origin)', contentClass)}
@@ -125,6 +129,7 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
       <ContextMenuPrimitive.Portal container={container}>
         <ContextMenuPrimitive.SubContent
           sideOffset={4}
+          collisionPadding={EDGE_GAP}
           data-ds-motion
           data-electron-no-drag
           className={cn('origin-(--radix-context-menu-content-transform-origin)', contentClass)}

@@ -855,6 +855,8 @@ const enUS: TranslationDict = {
     clearAllKeys: 'Clear all stored keys',
     clearAllKeysConfirm: 'This removes every provider and auxiliary-service API key from this machine. You will have to re-enter them next time. Continue?',
     clearAllKeysDone: 'All keys cleared',
+    secretShow: 'Show key',
+    secretHide: 'Hide key',
     // Model Section
     model: 'Model',
     customModelOption: 'Custom Model...',

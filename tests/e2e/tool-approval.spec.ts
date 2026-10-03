@@ -486,7 +486,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
     const setupDialog = page.getByRole('dialog');
     await expect(setupDialog).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(setupDialog).toHaveAttribute('aria-label', CAPABILITY_SETUP_DIALOG);
+    await expect(setupDialog).toHaveAccessibleName(CAPABILITY_SETUP_DIALOG);
     await expect(
       setupDialog.getByRole('heading', { name: MY_CHROME_HEADING }),
     ).toBeVisible();

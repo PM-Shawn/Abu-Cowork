@@ -5,13 +5,22 @@ import { buttonVariants, iconButtonVariants, type ButtonVariant, type ControlSiz
 import { Icon } from './icon';
 import { Tooltip } from './tooltip';
 
-export function Button({ variant, size, icon, className, children, type = 'button', ...props }: ComponentProps<'button'> & {
+export function Button({ variant, size, icon, busy = false, className, children, type = 'button', onClick, ...props }: ComponentProps<'button'> & {
   variant?: ButtonVariant;
   size?: ControlSize;
   icon?: LucideIcon;
+  // The action this button started is still running. It looks disabled and takes no press, and
+  // it stays focusable: a button disabled under the keyboard would lose the focus.
+  busy?: boolean;
 }) {
   return (
-    <button type={type} className={cn(buttonVariants({ variant, size }), className)} {...props}>
+    <button
+      type={type}
+      aria-disabled={busy || undefined}
+      className={cn(buttonVariants({ variant, size }), className)}
+      {...props}
+      onClick={busy ? (event) => event.preventDefault() : onClick}
+    >
       {icon && <Icon icon={icon} size="sm" />}
       {children}
     </button>

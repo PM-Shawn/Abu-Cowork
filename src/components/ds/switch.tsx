@@ -3,12 +3,14 @@ import { useId, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { DISABLED, FOCUS_RING } from './styles';
 
-export function Switch({ checked, onCheckedChange, label, disabled, id }: {
+export function Switch({ checked, onCheckedChange, label, disabled, id, 'aria-label': ariaLabel }: {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   label?: ReactNode;
   disabled?: boolean;
   id?: string;
+  // The name of a switch that has no visible label and no SettingRow title pointing at it.
+  'aria-label'?: string;
 }) {
   const autoId = useId();
   const switchId = id ?? autoId;
@@ -16,6 +18,7 @@ export function Switch({ checked, onCheckedChange, label, disabled, id }: {
     <span className="inline-flex items-center gap-2">
       <SwitchPrimitive.Root
         id={switchId}
+        aria-label={ariaLabel}
         checked={checked}
         disabled={disabled}
         onCheckedChange={onCheckedChange}

@@ -62,7 +62,7 @@ describe('BrowserTab native overlay visibility', () => {
     drainCapabilitySetupRequests();
     useChatStore.setState({ activeConversationId: 'active-conversation' });
     useSettingsStore.setState({ systemSettingsOpen: false });
-    usePreviewStore.setState({ menuOpen: false });
+    usePreviewStore.setState({ menuOpen: false, dsModalOpen: false });
     useImageLightboxStore.getState().close();
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -451,6 +451,52 @@ describe('BrowserTab native overlay visibility', () => {
       approvalBridge.resolveActive('command', false);
     });
     await expect(approvalPromise!).resolves.toBe(false);
+  });
+
+  it('hides the native view while a design-system dialog is open and restores it afterwards', async () => {
+    render(
+      <DesignSystemProvider>
+        <BrowserTab tabId="browser-under-dialog" url="https://example.com" />
+      </DesignSystemProvider>,
+    );
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: 'browser-under-dialog' }));
+    });
+    invoke.mockClear();
+
+    act(() => { usePreviewStore.getState().setDsModalOpen(true); });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_hide', { id: 'browser-under-dialog' });
+    });
+
+    invoke.mockClear();
+    act(() => { usePreviewStore.getState().setDsModalOpen(false); });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_show', { id: 'browser-under-dialog' });
+    });
+  });
+
+  it('creates an Electron native view hidden when a design-system dialog is already open', async () => {
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    };
+    runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    usePreviewStore.setState({ dsModalOpen: true });
+
+    render(
+      <DesignSystemProvider>
+        <BrowserTab tabId="browser-created-under-dialog" url="https://example.com" />
+      </DesignSystemProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-created-under-dialog',
+        visible: false,
+      }));
+    });
+    expect(invoke.mock.calls.some(([command]) => command === 'browser_hide')).toBe(false);
+    delete runtime.__ABU_SHELL__;
   });
 
   it('creates an Electron native view hidden when setup is already open', async () => {
@@ -1283,23 +1329,46 @@ describe('BrowserTab native overlay visibility', () => {
       });
     });
 
-    // The handler looks at the key only. A keydown named Enter commits even while the
-    // event still reports a composition; this pins that, so a change to it is deliberate.
-    it('current behaviour: an Enter keydown that reports isComposing commits the half-composed text', async () => {
+    // The Enter that picks a candidate belongs to the input method: Chromium reports it
+    // with isComposing and keyCode 229, and fires compositionend after it.
+    it('leaves the Enter that commits a candidate to the input method and navigates on the next Enter', async () => {
       const input = await renderLoadedTab('browser-address-ime-enter');
 
       fireEvent.focus(input);
       fireEvent.compositionStart(input);
       fireEvent.change(input, { target: { value: 'tianqi' } });
       fireEvent.compositionUpdate(input, { data: 'tianqi' });
-      fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
-      fireEvent.compositionEnd(input, { data: 'tianqi' });
+      fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true });
+      fireEvent.change(input, { target: { value: '天气' } });
+      fireEvent.compositionEnd(input, { data: '天气' });
+      await act(async () => { await Promise.resolve(); });
 
+      expect(navigations()).toHaveLength(0);
+      expect(input.value).toBe('天气');
+
+      fireEvent.keyDown(input, { key: 'Enter', keyCode: 13 });
       await waitFor(() => {
-        expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-ime-enter', url: 'https://tianqi' });
+        expect(invoke).toHaveBeenCalledWith('browser_navigate', { id: 'browser-address-ime-enter', url: 'https://天气' });
       });
       expect(navigations()).toHaveLength(1);
-      expect(input.value).toBe('https://tianqi');
+      expect(input.value).toBe('https://天气');
+    });
+
+    it.each([
+      ['isComposing without keyCode 229', { key: 'Enter', keyCode: 13, isComposing: true }],
+      // Some Windows input methods report keyCode 229 and leave isComposing false.
+      ['keyCode 229 without isComposing', { key: 'Enter', keyCode: 229 }],
+    ])('does not navigate on an Enter keydown that reports %s', async (_signal, keydown) => {
+      const input = await renderLoadedTab('browser-address-ime-signal');
+
+      fireEvent.focus(input);
+      fireEvent.compositionStart(input);
+      fireEvent.change(input, { target: { value: 'tianqi' } });
+      fireEvent.keyDown(input, keydown);
+      await act(async () => { await Promise.resolve(); });
+
+      expect(navigations()).toHaveLength(0);
+      expect(input.value).toBe('tianqi');
     });
   });
 

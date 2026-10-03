@@ -7,6 +7,8 @@ const scopedAuthorizeWorkspaceMock = vi.fn();
 const disposeAuthorizationScopeMock = vi.fn();
 const createConversationMock = vi.fn();
 const renameConversationMock = vi.fn();
+const setConversationPermissionModeMock = vi.fn();
+const waitForBuiltinBrowserToolsMock = vi.fn();
 const addMessageMock = vi.fn();
 const emitBrowserRunReportMock = vi.fn();
 
@@ -25,9 +27,20 @@ vi.mock('../../stores/chatStore', () => ({
     getState: () => ({
       createConversation: createConversationMock,
       renameConversation: renameConversationMock,
+      setConversationPermissionMode: setConversationPermissionModeMock,
       addMessage: addMessageMock,
     }),
   },
+}));
+
+vi.mock('./ports/toolInvoker', () => ({
+  getToolInvoker: () => ({
+    getAllTools: () => [{ name: 'read_file' }, { name: 'run_command' }],
+  }),
+}));
+
+vi.mock('../browser/builtinBrowserRuntime', () => ({
+  waitForBuiltinBrowserTools: (...args: unknown[]) => waitForBuiltinBrowserToolsMock(...args),
 }));
 
 // U7 review / B6 — the third unattended entry point now emits a run report
@@ -71,6 +84,9 @@ describe('handleWatchTrigger background authorization', () => {
     createConversationMock.mockReset();
     createConversationMock.mockReturnValue('watch-conversation-1');
     renameConversationMock.mockReset();
+    setConversationPermissionModeMock.mockReset();
+    waitForBuiltinBrowserToolsMock.mockReset();
+    waitForBuiltinBrowserToolsMock.mockResolvedValue('ready');
     addMessageMock.mockReset();
     emitBrowserRunReportMock.mockReset();
   });
@@ -105,6 +121,45 @@ describe('handleWatchTrigger background authorization', () => {
     await expect(options.commandConfirmCallback({})).resolves.toBe(false);
     await expect(options.filePermissionCallback({})).resolves.toBe(false);
     expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('watch-scope-1');
+  });
+
+  it('pins the run to the standard mode and a scheduled ceiling', async () => {
+    await handleWatchTrigger({ ...rule, id: 'watch-ceiling' }, `${rule.path}/invoice.pdf`);
+
+    expect(setConversationPermissionModeMock).toHaveBeenCalledWith('watch-conversation-1', 'standard');
+    expect(runAgentLoopDispatchedMock.mock.calls[0][2]).toMatchObject({
+      allowedTools: ['read_file', 'run_command'],
+      runPermissionCeiling: {
+        version: 1,
+        source: 'scheduler',
+        capability: 'scheduled',
+        allowedTools: ['read_file', 'run_command'],
+      },
+      initiatedBy: 'automation',
+    });
+  });
+
+  it('still dispatches when the built-in browser is not ready in time', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    waitForBuiltinBrowserToolsMock.mockResolvedValue('not-ready');
+    try {
+      await handleWatchTrigger({ ...rule, id: 'watch-browser-late' }, `${rule.path}/invoice.pdf`);
+      expect(runAgentLoopDispatchedMock).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('disposes the scope when the roster snapshot throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    waitForBuiltinBrowserToolsMock.mockRejectedValue(new Error('runtime gone'));
+    try {
+      await handleWatchTrigger({ ...rule, id: 'watch-roster-throw' }, `${rule.path}/invoice.pdf`);
+      expect(runAgentLoopDispatchedMock).not.toHaveBeenCalled();
+      expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('watch-scope-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   /**

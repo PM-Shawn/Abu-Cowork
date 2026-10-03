@@ -22,6 +22,13 @@ import { BROWSER_DENIAL_ABORT_CAUSE } from './browserDenialTracker';
 import { getBrowserSignalCursor } from '../observability/browserSignals';
 import { browserRunReportOutcomeFor } from '../observability/browserRunReport';
 import { emitBrowserRunReport } from '../observability/browserRunReportEmitter';
+import { getToolInvoker } from './ports/toolInvoker';
+import { waitForBuiltinBrowserTools } from '../browser/builtinBrowserRuntime';
+import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import type { PermissionMode } from '../permissions/permissionMode';
+
+const WATCH_RUN_PERMISSION_MODE: PermissionMode = 'standard';
+const BUILTIN_BROWSER_READY_TIMEOUT_MS = 15_000;
 
 export interface FileWatchRule {
   id: string;
@@ -96,6 +103,12 @@ export async function handleWatchTrigger(rule: FileWatchRule, filePath: string) 
 
   const chatStore = useChatStore.getState();
   const conversationId = chatStore.createConversation(null, { skipActivate: true });
+  // A watch rule carries no authority of its own (no mode, no capability), so
+  // its run is pinned to `standard`: ordinary work inside the watched
+  // directory runs, every escalation reaches the auto-deny callbacks below.
+  // Left unset, the conversation would follow the global mode, and under
+  // `autonomous` the strategy allows risky commands without asking anyone.
+  chatStore.setConversationPermissionMode(conversationId, WATCH_RUN_PERMISSION_MODE);
 
   const timeStr = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   chatStore.renameConversation(
@@ -122,12 +135,32 @@ export async function handleWatchTrigger(rule: FileWatchRule, filePath: string) 
   let reportOutcome = browserRunReportOutcomeFor('error', false);
   try {
     scopedAuthorizeWorkspace(authorizationScopeId, rule.path, ['read', 'write']);
+    // Same ceiling a scheduled run gets: the roster is frozen to the tools the
+    // host has at dispatch, and plugin / self-extension tools are refused
+    // outright. Snapshot after the built-in browser has settled, for the
+    // reason `scheduler.ts` documents (#389); a timeout runs without it.
+    const browserReadiness = await waitForBuiltinBrowserTools({
+      timeoutMs: BUILTIN_BROWSER_READY_TIMEOUT_MS,
+    });
+    if (browserReadiness === 'not-ready') {
+      console.warn(
+        `[FileWatcher] Built-in browser not ready within ${BUILTIN_BROWSER_READY_TIMEOUT_MS}ms — running without browser tools: rule ${rule.id}`,
+      );
+    }
+    const runPermissionCeiling = buildScheduledRunPermissionCeiling(
+      getToolInvoker().getAllTools().map((tool) => tool.name),
+    );
+    // Frozen builder output; AgentLoopOptions types the roster as mutable but
+    // no consumer mutates it (same cast as the scheduler).
+    const allowedTools = runPermissionCeiling.allowedTools as string[];
     const result = await runAgentLoopDispatched(conversationId, prompt, {
-      // Auto-deny dangerous commands in background mode
+      // Nobody is present to answer: whatever `standard` escalates is denied.
       commandConfirmCallback: async () => false,
       filePermissionCallback: async () => false,
       blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
+      allowedTools,
       authorizationScopeId,
+      runPermissionCeiling,
       initiatedBy: 'automation',
     });
     reportOutcome = browserRunReportOutcomeFor(

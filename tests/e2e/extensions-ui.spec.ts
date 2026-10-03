@@ -31,10 +31,15 @@ test('released skill cards keep switches, detail actions and creation', async ()
     await expect(detail.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
     await detail.getByRole('switch').click();
     await detail.getByTestId('skill-detail-menu').click();
-    await expect(detail.getByText('导出', { exact: false })).toBeVisible();
-    await expect(detail.getByText('查看历史', { exact: true })).toBeVisible();
+    // The menu is a layer of its own above the window, so it is read from the page.
+    await expect(page.getByRole('menuitem', { name: /导出/ })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: '查看历史', exact: true })).toBeVisible();
     await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-skills-detail.png' });
+    // The first Escape closes the menu, the second the window.
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('skill-detail')).toHaveCount(0);
     await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-skills-cards.png' });
     await page.getByTestId('skill-create-trigger').click();
     await page.getByText('手动创建', { exact: true }).click();

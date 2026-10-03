@@ -13,8 +13,11 @@
  * users who never hit this path.
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { Ban } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Button } from '@/components/ds/button';
+import { focusIsOnWindow } from '@/components/toolbox/plugins/cardFocus';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import { useI18n, format } from '@/i18n';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -57,11 +60,28 @@ export default function SkillCategoryBlocksPanel() {
     void loadBlocks();
   }, [loadBlocks]);
 
+  // The row whose button was pressed leaves with its button. The focus goes to the row that took
+  // its place, else the one before it, else — the panel has left too — the page's 「添加」 button.
+  const listRef = useRef<HTMLDivElement>(null);
+  const removedAt = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const index = removedAt.current;
+    if (index === null) return;
+    removedAt.current = null;
+    // Only when no control has the focus: the user may have moved on while the unblock ran.
+    if (!focusIsOnWindow()) return;
+    const buttons = Array.from(listRef.current?.querySelectorAll<HTMLElement>('button') ?? []);
+    const next = buttons[Math.min(index, buttons.length - 1)]
+      ?? document.querySelector<HTMLElement>('[data-testid="skill-create-trigger"]');
+    next?.focus();
+  }, [blocks]);
+
   const handleUnblock = async (entry: CategoryBlockEntry) => {
     try {
       await deleteMemory(entry.filename, workspacePath);
       // Optimistic remove from the list — the memdir write is atomic
       // and already succeeded, so a follow-up scan would just confirm.
+      removedAt.current = blocks.findIndex((b) => b.filename === entry.filename);
       setBlocks((prev) => prev.filter((b) => b.filename !== entry.filename));
     } catch (err) {
       addToast({
@@ -75,43 +95,40 @@ export default function SkillCategoryBlocksPanel() {
   if (blocks.length === 0) return null;
 
   return (
-    <div className="mx-4 my-3 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-elevated)] overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--abu-border)]">
+    <div className="mx-4 my-3 overflow-hidden rounded-panel border border-separator">
+      <div className="flex items-center justify-between border-b border-separator px-3 py-2">
         <div className="flex items-center gap-2">
-          <Ban className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-          <span className="text-minor font-semibold text-[var(--abu-text-primary)]">
+          <Icon icon={AppIcons.block} size="sm" className="text-label-tertiary" />
+          <span className="text-ui-sm font-medium text-label">
             {t.toolbox.categoryBlocksTitle}
           </span>
-          <span className="text-caption text-[var(--abu-text-muted)]">
+          <span className="text-caption text-label-tertiary">
             {format(t.toolbox.categoryBlocksCount, { count: String(blocks.length) })}
           </span>
         </div>
       </div>
-      <div className="px-3 py-1.5 text-caption text-[var(--abu-text-muted)] border-b border-[var(--abu-border-subtle)]">
+      <div className="border-b border-separator px-3 py-1 text-caption text-label-tertiary">
         {t.toolbox.categoryBlocksHint}
       </div>
-      <div className="max-h-48 overflow-y-auto overlay-scroll">
+      <div ref={listRef} className="max-h-48 overflow-y-auto overlay-scroll">
         {blocks.map((entry) => (
           <div
             key={entry.filename}
-            className="flex items-center gap-2 px-3 py-2 border-b border-[var(--abu-border-subtle)] last:border-b-0 hover:bg-[var(--abu-bg-active)] transition-colors"
+            className="flex items-center gap-2 border-b border-separator px-3 py-2 last:border-b-0"
           >
-            <div className="flex-1 min-w-0">
-              <div className="text-minor font-medium text-[var(--abu-text-primary)] truncate">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-ui-sm font-medium text-label">
                 {entry.skillName}
               </div>
               {entry.description && (
-                <div className="text-caption text-[var(--abu-text-muted)] mt-0.5 line-clamp-1">
+                <div className="mt-1 line-clamp-1 text-caption text-label-tertiary">
                   {entry.description}
                 </div>
               )}
             </div>
-            <button
-              onClick={() => handleUnblock(entry)}
-              className="px-2 py-1 rounded-md text-caption text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors shrink-0"
-            >
+            <Button variant="plain" size="sm" onClick={() => { void handleUnblock(entry); }}>
               {t.toolbox.categoryBlocksUnblock}
-            </button>
+            </Button>
           </div>
         ))}
       </div>

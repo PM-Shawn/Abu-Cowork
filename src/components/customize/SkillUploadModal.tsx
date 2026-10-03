@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
@@ -11,40 +11,100 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
 import { getParentDir, normalizeSeparators } from '@/utils/pathUtils';
-import { FileArchive, Upload, X, Loader2 } from 'lucide-react';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { cn } from '@/lib/utils';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Dialog } from '@/components/ds/dialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { BUSY } from '@/components/ds/styles';
 
 /**
  * Discriminated union for the install conflict state.
- * A single <ConfirmDialog> handles both archive and folder conflicts;
- * the confirm handler branches on `kind`.
+ * One question handles both archive and folder conflicts;
+ * the overwrite branches on `kind`.
  */
 type UploadConflict =
   | { kind: 'archive'; bytes: Uint8Array; baseDir: string; skillName: string }
   | { kind: 'folder'; folderPath: string; skillName: string };
 
 interface SkillUploadModalProps {
+  /** Whether the window is open. Left out, it is open for as long as it is mounted. */
+  open?: boolean;
   onClose: () => void;
   /** Called with the installed skill name on successful install / overwrite. */
   onInstalled: (skillName: string) => void;
+  /** Runs once the window has gone; `event.preventDefault()` there keeps the focus from returning to the control that opened it. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /**
- * Unified skill-upload modal (Fix #10 extract, Fix #1 folder conflict, Fix #3 close-on-success).
- *
- * Mounted conditionally by SkillsSection — so useFileDragDrop's window-level
- * Tauri listener only runs while the modal is actually open.
+ * The drop zone. Click → folder picker (skills are folders); drag accepts a
+ * folder OR a .askill/.zip. It lives inside the window's content, so the
+ * window-level file-drop listener of the Tauri shell runs only while the
+ * window is on the page (Electron handlers are scoped to the zone itself).
  */
-export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadModalProps) {
+function DropZone({ busy, onPick, onDropPaths }: { busy: boolean; onPick: () => void; onDropPaths: (paths: string[]) => void }) {
   const { t } = useI18n();
+  const { isDragging, dropTargetProps } = useFileDragDrop((paths) => onDropPaths(paths));
+  return (
+    <Pressable
+      {...dropTargetProps}
+      // Busy, not disabled: the zone was pressed to start the import and keeps the focus while it runs.
+      aria-disabled={busy || undefined}
+      onClick={busy ? undefined : onPick}
+      className={cn(
+        'flex w-full flex-col items-center gap-2 rounded-panel border-2 border-dashed px-4 py-8',
+        BUSY,
+        isDragging ? 'border-control-border bg-fill-selected' : 'border-separator hover:bg-fill-hover',
+      )}
+    >
+      {/* One height for both states, so the window does not move when an import starts. */}
+      <span className="flex h-12 flex-col items-center justify-center gap-2">
+        {busy ? (
+          <Spinner label={t.toolbox.dropZoneHint} />
+        ) : (
+          <>
+            <Icon icon={AppIcons.upload} size="lg" className="text-label-tertiary" />
+            <span className="text-center text-ui-sm text-label-secondary">{t.toolbox.dropZoneHint}</span>
+          </>
+        )}
+      </span>
+    </Pressable>
+  );
+}
+
+/**
+ * Unified skill-upload window (Fix #10 extract, Fix #1 folder conflict, Fix #3 close-on-success).
+ */
+export default function SkillUploadModal({ open = true, onClose, onInstalled, onCloseAutoFocus }: SkillUploadModalProps) {
+  const { t } = useI18n();
+  const confirm = useConfirm();
   const [importInProgress, setImportInProgress] = useState(false);
-  const [importConflict, setImportConflict] = useState<UploadConflict | null>(null);
+  // The authority for "an import is running": a drop or a second press can land before the next render.
+  const importing = useRef(false);
+  // The same-name skill the user is being asked about. The answer overwrites this one only.
+  const pendingConflict = useRef<UploadConflict | null>(null);
+  // The window stays on the page while it fades out; its handlers read whether it is still open.
+  const openRef = useRef(open);
+  useLayoutEffect(() => { openRef.current = open; });
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const setImporting = (running: boolean) => {
+    importing.current = running;
+    setImportInProgress(running);
+  };
 
   // ── Install helpers ────────────────────────────────────────────────
 
   /**
    * Unpack a .askill / .zip archive into ~/.abu/skills/.
-   * Returns true on success, false on conflict (ConfirmDialog takes over) or error.
+   * Returns true on success, false on conflict (the overwrite question takes over) or error.
    */
   const installArchive = async (path: string): Promise<boolean> => {
     const addToast = useToastStore.getState().addToast;
@@ -81,8 +141,8 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
       return true;
     } catch (err) {
       if (err instanceof ConflictError) {
-        setImportConflict({ kind: 'archive', bytes: archiveBytes, baseDir, skillName: err.skillName });
-        return false; // ConfirmDialog takes over from here
+        pendingConflict.current = { kind: 'archive', bytes: archiveBytes, baseDir, skillName: err.skillName };
+        return false; // the overwrite question takes over from here
       }
       throw err;
     }
@@ -124,7 +184,7 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
   /**
    * Install a skill from a local folder (copies into ~/.abu/skills/).
    * Calls installSkillFromFolder WITHOUT overwrite first; on ALREADY_EXISTS
-   * pops a ConfirmDialog instead of silently clobbering.
+   * the user is asked instead of silently clobbering.
    * Returns true on success, false on conflict or error.
    */
   const installFolder = async (folderPath: string): Promise<boolean> => {
@@ -136,8 +196,8 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
         // Extract name from message: `Skill "NAME" already exists`
         const nameMatch = result.message.match(/"([^"]+)"/);
         const skillName = nameMatch?.[1] ?? folderPath.split('/').pop() ?? '?';
-        setImportConflict({ kind: 'folder', folderPath, skillName });
-        return false; // ConfirmDialog takes over
+        pendingConflict.current = { kind: 'folder', folderPath, skillName };
+        return false; // the overwrite question takes over
       }
       addToast({ type: 'error', title: t.toolbox.importFailed, message: installErrorMessage(result, folderPath) });
       return false;
@@ -156,66 +216,10 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
     return true;
   };
 
-  /**
-   * Unified router for the drop zone and both file pickers.
-   * Calls onClose ONLY when install actually succeeded (Fix #3).
-   */
-  const installFromPath = async (rawPath: string) => {
-    const path = normalizeSeparators(rawPath);
-    setImportInProgress(true);
-    try {
-      let success: boolean;
-      if (path.endsWith('.askill') || path.endsWith('.zip')) {
-        success = await installArchive(path);
-      } else if (path.endsWith('/SKILL.md')) {
-        success = await installFolder(getParentDir(path));
-      } else {
-        success = await installFolder(path);
-      }
-      if (success) onClose();
-    } catch (err) {
-      console.error('Install skill failed:', err);
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: t.toolbox.importFailed,
-        message: thrownErrorMessage(err),
-      });
-      // Do NOT close on error — keep modal open so user can retry.
-    } finally {
-      setImportInProgress(false);
-    }
-  };
-
-  // Tauri listens at window level; Electron handlers are scoped to the drop zone below.
-  const { isDragging, dropTargetProps } = useFileDragDrop((paths) => {
-    if (importInProgress) return;
-    if (paths.length > 0) void installFromPath(paths[0]);
-  });
-
-  // Folder picker (Tauri can't offer folder + file in one dialog, hence two buttons).
-  const pickFolder = async () => {
-    const picked = await openDialog({ directory: true, multiple: false });
-    if (!picked || typeof picked !== 'string') return;
-    await installFromPath(picked);
-  };
-
-  // File picker for .askill / .zip packages.
-  const pickFile = async () => {
-    const picked = await openDialog({
-      filters: [{ name: 'Skill Package', extensions: ['askill', 'zip'] }],
-      multiple: false,
-    });
-    if (!picked || typeof picked !== 'string') return;
-    await installFromPath(picked);
-  };
-
-  // Confirm overwrite — handles both archive and folder conflicts.
-  const handleImportOverwrite = async () => {
-    if (!importConflict) return;
-    const conflict = importConflict; // capture before clearing
+  // Overwrite the skill the user was asked about — handles both archive and folder conflicts.
+  const handleImportOverwrite = async (conflict: UploadConflict) => {
     const addToast = useToastStore.getState().addToast;
-    setImportConflict(null);
-    setImportInProgress(true);
+    setImporting(true);
     try {
       let name: string;
       if (conflict.kind === 'archive') {
@@ -251,93 +255,116 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
         title: t.toolbox.importFailed,
         message: thrownErrorMessage(err),
       });
-      // Keep modal open on error so user can try again.
+      // Keep the window open on error so user can try again.
     } finally {
-      setImportInProgress(false);
+      setImporting(false);
     }
   };
 
+  /**
+   * A skill of that name is already installed: overwriting replaces it, so the
+   * user is asked first, with the name. The answer acts on the import that
+   * asked: nothing is overwritten when the window has gone, or when another
+   * import has asked since.
+   */
+  const askToOverwrite = async (conflict: UploadConflict) => {
+    const confirmed = await confirm({
+      title: t.toolbox.importConflictTitle,
+      message: format(t.toolbox.importConflictMessage, { name: conflict.skillName }),
+      confirmLabel: t.toolbox.importConflictOverwrite,
+      tone: 'danger',
+    });
+    if (pendingConflict.current !== conflict) return;
+    pendingConflict.current = null;
+    if (!confirmed || !mounted.current || !openRef.current || importing.current) return;
+    await handleImportOverwrite(conflict);
+  };
+
+  /**
+   * Unified router for the drop zone and both file pickers.
+   * Calls onClose ONLY when install actually succeeded (Fix #3).
+   */
+  const installFromPath = async (rawPath: string) => {
+    // The window stays on the page while it fades out; nothing is imported from there.
+    if (!openRef.current || importing.current) return;
+    const path = normalizeSeparators(rawPath);
+    pendingConflict.current = null;
+    setImporting(true);
+    try {
+      let success: boolean;
+      if (path.endsWith('.askill') || path.endsWith('.zip')) {
+        success = await installArchive(path);
+      } else if (path.endsWith('/SKILL.md')) {
+        success = await installFolder(getParentDir(path));
+      } else {
+        success = await installFolder(path);
+      }
+      if (success) onClose();
+    } catch (err) {
+      console.error('Install skill failed:', err);
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: t.toolbox.importFailed,
+        message: thrownErrorMessage(err),
+      });
+      // Do NOT close on error — keep the window open so user can retry.
+    } finally {
+      setImporting(false);
+    }
+    const conflict = pendingConflict.current;
+    if (conflict) void askToOverwrite(conflict);
+  };
+
+  // Folder picker (Tauri can't offer folder + file in one dialog, hence two buttons).
+  const pickFolder = async () => {
+    if (!openRef.current || importing.current) return;
+    const picked = await openDialog({ directory: true, multiple: false });
+    if (!picked || typeof picked !== 'string') return;
+    await installFromPath(picked);
+  };
+
+  // File picker for .askill / .zip packages.
+  const pickFile = async () => {
+    if (!openRef.current || importing.current) return;
+    const picked = await openDialog({
+      filters: [{ name: 'Skill Package', extensions: ['askill', 'zip'] }],
+      multiple: false,
+    });
+    if (!picked || typeof picked !== 'string') return;
+    await installFromPath(picked);
+  };
+
   return (
-    <>
-      {/* Modal backdrop + container */}
-      <div
-        data-electron-no-drag
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-        onClick={() => { if (!importInProgress) onClose(); }}
-      >
-        <div
-          className="w-[420px] bg-[var(--abu-bg-base)] rounded-xl shadow-xl border border-[var(--abu-border)] overflow-hidden"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--abu-border)]">
-            <div className="flex items-center gap-2">
-              <Upload className="h-4 w-4 text-[var(--abu-clay)]" />
-              <h2 className="text-body font-semibold text-[var(--abu-text-primary)]">{t.toolbox.importEntry}</h2>
-            </div>
-            <button
-              onClick={onClose}
-              disabled={importInProgress}
-              className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors disabled:opacity-50"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
+    <Dialog
+      open={open}
+      // Escape, a press outside and the close button ask to close; while an import runs the window stays.
+      onOpenChange={(next) => { if (!next && !importing.current) onClose(); }}
+      title={t.toolbox.importEntry}
+      size="md"
+      closeButton
+      onCloseAutoFocus={onCloseAutoFocus}
+    >
+      <div className="space-y-3">
+        {/* Clickable + droppable zone. Tauri can't offer folder+file in one
+            native picker, so archives get the link below. */}
+        <DropZone
+          busy={importInProgress}
+          onPick={() => { void pickFolder(); }}
+          onDropPaths={(paths) => { if (paths.length > 0) void installFromPath(paths[0]); }}
+        />
 
-          {/* Body */}
-          <div className="px-5 py-4 space-y-3">
-            {/* Clickable + droppable zone. Click → folder picker (skills are
-                folders); drag accepts a folder OR a .askill/.zip. Tauri can't
-                offer folder+file in one native picker, so archives get the link below. */}
-            <button
-              {...dropTargetProps}
-              type="button"
-              onClick={pickFolder}
-              disabled={importInProgress}
-              className={`w-full flex flex-col items-center justify-center gap-2 py-8 px-4 rounded-lg border-2 border-dashed transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                isDragging
-                  ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-tint)]'
-                  : 'border-[var(--abu-border)] hover:border-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]'
-              }`}
-            >
-              {importInProgress ? (
-                <Loader2 className="h-6 w-6 text-[var(--abu-clay)] animate-spin" />
-              ) : (
-                <Upload className="h-6 w-6 text-[var(--abu-text-muted)]" />
-              )}
-              <span className="text-minor text-[var(--abu-text-muted)] text-center">{t.toolbox.dropZoneHint}</span>
-            </button>
-
-            {/* Secondary: import a packaged skill (.askill / .zip). */}
-            <div className="text-center">
-              <button
-                type="button"
-                onClick={pickFile}
-                disabled={importInProgress}
-                className="inline-flex items-center gap-1 text-minor text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <FileArchive className="h-3 w-3" />
-                {t.toolbox.pickFile}
-              </button>
-            </div>
-          </div>
+        {/* Secondary: import a packaged skill (.askill / .zip). */}
+        <div className="text-center">
+          <Pressable
+            aria-disabled={importInProgress || undefined}
+            onClick={importInProgress ? undefined : () => { void pickFile(); }}
+            className={cn('inline-flex items-center gap-1 rounded-control text-ui-sm text-link hover:underline', BUSY)}
+          >
+            <Icon icon={AppIcons.fileArchive} size="sm" />
+            {t.toolbox.pickFile}
+          </Pressable>
         </div>
       </div>
-
-      {/* Import conflict confirm — pops when an existing skill name is found.
-          Handles both archive and folder installs via the discriminated union. */}
-      <ConfirmDialog
-        open={!!importConflict}
-        title={t.toolbox.importConflictTitle}
-        message={importConflict
-          ? format(t.toolbox.importConflictMessage, { name: importConflict.skillName })
-          : ''}
-        confirmText={t.toolbox.importConflictOverwrite}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onConfirm={handleImportOverwrite}
-        onCancel={() => setImportConflict(null)}
-      />
-    </>
+    </Dialog>
   );
 }

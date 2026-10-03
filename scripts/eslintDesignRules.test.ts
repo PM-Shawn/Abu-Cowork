@@ -202,7 +202,30 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     }
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/toolbox/plugins/cardFocus.ts')).not.toEqual([]);
-    // The other toolbox folders migrate in later tasks.
-    expect(await messages(code, 'src/components/toolbox/skills/SkillDetailPanel.tsx')).toEqual([]);
+  });
+
+  it('checks every file of the skills page, tests and helpers included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/customize/SkillsSection.tsx',
+      'src/components/customize/SkillsSection.test.tsx',
+      'src/components/customize/SkillEditor.tsx',
+      'src/components/customize/SkillEditor.nameCollision.test.tsx',
+      'src/components/customize/SkillUploadModal.tsx',
+      'src/components/customize/SkillHistoryModal.test.tsx',
+      'src/components/customize/SkillDraftsPanel.tsx',
+      'src/components/customize/SkillCategoryBlocksPanel.tsx',
+      'src/components/toolbox/skills/SkillDetailPanel.tsx',
+      'src/components/toolbox/skills/NewFileOfThePage.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/customize/skillHistoryTime.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/toolbox/skills/skillCardFocus.ts')).not.toEqual([]);
+    // customize/ has no directory entry: the pages that migrate in later tasks and the unused files stay on the old rules.
+    expect(await messages(code, 'src/components/customize/MCPSection.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/customize/SkillDetailModal.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/toolbox/connectors/connectorPrefill.tsx')).toEqual([]);
   });
 });

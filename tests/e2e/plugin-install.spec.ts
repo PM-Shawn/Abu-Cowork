@@ -356,9 +356,13 @@ test.describe('plugin install loop', () => {
     await pluginSkillCard.click();
     await expect(page.getByTestId('skill-plugin-origin')).toContainText('e2e-weather');
     await page.getByTestId('skill-detail-menu').click();
-    await expect(page.getByRole('button', { name: /^(编辑|Edit)$/ })).toHaveCount(0);
+    await expect(page.getByRole('menuitem')).toHaveCount(2);
+    await expect(page.getByRole('menuitem', { name: /^(编辑|Edit)$/ })).toHaveCount(0);
+    // The first Escape closes the menu; once it has gone, the second closes the window.
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
     await page.keyboard.press('Escape');
+    await expect(page.getByTestId('skill-detail')).toHaveCount(0);
     await page.getByRole('main').getByRole('button', { name: PLUGINS_TAB }).click();
     // 市场 keeps the entry, marked installed, and is where the rest of this
     // journey happens.

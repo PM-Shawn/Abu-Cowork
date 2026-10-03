@@ -10,23 +10,34 @@
  * it flips `soul.draftsOnboardingShown` and falls through to the normal
  * list view.
  *
- * Batch ops ([全部采纳] / [全部拒绝]) gate behind ConfirmDialog when ≥5
- * drafts would be touched. Individual accept / reject buttons apply
- * inline without a confirm — the cost of a mistake is low because
- * rejected drafts land in drafts/.trash/ for 7 days anyway.
+ * Batch ops ([全部采纳] / [全部拒绝]) ask first when ≥5 drafts would be
+ * touched. Individual accept / reject buttons apply inline without a
+ * question — the cost of a mistake is low because rejected drafts land in
+ * drafts/.trash/ for 7 days anyway.
+ *
+ * `memo` with no props, and each draft row is `memo` with stable props: the
+ * skills page renders for every character typed in its search box, and every
+ * row holds two buttons with tooltips.
  */
 
-import { useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, format } from '@/i18n';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
-import { Check, X, Trash2, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { focusIsOnWindow } from '@/components/toolbox/plugins/cardFocus';
 import type { DraftRecord } from '@/core/skill/drafts';
 
 type ProactivityLevel = 'shy' | 'companion' | 'butler';
+
+const PANEL = 'mx-4 my-3 overflow-hidden rounded-panel border border-separator';
 
 function relativeTime(ms: number, now: number = Date.now()): string {
   const diff = ms - now;
@@ -39,8 +50,9 @@ function relativeTime(ms: number, now: number = Date.now()): string {
   return unit(Math.round(abs / 86_400_000), 'day', 'days');
 }
 
-export default function SkillDraftsPanel() {
+function SkillDraftsPanel() {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const drafts = useSkillDraftsStore((s) => s.drafts);
   const acceptDraft = useSkillDraftsStore((s) => s.acceptDraft);
   const rejectDraft = useSkillDraftsStore((s) => s.rejectDraft);
@@ -56,8 +68,60 @@ export default function SkillDraftsPanel() {
     (s) => s.soul?.proactivity ?? 'companion',
   );
 
-  const [confirmAllOpen, setConfirmAllOpen] = useState<'accept' | 'reject' | null>(null);
   const [onboardingPick, setOnboardingPick] = useState<ProactivityLevel>(proactivity);
+
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  // A draft that is accepted or rejected leaves the list with the button that was pressed. The
+  // focus goes to the same button of the row that took its place, else of the row before it,
+  // else — the panel has left with its last draft — to the page's 「添加」 button.
+  const listRef = useRef<HTMLDivElement>(null);
+  const pressedAt = useRef<number | null>(null);
+  // Where the pressed button sits among the list's buttons.
+  const notePressed = useCallback(() => {
+    const active = document.activeElement;
+    const index = Array.from(listRef.current?.querySelectorAll<HTMLElement>('button') ?? []).findIndex((button) => button === active);
+    pressedAt.current = index >= 0 ? index : null;
+  }, []);
+  // 「全部采纳」 and 「全部拒绝」 sit in the title row, which leaves once no draft is left.
+  const noteAllPressed = () => { pressedAt.current = 0; };
+  const allDone = () => {
+    // Drafts are left (some failed): the title row and its buttons are still there.
+    if (useSkillDraftsStore.getState().drafts.length > 0) pressedAt.current = null;
+  };
+  useLayoutEffect(() => {
+    const index = pressedAt.current;
+    // Only when no control has the focus: the pressed button may still be there.
+    if (index === null || !focusIsOnWindow()) return;
+    pressedAt.current = null;
+    const buttons = Array.from(listRef.current?.querySelectorAll<HTMLElement>('button') ?? []);
+    // Each row holds two buttons, so the same button of the row before sits two back.
+    const next = buttons[index] ?? buttons[index - 2] ?? buttons.at(-1)
+      ?? document.querySelector<HTMLElement>('[data-testid="skill-create-trigger"]');
+    next?.focus();
+  }, [drafts]);
+
+  const handleAccept = useCallback(async (name: string) => {
+    notePressed();
+    const r = await acceptDraft(name);
+    if (!r.ok) {
+      pressedAt.current = null;
+      addToast({ type: 'error', title: t.toolbox.draftsAcceptError, message: r.error });
+    }
+  }, [acceptDraft, addToast, t, notePressed]);
+
+  const handleReject = useCallback(async (name: string) => {
+    notePressed();
+    const r = await rejectDraft(name);
+    if (!r.ok) {
+      pressedAt.current = null;
+      addToast({ type: 'error', title: t.toolbox.draftsRejectError, message: r.error });
+    }
+  }, [rejectDraft, addToast, t, notePressed]);
 
   // Hidden state: no drafts → render nothing, let SkillsSection show its
   // regular content without any draft-section chrome.
@@ -82,151 +146,131 @@ export default function SkillDraftsPanel() {
     };
 
     return (
-      <div className="mx-4 my-3 p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-elevated)]">
-        <div className="flex items-center gap-2 mb-2">
-          <Sparkles className="h-4 w-4 text-[var(--abu-clay)]" />
-          <span className="text-body font-semibold text-[var(--abu-text-primary)]">
+      <div className="mx-4 my-3 rounded-panel border border-separator p-4">
+        <div className="mb-2 flex items-center gap-2">
+          <Icon icon={AppIcons.sparkles} size="md" className="text-label-tertiary" />
+          <span className="text-ui font-medium text-label">
             {t.toolbox.draftsOnboardTitle}
           </span>
         </div>
-        <p className="text-minor text-[var(--abu-text-tertiary)] leading-relaxed mb-3">
+        <p className="mb-3 text-ui-sm text-label-secondary">
           {t.toolbox.draftsOnboardBody}
         </p>
-        <div className="flex flex-col gap-1.5 mb-4">
+        <div className="mb-4 flex flex-col gap-1">
           {levels.map((lv) => (
-            <button
+            <Pressable
               key={lv.id}
+              aria-pressed={onboardingPick === lv.id}
               onClick={() => setOnboardingPick(lv.id)}
               className={cn(
-                'flex items-start gap-2.5 px-3 py-2 rounded-lg text-left transition-colors border',
+                'flex items-start gap-3 rounded-control border px-3 py-2 text-left',
                 onboardingPick === lv.id
-                  ? 'bg-[var(--abu-clay-tint)] border-[var(--abu-clay-ring)]'
-                  : 'border-transparent hover:bg-[var(--abu-bg-active)]',
+                  ? 'border-control-border bg-fill-selected'
+                  : 'border-transparent hover:bg-fill-hover',
               )}
             >
-              <span className="text-h-sm leading-none mt-0.5">{lv.emoji}</span>
-              <div className="flex-1 min-w-0">
-                <div className="text-minor font-semibold text-[var(--abu-text-primary)]">
+              <span className="text-title leading-none">{lv.emoji}</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-ui-sm font-medium text-label">
                   {lv.title}
                 </div>
-                <div className="text-caption text-[var(--abu-text-muted)] mt-0.5">
+                <div className="mt-1 text-caption text-label-tertiary">
                   {lv.desc}
                 </div>
               </div>
-            </button>
+            </Pressable>
           ))}
         </div>
         <div className="flex justify-end">
-          <button
-            onClick={handleConfirmOnboarding}
-            className="px-3 py-1.5 rounded-lg text-minor font-medium text-white bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] transition-colors"
-          >
+          <Button variant="primary" size="sm" onClick={handleConfirmOnboarding}>
             {t.toolbox.draftsOnboardConfirm}
-          </button>
+          </Button>
         </div>
       </div>
     );
   }
 
   // ── Normal list branch ────────────────────────────────────────────────
-  const handleAccept = async (name: string) => {
-    const r = await acceptDraft(name);
-    if (!r.ok) {
-      addToast({ type: 'error', title: t.toolbox.draftsAcceptError, message: r.error });
-    }
-  };
-
-  const handleReject = async (name: string) => {
-    const r = await rejectDraft(name);
-    if (!r.ok) {
-      addToast({ type: 'error', title: t.toolbox.draftsRejectError, message: r.error });
-    }
-  };
+  // Five drafts or more are asked about first. The answer acts on the drafts that are there at
+  // that moment: one may have expired or been accepted elsewhere while the question was open.
+  // An answer given after the panel has left the page touches nothing.
+  const needsBatchConfirm = drafts.length >= 5;
 
   const handleAcceptAll = async () => {
-    setConfirmAllOpen(null);
+    if (needsBatchConfirm) {
+      const confirmed = await confirm({
+        title: t.toolbox.draftsAcceptAll,
+        message: format(t.toolbox.draftsConfirmAcceptAll, { count: String(drafts.length) }),
+        confirmLabel: t.toolbox.draftsAcceptAll,
+      });
+      if (!confirmed || !mounted.current) return;
+    }
+    noteAllPressed();
     // Snapshot list — store will mutate as we go.
-    const names = drafts.map((d) => d.skillName);
+    const names = useSkillDraftsStore.getState().drafts.map((d) => d.skillName);
     for (const n of names) {
       const r = await acceptDraft(n);
       if (!r.ok) {
         addToast({ type: 'error', title: t.toolbox.draftsAcceptError, message: `${n}: ${r.error}` });
       }
     }
+    allDone();
   };
 
   const handleRejectAll = async () => {
-    setConfirmAllOpen(null);
-    const names = drafts.map((d) => d.skillName);
+    if (needsBatchConfirm) {
+      const confirmed = await confirm({
+        title: t.toolbox.draftsRejectAll,
+        message: format(t.toolbox.draftsConfirmRejectAll, { count: String(drafts.length) }),
+        confirmLabel: t.toolbox.draftsRejectAll,
+        tone: 'danger',
+      });
+      if (!confirmed || !mounted.current) return;
+    }
+    noteAllPressed();
+    const names = useSkillDraftsStore.getState().drafts.map((d) => d.skillName);
     for (const n of names) {
       const r = await rejectDraft(n);
       if (!r.ok) {
         addToast({ type: 'error', title: t.toolbox.draftsRejectError, message: `${n}: ${r.error}` });
       }
     }
+    allDone();
   };
 
-  const needsBatchConfirm = drafts.length >= 5;
-
   return (
-    <>
-      <div className="mx-4 my-3 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-elevated)] overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--abu-border)]">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-            <span className="text-minor font-semibold text-[var(--abu-text-primary)]">
-              {t.toolbox.draftsTitle}
-            </span>
-            <span className="text-caption text-[var(--abu-text-muted)]">
-              {format(t.toolbox.draftsCount, { count: String(drafts.length) })}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => (needsBatchConfirm ? setConfirmAllOpen('accept') : handleAcceptAll())}
-              className="px-2 py-1 rounded-md text-caption text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-            >
-              {t.toolbox.draftsAcceptAll}
-            </button>
-            <button
-              onClick={() => (needsBatchConfirm ? setConfirmAllOpen('reject') : handleRejectAll())}
-              className="px-2 py-1 rounded-md text-caption text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-            >
-              {t.toolbox.draftsRejectAll}
-            </button>
-          </div>
+    <div className={PANEL}>
+      <div className="flex items-center justify-between border-b border-separator px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Icon icon={AppIcons.sparkles} size="sm" className="text-label-tertiary" />
+          <span className="text-ui-sm font-medium text-label">
+            {t.toolbox.draftsTitle}
+          </span>
+          <span className="text-caption text-label-tertiary">
+            {format(t.toolbox.draftsCount, { count: String(drafts.length) })}
+          </span>
         </div>
-        <div className="max-h-64 overflow-y-auto overlay-scroll">
-          {drafts.map((d) => (
-            <DraftCard key={d.id} draft={d} onAccept={handleAccept} onReject={handleReject} />
-          ))}
+        <div className="flex items-center gap-1">
+          <Button variant="plain" size="sm" onClick={() => { void handleAcceptAll(); }}>
+            {t.toolbox.draftsAcceptAll}
+          </Button>
+          <Button variant="plain" size="sm" onClick={() => { void handleRejectAll(); }}>
+            {t.toolbox.draftsRejectAll}
+          </Button>
         </div>
       </div>
-
-      <ConfirmDialog
-        open={confirmAllOpen === 'accept'}
-        title={t.toolbox.draftsAcceptAll}
-        message={format(t.toolbox.draftsConfirmAcceptAll, { count: String(drafts.length) })}
-        confirmText={t.toolbox.draftsAcceptAll}
-        cancelText="×"
-        onConfirm={handleAcceptAll}
-        onCancel={() => setConfirmAllOpen(null)}
-      />
-      <ConfirmDialog
-        open={confirmAllOpen === 'reject'}
-        title={t.toolbox.draftsRejectAll}
-        message={format(t.toolbox.draftsConfirmRejectAll, { count: String(drafts.length) })}
-        confirmText={t.toolbox.draftsRejectAll}
-        cancelText="×"
-        onConfirm={handleRejectAll}
-        onCancel={() => setConfirmAllOpen(null)}
-        variant="danger"
-      />
-    </>
+      <div ref={listRef} className="max-h-64 overflow-y-auto overlay-scroll">
+        {drafts.map((d) => (
+          <DraftCard key={d.id} draft={d} onAccept={handleAccept} onReject={handleReject} />
+        ))}
+      </div>
+    </div>
   );
 }
 
-function DraftCard({
+export default memo(SkillDraftsPanel);
+
+const DraftCard = memo(function DraftCard({
   draft,
   onAccept,
   onReject,
@@ -242,45 +286,43 @@ function DraftCard({
   const expiresWhen = relativeTime(draft.expiresAt, now);
 
   return (
-    <div className="px-3 py-2 border-b border-[var(--abu-border-subtle)] last:border-b-0 hover:bg-[var(--abu-bg-active)] transition-colors">
+    <div className="border-b border-separator px-3 py-2 last:border-b-0">
       <div className="flex items-start gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="text-minor font-semibold text-[var(--abu-text-primary)] truncate">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-ui-sm font-medium text-label">
             {draft.skillName}
           </div>
           {draft.triggerReason && (
-            <div className="text-caption text-[var(--abu-text-muted)] mt-0.5 line-clamp-2">
-              <span className="text-[var(--abu-text-tertiary)]">
+            <div className="mt-1 line-clamp-2 text-caption text-label-tertiary">
+              <span className="text-label-secondary">
                 {t.toolbox.draftsTriggerReason}:
               </span>{' '}
               {draft.triggerReason}
             </div>
           )}
-          <div className="flex items-center gap-1.5 mt-1 text-caption text-[var(--abu-text-muted)]">
+          <div className="mt-1 flex items-center gap-1 text-caption text-label-tertiary">
             <span>{format(t.toolbox.draftsCreatedAgo, { when: createdWhen })}</span>
             <span>·</span>
-            <span className={cn(isExpired && 'text-[var(--abu-danger)] font-medium')}>
-              {isExpired ? t.toolbox.draftsExpired : format(t.toolbox.draftsExpiresIn, { when: expiresWhen })}
-            </span>
+            {isExpired ? (
+              <span className="inline-flex items-center gap-1 font-medium text-danger">
+                <StatusIcon tone="danger" size="sm" />
+                {t.toolbox.draftsExpired}
+              </span>
+            ) : (
+              <span>{format(t.toolbox.draftsExpiresIn, { when: expiresWhen })}</span>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => onAccept(draft.skillName)}
-            title={t.toolbox.draftsAccept}
-            className="p-1 rounded hover:bg-[var(--abu-clay-tint)] text-[var(--abu-clay)] transition-colors"
-          >
-            <Check className="h-3.5 w-3.5" />
-          </button>
-          <button
+        <div className="flex shrink-0 items-center gap-1">
+          <IconButton size="sm" icon={AppIcons.done} label={t.toolbox.draftsAccept} onClick={() => onAccept(draft.skillName)} />
+          <IconButton
+            size="sm"
+            icon={isExpired ? AppIcons.delete : AppIcons.close}
+            label={t.toolbox.draftsReject}
             onClick={() => onReject(draft.skillName)}
-            title={t.toolbox.draftsReject}
-            className="p-1 rounded hover:bg-[var(--abu-danger-bg)] text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] transition-colors"
-          >
-            {isExpired ? <Trash2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
-          </button>
+          />
         </div>
       </div>
     </div>
   );
-}
+});

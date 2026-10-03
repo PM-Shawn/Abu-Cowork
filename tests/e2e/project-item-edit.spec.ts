@@ -115,7 +115,8 @@ test.describe('editing an item outside ~/.abu', () => {
       const detail = page.locator('[data-electron-no-drag]').filter({ has: page.getByTestId('skill-detail') }).last();
       await expect(detail).toContainText('PROJECT-BODY');
       await detail.getByTestId('skill-detail-menu').click();
-      await detail.getByText('编辑', { exact: true }).click();
+      // The menu is a layer of its own above the window, so its items are read from the page.
+      await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
       await page.getByPlaceholder('Write skill instructions in Markdown...').fill('EDITED-BODY');
       await page.getByRole('button', { name: '保存', exact: true }).click();
       await card.click();
@@ -129,7 +130,7 @@ test.describe('editing an item outside ~/.abu', () => {
 
       // ---- 3. Renaming it — and only that — moves its folder in the project ---
       await detail.getByTestId('skill-detail-menu').click();
-      await detail.getByText('编辑', { exact: true }).click();
+      await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
       await page.getByPlaceholder('my-skill').fill(RENAMED_SKILL);
       await page.getByRole('button', { name: '保存', exact: true }).click();
       await expect(page.getByRole('button', { name: new RegExp(`^${RENAMED_SKILL} `) })).toContainText('项目');

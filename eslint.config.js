@@ -226,6 +226,14 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/toolbox/InstalledItemMenu*.{ts,tsx}',
   'src/components/toolbox/ToolboxCreateMenu*.{ts,tsx}',
   'src/components/toolbox/plugins/**/*.{ts,tsx}',
+  'src/components/customize/SkillsSection*.{ts,tsx}',
+  'src/components/customize/SkillEditor*.{ts,tsx}',
+  'src/components/customize/SkillUploadModal*.{ts,tsx}',
+  'src/components/customize/SkillHistoryModal*.{ts,tsx}',
+  'src/components/customize/SkillDraftsPanel*.{ts,tsx}',
+  'src/components/customize/SkillCategoryBlocksPanel*.{ts,tsx}',
+  'src/components/customize/skillHistoryTime*.ts',
+  'src/components/toolbox/skills/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

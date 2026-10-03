@@ -26,14 +26,27 @@ const LOCALIZED_APP_NAMES = {
   zh_TW: '阿布',
 };
 
+/**
+ * Localized NSMicrophoneUsageDescription (voice input). macOS shows it in the
+ * microphone consent prompt; the English default lives in electron-builder.yml
+ * `mac.extendInfo`.
+ */
+const LOCALIZED_MICROPHONE_USAGE = {
+  zh_CN: '阿布使用麦克风把你的语音转写成消息草稿，音频只在本机处理。',
+  zh_TW: '阿布使用麥克風把你的語音轉寫成訊息草稿，音訊只在本機處理。',
+};
+
 /** Escape a value for a .strings double-quoted literal. */
 function stringsEscape(value) {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-function renderInfoPlistStrings(localizedName) {
+function renderInfoPlistStrings(localizedName, microphoneUsage) {
   const escaped = stringsEscape(localizedName);
-  return `CFBundleDisplayName = "${escaped}";\nCFBundleName = "${escaped}";\n`;
+  const lines = `CFBundleDisplayName = "${escaped}";\nCFBundleName = "${escaped}";\n`;
+  return microphoneUsage
+    ? `${lines}NSMicrophoneUsageDescription = "${stringsEscape(microphoneUsage)}";\n`
+    : lines;
 }
 
 /**
@@ -46,7 +59,10 @@ function writeLocalizedAppNames(resourcesDir) {
   for (const [lproj, localizedName] of Object.entries(LOCALIZED_APP_NAMES)) {
     const lprojDir = path.join(resourcesDir, `${lproj}.lproj`);
     fs.mkdirSync(lprojDir, { recursive: true });
-    fs.writeFileSync(path.join(lprojDir, 'InfoPlist.strings'), renderInfoPlistStrings(localizedName));
+    fs.writeFileSync(
+      path.join(lprojDir, 'InfoPlist.strings'),
+      renderInfoPlistStrings(localizedName, LOCALIZED_MICROPHONE_USAGE[lproj]),
+    );
     written.push(lproj);
   }
   return written;
@@ -61,4 +77,10 @@ function localizeMacAppName(context) {
   console.log(`[localize-app-name] wrote InfoPlist.strings for ${written.join(', ')}`);
 }
 
-module.exports = { LOCALIZED_APP_NAMES, renderInfoPlistStrings, writeLocalizedAppNames, localizeMacAppName };
+module.exports = {
+  LOCALIZED_APP_NAMES,
+  LOCALIZED_MICROPHONE_USAGE,
+  renderInfoPlistStrings,
+  writeLocalizedAppNames,
+  localizeMacAppName,
+};

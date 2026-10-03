@@ -59,6 +59,29 @@ describe('scrubSecrets — value pattern redaction', () => {
     expect(scrubSecrets('Bearer xyz123abcdef0987654321qq')).toContain('[REDACTED]');
   });
 
+  it('redacts the whole value of an Authorization header, whatever the scheme or length', () => {
+    expect(scrubSecrets('headers: Authorization: Bearer test-bearer-token-not-a-secret'))
+      .toBe('headers: Authorization: [REDACTED]');
+    expect(scrubSecrets('Authorization: Bearer abc123 rejected')).toBe('Authorization: [REDACTED] rejected');
+    expect(scrubSecrets('Proxy-Authorization: Basic dGVzdDpub3QtYS1zZWNyZXQ=')).toBe('Proxy-Authorization: [REDACTED]');
+    expect(scrubSecrets('{"authorization":"Bearer abc:def:not-a-secret"}')).toBe('{"authorization":"[REDACTED]"}');
+    expect(scrubSecrets('body {\\"Authorization\\":\\"Bearer abc123\\"}')).toBe('body {\\"Authorization\\":\\"[REDACTED]\\"}');
+  });
+
+  it('redacts a scheme-less Authorization value without touching what follows it', () => {
+    expect(scrubSecrets('authorization: tok123abc token: tok456def'))
+      .toBe('authorization: [REDACTED] token: [REDACTED]');
+    expect(scrubSecrets('Authorization: tok123abc\nProxy-Authorization: tok456def'))
+      .toBe('Authorization: [REDACTED]\nProxy-Authorization: [REDACTED]');
+    expect(scrubSecrets('Authorization: tok123abc\nX-Request-Id: 42\nHost: x.test'))
+      .toBe('Authorization: [REDACTED]\nX-Request-Id: 42\nHost: x.test');
+    expect(scrubSecrets('authorization=denied reason=expired')).toBe('authorization=[REDACTED] reason=expired');
+  });
+
+  it('redacts a Bearer token that follows a secret-named key', () => {
+    expect(scrubSecrets('api_key: Bearer test-bearer-token-not-a-secret')).toBe('api_key: [REDACTED]');
+  });
+
   it('redacts short secret fields embedded in serialized or plain log strings', () => {
     expect(scrubSecrets('request {"apiKey":"short-local-key","model":"m"}')).toBe(
       'request {"apiKey":"[REDACTED]","model":"m"}',

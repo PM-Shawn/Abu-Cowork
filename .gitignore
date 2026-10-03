@@ -126,4 +126,3 @@ release-electron-computer-use-test-e2e/
 .artifact-digests/
 # Local macOS protocol shell (not a distributable).
 .dev-shell/
-.scratch/

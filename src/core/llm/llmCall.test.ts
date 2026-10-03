@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { ProviderInstance } from '../../types/provider';
 import { getConversationReader, setConversationReader, type ConversationReader } from '../agent/ports/conversationReader';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { llmCall } from './llmCall';
 
 const mockChat = vi.fn();
@@ -17,6 +18,10 @@ vi.mock('./ollama-native', () => ({
 }));
 const { mockProbeContextWindow } = vi.hoisted(() => ({ mockProbeContextWindow: vi.fn() }));
 vi.mock('./contextWindowProbe', () => ({ probeContextWindow: mockProbeContextWindow }));
+vi.mock('../enterprise/llm-resolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../enterprise/llm-resolver')>();
+  return { ...actual, resolveEffectiveLlmCreds: vi.fn(actual.resolveEffectiveLlmCreds) };
+});
 
 function provider(id: string): ProviderInstance {
   return {
@@ -113,5 +118,81 @@ describe('llmCall', () => {
     const options = mockChat.mock.calls[0][1] as { localServer?: boolean; requestedContextLength?: number };
     expect(options.localServer).toBe(false);
     expect(options.requestedContextLength).toBeUndefined();
+  });
+
+  describe('a model that can no longer be used', () => {
+    it.each([
+      ['provider removed', () => [provider('own')]],
+      ['provider turned off', () => [{ ...provider('default'), enabled: false }]],
+      ['model no longer listed', () => [{ ...provider('default'), models: [{ id: 'other', label: 'other' }] }]],
+      ['builtin provider trashed', () => [{ ...provider('default'), source: 'builtin' as const, enabled: false, apiKey: '', userAdded: false }]],
+    ])('refuses before any request: %s', async (_label, providers) => {
+      useSettingsStore.setState({
+        providers: providers() as ProviderInstance[],
+        activeModel: { providerId: 'default', modelId: 'default-model' },
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await expect(llmCall({ messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow(/model unavailable/i);
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('[llmCall]'),
+        expect.objectContaining({ providerId: 'default', modelId: 'default-model' }),
+      );
+      warn.mockRestore();
+    });
+
+    it('names the reason in the error', async () => {
+      useSettingsStore.setState({
+        providers: [{ ...provider('default'), enabled: false }],
+        activeModel: { providerId: 'default', modelId: 'default-model' },
+      });
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await expect(llmCall({ messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow('provider-disabled');
+
+      vi.mocked(console.warn).mockRestore();
+    });
+
+    it('checks the named conversation\'s own model', async () => {
+      setConversationReader({
+        getConversation: () => ({ model: { providerId: 'own', modelId: 'own-model' } }) as never,
+        getIndexEntry: () => undefined,
+        getThinkingStartTime: () => null,
+      } as ConversationReader);
+      useSettingsStore.setState({
+        providers: [provider('default'), { ...provider('own'), enabled: false }],
+        activeModel: { providerId: 'default', modelId: 'default-model' },
+      });
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await expect(llmCall({ messages: [{ role: 'user', content: 'hi' }], conversationId: 'c1' }))
+        .rejects.toThrow('provider-disabled');
+
+      expect(mockChat).not.toHaveBeenCalled();
+      vi.mocked(console.warn).mockRestore();
+    });
+
+    it('does not check personal providers when the enterprise gateway supplies credentials', async () => {
+      useSettingsStore.setState({ providers: [], activeModel: { providerId: 'default', modelId: 'default-model' } });
+      vi.mocked(resolveEffectiveLlmCreds).mockReturnValueOnce({
+        apiKey: 'gateway-key',
+        baseUrl: 'https://gateway.example.net/v1',
+        forceOpenAiCompatible: true,
+      });
+
+      await llmCall({ messages: [{ role: 'user', content: 'hi' }] });
+
+      expect(mockChat.mock.calls[0][1]).toMatchObject({ apiKey: 'gateway-key', baseUrl: 'https://gateway.example.net/v1' });
+    });
+
+    it('does not check an enterprise-gateway model against personal providers', async () => {
+      useSettingsStore.setState({ providers: [], activeModel: { providerId: 'enterprise-gateway', modelId: 'gw-model' } });
+
+      await llmCall({ messages: [{ role: 'user', content: 'hi' }] });
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+    });
   });
 });

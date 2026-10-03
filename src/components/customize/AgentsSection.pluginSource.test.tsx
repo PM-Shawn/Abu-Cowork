@@ -11,8 +11,13 @@
  * this also pins that the section carries the label across that join.
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail window is a design-system dialog, so the section renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 

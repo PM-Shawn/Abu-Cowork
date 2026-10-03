@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
-import type { ReactNode } from 'react';
-import { act, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
+import type { ReactElement, ReactNode } from 'react';
+import { act, fireEvent, render as renderBare, screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail window is a design-system dialog, so the list renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 import AuthoredPluginList from './AuthoredPluginList';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
@@ -55,7 +60,9 @@ it('keeps the preview shell stable while validating and returns to details on ca
   fireEvent.click(within(screen.getByTestId('plugin-mine-draft')).getByRole('button'));
   fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsReviewChanges }));
   const panel = screen.getByTestId('plugin-install-disclosure');
-  expect(panel).toHaveClass('max-w-2xl', 'h-[min(640px,85vh)]');
+  // The window carries the width; the height asked for sits on its content area.
+  expect(panel).toHaveClass('max-w-2xl');
+  expect(Array.from(panel.querySelectorAll('div')).some((area) => area.classList.contains('h-[min(640px,85vh)]'))).toBe(true);
   expect(screen.getByRole('status')).toHaveTextContent(getI18n().toolbox.pluginsDisclosureLoading);
   await act(async () => { finish({ author, disclosure }); });
   expect(screen.getByTestId('plugin-install-disclosure')).toBe(panel);
@@ -93,9 +100,10 @@ it('requires an honest source-retention confirmation before deleting a draft', a
   state.remove.mockResolvedValue(undefined);
   render(<AuthoredPluginList home="/home" searchQuery="" />);
   fireEvent.click(within(screen.getByTestId('plugin-mine-draft')).getByRole('button'));
-  fireEvent.click(screen.getByTestId('plugin-author-menu'));
+  await userEvent.click(screen.getByTestId('plugin-author-menu'));
   fireEvent.click(screen.getByTestId('plugin-author-menu-delete'));
-  expect(screen.getByText(getI18n().toolbox.pluginsDeleteDraftWarning)).toBeVisible();
+  // The chosen action runs once the menu has gone.
+  expect(await screen.findByText(getI18n().toolbox.pluginsDeleteDraftWarning)).toBeVisible();
   expect(screen.getByText(author.sourceDir)).toBeVisible();
   expect(state.remove).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));

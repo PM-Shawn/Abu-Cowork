@@ -222,6 +222,9 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/common/PluginUpdateBadge.tsx',
   'src/components/team/TeamAvatar*.{ts,tsx}',
   'src/components/settings/ToolboxModal*.{ts,tsx}',
+  'src/components/toolbox/ToolDetailModal*.{ts,tsx}',
+  'src/components/toolbox/InstalledItemMenu*.{ts,tsx}',
+  'src/components/toolbox/ToolboxCreateMenu*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

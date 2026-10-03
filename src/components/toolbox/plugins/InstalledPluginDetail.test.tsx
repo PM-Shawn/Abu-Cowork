@@ -5,8 +5,13 @@
  * whoever runs it — the same names the app home shows, never a team id.
  */
 
-import { render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail window is a design-system dialog, so it renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/core/plugin/installedStore', () => ({
   readInstalled: vi.fn().mockResolvedValue([]),

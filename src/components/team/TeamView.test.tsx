@@ -2,6 +2,7 @@
 import { clearAllComposerDrafts, readComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
 import type { ReactElement } from 'react';
 import { act, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useTeamStore } from '@/stores/teamStore';
@@ -594,10 +595,10 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-name-input')).toBeTruthy();
   });
 
-  it('teams tab: creating offers 使用阿布创建 alongside 手动创建 (parity with 专家)', () => {
+  it('teams tab: creating offers 使用阿布创建 alongside 手动创建 (parity with 专家)', async () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId('team-create-trigger'));
+    await userEvent.click(screen.getByTestId('team-create-trigger'));
     const menu = screen.getByTestId('team-create-menu');
     expect(menu.textContent).toContain('使用阿布创建');
     expect(menu.textContent).toContain('手动创建');
@@ -606,12 +607,13 @@ describe('TeamView', () => {
   it.each([
     ['teams', 'team-create-trigger', '/create-agent 帮我组建一个专家团，我的需求是：'],
     ['members', 'member-create-trigger', '/create-agent 帮我创建一个专家，我的需求是：'],
-  ] as const)('explicitly selects the creation skill from the %s entry', (tab, trigger, prompt) => {
+  ] as const)('explicitly selects the creation skill from the %s entry', async (tab, trigger, prompt) => {
     settingsState.activeTeamTab = tab;
     render(<TeamView />);
-    fireEvent.click(screen.getByTestId(trigger));
+    await userEvent.click(screen.getByTestId(trigger));
     fireEvent.click(screen.getByText('使用阿布创建'));
-    expect(chatState.startNewConversation).toHaveBeenCalledOnce();
+    // The chosen entry runs once the menu has gone.
+    await waitFor(() => expect(chatState.startNewConversation).toHaveBeenCalledOnce());
     expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt, { startsTask: true });
     expect(dispatch).not.toHaveBeenCalled();
   });
@@ -692,13 +694,14 @@ describe('TeamView', () => {
     expect(screen.getByTestId('agents-section')).toBeVisible();
   });
 
-  it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', () => {
+  it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', async () => {
     settingsState.activeTeamTab = 'members';
     // The settings mock is a plain object, so a tab click needs a rerender to show.
     const { rerender } = render(<TeamView />);
-    fireEvent.click(screen.getByTestId('member-create-trigger'));
+    await userEvent.click(screen.getByTestId('member-create-trigger'));
     fireEvent.click(screen.getByText('手动创建'));
-    expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('1');
+    // The chosen entry runs once the menu has gone.
+    await waitFor(() => expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('1'));
     expect(editorOpens).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText('专家团'));

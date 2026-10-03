@@ -12,9 +12,14 @@
  * the user supplies the secrets — nothing is written behind their back.
  */
 
-import { useState } from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { useState, type ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail window is a design-system dialog, so the section renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 import { getI18n, setLanguage } from '@/i18n';
 import type { MCPServerEntry } from '@/stores/mcpStore';
@@ -368,7 +373,7 @@ describe('MCPSection · prefill does not hijack the form', () => {
 
     // 「市场」's 管理 opened the detail; the user chooses Edit from the detail menu.
     await waitFor(() => expect(screen.getByRole('heading', { name: /my-db/ })).toBeTruthy());
-    fireEvent.click(screen.getByTestId('mcp-detail-menu'));
+    await userEvent.click(screen.getByTestId('mcp-detail-menu'));
     fireEvent.click(screen.getByRole('menuitem', { name: tb().skillEdit }));
 
     const name = await screen.findByPlaceholderText(tb().serverName);
@@ -604,15 +609,16 @@ describe('MCPSection · template install requires its fields', () => {
 
 
 describe('released connector grouping', () => {
-  it('does not offer independent removal of a plugin-owned connector', () => {
+  it('does not offer independent removal of a plugin-owned connector', async () => {
     useMCPStore.setState({ servers: { 'weather-mcp': serverEntry('weather-mcp') } });
     usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });
     render(<MCPSection />);
     fireEvent.click(screen.getByText('weather-mcp'));
     expect(screen.getByTitle(tb().mcpFromPlugin.replace('{name}', 'weather'))).toBeDisabled();
-    fireEvent.click(screen.getByTestId('mcp-detail-menu'));
+    await userEvent.click(screen.getByTestId('mcp-detail-menu'));
     fireEvent.click(screen.getByRole('menuitem', { name: tb().skillEdit }));
-    expect(screen.getByPlaceholderText(tb().serverName)).toBeDisabled();
+    // The chosen action runs once the menu has gone.
+    expect(await screen.findByPlaceholderText(tb().serverName)).toBeDisabled();
   });
 });
 
@@ -641,9 +647,10 @@ it('shows logs as a separate detail view and returns to the connector', async ()
   useMCPStore.setState({ servers: { local: serverEntry('local') } });
   render(<MCPSection focusServer="local" />);
   await waitFor(() => expect(screen.getByTestId('mcp-detail-menu')).toBeTruthy());
-  fireEvent.click(screen.getByTestId('mcp-detail-menu'));
+  await userEvent.click(screen.getByTestId('mcp-detail-menu'));
   fireEvent.click(screen.getByRole('menuitem', { name: tb().viewLogs }));
-  expect(screen.getByTestId('mcp-logs-view')).toBeVisible();
+  // The chosen action runs once the menu has gone.
+  expect(await screen.findByTestId('mcp-logs-view')).toBeVisible();
   expect(screen.queryByText('Command')).toBeNull();
   expect(screen.queryByRole('button', { name: tb().testConnection })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: tb().backToDetails }));

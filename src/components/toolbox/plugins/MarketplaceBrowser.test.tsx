@@ -6,8 +6,14 @@
  * single click, with the disclosure reduced to decoration.
  */
 
-import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail and install windows are design-system dialogs, so the browser renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 /** A promise whose resolution this test controls, to drive plan ordering. */
 function makeDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -409,7 +415,7 @@ describe('MarketplaceBrowser', () => {
     fireEvent.click(screen.getByText('weather'));
     expect(screen.getByRole('button', { name: tb().menuTrial })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: tb().pluginsUninstall })).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('plugin-detail-menu'));
+    await userEvent.click(screen.getByTestId('plugin-detail-menu'));
     expect(screen.getByRole('menuitem', { name: tb().pluginsDisclosureSource })).toBeInTheDocument();
   });
 

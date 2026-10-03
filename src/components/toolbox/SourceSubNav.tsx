@@ -1,3 +1,4 @@
+import { Pressable } from '@/components/ds/pressable';
 import { cn } from '@/lib/utils';
 import { DEFAULT_SOURCE_ID_PREFIX, sourceTabId, type ExtensionSource } from './extensionSource';
 
@@ -39,9 +40,8 @@ export default function SourceSubNav({
       {items.map((item) => {
         const active = item.id === value;
         return (
-          <button
+          <Pressable
             key={item.id}
-            type="button"
             role="tab"
             id={sourceTabId(item.id, testIdPrefix)}
             aria-selected={active}
@@ -49,20 +49,15 @@ export default function SourceSubNav({
             data-testid={sourceTabId(item.id, testIdPrefix)}
             onClick={() => onChange(item.id)}
             className={cn(
-              'rounded-lg px-3 py-1 text-body transition-colors',
-              active
-                // Clay tint, the same pill TopTabNav's active tab uses. The
-                // grey this used to be was `--abu-bg-hover` — byte-identical to
-                // the hover state on the line below, so an inactive tab under
-                // the pointer read exactly like the selected one, and the two
-                // rows of the same nav stack disagreed on what "selected" looks
-                // like.
-                ? 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium'
-                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]',
+              'h-6 rounded-control px-3 text-ui',
+              // The selected fill, the same pill TopTabNav's tab in view uses: the
+              // two rows of one nav agree on what "selected" looks like, and it is
+              // a step darker than the hover fill on the line below.
+              active ? 'bg-fill-selected font-medium text-label' : 'text-label-secondary hover:bg-fill-hover hover:text-label',
             )}
           >
             {item.label}
-          </button>
+          </Pressable>
         );
       })}
     </div>

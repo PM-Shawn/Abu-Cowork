@@ -440,7 +440,7 @@ describe('Dialog close button, data attributes and focus', () => {
   });
 
   // An enlarged image has nothing to press but the close button. Focus on that button would
-  // show its tooltip the moment the dialog opens, and the first Escape would close the tooltip.
+  // show its tooltip the moment the dialog opens.
   it('opens with focus on the dialog itself when the close button is its only control, and closes on one Escape', async () => {
     const user = userEvent.setup();
     render(
@@ -991,5 +991,381 @@ describe('Dialog that only its buttons can close', () => {
     expect(onCheckChange.mock.calls).toEqual([[false]]);
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.queryByRole('dialog', { hidden: true })).toBeNull();
+  });
+});
+
+describe('Dialog header', () => {
+  const scrollArea = (dialog: HTMLElement) => dialog.querySelector<HTMLElement>('.overflow-y-auto')!;
+  // Tag and classes of each element the dialog box holds directly.
+  const outline = (dialog: HTMLElement) => Array.from(dialog.children).map((child) => `${child.tagName.toLowerCase()}.${child.className}`);
+
+  it('keeps the header above the scrolling content, and opens on the first control of the header', () => {
+    render(
+      <Dialog open title="Canva" titleHidden closeButton header={<Button>Header action</Button>} footer={<Button>Footer action</Button>}>
+        <Button>Body action</Button>
+      </Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Canva' });
+    const header = screen.getByRole('button', { name: 'Header action' });
+    const body = screen.getByRole('button', { name: 'Body action' });
+    expect(scrollArea(dialog)).toContainElement(body);
+    expect(scrollArea(dialog)).not.toContainElement(header);
+    expect(header.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(header).toHaveFocus();
+    // The header cannot shrink when the content is taller than the window.
+    expect(header.parentElement).toHaveClass('shrink-0');
+  });
+
+  it('with a hidden title, the header stops short of the close button in the corner', () => {
+    render(
+      <Dialog open title="Canva" titleHidden closeButton header={<Button>Header action</Button>}>Body</Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const box = screen.getByRole('button', { name: 'Header action' }).parentElement;
+    expect(box).toHaveClass('pr-8');
+    expect(box).not.toHaveClass('mt-4');
+  });
+
+  it('under a visible title, the header takes the full width and the content keeps its gap', () => {
+    render(
+      <Dialog open title="Canva" closeButton header={<Button>Header action</Button>}>Body</Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    const box = screen.getByRole('button', { name: 'Header action' }).parentElement;
+    expect(box).toHaveClass('mt-4');
+    expect(box).not.toHaveClass('pr-8');
+    expect(screen.getByText('Canva')).toHaveClass('pr-8');
+    expect(scrollArea(screen.getByRole('dialog')).parentElement).toHaveClass('mt-4');
+  });
+
+  it('puts the gap between the header and the content when the title is hidden', () => {
+    render(
+      <Dialog open title="Canva" titleHidden header={<Button>Header action</Button>}>Body</Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    expect(scrollArea(screen.getByRole('dialog')).parentElement).toHaveClass('mt-4');
+  });
+
+  it('renders the same elements as before for a dialog without a header', () => {
+    const { unmount } = render(<Dialog open title="Plain" footer={<Button>Done</Button>}>Body</Dialog>, { wrapper: DesignSystemProvider });
+    expect(outline(screen.getByRole('dialog'))).toEqual([
+      'h2.text-title text-label',
+      'div.flex min-h-0 flex-col mt-4',
+      'div.mt-6 flex shrink-0 justify-end gap-2',
+    ]);
+    unmount();
+    render(<Dialog open title="Search" titleHidden>Body</Dialog>, { wrapper: DesignSystemProvider });
+    const hidden = screen.getByRole('dialog');
+    expect(outline(hidden).slice(1)).toEqual(['div.flex min-h-0 flex-col']);
+    expect(hidden.children).toHaveLength(2);
+  });
+});
+
+/**
+ * A layer stays on the page while it fades out, and Radix still counts it as the top layer.
+ * An Escape pressed then belongs to the top layer that is open.
+ */
+describe('Escape while the layer above fades out', () => {
+  // happy-dom reports no animation, so Radix removes a closed layer at once. With this, a closed
+  // layer has an exit animation: it stays on the page, as it does in the app while it fades out.
+  let restoreStyles: (() => void) | null = null;
+  function keepClosingLayersOnScreen() {
+    const real = window.getComputedStyle.bind(window);
+    const spy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const styles = real(element, pseudo);
+      return new Proxy(styles, {
+        get(target, prop) {
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    restoreStyles = () => spy.mockRestore();
+  }
+  afterEach(() => {
+    restoreStyles?.();
+    restoreStyles = null;
+  });
+
+  const escape = () => { fireEvent.keyDown(document, { key: 'Escape' }); };
+
+  function Window({ onOpenChange, dirty = false, dismissible = true, children }: {
+    onOpenChange: (open: boolean) => void;
+    dirty?: boolean;
+    dismissible?: boolean;
+    children: ReactNode;
+  }) {
+    const [open, setOpen] = useState(true);
+    return (
+      <Dialog open={open} onOpenChange={(next) => { onOpenChange(next); setOpen(next); }} title="Window" dirty={dirty} dismissible={dismissible}>
+        {children}
+      </Dialog>
+    );
+  }
+
+  const more = <Menu trigger={<Button>More</Button>}><MenuItem>One</MenuItem></Menu>;
+  const info = <Popover trigger={<Button>Info</Button>}><p>Details</p></Popover>;
+
+  it('closes the dialog on the second Escape when a menu was open in it', async () => {
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(<Window onOpenChange={onOpenChange}>{more}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    keepClosingLayersOnScreen();
+
+    escape();
+    expect(document.querySelector('[role="menu"][data-state="closed"]')).not.toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    escape();
+
+    expect(onOpenChange.mock.calls).toEqual([[false]]);
+  });
+
+  it('closes the dialog on the second Escape when a popover was open in it', async () => {
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(<Window onOpenChange={onOpenChange}>{info}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Info' }));
+    expect(screen.getByText('Details')).toBeInTheDocument();
+    keepClosingLayersOnScreen();
+
+    escape();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    escape();
+
+    expect(onOpenChange.mock.calls).toEqual([[false]]);
+  });
+
+  it('closes the dialog on the second Escape when a combobox list was open in it', async () => {
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Window onOpenChange={onOpenChange}>
+        <Combobox
+          label="Model"
+          value=""
+          onValueChange={() => undefined}
+          options={[{ value: 'sonnet', label: 'Claude Sonnet 5' }]}
+          placeholder="Choose a model"
+          searchPlaceholder="Search models"
+          emptyText="No matching model"
+        />
+      </Window>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
+    expect(screen.getByPlaceholderText('Search models')).toBeInTheDocument();
+    keepClosingLayersOnScreen();
+
+    escape();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    escape();
+
+    expect(onOpenChange.mock.calls).toEqual([[false]]);
+  });
+
+  it('closes the dialog on the second Escape when a context menu was open in it', () => {
+    const onOpenChange = vi.fn();
+    render(
+      <Window onOpenChange={onOpenChange}>
+        <ContextMenu content={<MenuItem>Copy</MenuItem>}><div>Message body</div></ContextMenu>
+      </Window>,
+      { wrapper: DesignSystemProvider },
+    );
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    keepClosingLayersOnScreen();
+
+    escape();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    escape();
+
+    expect(onOpenChange.mock.calls).toEqual([[false]]);
+  });
+
+  it('closes the outer dialog on the second Escape when a dialog was open inside it', async () => {
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Window onOpenChange={onOpenChange}>
+        <Dialog trigger={<Button>Open inner</Button>} title="Inner">Inner body</Dialog>
+      </Window>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Open inner' }));
+    expect(screen.getByText('Inner body')).toBeInTheDocument();
+    keepClosingLayersOnScreen();
+
+    escape();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    escape();
+
+    expect(onOpenChange.mock.calls).toEqual([[false]]);
+  });
+
+  it('asks again about unsaved input when Escape comes while the question fades out', () => {
+    const onOpenChange = vi.fn();
+    render(<Window onOpenChange={onOpenChange} dirty><input aria-label="Name" /></Window>, { wrapper: DesignSystemProvider });
+    keepClosingLayersOnScreen();
+    const question = () => document.querySelector('[role="alertdialog"]');
+
+    escape();
+    expect(question()).toHaveAttribute('data-state', 'open');
+    escape();
+    expect(question()).toHaveAttribute('data-state', 'closed');
+    escape();
+
+    expect(question()).toHaveAttribute('data-state', 'open');
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('leaves a dialog only its buttons may close open after two Escapes with a menu in it', async () => {
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(<Window onOpenChange={onOpenChange} dismissible={false}>{more}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    keepClosingLayersOnScreen();
+
+    escape();
+    escape();
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"][data-state="open"]')).not.toBeNull();
+  });
+
+  it('closes a popover opened while a menu fades out first, then the dialog', async () => {
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(<Window onOpenChange={onOpenChange}>{more}{info}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    keepClosingLayersOnScreen();
+    escape();
+    fireEvent.click(screen.getByText('Info'));
+    expect(screen.getByText('Details').closest('[data-state]')).toHaveAttribute('data-state', 'open');
+
+    escape();
+    expect(screen.getByText('Details').closest('[data-state]')).toHaveAttribute('data-state', 'closed');
+    expect(onOpenChange).not.toHaveBeenCalled();
+    escape();
+
+    expect(onOpenChange.mock.calls).toEqual([[false]]);
+  });
+
+  // Radix turns pointer input off on <body> under a modal layer and counts a menu that is fading
+  // out as one. Two Escapes within one frame end both fades together, the dialog first: its menu
+  // leaves the page still counted, and Radix never turns pointer input back on.
+  it('gives the page its pointer input back when the dialog leaves before the menu that was fading in it', async () => {
+    const user = userEvent.setup();
+    render(<Window onOpenChange={() => {}}>{more}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect(document.body.style.pointerEvents).toBe('none');
+    keepClosingLayersOnScreen();
+    escape();
+    escape();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]');
+    expect(dialog).not.toBeNull();
+    expect(document.querySelector('[role="menu"][data-state="closed"]')).not.toBeNull();
+
+    // The dialog's fade ends first; what the layers do once they have gone runs one timer tick later.
+    vi.useFakeTimers();
+    try {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { dialog!.dispatchEvent(ended); });
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+  });
+
+  it('gives the page its pointer input back when the dialog leaves before the context menu that was fading in it', () => {
+    render(
+      <Window onOpenChange={() => {}}>
+        <ContextMenu content={<MenuItem>Copy</MenuItem>}><div>Message body</div></ContextMenu>
+      </Window>,
+      { wrapper: DesignSystemProvider },
+    );
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(document.body.style.pointerEvents).toBe('none');
+    keepClosingLayersOnScreen();
+    escape();
+    escape();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="closed"]');
+    expect(dialog).not.toBeNull();
+    expect(document.querySelector('[role="menu"][data-state="closed"]')).not.toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { dialog!.dispatchEvent(ended); });
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+  });
+
+  it('gives the page its pointer input back when the owner takes the dialog away while its menu fades', async () => {
+    const user = userEvent.setup();
+    // The page that owns the dialog leaves: the dialog and its menu go in one step, with no fade.
+    function Page({ shown }: { shown: boolean }) {
+      return shown ? <Window onOpenChange={() => {}}>{more}</Window> : null;
+    }
+    const view = render(<Page shown />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect(document.body.style.pointerEvents).toBe('none');
+    keepClosingLayersOnScreen();
+    escape();
+    expect(document.querySelector('[role="menu"][data-state="closed"]')).not.toBeNull();
+    expect(document.querySelector('[role="dialog"][data-state="open"]')).not.toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      view.rerender(<Page shown={false} />);
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+  });
+
+  it('leaves pointer input off while a layer is still on the page', async () => {
+    const user = userEvent.setup();
+    render(<Window onOpenChange={() => {}}>{more}</Window>, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    keepClosingLayersOnScreen();
+    escape();
+    const menu = document.querySelector<HTMLElement>('[role="menu"][data-state="closed"]');
+    expect(menu).not.toBeNull();
+
+    // The menu has gone; its dialog is still open over the page.
+    vi.useFakeTimers();
+    try {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { menu!.dispatchEvent(ended); });
+      act(() => { vi.runOnlyPendingTimers(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(screen.getByRole('dialog')).toHaveAttribute('data-state', 'open');
+    expect(document.body.style.pointerEvents).toBe('none');
   });
 });

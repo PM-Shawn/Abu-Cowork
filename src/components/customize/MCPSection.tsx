@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { memo, useCallback, useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
 import { useExtensionsSearchQuery } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -13,18 +13,29 @@ import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/c
 import { parseArgs } from '@/utils/argsParser';
 import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import type { MCPTemplate } from '@/types/marketplace';
-import { Plus, Loader2, Check, X, ChevronDown, ChevronRight, Wrench, AlertCircle, Server, ArrowLeft } from 'lucide-react';
-import EmptyState from '@/components/common/EmptyState';
-import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
-import { Button } from '@/components/ui/button';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Disclosure } from '@/components/ds/disclosure';
+import { EmptyState } from '@/components/ds/empty-state';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Link } from '@/components/ds/link';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon, type StatusTone } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
 import InstalledItemMenu from '@/components/toolbox/InstalledItemMenu';
-import { Toggle } from '@/components/ui/toggle';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import { cardOrNeighbour, cardPlace, cardProps, focusByTestId, focusIsOnWindow, type CardPlace } from '@/components/toolbox/cardFocus';
+import { DETAIL_WINDOW_CONTENT_HEIGHT } from '@/components/toolbox/windowHeight';
 import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
+import MCPServerFormDialog, { type MCPServerFormValues } from './MCPServerFormDialog';
 
 const urlPattern = /https?:\/\/[^\s]+/;
 
@@ -33,13 +44,14 @@ function renderSetupHint(text: string) {
   const parts = text.split(/(https?:\/\/[^\s]+)/g);
   return parts.map((part, i) =>
     urlPattern.test(part) ? (
-      <a
+      <Link
         key={i}
+        href={part}
         onClick={(e) => { e.preventDefault(); open(part); }}
-        className="underline text-[var(--abu-warning)] hover:text-[var(--abu-warning)] cursor-pointer break-all"
+        className="break-all"
       >
         {part}
-      </a>
+      </Link>
     ) : (
       <span key={i}>{part}</span>
     )
@@ -76,12 +88,14 @@ function ToolDetailsList({ tools }: { tools: { name: string; description?: strin
   return (
     <div className="space-y-1">
       {tools.map((tool) => (
-        <div key={tool.name} className="flex items-start gap-2 py-1.5 px-2 rounded bg-[var(--abu-bg-muted)]">
-          <Wrench className="h-3 w-3 text-[var(--abu-text-muted)] mt-0.5 shrink-0" />
+        <div key={tool.name} className="flex items-start gap-2 rounded-control bg-fill px-2 py-1">
+          <span className="flex h-5 shrink-0 items-center">
+            <Icon icon={AppIcons.tool} size="sm" className="text-label-tertiary" />
+          </span>
           <div className="min-w-0">
-            <span className="text-minor font-medium text-[var(--abu-text-primary)]">{tool.name}</span>
+            <span className="text-ui-sm font-medium text-label">{tool.name}</span>
             {tool.description && (
-              <p className="text-caption text-[var(--abu-text-muted)] truncate">{tool.description}</p>
+              <p className="truncate text-caption text-label-tertiary">{tool.description}</p>
             )}
           </div>
         </div>
@@ -94,6 +108,106 @@ type SelectedItem =
   | { kind: 'server'; name: string }
   | { kind: 'template'; id: string }
   | null;
+
+/** What the detail window shows: the chosen item, and the server's entry while it is one. */
+interface DetailSubject {
+  item: NonNullable<SelectedItem>;
+  server: MCPServerEntry | null;
+}
+
+/**
+ * Puts the focus on the connector's card; once that card has gone, on the card that took its
+ * place, else the one before it, else the empty shelf's own button, else the page's 「添加」 button.
+ */
+function focusConnectorCard(root: ParentNode | null, place: CardPlace | null): void {
+  const card = root && place ? cardOrNeighbour(root, 'connector', place.id, place.index) : null;
+  if (card) card.focus();
+  else if (!root || !focusByTestId('connectors-mine-add', root)) focusByTestId('connector-create-trigger');
+}
+
+/**
+ * A configured server's card. `memo` with stable props: the page renders for every character
+ * typed into its add window, and each card holds a switch.
+ */
+const ServerCard = memo(function ServerCard({ entry, owner, connecting, locked, onOpen, onToggle }: {
+  entry: MCPServerEntry;
+  /** The plugin that brought the server in, when one did. */
+  owner: string | undefined;
+  /** This server's connection is being switched from this page. */
+  connecting: boolean;
+  /** Some connection is being switched from this page: no other switch takes a press. */
+  locked: boolean;
+  onOpen: (name: string) => void;
+  onToggle: (entry: MCPServerEntry) => void;
+}) {
+  const { t } = useI18n();
+  const c = entry.config;
+  const isHttp = !!(c.url || c.transport === 'http');
+  const baseDescription = isHttp ? c.url : [c.command, ...(c.args ?? [])].filter(Boolean).join(' ');
+  const description = owner
+    ? `${format(t.toolbox.mcpFromPlugin, { name: owner })} · ${baseDescription ?? ''}`
+    : baseDescription;
+  // The state comes from `serverStatusMeta`, the same function the detail window uses, so the
+  // card and the window can never disagree. A shape, no visible text: the badge box is the slot
+  // that yields width, and a label like 「Connection error」 would squeeze the name. The label is
+  // the shape's name and the tooltip.
+  const { statusLabel, tone } = serverStatusMeta(entry, connecting ? c.name : null, null, t);
+  return (
+    <div className="h-full" {...cardProps('connector', c.name)}>
+      <ToolCard
+        item={{
+          id: c.name,
+          testId: `mcp-card-${c.name}`,
+          name: c.name,
+          description,
+          avatar: <Icon icon={AppIcons.connector} size="lg" className="text-label-tertiary" />,
+          badge: (
+            <span className="flex items-center" title={entry.error || statusLabel} data-testid={`mcp-status-${c.name}`}>
+              {tone
+                ? <StatusIcon tone={tone} size="sm" label={statusLabel} />
+                : <Icon icon={AppIcons.notChecked} size="sm" label={statusLabel} className="text-label-tertiary" />}
+            </span>
+          ),
+          toggle: (
+            <span className="flex" title={entry.error || (entry.status === 'connected' ? t.toolbox.disconnect : t.toolbox.connect)} onClick={event => event.stopPropagation()}>
+              <Switch
+                checked={entry.status === 'connected'}
+                busy={locked || entry.status === 'connecting' || entry.status === 'reconnecting'}
+                onCheckedChange={() => onToggle(entry)}
+                aria-label={c.name}
+              />
+            </span>
+          ),
+        }}
+        onClick={() => onOpen(c.name)}
+      />
+    </div>
+  );
+});
+
+/** A catalog entry the user has not added. Its place among the cards is the server it would add. */
+const TemplateCard = memo(function TemplateCard({ id, serverName, name, description, onOpen }: {
+  id: string;
+  serverName: string;
+  name: string;
+  description: string;
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <div className="h-full" {...cardProps('connector', serverName)}>
+      <ToolCard
+        item={{
+          id,
+          testId: `mcp-card-${serverName}`,
+          name,
+          description,
+          avatar: <Icon icon={AppIcons.connector} size="lg" className="text-label-tertiary" />,
+        }}
+        onClick={() => onOpen(id)}
+      />
+    </div>
+  );
+});
 
 interface MCPSectionProps {
   showAddForm?: boolean;
@@ -128,6 +242,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const disconnectServer = useMCPStore((s) => s.disconnectServer);
   const clearServerError = useMCPStore((s) => s.clearServerError);
   const { t, locale } = useI18n();
+  const confirm = useConfirm();
 
   const mcpServers = useMemo(() => Object.values(servers), [servers]);
   const installedPlugins = usePluginStore((s) => s.installed);
@@ -139,7 +254,23 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Selection
   const [selected, setSelected] = useState<SelectedItem>(null);
 
-
+  const rootRef = useRef<HTMLDivElement>(null);
+  // What the handlers read: the item whose window is open (null once it is closing).
+  const selectedRef = useRef<SelectedItem>(null);
+  useLayoutEffect(() => { selectedRef.current = selected; });
+  // The card the detail window belongs to, and the control it was opened from. That control can
+  // be gone when the window closes (the add window, a deleted server's card): the focus then
+  // goes to the card, or to what took its place.
+  const opener = useRef<CardPlace | null>(null);
+  const openedFrom = useRef<Element | null>(null);
+  const openDetail = useCallback((item: NonNullable<SelectedItem>) => {
+    const id = item.kind === 'server' ? item.name : availableTemplates.find((tmpl) => tmpl.id === item.id)?.name ?? item.id;
+    if (selectedRef.current === null) openedFrom.current = document.activeElement;
+    opener.current = cardPlace(rootRef.current, 'connector', id);
+    setSelected(item);
+  }, [availableTemplates]);
+  const openServer = useCallback((name: string) => openDetail({ kind: 'server', name }), [openDetail]);
+  const openTemplate = useCallback((id: string) => openDetail({ kind: 'template', id }), [openDetail]);
 
   // Connection UI state
   const [connectingServer, setConnectingServer] = useState<string | null>(null);
@@ -176,9 +307,14 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const [addMode, setAddMode] = useState<'form' | 'json'>('form');
   const [jsonInput, setJsonInput] = useState('');
   const [jsonError, setJsonError] = useState('');
+  // Counts the catalog entries this page filled the open form with: what the form then holds is
+  // where it starts, so closing it loses nothing the user typed.
+  const [formStartingPoint, setFormStartingPoint] = useState(0);
 
   // Open form in edit mode with existing config pre-filled
   const handleEditServer = (entry: MCPServerEntry) => {
+    // The window stays on the page while it fades out; nothing is opened from there.
+    if (selectedRef.current === null) return;
     const c = entry.config;
     const isHttp = !!(c.url || c.transport === 'http');
     setEditingServerName(c.name);
@@ -258,7 +394,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       return next;
     });
     handleCloseAddForm();
-    setSelected({ kind: 'server', name: newName });
+    openDetail({ kind: 'server', name: newName });
     setConnectingServer(newName);
     try { await connectServer(newName); }
     catch (err) {
@@ -370,7 +506,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
     handleCloseAddForm();
     setSource('mcp', 'mine');
-    setSelected({ kind: 'server', name: config.name });
+    openDetail({ kind: 'server', name: config.name });
 
     // Connect (or reconnect)
     setConnectingServer(config.name);
@@ -448,20 +584,12 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         setJsonError('');
         setShowAddForm(false);
         setSource('mcp', 'mine');
-        setSelected({ kind: 'server', name: firstName });
+        openDetail({ kind: 'server', name: firstName });
       }
     } catch {
       setJsonError(t.toolbox.jsonConfigInvalid);
     }
   };
-
-  useEffect(() => {
-    if (!showAddForm) return;
-    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowAddForm(false); };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- setShowAddForm is recreated each render (wraps onAddFormChange prop), adding it would cause infinite re-runs
-  }, [showAddForm]);
 
   const handleCloseAddForm = () => {
     setShowAddForm(false);
@@ -503,7 +631,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       : undefined;
     if (template) {
       setTemplateArgs({});
-      setSelected({ kind: 'template', id: template.id });
+      openDetail({ kind: 'template', id: template.id });
       // The add form was opened for a connector that does not use it.
       setShowAddForm(false);
       return;
@@ -531,6 +659,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setAddMode('form');
     setJsonError('');
     setServerNameError('');
+    setFormStartingPoint((count) => count + 1);
   // Keyed on the entry's identity (its name) via the ref, not the object
   // reference: a host that rebuilds the entry object each render would otherwise
   // wipe a form the user has already started editing.
@@ -542,12 +671,14 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // ignored rather than opening an empty detail.
   useEffect(() => {
     if (!focusServer || !servers[focusServer]) return;
-    setSelected({ kind: 'server', name: focusServer });
+    openDetail({ kind: 'server', name: focusServer });
   // eslint-disable-next-line react-hooks/exhaustive-deps -- servers omitted: an object ref that changes on every store update, and re-opening a detail the user just closed would fight them
   }, [focusServer]);
 
   // Install from template
   const handleInstallTemplate = async (template: MCPTemplate) => {
+    // The window stays on the page while it fades out; a key press there installs nothing.
+    if (selectedRef.current === null) return;
     // The button is disabled in this state; this guards the paths that never
     // consult it (Enter on the form, a keyboard activation racing a change).
     if (!templateRequiredFilled(template, templateArgs)) return;
@@ -582,7 +713,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       // the same jump the two hand-add paths make, so 「添加」 always lands
       // where the new connector actually is.
       setSource('mcp', 'mine');
-      setSelected({ kind: 'server', name: config.name });
+      openDetail({ kind: 'server', name: config.name });
       try { await connectServer(config.name); } catch (err) { console.error('Failed to connect MCP server:', err); }
     } finally {
       setInstallingTemplate(null);
@@ -590,28 +721,31 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     }
   };
 
+  // Removing a connector drops its configuration, so it is asked first, naming the server. The
+  // question is asked over the open window, which answers it "no" when it goes. The answer acts
+  // on the server as it is at that moment: nothing is removed once it has left the store.
+  const removing = useRef(false);
   const handleRemoveServer = async (name: string) => {
-    // Keep selection in context after removal
-    if (selected?.kind === 'server' && selected.name === name) {
-      // If it's a template MCP, switch to template view (stays on same item)
-      const tmpl = availableTemplates.find((t) => t.name === name);
-      if (tmpl) {
-        setSelected({ kind: 'template', id: tmpl.id });
-      } else {
-        // Custom server: select an adjacent item. A server with no template
-        // behind it is only ever listed under 「我的」, so that is the list.
-        const siblings = mineServers;
-        const idx = siblings.findIndex((s) => s.config.name === name);
-        const nextName = siblings[idx - 1]?.config.name ?? siblings[idx + 1]?.config.name;
-        setSelected(nextName ? { kind: 'server', name: nextName } : null);
-      }
+    // The window stays on the page while it fades out; a key press there asks nothing.
+    const shown = selectedRef.current;
+    if (shown?.kind !== 'server' || shown.name !== name || removing.current) return;
+    const ok = await confirm({ title: t.common.delete, message: name, confirmLabel: t.common.delete, tone: 'danger' });
+    if (!ok || removing.current) return;
+    if (!useMCPStore.getState().servers[name]) return;
+    removing.current = true;
+    // Where the card sits now: once it has gone the focus goes to the card that took its place.
+    opener.current = cardPlace(rootRef.current, 'connector', name);
+    try {
+      // Disconnect before removing to avoid stale connected state
+      try { await disconnectServer(name); } catch { /* ignore */ }
+      removeServer(name);
+      setSelected(null);
+    } finally {
+      removing.current = false;
     }
-    // Disconnect before removing to avoid stale connected state
-    try { await disconnectServer(name); } catch { /* ignore */ }
-    removeServer(name);
   };
 
-  const handleToggleConnection = async (entry: MCPServerEntry) => {
+  const handleToggleConnection = useCallback(async (entry: MCPServerEntry) => {
     const name = entry.config.name;
     setConnectingServer(name);
     // Connect/disconnect is the authoritative action — clear any stale test result.
@@ -633,9 +767,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     } catch (err) {
       setServerErrors((prev) => ({ ...prev, [name]: err instanceof Error ? err.message : String(err) }));
     } finally { setConnectingServer(null); }
-  };
+  }, [connectServer, disconnectServer, updateServer]);
 
   const handleTestConnection = async (entry: MCPServerEntry) => {
+    // The window stays on the page while it fades out; a key press there probes nothing.
+    if (selectedRef.current === null) return;
     const name = entry.config.name;
     setTestingServer(name);
     // Clear both stale test result and stale connect error — test is a fresh probe.
@@ -653,116 +789,152 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     } finally { setTestingServer(null); }
   };
 
+  // The detail window keeps showing what it held while it fades out. A server's entry carries its
+  // environment and headers, so what is held is dropped once the window has gone.
+  const liveServer = selected?.kind === 'server' ? servers[selected.name] ?? null : null;
+  const [held, setHeld] = useState<DetailSubject | null>(null);
+  if (selected && (held?.item !== selected || held.server !== liveServer)) setHeld({ item: selected, server: liveServer });
+  const shown: DetailSubject | null = selected ? { item: selected, server: liveServer } : held;
+
   // Get selected server entry or template
-  const selectedServer = selected?.kind === 'server' ? servers[selected.name] : null;
-  const selectedTemplate = selected?.kind === 'template'
-    ? availableTemplates.find((t) => t.id === selected.id) ?? null
+  const selectedServer = shown?.item.kind === 'server' ? shown.server : null;
+  const shownTemplateId = shown?.item.kind === 'template' ? shown.item.id : null;
+  const selectedTemplate = shownTemplateId
+    ? availableTemplates.find((t) => t.id === shownTemplateId) ?? null
     : null;
+  const detailName = selectedServer?.config.name
+    ?? (selectedTemplate ? pickLocale(locale, selectedTemplate.name, selectedTemplate.nameEn) : '');
 
   // Reset detail state when selection changes
   const selectedKey = selected?.kind === 'server' ? selected.name : selected?.kind === 'template' ? selected.id : null;
   useEffect(() => {
+    // A window that is closing keeps the page it showed.
+    if (selectedKey === null) return;
     setExpandedTools(true);
     setShowLogs(false);
   }, [selectedKey]);
 
-  /** The catalog shelf mixes servers the user has added with ones they have
-   *  not. A card with no dot has not been added — that dot is what 「市场」
-   *  lacked, and it doubles as the health readout on 「我的」.
-   *
-   *  Dot only, no visible text: ToolCard's badge box is the slot that yields
-   *  width (`ToolCard.tsx:95`), and at four columns a label like
-   *  「Connection error」 squeezes the name to its 40px floor — the same trap
-   *  the expert cards' tool-count badge was removed for. The label still rides
-   *  along as the tooltip and for screen readers.
-   *
-   *  The state itself comes from `serverStatusMeta`, the same function the
-   *  detail header uses, so the card and the detail can never disagree. */
-  const statusDot = (entry: MCPServerEntry) => {
-    const { statusLabel, statusDotColor } = serverStatusMeta(entry, connectingServer, null, t);
-    return (
-      <span className="flex items-center" title={entry.error || statusLabel} data-testid={`mcp-status-${entry.config.name}`}>
-        <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', statusDotColor)} />
-        <span className="sr-only">{statusLabel}</span>
-      </span>
-    );
+  // The logs page takes the place of the details and the header's controls: the focus moves to
+  // its way back, and on the way back to the menu button that opened it.
+  const logsShown = useRef(false);
+  useLayoutEffect(() => {
+    const was = logsShown.current;
+    logsShown.current = showLogs;
+    if (was === showLogs || selectedRef.current === null || !focusIsOnWindow()) return;
+    document.querySelector<HTMLElement>(showLogs ? '[data-connector-logs-back]' : '[data-testid="mcp-detail-menu"]')?.focus();
+  }, [showLogs]);
+
+  const afterDetailClosed = (event: Event) => {
+    // The window has gone: the entry it held, with its environment and headers, is dropped.
+    setHeld(null);
+    const from = openedFrom.current;
+    // Another layer took the focus, or the control the window was opened from is still there and gets it back.
+    if (event.defaultPrevented || (from instanceof HTMLElement && from !== document.body && from.isConnected)) return;
+    event.preventDefault();
+    focusConnectorCard(rootRef.current, opener.current);
   };
 
-  const renderServerCard = (entry: MCPServerEntry) => {
-    const c = entry.config;
-    const isHttp = !!(c.url || c.transport === 'http');
-    const baseDescription = isHttp ? c.url : [c.command, ...(c.args ?? [])].filter(Boolean).join(' ');
-    const owner = serverOwners[c.name];
-    const description = owner
-      ? `${format(t.toolbox.mcpFromPlugin, { name: owner })} · ${baseDescription ?? ''}`
-      : baseDescription;
-    return (
-      <ToolCard
-        key={c.name}
-        item={{
-          id: c.name,
-          testId: `mcp-card-${c.name}`,
-          name: c.name,
-          description,
-          avatar: <Server className="h-6 w-6 text-[var(--abu-text-muted)]" />,
-          badge: statusDot(entry),
-          toggle: (
-            <span title={entry.error || (entry.status === 'connected' ? t.toolbox.disconnect : t.toolbox.connect)} onClick={event => event.stopPropagation()}>
-              <Toggle
-                checked={entry.status === 'connected'}
-                disabled={connectingServer !== null || entry.status === 'connecting' || entry.status === 'reconnecting'}
-                onChange={() => void handleToggleConnection(entry)}
-                size="sm"
-                tone="green"
-              />
-            </span>
-          ),
-        }}
-        onClick={() => setSelected({ kind: 'server', name: c.name })}
-      />
-    );
+  // The add window closed because a connector was added: its own window is open by now and has the focus.
+  const afterAddFormClosed = (event: Event) => {
+    if (!event.defaultPrevented && selectedRef.current !== null) event.preventDefault();
   };
 
-  const renderTemplateCard = (tmpl: MCPTemplate) => (
-    <ToolCard
-      key={tmpl.id}
-      item={{
-        id: tmpl.id,
-        testId: `mcp-card-${tmpl.name}`,
-        name: pickLocale(locale, tmpl.name, tmpl.nameEn),
-        description: pickLocale(locale, tmpl.description, tmpl.descriptionEn),
-        avatar: <Server className="h-6 w-6 text-[var(--abu-text-placeholder)]" />,
-      }}
-      onClick={() => setSelected({ kind: 'template', id: tmpl.id })}
+  const formValues: MCPServerFormValues = {
+    name: newServerName,
+    transport: newTransportType,
+    command: newServerCommand,
+    args: newServerArgs,
+    env: newServerEnv,
+    url: newServerUrl,
+    headers: newServerHeaders,
+  };
+  const changeForm = (patch: Partial<MCPServerFormValues>) => {
+    if (patch.name !== undefined) { setNewServerName(patch.name); setServerNameError(''); }
+    if (patch.transport !== undefined) setNewTransportType(patch.transport);
+    if (patch.command !== undefined) setNewServerCommand(patch.command);
+    if (patch.args !== undefined) setNewServerArgs(patch.args);
+    if (patch.env !== undefined) setNewServerEnv(patch.env);
+    if (patch.url !== undefined) setNewServerUrl(patch.url);
+    if (patch.headers !== undefined) setNewServerHeaders(patch.headers);
+  };
+  // Adding opens from the page; editing opens over the window of the connector it edits, which
+  // stays under it and gets the focus back.
+  const formWindow = (over: 'page' | 'detail') => (
+    <MCPServerFormDialog
+      open={showAddForm && (over === 'detail') === (editingServerName !== null)}
+      mode={editingServerName ? 'edit' : 'add'}
+      editingServerName={editingServerName}
+      values={formValues}
+      onChange={changeForm}
+      addMode={addMode}
+      onAddModeChange={setAddMode}
+      jsonInput={jsonInput}
+      onJsonInputChange={(value) => { setJsonInput(value); setJsonError(''); }}
+      serverNameError={serverNameError}
+      jsonError={jsonError}
+      nameLockedHint={editingNameLocked
+        ? (editingServerName && serverOwners[editingServerName] ? format(t.toolbox.mcpFromPlugin, { name: serverOwners[editingServerName] }) : t.toolbox.serverNameLockedHint)
+        : undefined}
+      startingPoint={formStartingPoint}
+      onSubmit={addMode === 'json' ? handleAddFromJSON : handleAddServer}
+      onClose={handleCloseAddForm}
+      onCloseAutoFocus={over === 'page' ? afterAddFormClosed : undefined}
     />
   );
 
+  const renderServerCard = (entry: MCPServerEntry) => (
+    <ServerCard
+      key={entry.config.name}
+      entry={entry}
+      owner={serverOwners[entry.config.name]}
+      connecting={connectingServer === entry.config.name}
+      locked={connectingServer !== null}
+      onOpen={openServer}
+      onToggle={handleToggleConnection}
+    />
+  );
+
+  const renderTemplateCard = (tmpl: MCPTemplate) => (
+    <TemplateCard
+      key={tmpl.id}
+      id={tmpl.id}
+      serverName={tmpl.name}
+      name={pickLocale(locale, tmpl.name, tmpl.nameEn)}
+      description={pickLocale(locale, tmpl.description, tmpl.descriptionEn)}
+      onOpen={openTemplate}
+    />
+  );
+
+  const logsView = showLogs && selectedServer !== null;
+  const serverBusy = selectedServer !== null
+    && (connectingServer !== null || selectedServer.status === 'connecting' || selectedServer.status === 'reconnecting');
+
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
+    <div ref={rootRef} className="flex h-full flex-col overflow-hidden">
       {/* One shelf at a time: 「我的」 lists the servers this user configured,
           「市场」 the curated catalog (installed entries first). */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6">
         {source === 'mine' ? (
           mineServers.length === 0 ? (
-            scopedServers.length === 0 ? (
-              <div className="py-16">
+            <div className="py-8">
+              {scopedServers.length === 0 ? (
                 <EmptyState
-                  icon={Server}
+                  icon={AppIcons.connector}
                   title={t.toolbox.connectorsMineEmptyTitle}
-                  hint={t.toolbox.connectorsMineEmptyHint}
-                  action={<Button size="sm" data-testid="connectors-mine-add" onClick={() => setShowAddForm(true)}>{t.toolbox.addServer}</Button>}
+                  description={t.toolbox.connectorsMineEmptyHint}
+                  action={<Button variant="secondary" data-testid="connectors-mine-add" onClick={() => setShowAddForm(true)}>{t.toolbox.addServer}</Button>}
                 />
-              </div>
-            ) : (
-              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
-            )
+              ) : (
+                <EmptyState icon={AppIcons.connector} title={t.toolbox.noServersConnected} />
+              )}
+            </div>
           ) : (
             <div className="max-w-5xl mx-auto">
               <ToolGrid>{mineServers.map((entry) => renderServerCard(entry))}</ToolGrid>
             </div>
           )
         ) : exampleItems.length === 0 && pluginServers.length === 0 ? (
-          <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
+          <div className="py-8"><EmptyState icon={AppIcons.connector} title={t.toolbox.noServersConnected} /></div>
         ) : (
           /* 「市场」 — the curated catalog (installed entries first), then the
              servers plugins brought in. One grid: which shelf this is is the
@@ -780,68 +952,70 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       {/* Detail modal */}
       <ToolDetailModal
         open={!!selected}
+        ariaLabel={detailName}
         onClose={() => setSelected(null)}
+        onCloseAutoFocus={afterDetailClosed}
         maxWidth="max-w-2xl"
-        avatar={showLogs && selectedServer ? <button type="button" aria-label={t.toolbox.backToDetails} title={t.toolbox.backToDetails} onClick={() => setShowLogs(false)} className="flex h-full w-full items-center justify-center rounded-full hover:bg-[var(--abu-bg-active)]"><ArrowLeft className="h-5 w-5 text-[var(--abu-text-muted)]" /></button> : selected ? <Server className="h-6 w-6 text-[var(--abu-text-muted)]" /> : undefined}
+        avatar={logsView
+          ? <IconButton icon={AppIcons.back} label={t.toolbox.backToDetails} onClick={() => setShowLogs(false)} data-connector-logs-back="" />
+          : shown ? <Icon icon={AppIcons.connector} size="lg" className="text-label-tertiary" /> : undefined}
         stackedHeader
-        panelClassName="h-[min(640px,85vh)]"
+        panelClassName={DETAIL_WINDOW_CONTENT_HEIGHT}
         footer={selectedServer && !showLogs ? (
-          <div className="flex items-center justify-between gap-3">
-          <Button variant="ghost" size="sm"
-            className="rounded-xl bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
-            disabled={!!serverOwners[selectedServer.config.name]}
-            title={serverOwners[selectedServer.config.name] ? format(t.toolbox.mcpFromPlugin, { name: serverOwners[selectedServer.config.name] }) : undefined}
-            onClick={() => handleRemoveServer(selectedServer.config.name)}>
-            {t.common.delete}
-          </Button>
-          <Button size="sm" className="rounded-xl"
-            disabled={testingServer !== null || connectingServer !== null || selectedServer.status === 'connecting' || selectedServer.status === 'reconnecting'}
-            onClick={() => void handleTestConnection(selectedServer)}>
-            {testingServer === selectedServer.config.name && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            {t.toolbox.testConnection}
-          </Button>
-          </div>
-        ) : selectedTemplate ? (
-          <div className="flex justify-end">
-            <Button size="sm" className="rounded-xl" onClick={() => handleInstallTemplate(selectedTemplate)}
-              disabled={installingTemplate === selectedTemplate.id || !templateRequiredFilled(selectedTemplate, templateArgs)}>
-              {installingTemplate === selectedTemplate.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-              {t.toolbox.install}
+          <div className="flex w-full items-center justify-between gap-3">
+            {/* The reason sits on the element around the button: a disabled button shows no title of its own. */}
+            <span className="flex" title={serverOwners[selectedServer.config.name] ? format(t.toolbox.mcpFromPlugin, { name: serverOwners[selectedServer.config.name] }) : undefined}>
+              <Button variant="danger" size="sm" icon={AppIcons.delete}
+                disabled={!!serverOwners[selectedServer.config.name]}
+                onClick={() => void handleRemoveServer(selectedServer.config.name)}>
+                {t.common.delete}
+              </Button>
+            </span>
+            <Button variant="primary" size="sm"
+              busy={testingServer === selectedServer.config.name}
+              disabled={serverBusy || (testingServer !== null && testingServer !== selectedServer.config.name)}
+              onClick={() => void handleTestConnection(selectedServer)}>
+              {t.toolbox.testConnection}
             </Button>
           </div>
+        ) : selectedTemplate ? (
+          <Button variant="primary" size="sm" icon={AppIcons.add}
+            busy={installingTemplate === selectedTemplate.id}
+            disabled={!templateRequiredFilled(selectedTemplate, templateArgs)}
+            onClick={() => void handleInstallTemplate(selectedTemplate)}>
+            {t.toolbox.install}
+          </Button>
         ) : undefined}
         headerActions={showLogs ? undefined :
           selectedServer ? (
             <ServerHeaderActions
               entry={selectedServer}
               connectingServer={connectingServer}
-              onToggleLogs={() => setShowLogs(!showLogs)}
-              onToggleConnection={() => handleToggleConnection(selectedServer)}
+              onToggleLogs={() => { if (selectedRef.current !== null) setShowLogs(!showLogs); }}
+              onToggleConnection={() => { if (selectedRef.current !== null) void handleToggleConnection(selectedServer); }}
               onEdit={() => handleEditServer(selectedServer)}
             />
           ) : undefined
         }
       >
-        {showLogs && selectedServer ? <div data-testid="mcp-logs-view" className="space-y-4">
-          <h2 className="text-h-lg font-semibold text-[var(--abu-text-primary)]">{t.toolbox.viewLogs}</h2>
-          <p className="text-body text-[var(--abu-text-muted)]">{selectedServer.config.name}</p>
+        {logsView && selectedServer ? <div data-testid="mcp-logs-view" className="space-y-4">
+          <h2 className="text-title text-label">{t.toolbox.viewLogs}</h2>
+          <p className="text-ui text-label-secondary">{selectedServer.config.name}</p>
           <ServerLogsPanel serverName={selectedServer.config.name} />
         </div> : <>
         <div className="mb-5 flex items-center justify-between gap-4">
-          <h2 className="min-w-0 text-h-lg font-semibold text-[var(--abu-text-primary)] break-words">
-            {selectedServer?.config.name ?? (selectedTemplate ? pickLocale(locale, selectedTemplate.name, selectedTemplate.nameEn) : '')}{' '}
-            <span className="font-normal text-[var(--abu-text-muted)]">{t.toolbox.connectors}</span>
+          <h2 className="min-w-0 break-words text-title text-label">
+            {detailName}{' '}
+            <span className="font-normal text-label-tertiary">{t.toolbox.connectors}</span>
           </h2>
-          {selectedServer && <p data-testid="mcp-detail-status" className={cn('shrink-0 text-body', serverStatusMeta(selectedServer, connectingServer, testingServer, t).statusColor)}>
-            {serverStatusMeta(selectedServer, connectingServer, testingServer, t).statusLabel}
-          </p>}
+          {selectedServer && <ServerStatus entry={selectedServer} connectingServer={connectingServer} testingServer={testingServer} />}
         </div>
         {selectedServer ? (
           <ServerDetail
             entry={selectedServer}
             serverErrors={serverErrors}
             expandedTools={expandedTools}
-            onToggleTools={() => setExpandedTools(!expandedTools)}
+            onToggleTools={setExpandedTools}
           />
         ) : selectedTemplate ? (
           <TemplateDetail
@@ -851,125 +1025,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
           />
         ) : null}
         </>}
+        {formWindow('detail')}
       </ToolDetailModal>
 
-      {/* Add / Edit Server Modal */}
-      {showAddForm && (
-        <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) handleCloseAddForm(); }}>
-          <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-md flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--abu-border)]">
-              <div className="flex items-center gap-2">
-                <Server className="h-5 w-5 text-[var(--abu-clay)]" />
-                <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-                  {editingServerName ? t.toolbox.skillEdit : t.toolbox.addCustomServer}
-                </h2>
-              </div>
-              <button onClick={handleCloseAddForm} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            {/* Form / JSON mode toggle */}
-            <div className="px-5 pt-3 pb-0">
-              <div className="flex gap-1 p-0.5 bg-[var(--abu-bg-muted)] rounded-md">
-                <button onClick={() => setAddMode('form')}
-                  className={cn('flex-1 py-1.5 text-minor font-medium rounded transition-colors', addMode === 'form' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
-                  {t.toolbox.formMode}
-                </button>
-                <button onClick={() => setAddMode('json')}
-                  className={cn('flex-1 py-1.5 text-minor font-medium rounded transition-colors', addMode === 'json' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
-                  {t.toolbox.jsonMode}
-                </button>
-              </div>
-            </div>
-
-            {addMode === 'json' ? (
-              <div className="px-5 py-4 space-y-3">
-                <div>
-                  <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.jsonConfigLabel}</label>
-                  <textarea
-                    value={jsonInput}
-                    onChange={(e) => { setJsonInput(e.target.value); setJsonError(''); }}
-                    placeholder={t.toolbox.jsonConfigPlaceholder}
-                    rows={10}
-                    className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-minor text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all font-mono resize-none"
-                  />
-                  <p className="text-caption text-[var(--abu-text-muted)] mt-1.5">{t.toolbox.jsonConfigHint}</p>
-                  {jsonError && <p className="text-minor text-[var(--abu-danger)] mt-1">{jsonError}</p>}
-                </div>
-              </div>
-            ) : (
-              <div className="px-5 py-4 space-y-3">
-                <div>
-                  <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.serverName}</label>
-                  <input type="text" placeholder={t.toolbox.serverName} value={newServerName}
-                    onChange={(e) => { setNewServerName(e.target.value); setServerNameError(''); }}
-                    disabled={editingNameLocked}
-                    className={cn('w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                      editingNameLocked && 'opacity-60 cursor-not-allowed')} />
-                  {serverNameError && <p className="text-minor text-[var(--abu-danger)] mt-1">{serverNameError}</p>}
-                  {editingNameLocked && <p className="text-caption text-[var(--abu-text-muted)] mt-1">{editingServerName && serverOwners[editingServerName] ? format(t.toolbox.mcpFromPlugin, { name: serverOwners[editingServerName] }) : t.toolbox.serverNameLockedHint}</p>}
-                </div>
-                <div>
-                  <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.transportType}</label>
-                  <div className="flex gap-1 p-0.5 bg-[var(--abu-bg-muted)] rounded-md">
-                    <button onClick={() => setNewTransportType('stdio')}
-                      className={cn('flex-1 py-1.5 text-minor font-medium rounded transition-colors', newTransportType === 'stdio' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
-                      {t.toolbox.transportStdio}
-                    </button>
-                    <button onClick={() => setNewTransportType('http')}
-                      className={cn('flex-1 py-1.5 text-minor font-medium rounded transition-colors', newTransportType === 'http' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
-                      {t.toolbox.transportHttp}
-                    </button>
-                  </div>
-                </div>
-                {newTransportType === 'stdio' ? (
-                  <>
-                    <div>
-                      <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.serverCommand}</label>
-                      <input type="text" placeholder={t.toolbox.serverCommand} value={newServerCommand} onChange={(e) => setNewServerCommand(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
-                    </div>
-                    <div>
-                      <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.serverArgs}</label>
-                      <input type="text" placeholder={t.toolbox.serverArgs} value={newServerArgs} onChange={(e) => setNewServerArgs(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
-                    </div>
-                    <div>
-                      <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">Env (JSON)</label>
-                      <input type="text" placeholder='{"API_KEY": "..."}' value={newServerEnv} onChange={(e) => setNewServerEnv(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all font-mono" />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div>
-                      <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">URL</label>
-                      <input type="text" placeholder={t.toolbox.serverUrlPlaceholder} value={newServerUrl} onChange={(e) => setNewServerUrl(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
-                    </div>
-                    <div>
-                      <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">Headers (JSON)</label>
-                      <input type="text" placeholder={t.toolbox.serverHeadersPlaceholder} value={newServerHeaders} onChange={(e) => setNewServerHeaders(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all font-mono" />
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--abu-border)]">
-              <button onClick={handleCloseAddForm} className="px-4 py-1.5 rounded-lg text-body font-medium text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors">
-                {t.common.cancel}
-              </button>
-              <button onClick={addMode === 'json' ? handleAddFromJSON : handleAddServer}
-                disabled={addMode === 'json' ? !jsonInput.trim() : (!newServerName.trim() || (newTransportType === 'stdio' && !newServerCommand.trim()) || (newTransportType === 'http' && !newServerUrl.trim()))}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                <Check className="h-3.5 w-3.5" />
-                {editingServerName ? t.common.save : t.toolbox.add}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Add window. Editing opens the same form over the detail window, above. */}
+      {formWindow('page')}
     </div>
   );
 }
@@ -994,19 +1054,29 @@ function serverStatusMeta(
     : isConnected ? t.toolbox.connected
     : status === 'error' ? t.toolbox.connectionError
     : t.toolbox.disconnected;
-  const statusColor = isReconnecting ? 'text-[var(--abu-warning)]'
-    : isConnecting ? 'text-[var(--abu-warning)]'
-    : isConnected ? 'text-[var(--abu-success)]'
-    : status === 'error' ? 'text-[var(--abu-danger)]'
-    : 'text-[var(--abu-text-muted)]';
-  // Same five states as a filled dot, for the card badge. Kept here rather than
-  // derived from `statusColor` so the two can never drift apart.
-  const statusDotColor = isReconnecting ? 'bg-[var(--abu-warning)]'
-    : isConnecting ? 'bg-[var(--abu-warning)]'
-    : isConnected ? 'bg-[var(--abu-success-solid)]'
-    : status === 'error' ? 'bg-[var(--abu-danger)]'
-    : 'bg-[var(--abu-text-placeholder)]';
-  return { isConnected, isConnecting, isTesting, statusLabel, statusColor, statusDotColor };
+  // The same five states as a status tone, for the card badge and the window's status line.
+  // 「未连接」 is no status: it has no tone and shows a neutral shape.
+  const tone: StatusTone | null = isReconnecting ? 'warning'
+    : isConnecting ? 'warning'
+    : isConnected ? 'success'
+    : status === 'error' ? 'danger'
+    : null;
+  return { isConnected, isConnecting, isTesting, statusLabel, tone };
+}
+
+/** The status line of the detail window: the one place that spins while the server connects. */
+function ServerStatus({ entry, connectingServer, testingServer }: {
+  entry: MCPServerEntry;
+  connectingServer: string | null;
+  testingServer: string | null;
+}) {
+  const { t } = useI18n();
+  const { isConnecting, statusLabel, tone } = serverStatusMeta(entry, connectingServer, testingServer, t);
+  return (
+    <span data-testid="mcp-detail-status" className="flex shrink-0">
+      {isConnecting ? <Spinner size="sm" label={statusLabel} /> : <Tag tone={tone ?? 'neutral'}>{statusLabel}</Tag>}
+    </span>
+  );
 }
 
 /** Connection control and secondary actions share the extension detail header. */
@@ -1023,11 +1093,13 @@ function ServerHeaderActions({
   const { t } = useI18n();
   const { isConnected, isConnecting } = serverStatusMeta(entry, connectingServer, null, t);
   const busy = isConnecting || entry.status === 'reconnecting' || connectingServer !== null;
+  // What a press does, as the tooltip and as the switch's name.
+  const action = busy ? t.toolbox.connecting : isConnected ? t.toolbox.disconnect : t.toolbox.connect;
   return (
     <>
       <span className="flex items-center" data-testid="mcp-server-toggle-connection" data-connected={isConnected ? 'true' : 'false'}
-        title={busy ? t.toolbox.connecting : isConnected ? t.toolbox.disconnect : t.toolbox.connect}>
-        <Toggle checked={isConnected} disabled={busy} onChange={onToggleConnection} tone="green" size="sm" />
+        title={action}>
+        <Switch checked={isConnected} busy={busy} onCheckedChange={onToggleConnection} aria-label={action} />
       </span>
       <InstalledItemMenu testId="mcp-detail-menu"
         ariaLabel={format(t.toolbox.itemMenuLabel, { name: entry.config.name })}
@@ -1048,7 +1120,7 @@ function ServerDetail({
   entry: MCPServerEntry;
   serverErrors: Record<string, string>;
   expandedTools: boolean;
-  onToggleTools: () => void;
+  onToggleTools: (open: boolean) => void;
 }) {
   const { t } = useI18n();
   const { config, status, tools } = entry;
@@ -1060,25 +1132,19 @@ function ServerDetail({
     <>
       {/* Error */}
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] flex items-start gap-2">
-          <AlertCircle className="h-4 w-4 text-[var(--abu-danger)] shrink-0 mt-0.5" />
-          <p className="text-minor text-[var(--abu-danger)] break-words">{error}</p>
+        <div className="mb-4">
+          <InlineMessage tone="danger"><p className="break-words">{error}</p></InlineMessage>
         </div>
       )}
 
       {/* Tools */}
       {isConnected && toolDetails.length > 0 && (
         <div className="mb-5">
-          <button onClick={onToggleTools} className="flex items-center gap-2 text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors mb-2">
-            {expandedTools ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            <Wrench className="h-3 w-3" />
-            <span>{t.toolbox.agentTools} ({toolDetails.length})</span>
-          </button>
-          {expandedTools && <ToolDetailsList tools={toolDetails} />}
+          <Disclosure title={`${t.toolbox.agentTools} (${toolDetails.length})`} open={expandedTools} onOpenChange={onToggleTools}>
+            <ToolDetailsList tools={toolDetails} />
+          </Disclosure>
         </div>
       )}
-
-
     </>
   );
 }
@@ -1101,43 +1167,44 @@ function TemplateDetail({
     <>
       {/* Description */}
       <div className="mb-5">
-        <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.detailDescription}</span>
-        <p className="text-body text-[var(--abu-text-primary)] mt-1">{pickLocale(locale, template.description, template.descriptionEn)}</p>
+        <span className="text-ui-sm text-label-tertiary">{t.toolbox.detailDescription}</span>
+        <p className="mt-1 text-ui text-label">{pickLocale(locale, template.description, template.descriptionEn)}</p>
       </div>
 
       {/* Setup hint */}
       {hasSetupHint && (
-        <div className="mb-5 p-3 rounded-lg bg-[var(--abu-warning-bg)] border border-[var(--abu-warning)]">
-          <p className="text-minor text-[var(--abu-warning)] leading-relaxed whitespace-pre-wrap break-words">
-            {renderSetupHint(pickLocale(locale, template.setupHint!, template.setupHintEn))}
-          </p>
+        <div className="mb-5">
+          <InlineMessage tone="warning">
+            <p className="whitespace-pre-wrap break-words">
+              {renderSetupHint(pickLocale(locale, template.setupHint!, template.setupHintEn))}
+            </p>
+          </InlineMessage>
         </div>
       )}
 
       {/* Configuration inputs */}
       {(hasConfigurableArgs || hasEnvVars) && (
         <div className="space-y-3">
-          <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.serverArgs}</span>
+          <span className="text-ui-sm text-label-tertiary">{t.toolbox.serverArgs}</span>
           {template.configurableArgs?.map((arg) => (
             // Labeled like the secret below it: the placeholder is the only
             // thing naming this field, and it vanishes the moment the user
             // types — leaving a bare box next to a labeled one.
             <div key={arg.index}>
-              <label htmlFor={`${template.id}-arg-${arg.index}`} className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{pickLocale(locale, arg.label, arg.labelEn)}</label>
-              <input id={`${template.id}-arg-${arg.index}`} type="text" placeholder={pickLocale(locale, arg.placeholder, arg.placeholderEn)}
+              <label htmlFor={`${template.id}-arg-${arg.index}`} className="mb-1 block text-ui-sm font-medium text-label-secondary">{pickLocale(locale, arg.label, arg.labelEn)}</label>
+              <TextField id={`${template.id}-arg-${arg.index}`} placeholder={pickLocale(locale, arg.placeholder, arg.placeholderEn)}
                 value={templateArgs[`${template.id}-${arg.index}`] || ''}
-                onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-${arg.index}`]: e.target.value }))}
-                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
+                onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-${arg.index}`]: e.target.value }))} />
             </div>
           ))}
           {template.requiredEnvVars?.map((envVar) => (
             <div key={envVar.name}>
-              <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{pickLocale(locale, envVar.label, envVar.labelEn)}</label>
-              <input type="password" placeholder={pickLocale(locale, envVar.placeholder, envVar.placeholderEn)}
+              <label htmlFor={`${template.id}-env-${envVar.name}`} className="mb-1 block text-ui-sm font-medium text-label-secondary">{pickLocale(locale, envVar.label, envVar.labelEn)}</label>
+              {/* Masked, with no way to show it: what is typed here is usually a key. */}
+              <TextField id={`${template.id}-env-${envVar.name}`} type="password" className="font-code" placeholder={pickLocale(locale, envVar.placeholder, envVar.placeholderEn)}
                 value={templateArgs[`${template.id}-env-${envVar.name}`] || ''}
-                onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-env-${envVar.name}`]: e.target.value }))}
-                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all font-mono" />
-              {envVar.description && <p className="text-caption text-[var(--abu-text-muted)] mt-0.5">{pickLocale(locale, envVar.description, envVar.descriptionEn)}</p>}
+                onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-env-${envVar.name}`]: e.target.value }))} />
+              {envVar.description && <p className="mt-1 text-caption text-label-tertiary">{pickLocale(locale, envVar.description, envVar.descriptionEn)}</p>}
             </div>
           ))}
         </div>
@@ -1161,23 +1228,29 @@ function ServerLogsPanel({ serverName }: { serverName: string }) {
 
   if (logs.length === 0) {
     return (
-      <div className="px-3 py-2 text-caption text-[var(--abu-text-muted)] bg-[var(--abu-bg-base)] rounded-lg border border-[var(--abu-border)]">
+      <div className="rounded-control border border-separator px-3 py-2 text-caption text-label-tertiary">
         {t.toolbox.noLogs}
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-[var(--abu-border)] bg-neutral-900 p-2">
+    <div className="overflow-x-auto rounded-control bg-code p-2">
       {logs.map((log, i) => (
-        <div key={i} className="flex gap-2 text-caption font-mono leading-4">
-          <span className="text-[var(--abu-text-tertiary)] shrink-0">
+        <div key={i} className="flex gap-2 font-code text-ui-sm">
+          <span className="shrink-0 text-label-tertiary">
             {new Date(log.timestamp).toLocaleTimeString()}
           </span>
-          <span className={cn(
-            log.level === 'error' ? 'text-[var(--abu-danger-solid)]' :
-            log.level === 'warn' ? 'text-[var(--abu-warning-solid)]' : 'text-neutral-300'
-          )}>
+          {/* Status colour comes with a shape; the level string is the shape's name. */}
+          {(log.level === 'error' || log.level === 'warn') && (
+            <span className="flex h-4 shrink-0 items-center">
+              <StatusIcon tone={log.level === 'error' ? 'danger' : 'warning'} size="sm" label={log.level} />
+            </span>
+          )}
+          <span className={
+            log.level === 'error' ? 'text-danger' :
+            log.level === 'warn' ? 'text-warning' : 'text-label-secondary'
+          }>
             {log.message}
           </span>
         </div>

@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Button } from '@/components/ds/button';
 import SkillCategoryBlocksPanel from './SkillCategoryBlocksPanel';
 import type { MemoryHeader } from '@/core/memdir/types';
 
@@ -140,5 +141,73 @@ describe('SkillCategoryBlocksPanel', () => {
     });
     // Failed delete → row still visible so user can retry.
     expect(screen.getByText('weekly-digest')).toBeInTheDocument();
+  });
+});
+
+describe('SkillCategoryBlocksPanel · where the focus goes when a row leaves', () => {
+  const three = () => [
+    makeHeader('不要主动为类似 "alpha" 的任务建议 skill', 'feedback_a.md', { created: 3 }),
+    makeHeader('不要主动为类似 "beta" 的任务建议 skill', 'feedback_b.md', { created: 2 }),
+    makeHeader('不要主动为类似 "gamma" 的任务建议 skill', 'feedback_c.md', { created: 1 }),
+  ];
+  // The button of the row that names this skill.
+  const unblock = (skillName: string) => {
+    const button = screen.getByText(skillName).parentElement?.parentElement?.querySelector('button');
+    if (!button) throw new Error(`No button for ${skillName}`);
+    return button;
+  };
+
+  it('moves to the row that took its place', async () => {
+    mockScanMemoryFiles.mockResolvedValueOnce(three());
+    const user = userEvent.setup();
+    render(<SkillCategoryBlocksPanel />);
+    await screen.findByText('alpha');
+
+    await user.click(unblock('beta'));
+
+    await waitFor(() => expect(screen.queryByText('beta')).not.toBeInTheDocument());
+    expect(unblock('gamma')).toHaveFocus();
+  });
+
+  it('moves to the row before it when it was the last one', async () => {
+    mockScanMemoryFiles.mockResolvedValueOnce(three());
+    const user = userEvent.setup();
+    render(<SkillCategoryBlocksPanel />);
+    await screen.findByText('alpha');
+
+    await user.click(unblock('gamma'));
+
+    await waitFor(() => expect(screen.queryByText('gamma')).not.toBeInTheDocument());
+    expect(unblock('beta')).toHaveFocus();
+  });
+
+  it('moves to the page\'s add button when the panel leaves with its last row', async () => {
+    mockScanMemoryFiles.mockResolvedValueOnce([three()[0]]);
+    const user = userEvent.setup();
+    render(
+      <>
+        <Button data-testid="skill-create-trigger">add</Button>
+        <SkillCategoryBlocksPanel />
+      </>,
+    );
+    await screen.findByText('alpha');
+
+    await user.click(unblock('alpha'));
+
+    await waitFor(() => expect(screen.queryByText('alpha')).not.toBeInTheDocument());
+    expect(screen.getByTestId('skill-create-trigger')).toHaveFocus();
+  });
+
+  it('leaves the focus where it is when the unblock fails', async () => {
+    mockScanMemoryFiles.mockResolvedValueOnce(three());
+    mockDeleteMemory.mockRejectedValueOnce(new Error('disk full'));
+    const user = userEvent.setup();
+    render(<SkillCategoryBlocksPanel />);
+    await screen.findByText('alpha');
+
+    await user.click(unblock('beta'));
+
+    await waitFor(() => expect(mockAddToast).toHaveBeenCalled());
+    expect(unblock('beta')).toHaveFocus();
   });
 });

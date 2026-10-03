@@ -11,8 +11,14 @@
  * this also pins that the section carries the label across that join.
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+
+// The detail window is a design-system dialog, so the section renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 
@@ -67,7 +73,7 @@ const menuButton = () => [...document.querySelectorAll('button')].find((b) =>
 
 /** Render the section with `reviewer` discovered, then open its detail.
  *  A plugin's expert and a user's own both sit on 我的 — the user has them. */
-function openDetail(meta: SubagentMetadata) {
+async function openDetail(meta: SubagentMetadata) {
   useDiscoveryStore.setState({ agents: [meta], skills: [], isLoading: false });
   render(<AgentsSection source="mine" />);
   fireEvent.click(screen.getByText('reviewer'));
@@ -78,7 +84,8 @@ function openDetail(meta: SubagentMetadata) {
   if (meta.source?.kind === 'plugin') return;
   const button = menuButton();
   expect(button).toBeDefined();
-  fireEvent.click(button!);
+  await userEvent.click(button!);
+  await screen.findByRole('menu');
 }
 
 beforeEach(() => {
@@ -130,10 +137,10 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
       render(<AgentsSection source="mine" />);
       fireEvent.click(screen.getByText('reviewer'));
 
-      expect(screen.getByTitle('预览')).toBeTruthy();
-      expect(screen.getByTitle('源码')).toBeTruthy();
-      expect(screen.queryByTitle('Preview')).toBeNull();
-      expect(screen.queryByTitle('Source')).toBeNull();
+      expect(screen.getByRole('button', { name: '预览' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: '源码' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Source' })).toBeNull();
       expect(screen.getByText('来源')).toBeTruthy();
       expect(screen.getByTestId('agent-added-by').textContent).toBe('用户');
       expect(screen.getByText('描述')).toBeTruthy();
@@ -144,8 +151,8 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
     }
   });
 
-  it('offers no "..." menu at all — not even greyed-out entries', () => {
-    openDetail({
+  it('offers no "..." menu at all — not even greyed-out entries', async () => {
+    await openDetail({
       name: 'reviewer',
       description: 'Reviews code',
       source: { kind: 'plugin', plugin: 'weather@official' },
@@ -156,11 +163,11 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
     expect(screen.queryByText(tb().deleteItem)).toBeNull();
   });
 
-  it('leaves edit and delete usable for a user-authored agent', () => {
-    openDetail({ name: 'reviewer', description: 'Reviews code' });
+  it('leaves edit and delete usable for a user-authored agent', async () => {
+    await openDetail({ name: 'reviewer', description: 'Reviews code' });
 
-    expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(false);
-    expect(screen.getByText(tb().deleteItem).closest('button')!.hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('menuitem', { name: tb().agentEdit })).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByRole('menuitem', { name: tb().deleteItem })).not.toHaveAttribute('aria-disabled');
   });
 });
 
@@ -194,8 +201,8 @@ describe('AgentsSection — plugin ownership invariant', () => {
   // end-to-end complement: the detail offers no delete entry AND the handler
   // behind it early-returns, so no path from this detail reaches the filesystem
   // for a plugin agent.
-  it('offers no delete entry, and removes nothing from disk, for a plugin agent', () => {
-    openDetail({
+  it('offers no delete entry, and removes nothing from disk, for a plugin agent', async () => {
+    await openDetail({
       name: 'reviewer',
       description: 'Reviews code',
       source: { kind: 'plugin', plugin: 'weather@official' },
@@ -211,25 +218,26 @@ describe('AgentsSection — the store\'s normalised source wins over the registr
   // section reads the store; the registry only echoes the AGENT.md frontmatter,
   // which the user (or the `save_agent` tool) can write. Taking the raw value
   // would let a forged `source:` lock the user out of their own agent.
-  it('ignores a forged plugin source the store already stripped', () => {
+  it('ignores a forged plugin source the store already stripped', async () => {
     vi.mocked(agentRegistry.getAgent).mockReturnValue({
       ...definition,
       source: { kind: 'plugin', plugin: 'forged@nowhere' },
     });
-    openDetail({ name: 'reviewer', description: 'Reviews code' });
+    await openDetail({ name: 'reviewer', description: 'Reviews code' });
 
     expect(screen.getByTestId('agent-added-by').textContent).toBe(tb().sourceUser);
-    expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(false);
-    const remove = screen.getByText(tb().deleteItem).closest('button')!;
-    expect(remove.hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('menuitem', { name: tb().agentEdit })).not.toHaveAttribute('aria-disabled');
+    const remove = screen.getByRole('menuitem', { name: tb().deleteItem });
+    expect(remove).not.toHaveAttribute('aria-disabled');
 
-    // …and the handler behind the entry actually proceeds to the disk delete.
+    // …and the handler behind the entry actually proceeds to the disk delete, once the question is answered.
     fireEvent.click(remove);
-    expect(vi.mocked(fsRemove)).toHaveBeenCalledWith('/Users/tester/.abu/agents/reviewer', { recursive: true });
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: getI18n().common.delete }));
+    await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledWith('/Users/tester/.abu/agents/reviewer', { recursive: true }));
   });
 
-  it('still carries a backfilled source the registry never saw', () => {
-    openDetail({
+  it('still carries a backfilled source the registry never saw', async () => {
+    await openDetail({
       name: 'reviewer',
       description: 'Reviews code',
       source: { kind: 'plugin', plugin: 'weather@official' },

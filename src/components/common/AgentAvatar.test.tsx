@@ -2,7 +2,10 @@
 /// <reference types="@testing-library/jest-dom" />
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { AVATAR_TINT_MAP } from '@/core/team/avatarPresets';
 import AgentAvatar, { agentAvatarValue } from './AgentAvatar';
+
+const classes = (el: Element) => (el.getAttribute('class') ?? '').split(/\s+/);
 
 describe('AgentAvatar', () => {
   afterEach(cleanup);
@@ -51,23 +54,81 @@ describe('AgentAvatar', () => {
   it('fills the 40px card slot at size="xl"', () => {
     render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} size="xl" />);
     const box = screen.getByTestId('agent-avatar');
-    expect(box.className).toContain('h-10 w-10');
-    expect(box.querySelector('svg')?.getAttribute('class')).toContain('h-5 w-5');
+    expect(classes(box)).toContain('size-10');
+    expect(classes(box)).toContain('rounded-control');
+    expect(box.querySelector('svg')?.getAttribute('width')).toBe('16');
   });
 
   it('fills the 56px detail slot at size="2xl", matching its radius', () => {
     render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} size="2xl" />);
     const box = screen.getByTestId('agent-avatar');
-    expect(box.className).toContain('h-14 w-14');
-    expect(box.querySelector('svg')?.getAttribute('class')).toContain('h-6 w-6');
-    // The detail slot is rounded-2xl and has no overflow-hidden: a rounded-lg
-    // avatar would leave grey corners showing through.
-    expect(box.className).toContain('rounded-2xl');
+    expect(classes(box)).toContain('size-14');
+    expect(box.querySelector('svg')?.getAttribute('width')).toBe('20');
+    // The detail slot has panel corners and does not clip: an avatar with
+    // control corners would leave grey corners showing through.
+    expect(classes(box)).toContain('rounded-panel');
   });
 
   it('stays a circle at size="2xl" when round', () => {
     render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} size="2xl" round />);
-    expect(screen.getByTestId('agent-avatar').className).toContain('rounded-full');
+    expect(classes(screen.getByTestId('agent-avatar'))).toContain('rounded-full');
+    expect(classes(screen.getByTestId('agent-avatar'))).not.toContain('rounded-panel');
+  });
+
+  it.each([
+    ['xs', 'size-4', '14'],
+    ['sm', 'size-5', '14'],
+    ['md', 'size-7', '16'],
+    ['lg', 'size-8', '16'],
+  ] as const)('draws size %s as a %s box with a %spx design-system icon', (size, box, px) => {
+    render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} size={size} />);
+    const avatar = screen.getByTestId('agent-avatar');
+    expect(classes(avatar)).toContain(box);
+    const glyph = avatar.querySelector('svg')!;
+    expect(glyph.getAttribute('width')).toBe(px);
+    expect(glyph.getAttribute('height')).toBe(px);
+    expect(glyph.getAttribute('stroke-width')).toBe('1.5');
+  });
+
+  it('paints the tint of a preset as the identity colour, over the neutral fill', () => {
+    render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} />);
+    const avatar = screen.getByTestId('agent-avatar');
+    expect(avatar.style.backgroundColor).toBe(AVATAR_TINT_MAP.blue.bg);
+    expect(avatar.style.color).toBe(AVATAR_TINT_MAP.blue.fg);
+    expect(classes(avatar)).toContain('bg-fill');
+    // The glyph takes the tint's own foreground.
+    expect(avatar.querySelector('svg')?.getAttribute('class') ?? '').not.toContain('text-label-tertiary');
+  });
+
+  it('draws the default mark grey on the neutral fill, with no inline colour', () => {
+    render(<AgentAvatar agent={{ name: 'coder' }} />);
+    const avatar = screen.getByTestId('agent-avatar');
+    expect(avatar.getAttribute('style')).toBeNull();
+    expect(classes(avatar)).toContain('bg-fill');
+    expect(avatar.querySelector('svg')?.getAttribute('class')).toContain('text-label-tertiary');
+    expect(avatar).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('gives a legacy emoji the type size of its slot', () => {
+    render(<AgentAvatar agent={{ name: 'coder', avatar: '📊' }} size="xl" />);
+    expect(classes(screen.getByText('📊'))).toContain('text-title');
+    cleanup();
+    render(<AgentAvatar agent={{ name: 'coder', avatar: '📊' }} size="2xl" />);
+    expect(classes(screen.getByText('📊'))).toContain('text-title-lg');
+    cleanup();
+    render(<AgentAvatar agent={{ name: 'coder', avatar: '📊' }} size="sm" />);
+    expect(classes(screen.getByText('📊'))).toContain('text-ui-sm');
+  });
+
+  it('adds no floating layer of its own: an avatar is a span with a glyph in it', () => {
+    // Avatars sit in every row of the message list, the sidebar and the team panel.
+    const { container } = render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} />);
+    const avatar = screen.getByTestId('agent-avatar');
+    expect(container.children).toHaveLength(1);
+    expect(container.firstElementChild).toBe(avatar);
+    expect(avatar.tagName).toBe('SPAN');
+    expect([...avatar.children].map((child) => child.tagName.toLowerCase())).toEqual(['svg']);
+    expect(avatar).not.toHaveAttribute('data-state');
   });
 
   it.each([

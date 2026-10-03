@@ -46,7 +46,7 @@ function useOutsideClose(
 /**
  * Anchor the dropdown to the trigger with fixed positioning in a portal, so
  * it can never be clipped by a dialog's overflow container (the bug this
- * replaced: absolute positioning inside DialogShell's scroll area).
+ * replaced: absolute positioning inside a dialog's scroll area).
  *
  * Placement (user feedback 2026-08-31): always open DOWNWARD — when the space
  * below is short, shrink the list (it scrolls internally) instead of flipping.

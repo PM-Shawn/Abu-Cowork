@@ -2,6 +2,7 @@ import { ContextMenu as ContextMenuPrimitive, DropdownMenu as DropdownMenuPrimit
 import type { LucideIcon } from 'lucide-react';
 import { useId, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import type { DataAttributes } from './dialog';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
@@ -14,7 +15,7 @@ const MENU_PANEL = 'max-h-(--radix-dropdown-menu-content-available-height) min-w
 
 // onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
 // event.preventDefault() there to keep focus off the trigger (e.g. to focus a field).
-export function Menu({ trigger, children, align = 'start', side = 'bottom', open, defaultOpen = false, onOpenChange, onCloseAutoFocus }: {
+export function Menu({ trigger, children, align = 'start', side = 'bottom', open, defaultOpen = false, onOpenChange, onCloseAutoFocus, contentProps }: {
   trigger: ReactNode;
   children: ReactNode;
   align?: 'start' | 'center' | 'end';
@@ -23,10 +24,12 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   onCloseAutoFocus?: (event: Event) => void;
+  // data-* attributes for the menu's content element (a test id).
+  contentProps?: DataAttributes;
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const { id, onCloseAutoFocus: layerCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
+  const { id, onCloseAutoFocus: layerCloseAutoFocus, onEscapeKeyDown } = useLayer('popover', isOpen, setOpen);
   const level = useFloatingLevel();
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
@@ -37,7 +40,9 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
           side={side}
           sideOffset={4}
           collisionPadding={EDGE_GAP}
+          onEscapeKeyDown={onEscapeKeyDown}
           onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
+          {...contentProps}
           data-ds-layer
           data-ds-motion
           data-electron-no-drag
@@ -54,7 +59,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
 
 // onSelect receives Radix's select event; event.preventDefault() keeps the menu open
 // (an item whose result shows in the item itself, like checking for updates).
-export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect, description, title }: {
+export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect, description, title, testId }: {
   children: ReactNode;
   icon?: LucideIcon;
   shortcut?: string;
@@ -65,6 +70,8 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
   description?: ReactNode;
   // Native hint for an item whose name does not say what choosing it does (a version's time).
   title?: string;
+  // Rendered as data-testid on the item.
+  testId?: string;
 }) {
   const kind = useMenuKind();
   const descriptionId = useId();
@@ -86,8 +93,8 @@ export function MenuItem({ children, icon, shortcut, tone = 'default', disabled,
   );
   const describedBy = description ? descriptionId : undefined;
   return kind === 'dropdown'
-    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} className={className}>{body}</DropdownMenuPrimitive.Item>
-    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} className={className}>{body}</ContextMenuPrimitive.Item>;
+    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} data-testid={testId} className={className}>{body}</DropdownMenuPrimitive.Item>
+    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} data-testid={testId} className={className}>{body}</ContextMenuPrimitive.Item>;
 }
 
 // A nested list inside a Menu or ContextMenu. It belongs to the parent menu's layer:

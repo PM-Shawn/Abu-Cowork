@@ -9,14 +9,16 @@
 
 import { useEffect, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
-import { Search } from 'lucide-react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { TextField } from '@/components/ds/text-field';
 import { useI18n } from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
-import { Input } from '@/components/ui/input';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import MarketplaceBrowser from './MarketplaceBrowser';
+import { focusIsOnWindow } from '../cardFocus';
 
 export default function AppMarketDialog() {
   const { t } = useI18n();
@@ -56,35 +58,42 @@ export default function AppMarketDialog() {
     <ToolDetailModal
       open={open}
       onClose={onClose}
+      onCloseAutoFocus={() => {
+        // The window opens from the app switcher's menu, which is gone by now, so the focus has no
+        // control to return to. Once the window has handed it back: when nothing took it, the
+        // switcher's button does.
+        queueMicrotask(() => {
+          if (focusIsOnWindow()) document.querySelector<HTMLElement>('[data-testid="app-switcher-trigger"]')?.focus();
+        });
+      }}
       ariaLabel={t.appMarket.title}
       testId="app-market-dialog"
       title={t.appMarket.title}
       subtitle={t.appMarket.subtitle}
       maxWidth="max-w-4xl"
-      panelClassName="h-[70vh]"
+      // The list renders row by row as it scrolls, so its area has a fixed height.
+      panelClassName="h-120"
       headerActions={
         <div className="relative w-56">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--abu-text-muted)]" />
-          <Input
+          <Icon icon={AppIcons.search} size="sm" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-label-tertiary" />
+          <TextField
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t.appMarket.searchPlaceholder}
             aria-label={t.appMarket.searchPlaceholder}
             data-testid="app-market-search"
-            className="h-8 pl-8"
+            className="pl-7"
           />
         </div>
       }
     >
       {home !== null && (
-        <div className="-mx-6 h-full">
-          <MarketplaceBrowser
-            home={home}
-            mode="apps"
-            searchQuery={query}
-            onAddMarketplace={onClose}
-          />
-        </div>
+        <MarketplaceBrowser
+          home={home}
+          mode="apps"
+          searchQuery={query}
+          onAddMarketplace={onClose}
+        />
       )}
     </ToolDetailModal>
   );

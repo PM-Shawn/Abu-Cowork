@@ -30,7 +30,7 @@ test.describe('Skill upload menu (Phase E)', () => {
     const menu = page.getByTestId('skill-create-menu');
 
     // Exactly 3 entries, in order.
-    await expect(menu.locator('button')).toHaveCount(3);
+    await expect(menu.getByRole('menuitem')).toHaveCount(3);
     await expect(menu.getByText('使用阿布创建', { exact: true })).toBeVisible();
     await expect(menu.getByText('手动创建', { exact: true })).toBeVisible();
     await expect(menu.getByText('导入技能', { exact: true })).toBeVisible();

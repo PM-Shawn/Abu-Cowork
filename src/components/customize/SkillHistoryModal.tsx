@@ -21,9 +21,18 @@
  *   few days. Empty copy explains this so users don't think it's broken.
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { X, Clock, RotateCcw, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPatch } from 'diff';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { EmptyState } from '@/components/ds/empty-state';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
+import { cn } from '@/lib/utils';
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
@@ -42,11 +51,18 @@ interface Props {
   onClose: () => void;
   /** Package-managed skills allow inspection without changing their installed files. */
   readOnly?: boolean;
+  /** Whether the window is open. Left out, it is open for as long as it is mounted. */
+  open?: boolean;
+  /** Runs once the window has gone; `event.preventDefault()` there keeps the focus from returning to the control that opened it. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
-export default function SkillHistoryModal({ skillDir, skillName, onClose, readOnly = false }: Props) {
+export default function SkillHistoryModal({ skillDir, skillName, onClose, readOnly = false, open = true, onCloseAutoFocus }: Props) {
   const { t } = useI18n();
   const addToast = useToastStore((s) => s.addToast);
+  // The window stays on the page while it fades out; a revert reads whether it is still open.
+  const openRef = useRef(open);
+  useLayoutEffect(() => { openRef.current = open; });
 
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,16 +85,10 @@ export default function SkillHistoryModal({ skillDir, skillName, onClose, readOn
     void loadEntries();
   }, [loadEntries]);
 
-  // Own the Escape key while stacked on top of the skill detail modal (which
-  // suppresses its own Escape via disableEscape when this modal is open).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   const handleRevert = async (turnId: string) => {
     if (readOnly) return;
+    // A revert rewrites the skill's files: nothing is reverted from a window that is closing.
+    if (!openRef.current) return;
     setRevertingTurnId(turnId);
     try {
       const result = await revertTurn(skillDir, turnId);
@@ -105,64 +115,39 @@ export default function SkillHistoryModal({ skillDir, skillName, onClose, readOn
   };
 
   return (
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={`${t.toolbox.historyModalTitle} — ${skillName}`}
+      size="xl"
+      closeButton
+      onCloseAutoFocus={onCloseAutoFocus}
     >
-      <div
-        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--abu-bg-active)]">
-          <div className="flex items-center gap-2">
-            <Clock className="h-5 w-5 text-[var(--abu-text-tertiary)]" />
-            <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-              {t.toolbox.historyModalTitle} — {skillName}
-            </h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
+      {loading ? (
+        <div className="flex justify-center py-8">
+          <Spinner label={t.common.loading} />
         </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto overlay-scroll">
-          {loading ? (
-            <div className="py-12 text-center text-body text-[var(--abu-text-muted)]">
-              <Loader2 className="h-4 w-4 mx-auto animate-spin" />
-            </div>
-          ) : entries.length === 0 ? (
-            <div className="py-12 px-8 text-center text-body text-[var(--abu-text-muted)]">
-              {t.toolbox.historyEmpty}
-            </div>
-          ) : (
-            <ul className="divide-y divide-[var(--abu-border-subtle)]">
-              {entries.map((entry) => (
-                <HistoryRow
-                  key={entry.turnId}
-                  entry={entry}
-                  skillDir={skillDir}
-                  expanded={expandedTurnId === entry.turnId}
-                  onToggle={() =>
-                    setExpandedTurnId(expandedTurnId === entry.turnId ? null : entry.turnId)
-                  }
-                  onRevert={() => handleRevert(entry.turnId)}
-                  readOnly={readOnly}
-                  isReverting={revertingTurnId === entry.turnId}
-                />
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </div>
+      ) : entries.length === 0 ? (
+        <EmptyState title={t.toolbox.historyEmpty} />
+      ) : (
+        <ul className="divide-y divide-separator">
+          {entries.map((entry) => (
+            <HistoryRow
+              key={entry.turnId}
+              entry={entry}
+              skillDir={skillDir}
+              expanded={expandedTurnId === entry.turnId}
+              onToggle={() =>
+                setExpandedTurnId(expandedTurnId === entry.turnId ? null : entry.turnId)
+              }
+              onRevert={() => handleRevert(entry.turnId)}
+              readOnly={readOnly}
+              isReverting={revertingTurnId === entry.turnId}
+            />
+          ))}
+        </ul>
+      )}
+    </Dialog>
   );
 }
 
@@ -185,55 +170,44 @@ function HistoryRow({ entry, skillDir, expanded, onToggle, onRevert, isReverting
   const isRevertEntry = entry.op === 'revert';
 
   return (
-    <li className="px-4 py-3">
-      <button
+    <li className="px-2 py-3">
+      <Pressable
+        aria-expanded={expanded}
         onClick={onToggle}
-        className="w-full flex items-center gap-2 text-left hover:bg-[var(--abu-bg-muted)]/50 rounded-md -mx-2 px-2 py-1 transition-colors"
+        className="flex w-full items-center gap-2 rounded-control px-2 py-1 text-left hover:bg-fill-hover"
       >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-        )}
-        <span className="text-minor text-[var(--abu-text-muted)] shrink-0">
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="text-label-tertiary" />
+        <span className="shrink-0 text-ui-sm text-label-tertiary">
           {relativeTime(entry.ts, Date.now())}
         </span>
-        <span className="text-minor font-medium text-[var(--abu-text-primary)] shrink-0">
+        <span className="shrink-0 text-ui-sm font-medium text-label">
           {t.toolbox[historyOpLabelKey(entry.op)]}
         </span>
-        <span className="text-minor text-[var(--abu-text-tertiary)] truncate flex-1">
+        <span className="flex-1 truncate text-ui-sm text-label-secondary">
           {fileCount === 1 ? fileNames : format(t.toolbox.historyFileCount, { count: String(fileCount) })}
         </span>
         {entry.summary && !isRevertEntry && (
-          <span className="text-caption text-[var(--abu-text-muted)] truncate max-w-[180px]">
+          <span className="max-w-45 truncate text-caption text-label-tertiary">
             {entry.summary}
           </span>
         )}
-      </button>
+      </Pressable>
 
       {expanded && (
-        <div className="mt-3 ml-5 space-y-3">
+        <div className="mt-3 space-y-3 pl-8 pr-2">
           {entry.files.map((change) => (
             <FileDiffBlock key={change.relPath} skillDir={skillDir} change={change} />
           ))}
 
           {/* Revert button. Hidden for 'revert' entries themselves (no
               point reverting a revert — user can do a fresh action) and
-              only shown when the entry still has something actionable. */}
+              only shown when the entry still has something actionable.
+              Busy while its revert runs, so it keeps the focus. */}
           {!readOnly && !isRevertEntry && (
             <div className="flex justify-end pt-1">
-              <button
-                onClick={onRevert}
-                disabled={isReverting}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-minor font-medium border border-[var(--abu-border)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors disabled:opacity-50"
-              >
-                {isReverting ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <RotateCcw className="h-3 w-3" />
-                )}
+              <Button variant="secondary" size="sm" busy={isReverting} onClick={onRevert}>
                 {t.toolbox.historyRevert}
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -299,22 +273,15 @@ function FileDiffBlock({ skillDir, change }: { skillDir: string; change: History
   }, [skillDir, change]);
 
   return (
-    <div className="border border-[var(--abu-border-subtle)] rounded-md overflow-hidden">
-      <div className="px-3 py-1.5 bg-[var(--abu-bg-muted)] flex items-center gap-2 text-caption">
-        <span className={cn(
-          'px-1.5 py-0.5 rounded font-medium',
-          change.action === 'modified' && 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]',
-          change.action === 'created' && 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]',
-          change.action === 'removed' && 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]',
-        )}>
-          {t.toolbox[historyActionLabelKey(change.action)]}
-        </span>
-        <span className="text-[var(--abu-text-primary)] font-mono">{change.relPath}</span>
+    <div className="overflow-hidden rounded-control border border-separator">
+      <div className="flex items-center gap-2 bg-fill px-3 py-1">
+        <Tag tone={ACTION_TONE[change.action]}>{t.toolbox[historyActionLabelKey(change.action)]}</Tag>
+        <span className="font-code text-ui-sm text-label">{change.relPath}</span>
       </div>
       {error ? (
-        <div className="px-3 py-2 text-minor text-[var(--abu-danger)]">{error}</div>
+        <div className="p-2"><InlineMessage tone="danger">{error}</InlineMessage></div>
       ) : diffText === null ? (
-        <div className="px-3 py-2 text-minor text-[var(--abu-text-muted)]">…</div>
+        <div className="px-3 py-2 text-ui-sm text-label-tertiary">…</div>
       ) : (
         <DiffView text={diffText} />
       )}
@@ -322,11 +289,14 @@ function FileDiffBlock({ skillDir, change }: { skillDir: string; change: History
   );
 }
 
+// What happened to the file, as a status: changed, added, taken away.
+const ACTION_TONE = { modified: 'info', created: 'success', removed: 'danger' } as const;
+
 function DiffView({ text }: { text: string }) {
   return (
-    <pre className="text-caption leading-relaxed font-mono max-h-64 overflow-y-auto overlay-scroll bg-[var(--abu-bg-base)]">
+    <pre className="max-h-64 overflow-y-auto overlay-scroll bg-code font-code text-ui-sm">
       {text.split('\n').map((line, i) => (
-        <div key={i} className={diffLineClass(line)}>
+        <div key={i} className={cn('px-3', diffLineClass(line))}>
           {line || '\u00A0'}
         </div>
       ))}
@@ -334,17 +304,13 @@ function DiffView({ text }: { text: string }) {
   );
 }
 
+// The sign at the start of the line says added or removed; the colour repeats it.
 function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'px-3 text-[var(--abu-text-muted)]';
-  if (line.startsWith('@@')) return 'px-3 bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]';
-  if (line.startsWith('+')) return 'px-3 bg-[var(--abu-success-bg)] text-[var(--abu-success)]';
-  if (line.startsWith('-')) return 'px-3 bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]';
-  return 'px-3 text-[var(--abu-text-secondary)]';
-}
-
-// Tiny local util so we don't pull in @/lib/utils for one call site.
-function cn(...parts: Array<string | false | undefined | null>): string {
-  return parts.filter(Boolean).join(' ');
+  if (line.startsWith('+++') || line.startsWith('---')) return 'text-label-tertiary';
+  if (line.startsWith('@@')) return 'bg-fill text-label-secondary';
+  if (line.startsWith('+')) return 'bg-success-soft text-success';
+  if (line.startsWith('-')) return 'bg-danger-soft text-danger';
+  return 'text-label-secondary';
 }
 
 // Map enum values to i18n keys. Split out so TypeScript can narrow

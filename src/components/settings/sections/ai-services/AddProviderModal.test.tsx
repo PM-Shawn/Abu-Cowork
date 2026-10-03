@@ -32,9 +32,23 @@ import type { ProviderInstance } from '@/types/provider';
 // GET /models — no other test in this file clicks Fetch, so a file-wide mock is safe.
 vi.mock('@/core/llm/modelFetcher', () => ({ fetchProviderModels: vi.fn() }));
 import { fetchProviderModels } from '@/core/llm/modelFetcher';
-// Only the behaviour pins at the end of this file press Validate.
+// LM Studio / Ollama 获取模型后会询问窗口；测试里不发真实请求
+vi.mock('@/core/llm/contextWindowProbe', () => ({
+  fetchLmStudioContextWindows: vi.fn(async () => new Map<string, number>()),
+  fetchOllamaLoadedContextWindows: vi.fn(async () => new Map<string, number>()),
+}));
+// The behaviour pins at the end of this file press Validate against a stubbed health check; the
+// redaction test runs the real one over a stubbed adapter (the only thing that would reach the network).
 vi.mock('@/core/llm/healthCheck', () => ({ checkProviderHealth: vi.fn() }));
 import { checkProviderHealth } from '@/core/llm/healthCheck';
+const { mockAdapterChat } = vi.hoisted(() => ({ mockAdapterChat: vi.fn() }));
+vi.mock('@/core/llm/openai-compatible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/llm/openai-compatible')>()),
+  OpenAICompatibleAdapter: class {
+    chat = mockAdapterChat;
+  },
+}));
+import { classifyError } from '@/core/llm/adapter';
 // The real checkbox, counted: a model row renders one, so the count says which rows rendered again.
 const checkboxRenders = vi.hoisted(() => ({ count: 0 }));
 vi.mock('@/components/ds/checkbox', async (importOriginal) => {
@@ -609,6 +623,38 @@ describe('AddProviderModal — Validate Connection gating', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'DeepSeek V4 Pro' }));
 
     expect(validateButton).not.toBeDisabled();
+  });
+
+  it('shows a failed validation without the key the endpoint echoed back', async () => {
+    const fakeKey = 'sk-test-not-a-secret';
+    // The real health check runs here; only the adapter under it is stubbed.
+    const realHealthCheck = await vi.importActual<typeof import('@/core/llm/healthCheck')>('@/core/llm/healthCheck');
+    vi.mocked(checkProviderHealth).mockImplementation(realHealthCheck.checkProviderHealth);
+    mockAdapterChat.mockRejectedValue(
+      classifyError(401, JSON.stringify({ error: { message: `Incorrect API key provided: ${fakeKey}` } })),
+    );
+    try {
+      renderWindow(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'DeepSeek' }));
+      const apiKeyInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+      fireEvent.change(apiKeyInput, { target: { value: fakeKey } });
+      fireEvent.click(screen.getByRole('button', { name: /select model/i }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'DeepSeek V4 Pro' }));
+      fireEvent.click(screen.getByRole('button', { name: /validate connection/i }));
+
+      expect(await screen.findByText('Incorrect API key provided: [REDACTED]')).toBeInTheDocument();
+      expect(mockAdapterChat).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).not.toContain(fakeKey);
+      for (const attribute of ['title', 'aria-label']) {
+        const values = Array.from(document.querySelectorAll(`[${attribute}]`), (el) => el.getAttribute(attribute));
+        expect(values.join('\n')).not.toContain(fakeKey);
+      }
+    } finally {
+      vi.mocked(checkProviderHealth).mockReset();
+      mockAdapterChat.mockReset();
+    }
   });
 });
 
@@ -1962,7 +2008,7 @@ describe('AddProviderModal — behaviour pins', () => {
       fireEvent.click(screen.getByRole('checkbox', { name: t().settings.capTools }));
       fireEvent.click(screen.getByRole('checkbox', { name: t().settings.capReasoning }));
       fireEvent.click(screen.getByRole('checkbox', { name: t().settings.effortHigh }));
-      fireEvent.change(screen.getAllByPlaceholderText(t().settings.capTokenDefault)[0], { target: { value: '12a8000' } });
+      fireEvent.change(screen.getByRole('textbox', { name: t().settings.capContextLength }), { target: { value: '12a8000' } });
       ui.save();
 
       expect(log).toEqual([
@@ -2098,5 +2144,52 @@ describe('AddProviderModal — behaviour pins', () => {
       expect(screen.queryByText(t().settings.apiKeyDecryptFailed)).not.toBeInTheDocument();
       expect(screen.queryByText(t().settings.apiKeySaveFailed)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe('AddProviderModal — 上下文长度 placeholder', () => {
+  beforeEach(() => {
+    setLanguage('en-US');
+    useSettingsStore.setState({
+      providers: [],
+      activeModel: { providerId: '', modelId: '' },
+      failedSecretKeys: [],
+      contextWindowSize: 200000,
+    });
+  });
+
+  afterEach(() => {
+    unmountWindow();
+  });
+
+  /** 选自定义 API、填地址、手动加一个模型并展开它的高级配置 */
+  function openAdvancedFor(baseUrl: string, modelId: string): HTMLInputElement {
+    renderWindow(<AddProviderModal open={true} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Custom API' }));
+    fireEvent.change(screen.getByPlaceholderText('https://...'), { target: { value: baseUrl } });
+    fireEvent.click(screen.getByRole('button', { name: /add model/i }));
+    const modelInput = screen.getByPlaceholderText('Enter model ID');
+    fireEvent.change(modelInput, { target: { value: modelId } });
+    fireEvent.keyDown(modelInput, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: t().settings.advancedConfig }));
+    return contextLengthInput();
+  }
+
+  function contextLengthInput(): HTMLInputElement {
+    return screen.getByRole('textbox', { name: 'Context length' }) as HTMLInputElement;
+  }
+
+  it('caps the estimate at the global context-window limit the runtime uses', () => {
+    // qwen3-max 按名字估计 262144，高于全局上限 200000
+    const input = openAdvancedFor('https://api.example.com/v1', 'qwen3-max');
+    expect(input).toHaveAttribute('placeholder', 'Not detected; blank means 200K is assumed');
+  });
+
+  it('follows the address: a local server gets the local estimate, a cloud one the name-based one', () => {
+    const input = openAdvancedFor('http://127.0.0.1:8080/v1', 'qwen3-vl-8b');
+    expect(input).toHaveAttribute('placeholder', 'Not detected; blank means 32K is assumed');
+    fireEvent.change(screen.getByPlaceholderText('https://...'), { target: { value: 'https://api.example.com/v1' } });
+    expect(contextLengthInput()).toHaveAttribute('placeholder', 'Not detected; blank means 128K is assumed');
   });
 });

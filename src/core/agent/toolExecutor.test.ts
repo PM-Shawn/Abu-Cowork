@@ -152,6 +152,32 @@ describe('executeToolBatch · hard run restrictions', () => {
     expect(executeAnyTool).not.toHaveBeenCalled();
   });
 
+  it('lists the offered tools when the refused name was never offered', async () => {
+    const executeAnyTool = vi.fn();
+    const result = await executeToolBatch({
+      ...makeParams(makeToolCall('write_file'), makeInvoker(executeAnyTool)),
+      toolContext: { offeredToolNames: ['read_file', 'delegate_to_agent'] },
+      agentToolPolicy: { tools: ['read_file'], protocolTools: ['delegate_to_agent'] },
+    });
+    expect(result.observations[0]).toMatchObject({
+      error: true,
+      result: 'Error: tool "write_file" input is outside this agent\'s fixed tool boundary. Available tools: delegate_to_agent, read_file. Call one of them again with its exact name.',
+    });
+    expect(executeAnyTool).not.toHaveBeenCalled();
+  });
+
+  it('keeps the plain refusal when the name was offered but its input is outside the limit', async () => {
+    const executeAnyTool = vi.fn();
+    const result = await executeToolBatch({
+      ...makeParams(makeToolCall('run_command', { command: 'rm -rf /tmp/x' }), makeInvoker(executeAnyTool), undefined, ['run_command(npm run *)']),
+      toolContext: { offeredToolNames: ['run_command'] },
+    });
+    expect(result.observations[0]).toMatchObject({
+      error: true,
+      result: 'Error: tool "run_command" is not allowed for this agent run',
+    });
+  });
+
   it.each([
     ['role only', 'npm run build', ['run_command(npm run *)'], ['run_command(npm * test)']],
     ['task only', 'npm install test', ['run_command(npm run *)'], ['run_command(npm * test)']],

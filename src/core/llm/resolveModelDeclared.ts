@@ -1,4 +1,5 @@
 import type { DeclaredCapabilities, ProviderInstance } from '@/types/provider';
+import { resolveCapabilities } from './modelCapabilities';
 
 /**
  * Resolve the effective DeclaredCapabilities for one model on a provider.
@@ -29,4 +30,9 @@ export function resolveModelDeclared(
     maxTokensField: p?.maxTokensField,
     requiresToolResultName: p?.requiresToolResultName,
   };
+}
+
+/** 这个模型能不能看图：与运行时同一口径，用户的勾选优先，其次按名字。 */
+export function resolveModelVision(provider: ProviderInstance | undefined, modelId: string): boolean {
+  return resolveModelDeclared(provider, modelId)?.supportsImages ?? resolveCapabilities(modelId).vision;
 }

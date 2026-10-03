@@ -417,6 +417,10 @@ export interface TranslationDict {
     // Model selector — managed provider group
     /** Header above the user's own providers, shown when a managed provider is listed. */
     myModels: string;
+    /** Tag next to a model that can see images. */
+    modelCanSeeImages: string;
+    /** Accessible name of a picker row that carries the tag. {model} */
+    modelRowCanSeeImages: string;
     managedModelsSyncing: string;
     /** `{org}` = the managed provider's name. */
     managedProviderUnreachable: string;
@@ -579,12 +583,18 @@ export interface TranslationDict {
     ollamaForbidden: string;
     /** Provider account balance/resource-package exhausted. */
     insufficientBalance: string;
-    /** Streamed-inline notice while compacting an oversized context (includes markdown). */
+    /** Streamed-inline notice while compacting an oversized context (includes markdown; ends with a paragraph break so the retried reply starts its own paragraph). */
     compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;
-    /** System prompt and tool definitions leave no safe room for user input. */
+    /** System prompt and tool definitions leave no safe room for user input; also used when the request is still too long after the conversation was condensed. */
     contextFixedTooLarge: string;
+    /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
+    contextFixedTooLargeLocal: string;
+    /** The model failed to send an operation even after one quiet rewrite. */
+    malformedToolCall: string;
+    /** A local model server gave no first output within its 10-minute wait; nothing retries it. */
+    localServerNoFirstResponse: string;
     /** Conversation-title fallback used in task notifications. */
     notificationTaskFallback: string;
     /** Error after repeated output-token-limit hits (multi-line). {limit} */
@@ -1051,6 +1061,7 @@ export interface TranslationDict {
   settings: {
     browserResourceGrantBrowse: string;
     browserResourceGrantUpload: string;
+    browserResourceGrantScript: string;
     browserRequestOnce: string;
     browserDownloadsCompleted: string;
     browserDownloadsUnavailable: string;
@@ -1743,6 +1754,7 @@ export interface TranslationDict {
     advancedConfig: string;
     capTools: string;
     capImages: string;
+    capImagesHint: string;
     capReasoning: string;
     capRawUrl: string;
     capRawUrlHint: string;
@@ -1750,7 +1762,12 @@ export interface TranslationDict {
     effortLow: string;
     effortMedium: string;
     effortHigh: string;
-    capMaxInput: string;
+    capContextLength: string;
+    capContextLengthHint: string;
+    /** Placeholder when the service reported the length. {size} */
+    capContextLengthDetected: string;
+    /** Placeholder when nothing was reported. {size} */
+    capContextLengthEstimated: string;
     capMaxOutput: string;
     capTokenDefault: string;
     capPerModelHint: string;
@@ -2093,23 +2110,53 @@ export interface TranslationDict {
     confirmationStripTitle: string;
     confirmationSeparator: string;
     confirmationLeader: string;
-    confirmationApproveRun: string;
-    confirmationAllowSite: string;
     confirmationWriteRead: string;
     confirmationWrite: string;
     confirmationRead: string;
     confirmationCwd: string;
     confirmationOrigin: string;
-    confirmationRequestOrdinal: string;
     confirmationDefaultCwd: string;
-    confirmationLegacy: string;
-    confirmationRunRule: string;
-    confirmationRevoke: string;
+    /** Shown instead of any allow button on a record that can no longer be allowed. */
+    confirmationExpired: string;
+    /** Allow this one call. */
     confirmationApprove: string;
+    /** Allow this kind of request for the rest of the team task. */
+    confirmationApproveTask: string;
+    /** Allow every pending request that can be allowed for the task. */
+    confirmationApproveAll: string;
+    /** Heading of the list of "this task" allowances. */
+    confirmationTaskRules: string;
+    confirmationRevoke: string;
     confirmationReject: string;
+    /** What a "this task" allowance covers, one line each. */
+    confirmationScopeCommand: string;
+    confirmationScopeExactCommand: string;
+    confirmationScopeFileRead: string;
+    confirmationScopeFileWrite: string;
+    confirmationScopeBrowse: string;
+    confirmationScopeUpload: string;
+    confirmationScopeScript: string;
+    /** The {site} of a region embedded in a page. */
+    confirmationScopeEmbeddedSite: string;
+    /** What a browser request does, shown in place of the tool name. */
+    confirmationBrowserScript: string;
+    confirmationBrowserUpload: string;
+    confirmationBrowserBrowse: string;
     confirmationNotice: string;
     confirmationApprovedFollowUp: string;
+    confirmationApprovedTaskFollowUp: string;
     confirmationRejectedFollowUp: string;
+    /** A member the task stopped after repeated failures. */
+    stoppedMemberBlocked: string;
+    /** The task used its hand-off allowance. */
+    stoppedRunCap: string;
+    stoppedLastFailure: string;
+    /** The last failure was a hand-off that did not produce its required files. */
+    stoppedMissingFiles: string;
+    stoppedTryAnotherWay: string;
+    stoppedSkip: string;
+    stoppedTryAnotherWayFollowUp: string;
+    stoppedSkipFollowUp: string;
     stallStoppedNotice: string;
     resumeAfterRestart: string;
     resumeAfterRestartFailed: string;
@@ -4215,6 +4262,8 @@ export interface TranslationDict {
       planApproved: string;
       /** Plan approval timed out or was cancelled. */
       planTimeout: string;
+      /** A plan approval already timed out in this task; the plan is not asked again. */
+      planAwaitingUser: string;
       /** User rejected the plan. */
       planRejected: string;
       /** Plan recorded (no steps). */
@@ -4614,6 +4663,8 @@ export interface TranslationDict {
     };
     // manage_mcp_server
     system: {
+      /** Appended to an unknown-tool error. {names} */
+      unknownToolAvailable: string;
       /** Error: action=search requires query. */
       errSearchNeedsQuery: string;
       /** No MCP server matched the query. {query} */
@@ -5173,6 +5224,8 @@ export interface TranslationDict {
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */
       errNoVision: string;
+      /** scroll on Windows: needs a screenshot the model cannot use; scroll through focus + PageDown instead. */
+      errNoVisionScrollWindows: string;
       /** activate_app: missing app parameter. */
       errActivateNeedsApp: string;
       /** activate_app success. {name} */

@@ -7,9 +7,11 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Popover } from '@/components/ds/popover';
+import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
 import type { ModelInfo, ProviderInstance } from '@/types';
 import { refreshManagedProvider } from '@/core/llm/managedProviderRefresh';
+import { resolveModelVision } from '@/core/llm/resolveModelDeclared';
 import { applyModelPick } from './modelPick';
 
 const GROUP_TITLE = 'px-2 py-1 text-ui-sm font-medium text-label-tertiary';
@@ -21,6 +23,7 @@ function ModelRow({
   isFavorite,
   onSelect,
   onToggleFavorite,
+  canSeeImages,
   dim = false,
 }: {
   model: ModelInfo;
@@ -28,8 +31,11 @@ function ModelRow({
   isFavorite: boolean;
   onSelect: () => void;
   onToggleFavorite: () => void;
+  canSeeImages: boolean;
   dim?: boolean;
 }) {
+  const { t } = useI18n();
+  const name = model.label || model.id;
   const selected = isActive && !dim;
   // The row holds the favorite button, and a button cannot sit inside a button.
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -43,6 +49,9 @@ function ModelRow({
     <div
       role="button"
       tabIndex={0}
+      // 带「能看图」标记时，读屏按「模型名，能看图」读出，避免两段文字连成一个词；
+      // 名字写明在行上，行里的收藏按钮不会混进行的名字
+      aria-label={canSeeImages ? format(t.chat.modelRowCanSeeImages, { model: name }) : name}
       className={cn(
         'group/row flex h-7 items-center gap-1 rounded-control px-2 text-ui text-label outline-none hover:bg-fill-hover focus-visible:ring-2 focus-visible:ring-focus',
         selected && 'bg-fill-selected',
@@ -51,7 +60,8 @@ function ModelRow({
       onClick={onSelect}
       onKeyDown={handleKeyDown}
     >
-      <span className="min-w-0 flex-1 truncate">{model.label || model.id}</span>
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      {canSeeImages && <Tag>{t.chat.modelCanSeeImages}</Tag>}
       {selected && <Icon icon={AppIcons.done} size="sm" />}
       <IconButton
         size="sm"
@@ -261,6 +271,7 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
                   isFavorite={true}
                   onSelect={() => handleSelect(provider.id, model.id)}
                   onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                  canSeeImages={resolveModelVision(provider, model.id)}
                 />
               ))}
             </div>
@@ -281,6 +292,7 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
                   isFavorite={isModelFavorite(provider.id, model.id)}
                   onSelect={() => handleSelect(provider.id, model.id)}
                   onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                  canSeeImages={resolveModelVision(provider, model.id)}
                   dim
                 />
               ))}
@@ -320,6 +332,7 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
                   isFavorite={isModelFavorite(provider.id, model.id)}
                   onSelect={() => handleSelect(provider.id, model.id)}
                   onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                  canSeeImages={resolveModelVision(provider, model.id)}
                 />
               ))}
             </div>

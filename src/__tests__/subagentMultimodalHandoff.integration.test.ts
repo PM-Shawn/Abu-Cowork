@@ -21,6 +21,9 @@ const state = vi.hoisted(() => ({
   modelCallCount: 0,
 }));
 
+// 本地服务商运行开始会询问窗口；测试里不发真实请求
+vi.mock('../core/llm/contextWindowProbe', () => ({ probeContextWindow: vi.fn(async () => undefined) }));
+
 vi.mock('../core/llm/selectChatAdapter', () => ({
   selectChatAdapter: () => ({
     chat: async (messages: unknown[], options: unknown, onEvent: (event: { type: string; text?: string; stopReason?: string; id?: string; name?: string; input?: Record<string, unknown> }) => void) => {

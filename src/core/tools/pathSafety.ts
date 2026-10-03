@@ -17,6 +17,8 @@ export type PathCheckResult = {
   resolvedPath?: string;
   needsPermission?: boolean;
   permissionPath?: string;    // Top-level directory that needs authorization
+  /** permissionPath 是整块授权的顶层文件夹（如 ~/Documents），不是请求的路径本身 */
+  permissionIsFolder?: boolean;
   capability?: 'read' | 'write';
   reason?: string;
 };
@@ -1023,6 +1025,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
       allowed: false,
       needsPermission: true,
       permissionPath: permDir,
+      permissionIsFolder: true,
       capability: 'read',
     };
   }
@@ -1034,6 +1037,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
       allowed: false,
       needsPermission: true,
       permissionPath: fallbackPermDir,
+      permissionIsFolder: true,
       capability: 'read',
     };
   }
@@ -1155,6 +1159,7 @@ export async function checkWritePath(
       allowed: false,
       needsPermission: true,
       permissionPath: permDir,
+      permissionIsFolder: true,
       capability: 'write',
     };
   }
@@ -1166,6 +1171,7 @@ export async function checkWritePath(
       allowed: false,
       needsPermission: true,
       permissionPath: fallbackPermDir,
+      permissionIsFolder: true,
       capability: 'write',
     };
   }
@@ -1235,6 +1241,8 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
       allowed: false,
       needsPermission: true,
       permissionPath: resolved.canonicalPath,
+      // 列目录时被列的文件夹本身就是授权单位
+      permissionIsFolder: true,
       capability: 'read',
     };
   }
@@ -1259,6 +1267,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
       allowed: false,
       needsPermission: true,
       permissionPath: permDir,
+      permissionIsFolder: true,
       capability: 'read',
     };
   }
@@ -1270,6 +1279,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
       allowed: false,
       needsPermission: true,
       permissionPath: fallbackPermDir2,
+      permissionIsFolder: true,
       capability: 'read',
     };
   }
@@ -1279,6 +1289,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     allowed: false,
     needsPermission: true,
     permissionPath: normalizedPath,
+    permissionIsFolder: true,
     capability: 'read',
   };
 }

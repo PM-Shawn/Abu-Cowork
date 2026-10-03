@@ -111,7 +111,11 @@ export async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Pro
         'content-type': 'application/json; charset=utf-8',
       });
       if (replyPlan.kind === 'hold-open') {
-        res.end(JSON.stringify({ error: 'hold-open replies require a streaming request' }));
+        // Tool-enabled requests are non-streaming, so there is no partial
+        // text to send: hold the response until the client aborts it.
+        res.once('close', () => {
+          mockRequest.responseAborted = !res.writableEnded;
+        });
         return;
       }
       const message = replyPlan.kind === 'tool-call'

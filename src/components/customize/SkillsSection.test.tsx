@@ -28,6 +28,19 @@ vi.mock('@/core/skill/packager', async (importOriginal) => ({
   packSkill: vi.fn(),
 }));
 
+// How many times each card has rendered, by the id of its item.
+const cardRenders = vi.hoisted(() => ({ byId: {} as Record<string, number> }));
+vi.mock('@/components/toolbox/ToolCard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/toolbox/ToolCard')>();
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      cardRenders.byId[props.item.id] = (cardRenders.byId[props.item.id] ?? 0) + 1;
+      return actual.default(props);
+    },
+  };
+});
+
 // The history window reads the skill's change log; these tests only open it.
 vi.mock('@/core/skill/history', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/skill/history')>()),
@@ -89,6 +102,7 @@ const full = (m: SkillMetadata): Skill => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cardRenders.byId = {};
   useDiscoveryStore.setState({ skills: CATALOG });
   useSkillDraftsStore.setState({ drafts: [] });
   // Past the one-time onboarding card, so the drafts list itself renders.
@@ -894,5 +908,66 @@ describe('SkillsSection · a window that is closing', () => {
 
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing and starts nothing from a window that fades out because its skill left the list', async () => {
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('my-notes'));
+    keepClosingLayersOnScreen();
+    // Removed in a task or from the file manager: the next reading of the skills no longer lists it.
+    vi.mocked(skillLoader.getSkill).mockImplementation((name: string) => {
+      const m = CATALOG.find((s) => s.name === name && s.name !== 'my-notes');
+      return m ? full(m) : undefined;
+    });
+    act(() => { useDiscoveryStore.setState({ skills: CATALOG.filter((s) => s.name !== 'my-notes') }); });
+    const closing = closingWindow();
+    expect(within(closing).getByTestId('skill-detail')).toHaveTextContent('my-notes does things');
+
+    fireEvent.click(within(closing).getByText(tb().deleteItem).closest('button') as HTMLButtonElement);
+    fireEvent.click(within(closing).getByText(tb().menuTrial).closest('button') as HTMLButtonElement);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
+    expect(startNewConversation).not.toHaveBeenCalled();
+    expect(setPendingInput).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A shelf holds up to a hundred cards and each holds a switch. Opening a window or
+ * flipping one switch must not render the other cards again.
+ */
+describe('SkillsSection · cards render once', () => {
+  const card = (name: string) => screen.getByText(name).closest('[role="button"]') as HTMLElement;
+  const total = () => Object.values(cardRenders.byId).reduce((sum, count) => sum + count, 0);
+
+  it('renders no card again when a detail window opens and closes', async () => {
+    render(<SkillsSection source="mine" />);
+    await screen.findByText('my-notes');
+    const before = total();
+    expect(before).toBe(CATALOG.length);
+
+    fireEvent.click(card('my-notes'));
+    expect(screen.getByTestId('skill-detail')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('skill-detail')).toBeNull());
+
+    expect(total()).toBe(before);
+  });
+
+  it('renders only the card whose switch was flipped', async () => {
+    useSettingsStore.setState({ disabledSkills: [] });
+    render(<SkillsSection source="mine" />);
+    await screen.findByText('my-notes');
+    const before = { ...cardRenders.byId };
+
+    fireEvent.click(within(card('team-rules')).getByRole('switch'));
+
+    await waitFor(() => expect(within(card('team-rules')).getByRole('switch')).toHaveAttribute('aria-checked', 'false'));
+    expect(cardRenders.byId['team-rules']).toBe(before['team-rules'] + 1);
+    expect(cardRenders.byId['my-notes']).toBe(before['my-notes']);
+    expect(cardRenders.byId['docx']).toBe(before['docx']);
+    useSettingsStore.setState({ disabledSkills: [] });
   });
 });

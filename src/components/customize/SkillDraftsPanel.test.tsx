@@ -233,6 +233,29 @@ describe('SkillDraftsPanel · all drafts', () => {
     expect(acceptDraft.mock.calls).toEqual([['draft-1'], ['draft-3'], ['draft-4'], ['draft-6']]);
   });
 
+  // A task running in the background can write a draft while the question is open. The question
+  // named the drafts that were there; one that arrived later was never on screen when it was answered.
+  it.each([
+    ['accepts', () => tb().draftsAcceptAll, acceptDraft, rejectDraft],
+    ['rejects', () => tb().draftsRejectAll, rejectDraft, acceptDraft],
+  ] as const)('%s only the drafts the question was asked about, and of those the ones still there', async (_verb, label, call, other) => {
+    seed(names(5).map((name) => draft(name)));
+    const user = userEvent.setup();
+    render(<SkillDraftsPanel />);
+
+    await user.click(screen.getByRole('button', { name: label() }));
+    await screen.findByRole('alertdialog');
+    act(() => {
+      useSkillDraftsStore.setState({ drafts: ['draft-1', 'draft-2', 'draft-4', 'draft-5', 'arrived-later'].map((name) => draft(name)) });
+    });
+    await user.click(lastButton(label()));
+
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(4));
+    await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+    expect(call.mock.calls).toEqual([['draft-1'], ['draft-2'], ['draft-4'], ['draft-5']]);
+    expect(other).not.toHaveBeenCalled();
+  });
+
   it('names the draft in the notice when one of them fails', async () => {
     acceptDraft.mockImplementation(async (name: string) => (name === 'draft-2' ? { ok: false, error: 'exists' } : { ok: true }));
     seed(names(3).map((name) => draft(name)));

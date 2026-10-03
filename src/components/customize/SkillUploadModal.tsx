@@ -264,8 +264,9 @@ export default function SkillUploadModal({ open = true, onClose, onInstalled, on
   /**
    * A skill of that name is already installed: overwriting replaces it, so the
    * user is asked first, with the name. The answer acts on the import that
-   * asked: nothing is overwritten when the window has gone, or when another
-   * import has asked since.
+   * asked: nothing is overwritten when another import has asked since. The
+   * question is asked over the open window and is answered "no" when the
+   * window goes.
    */
   const askToOverwrite = async (conflict: UploadConflict) => {
     const confirmed = await confirm({
@@ -276,7 +277,7 @@ export default function SkillUploadModal({ open = true, onClose, onInstalled, on
     });
     if (pendingConflict.current !== conflict) return;
     pendingConflict.current = null;
-    if (!confirmed || !mounted.current || !openRef.current || importing.current) return;
+    if (!confirmed || importing.current) return;
     await handleImportOverwrite(conflict);
   };
 
@@ -311,8 +312,11 @@ export default function SkillUploadModal({ open = true, onClose, onInstalled, on
     } finally {
       setImporting(false);
     }
+    // The question is asked over the open window, which ends it when it closes. An import that
+    // ends after the window or the page has gone asks nothing and overwrites nothing.
     const conflict = pendingConflict.current;
-    if (conflict) void askToOverwrite(conflict);
+    if (conflict && mounted.current && openRef.current) void askToOverwrite(conflict);
+    else pendingConflict.current = null;
   };
 
   // Folder picker (Tauri can't offer folder + file in one dialog, hence two buttons).

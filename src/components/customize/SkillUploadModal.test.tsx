@@ -27,9 +27,20 @@ vi.mock('@/core/skill/packager', () => ({
   ConflictError: class ConflictError extends Error { skillName = ''; },
 }));
 
-vi.mock('@/hooks/useFileDragDrop', () => ({
-  useFileDragDrop: () => ({ isDragging: false, dropTargetProps: {} }),
-}));
+// The handler the drop zone registered, for as long as the zone is on the page.
+const drop = vi.hoisted(() => ({ handler: null as ((paths: string[]) => void | Promise<void>) | null }));
+vi.mock('@/hooks/useFileDragDrop', async () => {
+  const { useEffect } = await import('react');
+  return {
+    useFileDragDrop: (handler: (paths: string[]) => void | Promise<void>) => {
+      useEffect(() => {
+        drop.handler = handler;
+        return () => { drop.handler = null; };
+      });
+      return { isDragging: false, dropTargetProps: {} };
+    },
+  };
+});
 
 // Real placeholder substitution, so the assertions below read the string the
 // user actually sees rather than a bare template.
@@ -421,6 +432,49 @@ describe('SkillUploadModal · the window', () => {
     await act(async () => { await Promise.resolve(); });
     expect(mockInstall).toHaveBeenCalledTimes(1);
     expect(onInstalled).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the page has left', (view: ReturnType<typeof render>) => view.rerender(<span>chat</span>)],
+    ['the window has been closed', (view: ReturnType<typeof render>) => view.rerender(<SkillUploadModal open={false} onClose={vi.fn()} onInstalled={vi.fn()} />)],
+  ] as const)('asks nothing when an import ends in a name conflict after %s', async (_when, leave) => {
+    let finish: (result: typeof exists) => void = () => {};
+    mockInstall.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    mockInstall.mockResolvedValue(installed);
+    mockOpenDialog.mockResolvedValue('/Users/test/my-skill' as never);
+    const view = render(<SkillUploadModal open onClose={vi.fn()} onInstalled={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Drop a folder' }));
+    await waitFor(() => expect(mockInstall).toHaveBeenCalledTimes(1));
+
+    leave(view);
+    await act(async () => { finish(exists); });
+    await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); });
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.queryByText('my-skill exists')).toBeNull();
+    expect(mockInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('imports a dropped folder, ignores a drop while that import runs, and listens only while it is open', async () => {
+    let finish: (result: typeof installed) => void = () => {};
+    mockInstall.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const onClose = vi.fn();
+    const view = render(<SkillUploadModal open onClose={onClose} onInstalled={vi.fn()} />);
+    expect(drop.handler).not.toBeNull();
+
+    await act(async () => { void drop.handler?.(['/Users/test/first-skill', '/Users/test/ignored-second-path']); });
+    await waitFor(() => expect(mockInstall).toHaveBeenCalledTimes(1));
+    expect(mockInstall).toHaveBeenCalledWith('/Users/test/first-skill');
+
+    await act(async () => { void drop.handler?.(['/Users/test/dropped-while-busy']); });
+    await act(async () => { void drop.handler?.([]); });
+    expect(mockInstall).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finish(installed); });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+
+    view.rerender(<SkillUploadModal open={false} onClose={onClose} onInstalled={vi.fn()} />);
+    expect(drop.handler).toBeNull();
   });
 
   it('asks again for a second import and overwrites only what the last question was about', async () => {

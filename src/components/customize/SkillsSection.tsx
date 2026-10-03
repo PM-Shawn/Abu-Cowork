@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
 import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
@@ -59,6 +59,51 @@ function sourceLabelKey(skill: Skill): SourceLabelKey | null {
   return null;  // 'user' — default, no label
 }
 
+/**
+ * One card of the shelf. `memo` with stable props: a shelf holds up to a hundred cards and each
+ * holds a switch, and the page renders for every window it opens and every character typed in
+ * its search box.
+ */
+const SkillCard = memo(function SkillCard({ skill, enabled, gated, market, pluginName, onOpen, onToggle }: {
+  skill: Skill;
+  enabled: boolean;
+  /** The plugin that owns the skill is switched off. */
+  gated: boolean;
+  market: boolean;
+  /** The display name of the plugin that brought the skill in, when one did and it is known. */
+  pluginName: string | undefined;
+  onOpen: (name: string) => void;
+  onToggle: (name: string) => void;
+}) {
+  const { t } = useI18n();
+  const labelKey = sourceLabelKey(skill);
+  const provenance = skill.source === 'plugin' ? <SourceBadge source={{ kind: 'plugin', plugin: pluginName }} />
+    : skill.source === 'enterprise' ? <SourceBadge source={{ kind: 'enterprise' }} /> : null;
+  return (
+    <div className="h-full" {...skillEntryProps(skill.name)}>
+      <ToolCard
+        item={{
+          id: skill.name,
+          name: skill.name,
+          description: skill.description,
+          avatar: <Icon icon={AppIcons.file} size="lg" className="text-label-tertiary" />,
+          badge: provenance ?? (labelKey ? <Tag>{t.toolbox[labelKey]}</Tag> : undefined),
+          toggle: market ? (
+            <span data-testid="skill-installed-badge" className="flex">
+              <Tag>{t.toolbox.installedMark}</Tag>
+            </span>
+          ) : (
+            <span className="flex" onClick={(event) => event.stopPropagation()} title={gated ? t.toolbox.skillPluginDisabled : undefined}>
+              <Switch checked={enabled} disabled={gated} onCheckedChange={() => onToggle(skill.name)} aria-label={skill.name} />
+            </span>
+          ),
+        }}
+        onClick={() => onOpen(skill.name)}
+      />
+    </div>
+  );
+});
+
 interface SkillsSectionProps {
   manualCreateTrigger?: number;
   /** Unified upload dialog (folder / .askill / .zip) — opened from ToolboxModal's
@@ -115,29 +160,23 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
   const rootRef = useRef<HTMLDivElement>(null);
   // What the handlers read: the skill whose window is open, whether one of the page's windows
-  // is open, and whether the editor has taken the place of the list.
+  // is open, and whether the editor has taken the place of the list. The first two are set
+  // further down, once the skill the window shows is known.
   const selectedRef = useRef<string | null>(null);
   const windowOpen = useRef(false);
   const editorOpen = useRef(false);
   useLayoutEffect(() => {
-    selectedRef.current = selectedSkill;
-    windowOpen.current = selectedSkill !== null || history?.open === true;
     editorOpen.current = editorSkill !== null;
   });
-  const mounted = useRef(false);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
 
   // The card whose windows are open (detail, then history). The window that closes last may have
   // opened from a control that is gone: the focus then goes back to the card, or to what took its
   // place once it has gone.
   const opener = useRef<SkillCardPlace | null>(null);
-  const openDetail = (name: string) => {
+  const openDetail = useCallback((name: string) => {
     opener.current = skillCardPlace(rootRef.current, name);
     setSelectedSkill(name);
-  };
+  }, []);
   const afterWindowClosed = (event: Event) => {
     // Another layer took the focus, or one of this card's windows is still open.
     if (event.defaultPrevented || !opener.current) return;
@@ -237,6 +276,12 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   const [held, setHeld] = useState<Skill | null>(null);
   if (selected && selected !== held) setHeld(selected);
   const shown = selected ?? held;
+  // The window is open while the chosen skill is on the list: once the skill has left it, the
+  // window fades out although the choice still names it.
+  useLayoutEffect(() => {
+    selectedRef.current = selected ? selected.name : null;
+    windowOpen.current = selected !== null || history?.open === true;
+  });
 
   // Delete a user-installed skill. With the detail now a modal (not a
   // list panel), there's no natural "adjacent" item to select after
@@ -266,8 +311,9 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   }, [installedSkills]);
 
   // Deleting removes the skill's folder for good, so it is asked first, naming the skill. The
-  // answer acts on the skill as it is at that moment: nothing is removed when the window that
-  // asked has gone, or when the name no longer leads to the same file.
+  // question is asked over the open window, which answers it "no" when it goes. The answer acts
+  // on the skill as it is at that moment: nothing is removed when the window shows another
+  // skill, or when the name no longer leads to the same file.
   const askToDelete = async (skill: Skill) => {
     // The window stays on the page while it fades out; a key press there asks nothing.
     if (selectedRef.current !== skill.name || deleting.current) return;
@@ -277,7 +323,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
       confirmLabel: t.common.delete,
       tone: 'danger',
     });
-    if (!confirmed || !mounted.current || selectedRef.current !== skill.name || deleting.current) return;
+    if (!confirmed || selectedRef.current !== skill.name || deleting.current) return;
     const current = skillLoader.getSkill(skill.name);
     if (!current || current.filePath !== skill.filePath) return;
     deleting.current = true;
@@ -323,38 +369,22 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
   const renderSkillCard = (skill: Skill) => {
     const gated = !pluginAllowed(skill);
-    const isEnabled = !disabledSet.has(skill.name) && !gated;
-    // On 市场 a card says whether the skill is installed; the switch belongs to
-    // 我的, where the user's installed skills are.
-    const market = source !== 'mine';
-    const labelKey = sourceLabelKey(skill);
     // Plugin and organization skills sit under 「我的」 with their provenance
     // on the card, the same label the expert and team cards carry.
     const owner = skill.source === 'plugin' ? pluginOwnerForSkill(skill.skillDir) : undefined;
-    const provenance = skill.source === 'plugin' ? <SourceBadge source={{ kind: 'plugin', plugin: owner ? pluginDisplayName(installedPlugins, owner) : undefined }} />
-      : skill.source === 'enterprise' ? <SourceBadge source={{ kind: 'enterprise' }} /> : null;
     return (
-      <div key={skill.name} className="h-full" {...skillEntryProps(skill.name)}>
-        <ToolCard
-          item={{
-            id: skill.name,
-            name: skill.name,
-            description: skill.description,
-            avatar: <Icon icon={AppIcons.file} size="lg" className="text-label-tertiary" />,
-            badge: provenance ?? (labelKey ? <Tag>{t.toolbox[labelKey]}</Tag> : undefined),
-            toggle: market ? (
-              <span data-testid="skill-installed-badge" className="flex">
-                <Tag>{t.toolbox.installedMark}</Tag>
-              </span>
-            ) : (
-              <span className="flex" onClick={(event) => event.stopPropagation()} title={gated ? t.toolbox.skillPluginDisabled : undefined}>
-                <Switch checked={isEnabled} disabled={gated} onCheckedChange={() => toggleSkillEnabled(skill.name)} aria-label={skill.name} />
-              </span>
-            ),
-          }}
-          onClick={() => openDetail(skill.name)}
-        />
-      </div>
+      <SkillCard
+        key={skill.name}
+        skill={skill}
+        enabled={!disabledSet.has(skill.name) && !gated}
+        gated={gated}
+        // On 市场 a card says whether the skill is installed; the switch belongs to
+        // 我的, where the user's installed skills are.
+        market={source !== 'mine'}
+        pluginName={owner ? pluginDisplayName(installedPlugins, owner) : undefined}
+        onOpen={openDetail}
+        onToggle={toggleSkillEnabled}
+      />
     );
   };
 

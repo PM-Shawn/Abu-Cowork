@@ -191,12 +191,18 @@ function SkillDraftsPanel() {
   }
 
   // ── Normal list branch ────────────────────────────────────────────────
-  // Five drafts or more are asked about first. The answer acts on the drafts that are there at
-  // that moment: one may have expired or been accepted elsewhere while the question was open.
+  // Five drafts or more are asked about first. The answer acts on the drafts the question was
+  // asked about that are still there: one may have expired or been accepted elsewhere while the
+  // question was open, and one that arrived in that time was never on screen when it was answered.
   // An answer given after the panel has left the page touches nothing.
   const needsBatchConfirm = drafts.length >= 5;
+  const stillThere = (asked: string[]) => {
+    const present = new Set(useSkillDraftsStore.getState().drafts.map((d) => d.skillName));
+    return asked.filter((name) => present.has(name));
+  };
 
   const handleAcceptAll = async () => {
+    const asked = drafts.map((d) => d.skillName);
     if (needsBatchConfirm) {
       const confirmed = await confirm({
         title: t.toolbox.draftsAcceptAll,
@@ -207,7 +213,7 @@ function SkillDraftsPanel() {
     }
     noteAllPressed();
     // Snapshot list — store will mutate as we go.
-    const names = useSkillDraftsStore.getState().drafts.map((d) => d.skillName);
+    const names = stillThere(asked);
     for (const n of names) {
       const r = await acceptDraft(n);
       if (!r.ok) {
@@ -218,6 +224,7 @@ function SkillDraftsPanel() {
   };
 
   const handleRejectAll = async () => {
+    const asked = drafts.map((d) => d.skillName);
     if (needsBatchConfirm) {
       const confirmed = await confirm({
         title: t.toolbox.draftsRejectAll,
@@ -228,7 +235,7 @@ function SkillDraftsPanel() {
       if (!confirmed || !mounted.current) return;
     }
     noteAllPressed();
-    const names = useSkillDraftsStore.getState().drafts.map((d) => d.skillName);
+    const names = stillThere(asked);
     for (const n of names) {
       const r = await rejectDraft(n);
       if (!r.ok) {

@@ -7,7 +7,7 @@ import { Button, IconButton } from './button';
 import { AppIcons } from './icons';
 import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
-import { InDialogContext, useLayer, useLayerContainer, useOpenState } from './layer-context';
+import { InDialogContext, useLayer, useLayerContainer, useLayerRegistry, useOpenState } from './layer-context';
 import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, SCRIM_MOTION } from './styles';
 
 const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
@@ -162,7 +162,12 @@ export function Dialog({
   // Keep editing, Escape, or anything else that closes the question without discarding.
   const keep = () => { takePendingDiscard()?.onKeep?.(); };
 
-  const { id, onCloseAutoFocus, held } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, { isDirty: () => dirtyRef.current, confirmDiscard: askToDiscard });
+  const registry = useLayerRegistry();
+  const { id, onCloseAutoFocus, held, onEscapeKeyDown: passEscapeWhileClosing } = useLayer(role === 'alertdialog' ? 'alert' : 'dialog', isOpen, setOpen, {
+    isDirty: () => dirtyRef.current,
+    confirmDiscard: askToDiscard,
+    escape: () => { if (dismissible) requestClose(); },
+  });
   // The owner closed the dialog while the discard question was on screen (a save that was in
   // flight landed): nothing is left to discard, so the question goes unanswered.
   useLayoutEffect(() => {
@@ -208,7 +213,7 @@ export function Dialog({
             data-ds-motion
             data-electron-no-drag
             role={role}
-            onEscapeKeyDown={stay}
+            onEscapeKeyDown={(event) => { passEscapeWhileClosing(event); stay?.(event); }}
             onInteractOutside={stay}
             onKeyDown={tabFromBox}
             onOpenAutoFocus={(event) => {
@@ -286,6 +291,12 @@ export function Dialog({
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
+            // The question is fading out: the key goes to the top open layer, as for any closing layer.
+            onEscapeKeyDown={(event) => {
+              if (discardAsked) return;
+              event.preventDefault();
+              registry.escapeTop();
+            }}
             onOpenAutoFocus={(event) => {
               remember(discardReturnTo);
               // The first button is the one that keeps editing, which Radix focuses too.

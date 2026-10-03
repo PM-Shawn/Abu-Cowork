@@ -8,6 +8,9 @@ export interface DialogGuard {
   // Asks whether to discard the unsaved input. `onKeep` runs when the question closes any
   // other way than Discard. Returns a function that takes the question back unanswered.
   confirmDiscard: (onDiscard: () => void, onKeep?: () => void) => () => void;
+  // What Escape does to the dialog: it asks before discarding input, and does nothing to a
+  // dialog only its own buttons may close.
+  escape: () => void;
 }
 
 export interface LayerEntry {
@@ -16,6 +19,8 @@ export interface LayerEntry {
   // Ids of the layers this one was opened inside; those stay open.
   ancestors: readonly string[];
   close: () => void;
+  // What the Escape key does to this layer.
+  escape: () => void;
   // Held: open as far as its owner knows, but not on the page. The registry holds a new
   // dialog while the user decides about unsaved input in the dialog it would replace.
   hold: () => void;
@@ -28,6 +33,8 @@ export interface LayerRegistry {
   container: HTMLElement | undefined;
   register: (entry: LayerEntry) => void;
   unregister: (id: string) => void;
+  // Escape reached a layer that is fading out: the key acts on the top open layer instead.
+  escapeTop: () => void;
 }
 
 export const LayerContext = createContext<LayerRegistry | null>(null);
@@ -75,6 +82,9 @@ export interface LayerHandle {
   onCloseAutoFocus: (event: Event) => void;
   // True while the registry holds this layer back; the layer renders as closed.
   held: boolean;
+  // Passed to the Radix Content. A layer stays on the page while it fades out and Radix still
+  // counts it as the top layer: an Escape that reaches it then goes to the top open layer.
+  onEscapeKeyDown: (event: Event) => void;
 }
 
 // Registers an open layer with the nearest LayerProvider.
@@ -82,10 +92,10 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
   const registry = useLayerRegistry();
   const ancestors = useContext(LayerScopeContext);
   const id = useId();
-  const latest = useRef({ setOpen, guard });
+  const latest = useRef({ setOpen, guard, open });
   const closedByRegistry = useRef(false);
   const [held, setHeld] = useState(false);
-  useLayoutEffect(() => { latest.current = { setOpen, guard }; });
+  useLayoutEffect(() => { latest.current = { setOpen, guard, open }; });
   useLayoutEffect(() => {
     if (!open) return undefined;
     closedByRegistry.current = false;
@@ -96,6 +106,11 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
       close: () => {
         closedByRegistry.current = true;
         latest.current.setOpen(false);
+      },
+      escape: () => {
+        const current = latest.current;
+        if (current.guard) current.guard.escape();
+        else current.setOpen(false);
       },
       hold: () => setHeld(true),
       release: () => setHeld(false),
@@ -112,5 +127,11 @@ export function useLayer(kind: LayerKind, open: boolean, setOpen: (open: boolean
     if (closedByRegistry.current) event.preventDefault();
     closedByRegistry.current = false;
   }, []);
-  return { id, onCloseAutoFocus, held };
+  const onEscapeKeyDown = useCallback((event: Event) => {
+    if (latest.current.open) return;
+    // Radix would use the key up on this layer, which is already closing.
+    event.preventDefault();
+    registry.escapeTop();
+  }, [registry]);
+  return { id, onCloseAutoFocus, held, onEscapeKeyDown };
 }

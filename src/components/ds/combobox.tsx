@@ -108,6 +108,7 @@ function ComboboxPanel({ layer, triggerRef, onLeave, options, isSelected, onPick
         sideOffset={4}
         collisionPadding={EDGE_GAP}
         onCloseAutoFocus={layer.onCloseAutoFocus}
+        onEscapeKeyDown={layer.onEscapeKeyDown}
         onKeyDown={(event) => {
           if (event.key !== 'Tab') return;
           // Tab and Shift+Tab end like Escape: the list closes and the focus is on the trigger.

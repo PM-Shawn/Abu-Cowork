@@ -450,7 +450,8 @@ inside a dialog are closed by the registry together with it, so an owner never h
 nested window itself. `role="alertdialog"` registers as an alert: it stacks over the open dialog, a
 new alert or a new dialog replaces it, and it is never held. Use it for a question about what is on
 screen (a confirmation, the privacy check, a site removal), never for a form. A dialog keeps
-rendering while it fades out and its content takes no pointer input then. Closing guards: a handler
+rendering while it fades out and its content takes no pointer input then. A layer that is closing
+takes no pointer input and no Escape; the key goes to the top open layer. Closing guards: a handler
 in a window that closes on success (save, add, remove in a form dialog) returns once the window is
 closing; a page handler inside the settings window gets the same `systemSettingsOpen` check only
 when it starts something that cannot be taken back (export, upload, download an update, relaunch).

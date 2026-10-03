@@ -29,7 +29,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const { id, onCloseAutoFocus: layerCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
+  const { id, onCloseAutoFocus: layerCloseAutoFocus, onEscapeKeyDown } = useLayer('popover', isOpen, setOpen);
   const level = useFloatingLevel();
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
@@ -40,6 +40,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
           side={side}
           sideOffset={4}
           collisionPadding={EDGE_GAP}
+          onEscapeKeyDown={onEscapeKeyDown}
           onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
           {...contentProps}
           data-ds-layer

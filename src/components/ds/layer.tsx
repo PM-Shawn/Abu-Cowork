@@ -140,6 +140,11 @@ export function LayerProvider({ children, container, onModalChange }: {
       container: container ?? undefined,
       unregister: (id) => { remove(id); publish(); },
       register: (entry) => { register(entry); publish(); },
+      // The top open layer is the last one opened that has no open layer inside it.
+      escapeTop: () => {
+        const open = layers.current;
+        [...open].reverse().find((layer) => !open.some((other) => other.ancestors.includes(layer.id)))?.escape();
+      },
     };
   }, [container]);
   return <LayerContext.Provider value={registry}>{children}</LayerContext.Provider>;

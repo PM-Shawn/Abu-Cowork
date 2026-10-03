@@ -59,6 +59,7 @@ for (const subPackage of ['abu-browser-bridge', 'abu-chrome-extension']) {
 }
 run(npmArgs('run', 'setup:electron-runtimes'), '准备内置 Node 和 Python');
 run(npmArgs('run', 'verify:electron-runtimes'), '校验内置运行时');
+run(npmArgs('run', 'setup:speech-runtime'), '准备语音输入运行时');
 run(npmArgs('run', 'build:electron-browser-runtime'), '构建浏览器能力');
 run(npmArgs('run', 'build:sidecar'), '构建 Agent sidecar');
 // src-tauri/browser-extension 的摘要戳只有 copy-resources 会写（.artifact-digests/

@@ -65,6 +65,7 @@ files:
   - "!electron/chrome-bridge-runtime/**" # Chrome bridge ships once as a real-file extraResource
   - "!electron/spike/**"           # dev-only E2E harnesses
   - "!electron/renderer/**"        # placeholder page — real frontend is dist-electron-spike
+  - "!electron/speech-runtime/**"  # native voice runtime ships as a real-file extraResource
   # previewServer.cjs reads this shared picker from app.asar at runtime.
   - "src-tauri/inspect/abu-preview-inspect.js"
   # computerUseGate.cjs loads the reviewed policy in Electron main.
@@ -134,6 +135,11 @@ extraResources:
     to: node-runtime/node_modules
   - from: electron/.runtime/python-runtime
     to: python-runtime
+  # Voice input: sherpa-onnx + ONNX Runtime (scripts/setup-speech-runtime.mjs).
+  # Native .node/.dylib files cannot load from app.asar; node_modules needs its
+  # own matcher root because electron-builder filters source node_modules.
+  - from: electron/speech-runtime/node_modules
+    to: speech-runtime/node_modules
   - from: electron/runtime
     to: runtime-metadata
   - from: electron/browser-runtime/dist
@@ -179,6 +185,9 @@ mac:
   # (scripts/electron-localize-app-name.cjs) so Spotlight matches Chinese.
   extendInfo:
     LSHasLocalizedDisplayName: true
+    # Shown by macOS in the microphone consent prompt (voice input). Required
+    # alongside com.apple.security.device.audio-input in the entitlements.
+    NSMicrophoneUsageDescription: "Abu uses the microphone to transcribe your speech into the message draft. Audio stays on this Mac."
   artifactName: "${productName}-${version}-mac-${arch}.${ext}"
   # `npm run pack:electron` (--dir) still produces just the unpacked .app for
   # fast iteration + the packaged smoke. `npm run dist:electron` builds:

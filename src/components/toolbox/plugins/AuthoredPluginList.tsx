@@ -22,6 +22,7 @@ import InstalledPluginCard from './InstalledPluginCard';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import UninstallPluginDialog from './UninstallPluginDialog';
+import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
 import { focusAddButton, focusIsOnWindow, pluginCardIndex, pluginCardOrNeighbour, pluginCardProps } from './cardFocus';
 
 /** The card at `from`, or what took its place once it has gone, else the page's 「添加」 button. */
@@ -171,7 +172,7 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
     </div>;
   });
   const dialogs = <>
-    {selected && !selectedRecord && <ToolDetailModal open testId="plugin-author-detail" ariaLabel={selected.name ?? tb.pluginsDraft} onClose={() => setSelected(null)} onCloseAutoFocus={afterWindowClosed} stackedHeader maxWidth="max-w-2xl" panelClassName="h-[min(640px,85vh)]" avatar={<Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}
+    {selected && !selectedRecord && <ToolDetailModal open testId="plugin-author-detail" ariaLabel={selected.name ?? tb.pluginsDraft} onClose={() => setSelected(null)} onCloseAutoFocus={afterWindowClosed} stackedHeader maxWidth="max-w-2xl" panelClassName={PLUGIN_WINDOW_CONTENT_HEIGHT} avatar={<Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}
       headerActions={<InstalledItemMenu ariaLabel={tb.plugins} testId="plugin-author-menu" actions={[
         ...sourceActions(selected),
         ...(isDraftOnly(selected) ? [{ id: 'delete' as const, label: tb.pluginsDeleteDraft, destructive: true, onSelect: () => { void deleteDraft(selected); } }] : []),

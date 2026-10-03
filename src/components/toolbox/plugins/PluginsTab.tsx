@@ -80,9 +80,16 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
     hadRecoveryError.current = Boolean(recoveryError);
   }, [recoveryError]);
 
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
   // Archiving stops the automatic recovery of an operation record that cannot be read. It is
   // asked first, with the backup paths the user has to keep; the answer acts on the record that
-  // is unreadable at that moment.
+  // is unreadable at that moment. The question outlives the page when the view changes under it:
+  // an answer given then archives nothing, because the notice with the paths could not be shown.
   const archive = async () => {
     const asked = usePluginStore.getState().unreadableOperation;
     if (!asked || archiving.current) return;
@@ -92,7 +99,7 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
       confirmLabel: t.toolbox.pluginsArchiveContinue,
     });
     const current = usePluginStore.getState().unreadableOperation;
-    if (!confirmed || !current || current.fingerprint !== asked.fingerprint || archiving.current) return;
+    if (!confirmed || !mounted.current || !current || current.fingerprint !== asked.fingerprint || archiving.current) return;
     archiving.current = true; setRecovering(true);
     void archivePluginOperation(current.fingerprint).then(async result => {
       setArchiveResult(result); await bootstrapPluginUpdates();

@@ -8,6 +8,7 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 // The detail window is a design-system dialog, so the list renders inside the provider like the app does.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 import AuthoredPluginList from './AuthoredPluginList';
+import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
 const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], error: null as string | null, refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn(), remove: vi.fn(), toast: vi.fn() }));
@@ -70,7 +71,7 @@ it('keeps the preview shell stable while validating and returns to details on ca
   const panel = screen.getByTestId('plugin-install-disclosure');
   // The window carries the width; the height asked for sits on its content area.
   expect(panel).toHaveClass('max-w-2xl');
-  expect(Array.from(panel.querySelectorAll('div')).some((area) => area.classList.contains('h-[min(640px,85vh)]'))).toBe(true);
+  expect(Array.from(panel.querySelectorAll('div')).some((area) => area.classList.contains(PLUGIN_WINDOW_CONTENT_HEIGHT))).toBe(true);
   expect(screen.getByRole('status')).toHaveTextContent(getI18n().toolbox.pluginsDisclosureLoading);
   await act(async () => { finish({ author, disclosure }); });
   expect(screen.getByTestId('plugin-install-disclosure')).toBe(panel);
@@ -154,6 +155,20 @@ it('deletes nothing when the draft was installed by the time of the answer', asy
   state.installed = [{ key: 'demo@author-a', authoringId: author.id, checksum: 'new' }];
   fireEvent.click(within(question).getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
   await act(async () => {});
+  expect(state.remove).not.toHaveBeenCalled();
+});
+
+it('ends the delete question with the draft window when the page leaves the screen, and deletes nothing', async () => {
+  function Shell({ page }: { page: boolean }) {
+    return page ? <AuthoredPluginList home="/home" searchQuery="" /> : <p>another view</p>;
+  }
+  const view = render(<Shell page />);
+  await askToDeleteDraft();
+  view.rerender(<Shell page={false} />);
+  await act(async () => {});
+
+  // The question was asked over the draft's window: it is answered with cancel when that window goes.
+  expect(screen.queryByRole('alertdialog')).toBeNull();
   expect(state.remove).not.toHaveBeenCalled();
 });
 

@@ -33,6 +33,7 @@ import type { InstallDisclosure, PluginAgentDisclosure } from '@/core/plugin/ins
 import type { ParsedPluginTeam } from '@/types/app';
 import type { PluginSource } from '@/core/plugin/marketplace';
 import { formatServerCommand } from './serverCommand';
+import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
 
 export type InstallPlanState =
   | { kind: 'loading' }
@@ -436,7 +437,7 @@ export default function InstallDisclosureDialog({
       onCloseAutoFocus={onCloseAutoFocus}
       footer={footer}
     >
-      {authoring ? <div className="h-[min(640px,85vh)]">{body}</div> : body}
+      {authoring ? <div className={PLUGIN_WINDOW_CONTENT_HEIGHT}>{body}</div> : body}
     </Dialog>
   );
 }

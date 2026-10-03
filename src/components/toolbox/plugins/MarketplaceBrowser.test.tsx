@@ -45,6 +45,11 @@ vi.mock('@/core/plugin/installedStore', () => ({
   upsertInstalled: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('@/core/plugin/uninstaller', () => ({ uninstallPlugin: vi.fn() }));
+// Real behaviour, observed: the install window reads the configuration fields once per render.
+vi.mock('@/core/plugin/configuration', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/core/plugin/configuration')>();
+  return { ...original, pluginConfigFields: vi.fn(original.pluginConfigFields) };
+});
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
 // happy-dom gives Virtuoso a zero-size viewport and its ResizeObserver never
 // fires, so the real component mounts no rows at all. Mock it as a plain list
@@ -84,6 +89,7 @@ import {
   UnsupportedSourceError,
   type InstallDisclosure,
 } from '@/core/plugin/installer';
+import { pluginConfigFields } from '@/core/plugin/configuration';
 import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
 import { readInstalledResult, type InstalledPlugin } from '@/core/plugin/installedStore';
@@ -820,6 +826,39 @@ describe('MarketplaceBrowser: controls, messages and where the focus goes', () =
     act(() => { usePluginStore.setState({ marketplaces: [twoMarkets[0]] }); });
 
     await answer(tb().pluginsRemoveMarketplace);
+    expect(removeMarketplace).not.toHaveBeenCalled();
+    usePluginStore.setState(usePluginStore.getInitialState());
+  });
+
+  it('renders the open install window once per render of the page', async () => {
+    const view = render(<MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: `${tb().pluginsInstall}: weather` }));
+    await screen.findByTestId('plugin-install-confirm');
+    await act(async () => {});
+    vi.mocked(pluginConfigFields).mockClear();
+
+    // The page renders again for a reason of its own; the window is handed the same plan.
+    view.rerender(<MarketplaceBrowser home="/Users/tester" searchQuery="wea" onAddMarketplace={vi.fn()} />);
+
+    expect(pluginConfigFields).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes nothing when the question is answered after the page has left the screen', async () => {
+    const removeMarketplace = vi.fn();
+    usePluginStore.setState({ removeMarketplace });
+    function Shell({ page }: { page: boolean }) {
+      return page ? <MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={vi.fn()} /> : <p>another view</p>;
+    }
+    const view = render(<Shell page />);
+    await screen.findByText('weather');
+    fireEvent.click(removeButton());
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    view.rerender(<Shell page={false} />);
+
+    await answer(tb().pluginsRemoveMarketplace);
+    // The marketplace is still in the store, so only the "page has gone" check stops the removal.
+    expect(usePluginStore.getState().marketplaces.map((m) => m.name)).toEqual(['official']);
     expect(removeMarketplace).not.toHaveBeenCalled();
     usePluginStore.setState(usePluginStore.getInitialState());
   });

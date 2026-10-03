@@ -430,14 +430,17 @@ export default function MarketplaceBrowser({
     }
   }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow, releasePreparation, enterInstalledApp]);
 
-  const dialogState: InstallPlanState =
+  // One object per flow value: the window compares what it is handed with what it shows, and a
+  // new object on every render of this page would make it render twice each time.
+  const dialogState = useMemo<InstallPlanState>(() => (
     flow.kind === 'ready'
       ? { kind: 'ready', disclosure: flow.disclosure }
       : flow.kind === 'unsupported'
         ? { kind: 'unsupported', sourceKind: flow.sourceKind }
         : flow.kind === 'error'
           ? { kind: 'error', message: flow.message }
-          : { kind: 'loading' };
+          : { kind: 'loading' }
+  ), [flow]);
 
   const showList = marketplace !== null && visibleEntries.length > 0;
 

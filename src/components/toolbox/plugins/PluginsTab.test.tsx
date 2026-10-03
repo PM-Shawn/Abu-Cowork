@@ -191,6 +191,24 @@ describe('PluginsTab: recovery and archiving', () => {
     expect(archivePluginOperation).not.toHaveBeenCalled();
   });
 
+  it('archives nothing when the question is answered after the plugins page has left the screen', async () => {
+    usePluginStore.setState({ recoveryError: 'unreadable', unreadableOperation: unreadable });
+    // The app shows another view in place of the page (a notification click, the new-task action).
+    function Shell({ page }: { page: boolean }) {
+      return page ? <PluginsTab searchQuery="" /> : <p>another view</p>;
+    }
+    const view = render(<Shell page />);
+    fireEvent.click(archiveButton());
+    await screen.findByRole('alertdialog');
+    view.rerender(<Shell page={false} />);
+    expect(screen.getByText('another view')).toBeInTheDocument();
+
+    // The question is a page-level layer: it is still there, and its answer is for nobody.
+    await answerYes();
+    expect(archivePluginOperation).not.toHaveBeenCalled();
+    expect(bootstrapPluginUpdates).not.toHaveBeenCalled();
+  });
+
   it('puts a failed archive into the recovery message', async () => {
     vi.mocked(archivePluginOperation).mockRejectedValue(new Error('archive refused'));
     usePluginStore.setState({ recoveryError: 'unreadable', unreadableOperation: unreadable });

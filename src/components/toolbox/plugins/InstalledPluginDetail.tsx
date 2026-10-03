@@ -14,6 +14,7 @@ import { Switch } from '@/components/ds/switch';
 import { Tag } from '@/components/ds/tag';
 import { cn } from '@/lib/utils';
 import { usePluginActivation } from './usePluginActivation';
+import { PLUGIN_WINDOW_CONTENT_HEIGHT } from './windowHeight';
 import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
 import { useToastStore } from '@/stores/toastStore';
 import { useAppStore } from '@/stores/appStore';
@@ -171,7 +172,7 @@ export default function InstalledPluginDetail({
       onCloseAutoFocus={onCloseAutoFocus}
       stackedHeader
       maxWidth="max-w-2xl"
-      panelClassName="h-[min(640px,85vh)]"
+      panelClassName={PLUGIN_WINDOW_CONTENT_HEIGHT}
       avatar={showSource
         ? <IconButton ref={backRef} icon={AppIcons.back} label={tb.backToDetails} onClick={() => openSource(false)} />
         : <Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}
@@ -187,7 +188,8 @@ export default function InstalledPluginDetail({
           { id: 'view', label: tb.pluginsDisclosureSource, onSelect: () => openSource(true) },
         ]} />
       </div>}
-      footer={showSource ? undefined : <div className="flex w-full items-center justify-between gap-3">
+      // The row is as tall as the footer of the draft window and of the preview, so the three windows are one size.
+      footer={showSource ? undefined : <div className="flex min-h-7 w-full items-center justify-between gap-3">
         <Button variant="danger" size="sm" icon={AppIcons.delete} onClick={() => onUninstall(plugin)}>{tb.pluginsUninstall}</Button>
         <div className="flex items-center gap-2">
           {authorUpdate && <Button variant="secondary" size="sm" onClick={authorUpdate.onReview}>{authorUpdate.available ? tb.pluginsPreviewUpdate : tb.pluginsCheckChanges}</Button>}

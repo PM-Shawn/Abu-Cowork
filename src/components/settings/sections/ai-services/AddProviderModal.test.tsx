@@ -73,7 +73,7 @@ vi.mock('@/components/ds/checkbox', async (importOriginal) => {
 // title and the unsaved-input flag the window gives its dialog, whether the content it hands over
 // (shown or not) carries the made-up key anywhere, and the value the key field is rendered with.
 const windowRenders = vi.hoisted(() => ({
-  dialogs: [] as { title: unknown; dirty: unknown; holdsKey: boolean }[],
+  dialogs: [] as { title: unknown; dirty: unknown; holdsKey: boolean; holds: (text: string) => boolean }[],
   keys: [] as string[],
 }));
 
@@ -96,6 +96,8 @@ vi.mock('@/components/ds/dialog', async (importOriginal) => {
         title: props.title,
         dirty: props.dirty,
         holdsKey: carriesText([props.children, props.footer], 'sk-test-not-a-secret'),
+        // Asked later, about the content this render handed over.
+        holds: (text) => carriesText([props.children, props.footer], text),
       });
       return <actual.Dialog {...props} />;
     },
@@ -2184,12 +2186,16 @@ describe('AddProviderModal — behaviour pins', () => {
         const { close, show } = fillDeepSeek();
         ui.validate();
         close();
-        await act(async () => { await Promise.resolve(); });
+        // The window has gone and has forgotten its form: the key is in no content it hands over.
+        await waitFor(() => expect(windowRenders.dialogs.at(-1)?.holdsKey).toBe(false));
         const drawn = windowRenders.dialogs.length;
+        const answer = t().settings.validationSuccess.replace('{latency}', '88');
 
         await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
-        // The closed window holds no new state, so it is not drawn again.
-        expect(windowRenders.dialogs).toHaveLength(drawn);
+        await act(async () => { await Promise.resolve(); });
+        // However often the closed window is drawn after that, no draw holds the late answer:
+        // a result written into its state would be in the content of the next draw.
+        expect(windowRenders.dialogs.slice(drawn).filter((render) => render.holds(answer))).toEqual([]);
 
         show();
         await fillAgain();

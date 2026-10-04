@@ -538,9 +538,13 @@ Migration list: `src/components/toolbox/**` is on it; `customize/` and `common/`
 (unused legacy files there wait for batch 10).
 
 **Other pages (batch 7b)**: the automation page shares the extensions shell: `TopTabNav`, and
-`ToolCard` for task and listener cards. The schedule and trigger editors are `Dialog size="lg"`. A
-choice inside a draft form (frequency, source, filter) is a `SegmentedControl` or `RadioGroup`; a
-listener's autonomy level, the one choice with consequences outside the form, is a `Select`. A
+`ToolCard` for task and listener cards. The schedule and trigger editors are `Dialog size="lg"`;
+each fills its form when it opens or moves to another item and reads that item from the store
+without subscribing to it, so a run recorded meanwhile leaves what was typed alone. A small,
+mutually exclusive choice inside a draft form is a `SegmentedControl` (frequency, weekday, source,
+filter, output) or a `RadioGroup` (listen scope, extract mode); a choice from a list (hour, minute,
+skill, project, channel, push platform) and both autonomy choices (a task's and a listener's) are
+`Select`s. A
 `Select` shows its placeholder while the value it holds matches no option, and leaves the owner's
 value alone. A `Dialog` description renders line breaks: the second line of a delete question is the
 name of what it acts on. `Checkbox` takes `aria-describedby` for an explanation shown beside it.

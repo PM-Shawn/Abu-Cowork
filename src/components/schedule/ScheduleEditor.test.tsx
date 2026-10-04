@@ -540,6 +540,50 @@ describe('ScheduleEditor', () => {
       expect(useScheduleStore.getState().showEditor).toBe(false);
     });
 
+    it('keeps what was typed when the task being edited starts and ends a run, and still asks before discarding it', async () => {
+      const user = userEvent.setup();
+      seedChoices();
+      useScheduleStore.setState({ tasks: { 'task-1': FULL_TASK } });
+      openEditor('task-1');
+      renderEditor();
+      await user.clear(nameField());
+      await user.type(nameField(), '周报二');
+
+      // A run of this task starts and ends while its editor is open.
+      let runId = '';
+      act(() => { runId = useScheduleStore.getState().startRun('task-1', 'conv-1'); });
+      act(() => useScheduleStore.getState().completeRun('task-1', runId));
+      expect(useScheduleStore.getState().tasks['task-1'].totalRuns).toBe(1);
+
+      expect(nameField()).toHaveValue('周报二');
+      await user.keyboard('{Escape}');
+      expect(screen.getByRole('alertdialog', { name: ds().discardTitle })).toBeVisible();
+      expect(useScheduleStore.getState().showEditor).toBe(true);
+      await user.click(screen.getByRole('button', { name: ds().keepEditing }));
+
+      // The save writes the form as the user sees it, and none of the run's own records.
+      await user.click(saveButton());
+      expect(updateTask).toHaveBeenCalledTimes(1);
+      expect(updateTask.mock.calls[0][0]).toBe('task-1');
+      expect(updateTask.mock.calls[0][1]).toMatchObject({ name: '周报二', prompt: '汇总本周进展' });
+      expect(Object.keys(updateTask.mock.calls[0][1]).sort()).toEqual([
+        'description', 'name', 'outputChannelId', 'outputChatIds', 'outputUserIds', 'permissionMode',
+        'projectId', 'prompt', 'schedule', 'skillName', 'teamId', 'workspacePath',
+      ]);
+    });
+
+    it('opens on the stored values of another task when the editor moves to it', () => {
+      seedChoices();
+      useScheduleStore.setState({ tasks: { 'task-1': FULL_TASK, 'task-2': { ...FULL_TASK, id: 'task-2', name: '月报' } } });
+      openEditor('task-1');
+      renderEditor();
+      expect(nameField()).toHaveValue('周报');
+
+      act(() => openEditor('task-2'));
+
+      expect(nameField()).toHaveValue('月报');
+    });
+
     it('saves nothing from the window while it fades out, and keeps showing what it showed', async () => {
       const user = userEvent.setup();
       const fading = keepClosingLayersOnScreen();

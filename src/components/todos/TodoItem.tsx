@@ -28,7 +28,7 @@ const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete, onClick }: T
     : todo.priority === 'medium' ? t.todos.priorityMedium
     : null;
   const hasNotes = typeof todo.notes === 'string' && todo.notes.trim().length > 0;
-  // These two names have no translation yet; they stay as they were.
+  // The screen-reader name of the done button: English words, with no translation key yet.
   const toggleName = done ? 'reopen' : 'complete';
   return (
     <div

@@ -92,7 +92,7 @@ export default function ScheduleEditor({ onCloseAutoFocus }: {
 }) {
   const { t } = useI18n();
   const id = useId();
-  const { showEditor, editingTaskId, closeEditor, createTask, updateTask, tasks } =
+  const { showEditor, editingTaskId, closeEditor, createTask, updateTask } =
     useScheduleStore();
   const skills = useDiscoveryStore((s) => s.skills);
   const channelsMap = useIMChannelStore((s) => s.channels);
@@ -102,8 +102,6 @@ export default function ScheduleEditor({ onCloseAutoFocus }: {
     Object.values(projectsMap).filter((p) => !p.archived).sort((a, b) => b.lastActiveAt - a.lastActiveAt),
     [projectsMap]
   );
-
-  const editingTask = editingTaskId ? tasks[editingTaskId] : null;
 
   // Form state
   const [name, setName] = useState('');
@@ -131,9 +129,14 @@ export default function ScheduleEditor({ onCloseAutoFocus }: {
   const [opened, setOpened] = useState<Fields | null>(null);
   const [editing, setEditing] = useState(false);
 
-  // Initialize form when the window opens or the task being edited changes
+  // Initialize the form when the window opens, or moves to another task. A run of the task that
+  // starts or ends while the window is open leaves the form alone: the task is read from the
+  // store here, not subscribed to.
   useEffect(() => {
     if (!showEditor) return;
+    const editingTask = editingTaskId
+      ? useScheduleStore.getState().tasks[editingTaskId] ?? null
+      : null;
     const fields = fieldsOf(editingTask);
     setName(fields.name);
     setDescription(fields.description);
@@ -152,7 +155,7 @@ export default function ScheduleEditor({ onCloseAutoFocus }: {
     setPermissionMode(fields.permissionMode);
     setOpened(fields);
     setEditing(editingTask !== null);
-  }, [editingTask, showEditor]);
+  }, [editingTaskId, showEditor]);
 
   // Stable option objects: the list rows are compared by them.
   const teamOptions = useMemo<ComboboxOption[]>(() => [

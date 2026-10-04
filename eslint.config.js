@@ -133,6 +133,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/ChatInput*.{ts,tsx}',
   'src/components/chat/ChatView*.{ts,tsx}',
   'src/components/chat/ChapterMenu*.{ts,tsx}',
+  'src/components/chat/VoiceInputControl*.{ts,tsx}',
   'src/components/chat/ChapterRail*.{ts,tsx}',
   'src/components/chat/chapters*.ts',
   'src/components/chat/AppHome.tsx',
@@ -209,6 +210,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/settings/sections/FeedbackSection*.{ts,tsx}',
   'src/components/settings/sections/AboutSection*.{ts,tsx}',
   'src/components/settings/sections/AuthorSection*.{ts,tsx}',
+  'src/components/settings/sections/VoiceInputSection*.{ts,tsx}',
   'src/components/settings/sections/index.ts',
   // Other pages, file by file (batch 7). customize/ and common/ keep legacy files, so no directory glob there.
   'src/components/toolbox/TopTabNav*.{ts,tsx}',

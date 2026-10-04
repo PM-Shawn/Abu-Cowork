@@ -39,7 +39,12 @@ vi.mock('@/core/llm/contextWindowProbe', () => ({
 }));
 // The behaviour pins at the end of this file press Validate against a stubbed health check; the
 // redaction test runs the real one over a stubbed adapter (the only thing that would reach the network).
-vi.mock('@/core/llm/healthCheck', () => ({ checkProviderHealth: vi.fn() }));
+// Only checkProviderHealth is stubbed: the model fetch and the Ollama check redact their failure
+// text through the real safeFailureText of this module.
+vi.mock('@/core/llm/healthCheck', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/llm/healthCheck')>()),
+  checkProviderHealth: vi.fn(),
+}));
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 const { mockAdapterChat } = vi.hoisted(() => ({ mockAdapterChat: vi.fn() }));
 vi.mock('@/core/llm/openai-compatible', async (importOriginal) => ({
@@ -49,6 +54,9 @@ vi.mock('@/core/llm/openai-compatible', async (importOriginal) => ({
   },
 }));
 import { classifyError } from '@/core/llm/adapter';
+// 失败文字的测试运行真实的 fetchProviderModels 与 checkOllamaHealth，只替换发出网络请求的 fetch
+const { mockTransportFetch } = vi.hoisted(() => ({ mockTransportFetch: vi.fn() }));
+vi.mock('@/core/llm/tauriFetch', () => ({ getTauriFetch: async () => mockTransportFetch }));
 // The real checkbox, counted: a model row renders one, so the count says which rows rendered again.
 const checkboxRenders = vi.hoisted(() => ({ count: 0 }));
 vi.mock('@/components/ds/checkbox', async (importOriginal) => {
@@ -2144,6 +2152,99 @@ describe('AddProviderModal — behaviour pins', () => {
       expect(screen.queryByText(t().settings.apiKeyDecryptFailed)).not.toBeInTheDocument();
       expect(screen.queryByText(t().settings.apiKeySaveFailed)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe('AddProviderModal — failure text of model fetch and Ollama check', () => {
+  const FAKE_KEY = 'sk-test-not-a-secret';
+  const FAKE_URL_PASSWORD = 'test-password-not-a-secret';
+  const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug'] as const;
+  let consoleSpies: Array<ReturnType<typeof vi.spyOn>>;
+
+  beforeEach(async () => {
+    setLanguage('en-US');
+    localStorage.clear();
+    useSettingsStore.setState({
+      providers: [],
+      activeModel: { providerId: '', modelId: '' },
+      failedSecretKeys: [],
+    });
+    const actual = await vi.importActual<typeof import('@/core/llm/modelFetcher')>('@/core/llm/modelFetcher');
+    vi.mocked(fetchProviderModels).mockImplementation(actual.fetchProviderModels);
+    // This file stubs the Ollama check for its behaviour pins; here the real one runs.
+    const actualOllama = await vi.importActual<typeof import('@/core/llm/ollama')>('@/core/llm/ollama');
+    vi.mocked(checkOllamaHealth).mockImplementation(actualOllama.checkOllamaHealth);
+    mockTransportFetch.mockReset();
+    consoleSpies = CONSOLE_METHODS.map((method) => vi.spyOn(console, method).mockImplementation(() => {}));
+  });
+
+  afterEach(() => {
+    unmountWindow();
+    vi.mocked(fetchProviderModels).mockReset();
+    vi.mocked(checkOllamaHealth).mockReset();
+    consoleSpies.forEach((spy) => spy.mockRestore());
+  });
+
+  /** 界面文字、title、aria-label、store、localStorage、控制台里都不出现给定的值 */
+  function expectAbsentEverywhere(secrets: string[]) {
+    const attributes = ['title', 'aria-label'].flatMap((attribute) =>
+      Array.from(document.querySelectorAll(`[${attribute}]`), (el) => el.getAttribute(attribute)),
+    );
+    const logged = consoleSpies
+      .flatMap((spy) => spy.mock.calls)
+      .map((args) => args.map((arg: unknown) => (arg instanceof Error ? `${arg.message}\n${arg.stack}` : JSON.stringify(arg))).join(' '));
+    const stored = Array.from({ length: localStorage.length }, (_, i) => localStorage.getItem(localStorage.key(i) as string));
+    const haystack = [
+      document.body.textContent,
+      ...attributes,
+      JSON.stringify(useSettingsStore.getState()),
+      ...stored,
+      ...logged,
+    ].join('\n');
+    for (const secret of secrets) expect(haystack).not.toContain(secret);
+  }
+
+  it('shows a failed model fetch without the key or the URL password the exception carried', async () => {
+    mockTransportFetch.mockRejectedValue(
+      new TypeError(
+        `Request cannot be constructed from a URL that includes credentials: https://user:${FAKE_URL_PASSWORD}@api.deepseek.com/models, header x-api-key ${FAKE_KEY}`,
+      ),
+    );
+    renderWindow(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek' }));
+    const apiKeyInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(apiKeyInput, { target: { value: FAKE_KEY } });
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+
+    expect(
+      await screen.findByText(
+        'TypeError: Request cannot be constructed from a URL that includes credentials: https://[REDACTED]@api.deepseek.com/models, header x-api-key [REDACTED]',
+      ),
+    ).toBeInTheDocument();
+    expectAbsentEverywhere([FAKE_KEY, FAKE_URL_PASSWORD]);
+  });
+
+  it('shows a failed Ollama check without the URL password the exception carried', async () => {
+    const baseUrl = `http://user:${FAKE_URL_PASSWORD}@ollama.example.test:11434`;
+    mockTransportFetch.mockRejectedValue(
+      new TypeError(`Request cannot be constructed from a URL that includes credentials: ${baseUrl}/`),
+    );
+    renderWindow(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ollama/i }));
+    const baseUrlInput = screen.getByPlaceholderText('http://127.0.0.1:11434');
+    fireEvent.change(baseUrlInput, { target: { value: baseUrl } });
+    fireEvent.blur(baseUrlInput);
+
+    expect(
+      await screen.findByText(
+        'Request cannot be constructed from a URL that includes credentials: [REDACTED]/',
+      ),
+    ).toBeInTheDocument();
+    expectAbsentEverywhere([FAKE_URL_PASSWORD]);
   });
 });
 

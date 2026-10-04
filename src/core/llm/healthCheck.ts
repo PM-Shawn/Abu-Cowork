@@ -25,6 +25,8 @@ const REDACTED = '[REDACTED]';
 // 参数名两侧的长度有上限，匹配耗时与文字长度成线性关系
 const SECRET_QUERY_PARAM_PATTERN =
   /([?&](?:[\w.-]{0,40}(?:key|token|secret|signature|password|auth)[\w.-]{0,40}|sig)=)[^&#\s"'<>]+/gi;
+/** URL 里 `scheme://` 与 `@` 之间的账号和密码；两段长度都有上限 */
+const URL_USERINFO_PATTERN = /(\b[a-z][a-z0-9+.-]{0,20}:\/\/)[^\s/?#@"'<>]{1,400}@/gi;
 /** 带 u 标志时只匹配不成对的 surrogate；encodeURIComponent 遇到它会抛出 URIError */
 const LONE_SURROGATE_PATTERN = /[\uD800-\uDFFF]/u;
 
@@ -40,15 +42,20 @@ function keyForms(key: string): string[] {
 
 /**
  * 失败文字来自服务端响应正文或网络异常，可能带有请求里的 key、Authorization
- * 请求头或带 key 的 URL。这段文字会写入 settingsStore、显示在界面上并进入
+ * 请求头或带凭证的 URL。这段文字会写入 settingsStore、显示在界面上并进入
  * 诊断包，所以在这里统一脱敏并限制长度。
  */
-function safeFailureText(raw: string, provider: ProviderInstance): string {
+export function safeFailureText(raw: string, provider: Pick<ProviderInstance, 'apiKey' | 'baseUrl'>): string {
   let text = raw.slice(0, FAILURE_TEXT_SCAN_CHARS);
   const key = provider.apiKey.trim();
   if (key.length >= MIN_KEY_ERASE_LENGTH) {
     for (const form of keyForms(key)) text = text.split(form).join(REDACTED);
   }
+  // 地址带账号密码时，fetch 的异常会原样引用这个地址；密码里可以有 / ? # @ 和空格，
+  // 没有固定形状，所以按填写的原文整段替换
+  const baseUrl = provider.baseUrl.trim().replace(/\/+$/, '');
+  if (baseUrl.includes('@')) text = text.split(baseUrl).join(REDACTED);
+  text = text.replace(URL_USERINFO_PATTERN, `$1${REDACTED}@`);
   text = text.replace(SECRET_QUERY_PARAM_PATTERN, `$1${REDACTED}`);
   return redactStringValue(text).slice(0, FAILURE_TEXT_MAX_CHARS);
 }

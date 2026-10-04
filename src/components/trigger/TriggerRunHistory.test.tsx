@@ -140,6 +140,11 @@ describe('TriggerRunHistory', () => {
     expect(within(rows()[5]).queryByRole('img')).toBeNull();
   });
 
+  it('gives every row the same least height, with or without a button at its end', () => {
+    renderHistory(RUNS);
+    for (const row of rows()) expect(classes(row)).toContain('min-h-8');
+  });
+
   it('does not render a row again when another conversation changes', () => {
     renderHistory(RUNS);
     const before = iconButtons.renders;

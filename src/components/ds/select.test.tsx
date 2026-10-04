@@ -366,6 +366,26 @@ describe('Select: while it is closed', () => {
     expect(unchosen).toHaveAttribute('data-placeholder');
   });
 
+  it('shows its placeholder while it holds a value that no option has, and hands that value to nobody', async () => {
+    const user = userEvent.setup();
+    const onValueChange = vi.fn();
+    render(
+      <Select label="Model" value="retired-model" placeholder="Choose a model" onValueChange={onValueChange} options={MODELS} />,
+      { wrapper: DesignSystemProvider },
+    );
+    const box = screen.getByRole('combobox', { name: 'Model' });
+    expect(box).toHaveTextContent(/^Choose a model$/);
+    expect(box).toHaveAttribute('data-placeholder');
+    expect(onValueChange).not.toHaveBeenCalled();
+
+    // No option is marked as chosen, and a pick is reported as any other.
+    await user.click(box);
+    expect(screen.getAllByRole('option').map((option) => option.getAttribute('aria-selected'))).toEqual(['false', 'false', 'false']);
+    await user.click(screen.getByRole('option', { name: 'Claude Opus 5' }));
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+    expect(onValueChange).toHaveBeenCalledWith('opus');
+  });
+
   it('shows the same mark and name in the closed select as in the list, and follows the value', async () => {
     const user = userEvent.setup();
     function Harness() {

@@ -36,7 +36,8 @@ const RunRow = memo(function RunRow({ run, canView, onView }: {
   // The event came in and nothing ran: it matched no rule, or repeated one just handled.
   const skipped = run.status === 'filtered' || run.status === 'debounced';
   return (
-    <div data-trigger-run={run.id} className="flex items-center gap-2 rounded-control px-2 py-1 hover:bg-fill-hover">
+    // One height for every row, with or without a button at its end.
+    <div data-trigger-run={run.id} className="flex min-h-8 items-center gap-2 rounded-control px-2 py-1 hover:bg-fill-hover">
       {/* The outcome as a shape; only a run in progress turns. */}
       <span className="flex shrink-0 items-center">
         {running && <Spinner size="sm" label={t.trigger.runStatusRunning} labelHidden />}

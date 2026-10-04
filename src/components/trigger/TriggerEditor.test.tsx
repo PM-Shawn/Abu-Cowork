@@ -1027,6 +1027,21 @@ describe('TriggerEditor', () => {
       expect(createTrigger.mock.calls[0][0].source).toStrictEqual({ type: 'im', channelId: 'channel-1', listenScope: 'all', chatId: 'chat-9', senderMatch: 'bot' });
     });
 
+    it('asks for a channel in the box when the channel of a listener was deleted, and still saves the stored one', async () => {
+      const user = userEvent.setup();
+      seedChoices();
+      const trigger = { ...IM_TRIGGER, source: { type: 'im', channelId: 'gone-channel', listenScope: 'all' } } as Trigger;
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      openEditor(trigger.id);
+      renderEditor();
+
+      expect(select('选择 IM 频道')).toHaveTextContent(/^选择 IM 频道$/);
+      expect(saveButton()).toBeEnabled();
+      await user.click(saveButton());
+
+      expect(updateTrigger.mock.calls[0][1].source).toMatchObject({ type: 'im', channelId: 'gone-channel' });
+    });
+
     it('shows the callback address of the chosen channel in a field that cannot be typed in, and copies it', async () => {
       const user = userEvent.setup();
       const writeText = vi.spyOn(navigator.clipboard, 'writeText');
@@ -1110,6 +1125,33 @@ describe('TriggerEditor', () => {
         webhookUrl: 'https://example.invalid/hook',
         customHeaders: { Authorization: 'Bearer sk-test-not-a-secret' },
       });
+    });
+
+    it('asks for a platform in the box of a new listener, whose stored platform is not on offer, and still saves that platform', async () => {
+      const user = userEvent.setup();
+      openEditor(undefined, { name: 'N', prompt: 'P' });
+      renderEditor();
+      await user.click(screen.getByRole('checkbox', { name: '处理完成后推送结果' }));
+
+      expect(select('推送平台')).toHaveTextContent(/^推送平台$/);
+      expect(select('推送平台')).toHaveAttribute('data-placeholder');
+      await user.click(saveButton());
+
+      expect(createTrigger.mock.calls[0][0].output).toMatchObject({ target: 'webhook', platform: 'dchat' });
+    });
+
+    it('asks for a channel in the box when the push channel of a listener was deleted, and still saves the stored one', async () => {
+      const user = userEvent.setup();
+      seedChoices();
+      const trigger = { ...IM_TRIGGER, output: { ...IM_TRIGGER.output!, outputChannelId: 'gone-channel' } };
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      openEditor(trigger.id);
+      renderEditor();
+
+      expect(select('选择推送频道')).toHaveTextContent(/^选择推送频道$/);
+      await user.click(saveButton());
+
+      expect(updateTrigger.mock.calls[0][1].output).toMatchObject({ outputChannelId: 'gone-channel' });
     });
 
     it('keeps the focus on the test button while the push is on its way: it is busy, never disabled', async () => {

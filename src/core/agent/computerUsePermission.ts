@@ -20,6 +20,8 @@ export interface ComputerUsePermissions {
   screenReadStatus: ComputerUsePermissionStatus;
   uiControlStatus: ComputerUsePermissionStatus;
   restartRequired: boolean;
+  /** Windows can control only same/lower-integrity targets without elevation. */
+  uiControlLimitation?: 'same-or-lower-integrity';
 }
 
 export type ComputerUsePermission = 'screenRead' | 'uiControl';
@@ -46,6 +48,7 @@ interface RawComputerUsePermissions {
   screen_recording_status?: ComputerUsePermissionStatus;
   accessibility_status?: ComputerUsePermissionStatus;
   restart_required?: boolean;
+  ui_control_limitation?: 'same-or-lower-integrity';
 }
 
 export function requiredComputerUsePermissions(path: ComputerUseExecutionPath): {
@@ -84,6 +87,9 @@ export function normalizeComputerUsePermissions(
     restartRequired: raw.restart_required === true
       || screenReadStatus === 'granted-relaunch-required'
       || uiControlStatus === 'granted-relaunch-required',
+    ...(raw.ui_control_limitation === 'same-or-lower-integrity'
+      ? { uiControlLimitation: raw.ui_control_limitation }
+      : {}),
   };
 }
 

@@ -1,9 +1,9 @@
 import { appDataDir } from '@tauri-apps/api/path';
 import { exists, mkdir } from '@tauri-apps/plugin-fs';
 import { isTauriEnv } from '../../utils/tauriEnv';
-import { joinPath } from '../../utils/pathUtils';
+import { createConversationPaths, type ConversationPaths } from './conversationPaths';
 
-let cachedBasePath: string | null = null;
+let cachedPaths: ConversationPaths | null = null;
 
 /**
  * Get the session output directory for a specific conversation.
@@ -18,12 +18,11 @@ let cachedBasePath: string | null = null;
 export async function getSessionOutputDir(conversationId: string): Promise<string | null> {
   if (!isTauriEnv()) return null; // web / E2E: no app data dir
 
-  if (!cachedBasePath) {
-    const appData = await appDataDir();
-    cachedBasePath = joinPath(appData, 'conversations');
+  if (!cachedPaths) {
+    cachedPaths = createConversationPaths(await appDataDir());
   }
 
-  const outputDir = joinPath(cachedBasePath, conversationId, 'outputs');
+  const outputDir = cachedPaths.outputsDir(conversationId);
 
   if (!(await exists(outputDir))) {
     await mkdir(outputDir, { recursive: true });

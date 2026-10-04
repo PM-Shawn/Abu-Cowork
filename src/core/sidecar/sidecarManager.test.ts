@@ -30,9 +30,11 @@ import {
   onSidecarConnectionState,
   waitForSidecarStatus,
   registerSidecarNotifyResync,
+  sidecarHasCapability,
   SidecarRequestError,
   __resetForTests,
 } from './sidecarManager';
+import { APP_VERSION } from '@/utils/version';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { IPC_MAX_ARGS_BYTES, PayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import type { EnterpriseBinding } from '@/core/enterprise/types';
@@ -78,10 +80,41 @@ function sentMessage(call: unknown): string {
   return (args as { message: string }).message;
 }
 
-/** Wire up default happy-path mocks: spawn/kill/write all resolve, listen captures callbacks. */
-function mockHappyPath(): void {
+const HANDSHAKE_OK = { protocolVersion: 2, sidecarVersion: 'test', capabilities: ['agent.start.history-from-ledger'] };
+
+type InvokeImpl = (cmd: string, args: unknown) => unknown;
+
+/**
+ * Wrap an `invoke` implementation so the post-spawn `handshake` request is
+ * answered the way a current sidecar answers it. `deliver` defaults to the
+ * Tauri-style message event; a dedicated-channel test passes its own.
+ */
+function answeringHandshake(
+  impl: InvokeImpl = () => Promise.resolve(undefined),
+  result: unknown = HANDSHAKE_OK,
+  deliver: (response: unknown) => void = emitMsg,
+): InvokeImpl {
+  return (cmd, args) => {
+    const out = impl(cmd, args);
+    if (cmd === 'mcp_write') {
+      const line = JSON.parse(sentMessage([cmd, args])) as { id?: number; method?: string };
+      if (line.method === 'handshake') {
+        queueMicrotask(() => deliver({ jsonrpc: '2.0', id: line.id, result }));
+      }
+    }
+    return out;
+  };
+}
+
+/**
+ * Wire up default happy-path mocks: spawn/kill/write all resolve, listen
+ * captures callbacks, and the post-spawn handshake is answered. `deliver`
+ * carries that answer to the shell; an Electron-shell test passes the
+ * dedicated channel's own delivery in place of the Tauri message event.
+ */
+function mockHappyPath(deliver?: (response: unknown) => void): void {
   resolveResource.mockResolvedValue('/resources/sidecar/index.mjs');
-  invoke.mockResolvedValue(undefined);
+  invoke.mockImplementation(answeringHandshake(undefined, HANDSHAKE_OK, deliver));
   listen.mockImplementation((eventName: string, cb: EventCallback) => {
     listenCallbacks.set(eventName, cb);
     // Deliberately does NOT remove from listenCallbacks on unlisten — lets
@@ -171,10 +204,10 @@ describe('sidecarManager', () => {
         listenCallbacks.set(eventName, cb);
         return Promise.resolve(() => {});
       });
-      invoke.mockImplementation((cmd: string) => {
+      invoke.mockImplementation(answeringHandshake((cmd: string) => {
         callOrder.push(`invoke:${cmd}`);
         return Promise.resolve(undefined);
-      });
+      }));
 
       await startSidecar();
 
@@ -968,7 +1001,9 @@ describe('sidecarManager', () => {
           return unsubscribe;
         },
       };
-      mockHappyPath();
+      mockHappyPath((response) => dedicatedHandler?.({
+        type: 'message', payload: JSON.stringify(response), sequence: 1, generation: 1,
+      }));
 
       await startSidecar();
       expect(listen).not.toHaveBeenCalled();
@@ -981,7 +1016,7 @@ describe('sidecarManager', () => {
       dedicatedHandler?.({
         type: 'message',
         payload: JSON.stringify({ jsonrpc: '2.0', id: sent.id, result: { ok: true } }),
-        sequence: 1,
+        sequence: 2,
         generation: 1,
       });
       await expect(pending).resolves.toEqual({ ok: true });
@@ -1012,11 +1047,13 @@ describe('sidecarManager', () => {
         },
         getSidecarBridgeSnapshot,
       };
-      mockHappyPath();
+      mockHappyPath((response) => dedicatedHandler?.({
+        type: 'message', payload: JSON.stringify(response), sequence: 1, generation: 1,
+      }));
       await startSidecar();
 
       dedicatedHandler?.({
-        type: 'error', payload: '[sidecar:test] [info] baseline', sequence: 1, generation: 1,
+        type: 'error', payload: '[sidecar:test] [info] baseline', sequence: 2, generation: 1,
       });
       await vi.advanceTimersByTimeAsync(0);
 
@@ -1031,30 +1068,30 @@ describe('sidecarManager', () => {
         sidecarId: 'abu-sidecar',
         generation: 1,
         bridgeStatus: 'running',
-        firstAvailableSequence: 1,
-        lastSequence: 3,
+        firstAvailableSequence: 2,
+        lastSequence: 4,
         truncated: false,
         events: [
           {
             type: 'message',
             payload: JSON.stringify({ jsonrpc: '2.0', id: sent.id, result: { recovered: true } }),
-            sequence: 2,
+            sequence: 3,
             generation: 1,
           },
           {
-            type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1,
+            type: 'error', payload: '[sidecar:test] [info] live', sequence: 4, generation: 1,
           },
         ],
         runs: [],
       });
 
       dedicatedHandler?.({
-        type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1,
+        type: 'error', payload: '[sidecar:test] [info] live', sequence: 4, generation: 1,
       });
       await vi.advanceTimersByTimeAsync(0);
 
       await expect(pending).resolves.toEqual({ recovered: true });
-      expect(getSidecarBridgeSnapshot).toHaveBeenCalledWith(1);
+      expect(getSidecarBridgeSnapshot).toHaveBeenCalledWith(2);
       expect(states).toContain('recovering');
       expect(states.at(-1)).toBe('connected');
     });
@@ -1081,11 +1118,13 @@ describe('sidecarManager', () => {
         },
         getSidecarBridgeSnapshot,
       };
-      mockHappyPath();
+      mockHappyPath((response) => dedicatedHandler?.({
+        type: 'message', payload: JSON.stringify(response), sequence: 1, generation: 1,
+      }));
       await startSidecar();
 
       dedicatedHandler?.({
-        type: 'error', payload: '[sidecar:test] [info] baseline', sequence: 1, generation: 1,
+        type: 'error', payload: '[sidecar:test] [info] baseline', sequence: 2, generation: 1,
       });
       await vi.advanceTimersByTimeAsync(0);
 
@@ -1102,18 +1141,18 @@ describe('sidecarManager', () => {
         sidecarId: 'abu-sidecar',
         generation: 1,
         bridgeStatus: 'running',
-        firstAvailableSequence: 2,
-        lastSequence: 3,
+        firstAvailableSequence: 3,
+        lastSequence: 4,
         truncated: true,
         events: [
-          { type: 'message', payload: reverseRequest, sequence: 2, generation: 1 },
-          { type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1 },
+          { type: 'message', payload: reverseRequest, sequence: 3, generation: 1 },
+          { type: 'error', payload: '[sidecar:test] [info] live', sequence: 4, generation: 1 },
         ],
         runs: [],
       });
 
       dedicatedHandler?.({
-        type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1,
+        type: 'error', payload: '[sidecar:test] [info] live', sequence: 4, generation: 1,
       });
       await vi.advanceTimersByTimeAsync(0);
 
@@ -1190,7 +1229,7 @@ describe('sidecarManager', () => {
 
     it('#549: Electron sends requests as raw UTF-8 bytes with routing headers', async () => {
       const shell = enterElectronShell();
-      mockHappyPath();
+      mockHappyPath(shell.deliver);
       await startSidecar();
       const callsBefore = invoke.mock.calls.length;
       const pending = request('agent.start', {
@@ -1214,8 +1253,7 @@ describe('sidecarManager', () => {
     });
 
     it('#549: request() encodes the JSON-RPC line once and sends that same buffer', async () => {
-      enterElectronShell();
-      mockHappyPath();
+      mockHappyPath(enterElectronShell().deliver);
       await startSidecar();
       traceRuntimeEvent.mockClear();
       const encodeSpy = vi.spyOn(TextEncoder.prototype, 'encode');
@@ -1235,8 +1273,7 @@ describe('sidecarManager', () => {
     });
 
     it('#549: an oversize request rejects with PayloadTooLargeError and records a numbers-only breakdown', async () => {
-      enterElectronShell();
-      mockHappyPath();
+      mockHappyPath(enterElectronShell().deliver);
       await startSidecar();
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'mcp_write') {
@@ -1281,7 +1318,7 @@ describe('sidecarManager', () => {
 
     it('#549: notifications and responses to sidecar requests use the raw form too', async () => {
       const shell = enterElectronShell();
-      mockHappyPath();
+      mockHappyPath(shell.deliver);
       await startSidecar();
       const callsBefore = invoke.mock.calls.length;
 
@@ -1301,7 +1338,7 @@ describe('sidecarManager', () => {
 
     it('#549: a 9 MiB tool result is sent as one raw-body response in Electron', async () => {
       const shell = enterElectronShell();
-      mockHappyPath();
+      mockHappyPath(shell.deliver);
       await startSidecar();
       const big = 'r'.repeat(9 * 1024 * 1024);
       onSidecarRequest('tool.invoke', vi.fn().mockResolvedValue({ ok: true, toolResult: big }));
@@ -1642,9 +1679,9 @@ describe('sidecarManager', () => {
     it('resolves running once a starting sidecar finishes spawning', async () => {
       mockHappyPath();
       let releaseSpawn!: () => void;
-      invoke.mockImplementation((cmd: string) => cmd === 'mcp_spawn'
+      invoke.mockImplementation(answeringHandshake((cmd: string) => cmd === 'mcp_spawn'
         ? new Promise<void>((resolve) => { releaseSpawn = resolve; })
-        : Promise.resolve(undefined));
+        : Promise.resolve(undefined)));
       const start = startSidecar();
       await vi.advanceTimersByTimeAsync(0);
       expect(getSidecarStatus()).toBe('starting');
@@ -1682,6 +1719,255 @@ describe('sidecarManager', () => {
       await stopSidecar();
       await expect(first).resolves.toBe('failed');
       await expect(second).resolves.toBe('failed');
+    });
+  });
+
+  describe('handshake (#549 P2a)', () => {
+    /** Spawn succeeds and every write is accepted, but nobody answers. */
+    function mockSilentSidecar(): void {
+      resolveResource.mockResolvedValue('/resources/sidecar/index.mjs');
+      invoke.mockResolvedValue(undefined);
+      listen.mockImplementation((eventName: string, cb: EventCallback) => {
+        listenCallbacks.set(eventName, cb);
+        return Promise.resolve(() => {});
+      });
+    }
+
+    function handshakeWrites(): { id: number; params: unknown }[] {
+      return invoke.mock.calls
+        .filter((call) => call[0] === 'mcp_write')
+        .map((call) => JSON.parse(sentMessage(call)) as { id: number; method?: string; params: unknown })
+        .filter((message) => message.method === 'handshake');
+    }
+
+    type ShellEvent = {
+      type: 'message' | 'error' | 'close' | 'hung';
+      payload: string;
+      sequence: number;
+      generation: number;
+    };
+
+    function restartEvents(): unknown[] {
+      return traceRuntimeEvent.mock.calls
+        .filter((call) => call[0] === 'renderer.sidecar_restart_scheduled')
+        .map((call) => call[1]);
+    }
+
+    function restartReasons(): unknown[] {
+      return restartEvents().map((event) => (event as { reason?: string }).reason);
+    }
+
+    /**
+     * Let the spawn chain run up to the handshake write without moving the
+     * clock — the handshake's own 30 s budget is what several of these tests
+     * measure, so nothing here may spend part of it.
+     */
+    async function untilHandshakeSent(): Promise<void> {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handshakeWrites()).toHaveLength(1);
+    }
+
+    it('reports running only after the sidecar answered, and remembers its capabilities', async () => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+      expect(getSidecarStatus()).toBe('starting');
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+      expect(handshakeWrites()[0].params).toEqual({ protocolVersion: 2, shellVersion: APP_VERSION });
+
+      emitMsg({ jsonrpc: '2.0', id: handshakeWrites()[0].id, result: HANDSHAKE_OK });
+      await starting;
+
+      expect(getSidecarStatus()).toBe('running');
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(true);
+      expect(sidecarHasCapability('something.else')).toBe(false);
+    });
+
+    it('a sidecar that announces no capability is running, and the capability reads false', async () => {
+      // What a sidecar started with ABU_AGENT_START_PROTOCOL=1 answers.
+      mockSilentSidecar();
+      invoke.mockImplementation(answeringHandshake(undefined, { ...HANDSHAKE_OK, capabilities: [] }));
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+    });
+
+    it.each([
+      ['a sidecar without the method', { error: { code: -32601, message: 'Method not found' } }, 'handshake-unsupported'],
+      ['another protocol version', { result: { ...HANDSHAKE_OK, protocolVersion: 3 } }, 'handshake-incompatible'],
+      ['a malformed answer', { result: { protocolVersion: 2, sidecarVersion: 'v', capabilities: 'all' } }, 'handshake-malformed'],
+    ])('%s is a spawn failure handled by the restart policy', async (_name, answer, reason) => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+      const killsBefore = killCallCount();
+
+      emitMsg({ jsonrpc: '2.0', id: handshakeWrites()[0].id, ...answer });
+      await starting;
+
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(restartReasons()).toEqual([reason]);
+      expect(killCallCount()).toBe(killsBefore + 1);
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+    });
+
+    it('an unanswered handshake times out after 30 s and is a spawn failure', async () => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(getSidecarStatus()).toBe('starting');
+      await vi.advanceTimersByTimeAsync(1);
+      await starting;
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(restartReasons()).toEqual(['handshake-failed']);
+    });
+
+    it('a sidecar that keeps timing out ends failed, though its failures are further apart than the crash-loop window', async () => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+
+      // One 30 s budget plus the 500 ms backoff per attempt: only two of these
+      // ever sit inside the 60 s window, so the window alone would restart for
+      // ever.
+      for (let attempt = 0; attempt < 4; attempt++) await vi.advanceTimersByTimeAsync(30_500);
+      await starting;
+
+      expect(getSidecarStatus()).toBe('failed');
+      expect(spawnCallCount()).toBe(4);
+      expect(restartReasons()).toEqual(['handshake-failed', 'handshake-failed', 'handshake-failed']);
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportError).toHaveBeenCalledWith(
+        'sidecar_crash',
+        'handshake-failed',
+        undefined,
+        undefined,
+        'Sidecar crash-looped: 4 starts in a row whose handshake failed',
+      );
+    });
+
+    it('a process that closes during the handshake counts as one failure, not two', async () => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+
+      emitClose();
+      await starting;
+
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(restartEvents()).toEqual([{
+        sidecarId: 'abu-sidecar',
+        reason: 'handshake-failed',
+        attemptCount: 1,
+        stage: 'restarting',
+        outcome: 'error',
+      }]);
+    });
+
+    it('a handshake line that cannot be written is a spawn failure', async () => {
+      mockSilentSidecar();
+      invoke.mockImplementation((cmd: string) => cmd === 'mcp_write'
+        ? Promise.reject(new Error('pipe closed'))
+        : Promise.resolve(undefined));
+
+      await startSidecar();
+
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(restartEvents()).toEqual([{
+        sidecarId: 'abu-sidecar',
+        reason: 'handshake-failed',
+        attemptCount: 1,
+        stage: 'restarting',
+        outcome: 'error',
+      }]);
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+    });
+
+    it('a close that arrives in the same batch as the answer keeps the sidecar out of running', async () => {
+      let dedicatedHandler: ((event: ShellEvent) => void) | undefined;
+      const getSidecarBridgeSnapshot = vi.fn();
+      (window as Window & { __ABU_SHELL__?: unknown }).__ABU_SHELL__ = {
+        mainSupervisesSidecar: true,
+        subscribeSidecarEvents: (handler: (event: ShellEvent) => void) => {
+          dedicatedHandler = handler;
+          return () => {};
+        },
+        getSidecarBridgeSnapshot,
+      };
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+
+      // A first event sets the cursor; the next one leaves a gap, so main's
+      // replay hands both the answer and the close to one synchronous loop.
+      dedicatedHandler?.({ type: 'error', payload: '[sidecar:test] [info] boot', sequence: 1, generation: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      getSidecarBridgeSnapshot.mockResolvedValue({
+        version: 1,
+        sidecarId: 'abu-sidecar',
+        generation: 1,
+        bridgeStatus: 'running',
+        firstAvailableSequence: 2,
+        lastSequence: 4,
+        truncated: false,
+        events: [
+          {
+            type: 'message',
+            payload: JSON.stringify({ jsonrpc: '2.0', id: handshakeWrites()[0].id, result: HANDSHAKE_OK }),
+            sequence: 2,
+            generation: 1,
+          },
+          { type: 'close', payload: '', sequence: 3, generation: 1 },
+        ],
+        runs: [],
+      });
+      dedicatedHandler?.({ type: 'error', payload: '[sidecar:test] [info] live', sequence: 4, generation: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      await starting;
+
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+      expect(restartReasons()).toEqual(['handshake-failed']);
+    });
+
+    it('a throwing tracer never holds a healthy sidecar short of running', async () => {
+      mockHappyPath();
+      traceRuntimeEvent.mockImplementation((name: string) => {
+        if (name === 'renderer.sidecar_handshake_completed') throw new Error('tracer exploded');
+      });
+
+      await startSidecar();
+
+      expect(getSidecarStatus()).toBe('running');
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(true);
+    });
+
+    it('a sidecar that never completes a handshake ends failed through the crash-loop policy', async () => {
+      mockSilentSidecar();
+      invoke.mockImplementation(answeringHandshake(undefined, { ...HANDSHAKE_OK, protocolVersion: 3 }));
+      await startSidecar();
+      // Three restarts are allowed inside the window; the fourth failure gives up.
+      for (let attempt = 0; attempt < 3; attempt++) await vi.advanceTimersByTimeAsync(500);
+      expect(getSidecarStatus()).toBe('failed');
+      expect(spawnCallCount()).toBe(4);
+    });
+
+    it('forgets the capabilities when the process closes', async () => {
+      mockHappyPath();
+      await startSidecar();
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(true);
+      emitClose();
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+    });
+
+    it('a stop during the handshake ends stopped, never running', async () => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+      await stopSidecar();
+      await starting;
+      expect(getSidecarStatus()).toBe('stopped');
     });
   });
 });

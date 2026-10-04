@@ -128,4 +128,63 @@ describe('Select menu geometry', () => {
     expect(menu?.style.width).toBe('');
     expect(menu?.className).toContain('min-w-[240px]');
   });
+
+  /**
+   * The rule that makes the line above mean anything.
+   *
+   * A ghost menu has no measured width, so the browser sizes it from its
+   * content. While an option row was `w-full`, that content width was defined
+   * in terms of the menu's own width — the row asks for 100% of a box whose
+   * size is still being decided — and the browser settles the loop with the
+   * space that happens to be available. In the account popover, right-anchored
+   * to a 74px trigger 231px from the window edge, that produced a 231px menu
+   * with 130px of blank space, hanging past the popover's left edge.
+   *
+   * Rows fill the menu by stretching inside its flex column instead. happy-dom
+   * does no layout, so what is pinned here is the rule, not a measurement.
+   */
+  it('sizes a ghost menu from its labels — no option row states a percentage width', async () => {
+    const user = userEvent.setup();
+    stubTriggerRect();
+
+    render(
+      <Select variant="ghost" value="ask" options={OPTIONS} onChange={() => {}} ariaLabel="快捷设置" />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /快捷设置/ }));
+
+    const menu = screen.getByRole('button', { name: /允许/ }).parentElement;
+    expect(menu?.className).toContain('flex-col');
+    const rows = menu?.querySelectorAll('button[data-value]') ?? [];
+    expect(rows.length).toBe(OPTIONS.length);
+    for (const row of rows) {
+      expect(row.className).not.toContain('w-full');
+    }
+  });
+
+  /** Grouped options sit one level deeper, so the group has to stretch its
+   *  rows the same way the menu stretches a flat list. */
+  it('stretches grouped rows too — each group is a column of its own', async () => {
+    const user = userEvent.setup();
+    stubTriggerRect();
+
+    render(
+      <Select
+        variant="inline"
+        value="allow"
+        options={[
+          { label: '常用', options: [OPTIONS[0], OPTIONS[1]] },
+          { label: '其他', options: [OPTIONS[2]] },
+        ]}
+        onChange={() => {}}
+        ariaLabel="分组设置"
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /分组设置/ }));
+
+    const row = screen.getByRole('button', { name: /拒绝/ });
+    expect(row.className).not.toContain('w-full');
+    expect(row.parentElement?.className).toContain('flex-col');
+  });
 });

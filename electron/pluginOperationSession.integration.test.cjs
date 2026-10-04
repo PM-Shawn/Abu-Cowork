@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createOperationSession } = require('./pluginOperationSession.cjs');
+const { identityOf, statIdentitySync } = require('./fileIdentity.cjs');
 
 test('one live session excludes another reader and releases only after its writes finish', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-operation-session-'));
@@ -14,10 +15,10 @@ test('one live session excludes another reader and releases only after its write
   try {
     await first.ready();
     await assert.rejects(concurrent.ready(), /another write is active/);
-    const info = fs.statSync(home);
-    await first.mutate({ home, identity: { ino: info.ino, dev: info.dev }, parent: ['.abu', 'plugin-operations'],
+    const info = statIdentitySync(home);
+    await first.mutate({ home, identity: info, parent: ['.abu', 'plugin-operations'],
       action: 'write', temp: 'sample.tmp', to: 'active.enc', bytes: Buffer.from('committed journal').toString('base64') });
-    await first.registry({ home, identity: { ino: info.ino, dev: info.dev }, action: 'upsert', request: {
+    await first.registry({ home, identity: info, action: 'upsert', request: {
       record: { key: 'demo@market', name: 'demo', marketplace: 'market', version: '1', checksum: 'sample',
         contributed: { skills: [], agents: [], mcpServers: [] } } } });
     await first.close();
@@ -39,8 +40,8 @@ for (const relative of ['.abu', '.abu/plugin-operations']) {
       const replaced = path.join(home, relative);
       fs.renameSync(replaced, `${replaced}-old`);
       fs.mkdirSync(path.join(home, '.abu', 'plugin-operations'), { recursive: true });
-      const identity = fs.statSync(home);
-      await assert.rejects(session.mutate({ home, identity: { ino: identity.ino, dev: identity.dev },
+      const identity = statIdentitySync(home);
+      await assert.rejects(session.mutate({ home, identity,
         parent: ['.abu', 'plugin-operations'], action: 'write', temp: 'new.tmp', to: 'active.enc',
         bytes: Buffer.from('must not be written').toString('base64') }), /lease directory changed/);
       assert.equal(fs.existsSync(path.join(home, '.abu', 'plugin-operations', 'active.enc')), false);
@@ -61,10 +62,13 @@ test('tree publication refuses a parent replaced while entering it', () => {
       const path = require('node:path');
       const assert = require('node:assert/strict');
       const { run } = require(process.argv[1]);
+      // The identities the worker receives are the decimal-string pairs a real
+      // caller sends over JSON, not live \`Stats\` (electron/fileIdentity.cjs).
+      const { statIdentitySync } = require(path.join(path.dirname(process.argv[1]), 'fileIdentity.cjs'));
       const [home, outside, parent] = process.argv.slice(2);
       process.chdir(home);
-      const identity = fs.statSync('.');
-      const parentIdentity = fs.statSync(parent);
+      const identity = statIdentitySync('.');
+      const parentIdentity = statIdentitySync(parent);
       const chdir = name => {
         if (name === 'agents') {
           // Replace the parent while the worker is still in .abu. Windows
@@ -99,10 +103,13 @@ test(process.platform === 'win32'
       const path = require('node:path');
       const assert = require('node:assert/strict');
       const { run } = require(process.argv[1]);
+      // As above: identities cross to the worker as decimal strings.
+      const { statIdentitySync, lstatIdentitySync, sameIdentity } =
+        require(path.join(path.dirname(process.argv[1]), 'fileIdentity.cjs'));
       const [home, outside, parent] = process.argv.slice(2);
       process.chdir(home);
-      const identity = fs.statSync('.');
-      const parentIdentity = fs.statSync(parent);
+      const identity = statIdentitySync('.');
+      const parentIdentity = statIdentitySync(parent);
       let attempted = false;
       const io = { ...fs, mkdirSync(name, ...args) {
         if (name === '.incoming') {
@@ -116,10 +123,8 @@ test(process.platform === 'win32'
         action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, io);
       if (process.platform === 'win32') {
         assert.throws(publish, { code: 'EBUSY', syscall: 'rename' });
-        const after = fs.lstatSync(parent);
-        assert.equal(after.isSymbolicLink(), false);
-        assert.equal(after.ino, parentIdentity.ino);
-        assert.equal(after.dev, parentIdentity.dev);
+        assert.equal(fs.lstatSync(parent).isSymbolicLink(), false);
+        assert.equal(sameIdentity(lstatIdentitySync(parent), parentIdentity), true);
         assert.equal(fs.existsSync(parent + '-old'), false);
         assert.deepEqual(fs.readdirSync(parent), []);
       } else {
@@ -147,8 +152,8 @@ test('an explicit reopen restarts a killed worker, and a disposed session stays 
   const session = createOperationSession(home);
   try {
     await session.ready();
-    const info = fs.statSync(home);
-    const write = value => session.mutate({ home, identity: { ino: info.ino, dev: info.dev },
+    const info = statIdentitySync(home);
+    const write = value => session.mutate({ home, identity: info,
       parent: ['.abu', 'plugin-operations'], action: 'write', temp: `${value}.tmp`, to: 'active.enc',
       bytes: Buffer.from(value).toString('base64') });
     await write('before');

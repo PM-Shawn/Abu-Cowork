@@ -9,6 +9,7 @@ export type RunRootCause =
   | 'start_ack'
   | 'user_stopped'
   | 'payload_too_large'
+  | 'history_unavailable'
   | 'sidecar_unavailable'
   | 'runtime_failure'
   | 'unknown';
@@ -122,11 +123,13 @@ function classifyOutcome(events: RunTimelineEvent[]): RunTerminalOutcome {
 
 function classifyRootCause(events: RunTimelineEvent[], outcome: RunTerminalOutcome): RunRootCause {
   if (outcome === 'interrupted') return 'user_stopped';
-  // #549: both causes are read from `stage` only. `errorType` is not stable for
-  // an oversize payload — a renderer-side pre-check throws PayloadTooLargeError
-  // while the sidecar returns a SidecarRequestError — and it names the transport
-  // error, not the reason, when the sidecar never became available.
+  // #549: all three causes are read from `stage` only. `errorType` is not
+  // stable for an oversize payload — a renderer-side pre-check throws
+  // PayloadTooLargeError while the sidecar returns a SidecarRequestError — and
+  // it names the transport error, not the reason, when the sidecar never became
+  // available.
   if (events.some((event) => event.stage === 'payload_too_large')) return 'payload_too_large';
+  if (events.some((event) => event.stage === 'history_unavailable')) return 'history_unavailable';
   if (events.some((event) => event.stage === 'sidecar_unavailable')) return 'sidecar_unavailable';
   if (events.some((event) => event.errorType?.includes('contextbudget'))) return 'context_budget';
   if (events.some((event) => (

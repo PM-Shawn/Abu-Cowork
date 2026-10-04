@@ -26,6 +26,8 @@
  * and subagentRunner.ts (shell side) for the full wire-protocol doc.
  *
  * Methods:
+ *   - `handshake` → { protocolVersion, sidecarVersion, capabilities } — the
+ *     shell's first request after spawn; see handshake.ts.
  *   - `ping` → { pong: true, pid, uptimeMs }
  *   - `echo` → returns `params` verbatim as `result`
  *   - `llm.chat` → runs one streaming LLM call to completion; see llmHost.ts.
@@ -137,6 +139,7 @@ import {
   handleStatePlanMode,
   shutdownAllAgentRuns,
 } from './agentLoopHost';
+import { handleHandshake } from './handshake';
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import { isAuthorizedE2ECrash } from './e2eCrashGate';
 import { applyEnterpriseEntitlementSnapshot } from './enterpriseEntitlementMirror';
@@ -270,6 +273,12 @@ function handleMessage(raw: string): void {
     }
     log('authenticated E2E crash requested');
     process.exit(86);
+  }
+
+  if (method === 'handshake') {
+    if (isNotification) return; // must be a request — the shell waits for the answer
+    runAsyncRequest(id, async () => handleHandshake(params));
+    return;
   }
 
   if (method === 'ping') {

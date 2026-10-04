@@ -82,6 +82,8 @@ vi.mock('../../stores/chatStore', () => ({
 const mockRunAgentLoop = vi.fn();
 vi.mock('../agent/agentLoop', () => ({
   runAgentLoop: (...args: unknown[]) => mockRunAgentLoop(...args),
+  // IM entry points do not capture the user's foreground desktop target.
+  isInteractiveDesktop: () => false,
 }));
 
 vi.mock('../agent/agentLoopRunner', () => ({
@@ -1090,6 +1092,11 @@ describe('IMChannelRouter', () => {
         'dispatch_failed',
         { error: '发送失败' },
         'Abu 处理出错: 发送失败',
+      ],
+      [
+        'history_unavailable',
+        { error: '读取对话记录失败' },
+        'Abu 处理出错: 读取对话记录失败',
       ],
     ])('#549: %s on a later turn answers the new question, not the old one', async (name, ending, reply) => {
       const convId = `conv-earlier-${name}`;

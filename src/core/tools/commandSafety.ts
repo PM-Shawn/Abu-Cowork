@@ -608,10 +608,55 @@ const SAFE_PATTERNS: RegExp[] = [
  * Analyze a single (non-compound) command segment.
  * Internal helper — does NOT split on compound operators.
  */
+/**
+ * A shell command that types, clicks, or brings a window forward.
+ *
+ * Computer Use asks before it sends a message, deletes something or changes a
+ * setting. A script that drives the same window reaches the same outcome with
+ * none of that. Measured on 2026-09-14: refused by Computer Use, the model
+ * wrote a Python ctypes script calling `keybd_event` and got there anyway.
+ *
+ * This is a confirmation, in the same class as the `rundll32` and
+ * `mshta vbscript:` entries — all of them are avoidable by someone who wants
+ * to, and none of them is a boundary. What it buys is that a command about to
+ * type on the user's keyboard says so before it runs.
+ *
+ * Both platforms' spellings are listed together because the command names
+ * identify themselves; a macOS-only `xdotool` on Windows is still a command
+ * asking to drive the screen.
+ */
+function screenDrivingCommand(segment: string): string | null {
+  const t = getI18n().toolResult.commandSafety;
+  // The identifier has to be used, not merely mentioned: a call bracket, an
+  // attribute dot, or a .NET member access. A folder called
+  // `sendinput-notes` is a file name, and asking about it would train the
+  // user to click through the very prompt this exists to raise.
+  const called = /\b(keybd_event|mouse_event|SendInput|SendKeys|pyautogui|pynput)\s*[(.\]]|::\s*(SendWait|SendInput)\b/i;
+  if (called.test(segment)) return t.dangerSynthesizeInput;
+  // Standalone tools, which appear as the command word rather than a call.
+  if (/(^|[;&|]\s*)(sudo\s+)?(xdotool|ydotool|cliclick)\s/i.test(segment)) {
+    return t.dangerSynthesizeInput;
+  }
+  if (/\b(AppActivate|SetForegroundWindow)\s*\(/i.test(segment)) return t.dangerDriveWindow;
+  if (/osascript[\s\S]*\b(keystroke|key code)\b/i.test(segment)) return t.dangerSynthesizeInput;
+  if (/osascript[\s\S]*System Events[\s\S]*\bclick\b/i.test(segment)) return t.dangerDriveWindow;
+  return null;
+}
+
 function analyzeSegment(segment: string): CommandAnalysis {
   const trimmed = segment.trim();
   const normalized = normalizeCommand(trimmed);
   const readOnly = isReadOnlyCommand(trimmed);
+
+  // Typing and clicking is checked before the safe list, because the safe
+  // list matches on the program being run and these commands hide inside a
+  // program that is ordinarily fine: `python` and `powershell` are both on it,
+  // so `python -c "import pyautogui; pyautogui.click(…)"` would short-circuit
+  // to safe on its first word.
+  const drivesTheScreen = screenDrivingCommand(trimmed);
+  if (drivesTheScreen) {
+    return { level: 'danger', reason: drivesTheScreen, readOnly: false };
+  }
 
   // Build platform-aware safe pattern list
   const safePatterns = isWindows() ? [...SAFE_PATTERNS, ...WIN_SAFE_PATTERNS] : SAFE_PATTERNS;

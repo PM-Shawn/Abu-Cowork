@@ -259,7 +259,10 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
         triggerRef.current?.focus();
       }}
       className={cn(
-        'w-full px-3 py-2 text-body text-left transition-colors',
+        // 行宽靠菜单的 flex 列拉伸得到，不用 `w-full`。百分比宽度会让菜单的内容
+        // 宽度取决于菜单自己的宽度：菜单问行要多宽，行回答「你的 100%」，于是浏
+        // 览器拿可用空间当答案。没有明确宽度的 ghost 菜单因此一路撑到窗口边缘。
+        'px-3 py-2 text-body text-left transition-colors',
         opt.disabled
           ? 'cursor-not-allowed opacity-60'
           : 'hover:bg-[var(--abu-bg-muted)]',
@@ -359,21 +362,28 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
         shrink-to-fit, and only there does the min-width floor decide
         anything — an option with a description needs more room than a
         borderless value is ever going to be.
+
+        `data-portal-menu` is how a surrounding popover recognises this menu as
+        its own: leaving the stacking context also leaves the popover's DOM
+        subtree, so a popover that closes on any mousedown outside itself would
+        close on the press that picks an option — and unmount the option before
+        its click ever arrives. See `PORTAL_MENU_SELECTOR`.
       */}
       {open && createPortal(
         <div
           ref={menuRef}
           id={dropdownId}
+          data-portal-menu="select"
           onKeyDown={handleMenuKeyDown}
           style={menuStyle}
           className={cn(
-            'fixed py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg overflow-auto',
+            'fixed flex flex-col py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg overflow-auto',
             !menuHugsTrigger && (hasDescriptions ? 'min-w-[240px]' : 'min-w-[140px]'),
           )}
         >
           {isGrouped(options) ? (
             options.map((group, gi) => (
-              <div key={group.label}>
+              <div key={group.label} className="flex flex-col">
                 {gi > 0 && <div className="my-1 border-t border-[var(--abu-border)]" />}
                 <div className="px-3 py-1.5 text-minor font-medium text-[var(--abu-text-muted)] select-none">
                   {group.label}

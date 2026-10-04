@@ -7,6 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   MAX_DELEGATED_MEDIA_BYTES,
+  isOpaqueId,
   persistDelegatedMedia,
   readDelegatedMedia,
 } = require('./delegatedMediaHost.cjs');
@@ -162,4 +163,15 @@ test('caps delegated media before disk persistence without a PDF-specific larger
     () => persistDelegatedMedia(appDataDir, { conversationId: 'conv_1', mediaType: 'application/pdf', bytes: oversizedPdf }),
     /too large/i,
   );
+});
+
+test('the conversation-id fixtures agree with isOpaqueId', () => {
+  const fixtures = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '../src/core/session/__fixtures__/conversationId.fixtures.json'), 'utf8'));
+  for (const value of fixtures.accepted) assert.equal(isOpaqueId(value), true, value);
+  for (const { value } of fixtures.rejectedByBoth) assert.equal(isOpaqueId(value), false, JSON.stringify(value));
+  for (const value of fixtures.notStrings) assert.equal(isOpaqueId(value), false);
+  // Names the conversation grammar removes on top: main accepts them, so a
+  // conversation id is always a valid opaque id and never the reverse.
+  for (const { value } of fixtures.rejectedByConversationGrammarOnly) assert.equal(isOpaqueId(value), true, value);
 });

@@ -1,0 +1,31 @@
+{
+  "name": "unsafe-skill-name",
+  "version": "1.0.0",
+  "minAbuVersion": "0.51.0",
+  "interface": { "displayName": "Unsafe skill", "shortDescription": "a skill name no installer accepts", "logo": "assets/logo.png", "logoDark": "assets/logo-dark.png" },
+  "app": {
+    "version": 1,
+    "home": {
+      "modes": {
+        "items": [
+          {
+            "modeId": "only",
+            "title": "Only mode",
+            "scenes": [
+              {
+                "id": "scene",
+                "title": "Scene",
+                "run": { "skill": "../../evil name " },
+                "templates": [
+                  { "id": "a", "title": "A", "prompt": "A" },
+                  { "id": "b", "title": "B", "prompt": "B" },
+                  { "id": "c", "title": "C", "prompt": "C" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

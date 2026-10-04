@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyError,
+  extractContextLimit,
+  isContextOverflowMessage,
   LLMError,
   formatLlmDisplayError,
   formatLlmTerminalError,
@@ -100,6 +102,38 @@ describe('adapter', () => {
       const err = classifyError(429, 'Rate limit, retry after: 30 seconds');
       expect(err.code).toBe('rate_limit');
       expect(err.retryAfterMs).toBe(30000);
+    });
+
+    // The gateway answers 429 for a spent budget too, and that one does not
+    // clear by waiting: retrying it costs a minute of backoff and reports the
+    // same answer the first response already carried.
+    it('429 naming a spent budget → quota_exceeded (not retryable)', () => {
+      const err = classifyError(429, JSON.stringify({
+        error: {
+          message: '本组织本周期预算已用完（1.0160 / 1.00 美元），请联系管理员调整',
+          type: 'invalid_request_error',
+          code: 'quota_exceeded',
+          level: 'org',
+          limit: 1,
+          spent: 1.016,
+          reset_at: '2026-10-01T00:00:00.000Z',
+        },
+      }));
+      expect(err.code).toBe('quota_exceeded');
+      expect(err.retryable).toBe(false);
+      expect(err.statusCode).toBe(429);
+    });
+
+    it('429 naming per-minute throttling stays retryable', () => {
+      const err = classifyError(429, JSON.stringify({
+        error: {
+          message: '本部门每分钟请求数已达上限，请稍后再试',
+          type: 'invalid_request_error',
+          code: 'rate_limit_exceeded',
+        },
+      }));
+      expect(err.code).toBe('rate_limit');
+      expect(err.retryable).toBe(true);
     });
 
     it('529 → overloaded (retryable)', () => {
@@ -437,5 +471,62 @@ describe('adapter', () => {
       const err = classifyError(429, 'Rate limit exceeded');
       expect(err.retryAfterMs).toBeUndefined();
     });
+  });
+});
+
+describe('context overflow', () => {
+  it('classifies llama.cpp "larger than the max context size" as context_too_long', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: { code: 400, message: 'input (9000 tokens) is larger than the max context size (8192 tokens). skipping', type: 'exceed_context_size_error' },
+    }));
+    expect(err.code).toBe('context_too_long');
+    expect(err.contextLimit).toBe(8192);
+  });
+
+  it('prefers the structured n_ctx field over the sentence', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: {
+        code: 400,
+        message: 'request (9000 tokens) exceeds the available context size (9999 tokens), try increasing it',
+        type: 'exceed_context_size_error',
+        n_prompt_tokens: 9000,
+        n_ctx: 8192,
+      },
+    }));
+    expect(err.contextLimit).toBe(8192);
+  });
+
+  it.each([
+    ['OpenAI', "This model's maximum context length is 16385 tokens. However, your messages resulted in 20000 tokens.", 16385],
+    ['llama.cpp', 'request (9000 tokens) exceeds the available context size (8192 tokens), try increasing it', 8192],
+    ['Ollama', 'The prompt is too long: 9000, model maximum context length: 4096', 4096],
+  ])('reads the limit from the %s sentence', (_label, message, limit) => {
+    expect(extractContextLimit('', message)).toBe(limit);
+  });
+
+  it('leaves the limit empty when nothing names it', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: { message: 'the prompt is longer than the context length currently available to the model' },
+    }));
+    expect(err.code).toBe('context_too_long');
+    expect(err.contextLimit).toBeUndefined();
+  });
+
+  it('never attaches a limit to other errors', () => {
+    expect(classifyError(429, JSON.stringify({ error: { message: 'maximum context length is 8192 tokens' } })).contextLimit).toBeUndefined();
+  });
+
+  it('exposes the overflow wording test for stream errors', () => {
+    expect(isContextOverflowMessage('the prompt is longer than the context length currently available')).toBe(true);
+    expect(isContextOverflowMessage('model runner crashed')).toBe(false);
+  });
+});
+
+describe('Ollama-shaped error bodies', () => {
+  it('reads a plain string error as the message and the summary', () => {
+    const err = classifyError(404, JSON.stringify({ error: "model 'x' not found" }));
+    expect(err.code).toBe('not_found');
+    expect(err.message).toBe("model 'x' not found");
+    expect(err.upstream?.summary).toBe("model 'x' not found");
   });
 });

@@ -22,6 +22,7 @@ export const SECRET_KEYS = {
   auxWebSearch: 'aux:webSearch',
   auxImageGen: 'aux:imageGen',
   imageGenBackend: (id: string) => `imagegen:${id}`,
+  accountCredentials: 'account:credentials:v1',
 } as const;
 
 export async function getSecret(key: string): Promise<string | null> {

@@ -13,7 +13,7 @@ const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
 async function openSecurity(page: Page) {
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-  await page.getByRole('button', { name: /^(我|Me)$/ }).first().click();
+  await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
   await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
   await page.getByRole('button', { name: '安全', exact: true }).click();
   await expect(page.getByText('默认权限模式', { exact: true })).toBeVisible();

@@ -163,6 +163,8 @@ import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
+import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
+import type { ComputerUseModelTier, ModelCapabilitySource } from '../llm/modelCapabilities';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
@@ -192,11 +194,15 @@ export interface SerializableToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
+  execution?: ToolDefinition['execution'];
 }
 
 /** Exported for reuse by agentLoopRunner.ts's `tool.list` REQUEST handler (P1-3b-2 item 5) — same wire-safe tool projection, no need for a second copy. */
 export function toSerializableTool(t: ToolDefinition): SerializableToolDefinition {
-  return { name: t.name, description: t.description, inputSchema: t.inputSchema };
+  return {
+    name: t.name, description: t.description, inputSchema: t.inputSchema,
+    ...(t.execution ? { execution: t.execution } : {}),
+  };
 }
 
 /** The `subagent.run` request params — see this file's module doc for the wire protocol. */
@@ -376,6 +382,14 @@ interface RunSession {
   imReplyTarget?: { platform: string; chatId: string };
   /** Frozen shell-side mirror of the roster sent to the sidecar loop. */
   offeredToolNames: ReadonlySet<string>;
+  /**
+   * 子代理实际使用的模型、能力来源、电脑操控档位与能否看图。外壳用派发时的设置快照
+   * 算出，工具执行时以这份为准，不用 sidecar 发来的副本。
+   */
+  modelId: string;
+  modelCapabilitySource: ModelCapabilitySource;
+  computerUseTier: ComputerUseModelTier;
+  supportsVision: boolean;
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
   firstToolInvokeArrived: boolean;
   /** Progress received before the sidecar run reaches a no-rerun commit point. */
@@ -403,6 +417,9 @@ function buildTrustedSubagentToolContext(
     agentRunId: session.runId,
     agentName: session.options.agent.name,
     teamApprovalDispatch: session.options.teamApprovalDispatch,
+    // The team task keys the leader's hand-off bounds; a member never
+    // dispatches, and a sidecar-supplied value must not reach that key.
+    teamTaskId: undefined,
     imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
     interactionMode: resolveSubagentInteractionMode(session.options),
     // Inherited from the parent run at delegation time — the sidecar's copy
@@ -415,6 +432,13 @@ function buildTrustedSubagentToolContext(
     reportBrowserDenial: session.options.reportBrowserDenial,
     reportBrowserAllow: session.options.reportBrowserAllow,
     abortSignal: session.options.signal,
+    // 本次运行给子代理的工具名单由 shell 自己保存，不用 sidecar 发来的副本
+    offeredToolNames: [...session.offeredToolNames],
+    // 模型、档位与能否看图决定电脑操控放不放行、提示里写哪个模型，同样用 shell 自己算的值
+    modelId: session.modelId,
+    modelCapabilitySource: session.modelCapabilitySource,
+    computerUseTier: session.computerUseTier,
+    supportsVision: session.supportsVision,
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
     commandConfirmCallback: session.options.commandConfirmCallback,
@@ -983,6 +1007,10 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     ...withPreloadedSkills,
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
+  // 算法与子代理循环相同，输入是派发给 sidecar 的完整设置快照；sidecar 里的循环读取共享
+  // 设置镜像、只把 activeModel 固定为这份快照里的值（sidecar/src/subagentHost.ts）。
+  // 工具执行时以这里的结果为准。
+  const delegatedCapabilities = resolveDelegatedModelCapabilities(options.agent.model, params.settingsSnapshot);
   const session: RunSession = {
     runId,
     options: sessionOptions,
@@ -997,6 +1025,10 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         options.blockedTools,
       ).map((tool) => tool.name),
     ),
+    modelId: delegatedCapabilities.modelId,
+    modelCapabilitySource: delegatedCapabilities.capabilitySource,
+    computerUseTier: delegatedCapabilities.computerUseTier,
+    supportsVision: delegatedCapabilities.vision,
     firstToolInvokeArrived: false,
     bufferedProgress: [],
     progressApplyTail: Promise.resolve(),

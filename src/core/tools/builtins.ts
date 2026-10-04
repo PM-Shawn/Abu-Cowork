@@ -3,7 +3,7 @@ import { preparePluginTool } from './definitions/pluginTools';
 import { toolRegistry } from './registry';
 
 // --- File tools ---
-import { readFileTool, writeFileTool, editFileTool, deleteFileTool, listDirectoryTool, searchFilesTool, findFilesTool } from './definitions/fileTools';
+import { readFileTool, writeFileTool, editFileTool, deleteFileTool, listDirectoryTool, searchFilesTool, findFilesTool, checkOpenDocumentTool } from './definitions/fileTools';
 
 // --- Command tools ---
 import { runCommandTool } from './definitions/commandTools';
@@ -74,6 +74,11 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(runCommandTool);
   toolRegistry.register(searchFilesTool);
   toolRegistry.register(findFilesTool);
+  // Registered on every platform, like computerTool, rather than behind
+  // isWindows() — registration runs at startup and must not depend on
+  // initPlatform() having landed first. The description leads with "Windows
+  // only" so a model on macOS drops it after one read.
+  toolRegistry.register(checkOpenDocumentTool);
   toolRegistry.register(useSkillTool);
   toolRegistry.register(readSkillFileTool);
   toolRegistry.register(reportPlanTool);

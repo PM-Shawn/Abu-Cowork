@@ -570,6 +570,39 @@ ipcRenderer.on(SIDECAR_EVENT_CHANNEL, (_e, event) => {
   for (const callback of sidecarEventCallbacks) deliverSidecarEvent(callback, event);
 });
 
+const SPEECH_CHANNEL = 'abu:speech';
+const SPEECH_EVENT_CHANNEL = 'abu:speech-event';
+const SPEECH_ACTIONS = new Set(['status', 'prepare', 'cancel', 'delete', 'transcribe']);
+// 150 s of 16 kHz mono PCM16 + header; the host re-validates the WAV itself.
+const MAX_SPEECH_AUDIO_BYTES = 44 + 150 * 16000 * 2;
+const speechEventCallbacks = new Set();
+
+function invokeSpeech(action, request = {}) {
+  if (!SPEECH_ACTIONS.has(action)) return Promise.reject(new Error('Speech: unsupported action'));
+  if (action !== 'transcribe') {
+    const source = request && typeof request.source === 'string' ? request.source : undefined;
+    return ipcRenderer.invoke(SPEECH_CHANNEL, { action, request: source ? { source } : {} });
+  }
+  const audio = request && request.audio;
+  if (!(audio instanceof Uint8Array) || audio.byteLength > MAX_SPEECH_AUDIO_BYTES) {
+    return Promise.reject(new Error('Speech: audio must be a WAV byte array within the recording limit'));
+  }
+  const language = typeof request.language === 'string' ? request.language : 'auto';
+  return ipcRenderer.invoke(SPEECH_CHANNEL, { action, request: { audio, language } });
+}
+
+function subscribeSpeechEvents(callback) {
+  if (typeof callback !== 'function') throw new TypeError('Speech event callback must be a function');
+  speechEventCallbacks.add(callback);
+  return () => speechEventCallbacks.delete(callback);
+}
+
+ipcRenderer.on(SPEECH_EVENT_CHANNEL, (_event, payload) => {
+  for (const callback of speechEventCallbacks) {
+    try { callback(payload); } catch { /* a renderer listener must not break the others */ }
+  }
+});
+
 contextBridge.exposeInMainWorld('__TAURI_INTERNALS__', {
   invoke,
   transformCallback: (cb, once = false) => {
@@ -595,12 +628,41 @@ contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sen
 // its own renderer heartbeat. This global is exposed ONLY here (Electron) —
 // under Tauri it's simply absent, which is exactly what tells sidecarManager
 // to fall back to running its own renderer heartbeat.
+// Which deep-link scheme this shell registered with the OS ('abu' packaged,
+// 'abu-dev' unpackaged — see electron/deepLinkHost.cjs). Passed in via
+// webPreferences.additionalArguments so it's readable synchronously here; the
+// renderer needs it while assembling an OAuth `redirect_uri`, and getting that
+// wrong sends the authorization code to a DIFFERENT Abu install.
+function readDeepLinkScheme() {
+  const flag = '--abu-deep-link-scheme=';
+  // Every real preload has `process`. The preload-surface tests
+  // (securityBoundary.test.cjs, ipcRawBody.test.cjs) evaluate this file in a
+  // bare VM sandbox that withholds the Node globals on purpose, and the whole
+  // bridge must stay constructible there — the same reason the localStorage
+  // work above tolerates its global being absent. No flag and no `process`
+  // land on the same production default below.
+  const argv = typeof process === 'undefined' ? [] : process.argv;
+  const arg = argv.find(a => a.startsWith(flag));
+  const value = arg ? arg.slice(flag.length) : '';
+  // Only ever the two schemes the shell can register; anything else falls back
+  // to the production scheme rather than propagating a bogus redirect_uri.
+  return value === 'abu-dev' || value === 'abu' ? value : 'abu';
+}
+
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   mainSupervisesSidecar: true,
+  deepLinkScheme: readDeepLinkScheme(),
   pluginAuthor: (action, request) => ipcRenderer.invoke('abu:plugin-author', { action, request }),
+  // App pages: the renderer names a plugin and a nav item, never a URL (appPageHost.cjs).
+  appPage: (action, request) => ipcRenderer.invoke('abu:app-page', { action, request }),
   pluginSnapshot: (action, request) => ipcRenderer.invoke('abu:plugin-snapshot', { action, request }),
-    pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
-    pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
+  pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
+  // Voice input: OS microphone consent status + opening its privacy page (microphonePermissions.cjs).
+  microphone: (action) => ipcRenderer.invoke('abu:microphone', { action }),
+  // Voice input: model status/download and transcription (speechHost.cjs).
+  speech: invokeSpeech,
+  subscribeSpeechEvents,
+  pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,
     { path, followFinalSymlink },

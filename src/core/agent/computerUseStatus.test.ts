@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 // NOT globally mocked — setupAbortListener() already wraps that dynamic
 // import in try/catch, so it degrades harmlessly in tests.
 
+import { emit, listen } from '@tauri-apps/api/event';
 import {
   setComputerUseActive,
   incrementComputerUseStep,
@@ -14,8 +15,14 @@ import {
   setSessionWindowHidden,
   pauseComputerUseStatus,
   checkCUSessionLimits,
+  beginComputerUseConsentPause,
   getCUStatusSnapshot,
   subscribeCUStatus,
+  setComputerUsePhase,
+  setComputerUseContext,
+  updateLatestScreenshot,
+  notePausedByTakeover,
+  getTakeoverPausedConversationId,
 } from './computerUseStatus';
 
 describe('computerUseStatus — per-conversation session table', () => {
@@ -134,6 +141,29 @@ describe('computerUseStatus — per-conversation session table', () => {
       expect(getCUStatusSnapshot().stepCount).toBe(0);
     });
 
+    it('nested consent pause tokens exclude arbitrary human wait exactly once', () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date('2026-09-01T00:00:00Z'));
+        setComputerUseActive(true, 'conv-A');
+        const first = beginComputerUseConsentPause('conv-A');
+        vi.advanceTimersByTime(6 * 60 * 1000);
+        const nested = beginComputerUseConsentPause('conv-A');
+        vi.advanceTimersByTime(6 * 60 * 1000);
+        first.resume();
+        expect(checkCUSessionLimits()).toBeNull();
+        nested.resume();
+        nested.resume(); // idempotent
+
+        vi.advanceTimersByTime(5 * 60 * 1000 - 1);
+        expect(checkCUSessionLimits()).toBeNull();
+        vi.advanceTimersByTime(2);
+        expect(checkCUSessionLimits()).toContain('已超时');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('setCurrentAction/pauseComputerUseStatus are harmless no-ops when idle (no phantom entry created)', () => {
       setCurrentAction('click');
       pauseComputerUseStatus();
@@ -203,5 +233,112 @@ describe('computerUseStatus — per-conversation session table', () => {
       expect(listener).toHaveBeenCalled();
       unsubscribe();
     });
+  });
+});
+
+// ── L5 W3: what the on-screen strip is told ──
+describe('computerUseStatus — chrome status push', () => {
+  const flush = async () => {
+    // emitStatusToOverlay resolves the event module lazily; let it settle.
+    for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const statusPayloads = () => vi.mocked(emit).mock.calls
+    .filter(([event]) => event === 'computer-use-status')
+    .map(([, payload]) => payload as Record<string, unknown>);
+
+  beforeEach(() => {
+    setComputerUseActive(false);
+    vi.mocked(emit).mockClear();
+    vi.mocked(invoke).mockClear();
+  });
+
+  it('pushes step, phase, app and labels — never a screenshot — and only when something shown changed', async () => {
+    setComputerUseActive(true, 'conv-strip');
+    setComputerUseContext({ targetApp: 'Notepad' });
+    setComputerUsePhase('acting');
+    incrementComputerUseStep('click');
+    await flush();
+    const latest = statusPayloads().at(-1);
+    expect(latest).toMatchObject({
+      step: 1,
+      maxSteps: 30,
+      action: 'click',
+      targetApp: 'Notepad',
+      phase: 'acting',
+      mode: 'running',
+    });
+    expect(String(latest?.stepLabel)).toMatch(/1\/30/);
+    expect(typeof latest?.phaseLabel).toBe('string');
+    expect(latest).not.toHaveProperty('latestScreenshot');
+
+    const before = statusPayloads().length;
+    updateLatestScreenshot('iVBORw0KGgo=');
+    await flush();
+    expect(statusPayloads().length).toBe(before);
+
+    setComputerUsePhase('awaiting-approval');
+    await flush();
+    expect(statusPayloads().at(-1)).toMatchObject({ phase: 'awaiting-approval', mode: 'approval' });
+  });
+
+  it('remembers the conversation to resume after a takeover and clears it on dismiss', async () => {
+    notePausedByTakeover('conv-paused');
+    await flush();
+    expect(getTakeoverPausedConversationId()).toBe('conv-paused');
+    const dismissCall = vi.mocked(listen).mock.calls.find(([event]) => event === 'computer-use-dismiss');
+    expect(dismissCall).toBeDefined();
+    (dismissCall?.[1] as (event: unknown) => void)({ payload: { source: 'computer-use-strip' } });
+    await flush();
+    expect(getTakeoverPausedConversationId()).toBeNull();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('computer_use_chrome_dismiss');
+  });
+});
+
+/// Measured on a real run (drawing in Paint): 32 `computer` calls, close to
+/// half of them `get_window_state`, budget exhausted with the drawing never
+/// started. The check-in fired as though thirty things had happened to the
+/// user's desktop. Looking at the screen is not one of those things.
+describe('the step budget counts what Abu does, not what it looks at', () => {
+  beforeEach(() => {
+    setComputerUseActive(false);
+    setComputerUseActive(true, 'conv-budget');
+  });
+
+  it('spends nothing on reading the screen', () => {
+    for (const action of ['get_window_state', 'list_windows', 'screenshot', 'get_app_state', 'get_ui', 'wait']) {
+      incrementComputerUseStep(action);
+    }
+    expect(getCUStatusSnapshot().stepCount).toBe(0);
+    expect(checkCUSessionLimits()).toBeNull();
+  });
+
+  it('still spends on anything that touches the machine', () => {
+    for (const action of ['click', 'type', 'drag', 'key', 'scroll', 'launch_app', 'activate_app']) {
+      incrementComputerUseStep(action);
+    }
+    expect(getCUStatusSnapshot().stepCount).toBe(7);
+  });
+
+  // Raising a window rearranges the user's screen, so it is not "just looking".
+  it('treats activating a window as an action', () => {
+    incrementComputerUseStep('activate');
+    expect(getCUStatusSnapshot().stepCount).toBe(1);
+  });
+
+  it('keeps showing what it is doing while it observes', () => {
+    incrementComputerUseStep('get_window_state');
+    expect(getCUStatusSnapshot().currentAction).toBe('get_window_state');
+  });
+
+  // The whole point: a run that interleaves looking and acting reaches the
+  // check-in after thirty real actions, not after fifteen.
+  it('reaches the limit on actions alone, not on the calls around them', () => {
+    for (let i = 0; i < 29; i++) {
+      incrementComputerUseStep('click');
+      incrementComputerUseStep('get_window_state');
+    }
+    expect(checkCUSessionLimits()).toBeNull();
+    incrementComputerUseStep('click');
+    expect(checkCUSessionLimits()).toMatch(/30/);
   });
 });

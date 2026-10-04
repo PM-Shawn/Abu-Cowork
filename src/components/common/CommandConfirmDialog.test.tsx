@@ -103,11 +103,19 @@ describe('CommandConfirmDialog', () => {
   });
   it.each([
     { allowPersistentGrant: false }, { browserOrigin: undefined },
-    { browserPermissionTargets: [] }, { browserPermissionResource: 'script' as const },
+    { browserPermissionTargets: [] },
     { browserEmbeddedOrigins: Array.from({ length: 6 }, (_, i) => `https://f${i}.example`) },
   ])('cannot offer a permanent grant beyond the request authority: %j', (overrides) => {
     renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: true, ...overrides });
     expect(screen.queryByRole('button', { name: /以后允许/ })).toBeNull();
+  });
+  it('offers to always allow scripts on the site, and writes only the script permission', async () => {
+    const { onConfirm } = renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: true,
+      browserPermissionResource: 'script', browserPermissionTargets: [{ origin: 'https://example.com' }] });
+    await userEvent.setup().click(screen.getByRole('button', { name: '以后在此网站允许执行脚本' }));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    expect(useSettingsStore.getState().browserPermissionConfigV2.sites['https://example.com'])
+      .toEqual({ ...emptyBrowserSiteRule(), script: 'allow' });
   });
   it('a save failure does not approve or hide the pending action', async () => {
     const write = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets').mockResolvedValue(false);
@@ -174,7 +182,7 @@ describe('CommandConfirmDialog', () => {
       expect(onConfirm).not.toHaveBeenCalled();
     });
 
-    it('is offered even when a permanent grant is forbidden (scripting tools)', () => {
+    it('is offered even when a permanent grant is forbidden (e.g. a high-risk site)', () => {
       renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: false });
 
       expect(screen.queryByRole('button', { name: /以后允许/ })).not.toBeInTheDocument();

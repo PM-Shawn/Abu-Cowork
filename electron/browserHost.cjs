@@ -3072,6 +3072,43 @@ async function downloadAutomation(view, payload, owner, signal, beforeDispatch) 
 }
 
 /**
+ * One half of a frozen file identity, kept in the form it arrived in.
+ *
+ * `minimum` is what the field means when it is absent: a device id of 0 is a
+ * real device, a file id of 0 is a filesystem that does not number its files.
+ * Either way an unreadable value becomes `null`, which leaves the size and the
+ * timestamp to identify the file — and `readApprovedUploadFile` refuses
+ * outright when nothing at all is left.
+ *
+ * Mirrored by `approvedFileId` in `abu-browser-bridge/src/locators.ts`, which
+ * is the other sender; the two must read one pin the same way.
+ */
+function approvedFileId(value, minimum) {
+  if (typeof value === 'string') {
+    return /^(?:0|[1-9][0-9]*)$/.test(value) && BigInt(value) >= BigInt(minimum) ? value : null;
+  }
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum ? value : null;
+}
+
+/**
+ * The frozen half against what the descriptor actually reports, compared in
+ * the space the pin was written in.
+ *
+ * An exact pin is a decimal string and is compared exactly. A pin that came
+ * over the wire as a JSON number is compared as a number, which is the same
+ * rounding both of its own sides went through. No pin means nothing to check.
+ *
+ * Mirrored by `sameFileId` in `abu-browser-bridge/src/tools.ts`.
+ *
+ * @param {string | number | null} pin
+ * @param {bigint} actual
+ */
+function sameFileId(pin, actual) {
+  if (pin === null) return true;
+  return typeof pin === 'string' ? String(actual) === pin : Number(actual) === pin;
+}
+
+/**
  * Open ONE approved file and hand back its bytes, or refuse.
  *
  * ## Why this is not `statSync` + `readFileSync` any more (review F1)
@@ -3089,6 +3126,24 @@ async function downloadAutomation(view, payload, owner, signal, beforeDispatch) 
  * against the identity the gate froze (`mtimeMs`, and `ino`/`dev` where the
  * platform has them), and the bytes read from the same handle. Refusing costs
  * the upload; sending the wrong file costs the file.
+ *
+ * ## The file id is 64 bits wide
+ *
+ * An NTFS id packs a record sequence number above the record index, so it
+ * passes 2^53 on a volume whose records have been reused enough — 62 of the
+ * 7621 files in a Windows install directory on the machine this was measured
+ * on. Both ends therefore work in bigints: the gate puts the exact id on the
+ * wire as a decimal string (`electron/fsHost.cjs` `toFileInfo`), and the
+ * `fstat` below is taken with `{ bigint: true }`, so two ids one rounding step
+ * apart — same record sequence number, adjacent record index — stay two files.
+ *
+ * A pin that arrives as a JSON number is compared as a number. That is the
+ * only shape the frozen Tauri shell can produce, its Rust `plugin:fs` putting
+ * a u64 on the wire as a JSON number, and both of ITS sides round the same
+ * 64-bit value the same way, so such a pin decides exactly what it decided
+ * before. Emit one fixed type, accept both on the way in — the same asymmetry
+ * protobuf's JSON mapping specifies for a 64-bit integer. No expression here
+ * mixes a bigint with a number.
  */
 function readApprovedUploadFile(entry) {
   const filePath = entry && typeof entry.path === 'string' ? entry.path : '';
@@ -3097,12 +3152,8 @@ function readApprovedUploadFile(entry) {
   const mtimeMs = entry && typeof entry.mtimeMs === 'number' && Number.isFinite(entry.mtimeMs)
     ? Math.floor(entry.mtimeMs)
     : null;
-  const ino = entry && typeof entry.ino === 'number' && Number.isSafeInteger(entry.ino) && entry.ino > 0
-    ? entry.ino
-    : null;
-  const dev = entry && typeof entry.dev === 'number' && Number.isSafeInteger(entry.dev) && entry.dev >= 0
-    ? entry.dev
-    : null;
+  const ino = approvedFileId(entry && entry.ino, 1);
+  const dev = approvedFileId(entry && entry.dev, 0);
   if (!filePath || !name || size < 0) {
     throw new Error('Refused: the approved file list for this upload was not readable.');
   }
@@ -3132,15 +3183,18 @@ function readApprovedUploadFile(entry) {
     );
   }
   try {
-    const stat = fs.fstatSync(fd);
+    const stat = fs.fstatSync(fd, { bigint: true });
     // A directory opens fine on POSIX; it is the `fstat` that says so.
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error(`Refused: "${name}" is not an ordinary file.`);
     }
-    const changed = stat.size !== size
-      || (mtimeMs !== null && Math.floor(stat.mtimeMs) !== mtimeMs)
-      || (ino !== null && stat.ino !== ino)
-      || (dev !== null && stat.dev !== dev);
+    // A bigint stat reports every field as a bigint, and the wire carries
+    // sizes and timestamps as numbers: `mtimeMs` is already whole truncated
+    // milliseconds here, which is the value the gate froze.
+    const changed = Number(stat.size) !== size
+      || (mtimeMs !== null && Number(stat.mtimeMs) !== mtimeMs)
+      || !sameFileId(ino, stat.ino)
+      || !sameFileId(dev, stat.dev);
     if (changed) {
       throw new Error(
         `Refused: "${name}" changed on disk between the confirmation and this upload. `
@@ -4127,6 +4181,17 @@ module.exports = {
   closeAllBrowserViews,
   performBrowserAutomation,
   __testing: {
+    /**
+     * The upload identity comparison, reachable without a filesystem.
+     *
+     * The case it exists for — two 64-bit ids one double-rounding step apart —
+     * needs file ids a test cannot make a real filesystem hand out: every id
+     * on a fresh ext4 or APFS volume is small, and the Windows volumes that do
+     * report wide ids give out no two of them close enough to collide. So the
+     * pair is stated here directly.
+     */
+    approvedFileId,
+    sameFileId,
     /** Swap the takeover backoff's clock; pass nothing to restore wall time. */
     setClock(next) { clock = next || REAL_CLOCK; },
     /**

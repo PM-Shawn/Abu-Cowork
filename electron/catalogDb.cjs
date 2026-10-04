@@ -49,7 +49,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { abuAppDataDir } = require('./appEnv.cjs');
-const { foldMessageLog } = require('./messageLedgerFold.cjs');
+const { projectLedger } = require('./generated/ledgerReader.cjs');
 
 /** Sentinel returned when `cmd` isn't a catalog command. */
 const CATALOG_MISS = Symbol('catalog-dispatch-miss');
@@ -412,12 +412,11 @@ function deriveTitle(text) {
  * file doesn't exist (mirrors `scan_conversation_file`'s `Ok(None)`). Never
  * mutates `jsonlPath`.
  *
- * The JSONL→messages projection is delegated to `foldMessageLog` in
- * `./messageLedgerFold.cjs`, which is pinned by fixture replay to the
- * renderer's `src/core/session/messageLedger.ts`. That shared fold is what
- * guarantees the catalog counts, `last_message_id` and FTS body describe
- * exactly the conversation the UI shows — previously the two sides only
- * promised each other so in a comment. */
+ * The JSONL→messages projection is delegated to `projectLedger` in
+ * `./generated/ledgerReader.cjs`, the bundle generated from the renderer's
+ * `src/core/session/ledgerReader.ts` — the same reader the renderer and the
+ * sidecar run. That is what guarantees the catalog counts, `last_message_id`
+ * and FTS body describe exactly the conversation the UI shows. */
 function scanConversationFile(jsonlPath) {
   let stat;
   try {
@@ -429,7 +428,9 @@ function scanConversationFile(jsonlPath) {
   const sourceMtime = Math.floor(stat.mtimeMs);
 
   const raw = fs.readFileSync(jsonlPath, 'utf8');
-  const { messages: deduped, corruptCount: corruptLines } = foldMessageLog(raw.split('\n'));
+  // The catalog indexes the durable ledger: no stream snapshot is passed, so an
+  // in-flight revision enters the catalog when its checkpoint reaches the ledger.
+  const { messages: deduped, corruptCount: corruptLines } = projectLedger({ ledgerText: raw });
 
   const messageCount = deduped.length;
   const lastIdRaw = deduped.length ? deduped[deduped.length - 1].id : undefined;

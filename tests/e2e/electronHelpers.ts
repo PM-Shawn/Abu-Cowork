@@ -6,6 +6,7 @@
  * headless IPC harness. See electron/main.cjs for the full launch story.
  */
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +24,9 @@ const MAIN_PROCESS_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'mainProcessR
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
+const { withoutLiveEvalCredential } = createRequire(import.meta.url)('../../scripts/computer-use-live-eval.cjs') as {
+  withoutLiveEvalCredential: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+};
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
@@ -161,7 +165,9 @@ export async function launchAbuElectron(
       '--lang=zh-CN',
     ],
     cwd: REPO_ROOT,
-    env: buildLaunchEnv(dataRoot, options.extraEnv),
+    // buildLaunchEnv isolates the profile and strips proxies; the live-eval
+    // credential must never reach a launched shell either.
+    env: withoutLiveEvalCredential(buildLaunchEnv(dataRoot, options.extraEnv)),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
@@ -262,7 +268,12 @@ export async function dismissFirstRunOverlays(page: Page): Promise<void> {
 
 export interface LocalMockProviderOptions {
   apiKey?: string;
-  contextWindowSize?: number;
+  /**
+   * The model's 上下文长度 (per-model maxInputTokens). Defaults to 128000 so
+   * a loopback provider keeps the window specs were written against; `null`
+   * leaves it blank so the app has to find the window itself.
+   */
+  contextWindowSize?: number | null;
   /** Additional models offered by the same provider, after the default one. */
   extraModels?: ReadonlyArray<{ id: string; label: string }>;
   maxOutputTokens?: number;
@@ -273,6 +284,17 @@ export interface LocalMockProviderOptions {
   providerName?: string;
   supportsReasoning?: boolean | null;
   supportsTools?: boolean;
+  /** The model's 能看图 checkbox; omitted leaves it undeclared. */
+  supportsImages?: boolean;
+  /** Turn computer use on before the reload. */
+  computerUseEnabled?: boolean;
+  /**
+   * 'builtin' configures one of the app's own provider entries (pass its id,
+   * e.g. 'lmstudio' or 'ollama', as providerId). Defaults to 'custom'.
+   */
+  providerSource?: 'custom' | 'builtin';
+  /** Keep the other provider entries (disabled built-ins included) instead of replacing them all. */
+  keepOtherProviders?: boolean;
 }
 
 /** Configure an isolated loopback provider while preserving each spec's metadata. */
@@ -283,7 +305,7 @@ export async function configureLocalMockProvider(
 ): Promise<void> {
   const {
     apiKey = 'abu-e2e-test-key-not-a-real-secret',
-    contextWindowSize,
+    contextWindowSize = 128_000,
     extraModels = [],
     maxOutputTokens,
     modelId = 'abu-e2e-local-model',
@@ -293,6 +315,10 @@ export async function configureLocalMockProvider(
     providerName = 'Abu E2E loopback mock',
     supportsReasoning = false,
     supportsTools = false,
+    supportsImages,
+    computerUseEnabled = false,
+    providerSource = 'custom',
+    keepOtherProviders = false,
   } = options;
 
   await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
@@ -301,16 +327,19 @@ export async function configureLocalMockProvider(
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
     const state = persisted.state;
-    const declaredCapabilities = configuration.supportsReasoning === null
-      ? { supportsTools: configuration.supportsTools }
-      : {
-          supportsReasoning: configuration.supportsReasoning,
-          supportsTools: configuration.supportsTools,
-        };
+    const declaredCapabilities = {
+      supportsTools: configuration.supportsTools,
+      ...(configuration.supportsReasoning === null ? {} : { supportsReasoning: configuration.supportsReasoning }),
+      ...(configuration.contextWindowSize === null ? {} : { maxInputTokens: configuration.contextWindowSize }),
+      ...(configuration.supportsImages === undefined ? {} : { supportsImages: configuration.supportsImages }),
+    };
 
-    state.providers = [{
+    const otherProviders = configuration.keepOtherProviders && Array.isArray(state.providers)
+      ? (state.providers as Array<{ id?: unknown }>).filter((provider) => provider.id !== configuration.providerId)
+      : [];
+    state.providers = [...otherProviders, {
       id: configuration.providerId,
-      source: 'custom',
+      source: configuration.providerSource,
       name: configuration.providerName,
       enabled: true,
       apiFormat: 'openai-compatible',
@@ -334,8 +363,8 @@ export async function configureLocalMockProvider(
     state.hasAcknowledgedDisclaimer = true;
     state.hasRunSensitiveAudit_v015 = true;
     if (configuration.permissionMode !== null) state.permissionMode = configuration.permissionMode;
-    if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
     if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
+    if (configuration.computerUseEnabled) state.computerUseEnabled = true;
 
     // Write `persisted` back whole, version untouched. Stamping a literal here
     // (this line carried a stale `version: 42` through four store bumps) makes
@@ -358,6 +387,10 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
+    supportsImages,
+    computerUseEnabled,
+    providerSource,
+    keepOtherProviders,
   })]);
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
@@ -373,6 +406,7 @@ export async function configureLocalMockProvider(
  */
 export async function closeAbuElectron(app: ElectronApplication): Promise<void> {
   const child = app.process();
+  const mainPid = await electronMainPid(app);
 
   // Ask Electron itself to quit so main.cjs's before-quit path tears down
   // browser views, PTYs, helpers, and sidecars. ElectronApplication.close()
@@ -385,14 +419,9 @@ export async function closeAbuElectron(app: ElectronApplication): Promise<void> 
   } catch {
     // The transport commonly closes before evaluate receives its result.
   }
-  if (await waitForChildExit(child, 5_000)) return;
+  if (await waitForChildClose(child, 5_000)) return;
 
-  // Bounded fallback for a broken teardown. Signals target only Playwright's
-  // exact child process, never a name/pattern that could match a user app.
-  child.kill('SIGTERM');
-  if (await waitForChildExit(child, 3_000)) return;
-  child.kill('SIGKILL');
-  await waitForChildExit(child, 2_000);
+  await forceReleaseLaunch(child, mainPid);
 }
 
 /**
@@ -402,10 +431,13 @@ export async function closeAbuElectron(app: ElectronApplication): Promise<void> 
  */
 export async function terminateAbuElectron(app: ElectronApplication): Promise<void> {
   const child = app.process();
-  child.kill('SIGTERM');
-  if (await waitForChildExit(child, 5_000)) return;
-  child.kill('SIGKILL');
-  await waitForChildExit(child, 2_000);
+  const mainPid = await electronMainPid(app);
+  killLaunch(child, mainPid, 'SIGTERM');
+  if (await waitForChildClose(child, 5_000)) return;
+  killLaunch(child, mainPid, 'SIGKILL');
+  if (await waitForChildClose(child, 2_000)) return;
+  detachChildStdio(child);
+  await waitForChildClose(child, 2_000);
 }
 
 /**
@@ -435,24 +467,123 @@ export async function crashAbuSidecarForE2E(page: Page, sidecarCrashToken: strin
   }, { id: SIDECAR_ID, token: sidecarCrashToken });
 }
 
-function waitForChildExit(
-  child: ReturnType<ElectronApplication['process']>,
-  timeoutMs: number,
-): Promise<boolean> {
+type LaunchedProcess = ReturnType<ElectronApplication['process']>;
+
+/**
+ * The pid of the Electron MAIN process — NOT always `app.process().pid`.
+ *
+ * playwright-core's Electron launcher sets `shell: true` on Windows and hands
+ * the whole command line to `cmd.exe`, so there `app.process()` is that shell
+ * wrapper and Electron is its child. Signalling only the wrapper (what this
+ * file used to do) leaves Electron running with no parent: it keeps the
+ * launch's single-instance lock, so the next launch on the same data root
+ * never gets a window, and it holds the inherited write ends of the launch's
+ * stdio pipes, so Playwright never sees the process close. On macOS/Linux
+ * Playwright spawns Electron directly and this is the same pid as
+ * `app.process().pid`, so killing both below is one redundant signal.
+ *
+ * Returns null if the app is already unreachable — the caller then falls back
+ * to signalling the process handle it does have.
+ */
+async function electronMainPid(app: ElectronApplication): Promise<number | null> {
+  try {
+    return await app.evaluate(() => process.pid);
+  } catch {
+    return null;
+  }
+}
+
+/** Signal this launch's Electron main first, then the process handle we hold. */
+function killLaunch(
+  child: LaunchedProcess,
+  mainPid: number | null,
+  signal: 'SIGTERM' | 'SIGKILL',
+): void {
+  // Order matters on Windows: killing the `cmd.exe` wrapper first severs the
+  // parent link and leaves Electron behind as an orphan. Both targets are
+  // exact pids from this launch — never a name/pattern that could match a
+  // user's own app.
+  if (mainPid !== null) {
+    try {
+      process.kill(mainPid, signal);
+    } catch {
+      // Already gone, or never ours to signal.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * Stop waiting on stdio pipes the OS never released.
+ *
+ * Last resort for the Windows shutdown this escalation exists for: the
+ * Electron main process reports as terminated (`Process.HasExited`) yet its
+ * process object lingers with a single thread, so the inherited write ends of
+ * the launch's stdout/stderr pipes are never closed and Node never sees EOF.
+ * Destroying OUR read ends lets Node finish the child's `'close'` bookkeeping
+ * without touching any process.
+ */
+function detachChildStdio(child: LaunchedProcess): void {
+  for (const stream of child.stdio) {
+    try {
+      stream?.destroy();
+    } catch {
+      // Best-effort: a stream that refuses to close is already not blocking us.
+    }
+  }
+}
+
+/** Bounded escalation for a launch that did not close on its own. */
+async function forceReleaseLaunch(child: LaunchedProcess, mainPid: number | null): Promise<void> {
+  // Windows has no signal semantics — both names reach TerminateProcess — so a
+  // SIGTERM grace round would only add dead time to every close.
+  if (process.platform !== 'win32') {
+    killLaunch(child, mainPid, 'SIGTERM');
+    if (await waitForChildClose(child, 3_000)) return;
+  }
+  killLaunch(child, mainPid, 'SIGKILL');
+  if (await waitForChildClose(child, 2_000)) return;
+  detachChildStdio(child);
+  await waitForChildClose(child, 2_000);
+}
+
+/** Whether Node has already emitted `'close'` for this child. */
+function hasChildClosed(child: LaunchedProcess): boolean {
+  const exited = child.exitCode !== null || child.signalCode !== null;
+  return exited && child.stdio.every((stream) => !stream || stream.destroyed);
+}
+
+/**
+ * Wait for the launched process to CLOSE, not merely to exit.
+ *
+ * Playwright's worker teardown waits on this same child's `'close'` event
+ * (playwright-core processLauncher's `waitForCleanup`, which only resolves
+ * inside `spawnedProcess.once('close', ...)`), and Node emits `'close'` only
+ * once the process has exited AND every stdio pipe has reached EOF. Returning
+ * here on `'exit'` alone therefore handed the worker a launch it still
+ * considered live, and the worker then blocked for the full project timeout —
+ * the "Worker teardown timeout of 90000ms exceeded" that failed otherwise
+ * green Windows runs.
+ */
+function waitForChildClose(child: LaunchedProcess, timeoutMs: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
+    if (hasChildClosed(child)) {
       resolve(true);
       return;
     }
     const timer = setTimeout(() => {
-      child.removeListener('exit', onExit);
+      child.removeListener('close', onClose);
       resolve(false);
     }, timeoutMs);
-    const onExit = () => {
+    const onClose = () => {
       clearTimeout(timer);
       resolve(true);
     };
-    child.once('exit', onExit);
+    child.once('close', onClose);
   });
 }
 
@@ -471,7 +602,7 @@ export async function appRegionAt(page: Page, x: number, y: number): Promise<str
   return page.evaluate(({ px, py }) => {
     let state = 'none';
     for (const element of document.querySelectorAll('*')) {
-      const region = getComputedStyle(element).webkitAppRegion;
+      const region = getComputedStyle(element).getPropertyValue('-webkit-app-region');
       if (region !== 'drag' && region !== 'no-drag') continue;
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;

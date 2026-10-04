@@ -1,0 +1,129 @@
+{
+  "cases": [
+    {
+      "name": "a ghost assistant row is dropped and streaming flags are cleared",
+      "input": [
+        { "id": "u1", "role": "user", "content": "你好", "timestamp": 1, "runState": "completed" },
+        { "id": "g1", "role": "assistant", "content": "", "timestamp": 2, "isStreaming": true },
+        { "id": "a1", "role": "assistant", "content": "回答", "timestamp": 3, "isStreaming": true }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "你好", "timestamp": 1, "runState": "completed", "isStreaming": false },
+        { "id": "a1", "role": "assistant", "content": "回答", "timestamp": 3, "isStreaming": false }
+      ]
+    },
+    {
+      "name": "a stale pending user row becomes a retryable failure",
+      "input": [
+        { "id": "u1", "role": "user", "content": "继续", "timestamp": 1, "runId": "r1", "loopId": "r1", "runState": "pending" }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "继续", "timestamp": 1, "runId": "r1", "loopId": "r1", "runState": "failed", "runError": "<<recovered>>", "isStreaming": false }
+      ]
+    },
+    {
+      "name": "a stale running row whose loop answered with usage is completed",
+      "input": [
+        { "id": "u1", "role": "user", "content": "问", "timestamp": 1, "loopId": "L1", "runState": "running" },
+        { "id": "a1", "role": "assistant", "content": "答", "timestamp": 2, "loopId": "L1", "usage": { "inputTokens": 1, "outputTokens": 1 } }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "问", "timestamp": 1, "loopId": "L1", "runState": "completed", "isStreaming": false },
+        { "id": "a1", "role": "assistant", "content": "答", "timestamp": 2, "loopId": "L1", "usage": { "inputTokens": 1, "outputTokens": 1 }, "isStreaming": false }
+      ]
+    },
+    {
+      "name": "the current run's own pending row keeps its run state",
+      "currentRunMessageId": "msg-run-9",
+      "input": [
+        { "id": "u0", "role": "user", "content": "旧的", "timestamp": 1, "runState": "accepted" },
+        { "id": "msg-run-9", "role": "user", "content": "新的", "timestamp": 2, "runId": "run-9", "clientMessageId": "msg-run-9", "loopId": "run-9", "runState": "pending" }
+      ],
+      "expected": [
+        { "id": "u0", "role": "user", "content": "旧的", "timestamp": 1, "runState": "failed", "runError": "<<recovered>>", "isStreaming": false },
+        { "id": "msg-run-9", "role": "user", "content": "新的", "timestamp": 2, "runId": "run-9", "clientMessageId": "msg-run-9", "loopId": "run-9", "runState": "pending", "isStreaming": false }
+      ]
+    },
+    {
+      "name": "interrupted sandbox recovery actions are rewritten and executing flags cleared",
+      "input": [
+        {
+          "id": "a1", "role": "assistant", "content": "", "timestamp": 1,
+          "toolCalls": [
+            { "id": "t1", "name": "run_command", "input": {}, "isExecuting": true, "sandboxRecoveryAction": "started" },
+            { "id": "t2", "name": "run_command", "input": {}, "sandboxRecoveryAction": "pending" },
+            { "id": "t3", "name": "run_command", "input": {}, "sandboxRecoveryAction": "enqueued" },
+            { "id": "t4", "name": "run_command", "input": {}, "sandboxRecoveryAction": "completed" },
+            { "id": "t5", "name": "read_file", "input": {}, "isExecuting": true }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "id": "a1", "role": "assistant", "content": "", "timestamp": 1, "isStreaming": false,
+          "toolCalls": [
+            { "id": "t1", "name": "run_command", "input": {}, "isExecuting": false, "sandboxRecoveryAction": "needs-review" },
+            { "id": "t2", "name": "run_command", "input": {}, "isExecuting": false, "sandboxRecoveryAction": "failed" },
+            { "id": "t3", "name": "run_command", "input": {}, "isExecuting": false, "sandboxRecoveryAction": "failed" },
+            { "id": "t4", "name": "run_command", "input": {}, "isExecuting": false, "sandboxRecoveryAction": "completed" },
+            { "id": "t5", "name": "read_file", "input": {}, "isExecuting": false }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "run error fields survive only on failed rows and only with a known kind",
+      "input": [
+        { "id": "u1", "role": "user", "content": "a", "timestamp": 1, "runState": "failed", "runError": "发送失败原因", "runErrorKind": "made_up" },
+        { "id": "u2", "role": "user", "content": "b", "timestamp": 2, "runState": "failed", "runError": "x", "runErrorKind": "dispatch_failed" },
+        { "id": "u3", "role": "user", "content": "c", "timestamp": 3, "runState": "completed", "runError": "leftover", "runErrorKind": "payload_too_large" }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "a", "timestamp": 1, "runState": "failed", "runError": "发送失败原因", "isStreaming": false },
+        { "id": "u2", "role": "user", "content": "b", "timestamp": 2, "runState": "failed", "runError": "x", "runErrorKind": "dispatch_failed", "isStreaming": false },
+        { "id": "u3", "role": "user", "content": "c", "timestamp": 3, "runState": "completed", "isStreaming": false }
+      ]
+    },
+    {
+      "name": "a structured provider body stored as run error is replaced by the empty-body text",
+      "input": [
+        { "id": "u1", "role": "user", "content": "x", "timestamp": 1, "runState": "failed", "runError": "{\"error\":{\"message\":\"secret body\"}}" }
+      ],
+      "expected": [
+        { "id": "u1", "role": "user", "content": "x", "timestamp": 1, "runState": "failed", "runError": "<<empty>>", "isStreaming": false }
+      ]
+    },
+    {
+      "name": "a structured run error with a provider projection is replaced by that projection's summary",
+      "input": [
+        {
+          "id": "u1", "role": "user", "content": "x", "timestamp": 1, "runState": "failed",
+          "runError": "{\"error\":{\"message\":\"body\"}}",
+          "runErrorDetails": { "status": 403, "summary": "content policy" }
+        }
+      ],
+      "expected": [
+        {
+          "id": "u1", "role": "user", "content": "x", "timestamp": 1, "runState": "failed",
+          "runError": "content policy",
+          "runErrorDetails": { "status": 403, "summary": "content policy" },
+          "isStreaming": false
+        }
+      ]
+    },
+    {
+      "name": "thinking or tool context makes an assistant row substantive; whitespace text does not; other roles are kept",
+      "input": [
+        { "id": "t1", "role": "assistant", "content": "", "timestamp": 1, "thinking": "想一想" },
+        { "id": "c1", "role": "assistant", "content": "", "timestamp": 2, "toolCallsForContext": [{ "name": "read_file", "input": {}, "result": "ok" }] },
+        { "id": "w1", "role": "assistant", "content": [{ "type": "text", "text": "   " }], "timestamp": 3 },
+        { "id": "s1", "role": "system", "content": "", "timestamp": 4 }
+      ],
+      "expected": [
+        { "id": "t1", "role": "assistant", "content": "", "timestamp": 1, "thinking": "想一想", "isStreaming": false },
+        { "id": "c1", "role": "assistant", "content": "", "timestamp": 2, "toolCallsForContext": [{ "name": "read_file", "input": {}, "result": "ok" }], "isStreaming": false },
+        { "id": "s1", "role": "system", "content": "", "timestamp": 4, "isStreaming": false }
+      ]
+    }
+  ]
+}

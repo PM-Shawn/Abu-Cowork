@@ -19,6 +19,14 @@ import computerUsePolicy from '../tools/computerUsePolicy.json';
 /** Permission mode determines how much autonomy the agent has before asking. */
 export type PermissionMode = 'standard' | 'smart' | 'autonomous';
 
+/** Every permission mode, ordered along the autonomy axis. */
+export const PERMISSION_MODES: readonly PermissionMode[] = ['standard', 'smart', 'autonomous'];
+
+/** Whether a value that did not come through the type system (a file on disk, an imported JSON) is a permission mode. */
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
 /**
  * Outcome of a permission decision:
  * - allow:   proceed without asking

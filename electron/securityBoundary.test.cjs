@@ -13,6 +13,7 @@ const {
   registerPrivilegedWebContents,
   assertTrustedIpcSender,
   assertTrustedMainIpcSender,
+  isTrustedMainWindowPage,
   validateInvokePayload,
   assertResourceOwner,
   canonicalFilePage,
@@ -95,6 +96,25 @@ test('main-only direct IPC accepts main and rejects other privileged windows', (
     () => assertTrustedMainIpcSender(trustedEvent(pet)),
     /main window/
   );
+});
+
+test('permission handlers trust only the main window on its registered page', () => {
+  const mainPage = fileUrl('main.html');
+  const main = new FakeWebContents(mainPage);
+  registerPrivilegedWebContents(main, mainPage, { label: 'main' });
+
+  const petPage = fileUrl('pet.html');
+  const pet = new FakeWebContents(petPage);
+  registerPrivilegedWebContents(pet, petPage, { label: 'pet' });
+
+  assert.equal(isTrustedMainWindowPage(main, `${mainPage}?boot=1#top`), true);
+  assert.equal(isTrustedMainWindowPage(main, petPage), false);
+  assert.equal(isTrustedMainWindowPage(main, 'https://example.com/'), false);
+  assert.equal(isTrustedMainWindowPage(pet, petPage), false);
+  assert.equal(isTrustedMainWindowPage(new FakeWebContents(mainPage), mainPage), false);
+  assert.equal(isTrustedMainWindowPage(null, mainPage), false);
+  main.destroyed = true;
+  assert.equal(isTrustedMainWindowPage(main, mainPage), false);
 });
 
 test('Windows drive and UNC paths are recognized as file pages before URL parsing', () => {
@@ -700,12 +720,15 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
 
   const shellBridge = exposed.get('__ABU_SHELL__');
   assert.deepEqual(Object.keys(shellBridge).sort(), [
+    'appPage',
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
+    'deepLinkScheme',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
     'mainSupervisesSidecar',
+    'microphone',
     'persistDelegatedMedia',
     'pluginAuthor',
     'pluginOperation',
@@ -717,8 +740,30 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'releaseUserAttachment',
     'saveImageAttachment',
     'selectUserAttachments',
+    'speech',
     'subscribeSidecarEvents',
+    'subscribeSpeechEvents',
   ]);
+  // Voice input: the renderer names an action, never a URL or a permission.
+  await shellBridge.microphone('status');
+  assert.equal(invoked.at(-1).channel, 'abu:microphone');
+  assert.deepEqual(Object.entries(invoked.at(-1).payload), [['action', 'status']]);
+  // Voice input: only named actions, and only a bounded WAV byte array crosses.
+  await assert.rejects(shellBridge.speech('rm', {}), /unsupported action/);
+  await assert.rejects(shellBridge.speech('transcribe', { audio: 'RIFF' }), /WAV byte array/);
+  await assert.rejects(
+    shellBridge.speech('transcribe', { audio: new Uint8Array(44 + 150 * 16000 * 2 + 2) }),
+    /WAV byte array/,
+  );
+  await shellBridge.speech('prepare', { source: 'hf-mirror', extra: 'dropped' });
+  assert.equal(invoked.at(-1).channel, 'abu:speech');
+  assert.deepEqual(Object.entries(invoked.at(-1).payload.request), [['source', 'hf-mirror']]);
+  invoked.pop();
+  invoked.pop(); // keep the invocation log below scoped to the file bridges
+  // This sandbox has no `process`, which is the point: assembling the bridge
+  // must never depend on a Node global. Without the launch flag the scheme
+  // stays on the production default rather than throwing at preload eval.
+  assert.equal(shellBridge.deepLinkScheme, 'abu');
   assert.equal(
     await shellBridge.canonicalizePathForPolicy('/native/report.png'),
     '/canonical/native/report.png',

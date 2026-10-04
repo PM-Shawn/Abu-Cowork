@@ -146,7 +146,11 @@ async function withSidecarFallback<T>(
     if (isFsErrorResponse(err)) {
       // Real fs error (ENOENT etc.) — surface faithfully, no retry.
       logger.debug('fs op via sidecar hit a real fs error — not retrying', { method, path, code: err.data.code });
-      throw new Error(err.data.message, { cause: err });
+      // Carry the errno forward. Callers that tell a locked file apart from a
+      // missing one read `code`; dropping it here left them matching on
+      // message text, or — worse — silently doing nothing, because the shape
+      // they were written against never reached them.
+      throw Object.assign(new Error(err.data.message, { cause: err }), { code: err.data.code });
     }
     // Transport-shaped failure — the sidecar hiccuped, not the file system.
     logger.warn('fs op via sidecar failed (transport) — retrying locally once', {

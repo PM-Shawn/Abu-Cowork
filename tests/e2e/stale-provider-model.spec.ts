@@ -179,7 +179,7 @@ async function openModelSettings(page: Page): Promise<Locator> {
     await sidebarToggle.click();
     await expect(sidebarToggle).not.toHaveAttribute('aria-label', /^显示/);
   }
-  await page.getByRole('button', { name: '我', exact: true }).first().click();
+  await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
   await page.getByText('设置', { exact: true }).last().click();
   const dialog = page.locator('[data-abu-settings-dialog]');
   await expect(dialog).toBeVisible({ timeout: READY_TIMEOUT });
@@ -328,7 +328,7 @@ test.describe('stale provider pin', () => {
       const tasksOnA = taskCount(a);
       await composerModelButton(page, 'model-a（不可用）').click();
       // Picker rows are role=button divs; the provider list is the last section.
-      const row = page.locator('div[role="button"]').filter({ hasText: /^Model B$/ }).last();
+      const row = page.locator('div[role="button"]').filter({ has: page.getByText('Model B', { exact: true }) }).last();
       await expect(row).toBeVisible();
       await row.click();
       await expect(composerModelButton(page, 'Model B')).toBeVisible();

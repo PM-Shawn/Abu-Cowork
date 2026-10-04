@@ -31,17 +31,19 @@
  */
 import { exists, mkdir } from './pluginFsRun';
 import { appDataDir } from './tauriPathRun';
-import { joinPath } from '@/utils/pathUtils';
+import { createConversationPaths, type ConversationPaths } from '@/core/session/conversationPaths';
 
-let cachedBasePath: string | null = null;
+let cachedPaths: ConversationPaths | null = null;
 
 export async function getSessionOutputDir(conversationId: string): Promise<string | null> {
-  if (!cachedBasePath) {
-    const appData = await appDataDir();
-    cachedBasePath = joinPath(appData, 'conversations');
+  if (!cachedPaths) {
+    cachedPaths = createConversationPaths(await appDataDir());
   }
 
-  const outputDir = joinPath(cachedBasePath, conversationId, 'outputs');
+  // The id arrives from `agent.start`, which checks it for nothing but
+  // "non-empty string", and the next line creates directories recursively —
+  // so the grammar runs here, before any path exists.
+  const outputDir = cachedPaths.outputsDir(conversationId);
 
   if (!(await exists(outputDir))) {
     await mkdir(outputDir, { recursive: true });

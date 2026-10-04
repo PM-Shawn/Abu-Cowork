@@ -26,8 +26,12 @@ function abortError(): Error {
 
 // Mock getTauriFetch BEFORE importing the adapter so the singleton picks up the mock.
 const mockFetch = vi.fn();
+const fetchRequests: Array<{ localServer?: boolean } | undefined> = [];
 vi.mock('./tauriFetch', () => ({
-  getTauriFetch: () => Promise.resolve(mockFetch),
+  getTauriFetch: (fetchOptions?: { localServer?: boolean }) => {
+    fetchRequests.push(fetchOptions);
+    return Promise.resolve(mockFetch);
+  },
 }));
 
 // Import after mock is registered.
@@ -796,44 +800,12 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
   });
 
-  it('non-streaming (Ollama+tools) body read aborts on the hang ceiling (B3)', async () => {
-    // Ollama endpoint + tools forces the NON-streaming path (response.json()).
-    // Headers arrive, but the body never completes and only errors on abort. The
-    // body-download timeout must abort so response.json() rejects and chat()
-    // unwinds — previously response.json() had no timeout and hung forever.
-    mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
-      const signal = init?.signal;
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          if (signal?.aborted) return controller.error(abortError());
-          signal?.addEventListener('abort', () => controller.error(abortError()), { once: true });
-        },
-      });
-      return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    });
-
-    const adapter = new OpenAICompatibleAdapter();
-    const events: StreamEvent[] = [];
-    const chatPromise = adapter.chat(
-      [userMessage],
-      makeOptions({ baseUrl: 'http://localhost:11434/v1' }),
-      (e) => events.push(e),
-    );
-    let settled = false;
-    chatPromise.then(() => { settled = true; }, () => { settled = true; });
-
-    await vi.advanceTimersByTimeAsync(179_000);
-    expect(settled).toBe(false);
-
-    await vi.advanceTimersByTimeAsync(2_000);
-    // code-review fix #10 regression: body-download hang timer now shares the
-    // same helper as the connect-phase timers but must keep its own message.
-    await expect(chatPromise).rejects.toMatchObject({
-      code: 'network_error',
-      retryable: true,
-      retryAfterMs: 2000,
-      message: '响应体读取超时：180 秒未完成',
-    });
+  it('streams with tools on a local address', async () => {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([{ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]));
+    await new OpenAICompatibleAdapter().chat([userMessage], makeOptions({ baseUrl: 'http://localhost:11434/v1' }), () => {});
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, { body: string }])[1].body) as Record<string, unknown>;
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
   });
 
   it('max_tokens retry re-arms the connect timeout instead of hanging (B4)', async () => {
@@ -877,6 +849,127 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
       message: '连接超时：180 秒未收到服务器响应头',
     });
     expect(call).toBe(2); // the retry actually fired
+  });
+
+  describe('a local server (Ollama / LM Studio / a loopback custom provider)', () => {
+    const local = { localServer: true, baseUrl: 'http://127.0.0.1:1234/v1' } as const;
+
+    /** 服务收下请求后一直不回响应头，直到请求被中止。 */
+    function neverAnswers(): void {
+      mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+        const signal = init?.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          if (signal?.aborted) return reject(abortError());
+          signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+        });
+      });
+    }
+
+    /** 响应头马上到，正文先送出 head，之后一直不动，直到请求被中止。 */
+    function stallsAfter(head: string): void {
+      mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+        const signal = init?.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            if (head) controller.enqueue(new TextEncoder().encode(head));
+            if (signal?.aborted) return controller.error(abortError());
+            signal?.addEventListener('abort', () => controller.error(abortError()), { once: true });
+          },
+        });
+        return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+      });
+    }
+
+    function start(overrides: Partial<ChatOptions> = {}): { chatPromise: Promise<void>; settled: () => boolean } {
+      let settled = false;
+      const chatPromise = new OpenAICompatibleAdapter().chat([userMessage], makeOptions({ ...local, ...overrides }), () => {});
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+      return { chatPromise, settled: () => settled };
+    }
+
+    it('sends the request as a local model server request, so the transport does not end the wait first', async () => {
+      fetchRequests.length = 0;
+      neverAnswers();
+      const { chatPromise } = start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchRequests).toEqual([{ localServer: true }]);
+      await vi.advanceTimersByTimeAsync(601_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout' });
+    });
+
+    it('gets 10 minutes before its first output, and that failure is not retried', async () => {
+      neverAnswers();
+      const { chatPromise, settled } = start();
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+      await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
+    });
+
+    it('is waited for as one 10 minute budget even after the headers arrived', async () => {
+      stallsAfter('');
+      const { chatPromise, settled } = start();
+      // 云端在这里 180 秒就会中止；本地服务的响应头不算开始回答
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+    });
+
+    it('keeps the 180 second idle rule once output has started', async () => {
+      stallsAfter('data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n');
+      const { chatPromise, settled } = start();
+      await vi.advanceTimersByTimeAsync(179_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+    });
+
+    it('ends at once when the user stops during the wait', async () => {
+      neverAnswers();
+      const controller = new AbortController();
+      const { chatPromise, settled } = start({ signal: controller.signal });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled()).toBe(false);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled()).toBe(true);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'network_error' });
+    });
+
+    it('restarts the 10 minute wait for the max_tokens retry', async () => {
+      let call = 0;
+      mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+        call++;
+        if (call === 1) {
+          return Promise.resolve(new Response(
+            JSON.stringify({ error: { param: 'max_tokens', message: 'max_tokens supports at most 4096' } }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          ));
+        }
+        const signal = init?.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          if (signal?.aborted) return reject(abortError());
+          signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+        });
+      });
+      const { chatPromise, settled } = start();
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+      expect(call).toBe(2);
+    });
+
+    it('leaves a cloud provider on the 180 second header wait', async () => {
+      fetchRequests.length = 0;
+      neverAnswers();
+      const { chatPromise } = start({ localServer: false, baseUrl: 'https://api.test.example.com/v1' });
+      await vi.advanceTimersByTimeAsync(181_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+      expect(fetchRequests[0]).toEqual({ localServer: false });
+    });
   });
 });
 
@@ -928,5 +1021,59 @@ describe('OpenAICompatibleAdapter body wiring: tool_choice', () => {
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<string, unknown>;
     expect(body.tool_choice).toBeUndefined();
+  });
+});
+
+describe('OpenAICompatibleAdapter — operations written into the reply text', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('runs an <invoke> split across chunks and never shows its text', async () => {
+    const events = await runChat([
+      { choices: [{ delta: { content: '我先读文件。<function_calls><inv' } }] },
+      { choices: [{ delta: { content: 'oke name="read_file"><parameter name="path">a.txt</parameter></invoke></function_calls>' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]);
+    const text = events.map((e) => (e.type === 'text' ? e.text : '')).join('');
+    expect(text).toBe('我先读文件。');
+    expect(events.find((e) => e.type === 'tool_use')).toMatchObject({ name: 'read_file', input: { path: 'a.txt' } });
+    expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'tool_use' });
+  });
+
+  it('reports a cut-off operation as malformed instead of printing it', async () => {
+    const events = await runChat([
+      { choices: [{ delta: { content: '<tool_call>{"name":"read_file","arguments":{"path"' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]);
+    expect(events.some((e) => e.type === 'text')).toBe(false);
+    expect(events.find((e) => e.type === 'malformed_tool_call'))
+      .toEqual({ type: 'malformed_tool_call', raw: '<tool_call>{"name":"read_file","arguments":{"path"' });
+    expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'end_turn' });
+  });
+
+  it('flushes held text when the stream ends without a finish reason or [DONE]', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial <thi' } }] })}\n\n`,
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    ));
+    const events: StreamEvent[] = [];
+    await new OpenAICompatibleAdapter().chat([userMessage], makeOptions(), (e) => events.push(e));
+    expect(events.map((e) => (e.type === 'text' ? e.text : '')).join('')).toBe('partial <thi');
+    expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'end_turn' });
+  });
+
+  it('shows written operations as text when the request carries no tools', async () => {
+    const written = 'Like <invoke name="read_file"><parameter name="path">a.txt</parameter></invoke> or <tool_call>{"name":"read_file"';
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([
+      { choices: [{ delta: { content: `<think>plan</think>${written}` } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]));
+    const events: StreamEvent[] = [];
+    await new OpenAICompatibleAdapter().chat([userMessage], makeOptions({ tools: undefined }), (e) => events.push(e));
+    expect(events.map((e) => (e.type === 'thinking' ? e.thinking : '')).join('')).toBe('plan');
+    expect(events.map((e) => (e.type === 'text' ? e.text : '')).join('')).toBe(written);
+    expect(events.some((e) => e.type === 'tool_use' || e.type === 'malformed_tool_call')).toBe(false);
+    expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'end_turn' });
   });
 });

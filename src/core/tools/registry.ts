@@ -19,6 +19,7 @@ import {
   type AuthorizationScopeId,
 } from './pathSafety';
 import { getI18n, format } from '../../i18n';
+import { offeredToolsHint } from './offeredToolsHint';
 import { useMCPStore } from '@/stores/mcpStore';
 import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidate, type InventoryReason } from './toolInventory';
 import { truncateToolResult } from '../context/truncation';
@@ -48,6 +49,7 @@ import {
   browserUploadRefusalText,
 } from '../permissions/browserDenialReasonText';
 import {
+  readFileIdPin,
   resolveUploadFiles,
   summarizeUploadFiles,
   type ApprovedUploadFile,
@@ -1314,7 +1316,7 @@ export async function checkToolApproval(
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -1380,7 +1382,7 @@ export async function checkToolApproval(
                   toolName: name,
                   agentName: toolContext?.agentName,
                   ...(isTeam ? {
-                    teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: pathCheck.permissionPath, capabilities: [cap, ...additionalCapabilities] }),
+                    teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: pathCheck.permissionPath, capabilities: [cap, ...additionalCapabilities], isFolder: pathCheck.permissionIsFolder === true }),
                     teamAuthorizationScopeId: teamFileScope,
                     additionalCapabilities,
                   } : {}),
@@ -1389,7 +1391,7 @@ export async function checkToolApproval(
               if (!granted) {
                 return {
                   decision: 'deny',
-                  reason: toolContext?.teamRoster
+                  reason: isTeam
                     ? `${t.commandConfirm.teamPendingConfirmation} (${pathCheck.permissionPath})`
                     : `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`,
                 };
@@ -1806,6 +1808,7 @@ export async function checkToolApproval(
         opClass, runMode, permissionMode, runPermissionCeiling, toolTargetsPage,
         originResolved: origin !== null, answersPageDialog: answersPageDialog(name), loginRequired,
         confirmationChannelAvailable: Boolean(onRequireConfirmation), originKnown: origin !== null, highRisk,
+        scriptInEmbeddedRegion: permissionResource === 'script' && permissionTargets.some((item) => item.embeddedIn),
       };
       const gate = evaluateBrowserPermissionGate({ ...gateFacts, configured: configuredPermission });
 
@@ -1823,7 +1826,7 @@ export async function checkToolApproval(
         if (runMode === 'unattended') return await denyUnattendedBrowser(reason);
         recordGateDenial(reason);
         if (reason === 'user-cancelled') {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
         const text = reason === 'approval-refused'
           ? t.commandConfirm.browserDenied
@@ -1892,8 +1895,14 @@ export async function checkToolApproval(
               isSymlink: info.isSymlink === true,
               size: typeof info.size === 'number' ? info.size : 0,
               mtimeMs: Number.isFinite(mtime) ? Math.floor(mtime) : 0,
-              ino: typeof info.ino === 'number' ? info.ino : null,
-              dev: typeof info.dev === 'number' ? info.dev : null,
+              // plugin-fs declares `ino` as `number | null`, and its
+              // `parseFileInfo` copies across whatever the host actually put
+              // on the field: the Electron and sidecar filesystem hosts write
+              // the exact 64-bit id as a decimal string, the Tauri shell a
+              // JSON number (see `ApprovedUploadFile.ino`). Read it as it
+              // arrives rather than as the type declares it.
+              ino: readFileIdPin((info as { ino?: unknown }).ino) ?? null,
+              dev: readFileIdPin((info as { dev?: unknown }).dev) ?? null,
             };
           },
         });
@@ -2278,7 +2287,7 @@ export async function checkToolApproval(
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -2335,7 +2344,7 @@ export async function checkToolApproval(
       const granted = await onRequireFilePermission({
         ...(isTeam ? {
           teamAuthorizationScopeId: teamFileScope,
-          teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: readCheck.permissionPath, capabilities: ['read'] }),
+          teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: readCheck.permissionPath, capabilities: ['read'], isFolder: readCheck.permissionIsFolder === true }),
         } : {}),
         path: readCheck.permissionPath,
         capability: 'read',
@@ -2476,6 +2485,13 @@ export function filterTabsBySitePermissions(
   const sanitized = { ...(summary ? { summary } : {}), windows };
   if (JSON.stringify(sanitized) === JSON.stringify(parsed)) return result;
   return JSON.stringify(sanitized, null, 2);
+}
+
+/** 工具名不存在：附上本轮给过模型的工具名，让它重选。 */
+function unknownToolResult(name: string, context: ToolExecutionContext | undefined): string {
+  const base = `Error: Unknown tool "${name}"`;
+  const hint = offeredToolsHint(context?.offeredToolNames);
+  return hint ? `${base}. ${hint}` : base;
 }
 
 /**
@@ -2635,7 +2651,7 @@ export async function executeAnyTool(
     }
   }
 
-  return `Error: Unknown tool "${name}"`;
+  return unknownToolResult(name, toolContext);
 }
 
 // ── OS Permission Error Detection ──

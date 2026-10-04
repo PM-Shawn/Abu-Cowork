@@ -28,6 +28,7 @@ import {
 import {
   ABU_APPROVED_UPLOAD_FILES_META_KEY,
   registerTools,
+  sameFileId,
   type BrowserTransport,
   type UploadDelivery,
 } from './tools.js';
@@ -77,11 +78,15 @@ const APPROVED_META = (files: unknown) => ({
  * ones that go near a real file take it from the file, because the sender
  * compares against an `fstat` of the descriptor it reads from.
  */
-const PIN = { mtimeMs: 1_757_000_000_123, ino: 4242, dev: 66 };
+const PIN = { mtimeMs: 1_757_000_000_123, ino: '4242', dev: '66' };
 
-function pinOf(file: string): { mtimeMs: number; ino: number; dev: number } {
-  const stat = fs.lstatSync(file);
-  return { mtimeMs: Math.floor(stat.mtimeMs), ino: stat.ino, dev: stat.dev };
+/**
+ * The file id and device id travel as exact decimal strings, which is the form
+ * the gate freezes: a 64-bit NTFS id does not fit the double a JSON number is.
+ */
+function pinOf(file: string): { mtimeMs: number; ino: string; dev: string } {
+  const stat = fs.lstatSync(file, { bigint: true });
+  return { mtimeMs: Number(stat.mtimeMs), ino: String(stat.ino), dev: String(stat.dev) };
 }
 
 /**
@@ -136,8 +141,54 @@ describe('parseApprovedUploadFiles', () => {
     ['an entry with no identity pin', [{ path: '/ws/a.txt', name: 'a.txt', size: 4 }]],
     ['an entry whose mtime is not a number', [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 'x' }]],
     ['an entry pinned by nothing but a zero mtime', [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 0 }]],
+    // A file id that is not canonical decimal is a value no producer writes,
+    // so it counts as no id: with a zero mtime beside it nothing is left to
+    // check and the whole stamp is refused.
+    ['an entry whose file id is hexadecimal', [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 0, ino: '0x2a' }]],
+    ['an entry whose file id has a leading zero', [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 0, ino: '007' }]],
+    ['an entry whose file id is signed', [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 0, ino: '-3' }]],
   ])('returns null for %s', (_label, raw) => {
     expect(parseApprovedUploadFiles(raw)).toBeNull();
+  });
+
+  /**
+   * A 64-bit file id reaches here as an exact decimal string from the Electron
+   * and sidecar hosts, and as a JSON number from the Tauri shell, whose Rust
+   * `plugin:fs` serializes a u64 onto the same field. Both are carried through
+   * unchanged — the form a pin arrived in is what a sender compares it in.
+   */
+  it('carries a file id in either form it can arrive in', () => {
+    const wide = [{
+      path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 0, ino: '9288674232255541', dev: '408553847',
+    }];
+    expect(parseApprovedUploadFiles(wide)).toEqual(wide);
+    expect(parseApprovedUploadFiles(JSON.stringify(wide))).toEqual(wide);
+
+    const numeric = [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 0, ino: 4242, dev: 66 }];
+    expect(parseApprovedUploadFiles(numeric)).toEqual(numeric);
+  });
+});
+
+describe('sameFileId', () => {
+  /**
+   * Two 64-bit ids one double-rounding step apart: the same record sequence
+   * number and adjacent record indexes on NTFS. This is the whole reason the
+   * exact form exists, and no filesystem will hand a test such a pair.
+   */
+  it('separates ids a double cannot, and keeps comparing a numeric pin', () => {
+    const actual = 9288674232255541n;
+    const neighbour = 9288674232255540n;
+    expect(Number(actual)).toBe(Number(neighbour));
+
+    expect(sameFileId(String(actual), actual)).toBe(true);
+    expect(sameFileId(String(neighbour), actual)).toBe(false);
+    // A pin from the Tauri shell rounds exactly as its own `fstat` does, so it
+    // still names the file it named — and cannot tell this pair apart.
+    expect(sameFileId(Number(neighbour), actual)).toBe(true);
+  });
+
+  it('checks nothing when the entry pinned no id', () => {
+    expect(sameFileId(undefined, 4242n)).toBe(true);
   });
 });
 

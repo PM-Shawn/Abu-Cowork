@@ -14,10 +14,16 @@ export interface PluginOperationResult {
   runtime: PluginRuntimeSnapshot;
   expectedRuntime?: PluginRuntimeSnapshot;
   installed?: boolean;
+  /** The localStorage marker written with `expectedRuntime`; absent in journals from older builds. */
+  marker?: string;
+  /** The values recovery compares against once committed storage proved older than the marker. */
+  baseline?: PluginRuntimeSnapshot;
+  /** The localStorage key where recovery lists what it has applied. */
+  progress?: string;
 }
 export interface UnreadablePluginOperation { unreadable: true; fingerprint: string; backupPaths: string[] }
 export type PluginOperationStatus = Pick<PluginOperationResult, 'id' | 'key' | 'phase'> | UnreadablePluginOperation | null;
-type Action = 'begin' | 'commit' | 'rollback' | 'recover' | 'ack' | 'status' | 'archive' | 'configurationCleanupAllowed';
+type Action = 'begin' | 'commit' | 'rollback' | 'recover' | 'checkpoint' | 'ack' | 'status' | 'archive' | 'configurationCleanupAllowed';
 type Bridge = (action: Action, request: object) => Promise<unknown>;
 function bridge(): Bridge {
   const host = (globalThis as typeof globalThis & { __ABU_SHELL__?: { pluginOperation?: Bridge } }).__ABU_SHELL__;
@@ -29,7 +35,7 @@ export function hasPluginOperationHost(): boolean {
 }
 export async function beginPluginOperation(value: {
   kind: 'install' | 'update' | 'uninstall'; key: string; token?: string;
-  record?: InstalledPlugin; expected: InstalledPlugin | null; runtime: PluginRuntimeSnapshot;
+  record?: InstalledPlugin; expected: InstalledPlugin | null; runtime: PluginRuntimeSnapshot; marker: string;
 }): Promise<{ id: string; previous: InstalledPlugin | null }> {
   return await bridge()('begin', value) as { id: string; previous: InstalledPlugin | null };
 }
@@ -41,6 +47,10 @@ export async function rollbackPluginOperation(id: string): Promise<PluginOperati
 }
 export async function recoverPluginOperation(key?: string): Promise<PluginOperationResult | null> {
   return await bridge()('recover', key ? { key } : {}) as PluginOperationResult | null;
+}
+/** Record the recovery baseline and progress key once; the host returns the first ones recorded. */
+export async function recordPluginOperationCheckpoint(id: string, baseline?: PluginRuntimeSnapshot): Promise<PluginOperationResult> {
+  return await bridge()('checkpoint', baseline ? { id, baseline } : { id }) as PluginOperationResult;
 }
 export async function pluginOperationStatus(): Promise<PluginOperationStatus> {
   return await bridge()('status', {}) as PluginOperationStatus;

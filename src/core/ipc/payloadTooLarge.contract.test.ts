@@ -33,6 +33,7 @@ type PreloadInvoke = (cmd: string, args?: unknown, options?: unknown) => unknown
 function loadPreloadInvoke(): PreloadInvoke {
   const exposed = new Map<string, unknown>();
   const context: Record<string, unknown> = {
+    process: { argv: ['electron', '--abu-deep-link-scheme=abu-dev'] },
     require: () => ({
       contextBridge: { exposeInMainWorld: (key: string, value: unknown) => exposed.set(key, value) },
       ipcRenderer: { invoke: async () => undefined, on() {}, send() {}, sendSync: () => null },

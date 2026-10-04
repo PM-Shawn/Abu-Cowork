@@ -1,0 +1,99 @@
+{
+  "name": "abu-example-shop-ops",
+  "version": "1.0.0",
+  "description": "电商店铺运营：选品、详情页、评价回复",
+  "author": { "name": "Abu" },
+  "license": "Apache-2.0",
+  "keywords": ["ecommerce", "shop", "listing"],
+  "minAbuVersion": "0.51.0",
+  "skills": ["./skills/product-listing"],
+  "mcpServers": {
+    "shop-api": {
+      "url": "https://shop.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${config.SHOP_TOKEN}" }
+    }
+  },
+  "interface": {
+    "displayName": "店铺运营",
+    "shortDescription": "选品、详情页、评价回复，一个首页全做完",
+    "longDescription": "给电商运营准备的应用：选品分析交给运营顾问和数据分析师，详情页交给文案专家和网页设计师，差评回复由客服话术技能负责。",
+    "developerName": "Abu",
+    "category": "ecommerce",
+    "capabilities": ["读取你上传的销售数据和商品资料", "通过店铺连接器读取订单和评价", "生成商品文案、详情页和回复话术"],
+    "brandColor": "#C4633A",
+    "logo": "assets/logo.png",
+    "logoDark": "assets/logo-dark.png",
+    "websiteURL": "https://example.com"
+  },
+  "app": {
+    "version": 1,
+    "defaultRun": { "team": "store-ops" },
+    "promptAppend": "The user runs an online shop. Answer with concrete, ready-to-use output (listings, replies, tables) and ask for the product or data file when it is missing.",
+    "requiredConnectors": ["shop-api"],
+    "allowedOrigins": ["https://example.com"],
+    "composer": { "placeholder": { "zh-CN": "告诉我要做的店铺工作，或者从上面选一件事开始", "en-US": "Describe the shop task, or pick one above" } },
+    "home": {
+      "header": {
+        "title": { "zh-CN": "店铺运营", "en-US": "Shop operations" },
+        "slogan": { "zh-CN": "选品、详情页、评价，一个首页全做完", "en-US": "Sourcing, listings and reviews from one home" }
+      },
+      "modes": {
+        "defaultSelected": "sourcing",
+        "items": [
+          {
+            "modeId": "sourcing",
+            "title": { "zh-CN": "选品", "en-US": "Sourcing" },
+            "promptAppend": "Focus on product selection: margins, competition, seasonality.",
+            "scenes": [
+              {
+                "id": "shortlist",
+                "title": { "zh-CN": "选品分析", "en-US": "Shortlist products" },
+                "run": { "team": "store-ops" },
+                "placeholder": { "zh-CN": "上传候选商品表，或者描述你在看的品类", "en-US": "Upload the candidate list or describe the category" },
+                "templates": [
+                  { "id": "compare", "title": { "zh-CN": "对比三款候选", "en-US": "Compare three candidates" }, "prompt": { "zh-CN": "对比这三款候选商品的利润、竞争和季节性，给我一个推荐顺序", "en-US": "Compare these three candidates on margin, competition and seasonality, and rank them" } },
+                  { "id": "trend", "title": { "zh-CN": "看品类趋势", "en-US": "Category trend" }, "prompt": { "zh-CN": "分析这个品类最近三个月的趋势，判断现在进入是否合适", "en-US": "Analyse this category's last three months and judge whether to enter now" } },
+                  { "id": "supplier", "title": { "zh-CN": "列供应商问题清单", "en-US": "Supplier checklist" }, "prompt": { "zh-CN": "给这款商品列一份联系供应商时要问清楚的问题清单", "en-US": "List the questions to settle with a supplier for this product" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "listing",
+            "title": { "zh-CN": "详情页", "en-US": "Listings" },
+            "scenes": [
+              {
+                "id": "write-listing",
+                "title": { "zh-CN": "写详情页", "en-US": "Write a listing" },
+                "run": { "skill": "product-listing" },
+                "templates": [
+                  { "id": "full", "title": { "zh-CN": "从参数写整页", "en-US": "Full page from specs" }, "prompt": { "zh-CN": "根据这些商品参数写一整页详情页文案，含标题、卖点和规格表", "en-US": "Write a complete listing from these specs: title, selling points, spec table" } },
+                  { "id": "rewrite", "title": { "zh-CN": "改写标题", "en-US": "Rewrite the title" }, "prompt": { "zh-CN": "把这个商品标题改成三个更吸引点击的版本", "en-US": "Rewrite this product title into three click-worthy versions" } },
+                  { "id": "faq", "title": { "zh-CN": "补一组 FAQ", "en-US": "Add an FAQ" }, "prompt": { "zh-CN": "给这个商品补一组买家最常问的问题和回答", "en-US": "Add the questions buyers ask most about this product, with answers" } }
+                ]
+              },
+              {
+                "id": "reply-review",
+                "title": { "zh-CN": "回复评价", "en-US": "Reply to reviews" },
+                "run": { "expert": "店铺客服顾问" },
+                "templates": [
+                  { "id": "negative", "title": { "zh-CN": "回复差评", "en-US": "Reply to a bad review" }, "prompt": { "zh-CN": "帮我回复这条差评，语气诚恳，给出补救方案", "en-US": "Reply to this negative review sincerely and offer a remedy" } },
+                  { "id": "batch", "title": { "zh-CN": "批量回复好评", "en-US": "Batch thank-you replies" }, "prompt": { "zh-CN": "给这十条好评各写一句不重复的感谢回复", "en-US": "Write a distinct thank-you reply for each of these ten positive reviews" } },
+                  { "id": "escalate", "title": { "zh-CN": "判断要不要升级处理", "en-US": "Escalate or not" }, "prompt": { "zh-CN": "看看这条投诉要不要升级给店长处理，说明理由", "en-US": "Decide whether this complaint should go to the store manager, and why" } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "nav": {
+      "items": [
+        { "id": "chat", "target": "builtin:chat", "order": 1 },
+        { "id": "experts", "target": "builtin:team", "order": 2 },
+        { "id": "portal", "title": { "zh-CN": "店铺后台", "en-US": "Shop portal" }, "target": "url:https://example.com/portal", "order": 3 },
+        { "id": "extensions", "target": "builtin:extensions", "order": 4 }
+      ]
+    }
+  }
+}

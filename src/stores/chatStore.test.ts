@@ -13,6 +13,10 @@ import {
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
 import { foldMessageLog } from '@/core/session/messageLedger';
+import {
+  expectedForText,
+  loadLoadedMessageSanitizerFixtures,
+} from '@/test/loadedMessageSanitizerFixtures';
 import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
@@ -1331,10 +1335,10 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
-      });
-      useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
-      useChatStore.getState().cancelStreaming(id);
-      const msg = useChatStore.getState().conversations[id].messages[0];
+        });
+        useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
+        useChatStore.getState().cancelStreaming(id);
+        const msg = useChatStore.getState().conversations[id].messages[0];
       expect(msg.thinking).toBe('mid-thought when aborted');
     });
   });
@@ -1588,6 +1592,46 @@ describe('chatStore', () => {
         expect(written.some((c) => c.includes('"stopReason":"user"'))).toBe(true);
       });
     });
+
+    it('cancels and persists an executing tool on an earlier message when a later placeholder is last', async () => {
+      const id = useChatStore.getState().createConversation();
+      const activeToolMessage = {
+        id: 'a-tool',
+        role: 'assistant' as const,
+        content: '',
+        timestamp: FIXED_TIMESTAMP,
+        toolCalls: [{ id: 'tc1', name: 'computer', input: { action: 'screenshot' }, isExecuting: true }],
+      };
+      const trailingPlaceholder = {
+        id: 'a-placeholder',
+        role: 'assistant' as const,
+        content: '',
+        timestamp: FIXED_TIMESTAMP + 1,
+        isStreaming: true,
+      };
+      useChatStore.getState().addMessage(id, activeToolMessage);
+      useChatStore.getState().addMessage(id, trailingPlaceholder);
+      vi.mocked(readTextFile).mockResolvedValue(
+        `${JSON.stringify(activeToolMessage)}\n${JSON.stringify(trailingPlaceholder)}\n`,
+      );
+
+      useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
+
+      const messages = useChatStore.getState().conversations[id].messages;
+      expect(messages[0].toolCalls?.[0]).toMatchObject({
+        id: 'tc1',
+        isExecuting: false,
+        result: getI18n().task.cancelled,
+      });
+      expect(messages[1]).toMatchObject({ id: 'a-placeholder', isStreaming: false });
+      await vi.waitFor(() => {
+        expect(written.some((c) => (
+          c.includes('"id":"a-tool"')
+          && c.includes('"isExecuting":false')
+          && c.includes(getI18n().task.cancelled)
+        ))).toBe(true);
+      });
+    });
   });
 
   // ── setMessageToolCalls — intent durability ──
@@ -1673,11 +1717,12 @@ describe('chatStore', () => {
       useChatStore.getState().setAgentStatus(id, 'thinking');
       const controller = useChatStore.getState().getAbortController(id);
 
-      useChatStore.getState().cancelStreaming(id);
+      useChatStore.getState().cancelStreaming(id, { source: 'chat-input-stop-button' });
 
       expect(mockIsConversationRunningInSidecar).toHaveBeenCalledWith(id);
       // Abort still fires — the shell's "喊停" signal reaches the sidecar.
       expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBe('chat-input-stop-button');
       expect(useChatStore.getState().hasAbortController(id)).toBe(true);
       // But the message/agentStatus decoration is untouched — deferred to
       // the sidecar's own cancelStreaming frame.
@@ -3871,6 +3916,26 @@ describe('pending team pin (welcome-page chip)', () => {
   });
 });
 
+describe('pending app binding (app home)', () => {
+  const binding = { version: 1 as const, appId: 'shop@market', pluginKey: 'shop@market', pluginVersion: '1.0.0', appName: '店铺运营', modeId: 'sourcing' };
+
+  it('travels with the team pin onto the foreground conversation only, and is cleared with it', () => {
+    useChatStore.getState().setPendingAppBinding(binding);
+    const background = useChatStore.getState().createConversation(null, { scheduledTaskId: 's1', skipActivate: true });
+    expect(useChatStore.getState().conversations[background].appBinding).toBeUndefined();
+    expect(useChatStore.getState().pendingAppBinding).toEqual(binding);
+
+    const foreground = useChatStore.getState().createConversation(null);
+    expect(useChatStore.getState().conversations[foreground].appBinding).toEqual(binding);
+    expect(useChatStore.getState().conversationIndex[foreground].appBinding).toEqual(binding);
+    expect(useChatStore.getState().pendingAppBinding).toBeUndefined();
+
+    useChatStore.getState().setPendingAppBinding(binding);
+    useChatStore.getState().startNewConversation();
+    expect(useChatStore.getState().pendingAppBinding).toBeUndefined();
+  });
+});
+
 
 describe('prefill intent', () => {
   it('resets new-task intent when the buffer is consumed or reused for an ordinary prompt', () => {
@@ -3975,4 +4040,20 @@ describe('#549 runErrorKind', () => {
     expect(row.runErrorKind).toBeUndefined();
     expect(row.runError).toBeUndefined();
   });
+});
+
+describe('sanitizeLoadedMessages replays the shared sanitiser fixtures (#549 P2a)', () => {
+  const { cases } = loadLoadedMessageSanitizerFixtures();
+  // The renderer's loader never names a current run, so a case that does has
+  // no renderer-tier form; `loadedMessageSanitizer.test.ts` replays those.
+  for (const testCase of cases.filter((c) => c.currentRunMessageId === undefined)) {
+    it(`fixture: ${testCase.name}`, () => {
+      const { chat } = getI18n();
+      const out = sanitizeLoadedMessages(testCase.input as never);
+      expect(JSON.parse(JSON.stringify(out))).toEqual(expectedForText(testCase.expected, {
+        runRecoveredAfterRestart: chat.runRecoveredAfterRestart,
+        errorEmptyBody: chat.errorEmptyBody,
+      }));
+    });
+  }
 });

@@ -1,10 +1,23 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles/index.css'
+import { installAppearanceAttributes } from './styles/appearance'
 import App from './App.tsx'
+import { initializeAccountProtocol } from './core/account/runtime'
 
 // Dev-only: registers window.__abuLangfuseSpike() for the Phase A transport test.
 if (import.meta.env.DEV) void import('./core/observability/langfuse')
+
+// Accessibility appearance attributes must exist before the first paint (tokens.css reads them).
+installAppearanceAttributes()
+
+// Developer design preview (Cmd/Ctrl+Option/Alt+Shift+D). Compiled out unless the
+// renderer was built with VITE_ABU_DESIGN_PREVIEW=1, which only electron:dev does.
+if (import.meta.env.VITE_ABU_DESIGN_PREVIEW === '1') {
+  void import('./components/design-preview/installDesignPreview').then((m) => { m.installDesignPreview(); });
+}
+
+void initializeAccountProtocol()
 
 // Overlay scrollbar: show the thumb only while an element is actively scrolling,
 // then fade out. Applies to EVERY scrollable element (not just those tagged

@@ -15,8 +15,9 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { LOCAL_FIRST_RESPONSE_TIMEOUT_MS } from './heartbeat';
 
-let _loadPromise: Promise<typeof globalThis.fetch> | null = null;
+let _loadPromise: Promise<{ fetch: typeof globalThis.fetch; localServerFetch: typeof globalThis.fetch }> | null = null;
 
 // Headers that the browser may inject into a Request object for cross-origin
 // requests. We strip them when talking to local AI providers so Ollama's
@@ -26,13 +27,14 @@ const STRIP_LOCAL_HEADERS = new Set(['origin', 'referer', 'host']);
 const LOCAL_URL_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?[/]/i;
 
 // Hard ceiling for the connect + response-header phase. tauri-plugin-http's
-// clientConfig.connectTimeout is undefined (no built-in timeout), and the
-// streaming idle-heartbeat in the LLM adapters only arms AFTER response.body
-// is obtained — so a server that accepts the TCP connection but never returns
-// headers would hang forever with zero protection. Headers come back when the
-// server starts responding (well before generation finishes), so 120s is
-// generous for even slow reasoning models while still bounding a true hang.
-const HEADER_TIMEOUT_MS = 120_000;
+// clientConfig.connectTimeout is undefined (no built-in timeout), so a server
+// that accepts the TCP connection but never returns headers would otherwise
+// hang forever. This path serves localhost / 127.0.0.1 addresses and requests
+// to local model servers (any address), which do not send headers until they
+// have processed the whole input. The LLM adapters' own local first-response timer (10
+// minutes) fires first and aborts the request through its signal; this
+// ceiling sits slightly above it as a last resort for callers without one.
+const HEADER_TIMEOUT_MS = LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000;
 
 /**
  * A fetch implementation that talks directly to tauri-plugin-http's IPC
@@ -40,7 +42,7 @@ const HEADER_TIMEOUT_MS = 120_000;
  * This prevents WebView2 (Windows) from injecting `Origin` into the
  * forwarded headers, which causes Ollama CORS 403 errors.
  */
-async function localFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+async function localFetch(input: RequestInfo | URL, init?: RequestInit, localServer = false): Promise<Response> {
   const url =
     typeof input === 'string'
       ? input
@@ -84,8 +86,12 @@ async function localFetch(input: RequestInfo | URL, init?: RequestInit): Promise
   }
 
   // Step 1: create the request resource on Rust side
+  // localServer 让 Electron 主进程（electron/httpHost.cjs）把响应头与正文的传输上限放到适配器 10 分钟之后
   const rid = await invoke<number>('plugin:http|fetch', {
-    clientConfig: { method, url, headers, data, maxRedirections: undefined, connectTimeout: undefined },
+    clientConfig: {
+      method, url, headers, data, maxRedirections: undefined, connectTimeout: undefined,
+      ...(localServer ? { localServer: true } : {}),
+    },
   });
 
   const abort = () => invoke('plugin:http|fetch_cancel', { rid });
@@ -175,12 +181,25 @@ function wrapWithLocalFetch(pluginFetch: typeof globalThis.fetch): typeof global
   };
 }
 
+/** 本地模型服务的请求：发给 localFetch 并带上 localServer 标记，地址不限于本机 */
+const localServerFetch: typeof globalThis.fetch = (input, init) => localFetch(input, init, true);
+
+export interface TauriFetchOptions {
+  /**
+   * 请求发给本地模型服务（Ollama、LM Studio、地址在本机的自定义服务商）。首次回答前的
+   * 等待与之后的空闲由适配器自己计时；桌面端发请求的 Node fetch（undici）默认 300 秒
+   * 没收到响应头或正文空闲 300 秒就断开，带上这一项后这两个上限放到适配器 10 分钟之后
+   * 10 秒（LOCAL_FIRST_RESPONSE_TIMEOUT_MS + 10_000），只作兜底。
+   */
+  localServer?: boolean;
+}
+
 /**
  * Get a fetch function that bypasses CORS in Tauri.
  * Must be called (awaited) before use.
  * Uses a Promise-based singleton to avoid concurrent import races.
  */
-export function getTauriFetch(): Promise<typeof globalThis.fetch> {
+export function getTauriFetch(options: TauriFetchOptions = {}): Promise<typeof globalThis.fetch> {
   if (!_loadPromise) {
     _loadPromise = (async () => {
       // Non-Tauri runtime (web mode / E2E): skip the plugin import entirely and
@@ -191,16 +210,16 @@ export function getTauriFetch(): Promise<typeof globalThis.fetch> {
         typeof window === 'undefined' ||
         !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
       ) {
-        return globalThis.fetch;
+        return { fetch: globalThis.fetch, localServerFetch: globalThis.fetch };
       }
       try {
         const mod = await import('@tauri-apps/plugin-http');
-        return wrapWithLocalFetch(mod.fetch);
+        return { fetch: wrapWithLocalFetch(mod.fetch), localServerFetch };
       } catch {
         // Not in Tauri environment, fall back to global fetch
-        return globalThis.fetch;
+        return { fetch: globalThis.fetch, localServerFetch: globalThis.fetch };
       }
     })();
   }
-  return _loadPromise;
+  return _loadPromise.then((loaded) => (options.localServer ? loaded.localServerFetch : loaded.fetch));
 }

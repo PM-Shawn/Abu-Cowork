@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useChatStore } from '@/stores/chatStore';
-import { useTeamStore } from '@/stores/teamStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -17,7 +17,7 @@ export function memberDefByName(team: TeamRouteContext, name: string): { name: s
 /** Team pinned to a conversation, re-resolved when the team store changes. */
 export function useConversationTeam(conversationId: string): TeamRouteContext | null {
   const teamId = useChatStore((s) => s.conversations[conversationId]?.teamId);
-  const teams = useTeamStore((s) => s.teams);
+  const teams = useVisibleTeams();
   // Roles resolve through the agent registry, which fills in asynchronously
   // after launch/reopen; without this dependency a reopened team conversation
   // stayed at "队员 · 0" (retest G1, 2026-09-07).

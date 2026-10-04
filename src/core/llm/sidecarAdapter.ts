@@ -56,6 +56,7 @@ interface SidecarLlmErrorData {
   retryAfterMs?: number;
   statusCode?: number;
   upstream?: UpstreamErrorDetails;
+  contextLimit?: number;
   message?: string;
 }
 
@@ -66,6 +67,7 @@ const SIDECAR_LLM_ERROR_DATA_KEYS = new Set([
   'retryAfterMs',
   'statusCode',
   'upstream',
+  'contextLimit',
   'message',
 ]);
 const WIRE_RETRYABLE_LLM_CODES: ReadonlySet<LLMErrorCode> = new Set([
@@ -81,6 +83,7 @@ const WIRE_HTTP_STATUS_BY_CODE: Partial<Record<LLMErrorCode, ReadonlySet<number>
   invalid_request: new Set([400]),
   not_found: new Set([404]),
   overloaded: new Set([503, 529]),
+  quota_exceeded: new Set([429]),
   rate_limit: new Set([429]),
   server_error: new Set([500, 502]),
 };
@@ -114,6 +117,10 @@ function isSidecarLlmErrorData(value: unknown): value is SidecarLlmErrorData {
   if (value.code && effectiveStatus !== undefined) {
     const allowedStatuses = WIRE_HTTP_STATUS_BY_CODE[value.code];
     if (allowedStatuses && !allowedStatuses.has(effectiveStatus)) return false;
+  }
+  if (value.contextLimit !== undefined
+    && (!Number.isSafeInteger(value.contextLimit) || (value.contextLimit as number) <= 0 || value.code !== 'context_too_long')) {
+    return false;
   }
   return value.message === undefined || typeof value.message === 'string';
 }
@@ -154,6 +161,7 @@ function reconstructError(err: unknown): LLMError {
         retryAfterMs: data.retryAfterMs,
         statusCode: typeof data.statusCode === 'number' ? data.statusCode : undefined,
         upstream,
+        contextLimit: data.contextLimit,
       });
     }
     if (isRecord(data) && data.name === 'LLMError') {

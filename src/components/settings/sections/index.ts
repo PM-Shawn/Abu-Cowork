@@ -5,3 +5,4 @@ export { default as SandboxSection } from './SandboxSection';
 export { default as GeneralSection } from './GeneralSection';
 export { default as CapabilitiesSection } from './CapabilitiesSection';
 export { default as IMChannelSection } from './IMChannelSection';
+export { default as AccountSection } from './AccountSection';

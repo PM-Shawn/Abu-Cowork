@@ -49,6 +49,7 @@ const RESTRICTED_WINDOW_COMMANDS = new Map([
   ],
   ['overlay', new Set(['plugin:event|listen', 'plugin:event|unlisten'])],
   ['stop-button', new Set(['plugin:event|emit'])],
+  ['overlay-strip', new Set(['plugin:event|listen', 'plugin:event|unlisten', 'plugin:event|emit'])],
 ]);
 const RESTRICTED_EMITTED_EVENTS = new Map([
   [
@@ -62,10 +63,12 @@ const RESTRICTED_EMITTED_EVENTS = new Map([
     ]),
   ],
   ['stop-button', new Set(['computer-use-abort'])],
+  ['overlay-strip', new Set(['computer-use-abort', 'computer-use-resume', 'computer-use-dismiss'])],
 ]);
 const RESTRICTED_LISTENED_EVENTS = new Map([
   ['pet', new Set(['pet-status-update', 'tauri://move'])],
-  ['overlay', new Set(['computer-use-status'])],
+  ['overlay', new Set(['computer-use-status', 'computer-use-heartbeat', 'computer-use-cursor'])],
+  ['overlay-strip', new Set(['computer-use-status', 'computer-use-heartbeat'])],
 ]);
 const BASE_DIRECTORY_VALUES = new Set(Array.from({ length: 23 }, (_v, i) => i + 1));
 const PATH_KEYS = new Set([
@@ -335,6 +338,20 @@ function assertTrustedIpcSender(event) {
     throw new Error(`Blocked privileged IPC: ${result.reason}`);
   }
   return result.record;
+}
+
+/**
+ * Whether `rawUrl` is the registered page of the main window's WebContents.
+ * Used by Chromium permission handlers, which see a WebContents + URL rather
+ * than an IPC event.
+ *
+ * @param {object | null | undefined} webContents
+ * @param {string} rawUrl
+ */
+function isTrustedMainWindowPage(webContents, rawUrl) {
+  const record = webContents && trustedWebContents.get(webContents);
+  if (!record || record.label !== 'main' || isDestroyedSender(webContents)) return false;
+  return typeof rawUrl === 'string' && isAllowedRegisteredPage(record, rawUrl);
 }
 
 function assertTrustedMainIpcSender(event) {
@@ -652,6 +669,7 @@ module.exports = {
   validateTrustedIpcSender,
   assertTrustedIpcSender,
   assertTrustedMainIpcSender,
+  isTrustedMainWindowPage,
   canonicalFilePage,
   isWindowsAbsolutePath,
   canonicalNavigatedFilePage,

@@ -28,8 +28,13 @@ vi.mock('./prompts/preloadedSkills', () => ({
   resolvePreloadedSkills: (...a: unknown[]) => resolvePreloadedSkillsMock(...a),
 }));
 
+const resolveEntryModelMock = vi.fn(() => ({
+  effectiveModelId: 'm1',
+  provider: undefined as unknown,
+  entryModelDeclared: { supportsTools: true } as Record<string, unknown>,
+}));
 vi.mock('./resolveEntryModel', () => ({
-  resolveEntryModel: () => ({ entryModelDeclared: { supportsTools: true } }),
+  resolveEntryModel: () => resolveEntryModelMock(),
 }));
 
 vi.mock('./prompts/capabilityPrompt', () => ({
@@ -98,5 +103,18 @@ describe('precomputeOrchestration', () => {
     await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
 
     expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
+  });
+
+  it('builds the system prompt for the tier the entry model will run at', async () => {
+    routeInputMock.mockReturnValue({ type: 'general', cleanInput: 'hi' });
+    resolveEntryModelMock.mockReturnValueOnce({
+      effectiveModelId: 'deepseek-chat',
+      provider: { id: 'p', source: 'custom' },
+      entryModelDeclared: { supportsTools: true, supportsImages: false },
+    });
+
+    await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
+
+    expect(buildSystemPromptSectionsMock.mock.calls.at(-1)?.[5]).toMatchObject({ computerUseTier: 'structured' });
   });
 });

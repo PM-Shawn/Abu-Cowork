@@ -193,14 +193,24 @@ describe('escalateMaxOutputTokens', () => {
     expect(escalateMaxOutputTokens(8192, 200000, 3)).toEqual({ maxOutputTokens: 16384, changed: true });
   });
 
-  it('caps at contextWindowSize - 1000', () => {
-    // contextWindow is 10000, so cap = 9000, doubling 8192 would be 16384 > 9000
-    const result = escalateMaxOutputTokens(8192, 10000, 1);
-    expect(result).toEqual({ maxOutputTokens: 9000, changed: true });
+  it('caps at a quarter of the window', () => {
+    // contextWindow 10000 → 上限 2500；2000 翻倍是 4000，封顶到 2500
+    const result = escalateMaxOutputTokens(2000, 10000, 1);
+    expect(result).toEqual({ maxOutputTokens: 2500, changed: true });
+  });
+
+  it('keeps an 8K window at 2048 after a cut-off answer, leaving room for input', () => {
+    expect(escalateMaxOutputTokens(2048, 8192, 1)).toEqual({ maxOutputTokens: 2048, changed: false });
+    expect(escalateMaxOutputTokens(1024, 8192, 1)).toEqual({ maxOutputTokens: 2048, changed: true });
+  });
+
+  it('still keeps 1000 tokens of input on a tiny window', () => {
+    // contextWindow 1200：四分之一是 300，窗口减 1000 是 200，取更小的 200
+    expect(escalateMaxOutputTokens(150, 1200, 1)).toEqual({ maxOutputTokens: 200, changed: true });
   });
 
   it('does not escalate when already at context limit', () => {
-    // currentMax=9000, contextWindow=10000, cap=9000 — doubling gives 9000, not > 9000
+    // currentMax=9000 已超过 contextWindow=10000 的四分之一，保持原值
     const result = escalateMaxOutputTokens(9000, 10000, 1);
     expect(result).toEqual({ maxOutputTokens: 9000, changed: false });
   });
@@ -208,6 +218,18 @@ describe('escalateMaxOutputTokens', () => {
   it('works with large context windows', () => {
     const result = escalateMaxOutputTokens(32768, 1000000, 2);
     expect(result).toEqual({ maxOutputTokens: 65536, changed: true });
+  });
+
+  it('takes the quarter from the model\'s own window when the global ceiling made the input window smaller', () => {
+    // 输入窗口被全局上限压到 200000，模型自己的窗口 1050000：四分之一按后者算，翻倍后的 65536 不被压到 50000
+    expect(escalateMaxOutputTokens(32768, 200000, 1, 1050000)).toEqual({ maxOutputTokens: 65536, changed: true });
+    // 仍然给输入留 1000
+    expect(escalateMaxOutputTokens(150000, 200000, 1, 1050000)).toEqual({ maxOutputTokens: 199000, changed: true });
+  });
+
+  it('keeps a Claude model at a quarter of its own 200000 window, as before this change', () => {
+    // 模型表里 Claude 的窗口本身就是 200000，全局上限不改变它，四分之一仍是 50000
+    expect(escalateMaxOutputTokens(32768, 200000, 1, 200000)).toEqual({ maxOutputTokens: 50000, changed: true });
   });
 });
 

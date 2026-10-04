@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint, Zap, UserRound } from 'lucide-react';
+import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint, Zap, UserRound, Mic } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, CapabilitiesSection, IMChannelSection } from './sections';
+import { AccountSection, AIServicesSection, AboutSection, SandboxSection, GeneralSection, CapabilitiesSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
 import AuthorSection from './sections/AuthorSection';
 import PersonalMemorySection from './sections/PersonalMemorySection';
@@ -13,6 +13,7 @@ import UsageSection from './sections/UsageSection';
 import EnterpriseSection from './sections/EnterpriseSection';
 import LabsSection from './sections/LabsSection';
 import PetSection from './sections/PetSection';
+import VoiceInputSection from './sections/VoiceInputSection';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_PET } from '@/core/labs/registry';
@@ -35,15 +36,17 @@ export default function SystemSettingsView() {
 
   // Nav is chunked into intent-based clusters, separated by thin dividers with
   // no group titles (mirrors TRAE / WorkBuddy settings). Order top→bottom:
-  // ① system/app config · ② models & usage · ③ personalization ·
+  // ① account + system/app config · ② models & usage · ③ personalization ·
   // ④ channels · ⑤ support (about/feedback/diagnostic last, by convention).
   // Theme & language also live in 通用 but are surfaced in the account popover.
   type NavItem = { id: SystemSettingsTab; label: string; icon: typeof Settings2 };
   const navGroups: NavItem[][] = [
-    // ① 系统 / 应用设置 — 沙盒 folded in here, not its own cluster
+    // ① 账号与系统 / 应用设置 — identity is the first conventional destination
     [
+      { id: 'account', label: t.account.title, icon: UserRound },
       { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
       { id: 'capabilities', label: t.settings.capabilityOverview, icon: Zap },
+      { id: 'voice-input', label: t.voiceInput.title, icon: Mic },
       { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
       { id: 'labs', label: t.settings.labs, icon: FlaskConical },
     ],
@@ -79,12 +82,16 @@ export default function SystemSettingsView() {
 
   const renderContent = () => {
     switch (activeSystemTab) {
+      case 'account':
+        return <AccountSection />;
       case 'general':
         return <GeneralSection />;
       case 'capabilities':
         return <CapabilitiesSection />;
       case 'labs':
         return <LabsSection />;
+      case 'voice-input':
+        return <VoiceInputSection />;
       case 'ai-services':
         return <AIServicesSection />;
       case 'sandbox':

@@ -91,9 +91,10 @@ export default function GeneralSection() {
     },
   ];
 
+  // 「跟随系统」排第一，和下面的语言一行读法一致：默认在最前，具体选项在后。
   const themeOptions = [
-    { value: 'light', label: t.settings.appearanceLight },
     { value: 'system', label: t.settings.appearanceSystem },
+    { value: 'light', label: t.settings.appearanceLight },
     { value: 'dark', label: t.settings.appearanceDark },
   ];
 

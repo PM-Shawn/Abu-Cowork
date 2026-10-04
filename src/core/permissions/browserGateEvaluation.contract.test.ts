@@ -164,7 +164,7 @@ function predictedGate(
     highRisk: site === 'high-risk',
     permissionMode: 'standard', runPermissionCeiling: null,
     toolTargetsPage: true, originResolved: true, answersPageDialog: false,
-    loginRequired: false, confirmationChannelAvailable: true, originKnown: true,
+    loginRequired: false, confirmationChannelAvailable: true, originKnown: true, scriptInEmbeddedRegion: false,
   });
 
   return { outcome: evaluation.outcome, askChannel: evaluation.ask?.channel ?? null };

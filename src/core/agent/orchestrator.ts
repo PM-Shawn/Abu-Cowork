@@ -16,6 +16,8 @@ import { getDefaultSoul } from './prompts/defaultSoul';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
+import { getConversationReader } from './ports/conversationReader';
+import { buildAppContextSection } from './prompts/appContext';
 import { getSessionOutputDir } from '../session/sessionDir';
 import { prepareSuggestedWorkspace } from './defaultWorkspace';
 import { isWindows } from '../../utils/platform';
@@ -24,6 +26,7 @@ import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
 import { getSkillsGuidance } from './prompts/skillsGuidance';
 import { buildResponseLanguageSection } from './prompts/responseLanguage';
+import { commandsFirstGuidance, openingAppsGuidance, structuredComputerUseGuidance } from './prompts/computerUseGuidance';
 import { BROWSER_NARRATION_RULES } from './browserNarrationRules';
 import type { PromptSection } from '../llm/promptSections';
 import type { TeamRouteContext } from '../team/leaderRoute';
@@ -501,6 +504,15 @@ export async function buildSystemPromptSections(
     sections.push({ name: 'planning', text: planningText, cacheable: true });
   }
 
+  // A conversation started inside an app carries that app's context in every
+  // mode above, right after the identity block: the app is the workspace the
+  // user chose, and a team-pinned conversation keeps both this and its Role.
+  // Fork contexts stay minimal, as for every other identity addition.
+  const appBinding = getConversationReader().getConversation(conversationId)?.appBinding;
+  if (appBinding && !isForkContext) {
+    sections.push({ name: 'app-context', text: buildAppContextSection(appBinding), cacheable: true });
+  }
+
   // Soul bootstrap: one-time personality introduction prompt
   // Triggers after user has had at least one deep conversation (≥3 user messages)
   const settings = getSettingsReader().getSnapshot();
@@ -723,16 +735,46 @@ ${indexContent.trim()}
     // computer tool is also registered (toolPrefetch.ts), so guidance and
     // tool ship together.
     if (settingsState.computerUseEnabled) {
+    // Which channel, before how to drive one. Only shipped when the GUI
+    // channel exists at all — with computer use off there is nothing to route
+    // away from, and this would be ~300 tokens of dead prompt on every turn.
+    sections.push({ name: 'channel-gate', text: `\n## Channel gate
+Read this before any task that touches a file, a document, or an application.
+Decide from the wording of the request alone. Never open the data to decide how
+to open it.
+
+1. The request names a file, or asks you to produce one, and the work is that
+   file's content → the document skills (.docx/.xlsx/.pptx/.pdf) or the file
+   tools. Not the GUI, even when the application is already open.
+2. The request is about an application's own state — a message to send, a
+   setting to change, a window to arrange, anything only that program can do →
+   the GUI.
+3. The request is about what is on the screen right now ("this window", "what
+   I'm looking at") → the GUI.
+4. The wording settles neither → ask, in one line. Do not open the file to find
+   out.
+
+One case overrides rule 1: the file is open in its application and the user is
+working in it. Writing the file behind the application's back either fails
+outright or discards their unsaved edits. Say so and ask whether to work in the
+open window or have them close it first.${isWindows() ? `
+check_open_document answers that for one path — which application, and whether
+their edits are saved. Ask it before rewriting a document that was already
+there, and whenever a write is refused for permission or sharing reasons. Do
+not open the file to find out, and do not guess from a window title.` : ''}
+
+The GUI is the last resort, never the default. It takes over the user's screen
+and keyboard, it is slower than every other channel, and it fails in ways they
+do not. When it is the answer, say so in one line before you start, so the user
+knows their screen is about to be used. When it is not, just do the work.`, cacheable: true });
+
+    if (toolContext?.computerUseTier === 'structured') {
+      sections.push({ name: 'computer-use', text: structuredComputerUseGuidance(isWindows()), cacheable: true });
+    } else {
     sections.push({ name: 'computer-use', text: `\n## Computer Control Capability
 You have the computer tool, which lets you take screenshots and perform mouse and keyboard operations to control any application on the user's screen.
 
-### Core principle: commands first, GUI as fallback
-If something can be done with run_command or another tool, do not use computer to click the GUI.
-1. **run_command handles it directly** → file operations, system settings, opening apps, etc.
-2. **Command + GUI together** → use a command to open the app, then use computer to interact with the GUI inside it
-3. **Pure GUI** → only when interactive operation is required and there is no command-line alternative
-
-Do not use computer to re-fetch information you already obtained through other tools.
+${commandsFirstGuidance(isWindows())}
 
 ### Coordinate system
 - Coordinates use the screenshot pixel coordinate system (origin at top-left) and are automatically mapped to the real screen
@@ -743,12 +785,15 @@ Do not use computer to re-fetch information you already obtained through other t
 - Use show_user=true when the user asks to see the screen; omit it for automated execution (not shown to the user by default, but you can still see it)
 - After each action, a screenshot is automatically returned — no need to call screenshot again to confirm
 
-### Opening apps
-${isWindows()
-  ? `- Use run_command: Start-Process "AppName" or start "" "AppName"
-- If unsure of the program name, use Get-Command or where to look it up`
-  : `- Use run_command: open -a "AppName"; if unsure of the English name, first run ls /Applications | grep -i to find it
-- Do not use open URL as a substitute for opening a desktop app`}
+### One action, as much ground as it can cover
+Every write consumes the observation it was authorized against, so the next
+write needs a fresh one — two writes in the same reply cannot both be valid.
+Observing is cheap and does not spend the step budget; what spends it is
+acting. So cover more ground per action rather than per reply: type a whole
+string instead of a key at a time, and give drag a path instead of one
+segment.
+
+${openingAppsGuidance(isWindows())}
 - When you need to interact with the GUI, wait 2 seconds after opening before taking a screenshot
 
 ### Operation guidelines
@@ -765,6 +810,7 @@ ${isWindows()
 - Input field issue → click first to confirm focus, then type
 - App is unresponsive → wait longer, or check whether a pop-up is blocking it
 - Cannot complete the task → honestly tell the user where you got stuck`, cacheable: true });
+    }
     } // end of computer-use gate (settingsState.computerUseEnabled)
 
     const electronHost = hasElectronCommandHost();

@@ -8,6 +8,7 @@
  */
 
 import { useSettingsStore } from '@/stores/settingsStore';
+import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { checkProviderHealth, type HealthCheckResult } from '@/core/llm/healthCheck';
 import { getProviderCallHealth } from '@/core/llm/providerCallHealth';
 import { resolveAgentModelCapabilities } from '@/core/llm/modelCapabilities';
@@ -71,7 +72,7 @@ export async function runAIServicesChecks(): Promise<CheckResult[]> {
       const id = `ai-services:${p.id}`;
 
       // Skipped path: requires key but none provided
-      if (p.id !== 'ollama' && p.id !== 'lmstudio' && !p.apiKey.trim()) {
+      if (!providerHasCredentials(p)) {
         return {
           id,
           category: 'ai-services' as const,

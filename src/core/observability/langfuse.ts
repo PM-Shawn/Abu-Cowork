@@ -41,6 +41,41 @@ class TauriLangfuse extends Langfuse {
 let _client: Langfuse | null | undefined;
 
 /**
+ * One finished LLM call — consumed by the enterprise span relay when a sink
+ * is registered. Enterprise builds batch these to the Console relay so
+ * Langfuse keys stay server-side; OSS with no sink keeps zero collection for
+ * that path.
+ */
+export interface GenerationEvent {
+  conversationId: string;
+  name?: string;
+  model: string;
+  input: unknown;
+  output?: unknown;
+  usage?: TokenUsage;
+  costUsd?: number;
+  /** epoch ms */
+  startTime: number;
+  /** epoch ms */
+  endTime: number;
+  error?: string;
+}
+
+export interface TraceSink {
+  onGeneration(event: GenerationEvent): void;
+}
+
+let _sink: TraceSink | null = null;
+
+/** Register the active trace sink (enterprise builds). Returns unregister. */
+export function registerTraceSink(sink: TraceSink): () => void {
+  _sink = sink;
+  return () => {
+    if (_sink === sink) _sink = null;
+  };
+}
+
+/**
  * Returns a lazily-initialised Langfuse client, or null when observability is
  * not configured. The result is cached (including the null case) so callers can
  * invoke this on every turn cheaply.
@@ -68,7 +103,7 @@ export function getLangfuse(): Langfuse | null {
 }
 
 export function isObservabilityEnabled(): boolean {
-  return getLangfuse() !== null;
+  return _sink !== null || getLangfuse() !== null;
 }
 
 // --- Trace lifecycle, keyed by conversationId -----------------------------
@@ -193,27 +228,52 @@ export function endConversationTrace(
   void getLangfuse()?.flushAsync().catch(() => {});
 }
 
-/** Record one LLM turn as a generation. Returns a no-op handle when disabled. */
+/**
+ * Record one LLM turn as a generation.
+ * - Enterprise sink registered → emit GenerationEvent even without Langfuse keys.
+ * - OSS Langfuse configured → also write into the parent conversation trace.
+ * - Neither → free no-op.
+ */
 export function startGeneration(
   conversationId: string,
   data: { name?: string; model: string; input: unknown; startTime?: Date },
 ): EndableGeneration {
+  const sink = _sink;
   const trace = _traces.get(conversationId);
-  if (!trace) return NOOP_GENERATION;
-  const gen = trace.generation({
-    name: data.name,
-    model: data.model,
-    input: sanitizeLangfusePayload(data.input),
-    startTime: data.startTime,
-  });
+  if (!sink && !trace) return NOOP_GENERATION;
+  const startTime = data.startTime?.getTime() ?? Date.now();
+  const gen = trace
+    ? trace.generation({
+        name: data.name,
+        model: data.model,
+        input: sanitizeLangfusePayload(data.input),
+        startTime: data.startTime,
+      })
+    : null;
   return {
     end(end) {
       try {
-        gen.end({
-          output: sanitizeLangfusePayload(end?.output),
-          usage: mapUsage(end?.usage, end?.costUsd),
-          ...(end?.level === 'ERROR' ? { level: 'ERROR', statusMessage: sanitizeLangfusePayload(end?.statusMessage) } : {}),
-        });
+        if (gen) {
+          gen.end({
+            output: sanitizeLangfusePayload(end?.output),
+            usage: mapUsage(end?.usage, end?.costUsd),
+            ...(end?.level === 'ERROR' ? { level: 'ERROR', statusMessage: sanitizeLangfusePayload(end?.statusMessage) } : {}),
+          });
+        }
+        if (sink) {
+          sink.onGeneration({
+            conversationId,
+            name: data.name,
+            model: data.model,
+            input: data.input,
+            output: end?.output,
+            usage: end?.usage,
+            costUsd: end?.costUsd,
+            startTime,
+            endTime: Date.now(),
+            ...(end?.level === 'ERROR' ? { error: end?.statusMessage ?? 'error' } : {}),
+          });
+        }
       } catch { /* best-effort */ }
     },
   };

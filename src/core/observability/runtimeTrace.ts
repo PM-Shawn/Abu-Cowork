@@ -17,6 +17,9 @@ export interface RuntimeTraceAttributes {
   payloadBytes?: number;
   /** The limit a payload was checked against (payload_too_large events). */
   limitBytes?: number;
+  /** The ledger watermark an `agent.start` named, and the ledger size the sidecar measured (history_unavailable). */
+  ledgerWatermarkBytes?: number;
+  ledgerFileBytes?: number;
   /** #549 step 0 per-field byte counts (numbers only, never content) — see core/ipc/payloadFieldSizes. */
   fieldMessagesTextBytes?: number;
   fieldUserMessageBytes?: number;
@@ -112,6 +115,8 @@ const SAFE_ATTRIBUTE_KEYS = new Set<keyof RuntimeTraceAttributes>([
   'durationMs',
   'payloadBytes',
   'limitBytes',
+  'ledgerWatermarkBytes',
+  'ledgerFileBytes',
   'fieldMessagesTextBytes',
   'fieldUserMessageBytes',
   'fieldRouteBytes',

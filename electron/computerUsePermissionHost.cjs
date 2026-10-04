@@ -46,6 +46,23 @@ function createComputerUsePermissionHost({
     if (!PERMISSION_COMMANDS.has(cmd)) {
       return COMPUTER_USE_PERMISSION_HOST_MISS;
     }
+    if (platform === 'win32') {
+      if (cmd === 'check_macos_permissions') {
+        // Windows has no macOS-style Screen Recording or Accessibility
+        // consent switches. A normal process can inspect and control
+        // same/lower-integrity desktop apps; the native action guard is
+        // responsible for rejecting a specific higher-integrity target.
+        return {
+          screen_recording: true,
+          accessibility: true,
+          screen_recording_status: 'granted',
+          accessibility_status: 'granted',
+          restart_required: false,
+          ui_control_limitation: 'same-or-lower-integrity',
+        };
+      }
+      return true;
+    }
     if (platform !== 'darwin') {
       return cmd === 'check_macos_permissions'
         ? COMPUTER_USE_PERMISSION_HOST_MISS

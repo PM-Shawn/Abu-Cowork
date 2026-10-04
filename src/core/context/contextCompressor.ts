@@ -40,6 +40,27 @@ export interface CompressionConfig {
   signal?: AbortSignal;
   /** Independent timeout for the summarization LLM call. Defaults to 30s. */
   timeoutMs?: number;
+  /** 记账归属：压缩的用量算在哪条会话名下。来源恒为 compaction，由本模块给出。 */
+  conversationId?: string | null;
+  /** 记账归属：Abu 自己的服务商配置 id。 */
+  providerInstanceId?: string;
+  /** 与主请求相同：用户填写的上下文长度，只有 Ollama 按它运行。 */
+  requestedContextLength?: number;
+  /** 与主请求相同：本地服务首次回答前最多等 10 分钟，超时不重试。 */
+  localServer?: boolean;
+}
+
+/**
+ * 压缩调用的记账身份。来源在这里统一给出 `compaction`：摘要请求全部从本模块发出，
+ * 各个调用方不必各自声明（任务书 U02）。
+ */
+function compactionAccounting(config: CompressionConfig) {
+  return {
+    source: 'compaction' as const,
+    conversationId: config.conversationId ?? null,
+    skill: null,
+    providerInstanceId: config.providerInstanceId ?? 'unknown',
+  };
 }
 
 /** Result of compression attempt */
@@ -119,7 +140,10 @@ ${middleText}
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     maxTokens: SUMMARY_MAX_TOKENS,
+    requestedContextLength: config.requestedContextLength,
+    localServer: config.localServer,
     signal: combinedSignal,
+    accounting: compactionAccounting(config),
   };
 
   let timedOut = false;
@@ -252,7 +276,10 @@ ${middleText}
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
       maxTokens: SUMMARY_MAX_TOKENS,
+      requestedContextLength: config.requestedContextLength,
+      localServer: config.localServer,
       signal: combinedSignal,
+      accounting: compactionAccounting(config),
     };
 
     let timedOut = false;

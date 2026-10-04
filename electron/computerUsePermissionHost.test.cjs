@@ -184,7 +184,7 @@ test('previously denied screen consent opens the exact System Settings pane', as
   assert.deepEqual(opened, [SCREEN_RECORDING_SETTINGS_URL]);
 });
 
-test('non-macOS requests preserve the existing no-op behavior', async () => {
+test('Windows reports desktop control capability without pretending elevation is consent', async () => {
   const dispatch = createComputerUsePermissionHost({
     platform: 'win32',
     electronProvider: () => {
@@ -194,6 +194,24 @@ test('non-macOS requests preserve the existing no-op behavior', async () => {
 
   assert.equal(await dispatch('request_accessibility'), true);
   assert.equal(await dispatch('request_screen_recording'), true);
+  assert.deepEqual(await dispatch('check_macos_permissions'), {
+    screen_recording: true,
+    accessibility: true,
+    screen_recording_status: 'granted',
+    accessibility_status: 'granted',
+    restart_required: false,
+    ui_control_limitation: 'same-or-lower-integrity',
+  });
+});
+
+test('other non-macOS platforms keep the compatibility fallback', async () => {
+  const dispatch = createComputerUsePermissionHost({
+    platform: 'linux',
+    electronProvider: () => {
+      throw new Error('Electron should not load for the compatibility path');
+    },
+  });
+
   assert.equal(
     await dispatch('check_macos_permissions'),
     COMPUTER_USE_PERMISSION_HOST_MISS,

@@ -37,7 +37,7 @@ test('installation metadata drives Chrome settings independently of live connect
     const page = await app.firstWindow();
     await expect(page.getByPlaceholder(/想让阿布帮你做点什么|What can Abu help/)).toBeVisible({ timeout: 45_000 });
     await dismissFirstRunOverlays(page);
-    await page.getByRole('button', { name: /^(我|Me)$/ }).click();
+    await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).click();
     await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
     await page.getByRole('button', { name: /^(能力|Capabilities)$/ }).click();
     await page.getByRole('button', { name: /^(我的 Chrome|My Chrome)/ }).click();

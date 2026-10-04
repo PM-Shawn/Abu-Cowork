@@ -71,6 +71,24 @@ describe('sidecar plugin-fs shim', () => {
         await writeTextFile(path, 'new', { create: false });
         expect(await read(path)).toBe('new');
       });
+
+      it.skipIf(isWindows)('writes a file whose owner left it write-only', async () => {
+        const path = join(dir, 'write-only.md');
+        await nodeWriteFile(path, 'old');
+        await nodeChmod(path, 0o200);
+        await writeTextFile(path, 'new', { create: false });
+        await nodeChmod(path, 0o600);
+        expect(await read(path)).toBe('new');
+      });
+
+      it.skipIf(isWindows)('appends to a file whose owner left it write-only', async () => {
+        const path = join(dir, 'write-only.log');
+        await nodeWriteFile(path, 'line 1\n');
+        await nodeChmod(path, 0o200);
+        await writeTextFile(path, 'line 2\n', { append: true, create: false });
+        await nodeChmod(path, 0o600);
+        expect(await read(path)).toBe('line 1\nline 2\n');
+      });
     });
 
     describe('append', () => {
@@ -265,8 +283,14 @@ describe('sidecar plugin-fs shim', () => {
       const info = await stat(path);
       const native = await nodeStat(path);
       expect(info.mode).toBe(native.mode);
-      expect(info.ino).toBe(native.ino);
-      expect(info.dev).toBe(native.dev);
+      // Identity is the exact 64-bit value as text, so it is compared against
+      // a bigint stat: the float `native.ino` is the rounded reading this
+      // encoding exists to replace, and on a volume whose file ids have passed
+      // 2^53 the two differ (seen here: 15481123719197795 read back as
+      // ...796).
+      const exact = await nodeStat(path, { bigint: true });
+      expect(info.ino).toBe(String(exact.ino));
+      expect(info.dev).toBe(String(exact.dev));
       expect(info.nlink).toBe(native.nlink);
       expect(info.uid).toBe(native.uid);
       expect(info.gid).toBe(native.gid);
@@ -288,7 +312,8 @@ describe('sidecar plugin-fs shim', () => {
       await nodeSymlink(target, link);
       const info = await lstat(link);
       expect(info.isSymlink).toBe(true);
-      expect(info.ino).toBe((await nodeLstat(link)).ino);
+      // The link's OWN id, as the exact decimal string the wire carries.
+      expect(info.ino).toBe(String((await nodeLstat(link, { bigint: true })).ino));
     });
   });
 

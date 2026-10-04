@@ -1,0 +1,91 @@
+{
+  "name": "abu-app-finance-reconciliation",
+  "version": "1.0.0",
+  "description": "财务对账：对账、分析、报表，由财务对账专家团负责",
+  "author": { "name": "Abu" },
+  "license": "Apache-2.0",
+  "keywords": ["finance", "reconciliation", "expense"],
+  "minAbuVersion": "0.51.0",
+  "interface": {
+    "displayName": "财务对账",
+    "shortDescription": "对流水、查差异、出报表",
+    "longDescription": "给财务同事准备的应用：对账、分析和报表三组场景，由随阿布附带的财务对账专家团负责——财务助理带队，数据分析师算数，办公文档专家出报表。",
+    "developerName": "Abu",
+    "category": "finance",
+    "capabilities": ["读取你上传的流水、费用表和报销单", "生成对账结果、差异说明和费用报表"],
+    "brandColor": "#0C447C",
+    "logo": "assets/logo.png",
+    "logoDark": "assets/logo-dark.png"
+  },
+  "app": {
+    "version": 1,
+    "defaultRun": { "team": "builtin-team:finance-reconciliation" },
+    "promptAppend": "The user does finance reconciliation. Work from the files they upload, show every difference you find with its source rows, and never invent a number that is not in the data.",
+    "home": {
+      "header": {
+        "title": { "zh-CN": "财务对账", "en-US": "Finance reconciliation" },
+        "slogan": { "zh-CN": "把流水和费用表交给我，差异我来找", "en-US": "Hand me the statements and the expense sheet; I will find the differences" }
+      },
+      "modes": {
+        "defaultSelected": "reconcile",
+        "items": [
+          {
+            "modeId": "reconcile",
+            "title": { "zh-CN": "对账", "en-US": "Reconcile" },
+            "scenes": [
+              {
+                "id": "monthly",
+                "title": { "zh-CN": "月度费用对账", "en-US": "Monthly expense reconciliation" },
+                "placeholder": { "zh-CN": "上传流水和费用表，说明对账口径", "en-US": "Upload the statement and the expense sheet, state the rules" },
+                "templates": [
+                  { "id": "match", "title": { "zh-CN": "对一遍流水", "en-US": "Match the statement" }, "prompt": { "zh-CN": "把这份流水和费用表对一遍，列出对不上的条目和原因", "en-US": "Match this statement against the expense sheet and list every unmatched item with a reason" } },
+                  { "id": "quarter", "title": { "zh-CN": "季度费用对账", "en-US": "Quarterly reconciliation" }, "prompt": { "zh-CN": "按季度汇总这些费用并和流水核对，给出差异清单", "en-US": "Aggregate these expenses by quarter, check them against the statement and give the difference list" } },
+                  { "id": "duplicates", "title": { "zh-CN": "找重复记账", "en-US": "Find duplicates" }, "prompt": { "zh-CN": "检查这批费用里有没有重复记账或重复报销", "en-US": "Check these expenses for duplicate entries or duplicate claims" } }
+                ]
+              },
+              {
+                "id": "claims",
+                "title": { "zh-CN": "报销单整理", "en-US": "Expense claims" },
+                "templates": [
+                  { "id": "over-limit", "title": { "zh-CN": "标出超标", "en-US": "Flag over-limit" }, "prompt": { "zh-CN": "整理这批报销单，按标准标出超标的项目", "en-US": "Tidy these expense claims and flag the items over the limit" } },
+                  { "id": "missing", "title": { "zh-CN": "缺票据的", "en-US": "Missing receipts" }, "prompt": { "zh-CN": "列出缺少票据或票据信息不全的报销条目", "en-US": "List the claims with missing or incomplete receipts" } },
+                  { "id": "summary", "title": { "zh-CN": "按人汇总", "en-US": "Summarize by person" }, "prompt": { "zh-CN": "把这批报销按人和类别汇总成一张表", "en-US": "Summarize these claims by person and category in one table" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "analyze",
+            "title": { "zh-CN": "分析", "en-US": "Analyze" },
+            "scenes": [
+              {
+                "id": "variance",
+                "title": { "zh-CN": "费用变化原因", "en-US": "Why costs moved" },
+                "templates": [
+                  { "id": "mom", "title": { "zh-CN": "环比变化", "en-US": "Month over month" }, "prompt": { "zh-CN": "分析这两个月费用变化的原因，按类别说明", "en-US": "Explain the change in costs between these two months, by category" } },
+                  { "id": "budget", "title": { "zh-CN": "对比预算", "en-US": "Against budget" }, "prompt": { "zh-CN": "把实际费用和预算对比，指出超支的地方", "en-US": "Compare actual costs with the budget and point out the overruns" } },
+                  { "id": "trend", "title": { "zh-CN": "半年趋势", "en-US": "Six-month trend" }, "prompt": { "zh-CN": "给出近半年各类费用的趋势和一句判断", "en-US": "Show the six-month trend per category with a one-line reading" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "report",
+            "title": { "zh-CN": "报表", "en-US": "Reports" },
+            "scenes": [
+              {
+                "id": "monthly-report",
+                "title": { "zh-CN": "月度费用报表", "en-US": "Monthly expense report" },
+                "templates": [
+                  { "id": "report", "title": { "zh-CN": "出月报", "en-US": "Monthly report" }, "prompt": { "zh-CN": "根据这些数据出一份月度费用报表，附一段说明", "en-US": "Produce a monthly expense report from this data, with a short note" } },
+                  { "id": "slides", "title": { "zh-CN": "汇报用摘要", "en-US": "Summary for the meeting" }, "prompt": { "zh-CN": "把这份报表压缩成一页汇报摘要", "en-US": "Condense this report into a one-page summary for the meeting" } },
+                  { "id": "template", "title": { "zh-CN": "做成模板", "en-US": "Make a template" }, "prompt": { "zh-CN": "把这份报表整理成下个月能直接复用的模板", "en-US": "Turn this report into a template reusable next month" } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -12,9 +12,12 @@ import ChatView from '@/components/chat/ChatView';
 import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
+import AccountLoginDialog from '@/components/account/AccountLoginDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
+import AppPageView from '@/components/app/AppPageView';
+import AppMarketDialog from '@/components/toolbox/plugins/AppMarketDialog';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
@@ -102,7 +105,6 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry
 import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
-import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
 import { useDeepLinkEnroll } from '@/core/enterprise/useDeepLinkEnroll';
 import {
   consumeComputerUseResumeToken,
@@ -279,7 +281,7 @@ function App() {
   const setShowCloseDialog = usePreviewStore((s) => s.setAppModalOpen);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
-  const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
+  useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -928,6 +930,7 @@ function App() {
                 {viewMode === 'automation' && <AutomationView />}
                 {viewMode === 'extensions' && <ExtensionsView />}
                 {viewMode === 'team' && <TeamView />}
+                {viewMode === 'app-page' && <AppPageView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}
                 {(viewMode === 'chat' || !viewMode) && (
@@ -952,8 +955,14 @@ function App() {
 
         <ConversationSearchModal open={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
 
+        {/* 应用市场 — one dialog for the whole shell, self-gates on appStore. */}
+        <AppMarketDialog />
+
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />
+
+        {/* Personal / enterprise account entry — centered, optional, and non-blocking. */}
+        <AccountLoginDialog />
 
         {/* Task-local capability setup — suspends the exact requesting tool call. */}
         <CapabilitySetupDialog />
@@ -992,16 +1001,6 @@ function App() {
           />
         )}
 
-        {/* Deep-link enrollment: show BindToEnterpriseFlow pre-seeded with serverUrl
-            when the app is opened via abu://enroll?server=<URL>&token=<token>.
-            Renders above all other overlays (z-50 inside BindToEnterpriseFlow). */}
-        {pendingEnroll && (
-          <BindToEnterpriseFlow
-            initialServerUrl={pendingEnroll.serverUrl}
-            onDone={dismissEnroll}
-            onCancel={dismissEnroll}
-          />
-        )}
       </div>
     </TooltipProvider>
     </ErrorBoundary>

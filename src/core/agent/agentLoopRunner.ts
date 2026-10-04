@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { assertPluginEnabled, assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
 import { agentToolPolicyForRoute, checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { clearRunBounds } from '../team/teamRunBounds';
-import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
+import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Shell-side channel handler module for the main agent loop's sidecar run —
  * the main-loop twin of `subagentRunner.ts` (P1-3a). Built up in two
@@ -36,7 +36,8 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, Message, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -45,8 +46,12 @@ import {
   getSidecarStatus,
   registerSidecarNotifyResync,
   request as sidecarRequest,
+  sidecarHasCapability,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
+import { CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER } from '../sidecar/sidecarProtocol';
+import { takeLedgerHistoryPoint } from '../session/ledgerHistoryPoint';
+import { parseHistoryUnavailableError, type HistoryUnavailableData } from '../ipc/historyUnavailable';
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
@@ -142,8 +147,10 @@ import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
 import {
   BROWSER_DENIAL_ABORT_CAUSE,
+  createBrowserDenialStreak,
   createBrowserDenialTracker,
   type BrowserDenialAbortCause,
+  type BrowserDenialStreak,
   type BrowserDenialTracker,
 } from './browserDenialTracker';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
@@ -202,17 +209,25 @@ const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
 
 /**
  * How long the `agent.start` acknowledgement may take, as a function of the
- * encoded request size. The clock starts before the write, so the budget has
- * to cover the IPC transfer, the boundary validation, the stdin pipe, the
- * sidecar's framing and `JSON.parse`, and the digest check — all of which
- * scale with the body. A base allowance plus a per-started-MiB allowance
- * gives 3 000 ms for an ordinary turn and 15 800 ms at the 128 MiB raw-body
- * ceiling. Passed to `sidecarRequest` as a function so the encoded length is
- * taken from the bytes that request already produced (#549).
+ * two sizes the sidecar works through before it answers.
+ *
+ * The clock starts before the write, so the budget has to cover the IPC
+ * transfer, the boundary validation, the stdin pipe, the sidecar's framing and
+ * `JSON.parse`, and the digest check — all of which scale with the request
+ * body. A start that names a ledger watermark hands the sidecar a tiny request
+ * and a whole ledger prefix to read, fold and sanitise before it acknowledges,
+ * so those bytes are paid for at the same rate: a 45 MiB history is 4 500 ms on
+ * top of the base allowance. A base allowance plus a per-started-MiB allowance
+ * for each size gives 3 000 ms for an ordinary turn and 15 800 ms at the
+ * 128 MiB raw-body ceiling. Exported for the table test; production passes
+ * `agentStartAckBudget` to `sidecarRequest` so the encoded length is taken from
+ * the bytes that request already produced (#549).
  */
-function agentStartAckBudgetMs(encodedBytes: number): number {
-  const startedMib = Math.ceil(encodedBytes / (1024 * 1024));
-  return AGENT_START_ACK_BASE_TIMEOUT_MS + startedMib * AGENT_START_ACK_MS_PER_MIB;
+export function agentStartAckBudgetMs(encodedBytes: number, ledgerWatermarkBytes = 0): number {
+  const startedMib = (bytes: number): number => Math.ceil(bytes / (1024 * 1024));
+  return AGENT_START_ACK_BASE_TIMEOUT_MS
+    + startedMib(encodedBytes) * AGENT_START_ACK_MS_PER_MIB
+    + startedMib(ledgerWatermarkBytes) * AGENT_START_ACK_MS_PER_MIB;
 }
 const MAX_REATTACH_UNAVAILABLE_CHECKS = 3;
 const AGENT_LOOP_EXIT_REASONS = new Set<AgentLoopExitReason>([
@@ -882,8 +897,12 @@ async function finalizePreAcceptFailure(params: {
   runtimeStartedAt: number;
   kind: PreAcceptFailureKind;
   displayMessage: string;
-  stage: 'sidecar_unavailable' | 'payload_too_large' | 'params_build_failed';
+  stage: 'sidecar_unavailable' | 'payload_too_large' | 'params_build_failed' | 'history_unavailable';
   errorType: string;
+  /** Fixed vocabulary, never free text: which variant of the stage this is. */
+  reason?: string;
+  /** Present when the sidecar measured the ledger (`history_unavailable`): numbers only. */
+  historyUnavailable?: HistoryUnavailableData;
   /** Present only once a RunSession exists; its own `finally` owns teardown. */
   session?: RunSession;
   userMessage?: string;
@@ -911,6 +930,11 @@ async function finalizePreAcceptFailure(params: {
     stage: params.stage,
     outcome: 'error',
     errorType: params.errorType,
+    ...(params.reason ? { reason: params.reason } : {}),
+    ...(params.historyUnavailable ? {
+      ledgerWatermarkBytes: params.historyUnavailable.uptoBytes,
+      ledgerFileBytes: params.historyUnavailable.fileBytes,
+    } : {}),
     durationMs: Date.now() - params.runtimeStartedAt,
   });
   try {
@@ -1027,6 +1051,27 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       if (session.abortWatchdog) {
         clearTimeout(session.abortWatchdog);
         session.abortWatchdog = undefined;
+      }
+
+      // Persist the turn-level Computer Use stop before any process-bound
+      // cleanup. The normal end-task call in run.finally releases leases, but
+      // must never make this same stopped run executable after a helper,
+      // renderer, or sidecar restart.
+      try {
+        const { stopComputerUseTurn } = await import('../tools/definitions/computerTools');
+        await stopComputerUseTurn(
+          session.conversationId,
+          session.runId ?? session.loopId,
+          typeof session.shellAbortController.signal.reason === 'string'
+            ? session.shellAbortController.signal.reason
+            : `agent-abort-${source}`,
+        );
+      } catch (error) {
+        logger.warn('Computer Use turn-stop marker failed; abort continues', {
+          runId: session.runId ?? session.loopId,
+          conversationId: session.conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
 
       await (session.frameApplyTail ?? Promise.resolve());
@@ -1148,6 +1193,11 @@ function requestSidecarRunAbort(session: RunSession): Promise<void> {
     runId: session.runId ?? session.loopId,
     method: 'agent.abort',
     stage: 'abort_requested',
+    reason: typeof session.shellAbortController.signal.reason === 'string'
+      ? session.shellAbortController.signal.reason
+      : session.shellAbortController.signal.reason instanceof Error
+        ? session.shellAbortController.signal.reason.name
+        : 'unspecified',
   });
   session.abortWatchdog = setTimeout(() => {
     traceRuntimeEvent('renderer.agent_abort_watchdog_fired', {
@@ -1235,22 +1285,23 @@ function handlePlanClear(rawParams: unknown): void {
 }
 
 /** The three CapsPort record* methods, addressable by `caps.record`'s `field`. */
-const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown) => void> = {
+const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown, probe: unknown) => void> = {
   maxOutputTokens: (providerId, modelId, value) => getCapsPort().recordMaxOutputTokens(providerId, modelId, value as number),
-  contextWindow: (providerId, modelId, value) => getCapsPort().recordContextWindow(providerId, modelId, value as number),
+  contextWindow: (providerId, modelId, value, probe) =>
+    getCapsPort().recordContextWindow(providerId, modelId, value as number, probe as number | undefined),
   reasoningObserved: (providerId, modelId) => getCapsPort().recordReasoningObserved(providerId, modelId),
 };
 
-/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value} → getCapsPort().record*. Unknown field → warn + drop. */
+/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value, probe?} → getCapsPort().record*. Unknown field → warn + drop. */
 function handleCapsRecord(rawParams: unknown): void {
-  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown } | null;
+  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown; probe?: unknown } | null;
   if (!params || typeof params.providerId !== 'string' || typeof params.modelId !== 'string' || typeof params.field !== 'string') return;
   const record = CAPS_RECORD_BY_FIELD[params.field];
   if (!record) {
     logger.warn('caps.record: unknown field, dropping', { field: params.field });
     return;
   }
-  record(params.providerId, params.modelId, params.value);
+  record(params.providerId, params.modelId, params.value, params.probe);
 }
 
 /** `shell.notifyTask` (NOTIFICATION) → {kind, title, conversationId} → notifyTaskCompleted/notifyTaskError. Unknown kind → warn + drop. */
@@ -1343,6 +1394,7 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'atomic_write_text',
   'ax_close_session',
   'computer_use_end_task',
+  'computer_use_stop_turn',
   // P1-3d-5 slice 3: delete_file runs locally in the sidecar and reverses its
   // OS-Trash move here. Safe to allowlist — move_to_trash is recoverable (lands
   // in Finder Trash, never a permanent delete), delete_file's write-path approval
@@ -1422,6 +1474,37 @@ function trustedTeamContext(conversationId: string): Pick<ToolExecutionContext, 
  * uses, so every downstream fence (sidecar abort, frame drop, dialog drain,
  * `assertRunNotStopping` on the next tool.invoke) fires exactly as for Stop.
  */
+/**
+ * Refusal streaks of team tasks. Every run the confirmation strip starts
+ * continues its task, so the runs share one streak; a new task retires the
+ * previous one's entry (see where `beginTask` is called).
+ */
+const browserDenialStreaksByTask = new Map<string, BrowserDenialStreak>();
+
+function browserDenialStreakFor(session: RunSession): BrowserDenialStreak | undefined {
+  const taskId = session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined;
+  if (!taskId) return undefined;
+  let streak = browserDenialStreaksByTask.get(taskId);
+  if (!streak) {
+    streak = createBrowserDenialStreak();
+    browserDenialStreaksByTask.set(taskId, streak);
+  }
+  return streak;
+}
+
+/**
+ * The user allowed a request on the confirmation strip. In a team task every
+ * request still waiting there already counted as a refusal, so an allowance
+ * is the same answer a dialog "allow" gives: the streak starts over.
+ */
+export function forgiveTeamBrowserDenials(conversationId: string): void {
+  const taskId = taskIdFor(conversationId);
+  const streak = taskId ? browserDenialStreaksByTask.get(taskId) : undefined;
+  if (!streak) return;
+  streak.consecutiveDenials = 0;
+  streak.streakHasScripting = false;
+}
+
 function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
   session.browserDenials ??= createBrowserDenialTracker(() => {
     session.abortCause = BROWSER_DENIAL_ABORT_CAUSE;
@@ -1439,7 +1522,7 @@ function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
       conversationId: session.conversationId,
     });
     session.shellAbortController.abort(new Error('Run stopped after consecutive browser denials'));
-  });
+  }, undefined, browserDenialStreakFor(session));
   return session.browserDenials;
 }
 
@@ -1451,10 +1534,41 @@ function abortedResultForSession(session: RunSession): AgentLoopDispatchResult {
   };
 }
 
+/**
+ * 本轮给模型的工具名只由 sidecar 里的运行时写入，线路上是字符串数组。
+ * 类型不对说明两端不一致，就地报错。
+ */
+function assertWireOfferedToolNames(incoming: ToolExecutionContext | undefined): void {
+  const names: unknown = incoming?.offeredToolNames;
+  if (names === undefined) return;
+  if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: offeredToolNames must be an array of strings');
+  }
+}
+
+const COMPUTER_USE_TIERS: ReadonlySet<unknown> = new Set<ComputerUseModelTier>(['full', 'structured', 'unsupported', 'unknown']);
+
+/**
+ * 电脑操控档位与能否看图同样只由 sidecar 里的运行时写入（agentLoop 按入口模型算出）。
+ * 工具说明、截图与坐标动作都按它们取舍，值不在约定范围内说明两端不一致，就地报错。
+ */
+function assertWireModelCapabilities(incoming: ToolExecutionContext | undefined): void {
+  const tier: unknown = incoming?.computerUseTier;
+  if (tier !== undefined && !COMPUTER_USE_TIERS.has(tier)) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: computerUseTier must be one of full, structured, unsupported, unknown');
+  }
+  const vision: unknown = incoming?.supportsVision;
+  if (vision !== undefined && typeof vision !== 'boolean') {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: supportsVision must be a boolean');
+  }
+}
+
 function contextForSession(
   session: RunSession,
   incoming: ToolExecutionContext | undefined,
 ): ToolExecutionContext {
+  assertWireOfferedToolNames(incoming);
+  assertWireModelCapabilities(incoming);
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,
@@ -1471,6 +1585,9 @@ function contextForSession(
     // Security boundary: the shell session owns the ceiling. Never trust a
     // sidecar-provided context to omit or widen it.
     runPermissionCeiling: session.options.runPermissionCeiling,
+    // Security boundary: the team task keys the hand-off bounds and the
+    // refusal streak, so it is shell-owned like the run identity above.
+    teamTaskId: session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined,
     // Security boundary: outbound identity is authority-bearing. A sidecar may
     // describe a tool call, but it may not choose a different IM recipient or
     // manufacture one for a non-IM run.
@@ -1787,9 +1904,16 @@ function assertRunToolAllowed(
   // wildcards (`abu-browser__*`, the read_tools trigger tier's browser
   // ceiling). resolveTools (agentLoop.ts) and executeToolBatch
   // (toolExecutor.ts) already match these as patterns; this shell-boundary
-  // check is the third enforcement point and has to cover the same set, or a
-  // reverse `tool.invoke` for a wildcard-blocked tool would sail through the
-  // one gate that is supposed to be authoritative.
+  // check is the third enforcement point, or a reverse `tool.invoke` for a
+  // wildcard-blocked tool would sail through the one gate that is supposed to
+  // be authoritative.
+  //
+  // It covers the run's own restrictions, not the per-iteration list the other
+  // two build: a skill the model activates mid-run adds `computer` there, and
+  // that addition does not reach here. Not a hole today — the sidecar's own
+  // executeToolBatch applies the merged list first, and every skill that
+  // blocks `computer` blocks `delegate_to_agent` with it — but the three
+  // points are no longer the same set, so do not read this as one.
   if (session.options.blockedTools?.some((pattern) => matchesToolName(toolName, pattern))) {
     throw new SidecarRequestError(-32602, `Tool is blocked for this agent run: ${toolName}`);
   }
@@ -2421,7 +2545,8 @@ export function removeShellLoopContext(runId: string): void {
 // ── Dispatch entrypoint (P1-3B-3B) ───────────────────────────────────────
 
 /**
- * Wire params for `agent.run` — mirrors `sidecar/src/agentLoopHost.ts`'s
+ * Wire params for `agent.start` (and, for a start that carries its messages,
+ * for `agent.run`) — mirrors `sidecar/src/agentLoopHost.ts`'s
  * `AgentRunParams` field-for-field. NEVER imported from there — `src/` must
  * never import from `sidecar/` (same discipline `frameApplier.ts`'s
  * independently-declared `PortFrame` type documents, P1-3b-2). Kept in sync
@@ -2455,7 +2580,7 @@ interface AgentRunParams {
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
   settingsSnapshot: SettingsState;
-  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; isReasoningModel?: boolean };
+  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; contextWindowProbe?: number; isReasoningModel?: boolean };
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
   toolList: ReturnType<typeof toSerializableTool>[];
   planMode?: 'off' | 'planning' | 'approved';
@@ -2470,6 +2595,13 @@ interface AgentRunParams {
    * cross this boundary; the shell starts them as independent runs.
    */
   queuedInputs?: { id: string; text: string; isSystem?: boolean }[];
+  /**
+   * Present when the sidecar reads this run's history from the conversation's
+   * ledger: `conversationSnapshot.messages` is then empty on the wire and the
+   * sidecar reads `messages.jsonl` up to this byte watermark
+   * (`takeLedgerHistoryPoint`). Absent when the params carry the messages.
+   */
+  history?: { source: 'ledger'; ledgerWatermark: number };
 }
 
 /** Defensive validation of the `agent.run` response before trusting it as an `AgentLoopResult` — same discipline as subagentRunner.ts's `isSerializableSubagentResult`. A malformed response is treated identically to any other transport failure by the caller (same committed-flag fallback decision). */
@@ -2629,12 +2761,15 @@ async function establishAgentStart(
     return raw;
   };
 
+  const ackBudget = agentStartAckBudget(params);
   try {
-    return accept(await sidecarRequest('agent.start', params, agentStartAckBudgetMs));
+    return accept(await sidecarRequest('agent.start', params, ackBudget));
   } catch (startError) {
-    // An oversize start can never succeed on retry: don't query state or
-    // replay the same bytes (#549 M2 — it used to cost 2 more full sends).
-    if (isPayloadTooLargeError(startError)) throw startError;
+    // Neither of these can succeed by asking again with the same bytes: an
+    // oversize start, and a start whose history the sidecar could not read at
+    // the watermark it was given. No state query, no replay (#549 M2 — the
+    // oversize case used to cost 2 more full sends).
+    if (isPayloadTooLargeError(startError) || parseHistoryUnavailableError(startError)) throw startError;
     traceRuntimeEvent('renderer.agent_start_ack_missing', {
       runId: params.runId,
       clientMessageId: params.clientMessageId,
@@ -2673,7 +2808,7 @@ async function establishAgentStart(
 
     // Same runId/clientMessageId/payloadDigest: the sidecar either accepts it
     // once or replays the existing fact. It can never execute twice.
-    return accept(await sidecarRequest('agent.start', params, agentStartAckBudgetMs));
+    return accept(await sidecarRequest('agent.start', params, ackBudget));
   }
 }
 
@@ -2752,6 +2887,49 @@ async function waitForReattachedTerminal(
 }
 
 /**
+ * Whether this dispatch lets the sidecar read the history from the ledger.
+ * One rule, asked once per dispatch: the running sidecar announced the
+ * capability in its handshake. A sidecar that does not announce it — an older
+ * build, or one started with `ABU_AGENT_START_PROTOCOL=1`
+ * (`sidecar/src/handshake.ts`) — gets the form that carries the messages. A
+ * failure of the chosen form is never answered by sending the other one.
+ */
+function agentStartReadsHistoryFromLedger(): boolean {
+  return sidecarHasCapability(CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER);
+}
+
+/**
+ * A user image reaches a sidecar that reads the ledger only through the file
+ * its `filePath` names: the ledger row keeps the path and drops the bytes.
+ * `buildUserMessageContent` leaves `filePath` undefined when the file could
+ * not be written, and such a turn is refused here, before anything is
+ * dispatched, with the same reason a failed message write gives.
+ */
+function assertUserImagesAreOnDisk(content: string | MessageContent[]): void {
+  if (typeof content === 'string') return;
+  if (content.some((block) => block.type === 'image' && !block.filePath)) {
+    throw new Error(getI18n().chat.messageSaveFailed);
+  }
+}
+
+/** What `agent.run` carries: three ids for a ledger start, the start's own params otherwise. */
+function agentRunRequestFor(params: AgentRunParams): unknown {
+  return params.history
+    ? { runId: params.runId, clientMessageId: params.clientMessageId, payloadDigest: params.payloadDigest }
+    : params;
+}
+
+/**
+ * The acknowledgement budget of one `agent.start`, closed over the ledger this
+ * start asks the sidecar to read. Both sends of a start use the same instance,
+ * so the replay is judged by the budget the first send was judged by.
+ */
+function agentStartAckBudget(params: AgentRunParams): (encodedBytes: number) => number {
+  const ledgerWatermarkBytes = params.history?.ledgerWatermark ?? 0;
+  return (encodedBytes: number) => agentStartAckBudgetMs(encodedBytes, ledgerWatermarkBytes);
+}
+
+/**
  * Build the `agent.run` wire params — the shell-side "frozen snapshot"
  * projection of everything `runAgentLoop` would otherwise resolve
  * in-process (design doc §4's `AgentRunParams` contract,
@@ -2760,8 +2938,10 @@ async function waitForReattachedTerminal(
  * `buildSubagentRunParams`) — frozen for the whole run.
  *
  * Throws if `resolveEffectiveLlmCreds` throws (enterprise gateway
- * unavailable — `EnterpriseLlmUnavailableError`) or if the conversation
- * record is missing. The caller (`runAgentLoopDispatched`) treats either as
+ * unavailable — `EnterpriseLlmUnavailableError`), if the conversation record
+ * is missing, if the history point cannot be taken, or if the turn carries an
+ * image that never reached disk on the ledger path. The caller
+ * (`runAgentLoopDispatched`) treats each of them as
  * a pre-accept failure (#549): the user row ends `failed` with the reason
  * from `paramsBuildDisplayMessage` and the existing Retry. Nothing is re-run
  * in this renderer, so this function still does not duplicate the loop's
@@ -2852,6 +3032,7 @@ async function buildAgentRunParams(
         modelId: effectiveModelId,
         maxOutputTokens: discovered.maxOutputTokens,
         contextWindow: discovered.contextWindow,
+        contextWindowProbe: discovered.contextWindowProbe,
         isReasoningModel: discovered.isReasoningModel,
       };
     }
@@ -2864,6 +3045,8 @@ async function buildAgentRunParams(
     orchestration.route.cleanInput,
     options?.images,
   );
+  const historyFromLedger = agentStartReadsHistoryFromLedger();
+  if (historyFromLedger) assertUserImagesAreOnDisk(userContent);
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
     state: 'pending',
     content: userContent,
@@ -2886,6 +3069,13 @@ async function buildAgentRunParams(
     conversationSnapshot,
     getWorkspaceReader().getCurrentPath(),
   );
+
+  // The watermark covers all prior history, any promoted stream-snapshot
+  // revision, and this turn's user row in its routed form: the barrier above
+  // has awaited that row's write, and a rejected write has already thrown.
+  const history = historyFromLedger
+    ? { source: 'ledger' as const, ledgerWatermark: (await takeLedgerHistoryPoint(conversationId)).ledgerWatermark }
+    : undefined;
 
   // Snapshot only internal system wake-ups for this conversation at dispatch
   // time. User follow-ups remain shell-side until the current run terminates.
@@ -2914,11 +3104,13 @@ async function buildAgentRunParams(
     // Freeze the entry provider/model onto the wire snapshot. A model switch
     // while message persistence is in flight belongs to the next run and must
     // not be combined with this run's already-resolved credentials.
-    conversationSnapshot: await prepareConversationSnapshotForSidecarWire({
-      ...conversationSnapshot,
-      workspacePath: workspacePathSnapshot,
-      model: settingsForModel.activeModel,
-    } as Conversation, abortSignal),
+    conversationSnapshot: history
+      ? { ...conversationSnapshot, workspacePath: workspacePathSnapshot, model: settingsForModel.activeModel, messages: [] } as Conversation
+      : await prepareConversationSnapshotForSidecarWire({
+          ...conversationSnapshot,
+          workspacePath: workspacePathSnapshot,
+          model: settingsForModel.activeModel,
+        } as Conversation, abortSignal),
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
     settingsSnapshot: settingsForModel,
     capsSnapshot,
@@ -2927,6 +3119,7 @@ async function buildAgentRunParams(
     planMode: getPlanMode(conversationId),
     locale: getLocale(),
     queuedInputs,
+    ...(history ? { history } : {}),
   };
   const payloadDigest = buildAgentRunPayloadDigest(paramsWithoutDigest);
   return { ...paramsWithoutDigest, payloadDigest };
@@ -2975,7 +3168,10 @@ async function buildAgentRunParams(
  *
  * Nothing is ever re-run in-process. Before the sidecar accepts the run
  * (params build failure, sidecar unavailable, transport failure, oversize
- * payload) the user row ends `failed` with a reason and Retry. After accept,
+ * payload, unreadable history) the user row ends `failed` with a reason and
+ * Retry. The form of `agent.start` is chosen once per dispatch from the
+ * sidecar's capability list, and a failed start is never repeated in the other
+ * form. After accept,
  * the existing recovery (state query, one replay while uncommitted,
  * reattach) runs; if it cannot settle, the run ends with a visible error.
  * The user's turn is never resent automatically.
@@ -2986,13 +3182,14 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   ownership: { messageTaken: boolean },
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
+  const entryConversation = getConversationReader().getConversation(conversationId);
   const inProcessEnvironment = isInProcessAgentEnvironment();
 
   // ── Concurrency guard — see doc above for the two-venue rationale. This
   // runs before venue selection so a renderer-hosted run cannot bypass the
   // same one-live-run-per-conversation invariant.
   {
-    const runningConv = getConversationReader().getConversation(conversationId);
+    const runningConv = entryConversation;
     const hasAttachments = Boolean(options?.images?.length);
     const stageable = userMessage.trim().length > 0 && !hasAttachments;
     const getBusyError = (): string => hasAttachments
@@ -3012,8 +3209,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             messageTaken: false,
           };
         }
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -3033,15 +3231,45 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
         // calls (userInputQueue.ts, unchanged).
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
   }
 
+  // Settle the loop identity before choosing an execution venue. The Windows
+  // foreground snapshot is task-scoped, so an in-process run, a sidecar run,
+  // and any safe pre-commit fallback must all use this exact same identifier.
   const ownedLoopId = options?.loopId ?? generateRunId();
   options = { ...options, loopId: ownedLoopId };
+  if (isInteractiveDesktop(options, entryConversation)) {
+    try {
+      const { captureComputerUseTurnTarget } = await import('../computer-use/windowProtocol');
+      await captureComputerUseTurnTarget(conversationId, ownedLoopId);
+    } catch (error) {
+      // This snapshot is an optional selector. A named-app/window_ref request
+      // can still resolve explicitly, so capture transport failure must not
+      // prevent the model run from starting.
+      logger.debug('computer-use turn target capture unavailable', {
+        conversationId,
+        runId: ownedLoopId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  // A team conversation's task spans every run the confirmation strip starts;
+  // any other run (a request the user typed, a schedule, an IM message)
+  // starts a new task and retires the previous one's rules and bounds.
+  const teamTask = entryConversation?.teamId
+    ? useTeamConfirmationStore.getState().beginTask(conversationId,
+      Boolean(options.teamConfirmationRetryId || options.continuesTeamTask))
+    : undefined;
+  if (teamTask?.retiredTaskId) {
+    clearRunBounds(teamTask.retiredTaskId);
+    browserDenialStreaksByTask.delete(teamTask.retiredTaskId);
+  }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
   if (inProcessEnvironment) {
@@ -3054,7 +3282,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       const result = await runAgentLoop(
         conversationId,
         userMessage,
-        rendererRuntimeOptions(options, (messageId) => {
+        rendererRuntimeOptions({ ...options, ...(teamTask ? { teamTaskId: teamTask.taskId } : {}) }, (messageId) => {
           ownership.messageTaken = true;
           localUserMessageId = messageId;
           if (messageId) {
@@ -3244,6 +3472,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runId,
       executionPath: 'sidecar',
       stage: 'params_built',
+      ...(params.history ? { ledgerWatermarkBytes: params.history.ledgerWatermark } : {}),
       durationMs: Date.now() - runtimeStartedAt,
     });
   } catch (err) {
@@ -3267,6 +3496,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       conversationId,
       error: err instanceof Error ? err.message : String(err),
     });
+    // A ledger that could not be brought level with what the user sees is the
+    // same root cause as a history the sidecar could not read; the reason tells
+    // the two apart. No byte counts: nothing was measured on this side.
+    const ledgerNotLevel = err instanceof Error && err.name === 'LedgerHistoryPointError';
     return finalizePreAcceptFailure({
       conversationId,
       clientMessageId,
@@ -3274,8 +3507,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runtimeStartedAt,
       kind: 'dispatch_failed',
       displayMessage: paramsBuildDisplayMessage(err),
-      stage: 'params_build_failed',
+      stage: ledgerNotLevel ? 'history_unavailable' : 'params_build_failed',
       errorType: runtimeErrorType(err),
+      ...(ledgerNotLevel ? { reason: 'ledger_not_level' } : {}),
       userMessage,
       images: options?.images,
     });
@@ -3474,7 +3708,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
 
     const rpcOutcome = sidecarRequest(
       'agent.run',
-      params,
+      agentRunRequestFor(params),
       0,
       session.transportAbortController!.signal,
     ).then((raw) => ({ source: 'rpc' as const, raw }));
@@ -3621,7 +3855,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
           });
           const replayRpc = sidecarRequest(
             'agent.run',
-            params,
+            agentRunRequestFor(params),
             0,
             session.transportAbortController!.signal,
           ).then((raw) => ({ source: 'rpc' as const, raw }));
@@ -3671,6 +3905,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       // happened anywhere: end the row visibly and retryably instead of
       // silently re-running the turn in this renderer (#549).
       const tooLarge = isPayloadTooLargeError(transportError);
+      const historyUnavailable = tooLarge ? null : parseHistoryUnavailableError(transportError);
       logger.warn('agent-loop transport failed before the sidecar accepted the run', {
         runId,
         conversationId,
@@ -3682,10 +3917,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         runtimeStartedAt,
         session,
-        kind: tooLarge ? 'payload_too_large' : 'sidecar_unavailable',
-        displayMessage: tooLarge ? getI18n().chat.payloadTooLarge : getI18n().chat.sidecarInterrupted,
-        stage: tooLarge ? 'payload_too_large' : 'sidecar_unavailable',
-        errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(transportError),
+        kind: tooLarge ? 'payload_too_large' : historyUnavailable ? 'dispatch_failed' : 'sidecar_unavailable',
+        displayMessage: tooLarge
+          ? getI18n().chat.payloadTooLarge
+          : historyUnavailable
+            ? getI18n().chat.historyUnavailable
+            : getI18n().chat.sidecarInterrupted,
+        stage: tooLarge ? 'payload_too_large' : historyUnavailable ? 'history_unavailable' : 'sidecar_unavailable',
+        errorType: tooLarge
+          ? 'payload_too_large'
+          : historyUnavailable ? 'history_unavailable' : runtimeErrorType(transportError),
+        ...(historyUnavailable ? { reason: historyUnavailable.reason, historyUnavailable } : {}),
         userMessage,
         images: options?.images,
       });
@@ -3839,7 +4081,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   }
   } finally {
     useTeamConfirmationStore.getState().clearRun(conversationId, ownedLoopId);
-    clearRunBounds(ownedLoopId);
+    // A team task's bounds outlive this run and are retired when the next
+    // task starts; only a run outside a task owns its own entry.
+    if (!teamTask) clearRunBounds(ownedLoopId);
   }
 }
 
@@ -3943,7 +4187,8 @@ async function runDispatchedTurns(
         // or incorrectly retain a lower ceiling. System-authored wake-ups never
         // reach this dequeue path (`dequeueNextUserInput` skips them). What
         // they ARE is human-typed, so the handoff run is user-initiated.
-        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId },
+        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
+          continuesTeamTask: queuedInput.continuesTeamTask },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);

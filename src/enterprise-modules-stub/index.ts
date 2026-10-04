@@ -49,7 +49,7 @@ export function resolveEffectiveLlmCreds(
   }
 }
 
-export type ClientEnterpriseModule = 'skills' | 'mcp' | 'kb'
+export type ClientEnterpriseModule = 'skills' | 'agents' | 'mcp' | 'kb'
 export interface EnterpriseEntitlementSnapshot {
   mode: 'personal' | 'enterprise' | 'offline'
   licenseStatus: string | null
@@ -93,12 +93,28 @@ export interface PendingEnroll {
   serverUrl: string
   enrollmentToken?: string
 }
+export interface PendingOpen {
+  serverUrl: string
+}
 
 export function useDeepLinkEnroll(): {
   pendingEnroll: PendingEnroll | null
   dismissEnroll: () => void
+  pendingOpen: PendingOpen | null
+  dismissOpen: () => void
 } {
-  return { pendingEnroll: null, dismissEnroll() {} }
+  return { pendingEnroll: null, dismissEnroll() {}, pendingOpen: null, dismissOpen() {} }
+}
+
+/** Which app the organization opens Abu in, and whether the employee may leave it. */
+export interface EnterpriseAppPolicy {
+  defaultAppId: string | null
+  allowExit: boolean
+}
+
+/** Personal mode: no default app, and every app is free to leave. */
+export function useEnterpriseAppPolicy(): EnterpriseAppPolicy {
+  return { defaultAppId: null, allowExit: true }
 }
 
 export function BindToEnterpriseFlow(_props: {
@@ -106,4 +122,10 @@ export function BindToEnterpriseFlow(_props: {
   onCancel: () => void
   initialServerUrl?: string
 }): null { return null }
+export type EnterpriseAccountLoginResult = 'started' | 'configuration_required' | 'failed'
+export function startEnterpriseAccountLogin(): Promise<EnterpriseAccountLoginResult> {
+  return Promise.resolve('configuration_required')
+}
+export function EnterpriseConnectionSlot(_props: { currentServerUrl?: string }): null { return null }
+
 export function PolicyConfirmModal(): null { return null }

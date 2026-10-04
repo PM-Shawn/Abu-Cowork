@@ -6,7 +6,7 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, ToolDefinition, ToolExecutionContext, ToolResultContent, UpstreamErrorDetails } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, TokenUsage, ToolDefinition, ToolExecutionContext, ToolResultContent, UpstreamErrorDetails } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError, normalizeUpstreamErrorDetails } from '../llm/adapter';
@@ -21,14 +21,18 @@ import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../uti
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import {
   resolveCapabilities,
-  resolveEffectiveContextWindow,
   computeReasoningParams,
   isReasoningStarvation,
-  deriveDeclaredDefaults,
   type ModelCapabilities,
 } from '../llm/modelCapabilities';
+import { resolveDelegatedDeclaredCapabilities, resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
+import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
+import { isWindows } from '../../utils/platform';
+import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
+import { probeContextWindow } from '../llm/contextWindowProbe';
+import { localServerKind } from '../llm/localProvider';
+import { adapterKindFor } from '../llm/adapterKind';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
-import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
@@ -50,9 +54,12 @@ import { startSubagentSpan } from '../observability/langfuse';
 import { format, getI18n } from '../../i18n';
 import { appendInstructionToHistory, drainDispatchInstructionEntries, hasDispatchInput, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
 import { matchesToolName } from '../skill/toolFilter';
+import { withOfferedToolsHint } from '../tools/offeredToolsHint';
 import { createLogger } from '../logging/logger';
+import { isToolResultError } from './toolResultErrors';
 import { scanMemoryFiles, loadMemoryIndex } from '../memdir/scan';
 import { deriveRunInteractionMode } from './runInteractionMode';
+import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
 import { browserNarrationSection } from './browserNarrationRules';
 import {
@@ -72,20 +79,6 @@ import {
 import { preflightDelegatedMedia, type DelegatedMediaFailureReason } from '../subagent/delegatedMediaPreflight';
 
 const logger = createLogger('subagentLoop');
-
-function resolveDelegatedDeclaredCapabilities(
-  provider: ReturnType<typeof getActiveProvider>,
-  modelId: string,
-) {
-  const declared = resolveModelDeclared(provider, modelId);
-  if (provider?.source !== 'custom' || declared?.supportsImages !== undefined) {
-    return declared;
-  }
-  return {
-    ...declared,
-    supportsImages: deriveDeclaredDefaults(modelId).supportsImages,
-  };
-}
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -619,11 +612,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined); } catch { return null; }
   })();
   const startupProvider = getActiveProvider(settings);
-  const adapterKind = startupCreds?.forceOpenAiCompatible || startupProvider?.apiFormat === 'openai-compatible'
-    ? 'openai-compatible'
-    : 'claude';
+  const adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
+  // 子代理自己的模型能不能看图、电脑操控走哪一档（与主循环同一算法）
+  const agentCapabilities = resolveDelegatedModelCapabilities(agent.model, settings);
   const delegatedPreflight = preflightDelegatedMedia(
     options.delegatedUserTurn,
     startupCaps,
@@ -646,6 +639,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       invalid_turn: getI18n().chat.subagent.delegatedMediaInvalid,
     };
     return new SubagentResult({ text: failureText[delegatedPreflight.diagnostic.reason], toolCallCount: 0, turnCount: 0, tokenUsage: { input: 0, output: 0 }, duration: 0, stopReason: 'error' });
+  }
+
+  // 与主循环相同：本地服务商运行开始问一次实际加载的长度，用户填了「上下文长度」就不问
+  let probedContextWindow: number | undefined;
+  if (startupProvider && startupDeclared?.maxInputTokens === undefined) {
+    probedContextWindow = await probeContextWindow(startupProvider, effectiveModelId);
   }
 
   // Lifecycle: subagentStart
@@ -762,7 +761,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       agent,
       options.allowedTools,
       options.blockedTools,
-    );
+    ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows()));
     // The resolver always strips orchestration tools from sub-agents to prevent recursive
     // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
     // is no depth/total-agent cap). Multi-agent orchestration is a main-agent-only
@@ -818,6 +817,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // calls at all trips this — without it the loop would spin up to maxTurns
     // (200) burning tokens.
     let consecutiveNoProgress = 0;
+    const malformedToolCallGuard = createMalformedToolCallGuard();
 
     // Max-output-tokens recovery state (mirrors agentLoop): on a max_tokens
     // truncation with no tool call, re-prompt with an escalated budget rather than
@@ -860,6 +860,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       let shouldContinue = false;
       let lastStopReason = '';
       let sawThinking = false;
+      let malformedToolCallSeen = false;
+      /**
+       * 当前这一次 chat() 调用的用量。provider 的流内用量是累计快照，同一次请求里
+       * 后到的事件是修订，按字段取最新值；加进总计的时机见下面的 chatFn。
+       */
+      const turnUsage: { current: TokenUsage | null } = { current: null };
 
       // Resolve budget + reasoning controls for the subagent's model. Overlay any
       // runtime-discovered limits/reasoning status, then reserve a content floor so
@@ -876,15 +882,26 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           ? { thinking: 'uncontrollable' as const }
           : {}),
       };
+      // Apply context management to prevent subagent context overflow
+      const resolvedContextWindow = resolveContextWindow({
+        modelId: effectiveModelId,
+        userSetting: declared?.maxInputTokens,
+        probed: probedContextWindow ?? provider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
+        discovered: discovered?.contextWindow,
+        discoveredProbe: discovered?.contextWindowProbe,
+        isLocal: localServerKind(provider) !== null,
+        ceiling: settings.contextWindowSize,
+      });
+      const contextWindowSize = resolvedContextWindow.size;
+      // 回答预留按模型自己的窗口算，全局上限只约束输入
+      const reserveWindowSize = resolvedContextWindow.uncappedSize;
+      // 与主循环相同：本地服务首次回答前等 10 分钟且超时不重试；只有用户填写的长度才让 Ollama 按它运行
+      const isLocalServer = localServerKind(provider) !== null;
+      const requestedContextLength = positiveInteger(declared?.maxInputTokens);
       const reasoningParams = computeReasoningParams(
         subagentCaps,
         settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
-      );
-      // Apply context management to prevent subagent context overflow
-      const contextWindowSize = resolveEffectiveContextWindow(
-        effectiveModelId,
-        declared?.maxInputTokens ?? settings.contextWindowSize,
-        discovered?.contextWindow,
+        reserveWindowSize,
       );
       // True output ceiling (distinct from the conservative per-turn budget below):
       // max_tokens-recovery escalation may climb toward this, never above a known limit.
@@ -893,7 +910,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
       // Escalate the budget on a max_tokens recovery (mirrors agentLoop), clamped to
       // the model's true output ceiling so we never re-ask above a known limit.
-      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount);
+      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, reserveWindowSize);
       if (escalation.changed) {
         const escalated = Math.min(escalation.maxOutputTokens, effectiveModelCeiling);
         if (escalated > maxOutputTokens) {
@@ -915,7 +932,17 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             systemPrompt,
             contextWindowSize,
             maxOutputTokens,
-            { adapter, model: effectiveModelId, apiKey: subCreds.apiKey, baseUrl: subCreds.baseUrl, signal }
+            {
+              adapter,
+              model: effectiveModelId,
+              apiKey: subCreds.apiKey,
+              baseUrl: subCreds.baseUrl,
+              signal,
+              conversationId: options.parentConversationId ?? null,
+              providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
+              requestedContextLength,
+              localServer: isLocalServer,
+            }
           );
           if (compressionResult.compressed) {
             messagesForContext = compressionResult.messages;
@@ -964,6 +991,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
+        requestedContextLength,
+        localServer: isLocalServer,
         enableThinking: reasoningParams.enableThinking,
         thinkingBudget: reasoningParams.thinkingBudget,
         reasoningEffort: reasoningParams.reasoningEffort,
@@ -974,6 +1003,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         // by normalizeMessages, with its standard "no vision" hint appended.
         supportsVision: subagentCaps.vision,
         declaredCapabilities: declared,
+        // 子代理的用量归到派它的那条会话名下，来源是 subagent——页面上这两类
+        // 分开显示，用户才看得出请求数里哪些是自己发的、哪些是队员发的。
+        accounting: {
+          source: 'subagent' as const,
+          conversationId: options.parentConversationId ?? null,
+          skill: null,
+          providerInstanceId: provider?.id ?? 'unknown',
+        },
       };
 
       const eventHandler = (event: StreamEvent) => {
@@ -992,9 +1029,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             });
             onProgress?.({ type: 'tool-start', id: event.id, toolName: event.name, toolInput: event.input });
             break;
+          case 'malformed_tool_call':
+            malformedToolCallSeen = true;
+            break;
           case 'usage':
-            totalInputTokens += event.usage.inputTokens ?? 0;
-            totalOutputTokens += event.usage.outputTokens ?? 0;
+            turnUsage.current = { ...(turnUsage.current ?? {}), ...event.usage };
             break;
           case 'done':
             lastStopReason = event.stopReason ?? '';
@@ -1013,21 +1052,37 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               maxOutputTokensRecoveryCount = 0;
             }
             if (event.usage) {
-              totalOutputTokens += event.usage.outputTokens ?? 0;
+              turnUsage.current = { ...(turnUsage.current ?? {}), ...event.usage };
             }
             break;
         }
       };
 
-      const chatFn = async () => adapter.chat(
-        await prepareDelegatedUserTurnForRequest(
-          preparedMessages,
-          signal,
-          options.delegatedUserTurn?.origin.conversationId ?? options.parentConversationId,
-        ),
-        chatOptions,
-        eventHandler,
-      );
+      // 计量单位是一次 chat() 调用：调用之内，provider 的用量事件是同一次请求的累计
+      // 快照，按字段取最新；调用结束时把这一次的结果加进总计。放在 finally 里，
+      // 请求抛出的那一次和 withRetry 重试的每一次都各自计入——消耗照样发生了。
+      const chatFn = async () => {
+        turnUsage.current = null;
+        try {
+          await adapter.chat(
+            await prepareDelegatedUserTurnForRequest(
+              preparedMessages,
+              signal,
+              options.delegatedUserTurn?.origin.conversationId ?? options.parentConversationId,
+            ),
+            chatOptions,
+            eventHandler,
+          );
+        } finally {
+          // 事件回调里的赋值编译器看不见，这里按声明的类型读回来。
+          const spent = turnUsage.current as TokenUsage | null;
+          if (spent) {
+            totalInputTokens += spent.inputTokens ?? 0;
+            totalOutputTokens += spent.outputTokens ?? 0;
+          }
+          turnUsage.current = null;
+        }
+      };
 
       await withRetry(
         chatFn,
@@ -1060,6 +1115,34 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       resultBuffer = appendTurnText(resultBuffer, turnText, resumingFromTruncation);
       resumingFromTruncation = false;
       completedTurns = turn + 1;
+
+      // 与主循环相同：写坏的操作悄悄重写一次，连续第二次把那句说明交回给派活的一方；
+      // 撞到输出上限的回答交给下面的截断续写
+      if (
+        !shouldContinue
+        && malformedToolCallSeen
+        && collectedToolCalls.length === 0
+        && lastStopReason !== 'max_tokens'
+      ) {
+        if (malformedToolCallGuard.decide() === 'retry') {
+          consecutiveNoProgress = 0;
+          messages.push({ id: `sub-asst-${turn}`, role: 'assistant', content: turnText, timestamp: Date.now() });
+          messages.push({ id: `sub-malformed-${turn}`, role: 'user', content: MALFORMED_TOOL_CALL_NUDGE, timestamp: Date.now() });
+          onProgress?.({
+            type: 'turn-complete',
+            turn: turn + 1,
+            totalTurns: maxTurns,
+            usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+          });
+          continue;
+        }
+        const note = getI18n().chat.malformedToolCall;
+        resultBuffer = resultBuffer ? `${resultBuffer}\n\n${note}` : note;
+        terminalStopReason = 'error';
+        break;
+      }
+      // 参数全部无法解析的原生调用不算做成了操作，不补回重写机会
+      if (collectedToolCalls.length > 0 && !allToolsUnparseable(collectedToolCalls)) malformedToolCallGuard.reset();
 
       // Max-output-tokens recovery: output truncated mid-thought with no tool call →
       // preserve the partial output in local history, re-prompt to resume, and let the
@@ -1170,7 +1253,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // A model may emit a tool_use it was never offered. The advertised
           // schema is not an execution boundary, so recheck the frozen roster.
           if (!offeredToolNames.has(tc.name)) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" is outside this agent's fixed tool boundary` };
+            return {
+              id: tc.id,
+              result: withOfferedToolsHint(
+                `Error: tool "${tc.name}" is outside this agent's fixed tool boundary`,
+                tc.name,
+                [...offeredToolNames],
+              ),
+            };
           }
           // Name-level roster filtering cannot express input constraints such
           // as run_command(npm run *); enforce those at dispatch time. Shared
@@ -1202,6 +1292,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             reportBrowserDenial: options.reportBrowserDenial,
             reportBrowserAllow: options.reportBrowserAllow,
             abortSignal: signal,
+            offeredToolNames: [...offeredToolNames],
+            // 电脑操控按子代理自己的模型取舍，不沿用会话的全局模型
+            modelId: agentCapabilities.modelId,
+            modelCapabilitySource: agentCapabilities.capabilitySource,
+            computerUseTier: agentCapabilities.computerUseTier,
+            supportsVision: agentCapabilities.vision,
             // Forward the IM reply target so send_file works from a subagent
             // delegated inside an IM run (without it the tool would falsely
             // report "not in an IM channel").
@@ -1299,9 +1395,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const resultContentToken = r.status === 'fulfilled' ? r.value.resultContentToken : undefined;
         const resultContent = activeRichResults.get(resultContentToken);
         // ToolRegistry resolves its established generic failures as `Error:`
-        // strings, so this child-tool channel must keep the legacy prefix
+        // strings (and tool-execution wrapper failures as `Error executing
+        // tool "…":`), so this child-tool channel must keep the legacy prefix
         // contract. B3 only structures the enclosing SubagentResult terminal.
-        const isError = r.status === 'rejected' || result.startsWith('Error:');
+        const isError = r.status === 'rejected' || isToolResultError(result);
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
         return { id: tc.id, name: tc.name, input: tc.input, result, resultContent, resultContentToken };
       });
@@ -1381,6 +1478,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const errorResult = new SubagentResult({
       text: `Error: ${err instanceof LLMError && err.code === 'content_policy'
         ? getI18n().chat.contentPolicyRejected
+        : err instanceof LLMError && err.code === 'local_server_timeout'
+        ? getI18n().chat.localServerNoFirstResponse
         : err instanceof LLMError
         ? formatLlmDisplayError(err, errMsg, getI18n().chat.errorEmptyBody)
         : errMsg}`,

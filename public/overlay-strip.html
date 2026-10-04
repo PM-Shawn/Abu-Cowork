@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100vw;
+    height: 100vh;
+    background: transparent;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* The whole strip drags the window; buttons opt out below. */
+  .strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 100vh;
+    padding: 0 12px 0 14px;
+    background: rgba(12, 14, 22, 0.86);
+    border: 1px solid rgba(56, 152, 255, 0.35);
+    border-radius: 23px;
+    color: rgba(225, 235, 255, 0.92);
+    font-size: 13px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    -webkit-app-region: drag;
+    cursor: grab;
+  }
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #3898ff;
+    box-shadow: 0 0 8px rgba(56, 152, 255, 0.9);
+    animation: pulse 1.6s ease-in-out infinite;
+    flex: none;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+  .brand { font-weight: 600; color: #fff; flex: none; }
+  .text {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .meta {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+    color: rgba(180, 200, 235, 0.8);
+    font-size: 12px;
+  }
+  .btn {
+    -webkit-app-region: no-drag;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 15px;
+    border: 1px solid transparent;
+    font-size: 13px;
+    cursor: pointer;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn kbd {
+    font-family: inherit;
+    font-size: 11px;
+    opacity: 0.55;
+  }
+  .btn.stop { border-color: rgba(255, 80, 80, 0.45); color: #ff8080; }
+  .btn.stop:hover { background: rgba(255, 60, 60, 0.22); }
+  .btn.stop .square { width: 9px; height: 9px; background: currentColor; border-radius: 2px; }
+  .btn.resume { background: rgba(56, 152, 255, 0.85); border-color: rgba(56, 152, 255, 0.9); }
+  .btn.resume:hover { background: rgba(80, 168, 255, 0.95); }
+  .hidden { display: none !important; }
+
+  /* Modes */
+  body.paused .strip { border-color: rgba(255, 176, 60, 0.55); }
+  body.paused .dot { background: #ffb03c; box-shadow: 0 0 8px rgba(255, 176, 60, 0.9); animation: none; }
+  body.approval .strip { border-color: rgba(255, 200, 60, 0.6); }
+  body.approval .dot { background: #ffd23c; box-shadow: none; animation: none; }
+  body.approval .btn.stop { opacity: 0.4; pointer-events: none; }
+  body.stale .strip { border-color: rgba(160, 160, 170, 0.5); color: rgba(225, 225, 230, 0.9); }
+  body.stale .dot { background: #9a9aa5; box-shadow: none; animation: none; }
+  body.stale .btn { display: none; }
+</style>
+</head>
+<body>
+  <div class="strip" id="strip">
+    <span class="dot"></span>
+    <span class="brand">阿布</span>
+    <span class="text" id="text"></span>
+    <span class="meta" id="steps"></span>
+    <span class="meta" id="clock"></span>
+    <button class="btn resume hidden" id="resumeBtn"><span id="resumeLabel">Continue</span></button>
+    <button class="btn stop" id="stopBtn"><span class="square"></span><span id="stopLabel">Stop control</span><kbd id="stopShortcut">Esc</kbd></button>
+  </div>
+  <script>
+    const i18n = window.__CU_I18N__ || {};
+    const el = (id) => document.getElementById(id);
+    el('stopLabel').textContent = i18n.stopControl || 'Stop control';
+    el('resumeLabel').textContent = i18n.resume || 'Continue';
+    el('stopShortcut').textContent = /Mac/i.test(navigator.platform) ? 'Esc / ⌘.' : 'Esc';
+
+    // ── State ─────────────────────────────────────────────────────────────
+    let mode = 'running';           // running | approval | paused | stale
+    let sessionStartTime = null;
+    let lastStatus = null;
+    let lastBeat = Date.now();
+    let beats = 0;
+    let closed = false;
+    const emits = [];
+
+    function setMode(next) {
+      mode = next;
+      document.body.classList.toggle('paused', next === 'paused');
+      document.body.classList.toggle('approval', next === 'approval');
+      document.body.classList.toggle('stale', next === 'stale');
+      el('resumeBtn').classList.toggle('hidden', next !== 'paused');
+      el('stopLabel').textContent = next === 'paused' ? (i18n.end || 'End') : (i18n.stopControl || 'Stop control');
+      el('stopShortcut').classList.toggle('hidden', next === 'paused');
+      if (next === 'paused') {
+        el('text').textContent = i18n.paused || 'Paused: you took over the mouse or keyboard';
+        el('steps').textContent = '';
+        el('clock').textContent = '';
+      }
+      if (next === 'stale') {
+        el('text').textContent = i18n.unresponsive || 'Abu is not responding; control has stopped';
+        el('steps').textContent = '';
+        el('clock').textContent = '';
+      }
+    }
+
+    function render(status) {
+      if (mode === 'paused' || mode === 'stale') return;
+      lastStatus = status;
+      if (status.sessionStartTime) sessionStartTime = status.sessionStartTime;
+      const parts = [];
+      if (status.targetApp) parts.push(status.targetApp);
+      if (status.phaseLabel && status.action) parts.push(`${status.phaseLabel}：${status.action}`);
+      else if (status.action) parts.push(status.action);
+      else if (status.phaseLabel) parts.push(status.phaseLabel);
+      el('text').textContent = parts.join(' · ');
+      el('steps').textContent = status.stepLabel || '';
+      setMode(status.mode === 'approval' ? 'approval' : 'running');
+    }
+
+    function tickClock() {
+      if (mode !== 'running' && mode !== 'approval') return;
+      if (!sessionStartTime) { el('clock').textContent = ''; return; }
+      const s = Math.max(0, Math.floor((Date.now() - sessionStartTime) / 1000));
+      el('clock').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }
+    setInterval(tickClock, 1000);
+
+    // Heartbeat watchdog (L5 W4): grey out after 3 s of silence, close at 8 s.
+    setInterval(() => {
+      const silence = Date.now() - lastBeat;
+      if (silence > 3000 && mode !== 'stale') setMode('stale');
+      if (silence > 8000 && !closed) {
+        closed = true;
+        try { window.close(); } catch (e) { /* main may close us instead */ }
+      }
+    }, 500);
+
+    async function emit(event, payload) {
+      try {
+        if (window.__TAURI__) {
+          await window.__TAURI__.event.emit(event, payload);
+          emits.push({ event, ok: true });
+        }
+      } catch (e) {
+        emits.push({ event, ok: false });
+      }
+    }
+    el('stopBtn').addEventListener('click', () => {
+      if (mode === 'paused') emit('computer-use-dismiss', { source: 'computer-use-strip' });
+      else emit('computer-use-abort', { source: 'computer-use-overlay-stop-button' });
+    });
+    el('resumeBtn').addEventListener('click', () => emit('computer-use-resume', { source: 'computer-use-strip' }));
+
+    // Diagnostic surface for electron/spike/overlayChromeVerify.cjs only.
+    window.__cuStripState = () => ({
+      mode, beats, text: el('text').textContent, steps: el('steps').textContent,
+      resumeVisible: !el('resumeBtn').classList.contains('hidden'), emits: emits.slice(-5), lastStatus,
+    });
+
+    if (window.__TAURI__) {
+      window.__TAURI__.event.listen('computer-use-status', (event) => {
+        const status = event.payload || {};
+        if (status.mode === 'paused') { setMode('paused'); return; }
+        render(status);
+      });
+      window.__TAURI__.event.listen('computer-use-heartbeat', () => { lastBeat = Date.now(); beats += 1; });
+    }
+  </script>
+</body>
+</html>

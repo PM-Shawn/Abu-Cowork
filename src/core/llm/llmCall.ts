@@ -10,8 +10,9 @@
 
 import type { StreamEvent, Message, ToolDefinition } from '../../types';
 import type { LLMAdapter } from './adapter';
-import { ClaudeAdapter } from './claude';
-import { OpenAICompatibleAdapter } from './openai-compatible';
+import { adapterKindFor } from './adapterKind';
+import { createAdapterForKind } from './createAdapter';
+import { providerChatOptions } from './providerChatOptions';
 import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { settingsForConversation } from '../agent/conversationSettings';
@@ -67,9 +68,7 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
   )
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
-  const adapter: LLMAdapter = (effectiveCreds.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible')
-    ? new OpenAICompatibleAdapter()
-    : new ClaudeAdapter();
+  const adapter: LLMAdapter = createAdapterForKind(adapterKindFor(getActiveProvider(settings), effectiveCreds.forceOpenAiCompatible));
 
   const messages: Message[] = options.messages.map((m, i) => ({
     id: `llmcall-${i}`,
@@ -102,7 +101,16 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
     systemPrompt: options.system,
     tools: options.tools,
     maxTokens: options.maxTokens ?? 4096,
+    ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
     signal: options.signal,
+    // 这条路径是技能与内部工具的单轮调用（test_skill_trigger、
+    // improve_skill_description 等），页面上归到「系统辅助」那一组。
+    accounting: {
+      source: 'skill' as const,
+      conversationId: options.conversationId ?? null,
+      skill: null,
+      providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
+    },
   }, eventHandler);
 
   return { text, toolCalls };

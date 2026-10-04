@@ -20,7 +20,7 @@ const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const SHOT = (name: string) => path.join(REPO_ROOT, 'test-results', `e2e-author-${name}.png`);
 
-const ACCOUNT = /^(我|Me)$/;
+const ACCOUNT = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 const SETTINGS = /^(设置|Settings)$/;
 const FEEDBACK_TAB = /^(反馈|Feedback)$/;
 const VERSION_TAB = /^(版本|Version)$/;

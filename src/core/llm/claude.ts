@@ -1,12 +1,19 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
 import { LLMError, classifyError, buildToolParseError } from './adapter';
-import type { Message, StreamEvent, ToolDefinition } from '../../types';
+import type { Message, StreamEvent, TokenUsage, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedToolCall } from './messageNormalizer';
-import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import {
+  createHeartbeat,
+  anySignal,
+  localFirstResponseTimeoutError,
+  DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS,
+  LOCAL_FIRST_RESPONSE_TIMEOUT_MS,
+} from './heartbeat';
 import { createLogger } from '../logging/logger';
+import { createDefaultUsageRecorder } from './usageRecorder';
 
 const logger = createLogger('claude');
 
@@ -178,11 +185,22 @@ export class ClaudeAdapter implements LLMAdapter {
     options: ChatOptions,
     onEvent: (event: StreamEvent) => void
   ): Promise<void> {
-    const fetchFn = await getTauriFetch();
+    const fetchFn = await getTauriFetch({ localServer: options.localServer === true });
+    // 用量采集在 provider 边界，尝试身份在 fetch 层铸造：SDK 自己的重试会再走一次
+    // fetch，它在账本里单独占一条尝试（任务书 U02）。
+    const recorder = createDefaultUsageRecorder({
+      protocol: 'anthropic',
+      requestedModel: options.model,
+      accounting: options.accounting,
+    });
+    const countingFetch: typeof fetchFn = (...args) => {
+      recorder.beginAttempt();
+      return fetchFn(...args);
+    };
     const clientOptions: Record<string, unknown> = {
       apiKey: options.apiKey,
       dangerouslyAllowBrowser: true,
-      fetch: fetchFn,
+      fetch: countingFetch,
     };
     if (options.baseUrl) {
       clientOptions.baseURL = options.baseUrl;
@@ -314,6 +332,15 @@ export class ClaudeAdapter implements LLMAdapter {
     let currentThinking = '';
     let isInThinkingBlock = false;
 
+    /**
+     * 本次流里已经见过的用量，按 Anthropic 的累计快照语义维护。
+     *
+     * `message_start` 带输入与缓存读写，`message_delta` 只带输出总数。结束事件
+     * 必须把两者合起来交出去：只交 `message_delta` 那一份，缓存读写就会归零，
+     * 而 `input_tokens` 缺失又会被补成 0——用户看到的缓存命中率因此恒为零。
+     */
+    let streamUsage: TokenUsage | undefined;
+
     // Idle timeout: if no data received within the window, treat as network hang
     // and abort so the pending stream rejects (emitting events alone left it hung).
     const heartbeat = createHeartbeat(STREAM_HANG_TIMEOUT_MS, () => {
@@ -324,40 +351,54 @@ export class ClaudeAdapter implements LLMAdapter {
     // Connect/header-phase timeout: the heartbeat is only reset once create()
     // resolves, so a server that never returns headers would hang create()
     // unbounded. Abort once the ceiling is hit.
+    // 本地服务（地址在本机、按 Anthropic 格式的自定义服务商）：从发出请求到第一个事件
+    // 算一个整体，最多等 10 分钟，超时不重试；云端保持 create() 返回前 180 秒。
+    const localServer = options.localServer === true;
+    let firstResponseTimedOut = false;
     const connectTimer = setTimeout(() => {
-      hangTimedOut = true;
+      if (localServer) firstResponseTimedOut = true;
+      else hangTimedOut = true;
       streamAbort.abort();
-    }, STREAM_HANG_TIMEOUT_MS);
+    }, localServer ? LOCAL_FIRST_RESPONSE_TIMEOUT_MS : STREAM_HANG_TIMEOUT_MS);
 
     try {
       const stream = await client.messages.create(params, streamOptions);
-      clearTimeout(connectTimer);
-      heartbeat.reset();
+      if (!localServer) {
+        clearTimeout(connectTimer);
+        heartbeat.reset();
+      }
 
+      let eventSeen = false;
       for await (const event of stream as AsyncIterable<Anthropic.MessageStreamEvent>) {
+        if (!eventSeen) {
+          eventSeen = true;
+          clearTimeout(connectTimer);
+        }
         heartbeat.reset();
 
         // Check for cancellation
         if (options.signal?.aborted) {
           heartbeat.clear();
+          recorder.settle('cancelled');
           onEvent({ type: 'done', stopReason: 'cancelled' });
           return;
         }
 
         switch (event.type) {
           case 'message_start':
+            if (event.message.model) recorder.noteServedModel(event.message.model);
             // Emit initial usage if available (including cache info)
             if (event.message.usage) {
               const usage = event.message.usage as unknown as Record<string, number>;
-              onEvent({
-                type: 'usage',
-                usage: {
-                  inputTokens: usage.input_tokens ?? 0,
-                  outputTokens: usage.output_tokens ?? 0,
-                  cacheCreationInputTokens: usage.cache_creation_input_tokens,
-                  cacheReadInputTokens: usage.cache_read_input_tokens,
-                },
-              });
+              // 流内累计快照：输入与缓存三项在这里，输出还只是个起始值。
+              recorder.observeUsage(usage, 'partial');
+              streamUsage = {
+                inputTokens: usage.input_tokens ?? 0,
+                outputTokens: usage.output_tokens ?? 0,
+                cacheCreationInputTokens: usage.cache_creation_input_tokens,
+                cacheReadInputTokens: usage.cache_read_input_tokens,
+              };
+              onEvent({ type: 'usage', usage: streamUsage });
             }
             break;
 
@@ -421,11 +462,25 @@ export class ClaudeAdapter implements LLMAdapter {
           case 'message_delta':
             if ('stop_reason' in event.delta) {
               heartbeat.clear();
-              const usage = event.usage ? {
-                inputTokens: event.usage.input_tokens ?? 0,
-                outputTokens: event.usage.output_tokens,
-              } : undefined;
-              onEvent({ type: 'done', stopReason: event.delta.stop_reason ?? 'end_turn', usage });
+              if (event.usage) {
+                const wire = event.usage as unknown as Record<string, number>;
+                recorder.observeUsage(wire, 'final');
+                // 结束事件只报它自己带的那几项，其余沿用流内已经拿到的值。
+                streamUsage = {
+                  inputTokens: wire.input_tokens ?? streamUsage?.inputTokens ?? 0,
+                  outputTokens: wire.output_tokens ?? streamUsage?.outputTokens ?? 0,
+                  cacheCreationInputTokens:
+                    wire.cache_creation_input_tokens ?? streamUsage?.cacheCreationInputTokens,
+                  cacheReadInputTokens:
+                    wire.cache_read_input_tokens ?? streamUsage?.cacheReadInputTokens,
+                };
+              }
+              recorder.settle('succeeded');
+              onEvent({
+                type: 'done',
+                stopReason: event.delta.stop_reason ?? 'end_turn',
+                usage: streamUsage,
+              });
               return;
             }
             break;
@@ -434,20 +489,29 @@ export class ClaudeAdapter implements LLMAdapter {
 
       // Fallback: stream ended without message_delta stop_reason (e.g. connection dropped)
       heartbeat.clear();
-      onEvent({ type: 'done', stopReason: 'end_turn' });
+      // 连接中途断了：流内累计值已经拿到一部分，但没有最终结算证据。
+      recorder.settle('interrupted');
+      onEvent({ type: 'done', stopReason: 'end_turn', usage: streamUsage });
     } catch (err) {
       heartbeat.clear();
       clearTimeout(connectTimer);
+      if (firstResponseTimedOut) {
+        recorder.settle('interrupted');
+        throw localFirstResponseTimeoutError();
+      }
       // Hang-timeout abort surfaces as an AbortError too, but must be retryable —
       // distinguish it from a genuine user cancel (which leaves options.signal aborted).
       if (hangTimedOut) {
+        recorder.settle('interrupted');
         throw new LLMError(`连接空闲超时：${STREAM_HANG_TIMEOUT_MS / 1000} 秒未收到任何数据`, 'network_error', { retryable: true });
       }
       // Handle abort errors gracefully
       if (err instanceof Error && err.name === 'AbortError') {
+        recorder.settle('cancelled');
         onEvent({ type: 'done', stopReason: 'cancelled' });
         return;
       }
+      recorder.settle('failed');
       // Already classified
       if (err instanceof LLMError) throw err;
       // Classify Anthropic SDK errors
@@ -459,6 +523,12 @@ export class ClaudeAdapter implements LLMAdapter {
         throw new LLMError(err.message, 'network_error', { retryable: true, retryAfterMs: 2000 });
       }
       throw err;
+    } finally {
+      // 本地服务的首次回答计时持续到第一个事件；流没有事件就结束时在这里收掉
+      clearTimeout(connectTimer);
+      // 兜底：走到这里还没结清，说明是上面几支没覆盖到的退出路径。
+      // 结清是幂等的，已经有结果的尝试不会被改写。
+      recorder.settle('interrupted');
     }
   }
 }

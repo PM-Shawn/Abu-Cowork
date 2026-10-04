@@ -43,6 +43,9 @@ vi.mock('@/utils/electronHost', () => ({
   readElectronUserAttachment: vi.fn(),
   releaseElectronUserAttachment: vi.fn(),
   selectElectronUserAttachments: vi.fn(),
+  // #549: the conversation writer resolves the conversations root through this
+  // one; null is what a tier without the Electron bridge answers.
+  canonicalizeElectronPathForPolicy: vi.fn(async () => null),
 }));
 
 vi.mock('react-virtuoso', async () => {

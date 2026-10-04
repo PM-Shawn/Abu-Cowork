@@ -21,6 +21,9 @@ vi.mock('@/utils/electronHost', () => ({
   // #549: conversationStorage's debounced flushIndex reaches rawBodyInvoke,
   // which probes this — without it the timer rejects after the suite ends.
   hasElectronRawBodyInvoke: () => false,
+  // #549: the conversation writer resolves the conversations root through this
+  // one; null is what a tier without the Electron bridge answers.
+  canonicalizeElectronPathForPolicy: async () => null,
 }));
 
 import {

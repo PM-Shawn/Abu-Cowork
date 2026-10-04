@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
 const moduleFlags = vi.hoisted(() => ({ skills: false, agents: false, mcp: false, kb: false }))
-const subscription = vi.hoisted(() => ({ callback: null as null | (() => void) }))
+// Both the entitlement watcher and the default-app landing subscribe; a live
+// session change reaches every subscriber with the store's current state.
+const store = vi.hoisted(() => ({
+  state: { mode: { kind: 'personal' as const } },
+  listeners: new Set<(state: { mode: { kind: 'personal' } }) => void>(),
+}))
 const calls = vi.hoisted(() => ({
   startSkills: vi.fn(), stopSkills: vi.fn(),
   startMcp: vi.fn(), stopMcp: vi.fn(),
@@ -26,9 +31,10 @@ vi.mock('@enterprise-modules/core/enterprise/entitlement', () => ({
 }))
 vi.mock('@enterprise-modules/stores/enterpriseStore', () => ({
   useEnterpriseStore: {
-    subscribe: vi.fn((callback: () => void) => {
-      subscription.callback = callback
-      return () => { subscription.callback = null }
+    getState: () => store.state,
+    subscribe: vi.fn((listener: (state: typeof store.state) => void) => {
+      store.listeners.add(listener)
+      return () => { store.listeners.delete(listener) }
     }),
   },
 }))
@@ -79,7 +85,7 @@ describe('enterprise entitlement lifecycle', () => {
     moduleFlags.mcp = false
     moduleFlags.kb = false
     moduleFlags.agents = false
-    subscription.callback?.()
+    store.listeners.forEach((listener) => listener(store.state))
 
     await vi.waitFor(() => {
       expect(calls.stopSkills).toHaveBeenCalled()

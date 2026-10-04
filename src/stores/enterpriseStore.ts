@@ -4,4 +4,4 @@ export {
   getBinding,
   isEnterprise,
   useEnterpriseStore,
-} from '@enterprise-modules'
+} from '@enterprise-modules/stores/enterpriseStore'

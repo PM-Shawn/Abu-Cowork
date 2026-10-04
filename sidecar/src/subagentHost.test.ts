@@ -2,6 +2,7 @@ import { describe, it, expect, expectTypeOf, vi, beforeEach } from 'vitest';
 import { RpcError } from './protocol';
 import { getCurrentSubagentRunContext } from './subagentRunContext';
 import type { SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { SubagentHostRunParams } from './subagentHost';
 import { materializeSidecarMediaRefsForShell, sidecarValueHasOpaqueMediaRefs } from '@/core/subagent/delegatedUserTurnMaterializer';
 import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
@@ -26,6 +27,12 @@ vi.mock('./rpcClient', () => ({
 const findActiveRunDeltaMock = vi.fn();
 vi.mock('./agentLoopHost', () => ({
   findActiveRunDeltaForConversation: (...a: unknown[]) => findActiveRunDeltaMock(...a),
+}));
+
+const traceSidecarRuntimeEventMock = vi.fn();
+vi.mock('./runtimeTrace', () => ({
+  traceSidecarRuntimeEvent: (...a: unknown[]) => traceSidecarRuntimeEventMock(...a),
+  sidecarRuntimeErrorType: (error: unknown) => (error instanceof Error ? error.name : 'unknown'),
 }));
 
 const delegatedMediaStoreMocks = vi.hoisted(() => ({
@@ -104,12 +111,24 @@ type SubagentRunResult = ReturnType<typeof resultShape> & {
 };
 
 describe('subagentHost', () => {
+  it('restores the execution presentation contract for subagent tools', async () => {
+    runSubagentLoopMock.mockImplementation(async (options: { toolInvoker: ToolInvoker }) => {
+      expect(options.toolInvoker.getAllTools()[0].execution).toEqual({ presentation: 'computer-use' });
+      return resultShape('ok');
+    });
+    await handleSubagentRun(baseParams({ tools: [{
+      name: 'computer', description: '', inputSchema: { type: 'object', properties: {} },
+      execution: { presentation: 'computer-use' },
+    }] }));
+  });
+
   beforeEach(() => {
     runSubagentLoopMock.mockReset();
     sendRequestMock.mockReset();
     sendRequestMock.mockResolvedValue('tool output');
     sendNotificationMock.mockReset();
     findActiveRunDeltaMock.mockReset();
+    traceSidecarRuntimeEventMock.mockReset();
     delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
     delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
   });
@@ -1108,6 +1127,75 @@ describe('subagentHost', () => {
     it('subagent.abort with an unknown runId is a silent no-op', () => {
       expect(() => handleSubagentAbort({ runId: 'no-such-run' })).not.toThrow();
     });
+  });
+});
+
+describe('runtime trace of a delegated run', () => {
+  it('records the run starting and finishing, with its stop reason', async () => {
+    const params = baseParams();
+    runSubagentLoopMock.mockResolvedValueOnce({ ...resultShape('ok'), stopReason: 'max_turns' });
+
+    await handleSubagentRun(params);
+
+    expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+      'sidecar.subagent_run_started',
+      expect.objectContaining({
+        runId: params.runId,
+        conversationId: 'conv-1',
+        stage: 'subagent_loop_running',
+      }),
+    );
+    expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+      'sidecar.subagent_run_completed',
+      expect.objectContaining({
+        runId: params.runId,
+        conversationId: 'conv-1',
+        stage: 'completed',
+        outcome: 'max_turns',
+      }),
+    );
+  });
+
+  it('records a run that threw, with the error type', async () => {
+    const params = baseParams();
+    runSubagentLoopMock.mockRejectedValueOnce(new TypeError('boom'));
+
+    await expect(handleSubagentRun(params)).rejects.toThrow('boom');
+
+    expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+      'sidecar.subagent_run_failed',
+      expect.objectContaining({
+        runId: params.runId,
+        stage: 'failed',
+        outcome: 'error',
+        errorType: 'TypeError',
+      }),
+    );
+  });
+
+  it('records an abort, and separates a live run from an unknown one', async () => {
+    const params = baseParams();
+    let release: (() => void) | undefined;
+    runSubagentLoopMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return resultShape('ok');
+    });
+    const running = handleSubagentRun(params);
+    await vi.waitFor(() => expect(release).toBeDefined());
+
+    handleSubagentAbort({ runId: params.runId });
+    handleSubagentAbort({ runId: 'no-such-run' });
+
+    expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+      'sidecar.subagent_abort_received',
+      expect.objectContaining({ runId: params.runId, outcome: 'accepted' }),
+    );
+    expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+      'sidecar.subagent_abort_received',
+      expect.objectContaining({ runId: 'no-such-run', outcome: 'unknown_run' }),
+    );
+    release?.();
+    await running;
   });
 });
 

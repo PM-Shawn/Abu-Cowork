@@ -284,11 +284,12 @@ Abu 是 Electron 桌面端，每轮“改 → 重启 dev → 验证”的成本�
   export default function MyComponent({ title, onClose }: { title: string; onClose: () => void }) { ... }
   ```
 - **i18n**: Always use `const { t } = useI18n()` — never hardcode Chinese strings in JSX.
-- **Icons**: Lucide React, rendered with explicit size classes (`className="h-4 w-4"`).
+- **Icons**: in design-system migrated files, render icons only through `Icon` + `AppIcons` from `@/components/ds/icon` and `@/components/ds/icons` (`size` = `sm` 14 / `md` 16 / `lg` 20, stroke fixed at 1.5). Legacy files keep Lucide with explicit size classes until they migrate.
 - **Class merging**: Use `cn()` from `@/lib/utils` for conditional className composition.
 - **Pure helper functions** for data transformation should be defined outside the component.
 
 ### 4.1 UI Component Library (MANDATORY)
+This section covers legacy files. Files on the design-system migration list use `src/components/ds/` instead (§6.3).
 All form controls **MUST** use components from `src/components/ui/`. **Do NOT** hand-roll `<input>`, `<textarea>`, `<select>`, or toggle switches with inline styling.
 
 - **Select** (`@/components/ui/select`): Use `variant="default"` for form fields (full-width), `variant="inline"` for compact settings rows.
@@ -337,11 +338,12 @@ All form controls **MUST** use components from `src/components/ui/`. **Do NOT** 
 
 ### 6. Styling (TailwindCSS v4)
 - TailwindCSS v4 via `@tailwindcss/vite` plugin — **no `tailwind.config.js` file**.
-- Dark theme as default design direction.
-- Custom colors use hex literals in class strings (`bg-[#faf9f5]`, `text-[#29261b]`).
-- Custom CSS classes (`btn-ghost`, `btn-claude-primary`, `streaming-cursor`) defined in global CSS files.
+- **Design system (in migration)**: tokens live only in `src/styles/tokens.css` (spec: workspace `docs/2026-09-28-design-system-brief.md`). See §6.3.
+- Legacy code still uses `--abu-*` tokens and shadcn variables (§6.1, §6.2) until its directory migrates.
+- Custom CSS classes (`btn-ghost`, `btn-claude-primary`, `streaming-cursor`) defined in global CSS files are legacy; do not add new ones.
 
 ### 6.1 Font sizes — 8-token scale (MANDATORY)
+Applies to legacy files. Files on the design-system migration list use the §6.3 type scale.
 All font sizes go through the `--text-*` token scale defined in `src/styles/index.css`
 (`@theme` block). Each token binds font-size + line-height + font-weight (TRAE-style).
 **Never** hand-roll a size with `text-[Npx]`, and **do not** use Tailwind's default named
@@ -363,6 +365,7 @@ heading. Neutral text uses `text-[var(--abu-text-*)]` (`--abu-text-muted` is AA-
 as of 2026-07). Semantic/link colors are tokenized too — see §6.2.
 
 ### 6.2 Semantic + link colors — token scale (MANDATORY)
+Applies to legacy files. Files on the design-system migration list use the §6.3 color tokens.
 Link and status colors go through the `--abu-*` semantic tokens in `src/styles/index.css`
 (both themes). **Never** use raw Tailwind status/link hues (`text/bg/border/ring/fill-`
 `red/green/emerald/lime/amber/yellow/blue/sky/indigo/orange-*`) — banned by ESLint
@@ -385,6 +388,56 @@ token except link, so `hover:text-[var(--abu-{role})]` on an element already in 
 a no-op (fine). Categorical tag palettes (e.g. memory-type tags: purple/teal + orange/blue)
 are a different concern from semantic status — keep those raw with a scoped
 `eslint-disable no-restricted-syntax` + comment.
+
+### 6.3 Design-system tokens and the migration list (MANDATORY for migrated files)
+Files matched by `DESIGN_SYSTEM_MIGRATED_FILES` / `DESIGN_SYSTEM_UI_FILES` in `eslint.config.js`
+must use only design-system token classes. ESLint bans arbitrary values
+(`bg-[…]`, `text-[…]`, `z-[…]`, `rounded-[…]`, `shadow-[…]`, `duration-[…]`), Tailwind palette
+colors (`gray-*`, `white`, …), and hand-written scrims (`fixed inset-0`) in both lists. Raw form
+controls and direct `lucide-react` / `radix-ui` / `cmdk` imports are banned only in
+`DESIGN_SYSTEM_MIGRATED_FILES`, because `src/components/ds/` is where those wrappers live.
+Both lists also ban legacy class names: shadcn color names (`bg-background`,
+`text-muted-foreground`…), legacy font sizes (`text-minor`, `text-h-*`), and Tailwind's own
+radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `duration-150`,
+`shadow-md`, `ease-out`).
+
+| Category | Classes |
+|---|---|
+| Surfaces | `bg-desk` `bg-surface` `bg-raised` `bg-material` `bg-code` `bg-field` `bg-scrim` |
+| Fills | `bg-fill` `bg-fill-hover` `bg-fill-selected` `bg-fill-pressed` |
+| Text | `text-label` `text-label-secondary` `text-label-tertiary` `text-label-placeholder` `text-link` |
+| Primary action | `bg-emphasis` + `text-on-emphasis` |
+| Status | `text-{success,warning,danger,info}` on `bg-{role}-soft` |
+| Lines / focus | `border-separator` `border-control-border` `ring-focus` |
+| Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono`; code font: `font-code` |
+| Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` |
+| Layers / motion | `z-sticky` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
+| Identity (avatar, app icon only) | `bg-brand` `text-brand-ink` |
+
+**Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
+`DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one
+menu/popover open at a time, and `useConfirm()`); use `useConfirm()` instead of
+`window.confirm()`, `Dialog` for every modal (it owns the only scrim and asks before
+discarding `dirty` input), and `InlineMessage` / `Toaster` / `EmptyState` / `LoadError`
+for feedback. Icon-only buttons are `IconButton` with a `label`. A confirmation from
+`useConfirm()` is a question about the current dialog: it stacks over an open dialog, and
+it answers `false` when another dialog opens and replaces it. `Toaster` renders its own
+notification list (a labelled region whose `aria-live="polite"` area holds the list, newest
+last) and
+does not use Radix Toast, so a toast never takes Escape from an open dialog. Every floating
+root — portaled overlay content, scrims, and the toast list — carries
+`data-electron-no-drag`; `src/__tests__/overlayDragRegions.test.ts` guards this. ds code
+never uses a bare `animate-in` class, because the legacy global `.animate-in` rule in
+`src/styles/index.css` overrides it; use the `data-[state=…]:animate-in` forms instead.
+
+**Accessibility appearances**: `src/styles/appearance.ts` sets `data-contrast="more"`,
+`data-transparency="reduced"` and `data-motion="reduced"` on `<html>`; `tokens.css` keys
+off those attributes only — never add `prefers-*` media queries to it. Animated floating
+layers carry `data-ds-motion` and spinners `data-ds-spinner` so reduced motion can stop them.
+
+When a directory finishes migrating, append its glob to the list in the same PR. Never remove an
+entry. `scripts/designTokens.test.ts` fails if a token change breaks WCAG contrast in any of the
+four appearances (light, dark, and each with increased contrast).
 
 ### 7. Core Module Patterns
 - **Interface-first design**: Define interfaces before implementations (e.g. `LLMAdapter` interface → `ClaudeAdapter` / `OpenAICompatibleAdapter`).
@@ -423,6 +476,7 @@ are a different concern from semantic status — keep those raw with a scoped
 - **Vitest**, `environment: 'node'` by default; component tests opt in per file with `// @vitest-environment happy-dom` (see TESTING.md §6). Config in `vitest.config.ts`.
 - **Test files co-located** next to source: `chatStore.ts` → `chatStore.test.ts`.
 - **Global mocks** in `src/test/setup.ts`: All Tauri APIs and external SDKs are mocked globally.
+- **Locale**: `src/test/setup.ts` pins `navigator.language` to `en-US`, so i18n's `'system'` default resolves the same on every machine as on CI (English tool-result copy is the contract). A suite that switches locale restores it in `afterEach`/`finally` (see TESTING.md §6 *Locale*).
 - **Store tests**: Call `useXxxStore.setState({...})` in `beforeEach` to reset. Test via `useXxxStore.getState().action()` — no React rendering needed.
 - **Timer tests**: Use `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()`, not `runAllTimers`.
 - **Structure**: `describe('feature') > describe('action') > it('description')`.
@@ -449,11 +503,11 @@ are a different concern from semantic status — keep those raw with a scoped
 - Do not use `enum` or `namespace` with runtime semantics.
 - Do not use Node.js built-in modules directly.
 - Do not hardcode Chinese strings in components — use i18n.
-- Do not use `index.css` or inline `<style>` blocks — use Tailwind classes.
+- Do not add styles to `index.css` or inline `<style>` blocks — use Tailwind classes; new design tokens go only in `src/styles/tokens.css`.
 - Do not add default exports to hook files.
 - Do not create new Zustand stores without `persist` middleware (unless the store is purely ephemeral by design).
 - Do not use `jest` syntax (`jest.fn()`, `jest.mock()`) — use Vitest (`vi.fn()`, `vi.mock()`).
-- Do not hand-roll form controls (select, toggle, input, textarea) — always use `src/components/ui/` components. If a variant is missing, extend the UI component.
+- Do not hand-roll form controls (select, toggle, input, textarea) — legacy files use `src/components/ui/`, migrated files use `src/components/ds/`. If a variant is missing, extend the component.
 
 ### 15. Reviewing review output (sanity-check-first)
 

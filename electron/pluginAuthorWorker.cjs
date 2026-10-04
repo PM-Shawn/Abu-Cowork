@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { enterDirectory } = require('./pluginRegistryWorker.cjs');
 const { registryIO, safeSegment, validateRecords } = require('./pluginRegistryHost.cjs');
+const { identityOf, sameIdentity } = require('./fileIdentity.cjs');
 const idValid = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 const preparedValid = value => value === null || (value && typeof value === 'object' && safeSegment(value.version) && /^[a-f0-9]{64}$/.test(value.checksum) && typeof value.description === 'string' && value.description.length <= 2048);
 const conversationValid = value => typeof value === 'string' && /^[\w-]{1,120}$/.test(value);
@@ -11,12 +12,15 @@ const conversationValid = value => typeof value === 'string' && /^[\w-]{1,120}$/
  * a creation conversation never needs write access to runtime metadata. */
 function runAuthor(input, io = fs, chdir = process.chdir) {
   const home = process.cwd();
-  const stat = io.statSync('.');
-  if (stat.ino !== input.identity.ino || stat.dev !== input.identity.dev) throw new Error('Plugin author: profile changed');
+  // `input.identity` arrived over JSON as decimal strings, so every identity
+  // here is read as bigint and compared the same way — a Windows file id does
+  // not fit in a double (`electron/fileIdentity.cjs`).
+  const stat = identityOf(io.statSync('.', { bigint: true }));
+  if (!sameIdentity(stat, identityOf(input.identity))) throw new Error('Plugin author: profile changed');
   enterDirectory('.abu', true, io, chdir);
   enterDirectory('plugin-authors', true, io, chdir);
   const metadataDir = process.cwd();
-  const metadataIdentity = io.statSync('.');
+  const metadataIdentity = identityOf(io.statSync('.', { bigint: true }));
   const data = registryIO(io, () => input.nonce);
   const raw = data.read('authors.json');
   const authors = raw === null ? [] : JSON.parse(raw);
@@ -34,7 +38,7 @@ function runAuthor(input, io = fs, chdir = process.chdir) {
     if (typeof input.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(input.createdAt) || !idValid(input.id) || authors.some(item => item.id === input.id) || authors.length >= 500) throw new Error('Plugin author: invalid or duplicate author identity');
     author = { id: input.id, createdAt: input.createdAt, conversationId: null, name: null, prepared: null };
     chdir(home);
-    if (io.statSync('.').ino !== stat.ino || io.statSync('.').dev !== stat.dev) throw new Error('Plugin author: profile changed');
+    if (!sameIdentity(identityOf(io.statSync('.', { bigint: true })), stat)) throw new Error('Plugin author: profile changed');
     enterDirectory('Abu Plugins', true, io, chdir);
     io.mkdirSync(input.id);
     authors.push(author);
@@ -44,7 +48,7 @@ function runAuthor(input, io = fs, chdir = process.chdir) {
     if (input.action === 'delete') {
       // Inspect installation ownership inside the same leased worker before removing metadata.
       chdir(home);
-      if (io.statSync('.').ino !== stat.ino || io.statSync('.').dev !== stat.dev) throw new Error('Plugin author: profile changed');
+      if (!sameIdentity(identityOf(io.statSync('.', { bigint: true })), stat)) throw new Error('Plugin author: profile changed');
       enterDirectory('.abu', false, io, chdir);
       let rawInstalled = null;
       try { enterDirectory('plugin-packages', false, io, chdir); rawInstalled = data.read('installed.json'); }
@@ -67,8 +71,8 @@ function runAuthor(input, io = fs, chdir = process.chdir) {
     } else throw new Error('Plugin author: unsupported action');
   }
   chdir(metadataDir);
-  const current = io.statSync('.');
-  if (current.ino !== metadataIdentity.ino || current.dev !== metadataIdentity.dev) throw new Error('Plugin author: metadata directory changed');
+  const current = identityOf(io.statSync('.', { bigint: true }));
+  if (!sameIdentity(current, metadataIdentity)) throw new Error('Plugin author: metadata directory changed');
   data.write('authors.json', JSON.stringify(authors));
   if (process.platform !== 'win32') {
     // Windows has no directory-fsync equivalent; see pluginLease.syncDirectory.

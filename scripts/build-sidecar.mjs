@@ -72,6 +72,15 @@ if (!existsSync(enterpriseModulesDir)) {
  */
 const packageJson = JSON.parse(readFileSync(path.resolve(root, 'package.json'), 'utf-8'));
 
+/** `alias` and `define` of the sidecar build, shared with builds that must resolve and guard imports the same way. */
+export const SIDECAR_BUILD_RESOLUTION = {
+  alias: { '@': srcDir, '@enterprise-modules': enterpriseModulesDir },
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version),
+    __ENTERPRISE_BUILD__: JSON.stringify(buildTarget === 'enterprise'),
+  },
+};
+
 /**
  * Shim map: resolved absolute path of the REAL module -> resolved absolute
  * path of its sidecar-local replacement. Extensionless — esbuild's own
@@ -152,8 +161,7 @@ export const SHIM_TARGETS = [
   // rejected import at its sole call site, so throwing is a safe, documented
   // feature gap, not a crash. See each shim's own doc for the specific
   // reasoning (memdir/extractor.ts is a design doc §6 explicit exclusion;
-  // usageTracker.ts and computerTools.ts's closeAxSession are new findings,
-  // flagged in the report).
+  // computerTools.ts's closeAxSession is a new finding, flagged in the report).
   { real: path.resolve(srcDir, 'core/memdir/extractor.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/memdirExtractorRun.ts') },
   // P1-3B-3A finding: P1-3a's assumption ("nothing imports memdir/paths.ts
   // directly once memdir/scan.ts is redirected — memdirScan.ts uses its own
@@ -168,7 +176,9 @@ export const SHIM_TARGETS = [
   // caller, verified by grep) — real module's export surface is a superset,
   // this shim intentionally covers only what's used.
   { real: path.resolve(srcDir, 'core/memdir/paths.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/memdirPaths.ts') },
-  { real: path.resolve(srcDir, 'core/llm/usageTracker.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/usageTrackerRun.ts') },
+  // 真转发：用量快照在 sidecar 里编成 stdout 帧直接交给主进程，不经过 renderer。
+  // 见 usageSinkRun.ts。
+  { real: path.resolve(srcDir, 'core/llm/usageSink.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/usageSinkRun.ts') },
   { real: path.resolve(srcDir, 'core/tools/definitions/computerTools.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/computerToolsAxRun.ts') },
   // Legitimate no-op — enterprise error telemetry, same class as langfuseRun.ts. Reached via agentLoop.ts's reportError -> consoleError.ts -> getTelemetryTarget() -> useEnterpriseStore.
   { real: path.resolve(srcDir, 'utils/consoleTelemetryTarget.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/consoleTelemetryTargetRun.ts') },
@@ -298,7 +308,7 @@ const shimMap = new Map(SHIM_TARGETS.map(({ real, shim }) => [real, shim]));
  * `shimMap` unconditionally — correctness over the now-irrelevant
  * micro-optimization (this is a one-off build script, not a hot path).
  */
-const shimPlugin = {
+export const shimPlugin = {
   name: 'abu-sidecar-shims',
   setup(pluginBuild) {
     // Bare node_modules package specifier — @tauri-apps/api/core's `invoke`.
@@ -379,7 +389,7 @@ const FORBIDDEN_DIR_PREFIXES = [
   path.resolve(srcDir, 'components') + path.sep,
 ];
 
-const bundleGraphGuardPlugin = {
+export const bundleGraphGuardPlugin = {
   name: 'abu-sidecar-fail-fast-guard',
   setup(pluginBuild) {
     pluginBuild.onResolve({ filter: /^@tauri-apps\// }, (args) => {
@@ -417,11 +427,7 @@ async function main() {
     // @anthropic-ai/sdk (and everything else reachable from main.ts) bundles
     // INTO the output — nothing marked external. The packaged app ships
     // sidecar/index.mjs standalone, with no node_modules alongside it.
-    alias: { '@': srcDir, '@enterprise-modules': enterpriseModulesDir },
-    define: {
-      __APP_VERSION__: JSON.stringify(packageJson.version),
-      __ENTERPRISE_BUILD__: JSON.stringify(buildTarget === 'enterprise'),
-    },
+    ...SIDECAR_BUILD_RESOLUTION,
     plugins: [shimPlugin, bundleGraphGuardPlugin],
     banner: {
       // Bundled ESM output has no CommonJS __dirname/__filename or `require`

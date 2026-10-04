@@ -19,7 +19,7 @@
 
 import { exists, readTextFile, writeTextFile, remove, readDir, mkdir } from '@tauri-apps/plugin-fs';
 import { appDataDir } from '@tauri-apps/api/path';
-import { joinPath } from '@/utils/pathUtils';
+import { createConversationPaths, isConversationId, type ConversationPaths } from './conversationPaths';
 
 // ════════════════════════════════════════════════════════════
 // Types
@@ -41,19 +41,17 @@ export interface Checkpoint {
 // Paths
 // ════════════════════════════════════════════════════════════
 
-let cachedBase: string | null = null;
+let cachedPaths: ConversationPaths | null = null;
 
-async function getConversationsDir(): Promise<string> {
-  if (!cachedBase) {
-    const appData = await appDataDir();
-    cachedBase = joinPath(appData, 'conversations');
+async function conversationPaths(): Promise<ConversationPaths> {
+  if (!cachedPaths) {
+    cachedPaths = createConversationPaths(await appDataDir());
   }
-  return cachedBase;
+  return cachedPaths;
 }
 
 async function checkpointPath(convId: string): Promise<string> {
-  const base = await getConversationsDir();
-  return joinPath(base, convId, 'checkpoint.json');
+  return (await conversationPaths()).checkpointPath(convId);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -144,18 +142,20 @@ function isRecoverableCheckpoint(value: unknown, directoryId: string, now: numbe
  * Older ones are auto-cleaned.
  */
 export async function findOrphanedCheckpoints(): Promise<Checkpoint[]> {
-  const base = await getConversationsDir();
-  if (!(await exists(base))) return [];
+  const paths = await conversationPaths();
+  if (!(await exists(paths.root))) return [];
 
   const orphans: Checkpoint[] = [];
 
   try {
-    const entries = await readDir(base);
+    const entries = await readDir(paths.root);
     for (const entry of entries) {
-      // Only check directories (conversation folders)
-      if (!entry.isDirectory || !entry.name) continue;
+      // Only check directories (conversation folders), and only those whose
+      // name is a conversation id: no other directory can hold a checkpoint
+      // this scan is able to attribute, and the builder below refuses one.
+      if (!entry.isDirectory || !entry.name || !isConversationId(entry.name)) continue;
 
-      const cpPath = joinPath(base, entry.name, 'checkpoint.json');
+      const cpPath = paths.checkpointPath(entry.name);
       if (!(await exists(cpPath))) continue;
 
       try {

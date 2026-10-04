@@ -98,8 +98,53 @@ export type SandboxRecoveryAction =
  * through ToolExecutor/ChatDelta separately from stdout so imported messages
  * and command output cannot manufacture privileged UI.
  */
+/** How one computer tool call ended, as the run report card shows it. */
+export type ComputerStepOutcome =
+  | 'verified-change'   // Host verified the expected UI change
+  | 'no-change'         // dispatched, nothing changed
+  | 'ambiguous'         // dispatched, change could not be attributed
+  | 'done'              // completed without a verification step (activate, wait)
+  | 'observed'          // an observation, not an action
+  | 'not-executed'      // refused before reaching the app; re-observed
+  | 'handoff'           // turn handed back to the user
+  | 'boundary'          // platform boundary (secure desktop, elevated window…)
+  | 'paused'            // the user took over the mouse/keyboard
+  | 'stopped'           // the run was stopped
+  | 'mismatch'          // the expected effect was not what happened
+  | 'outcome-unknown'   // dispatched, result unknown; replay blocked
+  | 'error';
+
+/**
+ * Per-step evidence for the Computer Use run report. Deliberately carries no
+ * typed text, labels or screenshots — ids, counts and outcomes only; the tool
+ * call's own input/resultContent hold the rest.
+ */
+export interface ComputerStepReport {
+  action: string;
+  targetApp: string | null;
+  /** The declared consequence category ('none' when harmless). */
+  consequence: string;
+  /** The model's one-line summary the user saw in the native approval dialog. */
+  consequenceDetail?: string;
+  outcome: ComputerStepOutcome;
+  /** Short machine code (helper/boundary code), never user content. */
+  detail?: string;
+  durationMs?: number;
+}
+
 export interface ToolExecutionMetadata {
   sandboxRecovery?: SandboxRecoveryPayload;
+  /** Trusted computer tool: how this step ended, for the run report card. */
+  computerStep?: ComputerStepReport;
+  /** Trusted tool says the current agent turn must stop until the user fixes
+   * an external precondition (for example, opening an explicitly named app). */
+  requiresUserRecovery?:
+    | 'computer-target-unavailable'
+    | 'computer-manual-handoff'
+    | 'computer-platform-boundary'
+    | 'computer-user-takeover'
+    | 'computer-verification-mismatch'
+    | 'computer-outcome-unknown-new-turn';
   subagentStopReason?: SubagentStopReason;
   batchTerminalSummary?: BatchTerminalSummary;
 }
@@ -257,6 +302,8 @@ export interface ToolCall {
   sandboxRecovery?: SandboxRecoveryPayload;
   /** Persisted user choice for the recovery card. */
   sandboxRecoveryAction?: SandboxRecoveryAction;
+  /** Computer Use step evidence (see ComputerStepReport); drives the run report card. */
+  computerStep?: ComputerStepReport;
   /**
    * User's answers to an ask_user_question tool call. Set once the user
    * submits — drives settled read-only rendering. undefined = still
@@ -519,6 +566,7 @@ export interface Conversation {
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
   teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
+  appBinding?: import('./app').ConversationAppBinding;  // The app (and mode / scene) this conversation was started in; absent = general shell
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
   projectId?: string;  // If set, this conversation belongs to a project
@@ -701,6 +749,12 @@ export interface ToolExecutionContext {
    */
   deferredToolNames?: string[];
   /**
+   * Names of every tool this turn offered the model (active + deferred). Set by
+   * the trusted agent runtime only; wire-safe. Used to answer a hallucinated
+   * tool name with the real choices.
+   */
+  offeredToolNames?: string[];
+  /**
    * In-conversation team mode: exact agent names the leader may delegate to.
    * Set by the trusted runtime from the pinned team's roster (never from model
    * input); delegate_to_agent / run_agent_batch refuse any other agent or
@@ -709,6 +763,12 @@ export interface ToolExecutionContext {
   teamRoster?: string[];
   /** Strict team (先确认分工): report_plan must get the user's approval before anything is dispatched. */
   teamRequirePlanApproval?: boolean;
+  /**
+   * Shell-owned team task this call belongs to (teamConfirmationStore's
+   * beginTask). Keys the task's hand-off bounds and refusal streak, so a
+   * sidecar-supplied value is always overwritten.
+   */
+  teamTaskId?: string;
   /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would
@@ -755,6 +815,12 @@ export interface ToolDefinition {
     required?: string[];
   };
   execute: (input: Record<string, unknown>, context?: ToolExecutionContext) => Promise<ToolResult>;
+  /** Runtime-only contract, not part of the model-facing input schema.
+   * Computer-use presentation also requires ordered batch/status handling.
+   * Host Gate owns approval-aware time/step limits; the executor adds no timer
+   * and does not retry tools automatically.
+   */
+  execution?: { presentation: 'computer-use' };
   /**
    * Whether this tool can safely execute in parallel with other concurrent-safe tools.
    * - `true` or returns `true`: tool only reads data, no side effects
@@ -829,6 +895,8 @@ export type StreamEvent =
   | { type: 'tool_result'; toolUseId: string; result: string }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; stopReason: string; usage?: TokenUsage }
+  /** 正文里出现了操作的开头却识别不出（没闭合、JSON 写坏）。原文不显示给用户。 */
+  | { type: 'malformed_tool_call'; raw: string }
   | { type: 'error'; error: string };
 
 // --- Skill ---

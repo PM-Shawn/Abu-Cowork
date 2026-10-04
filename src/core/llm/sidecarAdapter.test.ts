@@ -63,6 +63,29 @@ describe('SidecarLLMAdapter', () => {
     vi.useRealTimers();
   });
 
+  describe('记账身份随请求进 sidecar', () => {
+    it('accounting 原样传给 llm.chat，转发器自己不记账', async () => {
+      // sidecar 在跑的时候真正发 HTTP 的是它那一侧的适配器，记账也在那里。
+      // 这个类只是转发器：身份必须传过去，它自己一条账都不记，否则同一次请求
+      // 会在账本里出现两次（任务书 U02）。
+      let captured: { options?: { accounting?: unknown } } = {};
+      requestMock.mockImplementation((_method: string, params: { callId: string; options?: { accounting?: unknown } }) => {
+        captured = params;
+        return Promise.resolve({ ok: true });
+      });
+
+      const accounting = {
+        source: 'main' as const,
+        conversationId: 'conv-1',
+        skill: null,
+        providerInstanceId: 'provider-1',
+      };
+      await new SidecarLLMAdapter('claude').chat([], { model: 'm', apiKey: 'k', accounting }, () => {});
+
+      expect(captured.options?.accounting).toEqual(accounting);
+    });
+  });
+
   describe('event forwarding', () => {
     it('forwards llm.event notifications to onEvent in arrival order', async () => {
       // request() resolves only after we've fired both events, mirroring the
@@ -195,6 +218,24 @@ describe('SidecarLLMAdapter', () => {
       });
     });
 
+    it('rebuilds a local first-response timeout as the same non-retryable error', async () => {
+      requestMock.mockRejectedValue(
+        new SidecarRpcError(-32000, 'local server timeout', {
+          name: 'LLMError',
+          code: 'local_server_timeout',
+          retryable: false,
+          message: '本地服务 600 秒内没有开始回答',
+        }),
+      );
+      const adapter = new SidecarLLMAdapter('ollama');
+
+      await expect(adapter.chat([], { model: 'm', apiKey: '' }, () => {})).rejects.toMatchObject({
+        code: 'local_server_timeout',
+        retryable: false,
+        message: '本地服务 600 秒内没有开始回答',
+      });
+    });
+
     it.each([
       '{"private":"legacy provider body"}',
       '<html><body>legacy proxy response</body></html>',
@@ -265,6 +306,24 @@ describe('SidecarLLMAdapter', () => {
       expect(caught).toMatchObject({ code: 'network_error', retryable: true, message: 'Sidecar transport failed' });
       expect(formatLlmTerminalError(caught)).toBe('Sidecar transport failed');
       expect(JSON.stringify(caught)).not.toContain('plain transport body');
+    });
+
+    it('carries the learned context limit across the wire', async () => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'too long', {
+        name: 'LLMError', code: 'context_too_long', retryable: false, statusCode: 400, contextLimit: 8192, message: 'too long',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'context_too_long', contextLimit: 8192 });
+    });
+
+    it('treats a context limit on any other error as a corrupt response', async () => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'x', {
+        name: 'LLMError', code: 'rate_limit', retryable: true, contextLimit: 8192, message: 'x',
+      }));
+      const adapter = new SidecarLLMAdapter('openai-compatible');
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}))
+        .rejects.toMatchObject({ code: 'unknown', message: 'Invalid sidecar LLM error response' });
     });
   });
 

@@ -20,6 +20,22 @@
  * throw out of `startSidecar()` / `stopSidecar()`, and nothing here may
  * surface an error to the UI.
  *
+ * ## Start-up
+ *
+ * Spawn, then `handshake` (`SIDECAR_HANDSHAKE_METHOD`, 30 s budget), then
+ * `running`. A spawned process is not yet a sidecar this shell can talk to:
+ * the status stays `starting` / `restarting` while the handshake is out, so a
+ * send waits (`sidecarReadiness.ts`) instead of dispatching into a process
+ * whose protocol is unknown. An answer names the protocol version and the
+ * capability list, which `sidecarHasCapability()` reports for as long as that
+ * process is `running`. A sidecar without the method (`-32601`), on another
+ * protocol version, with a malformed answer, silent past the budget, or one
+ * that closed while its answer was on the way is a spawn failure: the process
+ * is killed and the restart policy below decides what happens next. Four such
+ * failures in a row end on `'failed'` however far apart they are, because one
+ * full budget is half the crash-loop window. `selfTestEcho` stays a
+ * best-effort latency probe issued after `running`.
+ *
  * ## Restart policy (documented per P1-0 spec)
  *
  * A single fixed process id (`abu-sidecar`) is reused across the sidecar's
@@ -132,6 +148,13 @@ import { FIELD_BREAKDOWN_MIN_BYTES, MEASURED_RPC_METHODS, measurePayloadFields }
 import { reportError } from '@/utils/consoleError';
 import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
 import { parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
+import { APP_VERSION } from '@/utils/version';
+import {
+  SIDECAR_HANDSHAKE_METHOD,
+  SIDECAR_PROTOCOL_VERSION,
+  SidecarHandshakeError,
+  parseSidecarHandshakeResult,
+} from './sidecarProtocol';
 
 const logger = createLogger('sidecar');
 
@@ -157,6 +180,16 @@ const HEARTBEAT_FAILURE_THRESHOLD = 3;
 // handleClose().
 const HEARTBEAT_JANK_MARGIN_MS = 5_000;
 const REQUEST_DEFAULT_TIMEOUT_MS = 5_000;
+/**
+ * How long the post-spawn handshake may take. Bounded from below by what a
+ * slow start legitimately costs — the Node process start plus the evaluation
+ * of the sidecar bundle on a cold disk, for which the main-process liveness
+ * monitor already tolerates about 35 s of silence
+ * (`electron/mcpBridge.cjs`, 3 × 10 s interval + a 5 s ping timeout) — and
+ * from above by the 60 s a send waits for the venue
+ * (`sidecarReadiness.ts`), which one full budget has to fit inside.
+ */
+const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CRASH_LOOP_WINDOW_MS = 60_000;
 const CRASH_LOOP_MAX_RESTARTS = 3;
 /** Small fixed delay before a respawn attempt, to avoid a tight spawn loop. */
@@ -256,6 +289,28 @@ let lastSidecarGeneration = 0;
 let sidecarEventChain: Promise<void> = Promise.resolve();
 let lastConnectionEvent: SidecarConnectionEvent | null = null;
 
+/** Capabilities the running sidecar announced in its handshake; empty whenever it is not `running`. */
+let sidecarCapabilities: ReadonlySet<string> = new Set();
+
+/**
+ * Bumped by every observed process close. `attemptSpawn` reads it on both
+ * sides of the handshake: a close can be dispatched in the same synchronous
+ * batch as the answer it rides behind (the replay loop in
+ * `deliverDedicatedEvent`), and `handleClose` treats a close during
+ * `starting` / `restarting` as the echo of our own kill, so without this the
+ * answer's continuation would report `running` for a process that is gone.
+ */
+let closeEpoch = 0;
+
+/**
+ * Spawn attempts in a row whose handshake failed. The crash-loop window below
+ * counts by wall clock, and a handshake that runs its full budget spaces its
+ * failures further apart than that window is wide, so a sidecar that starts
+ * but never answers would restart for ever on the window alone. Reset by a
+ * handshake that succeeds, by `startSidecar()` and by a deliberate stop.
+ */
+let consecutiveHandshakeFailures = 0;
+
 /** method -> handlers, for sidecar→shell notifications (llm.event, llm.chatMeta, ...). See onSidecarNotification(). */
 const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
 
@@ -304,6 +359,11 @@ function stopEnterpriseEntitlementSync(): void {
 /** Current supervisor state. Exported for future use/tests. */
 export function getSidecarStatus(): SidecarStatus {
   return status;
+}
+
+/** True while the sidecar is `running` and its handshake listed `capability`. */
+export function sidecarHasCapability(capability: string): boolean {
+  return status === 'running' && sidecarCapabilities.has(capability);
 }
 
 /**
@@ -379,6 +439,7 @@ export async function startSidecar(): Promise<void> {
   deliberatelyStopped = false;
   crashLoopWarned = false;
   restartTimestamps = [];
+  consecutiveHandshakeFailures = 0;
 
   const attempt = attemptSpawn('initial');
   startPromise = attempt.finally(() => {
@@ -399,6 +460,8 @@ export async function stopSidecar(): Promise<void> {
   rejectAllPending(new Error('Sidecar stopped'));
   restartTimestamps = [];
   crashLoopWarned = false;
+  consecutiveHandshakeFailures = 0;
+  sidecarCapabilities = new Set();
   setStatus('stopped');
 
   for (const unlisten of unlisteners) {
@@ -718,6 +781,9 @@ export function __resetForTests(): void {
   lastSidecarGeneration = 0;
   sidecarEventChain = Promise.resolve();
   lastConnectionEvent = null;
+  sidecarCapabilities = new Set();
+  closeEpoch = 0;
+  consecutiveHandshakeFailures = 0;
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
@@ -869,6 +935,7 @@ async function ensureListeners(): Promise<void> {
 
 async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
   setStatus(kind === 'initial' ? 'starting' : 'restarting');
+  sidecarCapabilities = new Set();
 
   // Listeners must be live before we spawn, so we never miss an early
   // stdout line or an immediate crash.
@@ -938,6 +1005,46 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     return;
   }
 
+  // The process exists; whether it is a sidecar this shell can talk to is only
+  // known once it answers the handshake. Until then the status stays
+  // `starting` / `restarting`, so a send keeps waiting (sidecarReadiness.ts).
+  const handshakeStartedAt = Date.now();
+  const closeEpochBeforeHandshake = closeEpoch;
+  try {
+    const answer = parseSidecarHandshakeResult(await request(
+      SIDECAR_HANDSHAKE_METHOD,
+      { protocolVersion: SIDECAR_PROTOCOL_VERSION, shellVersion: APP_VERSION },
+      HANDSHAKE_TIMEOUT_MS,
+    ));
+    if (closeEpoch !== closeEpochBeforeHandshake) {
+      // The process died with its answer already on the way, so the answer is
+      // about a process that no longer exists. Typed conversion: an answer
+      // that arrived too late is reported as the handshake failure it is.
+      throw new Error('Sidecar closed while its handshake was in flight');
+    }
+    sidecarCapabilities = new Set(answer.capabilities);
+    consecutiveHandshakeFailures = 0;
+  } catch (err) {
+    consecutiveHandshakeFailures += 1;
+    // Same ending as a failed spawn: no half-started process is left behind,
+    // and the restart policy decides what happens next. Under Electron the
+    // kill emits no close event of its own (`electron/mcpBridge.cjs`, a child
+    // killed through `mcp_kill` is no longer the registered one); on the Tauri
+    // listener path its echo arrives while the status is `starting` /
+    // `restarting`, which `handleClose` reads as our own kill. Either way the
+    // failure is counted here, once.
+    await invoke('mcp_kill', { id: SIDECAR_ID }).catch(() => {});
+    handleSpawnFailure(err, handshakeFailureReason(err));
+    return;
+  }
+  // Diagnostics never decide whether this start completes (see `traceSafely`).
+  traceSafely(() => traceRuntimeEvent('renderer.sidecar_handshake_completed', {
+    sidecarId: SIDECAR_ID,
+    stage: 'running',
+    outcome: 'success',
+    durationMs: Date.now() - handshakeStartedAt,
+  }));
+
   setStatus('running');
   publishConnectionState({ state: 'connected', reason: 'ready' });
   // Seed after every spawn/restart, then stream heartbeat/store changes.
@@ -949,6 +1056,14 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     startHeartbeat();
   }
   void selfTestEcho();
+}
+
+function handshakeFailureReason(err: unknown): string {
+  if (err instanceof SidecarRpcError && err.code === -32601) return 'handshake-unsupported';
+  if (err instanceof SidecarHandshakeError) {
+    return err.code === 'protocol_incompatible' ? 'handshake-incompatible' : 'handshake-malformed';
+  }
+  return 'handshake-failed';
 }
 
 function handleSpawnFailure(err: unknown, reason: string): void {
@@ -974,33 +1089,32 @@ function scheduleRestartOrGiveUp(reason: string): void {
   restartTimestamps.push(now);
   restartTimestamps = restartTimestamps.filter((t) => now - t <= CRASH_LOOP_WINDOW_MS);
 
-  if (restartTimestamps.length > CRASH_LOOP_MAX_RESTARTS) {
+  // Two ways to give up. The rolling window catches a process that dies often
+  // and fast. Handshake failures are counted consecutively instead, because a
+  // handshake that runs its full budget puts more than the window's width
+  // between one failure and the next.
+  const windowExhausted = restartTimestamps.length > CRASH_LOOP_MAX_RESTARTS;
+  if (windowExhausted || consecutiveHandshakeFailures > CRASH_LOOP_MAX_RESTARTS) {
+    const attemptCount = windowExhausted ? restartTimestamps.length : consecutiveHandshakeFailures;
+    const summary = windowExhausted
+      ? `Sidecar crash-looped: ${attemptCount} restarts within ${CRASH_LOOP_WINDOW_MS}ms`
+      : `Sidecar crash-looped: ${attemptCount} starts in a row whose handshake failed`;
     setStatus('failed');
     publishConnectionState({ state: 'failed', reason: 'crash-loop' });
     if (!crashLoopWarned) {
       crashLoopWarned = true;
-      logger.warn('Sidecar crash-looped — giving up', {
-        reason,
-        restartsInWindow: restartTimestamps.length,
-        windowMs: CRASH_LOOP_WINDOW_MS,
-      });
+      logger.warn('Sidecar crash-looped — giving up', { reason, summary });
       traceRuntimeEvent('renderer.sidecar_crash_loop', {
         sidecarId: SIDECAR_ID,
         reason,
-        attemptCount: restartTimestamps.length,
+        attemptCount,
         outcome: 'error',
         errorType: 'sidecar_crash_loop',
       });
       // Repeated respawns already failed, so the agent runtime is gone for the
       // rest of this session — the one sidecar signal worth a remote report.
       // reportError() no-ops when the user opted out of telemetry.
-      reportError(
-        'sidecar_crash',
-        reason,
-        undefined,
-        undefined,
-        `Sidecar crash-looped: ${restartTimestamps.length} restarts within ${CRASH_LOOP_WINDOW_MS}ms`,
-      );
+      reportError('sidecar_crash', reason, undefined, undefined, summary);
     }
     return;
   }
@@ -1294,6 +1408,8 @@ async function writeRpcMessage(
 }
 
 function handleClose(): void {
+  closeEpoch += 1;
+  sidecarCapabilities = new Set();
   stopHeartbeat();
   rejectAllPending(new Error('Sidecar process closed'));
 

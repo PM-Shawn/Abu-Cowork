@@ -247,6 +247,9 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/customize/AgentEditor*.{ts,tsx}',
   // The whole toolbox directory has migrated: files added to it later are checked from their first commit.
   'src/components/toolbox/**/*.{ts,tsx}',
+  // The automation page (batch 7b), directory by directory.
+  'src/components/automation/**/*.{ts,tsx}',
+  'src/components/schedule/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

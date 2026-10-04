@@ -281,4 +281,22 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/toolbox/useTrialLauncher.ts')).not.toEqual([]);
   });
+
+  it('checks every file of the automation frame and the scheduled tasks page, tests included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/automation/AutomationView.tsx',
+      'src/components/automation/AutomationView.test.tsx',
+      'src/components/schedule/ScheduleView.tsx',
+      'src/components/schedule/ScheduleTaskCard.tsx',
+      'src/components/schedule/ScheduleTaskDetail.test.tsx',
+      'src/components/schedule/ScheduleRunHistory.tsx',
+      'src/components/schedule/ScheduleEditor.tsx',
+      // The directory entries: a file added to either directory later is checked as well.
+      'src/components/automation/NewFileOfTheDirectory.tsx',
+      'src/components/schedule/NewFileOfTheDirectory.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+  });
 });

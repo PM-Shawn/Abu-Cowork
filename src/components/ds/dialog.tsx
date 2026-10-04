@@ -259,7 +259,8 @@ export function Dialog({
                   <DialogPrimitive.Title className={cn('text-title text-label', closeButton && 'pr-8')}>{title}</DialogPrimitive.Title>
                 )}
                 {description && (
-                  <DialogPrimitive.Description className="mt-1 text-ui text-label-secondary">{description}</DialogPrimitive.Description>
+                  // A line break in the words is kept: a question names what it acts on on a line of its own.
+                  <DialogPrimitive.Description className="mt-1 whitespace-pre-line text-ui text-label-secondary">{description}</DialogPrimitive.Description>
                 )}
                 {/* With a hidden title the header is the top row: it stops short of the close button's corner. */}
                 {header && <div className={cn('shrink-0', !titleHidden && 'mt-4', titleHidden && closeButton && 'pr-8')}>{header}</div>}

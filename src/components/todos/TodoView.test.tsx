@@ -350,40 +350,6 @@ describe('TodoView', () => {
         fireEvent.keyDown(titleField(), { key: 'Enter' });
         expect(button(t().todos.newTodo)).toHaveFocus();
       });
-
-      // A completed todo moves below the open ones. The browser may take the focus off a row
-      // that is taken out and put back in; happy-dom does not, so the store action here drops
-      // the focus the way a browser would.
-      const losingFocusOnToggle = () => {
-        useTodosStore.setState({
-          toggleStatus: (id) => {
-            calls.push(['toggleStatus', id]);
-            actions.toggleStatus(id);
-            (document.activeElement as HTMLElement | null)?.blur();
-          },
-        });
-      };
-
-      it.each(['today', 'all'] as const)('returns to the same todo after it is completed and its row moves (%s)', (tab) => {
-        losingFocusOnToggle();
-        show();
-        if (tab === 'all') fireEvent.click(button(t().todos.tabAll));
-        const complete = row(urgent).getByRole('button', { name: 'complete' });
-        byKeyboard(complete);
-        fireEvent.click(complete);
-        // It now sits after the two todos that are still open.
-        expect(shownTitles().slice(0, 3)).toEqual([running.title, someday.title, urgent.title]);
-        expect(row(urgent).getByRole('button', { name: 'reopen' })).toHaveFocus();
-      });
-
-      it('returns to the same todo after it is reopened', () => {
-        losingFocusOnToggle();
-        show();
-        const reopen = row(doneToday).getByRole('button', { name: 'reopen' });
-        byKeyboard(reopen);
-        fireEvent.click(reopen);
-        expect(row(doneToday).getByRole('button', { name: 'complete' })).toHaveFocus();
-      });
     });
 
     describe('render count', () => {

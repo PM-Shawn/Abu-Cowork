@@ -337,4 +337,14 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
       expect(await messages(code, file), file).not.toEqual([]);
     }
   });
+
+  it('checks the automation, inbox and app page files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/trigger/TriggerEditor.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/schedule/ScheduleEditor.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/inbox/InboxView.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/app/AppPageView.tsx')).not.toEqual([]);
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/todos/useRowFocus.ts')).not.toEqual([]);
+  });
 });

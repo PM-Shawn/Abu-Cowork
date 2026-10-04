@@ -1152,11 +1152,13 @@ describe('AddProviderModal — behaviour pins', () => {
   function open(editProvider?: ProviderInstance) {
     const onClose = vi.fn();
     const view = render(<AddProviderModal open={true} editProvider={editProvider} onClose={onClose} />, { wrapper: DesignSystemProvider });
+    const close = () => view.rerender(<AddProviderModal open={false} onClose={onClose} />);
+    const show = () => view.rerender(<AddProviderModal open={true} onClose={onClose} />);
     const reopen = () => {
-      view.rerender(<AddProviderModal open={false} onClose={onClose} />);
-      view.rerender(<AddProviderModal open={true} onClose={onClose} />);
+      close();
+      show();
     };
-    return { onClose, reopen };
+    return { onClose, reopen, close, show };
   }
 
   beforeEach(() => {
@@ -2174,6 +2176,25 @@ describe('AddProviderModal — behaviour pins', () => {
         await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
 
         expect(screen.queryByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeNull();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+      });
+
+      it('writes nothing when the answer arrives after the window has closed and stays closed', async () => {
+        const answers = holdChecks();
+        const { close, show } = fillDeepSeek();
+        ui.validate();
+        close();
+        await act(async () => { await Promise.resolve(); });
+        const drawn = windowRenders.dialogs.length;
+
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+        // The closed window holds no new state, so it is not drawn again.
+        expect(windowRenders.dialogs).toHaveLength(drawn);
+
+        show();
+        await fillAgain();
+        expect(screen.queryByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeNull();
+        expect(screen.queryByText(t().settings.validating)).toBeNull();
         expect(validateButton()).not.toHaveAttribute('aria-disabled');
       });
 

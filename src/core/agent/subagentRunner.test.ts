@@ -69,6 +69,7 @@ vi.mock('../observability/runtimeTrace', async (importOriginal) => {
 });
 
 const runSubagentLoopMock = vi.fn();
+const modelPreflightMock = vi.fn();
 vi.mock('./subagentLoop', () => {
   class SubagentResult {
     readonly text: string;
@@ -138,6 +139,10 @@ vi.mock('./subagentLoop', () => {
 
   return {
     runSubagentLoop: (...a: unknown[]) => runSubagentLoopMock(...a),
+    buildSubagentModelUnavailableFailure: (...a: unknown[]) => {
+      const text = modelPreflightMock(...a) as string | null;
+      return text === null ? null : failure(text);
+    },
     SubagentResult,
     resolveSubagentInteractionMode: (options: Record<string, unknown>) => [
       'authorizationScopeId',
@@ -344,6 +349,8 @@ describe('subagentRunner', () => {
     onSidecarNotification.mockReset();
     runSubagentLoopMock.mockReset();
     runSubagentLoopMock.mockResolvedValue({ text: 'in-process result', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+    modelPreflightMock.mockReset();
+    modelPreflightMock.mockReturnValue(null);
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     checkToolApprovalMock.mockReset();
@@ -441,6 +448,7 @@ describe('subagentRunner', () => {
         'filePermissionCallback',
         'onProgress',
         'settingsReader',
+        'liveSettingsReader',
         'toolInvoker',
         'capsPort',
         'workspaceReader',
@@ -586,6 +594,41 @@ describe('subagentRunner', () => {
   });
 
   describe('routing', () => {
+    it.each(['stopped', 'running'])('fails before %s runtime dispatch when the run model is no longer usable', async (sidecarStatus) => {
+      getSidecarStatus.mockReturnValue(sidecarStatus);
+      modelPreflightMock.mockReturnValue('model unavailable');
+      const runSnapshot = { agentMaxTurns: 200, activeModel: { providerId: 'p-conv', modelId: 'conv-model' } };
+      const liveSnapshot = { agentMaxTurns: 200, activeModel: { providerId: 'p-global', modelId: 'global-model' } };
+      getSettingsSnapshotMock.mockReturnValue(liveSnapshot);
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent,
+        task: 'do the thing',
+        settingsReader: { getSnapshot: () => runSnapshot as never },
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toBe('model unavailable');
+      expect(modelPreflightMock).toHaveBeenCalledWith(agent, runSnapshot, liveSnapshot);
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(onSidecarRequest).not.toHaveBeenCalled();
+    });
+
+    it('checks the live settings as the run settings when the caller passes no reader', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const liveSnapshot = { agentMaxTurns: 200, activeModel: { providerId: 'p-global', modelId: 'global-model' } };
+      getSettingsSnapshotMock.mockReturnValue(liveSnapshot);
+      sidecarRequestMock.mockResolvedValue({ text: 'ok', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'do the thing' });
+
+      expect(modelPreflightMock).toHaveBeenCalledWith(agent, liveSnapshot, liveSnapshot);
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+    });
+
     it.each(['stopped', 'running'])('fails before %s runtime dispatch when a required MCP tool is unavailable', async (sidecarStatus) => {
       getSidecarStatus.mockReturnValue(sidecarStatus);
       getAllToolsMock.mockReturnValue([

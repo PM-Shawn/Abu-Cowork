@@ -84,6 +84,7 @@ import {
 } from '../sidecar/sidecarManager';
 import {
   buildSubagentMcpPreflightFailure,
+  buildSubagentModelUnavailableFailure,
   runSubagentLoop,
   resolveSubagentInteractionMode,
   SubagentResult,
@@ -284,6 +285,7 @@ export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
   'filePermissionCallback',
   'onProgress',
   'settingsReader',
+  'liveSettingsReader',
   'toolInvoker',
   'capsPort',
   'workspaceReader',
@@ -920,6 +922,16 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   const availableTools = (options.toolInvoker ?? getToolInvoker()).getAllTools();
   const mcpPreflightFailure = buildSubagentMcpPreflightFailure(options.agent, availableTools);
   if (mcpPreflightFailure) return mcpPreflightFailure;
+
+  // Same placement for the model: the shell store is the freshest view of the
+  // user's providers, so a model made unusable mid-run never reaches either
+  // runtime (the loop repeats the check for the in-sidecar nested path).
+  const modelFailure = buildSubagentModelUnavailableFailure(
+    options.agent,
+    (options.settingsReader ?? getSettingsReader()).getSnapshot(),
+    getSettingsReader().getSnapshot(),
+  );
+  if (modelFailure) return modelFailure;
 
   // Resolve `agent.skills` HERE, before either runtime is chosen: this is the
   // shell, the only place the skill loader's index is populated (the sidecar

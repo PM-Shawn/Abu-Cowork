@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   appendTurnText,
+  buildSubagentModelUnavailableFailure,
   buildSubagentStartEvent,
   buildSubagentEndEvent,
   findMissingSubagentMcpRequirements,
@@ -10,6 +11,104 @@ import {
 } from './subagentLoop';
 import { registerHook, clearAllHooks, getHookCount } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent } from './lifecycleHooks';
+import type { SettingsState } from '../../stores/settingsStore';
+import type { ProviderInstance } from '../../types/provider';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
+
+const loggerWarn = vi.hoisted(() => vi.fn());
+vi.mock('../logging/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../logging/logger')>();
+  return {
+    ...actual,
+    createLogger: (name: string) => ({ ...actual.createLogger(name), warn: loggerWarn }),
+  };
+});
+
+vi.mock('../enterprise/llm-resolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../enterprise/llm-resolver')>();
+  return { ...actual, resolveEffectiveLlmCreds: vi.fn(actual.resolveEffectiveLlmCreds) };
+});
+
+describe('buildSubagentModelUnavailableFailure', () => {
+  const agent = { name: 'researcher' };
+
+  function makeProvider(patch: Partial<ProviderInstance> = {}): ProviderInstance {
+    return {
+      id: 'acme',
+      source: 'custom',
+      name: 'Acme',
+      enabled: true,
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://acme.example/v1',
+      apiKey: 'acme-key',
+      models: [
+        { id: 'acme-model', label: 'Acme Model Label' },
+        { id: 'acme-alt', label: '' },
+      ],
+      status: 'unchecked',
+      sortOrder: 0,
+      userAdded: true,
+      ...patch,
+    };
+  }
+
+  function makeSettings(
+    providers: ProviderInstance[],
+    activeModel = { providerId: 'acme', modelId: 'acme-model' },
+  ): SettingsState {
+    return { providers, activeModel } as unknown as SettingsState;
+  }
+
+  afterEach(() => {
+    loggerWarn.mockClear();
+    vi.mocked(resolveEffectiveLlmCreds).mockClear();
+  });
+
+  it('returns null while the run model is still usable in the live settings', () => {
+    const settings = makeSettings([makeProvider()]);
+    expect(buildSubagentModelUnavailableFailure(agent, settings, settings)).toBeNull();
+  });
+
+  it.each([
+    ['provider removed', [] as ProviderInstance[]],
+    ['provider turned off', [makeProvider({ enabled: false })]],
+    ['model no longer listed', [makeProvider({ models: [{ id: 'other', label: 'Other' }] })]],
+  ])('refuses when the live settings no longer allow the run model: %s', (_label, liveProviders) => {
+    const runSettings = makeSettings([makeProvider()]);
+    const result = buildSubagentModelUnavailableFailure(agent, runSettings, makeSettings(liveProviders));
+    expect(result?.stopReason).toBe('error');
+    expect(result?.toolCallCount).toBe(0);
+    expect(result?.turnCount).toBe(0);
+    expect(result?.text).toContain('Acme Model Label');
+    expect(loggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('model unavailable'),
+      expect.objectContaining({ agent: 'researcher', providerId: 'acme', modelId: 'acme-model' }),
+    );
+  });
+
+  it('checks the agent-specific model the run resolves to', () => {
+    const runSettings = makeSettings([makeProvider()]);
+    const live = makeSettings([makeProvider({ models: [{ id: 'acme-model', label: 'Acme Model Label' }] })]);
+    expect(buildSubagentModelUnavailableFailure({ ...agent, model: 'acme-alt' }, runSettings, live)?.text)
+      .toContain('acme-alt');
+    expect(buildSubagentModelUnavailableFailure({ ...agent, model: 'inherit' }, runSettings, live)).toBeNull();
+  });
+
+  it('does not check an enterprise-gateway pin against personal providers', () => {
+    const runSettings = makeSettings([], { providerId: 'enterprise-gateway', modelId: 'gw-model' });
+    expect(buildSubagentModelUnavailableFailure(agent, runSettings, runSettings)).toBeNull();
+  });
+
+  it('does not check personal providers when the enterprise gateway supplies credentials', () => {
+    vi.mocked(resolveEffectiveLlmCreds).mockReturnValueOnce({
+      apiKey: 'gateway-key',
+      baseUrl: 'https://gateway.example/v1',
+      forceOpenAiCompatible: true,
+    });
+    const runSettings = makeSettings([makeProvider()]);
+    expect(buildSubagentModelUnavailableFailure(agent, runSettings, makeSettings([]))).toBeNull();
+  });
+});
 
 describe('resolveSubagentInteractionMode', () => {
   it('retains trigger and scheduled provenance across delegation', () => {

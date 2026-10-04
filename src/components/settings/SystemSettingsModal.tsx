@@ -15,6 +15,7 @@ import UsageSection from './sections/UsageSection';
 import EnterpriseSection from './sections/EnterpriseSection';
 import LabsSection from './sections/LabsSection';
 import PetSection from './sections/PetSection';
+import VoiceInputSection from './sections/VoiceInputSection';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_PET } from '@/core/labs/registry';
@@ -47,6 +48,7 @@ export default function SystemSettingsView() {
       { id: 'account', label: t.account.title, icon: AppIcons.account },
       { id: 'general', label: t.settings.general, icon: AppIcons.preferences },
       { id: 'capabilities', label: t.settings.capabilityOverview, icon: AppIcons.capabilities },
+      { id: 'voice-input', label: t.voiceInput.title, icon: AppIcons.microphone },
       { id: 'sandbox', label: t.settings.sandbox, icon: AppIcons.security },
       { id: 'labs', label: t.settings.labs, icon: AppIcons.labs },
     ],
@@ -90,6 +92,8 @@ export default function SystemSettingsView() {
         return <CapabilitiesSection />;
       case 'labs':
         return <LabsSection />;
+      case 'voice-input':
+        return <VoiceInputSection />;
       case 'ai-services':
         return <AIServicesSection />;
       case 'sandbox':

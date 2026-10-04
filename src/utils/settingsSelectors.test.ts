@@ -5,8 +5,12 @@ import {
   getModelDisplayLabel,
   getModelUnavailableReason,
   hasAnyEnabledProvider,
+  providerHasCredentials,
+  providerNeedsApiKey,
+  providerRequiresApiKey,
   resolveAgentModel,
 } from './settingsSelectors';
+import type { ProviderInstance } from '@/types/provider';
 
 function makeSettings({
   activeProviderId = 'deepseek',
@@ -194,5 +198,60 @@ describe('getModelDisplayLabel', () => {
   });
   it('falls back to the raw model id when the provider is gone', () => {
     expect(getModelDisplayLabel(makeSettings(), { providerId: 'gone', modelId: 'model-a' })).toBe('model-a');
+  });
+});
+
+describe('providerNeedsApiKey', () => {
+  type KeyFields = Pick<ProviderInstance, 'id' | 'source' | 'apiFormat' | 'baseUrl'>;
+  const custom = (baseUrl: string, apiFormat: ProviderInstance['apiFormat'] = 'openai-compatible'): KeyFields =>
+    ({ id: 'my-endpoint', source: 'custom', apiFormat, baseUrl });
+
+  it.each<[string, KeyFields]>([
+    ['Ollama', { id: 'ollama', source: 'builtin', apiFormat: 'openai-compatible', baseUrl: 'http://127.0.0.1:11434' }],
+    ['Ollama on another machine', { id: 'ollama', source: 'builtin', apiFormat: 'openai-compatible', baseUrl: 'http://10.0.0.5:11434' }],
+    ['LM Studio', { id: 'lmstudio', source: 'builtin', apiFormat: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1' }],
+    ['a custom endpoint at localhost', custom('http://localhost:8000/v1')],
+    ['a custom endpoint at 127.0.0.1', custom('http://127.0.0.1:8000/v1')],
+    ['a custom endpoint elsewhere in 127.0.0.0/8', custom('http://127.1.2.3:8000/v1')],
+    ['a custom endpoint at [::1]', custom('http://[::1]:8000/v1')],
+    ['a custom endpoint at localhost written without a scheme', custom('localhost:8000')],
+  ])('is false for %s', (_name, provider) => {
+    expect(providerNeedsApiKey(provider)).toBe(false);
+  });
+
+  it.each<[string, KeyFields]>([
+    ['a built-in cloud provider', { id: 'deepseek', source: 'builtin', apiFormat: 'openai-compatible', baseUrl: 'https://api.deepseek.com' }],
+    ['a built-in provider pointed at localhost', { id: 'openai', source: 'builtin', apiFormat: 'openai-compatible', baseUrl: 'http://localhost:8000/v1' }],
+    ['a managed provider', { id: 'org-models', source: 'managed', apiFormat: 'openai-compatible', baseUrl: 'http://127.0.0.1:4000' }],
+    ['a custom endpoint on a remote host', custom('https://llm.example.com/v1')],
+    ['a custom endpoint on the LAN', custom('http://192.168.1.20:8000/v1')],
+    ['a host that only starts with localhost', custom('http://localhost.example.com/v1')],
+    ['a custom Anthropic-format endpoint at localhost', custom('http://127.0.0.1:8080', 'anthropic')],
+    ['a custom endpoint with an empty address', custom('')],
+  ])('is true for %s', (_name, provider) => {
+    expect(providerNeedsApiKey(provider)).toBe(true);
+  });
+});
+
+describe('providerHasCredentials', () => {
+  it('accepts a keyless provider that needs no key and rejects a keyless one that does', () => {
+    const local = { id: 'ollama', source: 'builtin', apiFormat: 'openai-compatible', baseUrl: 'http://127.0.0.1:11434', apiKey: '' } as const;
+    const cloud = { id: 'deepseek', source: 'builtin', apiFormat: 'openai-compatible', baseUrl: 'https://api.deepseek.com', apiKey: '  ' } as const;
+    expect(providerHasCredentials(local)).toBe(true);
+    expect(providerHasCredentials(cloud)).toBe(false);
+    expect(providerHasCredentials({ ...cloud, apiKey: 'sk-1' })).toBe(true);
+  });
+});
+
+describe('providerRequiresApiKey', () => {
+  it('follows the active provider', () => {
+    const settings = makeSettings();
+    settings.providers[1] = { ...settings.providers[1], baseUrl: 'http://127.0.0.1:8000/v1' };
+    expect(providerRequiresApiKey(settings)).toBe(true);
+    expect(providerRequiresApiKey({ ...settings, activeModel: { providerId: 'zmodel', modelId: 'glm-5.2' } })).toBe(false);
+  });
+
+  it('requires a key when the active provider is gone', () => {
+    expect(providerRequiresApiKey(makeSettings({ activeProviderId: 'gone' }))).toBe(true);
   });
 });

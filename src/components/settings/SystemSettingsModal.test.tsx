@@ -53,7 +53,7 @@ describe('SystemSettingsView navigation', () => {
     const t = getI18n();
     renderView();
     expect(groups()).toEqual([
-      [t.account.title, t.settings.general, t.settings.capabilityOverview, t.settings.sandbox, t.settings.labs],
+      [t.account.title, t.settings.general, t.settings.capabilityOverview, t.voiceInput.title, t.settings.sandbox, t.settings.labs],
       [t.settings.aiServices, t.usage.title],
       [t.sidebar.personalMemory, t.soul.title],
       [t.imChannel.title],
@@ -74,6 +74,7 @@ describe('SystemSettingsView navigation', () => {
       [t.account.title]: 'lucide-user-round',
       [t.settings.general]: 'lucide-sliders-horizontal',
       [t.settings.capabilityOverview]: 'lucide-zap',
+      [t.voiceInput.title]: 'lucide-mic',
       [t.settings.sandbox]: 'lucide-shield',
       [t.settings.labs]: 'lucide-flask-conical',
       [t.settings.aiServices]: 'lucide-settings-2',

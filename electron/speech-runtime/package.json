@@ -1,0 +1,9 @@
+{
+  "name": "abu-speech-runtime",
+  "private": true,
+  "description": "Native runtime for local voice input (sherpa-onnx + ONNX Runtime). Installed per platform by scripts/setup-speech-runtime.mjs and shipped as an extraResource; never bundled into asar.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "sherpa-onnx-node": "1.13.8"
+  }
+}

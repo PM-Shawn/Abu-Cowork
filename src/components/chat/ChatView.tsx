@@ -10,6 +10,7 @@ import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -985,11 +986,9 @@ export default function ChatView({
 
 
   // First-run banner: show when no provider has been configured yet.
-  // "Configured" = has an API key OR is a keyless provider (ollama/lmstudio).
+  // "Configured" = has an API key OR needs none (providerNeedsApiKey).
   const needsPersonalModelSetup = useSettingsStore((s) => {
-    return !s.providers.some(
-      p => p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio'
-    );
+    return !s.providers.some(providerHasCredentials);
   });
   const needsSetup = !isEnterprise && needsPersonalModelSetup;
 

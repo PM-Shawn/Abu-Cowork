@@ -4,6 +4,7 @@ import { getTauriFetch } from './tauriFetch';
 import { normalizeBaseUrl, resolveOpenAIBaseUrl } from './urlUtils';
 import { deriveUiCaps } from './modelCapabilities';
 import { positiveInteger } from './contextWindow';
+import { safeFailureText } from './healthCheck';
 
 /**
  * Why a fetch failed, in terms the UI can translate. Kept as a code rather
@@ -23,7 +24,7 @@ export type FetchModelsErrorCode =
 export interface FetchModelsResult {
   success: boolean;
   models: ModelInfo[];
-  /** Diagnostic detail (status line or raw error). Not user-facing prose. */
+  /** Diagnostic detail (status line or redacted error text). Not user-facing prose. */
   error?: string;
   errorCode?: FetchModelsErrorCode;
   status?: number;
@@ -167,7 +168,10 @@ export async function fetchProviderModels(
     const fetchFn = await getTauriFetch();
     return await fetcher.fetch(ctx, fetchFn);
   } catch (e) {
-    const raw = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    return { success: false, models: [], error: raw, errorCode: 'transport' };
+    // JSON 解析异常的 message 会引用一段响应正文，这里换成固定文字
+    const raw = e instanceof SyntaxError
+      ? 'SyntaxError: response is not valid JSON'
+      : e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    return { success: false, models: [], error: safeFailureText(raw, { apiKey, baseUrl }), errorCode: 'transport' };
   }
 }

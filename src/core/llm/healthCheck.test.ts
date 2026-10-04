@@ -175,6 +175,31 @@ describe('checkProviderHealth', () => {
       );
     });
 
+    it('removes the account and password from an echoed URL', async () => {
+      mocks.chat.mockRejectedValue(
+        new LLMError(
+          `Request cannot be constructed from a URL that includes credentials: https://user:${FAKE_UPSTREAM_TOKEN}@llm.example.test/v1/chat/completions`,
+          'network_error',
+        ),
+      );
+
+      const result = await checkProviderHealth(provider());
+
+      expect(result.error).toBe(
+        'Request cannot be constructed from a URL that includes credentials: https://[REDACTED]@llm.example.test/v1/chat/completions',
+      );
+    });
+
+    it('keeps a URL without an account intact', async () => {
+      mocks.chat.mockRejectedValue(
+        new LLMError('no route to https://llm.example.test:8443/v1/chat/completions, contact ops@example.test', 'network_error'),
+      );
+
+      const result = await checkProviderHealth(provider());
+
+      expect(result.error).toBe('no route to https://llm.example.test:8443/v1/chat/completions, contact ops@example.test');
+    });
+
     it('caps the text at 500 characters', async () => {
       mocks.chat.mockRejectedValue(classifyError(500, 'x'.repeat(5000)));
 

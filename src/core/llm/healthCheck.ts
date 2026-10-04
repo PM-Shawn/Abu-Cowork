@@ -20,11 +20,15 @@ const FAILURE_TEXT_MAX_CHARS = 500;
 
 /**
  * 失败文字来自服务端响应正文或网络异常，可能带有请求里的 key、Authorization
- * 请求头或带 key 的 URL。这段文字会写入 settingsStore、显示在界面上并进入
+ * 请求头或带凭证的 URL。这段文字会写入 settingsStore、显示在界面上并进入
  * 诊断包，所以在这里统一脱敏并限制长度。
  */
-function safeFailureText(raw: string, provider: ProviderInstance): string {
-  return redactFailureText(raw, [provider.apiKey]).slice(0, FAILURE_TEXT_MAX_CHARS);
+export function safeFailureText(raw: string, provider: Pick<ProviderInstance, 'apiKey' | 'baseUrl'>): string {
+  // 地址带账号密码时，fetch 的异常会原样引用这个地址；密码里可以有 / ? # @ 和空格，
+  // 没有固定形状，所以按填写的原文整段替换
+  const baseUrl = provider.baseUrl.trim().replace(/\/+$/, '');
+  const exactSecrets = baseUrl.includes('@') ? [provider.apiKey, baseUrl] : [provider.apiKey];
+  return redactFailureText(raw, exactSecrets).slice(0, FAILURE_TEXT_MAX_CHARS);
 }
 
 /** Perform a basic connection test against a provider */

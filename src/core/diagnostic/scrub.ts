@@ -284,6 +284,8 @@ const MIN_EXACT_SECRET_LENGTH = 8;
 // 参数名两侧的长度有上限，匹配耗时与文字长度成线性关系
 const SECRET_QUERY_PARAM_PATTERN =
   /([?&](?:[\w.-]{0,40}(?:key|token|secret|signature|password|auth)[\w.-]{0,40}|sig)=)[^&#\s"'<>)]+/gi;
+/** URL 里 `scheme://` 与 `@` 之间的账号和密码；两段长度都有上限 */
+const URL_USERINFO_PATTERN = /(\b[a-z][a-z0-9+.-]{0,20}:\/\/)[^\s/?#@"'<>]{1,400}@/gi;
 /** 带 u 标志时只匹配不成对的 surrogate；encodeURIComponent 遇到它会抛出 URIError */
 const LONE_SURROGATE_PATTERN = /[\uD800-\uDFFF]/u;
 
@@ -310,6 +312,7 @@ export function redactFailureText(raw: string, exactSecrets: readonly string[] =
     if (secret.length < MIN_EXACT_SECRET_LENGTH) continue;
     for (const form of secretForms(secret)) text = text.split(form).join(REDACTED);
   }
+  text = text.replace(URL_USERINFO_PATTERN, `$1${REDACTED}@`);
   text = text.replace(SECRET_QUERY_PARAM_PATTERN, `$1${REDACTED}`);
   return redactStringValue(text);
 }

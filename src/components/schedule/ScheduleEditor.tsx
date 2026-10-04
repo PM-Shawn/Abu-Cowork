@@ -86,7 +86,10 @@ const HINT = 'mt-1 text-caption text-label-tertiary';
  * removed, so it fades out showing what it showed; a save pressed in the fading window does
  * nothing. It asks before it discards what was typed.
  */
-export default function ScheduleEditor() {
+export default function ScheduleEditor({ onCloseAutoFocus }: {
+  // Runs once the window has gone, before the focus returns to what opened it (ds `Dialog`).
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
   const { t } = useI18n();
   const id = useId();
   const { showEditor, editingTaskId, closeEditor, createTask, updateTask, tasks } =
@@ -254,6 +257,7 @@ export default function ScheduleEditor() {
       size="lg"
       closeButton
       dirty={dirty}
+      onCloseAutoFocus={onCloseAutoFocus}
       footer={(
         <>
           <DialogClose asChild><Button variant="plain">{t.common.cancel}</Button></DialogClose>

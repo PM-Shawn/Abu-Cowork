@@ -31,7 +31,10 @@ function getFrequencyLabel(
 const SECTION = 'rounded-panel border border-separator p-4';
 const SECTION_TITLE = 'text-ui-sm text-label-tertiary';
 
-export default function ScheduleTaskDetail() {
+export default function ScheduleTaskDetail({ onQuestionClosed }: {
+  // Called once the delete question has gone, whatever the answer: the page may have left under it.
+  onQuestionClosed?: () => void;
+}) {
   const { t } = useI18n();
   const confirm = useConfirm();
   const {
@@ -72,10 +75,9 @@ export default function ScheduleTaskDetail() {
       confirmLabel: t.common.confirm,
       tone: 'danger',
     });
-    if (!confirmed) return;
     const store = useScheduleStore.getState();
-    if (!store.tasks[id]) return;
-    store.deleteTask(id);
+    if (confirmed && store.tasks[id]) store.deleteTask(id);
+    onQuestionClosed?.();
   };
 
   const handleEdit = () => {

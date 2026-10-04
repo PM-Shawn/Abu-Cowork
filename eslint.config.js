@@ -250,6 +250,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   // The automation page (batch 7b), directory by directory.
   'src/components/automation/**/*.{ts,tsx}',
   'src/components/schedule/**/*.{ts,tsx}',
+  'src/components/trigger/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

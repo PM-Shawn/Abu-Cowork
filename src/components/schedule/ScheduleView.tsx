@@ -1,11 +1,9 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useListDetailFocus } from '@/components/automation/useListDetailFocus';
 import { EmptyState } from '@/components/ds/empty-state';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
-import { lastInputWasPointer } from '@/components/ds/input-modality';
 import { ScrollArea } from '@/components/ds/scroll-area';
 import ToolGrid from '@/components/toolbox/ToolGrid';
-import { cardOrNeighbour, focusByTestId, focusIsOnWindow, type CardPlace } from '@/components/toolbox/cardFocus';
 import { useI18n } from '@/i18n';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import type { ScheduledTask } from '@/types/schedule';
@@ -14,6 +12,8 @@ import ScheduleTaskCard from './ScheduleTaskCard';
 import ScheduleTaskDetail from './ScheduleTaskDetail';
 
 const newestFirst = (tasks: Record<string, ScheduledTask>) => Object.values(tasks).sort((a, b) => b.createdAt - a.createdAt);
+// Where a task sits in the list as the store has it now.
+const placeOf = (id: string) => newestFirst(useScheduleStore.getState().tasks).findIndex((task) => task.id === id);
 
 export default function ScheduleView() {
   const { t } = useI18n();
@@ -24,34 +24,12 @@ export default function ScheduleView() {
   // The task whose page is in view; the list is in view when there is none.
   const detailId = selectedTaskId && tasks[selectedTaskId] ? selectedTaskId : null;
 
-  // The list and a task's page replace each other under the keyboard. When the control that had
-  // the focus went away with its page, the focus goes to the new page's way back (on the way in),
-  // or to the card of the task just left (on the way back): once that task is deleted, to the
-  // card that took its place, else the one before it, else the page's create button. Focus that
-  // sits elsewhere stays.
-  const root = useRef<HTMLDivElement>(null);
-  // The task whose page was in view at the last render, with its place in the list; `undefined`
-  // until the first render, which moves no focus.
-  const shown = useRef<CardPlace | null | undefined>(undefined);
-  useLayoutEffect(() => {
-    const left = shown.current;
-    shown.current = detailId
-      ? { id: detailId, index: newestFirst(useScheduleStore.getState().tasks).findIndex((task) => task.id === detailId) }
-      : null;
-    if (left === undefined || (left?.id ?? null) === detailId || !root.current || !focusIsOnWindow()) return;
-    const options = lastInputWasPointer() ? { focusVisible: false } : undefined;
-    if (detailId) {
-      root.current.querySelector<HTMLElement>('[data-automation-back]')?.focus(options);
-      return;
-    }
-    const card = left ? cardOrNeighbour(root.current, 'automation', left.id, left.index) : null;
-    if (card) card.focus(options);
-    else focusByTestId('automation-create');
-  }, [detailId]);
+  // The list and a task's page replace each other under the keyboard; the focus follows them.
+  const { root, afterLayer, editorCloseAutoFocus } = useListDetailFocus(detailId, placeOf);
 
   return (
     <div ref={root} className="flex h-full flex-col">
-      {detailId ? <ScheduleTaskDetail /> : (
+      {detailId ? <ScheduleTaskDetail onQuestionClosed={afterLayer} /> : (
         <>
           {/* When tasks run, in the same centered column as the tabs above and the list below. */}
           <div className="px-8 pt-4 pb-2">
@@ -81,7 +59,7 @@ export default function ScheduleView() {
       )}
 
       {/* One editor for the list and for a task's page: it stays mounted while they replace each other. */}
-      <ScheduleEditor />
+      <ScheduleEditor onCloseAutoFocus={editorCloseAutoFocus} />
     </div>
   );
 }

@@ -299,4 +299,21 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
       expect(await messages(code, file), file).not.toEqual([]);
     }
   });
+
+  it('checks every file of the event listeners page, tests included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/trigger/TriggerView.tsx',
+      'src/components/trigger/TriggerView.test.tsx',
+      'src/components/trigger/TriggerCard.tsx',
+      'src/components/trigger/TriggerDetail.tsx',
+      'src/components/trigger/TriggerRunHistory.tsx',
+      'src/components/trigger/TriggerEditor.tsx',
+      'src/components/trigger/TriggerEditor.test.tsx',
+      // The directory entry: a file added to the directory later is checked as well.
+      'src/components/trigger/NewFileOfTheDirectory.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+  });
 });

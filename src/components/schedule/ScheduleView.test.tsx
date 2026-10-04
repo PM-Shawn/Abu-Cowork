@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -234,6 +234,87 @@ describe('ScheduleView', () => {
 
       expect(useScheduleStore.getState().tasks).toEqual({});
       expect(screen.getByTestId('automation-create')).toHaveFocus();
+    });
+
+    // A tool in a conversation can delete the task whose page is in view. A window opened from
+    // that page then gives the focus back to a button that has left with the page.
+    describe('when the task in view is deleted from outside under a window opened from its page', () => {
+      it('goes to the card that took its place once the delete question is cancelled', async () => {
+        const user = userEvent.setup();
+        seed(task('a', '任务 A', 100), task('b', '任务 B', 200));
+        renderView();
+        await user.click(card('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().schedule.delete }));
+
+        act(() => useScheduleStore.getState().deleteTask('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+
+        await waitFor(() => expect(card('b')).toHaveFocus());
+      });
+
+      it('goes to the card that took its place once the delete question is confirmed', async () => {
+        const user = userEvent.setup();
+        seed(task('a', '任务 A', 100), task('b', '任务 B', 200));
+        renderView();
+        await user.click(card('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().schedule.delete }));
+
+        act(() => useScheduleStore.getState().deleteTask('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+
+        await waitFor(() => expect(card('b')).toHaveFocus());
+        expect(Object.keys(useScheduleStore.getState().tasks)).toEqual(['b']);
+      });
+
+      it('goes to the card that took its place once the editor is closed', async () => {
+        const user = userEvent.setup();
+        seed(task('a', '任务 A', 100), task('b', '任务 B', 200));
+        renderView();
+        await user.click(card('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().schedule.edit }));
+
+        act(() => useScheduleStore.getState().deleteTask('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+
+        await waitFor(() => expect(card('b')).toHaveFocus());
+      });
+
+      it('goes to the create button when no task is left', async () => {
+        const user = userEvent.setup();
+        seed(task('a', '任务 A', 100));
+        render(
+          <DesignSystemProvider>
+            <Button data-testid="automation-create">create</Button>
+            <ScheduleView />
+          </DesignSystemProvider>,
+        );
+        await user.click(card('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().schedule.edit }));
+
+        act(() => useScheduleStore.getState().deleteTask('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+
+        await waitFor(() => expect(screen.getByTestId('automation-create')).toHaveFocus());
+      });
+
+      it('leaves the focus on the button that opened the editor when that button is still on the page', async () => {
+        const user = userEvent.setup();
+        seed(task('a', '任务 A', 100), task('b', '任务 B', 200));
+        render(
+          <DesignSystemProvider>
+            <Button data-testid="automation-create" onClick={() => useScheduleStore.getState().openEditor()}>create</Button>
+            <ScheduleView />
+          </DesignSystemProvider>,
+        );
+        await user.click(card('a'));
+        await user.click(screen.getByTestId('automation-create'));
+
+        act(() => useScheduleStore.getState().deleteTask('a'));
+        await user.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await waitFor(() => expect(screen.getByTestId('automation-create')).toHaveFocus());
+      });
     });
   });
 

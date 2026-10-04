@@ -15,7 +15,13 @@
 // rather than the Zustand store module directly. `stores/**` is forbidden from
 // the sidecar bundle graph (`bundleGraphGuardPlugin` in build-sidecar.mjs), and
 // this is the same substitution `agentLoop.ts` already made for the same reason.
-import { getActiveApiKey, getActiveProvider, getEffectiveModel, providerRequiresApiKey } from '../../utils/settingsSelectors';
+import {
+  getActiveApiKey,
+  getActiveProvider,
+  getEffectiveModel,
+  getModelUnavailableReason,
+  providerRequiresApiKey,
+} from '../../utils/settingsSelectors';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { settingsForConversation } from '../agent/conversationSettings';
 // P1-3d-2: route the LLM call through `selectChatAdapter` (already sidecar-ized,
@@ -194,6 +200,19 @@ export async function extractMemoriesFromConversation(
 
     // Create adapter on the conversation's own model and provider.
     const settings = settingsForConversation(conversationId, getSettingsReader().getSnapshot());
+    // An unusable model (provider removed/turned off, model no longer listed)
+    // is never called. Enterprise-gateway pins have no personal provider entry.
+    const modelIssue = settings.activeModel.providerId === 'enterprise-gateway'
+      ? null
+      : getModelUnavailableReason(settings, settings.activeModel);
+    if (modelIssue) {
+      console.warn('[Memory] Auto-extraction skipped: model unavailable', {
+        reason: modelIssue,
+        providerId: settings.activeModel.providerId,
+        modelId: settings.activeModel.modelId,
+      });
+      return;
+    }
     const activeApiKey = getActiveApiKey(settings);
     if (providerRequiresApiKey(settings) && !activeApiKey) {
       console.warn('[Memory] Auto-extraction skipped: no API key configured');

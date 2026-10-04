@@ -6,12 +6,14 @@
  * an explicit insert when the draft changed, and cancels on Escape or a
  * conversation switch without ever inserting late.
  */
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import VoiceInputControl from './VoiceInputControl';
 import { Button } from '@/components/ds/button';
 import { Menu, MenuItem } from '@/components/ds/menu';
+import { Popover } from '@/components/ds/popover';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { TextArea } from '@/components/ds/text-area';
 import { useSpeechStore } from '@/stores/speechStore';
@@ -222,6 +224,93 @@ describe('VoiceInputControl', () => {
       await userEvent.keyboard(' ');
       expect(recordingMock.start).not.toHaveBeenCalled();
       expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue(' ');
+    });
+
+    // The transcript arrives while the user is typing in the draft: the card takes the focus by itself.
+    async function holdTranscriptWhileTypingInTheDraft() {
+      let finish: (value: unknown) => void = () => {};
+      transcribeMock.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      await userEvent.click(screen.getByRole('button', { name: 'Voice' }));
+      await userEvent.click(await screen.findByRole('button', { name: 'Done' }));
+      await screen.findByText('Transcribing…');
+      await userEvent.click(screen.getByRole('textbox', { name: 'Draft' }));
+      await userEvent.keyboard('more');
+      await act(async () => { finish({ text: '你好世界', audioSeconds: 1, inferenceSeconds: 0.1 }); });
+      await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Insert' })).toHaveFocus());
+    }
+
+    it('returns the focus to the draft it took it from when Escape closes it, and the next Space starts no recording', async () => {
+      renderBesideDraft();
+      await holdTranscriptWhileTypingInTheDraft();
+      await userEvent.keyboard('{Escape}');
+      await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Insert' })).toBeNull());
+      expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveFocus();
+      recordingMock.start.mockClear();
+      await userEvent.keyboard(' ');
+      expect(recordingMock.start).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('more ');
+    });
+
+    it('returns the focus to the draft it took it from when a conversation switch closes it, and the next Space starts no recording', async () => {
+      const { switchConversation } = renderBesideDraft();
+      await holdTranscriptWhileTypingInTheDraft();
+      switchConversation();
+      await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Insert' })).toBeNull());
+      // The focus is settled once the card has left the page, one timer tick after it closed.
+      await vi.waitFor(() => expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveFocus());
+      recordingMock.start.mockClear();
+      await userEvent.keyboard(' ');
+      expect(recordingMock.start).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('more ');
+    });
+
+    it('stays away while one layer hands over to another, and returns once the last has gone', async () => {
+      let setLayer: (layer: 'a' | 'b' | null) => void = () => {};
+      function TwoLayers() {
+        const [layer, set] = useState<'a' | 'b' | null>(null);
+        setLayer = set;
+        return (
+          <>
+            <Popover open={layer === 'a'} trigger={<Button>A</Button>}>First</Popover>
+            <Popover open={layer === 'b'} trigger={<Button>B</Button>}>Second</Popover>
+          </>
+        );
+      }
+      const insertAtCursor = vi.fn();
+      render(
+        <DesignSystemProvider>
+          <TwoLayers />
+          <VoiceInputControl
+            resetKey="conv-1"
+            getDraftSnapshot={() => ({ text: 'draft', start: 5, end: 5 })}
+            insertIfUnchanged={() => false}
+            insertAtCursor={insertAtCursor}
+          />
+        </DesignSystemProvider>,
+      );
+      await holdTranscript();
+      vi.useFakeTimers();
+      try {
+        const settle = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+        act(() => setLayer('a'));
+        await settle(1000);
+        expect(screen.getByText('First')).toBeInTheDocument();
+        expect(screen.queryByText('你好世界')).toBeNull();
+        // A closes; B opens on the next event, before one fade has passed.
+        act(() => setLayer(null));
+        await settle(50);
+        expect(screen.queryByText('你好世界')).toBeNull();
+        act(() => setLayer('b'));
+        await settle(1000);
+        expect(screen.getByText('Second')).toBeInTheDocument();
+        expect(screen.queryByText('你好世界')).toBeNull();
+        act(() => setLayer(null));
+        await settle(1000);
+        expect(screen.getByText('你好世界')).toBeInTheDocument();
+        expect(insertAtCursor).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('is offered again after another layer has opened and closed, and Insert inserts exactly that text', async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FocusEvent, type MouseEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type MouseEvent } from 'react';
 import { format, useI18n } from '@/i18n';
 import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
@@ -21,6 +21,8 @@ import { isMacOS, isWindows } from '@/utils/platform';
 /** Recording stops by itself shortly before the host's audio limit. */
 const MAX_RECORDING_SECONDS = 120;
 const WAVE_BARS = 18;
+/** The longest fade of a design-system layer: `duration-base` in src/styles/tokens.css. */
+const LAYER_FADE_MS = 200;
 
 type Phase =
   | { kind: 'idle' }
@@ -203,14 +205,39 @@ export default function VoiceInputControl({
   useEffect(() => {
     if (!steppedAside) return;
     // The other layer joins the page in the commit that closed the card and leaves it later:
-    // every change of the page after that is checked for an open layer.
+    // every change of the page after that is checked for an open layer. When none is left the
+    // card waits one fade and looks again, so a layer that hands over to another one (a menu
+    // item that opens a window) does not bring the card back in between.
+    let waiting: number | null = null;
+    const anotherLayerIsOpen = () => document.querySelector('[data-ds-layer][data-state="open"]') !== null;
     const returnWhenAlone = () => {
-      if (!document.querySelector('[data-ds-layer][data-state="open"]')) setSteppedAside(false);
+      if (anotherLayerIsOpen() || waiting !== null) return;
+      waiting = window.setTimeout(() => {
+        waiting = null;
+        if (!anotherLayerIsOpen()) setSteppedAside(false);
+      }, LAYER_FADE_MS);
     };
     const observer = new MutationObserver(returnWhenAlone);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (waiting !== null) window.clearTimeout(waiting);
+    };
   }, [steppedAside]);
+
+  // What had the focus before the card took it. The card opens by itself when a transcript
+  // arrives, often while the user is typing in the draft: Escape and a conversation switch give
+  // the focus back there. Read in a layout effect, which runs before the card's content mounts.
+  const cardIsOpen = openCard !== null;
+  const beforeCardRef = useRef<{ element: HTMLElement | null; inControl: boolean }>({ element: null, inControl: false });
+  const closedByButtonRef = useRef(false);
+  useLayoutEffect(() => {
+    if (!cardIsOpen) return;
+    const focused = document.activeElement;
+    const element = focused instanceof HTMLElement && focused !== document.body ? focused : null;
+    beforeCardRef.current = { element, inControl: element !== null && rootRef.current?.contains(element) === true };
+    closedByButtonRef.current = false;
+  }, [cardIsOpen]);
 
   // Conversation switch: nothing recorded for the old draft may land in the new one,
   // and the card that fades out shows nothing of it.
@@ -249,13 +276,17 @@ export default function VoiceInputControl({
 
   // The mic button and the pill replace each other. When the control held the focus and the
   // focused element has just left the page, the focus moves on inside the control.
+  // A card that closes is not part of this: where the focus goes then is `settleFocusAfterCard`.
+  const pillWasShownRef = useRef(false);
   useEffect(() => {
+    const pillWasShown = pillWasShownRef.current;
+    pillWasShownRef.current = active;
     if (!heldFocusRef.current) return;
     if (phase.kind === 'recording' && (focusIsOnWindow() || document.activeElement === barRef.current)) {
       doneRef.current?.focus();
     } else if (active && focusIsOnWindow()) {
       barRef.current?.focus();
-    } else if (phase.kind === 'idle' && focusIsOnWindow()) {
+    } else if (phase.kind === 'idle' && pillWasShown && focusIsOnWindow()) {
       micRef.current?.focus();
     }
   }, [active, phase.kind]);
@@ -268,18 +299,40 @@ export default function VoiceInputControl({
     if (next instanceof Node && !rootRef.current?.contains(next)) heldFocusRef.current = false;
   };
 
+  // Later and Discard: a button of the card closes it.
   const closeCard = () => {
     if (!openCard) return;
+    closedByButtonRef.current = true;
     setPhase({ kind: 'idle' });
   };
   // Another layer opened and the layer registry closed the card. Nothing else closes it this
   // way: its buttons and Escape set the phase, and a press outside or on the mic leaves it open.
   const cardClosedForAnotherLayer = () => {
     if (openCard?.kind === 'pending') setSteppedAside(true);
-    else closeCard();
+    else if (openCard) setPhase({ kind: 'idle' });
+  };
+  // Where the focus goes once the card has left the page.
+  const settleFocusAfterCard = (event: Event) => {
+    const before = beforeCardRef.current;
+    const byButton = closedByButtonRef.current;
+    beforeCardRef.current = { element: null, inControl: false };
+    closedByButtonRef.current = false;
+    if (keepFocusInDraftRef.current) {
+      event.preventDefault();
+    } else if (byButton || before.inControl) {
+      // The user was in the control: the mic button takes the focus when the control still holds it.
+      if (!heldFocusRef.current) event.preventDefault();
+    } else {
+      // Escape or a conversation switch closed a card that opened by itself. The focus goes back
+      // to where the user was and never to the mic button, where a key would start the microphone.
+      event.preventDefault();
+      if (before.element?.isConnected && focusIsOnWindow()) before.element.focus();
+    }
+    keepFocusInDraftRef.current = false;
   };
   const openVoiceSettings = () => {
     if (!openCard) return;
+    closedByButtonRef.current = true;
     setPhase({ kind: 'idle' });
     useSettingsStore.getState().openSystemSettings('voice-input');
   };
@@ -292,6 +345,7 @@ export default function VoiceInputControl({
   };
   const openMicSettings = () => {
     if (!openCard) return;
+    closedByButtonRef.current = true;
     void openMicrophoneSettings();
     setPhase({ kind: 'idle' });
   };
@@ -362,10 +416,7 @@ export default function VoiceInputControl({
           open={openCard !== null}
           onOpenChange={(open) => { if (!open) cardClosedForAnotherLayer(); }}
           onCloseAutoFocus={(event) => {
-            // The focus returns to the mic button only when the control held it. With the focus
-            // in the draft it stays there: a key meant for the draft must never reach the mic button.
-            if (keepFocusInDraftRef.current || !heldFocusRef.current) event.preventDefault();
-            keepFocusInDraftRef.current = false;
+            settleFocusAfterCard(event);
             // The card has left the page: nothing of it stays in state.
             setHeldCard(null);
           }}

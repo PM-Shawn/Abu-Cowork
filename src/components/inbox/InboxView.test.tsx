@@ -40,6 +40,8 @@ const ALL = [proposal, confirmation, result, failure, accepted, ignored];
 const calls: unknown[][] = [];
 const inboxActions = useInboxStore.getState();
 const todoActions = useTodosStore.getState();
+// The chat store as it was: the render-count tests put a conversation into it.
+const { conversations: chatBefore } = useChatStore.getState();
 
 function seed(items: InboxItem[]) {
   useInboxStore.setState({ items: Object.fromEntries(items.map((entry) => [entry.id, entry])) });
@@ -73,6 +75,7 @@ describe('InboxView', () => {
     cleanup();
     useInboxStore.setState({ ...inboxActions, items: {} });
     useTodosStore.setState({ ...todoActions, todos: {} });
+    useChatStore.setState({ conversations: chatBefore });
   });
 
   it('marks everything read on the way in', () => {

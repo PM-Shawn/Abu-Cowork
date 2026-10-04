@@ -2133,6 +2133,72 @@ describe('AddProviderModal — behaviour pins', () => {
       expect(checkProviderHealth).toHaveBeenCalledTimes(2);
     });
 
+    describe('when the window is closed and opened again while a check is out', () => {
+      type Answer = (result: { success: boolean; latencyMs: number }) => void;
+      // Each check waits until the test answers it; `answers` holds them in the order they started.
+      function holdChecks(): Answer[] {
+        const answers: Answer[] = [];
+        vi.mocked(checkProviderHealth).mockImplementation(() => new Promise((resolve) => { answers.push(resolve); }));
+        return answers;
+      }
+      // The window clears its form once it has closed; that settles before the form is filled again.
+      async function fillAgain() {
+        await act(async () => { await Promise.resolve(); });
+        ui.pickProvider('DeepSeek');
+        fireEvent.change(ui.keyInput(), { target: { value: FAKE_KEY } });
+        ui.pickCuratedModel('DeepSeek V4 Pro');
+      }
+      const validateButton = () => screen.getByRole('button', { name: t().settings.validateConnection });
+
+      it('starts a new check from the reopened window', async () => {
+        holdChecks();
+        const { reopen } = fillDeepSeek();
+        ui.validate();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+
+        reopen();
+        await fillAgain();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+        ui.validate();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+        expect(screen.getByText(t().settings.validating)).toBeInTheDocument();
+      });
+
+      it('does not show the answer of the old check in the reopened window', async () => {
+        const answers = holdChecks();
+        const { reopen } = fillDeepSeek();
+        ui.validate();
+        reopen();
+        await fillAgain();
+
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+
+        expect(screen.queryByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeNull();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+      });
+
+      it('keeps the new check running when the old one answers late, and shows only the new answer', async () => {
+        const answers = holdChecks();
+        const { reopen } = fillDeepSeek();
+        ui.validate();
+        reopen();
+        await fillAgain();
+        ui.validate();
+
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+        expect(validateButton()).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByText(t().settings.validating)).toBeInTheDocument();
+        expect(screen.queryByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeNull();
+        // Still one check at a time for this opening.
+        ui.validate();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+
+        await act(async () => { answers[1]({ success: true, latencyMs: 12 }); });
+        expect(screen.getByText(t().settings.validationSuccess.replace('{latency}', '12'))).toBeInTheDocument();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+      });
+    });
+
     it('shows the reason when the check fails', async () => {
       vi.mocked(checkProviderHealth).mockResolvedValue({ success: false, latencyMs: 0, error: 'made-up refusal' });
       fillDeepSeek();

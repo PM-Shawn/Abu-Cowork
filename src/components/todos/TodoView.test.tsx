@@ -9,16 +9,15 @@ import { useTodosStore } from '@/stores/todosStore';
 import type { Todo } from '@/types/todo';
 import TodoView from './TodoView';
 
-// The real icon button, counted: a todo row draws one (its delete button), so the count says
-// which rows were drawn again.
-const drawn = vi.hoisted(() => ({ iconButtons: 0 }));
-vi.mock('@/components/ds/button', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+// The real pressable, counted when it is the complete / reopen button: a todo row draws exactly
+// one, so the count says which rows were drawn again.
+const drawn = vi.hoisted(() => ({ rows: 0 }));
+vi.mock('@/components/ds/pressable', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/pressable')>();
   return {
-    ...actual,
-    IconButton: (props: Parameters<typeof actual.IconButton>[0]) => {
-      drawn.iconButtons += 1;
-      return <actual.IconButton {...props} />;
+    Pressable: (props: Parameters<typeof actual.Pressable>[0]) => {
+      if (props['aria-label'] === 'complete' || props['aria-label'] === 'reopen') drawn.rows += 1;
+      return <actual.Pressable {...props} />;
     },
   };
 });
@@ -43,6 +42,8 @@ const TITLES = ALL.map((entry) => entry.title);
 // Every store action the page may call, in the order it called them. Each still does its work.
 const calls: unknown[][] = [];
 const actions = useTodosStore.getState();
+// The chat store as it was: the render-count tests put a conversation into it.
+const { conversations } = useChatStore.getState();
 
 function seed(todos: Todo[]) {
   useTodosStore.setState({ todos: Object.fromEntries(todos.map((entry) => [entry.id, entry])) });
@@ -80,6 +81,7 @@ describe('TodoView', () => {
     cleanup();
     vi.useRealTimers();
     useTodosStore.setState({ ...actions, todos: {} });
+    useChatStore.setState({ conversations });
   });
 
   describe('the two tabs', () => {
@@ -272,12 +274,24 @@ describe('TodoView', () => {
       expect(row(doneToday).getAllByRole('button').map((element) => element.getAttribute('aria-label'))).toEqual(['reopen', t().common.delete]);
     });
 
-    it('shows the name of the complete button when the keyboard reaches it', () => {
+    // A tooltip trigger carries data-state. The list can hold hundreds of rows, and a row mounts
+    // no tooltip root.
+    it('mounts no tooltip on a row: neither button is a tooltip trigger, and focus by keyboard shows none', () => {
       show();
-      const complete = row(urgent).getByRole('button', { name: 'complete' });
+      const [complete, remove] = row(urgent).getAllByRole('button');
+      expect(complete).not.toHaveAttribute('data-state');
+      expect(remove).not.toHaveAttribute('data-state');
       byKeyboard(complete);
       fireEvent.focus(complete);
-      expect(screen.getByRole('tooltip')).toHaveTextContent('complete');
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    });
+
+    it('shows the delete button when the pointer is on the row or the focus is inside it', () => {
+      show();
+      const remove = row(urgent).getByRole('button', { name: t().common.delete });
+      expect(remove).toHaveClass('opacity-0');
+      expect(remove).toHaveClass('group-hover:opacity-100');
+      expect(remove).toHaveClass('group-focus-within:opacity-100');
     });
 
     it('shows the priority and the assignee as tags', () => {
@@ -337,12 +351,38 @@ describe('TodoView', () => {
         expect(button(t().todos.newTodo)).toHaveFocus();
       });
 
-      it('stays on the button of a todo that is completed', () => {
+      // A completed todo moves below the open ones. The browser may take the focus off a row
+      // that is taken out and put back in; happy-dom does not, so the store action here drops
+      // the focus the way a browser would.
+      const losingFocusOnToggle = () => {
+        useTodosStore.setState({
+          toggleStatus: (id) => {
+            calls.push(['toggleStatus', id]);
+            actions.toggleStatus(id);
+            (document.activeElement as HTMLElement | null)?.blur();
+          },
+        });
+      };
+
+      it.each(['today', 'all'] as const)('returns to the same todo after it is completed and its row moves (%s)', (tab) => {
+        losingFocusOnToggle();
         show();
+        if (tab === 'all') fireEvent.click(button(t().todos.tabAll));
         const complete = row(urgent).getByRole('button', { name: 'complete' });
         byKeyboard(complete);
         fireEvent.click(complete);
+        // It now sits after the two todos that are still open.
+        expect(shownTitles().slice(0, 3)).toEqual([running.title, someday.title, urgent.title]);
         expect(row(urgent).getByRole('button', { name: 'reopen' })).toHaveFocus();
+      });
+
+      it('returns to the same todo after it is reopened', () => {
+        losingFocusOnToggle();
+        show();
+        const reopen = row(doneToday).getByRole('button', { name: 'reopen' });
+        byKeyboard(reopen);
+        fireEvent.click(reopen);
+        expect(row(doneToday).getByRole('button', { name: 'complete' })).toHaveFocus();
       });
     });
 
@@ -367,8 +407,8 @@ describe('TodoView', () => {
         });
       };
       const rowsDrawn = () => {
-        const count = drawn.iconButtons;
-        drawn.iconButtons = 0;
+        const count = drawn.rows;
+        drawn.rows = 0;
         return count;
       };
 

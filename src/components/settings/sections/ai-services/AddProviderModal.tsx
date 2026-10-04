@@ -780,12 +780,16 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
 
   // ── Validate connection ──
   // The button is busy while a check is out, but two presses can arrive before the window draws
-  // it busy: the check itself refuses a second run.
-  const validatingRef = useRef(false);
+  // it busy: the check itself refuses a second run. The ref holds the check that is out for
+  // this opening of the window, or null. Resetting the form (the window opens again) clears it,
+  // so the reopened window can check at once, and a check that answers after that finds another
+  // holder: its answer is dropped and it leaves the newer check's busy state alone.
+  const validatingRef = useRef<object | null>(null);
   const handleValidate = useCallback(async () => {
     if (validatingRef.current) return;
     if (!baseUrl.trim() || !apiKey.trim()) return;
-    validatingRef.current = true;
+    const run = {};
+    validatingRef.current = run;
     setValidating(true);
     setValidateResult(null);
     try {
@@ -804,6 +808,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
         status: 'unchecked',
         sortOrder: 0,
       });
+      if (validatingRef.current !== run) return;
       setValidateResult({
         success: result.success,
         message: result.success
@@ -811,10 +816,13 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           : (result.error ?? t.settings.validationFailed),
       });
     } catch {
+      if (validatingRef.current !== run) return;
       setValidateResult({ success: false, message: t.settings.validationFailed });
     } finally {
-      validatingRef.current = false;
-      setValidating(false);
+      if (validatingRef.current === run) {
+        validatingRef.current = null;
+        setValidating(false);
+      }
     }
   }, [baseUrl, apiKey, selectedModels, effectiveFormat, t]);
 
@@ -1032,6 +1040,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     setPerModelDeclared({});
     setExpandedModelIds(new Set());
     setUseRawUrl(false);
+    validatingRef.current = null;
     setValidating(false);
     setValidateResult(null);
   }, []);
@@ -1087,6 +1096,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     setFetchedModels([]);
     setFetchModelsError('');
     setModelListFilter('');
+    validatingRef.current = null;
     setValidating(false);
     setValidateResult(null);
   }, []);

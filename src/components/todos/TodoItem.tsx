@@ -1,11 +1,9 @@
 import { memo } from 'react';
 import type { Todo } from '@/types/todo';
-import { IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
 import { Tag } from '@/components/ds/tag';
-import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 
@@ -17,9 +15,10 @@ interface TodoItemProps {
 }
 
 /**
- * One row of the todo list. The list can hold hundreds of rows and each row mounts two tooltips,
- * so the row is `memo` and takes handlers that stay the same between renders: typing in the
- * inline form or changing one todo draws no other row again.
+ * One row of the todo list. The list can hold hundreds of rows, so a row mounts no tooltip
+ * root (its two icon buttons are named for screen readers only), is `memo`, and takes handlers
+ * that stay the same between renders: typing in the inline form or changing one todo draws no
+ * other row again.
  */
 const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItemProps) {
   const { t } = useI18n();
@@ -40,15 +39,13 @@ const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete, onClick }: T
         done && 'opacity-60',
       )}
     >
-      <Tooltip content={toggleName}>
-        <Pressable
-          onClick={(e) => { e.stopPropagation(); onToggle(todo.id); }}
-          className={cn('shrink-0 rounded-control pt-0.5', done ? 'text-label' : 'text-label-tertiary hover:text-label')}
-          aria-label={toggleName}
-        >
-          <Icon icon={done ? AppIcons.success : AppIcons.todoOpen} size="lg" />
-        </Pressable>
-      </Tooltip>
+      <Pressable
+        onClick={(e) => { e.stopPropagation(); onToggle(todo.id); }}
+        className={cn('shrink-0 rounded-control pt-0.5', done ? 'text-label' : 'text-label-tertiary hover:text-label')}
+        aria-label={toggleName}
+      >
+        <Icon icon={done ? AppIcons.success : AppIcons.todoOpen} size="lg" />
+      </Pressable>
       <div className="min-w-0 flex-1">
         <div className={cn('truncate text-ui text-label', done && 'text-label-tertiary line-through')}>
           {todo.title}
@@ -68,13 +65,13 @@ const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete, onClick }: T
         </Tag>
       )}
       {todo.assignee === 'agent' && <Tag>{t.todos.assigneeAgent}</Tag>}
-      <IconButton
-        size="sm"
-        icon={AppIcons.delete}
-        label={t.common.delete}
+      <Pressable
+        aria-label={t.common.delete}
         onClick={(e) => { e.stopPropagation(); onDelete(todo.id); }}
-        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-      />
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-control text-label-secondary opacity-0 hover:bg-fill-hover hover:text-label group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        <Icon icon={AppIcons.delete} size="sm" />
+      </Pressable>
     </div>
   );
 });

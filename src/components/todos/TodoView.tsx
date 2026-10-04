@@ -93,6 +93,12 @@ const TodoView = memo(function TodoView() {
     note(id);
     deleteTodo(id);
   }, [note, deleteTodo]);
+  // A completed or reopened todo changes its place in the list. The browser may drop the focus
+  // of a row that is put somewhere else; it then returns to the same todo's button.
+  const handleToggle = useCallback((id: string) => {
+    note(id);
+    toggleStatus(id);
+  }, [note, toggleStatus]);
 
   // Guard Enter handler against IME composition:
   //   - `e.nativeEvent.isComposing` covers most engines mid-composition
@@ -178,7 +184,7 @@ const TodoView = memo(function TodoView() {
                 <TodoItem
                   key={todo.id}
                   todo={todo}
-                  onToggle={toggleStatus}
+                  onToggle={handleToggle}
                   onDelete={handleDelete}
                 />
               ))}

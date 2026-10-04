@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import VoiceInputControl from './VoiceInputControl';
+import { Button } from '@/components/ds/button';
+import { Menu, MenuItem } from '@/components/ds/menu';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { TextArea } from '@/components/ds/text-area';
 import { useSpeechStore } from '@/stores/speechStore';
@@ -164,21 +166,109 @@ describe('VoiceInputControl', () => {
   });
 
   describe('the held transcript card', () => {
+    // The control beside a draft field and another layer of the page (a menu).
     function renderBesideDraft() {
       const insertAtCursor = vi.fn(() => { screen.getByRole('textbox', { name: 'Draft' }).focus(); });
-      render(
+      const page = (resetKey: string) => (
         <DesignSystemProvider>
           <TextArea aria-label="Draft" />
+          <Menu trigger={<Button>Other</Button>}><MenuItem>Rename</MenuItem></Menu>
           <VoiceInputControl
-            resetKey="conv-1"
+            resetKey={resetKey}
             getDraftSnapshot={() => ({ text: 'draft', start: 5, end: 5 })}
             insertIfUnchanged={() => false}
             insertAtCursor={insertAtCursor}
           />
-        </DesignSystemProvider>,
+        </DesignSystemProvider>
       );
-      return { insertAtCursor };
+      const view = render(page('conv-1'));
+      return { insertAtCursor, switchConversation: () => view.rerender(page('conv-2')) };
     }
+
+    async function holdTranscript() {
+      await userEvent.click(screen.getByRole('button', { name: 'Voice' }));
+      await userEvent.click(await screen.findByRole('button', { name: 'Done' }));
+      await screen.findByText('你好世界');
+    }
+
+    async function openAndCloseTheMenu() {
+      await userEvent.click(screen.getByRole('button', { name: 'Other' }));
+      expect(await screen.findByRole('menu')).toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
+      await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    }
+
+    it('leaves the focus in the draft when Escape closes it, and the next Space starts no recording', async () => {
+      renderBesideDraft();
+      await holdTranscript();
+      await userEvent.click(screen.getByRole('textbox', { name: 'Draft' }));
+      await userEvent.keyboard('{Escape}');
+      await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Insert' })).toBeNull());
+      expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveFocus();
+      recordingMock.start.mockClear();
+      await userEvent.keyboard(' ');
+      expect(recordingMock.start).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue(' ');
+    });
+
+    it('leaves the focus in the draft when a conversation switch closes it, and the next Space starts no recording', async () => {
+      const { switchConversation } = renderBesideDraft();
+      await holdTranscript();
+      await userEvent.click(screen.getByRole('textbox', { name: 'Draft' }));
+      switchConversation();
+      await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Insert' })).toBeNull());
+      expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveFocus();
+      recordingMock.start.mockClear();
+      await userEvent.keyboard(' ');
+      expect(recordingMock.start).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue(' ');
+    });
+
+    it('is offered again after another layer has opened and closed, and Insert inserts exactly that text', async () => {
+      const { insertAtCursor } = renderBesideDraft();
+      await holdTranscript();
+      await userEvent.click(screen.getByRole('button', { name: 'Other' }));
+      expect(await screen.findByRole('menu')).toBeInTheDocument();
+      expect(insertAtCursor).not.toHaveBeenCalled();
+      // Escape belongs to the menu while the card has stepped aside.
+      await userEvent.keyboard('{Escape}');
+      await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+      expect(await screen.findByText('你好世界')).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Insert' }));
+      expect(insertAtCursor.mock.calls).toEqual([['你好世界']]);
+    });
+
+    it('is dropped by Escape', async () => {
+      const { insertAtCursor } = renderBesideDraft();
+      await holdTranscript();
+      await userEvent.keyboard('{Escape}');
+      await vi.waitFor(() => expect(screen.queryByText('你好世界')).toBeNull());
+      await openAndCloseTheMenu();
+      expect(screen.queryByText('你好世界')).toBeNull();
+      expect(insertAtCursor).not.toHaveBeenCalled();
+    });
+
+    it('is dropped by Discard', async () => {
+      const { insertAtCursor } = renderBesideDraft();
+      await holdTranscript();
+      await userEvent.click(screen.getByRole('button', { name: 'Discard' }));
+      await vi.waitFor(() => expect(screen.queryByText('你好世界')).toBeNull());
+      await openAndCloseTheMenu();
+      expect(screen.queryByText('你好世界')).toBeNull();
+      expect(insertAtCursor).not.toHaveBeenCalled();
+    });
+
+    it('is dropped by a conversation switch, also while another layer is open', async () => {
+      const { insertAtCursor, switchConversation } = renderBesideDraft();
+      await holdTranscript();
+      await userEvent.click(screen.getByRole('button', { name: 'Other' }));
+      expect(await screen.findByRole('menu')).toBeInTheDocument();
+      switchConversation();
+      await userEvent.keyboard('{Escape}');
+      await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+      expect(screen.queryByText('你好世界')).toBeNull();
+      expect(insertAtCursor).not.toHaveBeenCalled();
+    });
 
     it('stays while the user goes back to the draft to place the caret', async () => {
       renderBesideDraft();
@@ -246,6 +336,40 @@ describe('VoiceInputControl', () => {
     });
   });
 
+  describe('a card that fades out after a conversation switch', () => {
+    it('paints no transcript of the conversation that was left', async () => {
+      const real = window.getComputedStyle.bind(window);
+      const spy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+        const styles = real(element, pseudo);
+        return new Proxy(styles, {
+          get(target, prop) {
+            if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+            const value = Reflect.get(target, prop);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      });
+      try {
+        const { insertIfUnchanged, rerender } = renderControl({ unchanged: false });
+        await userEvent.click(screen.getByRole('button', { name: 'Voice' }));
+        await userEvent.click(await screen.findByRole('button', { name: 'Done' }));
+        await screen.findByText('你好世界');
+        rerender(
+          <VoiceInputControl
+            resetKey="conv-2"
+            getDraftSnapshot={() => ({ text: '', start: 0, end: 0 })}
+            insertIfUnchanged={insertIfUnchanged}
+            insertAtCursor={vi.fn()}
+          />,
+        );
+        expect(document.querySelector('[data-ds-layer][data-state="closed"]')).not.toBeNull();
+        expect(screen.queryByText('你好世界')).toBeNull();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   describe('keyboard focus', () => {
     it('moves from the mic button to 完成, to the pill while transcribing, and back to the mic button', async () => {
       let finish: (value: unknown) => void = () => {};
@@ -285,6 +409,14 @@ describe('VoiceInputControl', () => {
 
   describe('the level meter', () => {
     afterEach(() => { delete document.documentElement.dataset.motion; });
+
+    it('is drawn in the neutral text color, not in a status color', async () => {
+      renderControl();
+      await userEvent.click(screen.getByRole('button', { name: 'Voice' }));
+      const meter = (await screen.findByTestId('voice-recording-bar')).querySelector('[aria-hidden="true"]');
+      expect(meter).toHaveClass('text-label');
+      expect(meter).not.toHaveClass('text-danger');
+    });
 
     it('follows the input level', async () => {
       renderControl();

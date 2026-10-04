@@ -181,9 +181,40 @@ export default function VoiceInputControl({
     setPhase({ kind: 'idle' });
   }, [abort]);
 
-  // Conversation switch: nothing recorded for the old draft may land in the new one.
+  // The card over the mic button. It keeps its content while it fades out (`heldCard`).
+  const cardPhase: CardPhase | null =
+    phase.kind === 'setup' || phase.kind === 'pending' || phase.kind === 'error' ? phase : null;
+  const [heldCard, setHeldCard] = useState<CardPhase | null>(cardPhase);
+  if (cardPhase && heldCard !== cardPhase) setHeldCard(cardPhase);
+  // The pill replaces the mic button and its card at once: no fade, nothing to keep.
+  if (!cardPhase && phase.kind !== 'idle' && heldCard) setHeldCard(null);
+  const shownCard = cardPhase ?? heldCard;
+
+  // One menu or popover is open at a time, so the card closes when another layer opens. A held
+  // transcript is the user's input: it stays held (`steppedAside`) and the card shows it again
+  // once that layer has gone. Only the user's answer, Escape, a new recording or a conversation
+  // switch ends it.
+  const [steppedAside, setSteppedAside] = useState(false);
+  if (steppedAside && phase.kind !== 'pending') setSteppedAside(false);
+  // The card that is open now; its buttons act only on this one.
+  const openCard = steppedAside ? null : cardPhase;
+  useEffect(() => {
+    if (!steppedAside) return;
+    // The other layer joins the page in the commit that closed the card and leaves it later:
+    // every change of the page after that is checked for an open layer.
+    const returnWhenAlone = () => {
+      if (!document.querySelector('[data-ds-layer][data-state="open"]')) setSteppedAside(false);
+    };
+    const observer = new MutationObserver(returnWhenAlone);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
+    return () => observer.disconnect();
+  }, [steppedAside]);
+
+  // Conversation switch: nothing recorded for the old draft may land in the new one,
+  // and the card that fades out shows nothing of it.
   useEffect(() => {
     cancel();
+    setHeldCard(null);
   }, [resetKey, cancel]);
 
   // Release the microphone when the composer goes away.
@@ -191,7 +222,8 @@ export default function VoiceInputControl({
 
   const active = phase.kind === 'starting' || phase.kind === 'recording' || phase.kind === 'transcribing';
   useEffect(() => {
-    if (phase.kind === 'idle') return;
+    // While the card has stepped aside for another layer, Escape belongs to that layer.
+    if (phase.kind === 'idle' || steppedAside) return;
     // Capture phase + stopPropagation: Escape here must not also reach the
     // composer (which can stop a streaming reply) or close an outer view.
     const onKey = (event: KeyboardEvent) => {
@@ -202,7 +234,7 @@ export default function VoiceInputControl({
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [cancel, phase.kind]);
+  }, [cancel, phase.kind, steppedAside]);
 
   useEffect(() => {
     if (!active) return;
@@ -212,14 +244,6 @@ export default function VoiceInputControl({
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [active, cancel, phase.kind]);
-
-  // The card over the mic button. It keeps its content while it fades out; its buttons
-  // act only while it is open (`cardPhase`).
-  const cardPhase: CardPhase | null =
-    phase.kind === 'setup' || phase.kind === 'pending' || phase.kind === 'error' ? phase : null;
-  const [heldCard, setHeldCard] = useState<CardPhase | null>(cardPhase);
-  if (cardPhase && heldCard !== cardPhase) setHeldCard(cardPhase);
-  const shownCard = cardPhase ?? heldCard;
 
   // The mic button and the pill replace each other. When the control held the focus and the
   // focused element has just left the page, the focus moves on inside the control.
@@ -243,23 +267,29 @@ export default function VoiceInputControl({
   };
 
   const closeCard = () => {
-    if (!cardPhase) return;
+    if (!openCard) return;
     setPhase({ kind: 'idle' });
   };
+  // Another layer opened and the layer registry closed the card. Nothing else closes it this
+  // way: its buttons and Escape set the phase, and a press outside or on the mic leaves it open.
+  const cardClosedForAnotherLayer = () => {
+    if (openCard?.kind === 'pending') setSteppedAside(true);
+    else closeCard();
+  };
   const openVoiceSettings = () => {
-    if (!cardPhase) return;
+    if (!openCard) return;
     setPhase({ kind: 'idle' });
     useSettingsStore.getState().openSystemSettings('voice-input');
   };
   const insertHeldText = () => {
-    if (cardPhase?.kind !== 'pending') return;
+    if (openCard?.kind !== 'pending') return;
     // insertAtCursor puts the focus in the draft; the closing card must not take it back.
     keepFocusInDraftRef.current = true;
-    insertAtCursor(cardPhase.text);
+    insertAtCursor(openCard.text);
     setPhase({ kind: 'idle' });
   };
   const openMicSettings = () => {
-    if (!cardPhase) return;
+    if (!openCard) return;
     void openMicrophoneSettings();
     setPhase({ kind: 'idle' });
   };
@@ -292,9 +322,10 @@ export default function VoiceInputControl({
           ) : (
             <>
               <span className="sr-only">{v.recording}</span>
-              {/* Listening is a status: the microphone shape plus the status color. The bars are the
-                  input level, set per frame from the recorder (no CSS animation). */}
-              <span className="flex items-center gap-1 text-danger" aria-hidden="true">
+              {/* Listening is shown by the microphone shape, the moving bars and the running time, in
+                  the neutral text color. The bars are the input level, set per frame from the
+                  recorder (no CSS animation). */}
+              <span className="flex items-center gap-1 text-label" aria-hidden="true">
                 <Icon icon={AppIcons.microphone} size="sm" />
                 <span className="flex h-4 items-center gap-0.5">
                   {levels.map((level, index) => (
@@ -326,11 +357,15 @@ export default function VoiceInputControl({
         </div>
       ) : (
         <Popover
-          open={cardPhase !== null}
-          onOpenChange={(open) => { if (!open) closeCard(); }}
+          open={openCard !== null}
+          onOpenChange={(open) => { if (!open) cardClosedForAnotherLayer(); }}
           onCloseAutoFocus={(event) => {
-            if (keepFocusInDraftRef.current) event.preventDefault();
+            // The focus returns to the mic button only when the control held it. With the focus
+            // in the draft it stays there: a key meant for the draft must never reach the mic button.
+            if (keepFocusInDraftRef.current || !heldFocusRef.current) event.preventDefault();
             keepFocusInDraftRef.current = false;
+            // The card has left the page: nothing of it stays in state.
+            setHeldCard(null);
           }}
           staysOnOutsidePress
           side="top"

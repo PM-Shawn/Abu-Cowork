@@ -73,6 +73,15 @@ describe('Popover', () => {
       expect(screen.queryByRole('button', { name: 'Use it' })).toBeNull();
     });
 
+    it('still closes on Escape', async () => {
+      const user = userEvent.setup();
+      render(<Host staysOnOutsidePress />);
+      await user.click(screen.getByRole('button', { name: 'Details' }));
+      expect(screen.getByRole('button', { name: 'Use it' })).toBeInTheDocument();
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('button', { name: 'Use it' })).toBeNull();
+    });
+
     it('still closes from its own button', async () => {
       const user = userEvent.setup();
       render(<Host staysOnOutsidePress />);

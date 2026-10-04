@@ -6,6 +6,8 @@ import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Popover } from '@/components/ds/popover';
 import { Spinner } from '@/components/ds/spinner';
+import { FOCUS_RING } from '@/components/ds/styles';
+import { cn } from '@/lib/utils';
 import { Recording } from '@/core/speech/recording';
 import { transcribeSpeech } from '@/core/speech/speechBridge';
 import { describeVoiceError, type VoiceDraftSnapshot } from '@/core/speech/voiceInputText';
@@ -315,7 +317,7 @@ export default function VoiceInputControl({
           role="group"
           aria-label={transcribing ? v.transcribing : v.recording}
           data-testid="voice-recording-bar"
-          className="flex h-7 shrink-0 items-center gap-2 rounded-control bg-fill pl-2 pr-1 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          className={cn('flex h-7 shrink-0 items-center gap-2 rounded-control bg-fill pl-2 pr-1', FOCUS_RING)}
         >
           {transcribing ? (
             <Spinner size="sm" label={v.transcribing} />

@@ -539,8 +539,9 @@ Migration list: `src/components/toolbox/**` is on it; `customize/` and `common/`
 
 **Other pages (batch 7b)**: the automation page shares the extensions shell: `TopTabNav`, and
 `ToolCard` for task and listener cards. The schedule and trigger editors are `Dialog size="lg"`;
-each fills its form when it opens or moves to another item and reads that item from the store
-without subscribing to it, so a run recorded meanwhile leaves what was typed alone. A small,
+each fills its form when it opens or moves to another item, from the item as the store holds it at
+that moment, and does not refill when the item changes, so a run recorded meanwhile leaves what was
+typed alone. A small,
 mutually exclusive choice inside a draft form is a `SegmentedControl` (frequency, weekday, source,
 filter, output) or a `RadioGroup` (listen scope, extract mode); a choice from a list (hour, minute,
 skill, project, channel, push platform) and both autonomy choices (a task's and a listener's) are

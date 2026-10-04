@@ -82,7 +82,7 @@ export default function VoiceInputSection() {
     { value: 'huggingface', label: v.sourceHuggingface },
   ];
 
-  // A download or a delete started from the settings window while it fades out is not what the user asked for.
+  // A download started from the settings window while it fades out is not what the user asked for.
   const settingsOpen = () => useSettingsStore.getState().systemSettingsOpen;
 
   const handleDownload = () => {

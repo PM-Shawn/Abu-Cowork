@@ -2098,6 +2098,41 @@ describe('AddProviderModal — behaviour pins', () => {
       expect(button).not.toHaveAttribute('aria-disabled');
     });
 
+    // Two presses can arrive before the window has drawn the button as busy: the check itself
+    // refuses a second run while the first is out.
+    it('runs one check when the button is pressed twice before the window draws again', async () => {
+      let finish: (result: { success: boolean; latencyMs: number }) => void = () => undefined;
+      vi.mocked(checkProviderHealth).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      fillDeepSeek();
+      const button = screen.getByRole('button', { name: t().settings.validateConnection });
+
+      act(() => {
+        button.click();
+        button.click();
+      });
+      expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+
+      await act(async () => { finish({ success: true, latencyMs: 88 }); });
+      expect(screen.getByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeInTheDocument();
+
+      // Once the answer is in, the button checks again.
+      vi.mocked(checkProviderHealth).mockResolvedValue({ success: true, latencyMs: 12 });
+      await act(async () => { button.click(); });
+      expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+    });
+
+    it('checks again after a check that threw', async () => {
+      vi.mocked(checkProviderHealth).mockRejectedValueOnce(new Error('network down'));
+      fillDeepSeek();
+      const button = screen.getByRole('button', { name: t().settings.validateConnection });
+      await act(async () => { button.click(); });
+      expect(screen.getByText(t().settings.validationFailed)).toBeInTheDocument();
+
+      vi.mocked(checkProviderHealth).mockResolvedValue({ success: true, latencyMs: 12 });
+      await act(async () => { button.click(); });
+      expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+    });
+
     it('shows the reason when the check fails', async () => {
       vi.mocked(checkProviderHealth).mockResolvedValue({ success: false, latencyMs: 0, error: 'made-up refusal' });
       fillDeepSeek();

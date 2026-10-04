@@ -49,8 +49,9 @@ function ModelRow({
     <div
       role="button"
       tabIndex={0}
-      // 带「能看图」标记时，读屏按「模型名，能看图」读出，避免两段文字连成一个词；
-      // 名字写明在行上，行里的收藏按钮不会混进行的名字
+      // With the "can see images" mark, a screen reader reads "model name, can see images", so the
+      // two pieces do not run into one word. The name is given on the row itself, which keeps the
+      // favorite button inside the row out of the row's name.
       aria-label={canSeeImages ? format(t.chat.modelRowCanSeeImages, { model: name }) : name}
       className={cn(
         'group/row flex h-7 items-center gap-1 rounded-control px-2 text-ui text-label outline-none hover:bg-fill-hover focus-visible:ring-2 focus-visible:ring-focus',

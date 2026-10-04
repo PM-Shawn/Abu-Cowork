@@ -779,8 +779,13 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   }, [baseUrl, showAdvanced, seedDeclaredDefaults]);
 
   // ── Validate connection ──
+  // The button is busy while a check is out, but two presses can arrive before the window draws
+  // it busy: the check itself refuses a second run.
+  const validatingRef = useRef(false);
   const handleValidate = useCallback(async () => {
+    if (validatingRef.current) return;
     if (!baseUrl.trim() || !apiKey.trim()) return;
+    validatingRef.current = true;
     setValidating(true);
     setValidateResult(null);
     try {
@@ -808,6 +813,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     } catch {
       setValidateResult({ success: false, message: t.settings.validationFailed });
     } finally {
+      validatingRef.current = false;
       setValidating(false);
     }
   }, [baseUrl, apiKey, selectedModels, effectiveFormat, t]);

@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useCallback, useId, useLayoutEffect, useRef, useMemo } from 'react';
+import { memo, useState, useEffect, useCallback, useId, useLayoutEffect, useRef, useMemo, type ComponentProps } from 'react';
 import { useI18n, format } from '@/i18n';
 import { scanMemoryFiles, readMemoryFile } from '@/core/memdir/scan';
 import { deleteMemory, setMemoryPrivate, setMemoryDescription } from '@/core/memdir/write';
@@ -19,7 +19,23 @@ import { StatusIcon } from '@/components/ds/status-icon';
 import { Switch } from '@/components/ds/switch';
 import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
+import { Tooltip } from '@/components/ds/tooltip';
 import { cn } from '@/lib/utils';
+
+/**
+ * The icon button that opens the explanation of the three kinds of memory. It hands the
+ * popover's trigger props on to the button, and its name shows as a tooltip when the keyboard
+ * reaches it.
+ */
+function GuideTrigger({ name, ...props }: ComponentProps<'button'> & { name: string }) {
+  return (
+    <Tooltip content={name}>
+      <Pressable {...props} aria-label={name} className="inline-flex rounded-control text-label-tertiary hover:text-label">
+        <Icon icon={AppIcons.info} size="sm" />
+      </Pressable>
+    </Tooltip>
+  );
+}
 
 function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): string {
   const map: Record<MemoryType, string> = {
@@ -525,11 +541,7 @@ export default function PersonalMemorySection() {
           <Popover
             align="start"
             className="w-85"
-            trigger={(
-              <Pressable aria-label={t.sidebar.memoryGuideTitle} className="inline-flex rounded-control text-label-tertiary hover:text-label">
-                <Icon icon={AppIcons.info} size="sm" />
-              </Pressable>
-            )}
+            trigger={<GuideTrigger name={t.sidebar.memoryGuideTitle} />}
           >
             <div className="space-y-2 text-ui-sm text-label-secondary">
               <p className="text-ui font-medium text-label">{t.sidebar.memoryGuideTitle}</p>

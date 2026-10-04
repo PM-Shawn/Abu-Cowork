@@ -316,4 +316,25 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
       expect(await messages(code, file), file).not.toEqual([]);
     }
   });
+
+  it('checks every file of the inbox, the todos page and the app page, tests included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/inbox/InboxView.tsx',
+      'src/components/inbox/InboxView.test.tsx',
+      'src/components/inbox/InboxItem.tsx',
+      'src/components/todos/TodoView.tsx',
+      'src/components/todos/TodoView.test.tsx',
+      'src/components/todos/TodoItem.tsx',
+      'src/components/app/AppPageView.tsx',
+      'src/components/app/AppPageView.test.tsx',
+      'src/components/app/AppLogo.tsx',
+      // The directory entries: a file added to one of the directories later is checked as well.
+      'src/components/inbox/NewFileOfTheDirectory.tsx',
+      'src/components/todos/NewFileOfTheDirectory.tsx',
+      'src/components/app/NewFileOfTheDirectory.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+  });
 });

@@ -201,11 +201,23 @@ function composerInput(page: Page): Locator {
 }
 
 function composerModelButton(page: Page, label: string): Locator {
-  return page.getByTestId('composer-toolbar').locator(`button[title="${label}"]`);
+  return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
+/** The switch that turns a provider on or off; it carries the provider's name. */
+function providerSwitch(scope: Page | Locator, name: string): Locator {
+  return scope.getByRole('switch', { name, exact: true });
+}
+
+/**
+ * A provider's card: the innermost element holding both that provider's switch
+ * and a delete button (ancestors come earlier in document order, hence `last`).
+ */
 function providerCard(dialog: Locator, name: string): Locator {
-  return dialog.locator('div.group', { hasText: name }).first();
+  return dialog.locator('div')
+    .filter({ has: providerSwitch(dialog.page(), name) })
+    .filter({ has: dialog.page().getByRole('button', { name: '删除', exact: true }) })
+    .last();
 }
 
 /** Add provider B next to the configured provider A and reload. */
@@ -240,11 +252,12 @@ async function openModelSettings(page: Page): Promise<Locator> {
     await sidebarToggle.click();
     await expect(sidebarToggle).not.toHaveAttribute('aria-label', /^显示/);
   }
-  await page.getByRole('button', { name: '我', exact: true }).first().click();
-  await page.getByText('设置', { exact: true }).last().click();
+  await page.getByRole('button', { name: '我', exact: true }).click();
+  await page.getByRole('menuitem', { name: '设置', exact: true }).click();
   const dialog = page.locator('[data-abu-settings-dialog]');
   await expect(dialog).toBeVisible({ timeout: READY_TIMEOUT });
-  await dialog.getByText('模型', { exact: true }).first().click();
+  await dialog.getByRole('navigation', { name: '设置', exact: true })
+    .getByRole('button', { name: '模型', exact: true }).click();
   await expect(providerCard(dialog, PROVIDER_A.name)).toBeVisible({ timeout: READY_TIMEOUT });
   return dialog;
 }
@@ -326,9 +339,13 @@ test.describe('provider deleted mid-run', () => {
       const dialog = await openModelSettings(page);
       const card = providerCard(dialog, PROVIDER_A.name);
       await card.hover();
-      await card.getByTitle('删除', { exact: true }).click();
-      await page.getByRole('button', { name: '确认', exact: true }).last().click();
-      await expect(dialog.locator('div.group', { hasText: PROVIDER_A.name })).toHaveCount(0);
+      await card.getByRole('button', { name: '删除', exact: true }).click();
+      // The question names the provider it is about to delete.
+      const question = page.getByRole('alertdialog', { name: '确定要删除这个服务吗？', exact: true });
+      await expect(question).toContainText(PROVIDER_A.name);
+      await question.getByRole('button', { name: '确认', exact: true }).click();
+      await expect(providerSwitch(dialog, PROVIDER_A.name)).toHaveCount(0);
+      await expect(dialog.getByText(PROVIDER_A.name, { exact: true })).toHaveCount(0);
       await closeSettings(page);
       expect(countOf(m, 'subagent')).toBe(0);
     });

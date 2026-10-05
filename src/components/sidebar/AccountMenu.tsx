@@ -318,7 +318,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
         >
           {updateRow.icon
             ? <span className={cn(updateRow.accent && 'font-medium')}>{updateRow.label}</span>
-            : <Spinner size="sm" label={updateRow.label} />}
+            : <Spinner size="sm" labelSize="ui" label={updateRow.label} />}
         </MenuItem>
 
         <MenuSeparator />

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, cleanup } from '@testing-library/react';
+import { act, render, screen, cleanup, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import AccountMenu from './AccountMenu';
@@ -127,5 +127,7 @@ describe('AccountMenu 里的下拉选项', () => {
     const row = screen.getByRole('menuitem', { name: '检查中...' });
     expect(row).toHaveAttribute('data-disabled');
     expect(screen.getByRole('status')).toHaveTextContent('检查中...');
+    // The words are the size of every other menu item's name.
+    expect(within(screen.getByRole('status')).getByText('检查中...')).toHaveClass('text-ui');
   });
 });

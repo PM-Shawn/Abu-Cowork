@@ -115,6 +115,21 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     }
   });
 
+  it.each([
+    ['the radix-ui package', "import { Dialog } from 'radix-ui';\n"],
+    ['a radix-ui subpath', "import { FocusScope } from 'radix-ui/internal';\n"],
+    ['a scoped @radix-ui package', "import * as Dialog from '@radix-ui/react-dialog';\n"],
+  ])('bans %s outside ds/ and allows it inside', async (_name, importLine) => {
+    const code = `${importLine}${component('<div />')}export const used = [typeof Dialog, typeof FocusScope];\n`.replace(
+      importLine.includes('FocusScope') ? 'typeof Dialog, ' : ', typeof FocusScope',
+      '',
+    );
+    const outside = await messages(code, MIGRATED);
+    expect(outside.some((message) => message.includes('use the wrappers in @/components/ds'))).toBe(true);
+    const inside = await messages(code, UI_MIGRATED);
+    expect(inside.some((message) => message.includes('use the wrappers in @/components/ds'))).toBe(false);
+  });
+
   it('bans cmdk outside ds/', async () => {
     const code = `import { Command } from 'cmdk';\n${component('<Command />')}`;
     expect(await messages(code, MIGRATED)).not.toEqual([]);

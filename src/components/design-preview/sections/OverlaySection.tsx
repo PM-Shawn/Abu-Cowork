@@ -228,9 +228,9 @@ export function OverlaySection() {
           layer
           scrim
           initialFocus={(surface) => surface.querySelector<HTMLElement>('[data-fullscreen-toggle]')}
-          className="pointer-events-none flex items-center justify-center p-8"
+          className="flex items-center justify-center p-8"
         >
-          <div className="pointer-events-auto flex items-center gap-3 rounded-panel border border-separator bg-raised px-3 py-2">
+          <div className="flex items-center gap-3 rounded-panel border border-separator bg-raised px-3 py-2">
             <span className="text-ui-sm text-label-secondary">{fullscreen ? 'Shown over the window, in place.' : 'A block that can fill the window.'}</span>
             <Button data-fullscreen-toggle="" onClick={() => setFullscreen((value) => !value)}>
               {fullscreen ? 'Exit fullscreen' : 'Fullscreen surface'}

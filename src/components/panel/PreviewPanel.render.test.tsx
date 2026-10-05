@@ -77,6 +77,8 @@ describe('PreviewPanel toolbar', () => {
     // The first character moves the save state from "Saved" to "Saving…": one toolbar render.
     fireEvent.change(editor, { target: { value: 'const a = 1;\nx' } });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Saving…'));
+    // 「Saved」 and 「Saving…」 share one slot and one text size.
+    expect(screen.getByText('Saving…')).toHaveClass('text-ui');
     const iconButtons = layerRenders.iconButton.mock.calls.length;
     const menus = layerRenders.menu.mock.calls.length;
     expect(iconButtons).toBeGreaterThan(0);

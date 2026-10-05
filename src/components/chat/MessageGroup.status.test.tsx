@@ -666,6 +666,8 @@ describe('MessageGroup stopped terminal', () => {
       <MessageGroup conversationId={conversation.id} messages={[userMessage, placeholder]} isLastGroup />,
     );
     expect(document.querySelector('[data-ds-spinner]')).not.toBeNull();
+    // Its words are text-ui, like the divider that takes this slot next.
+    expect(document.querySelector('[data-ds-spinner]')?.nextElementSibling).toHaveClass('text-ui');
     expect(screen.queryByText(/Worked for/)).toBeNull();
     expect(screen.queryByText(/Working/)).toBeNull();
 

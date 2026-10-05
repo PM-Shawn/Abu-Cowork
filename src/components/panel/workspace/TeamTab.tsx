@@ -114,7 +114,7 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
               {/* One height, size and tone for both states, so the line stays steady when the leader starts. */}
               <div className="flex h-5 items-center">
                 {leaderRunning ? (
-                  <Spinner size="sm" label={t.workspace.agentStatusRunning} />
+                  <Spinner size="sm" labelSize="ui" label={t.workspace.agentStatusRunning} />
                 ) : (
                   <span className="inline-flex items-center gap-2 text-ui text-label-secondary">
                     <DispatchMark status="idle" />

@@ -306,7 +306,7 @@ const DESIGN_IMPORT_RESTRICTION = {
     { name: 'radix-ui', message: 'Design system: use the wrappers in @/components/ds.' },
     { name: 'cmdk', message: 'Design system: use Combobox from @/components/ds/combobox.' },
   ],
-  patterns: [{ group: ['@radix-ui/*'], message: 'Design system: use the wrappers in @/components/ds.' }],
+  patterns: [{ group: ['@radix-ui/*', 'radix-ui/*'], message: 'Design system: use the wrappers in @/components/ds.' }],
 }
 
 export default defineConfig([

@@ -12,6 +12,9 @@ import { isTabbable } from './tabbable';
 
 // eslint-disable-next-line no-restricted-syntax -- FullscreenSurface is the in-place full-window surface (a dialog cannot portal a live iframe)
 const COVER = 'fixed inset-0';
+// The surface lies over its scrim. Its own box takes no pointer input and each of its children
+// does, so a press beside the content reaches the scrim under it.
+const SEE_THROUGH = 'pointer-events-none *:pointer-events-auto';
 
 // Radix FocusScope keeps the keyboard inside the element it renders. The surface's element is
 // already on the page with the content in it, and a new element around that content would rebuild
@@ -68,7 +71,10 @@ function firstControl(surface: HTMLElement): HTMLElement | null {
 // or an approval that opens replaces it, and it is turned away while an approval is on the page),
 // the app hides what the page cannot paint over, the keyboard stays inside, it opens on the
 // control `initialFocus` names (else its first control that is not a frame) and gives the focus
-// back when it leaves. `scrim` puts the dialog scrim behind it; a press on the scrim leaves.
+// back when it leaves. `scrim` puts the dialog scrim behind it, and a press on the scrim leaves.
+// The surface covers the scrim, so with `scrim` the surface's own box lets pointer input through
+// and its direct children take it: what the caller lays out as empty room around the content
+// (padding, gaps) is where the scrim can be pressed. The caller adds no pointer-events classes.
 //
 // `onExit` must close it: the owner sets `open` to false.
 export function FullscreenSurface({
@@ -181,7 +187,7 @@ export function FullscreenSurface({
       <div
         ref={attach}
         {...surfaceProps}
-        className={shown ? cn(COVER, layer ? 'z-dialog' : 'z-sticky', 'outline-none', className) : 'contents'}
+        className={shown ? cn(COVER, layer ? 'z-dialog' : 'z-sticky', 'outline-none', className, trapped && scrim && SEE_THROUGH) : 'contents'}
         style={shown ? style : undefined}
         onKeyDown={(event) => scopeKeyDown.current?.(event)}
       >

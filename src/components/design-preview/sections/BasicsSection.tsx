@@ -51,6 +51,7 @@ export function BasicsSection() {
         <Separator decorative={false} />
         <div className="flex h-6 items-center gap-4">
           <Spinner label="Saving" size="sm" />
+          <Spinner label="Checking for updates" size="sm" labelSize="ui" />
           <Spinner label="Reading 9 files" />
           <Spinner label="Loading the task" size="lg" />
           <Spinner label="Syncing" labelHidden />

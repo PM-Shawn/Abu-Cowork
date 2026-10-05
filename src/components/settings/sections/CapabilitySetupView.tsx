@@ -354,7 +354,7 @@ export function ComputerUseSetupView({
         <div className="min-w-0 flex-1" aria-live="polite">
           {/* The page's one spinner: while a check runs it stands in for the state. */}
           {checking ? (
-            <Spinner size="sm" label={t.settings.capabilityStatusChecking} />
+            <Spinner size="sm" labelSize="ui" label={t.settings.capabilityStatusChecking} />
           ) : (
             <div className="flex items-center gap-2">
               <StateMark tone={!enabled ? 'off' : ready && !modelIssue ? 'success' : 'warning'} />

@@ -247,11 +247,34 @@ describe('FullscreenSurface as a layer', () => {
     expect(surfaceOf(screen.getByTestId('content'))).toHaveAttribute('data-ds-layer');
   });
 
-  it('leaves when its backdrop is pressed', () => {
+  // The surface covers the whole window, its scrim included. happy-dom cannot say which element
+  // a press at a point reaches, so this pins what decides it in a browser: the surface's own box
+  // takes no pointer input, its content does, and the press handler is on the scrim alone.
+  it('lets a press beside its content through to the scrim, which leaves', () => {
     const onExit = vi.fn();
     render(<Stage open layer scrim onExit={onExit} />);
-    fireEvent.click(screen.getByTestId('backdrop'));
+    const content = screen.getByTestId('content');
+    const surface = surfaceOf(content);
+    const backdrop = screen.getByTestId('backdrop');
+    expect(classes(surface)).toContain('pointer-events-none');
+    expect(classes(surface)).toContain('*:pointer-events-auto');
+    expect(content.parentElement).toBe(surface);
+    expect(classes(backdrop)).not.toContain('pointer-events-none');
+
+    // A press that lands on the content, or on the surface's element itself, is no press on the scrim.
+    fireEvent.click(content);
+    fireEvent.click(surface);
+    expect(onExit).not.toHaveBeenCalled();
+    fireEvent.click(backdrop);
     expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps taking pointer input on its whole box when it has no scrim, and in the plain form', () => {
+    const view = render(<Stage open layer />);
+    expect(classes(surfaceOf(screen.getByTestId('content')))).not.toContain('pointer-events-none');
+    view.unmount();
+    render(<Stage open scrim />);
+    expect(classes(surfaceOf(screen.getByTestId('content')))).not.toContain('pointer-events-none');
   });
 
   it('opens on the control initialFocus names, and never inside a frame', () => {

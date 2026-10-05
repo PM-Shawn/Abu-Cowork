@@ -1146,6 +1146,8 @@ describe('BrowserTab native overlay visibility', () => {
       expect(view.container.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
       const status = view.getByRole('status');
       expect(status).toHaveTextContent('Finishing the current action…');
+      // The notices it trades places with set their words in text-ui.
+      expect(status.lastElementChild).toHaveClass('text-ui');
       expect(status).toContainElement(view.container.querySelector('[data-ds-spinner]') as HTMLElement);
       expect(view.queryByText(/You are in control/)).toBeNull();
       // The control button keeps its existing wording and stays unavailable.

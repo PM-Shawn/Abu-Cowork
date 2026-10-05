@@ -17,7 +17,15 @@ import type { ConfirmationInfo } from '../tools/commandSafety';
 // so this file stays sidecar-bundle-safe: settingsStore.ts's module-level
 // zustand create()/persist/secrets-bootstrap graph must never load in the
 // sidecar process. See settingsSelectors.ts's module doc.
-import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../utils/settingsSelectors';
+import {
+  getActiveApiKey,
+  getActiveProvider,
+  getModelDisplayLabel,
+  getModelUnavailableReason,
+  resolveAgentModel,
+} from '../../utils/settingsSelectors';
+import { describeModelUnavailable } from '../../utils/modelUnavailableCopy';
+import type { SettingsState } from '../../stores/settingsStore';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import {
   resolveCapabilities,
@@ -318,6 +326,42 @@ export function findMissingSubagentMcpRequirements(
   return missing;
 }
 
+/**
+ * Refuse a subagent whose model can no longer be used. `runSettings` fixes the
+ * model (the parent run's entry snapshot, so a delegate follows its
+ * conversation's model); `liveSettings` decides usability, so a provider the
+ * user removed or turned off after the parent run started is never called.
+ * Nothing switches to another model. The enterprise gateway supplies its own
+ * credentials and its pins have no personal provider entry, so neither is
+ * checked here — same rule as agentLoop's entry check.
+ */
+export function buildSubagentModelUnavailableFailure(
+  agent: Pick<SubagentDefinition, 'name' | 'model'>,
+  runSettings: Readonly<SettingsState>,
+  liveSettings: Pick<SettingsState, 'providers'>,
+): SubagentResult | null {
+  const providerId = runSettings.activeModel.providerId;
+  if (providerId === 'enterprise-gateway') return null;
+  const gatewayMode = (() => {
+    try { return resolveEffectiveLlmCreds(getActiveApiKey(runSettings), undefined).forceOpenAiCompatible; }
+    catch { return false; }
+  })();
+  if (gatewayMode) return null;
+
+  const ref = { providerId, modelId: resolveAgentModel(agent.model, runSettings) };
+  const reason = getModelUnavailableReason(liveSettings, ref);
+  if (!reason) return null;
+  logger.warn('subagent refused: model unavailable', { agent: agent.name, reason, ...ref });
+  return new SubagentResult({
+    text: describeModelUnavailable(getI18n().chat, reason, getModelDisplayLabel(runSettings, ref)).inTask,
+    toolCallCount: 0,
+    turnCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+    stopReason: 'error',
+  });
+}
+
 /** Build the structured, localized fail-fast result shared by every entry path. */
 export function buildSubagentMcpPreflightFailure(
   agent: Pick<SubagentDefinition, 'name' | 'tools' | 'disallowedTools' | 'managed'>,
@@ -533,6 +577,12 @@ export interface SubagentLoopOptions {
    * docs/2026-07-19-phase1-p3-loop-migration-staging.md §2 "正式步 3a".
    */
   settingsReader?: SettingsReader;
+  /**
+   * Current settings, read only to decide whether the run model can still be
+   * used (`settingsReader` may be the parent run's entry snapshot). Defaults to
+   * `getSettingsReader()`; the sidecar subagent host passes its own live reader.
+   */
+  liveSettingsReader?: SettingsReader;
   toolInvoker?: ToolInvoker;
   /** Same injectable-port shape as settingsReader/toolInvoker above — added alongside them once the sidecar bundle-graph fail-fast guard (scripts/build-sidecar.mjs) proved subagentLoop.ts's OTHER two bare port calls (getCapsPort/getWorkspaceReader) have the identical "statically bundled even though the fallback is never taken" problem. See P1-3a-REPORT.md's bundle-graph-battles section. */
   capsPort?: CapsPort;
@@ -607,6 +657,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   if (mcpPreflightFailure) return mcpPreflightFailure;
 
   const settings = settingsReader.getSnapshot();
+  const modelFailure = buildSubagentModelUnavailableFailure(
+    agent,
+    settings,
+    (options.liveSettingsReader ?? getSettingsReader()).getSnapshot(),
+  );
+  if (modelFailure) return modelFailure;
   const effectiveModelId = resolveAgentModel(agent.model, settings);
   const startupCreds = (() => {
     try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined); } catch { return null; }

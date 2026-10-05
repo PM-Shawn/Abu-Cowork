@@ -40,9 +40,24 @@ vi.mock('@/stores/settingsStore', () => ({
 
 // ── Mock settingsReader port ──
 // The default in-process reader snapshots the (mocked, empty) settingsStore, so
-// pin a snapshot with a known global default model.
+// pin a snapshot with a known global default model. Provider `p` lists every
+// model the tests pin; individual tests replace it to make the model unusable.
 
-const mockSnapshotProviders: unknown[] = [];
+function makeUsableProvider() {
+  return {
+    id: 'p',
+    enabled: true,
+    userAdded: true,
+    apiKey: 'test-api-key',
+    models: [{ id: 'global-model' }, { id: 'conv-model' }, { id: 'index-model' }],
+  };
+}
+const mockSnapshotProviders: unknown[] = [makeUsableProvider()];
+
+/** Replace the snapshot's provider list (model-usability tests). */
+function setProviders(...providers: unknown[]): void {
+  mockSnapshotProviders.splice(0, mockSnapshotProviders.length, ...providers);
+}
 
 vi.mock('@/core/agent/ports/settingsReader', () => ({
   getSettingsReader: () => ({
@@ -89,6 +104,7 @@ vi.mock('@/core/context/contextCompressor', () => ({
 
 import * as contextCompressor from '@/core/context/contextCompressor';
 import * as settingsStore from '@/stores/settingsStore';
+import * as llmResolver from '@/core/enterprise/llm-resolver';
 import { compactConversationManually } from './compactionService';
 import { isCompactBoundary } from './compactBoundary';
 
@@ -134,13 +150,18 @@ beforeEach(() => {
   vi.mocked(settingsStore.getEffectiveModel).mockClear();
   vi.mocked(settingsStore.getActiveProvider).mockClear();
   vi.mocked(settingsStore.getActiveApiKey).mockClear();
+  vi.mocked(llmResolver.resolveEffectiveLlmCreds).mockReturnValue({
+    apiKey: 'resolved-api-key',
+    baseUrl: undefined,
+    forceOpenAiCompatible: false,
+  });
   for (const key of Object.keys(mockConversations)) {
     delete mockConversations[key];
   }
   for (const key of Object.keys(mockConversationIndex)) {
     delete mockConversationIndex[key];
   }
-  mockSnapshotProviders.length = 0;
+  setProviders(makeUsableProvider());
   mockProbeContextWindow.mockReset();
   mockProbeContextWindow.mockResolvedValue(undefined);
 });
@@ -290,6 +311,55 @@ describe('compactConversationManually', () => {
       expect(result.compacted).toBe(true);
       expect(mockSummarize.mock.calls.at(-1)?.[1]).toMatchObject({ model: 'llama3.2', requestedContextLength: 24576, localServer: true });
       expect(mockProbeContextWindow).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('model-unavailable', () => {
+    function pinConversation() {
+      mockConversations['conv-m'] = {
+        messages: buildRounds(6),
+        model: { providerId: 'p', modelId: 'conv-model' },
+      };
+      mockSummarize.mockResolvedValue('summary');
+    }
+
+    it.each([
+      ['provider removed', () => setProviders()],
+      ['provider turned off', () => setProviders({ ...makeUsableProvider(), enabled: false })],
+      ['model no longer listed', () => setProviders({ ...makeUsableProvider(), models: [{ id: 'global-model' }] })],
+    ])('never summarizes when the pinned model is unusable: %s', async (_label, breakModel) => {
+      pinConversation();
+      breakModel();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await compactConversationManually('conv-m');
+      expect(result).toEqual({ compacted: false, reason: 'model-unavailable' });
+      expect(mockSummarize).not.toHaveBeenCalled();
+      expect(mockAddMessage).not.toHaveBeenCalled();
+      expect(mockSetIsCompressing).toHaveBeenLastCalledWith('conv-m', false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[compaction]'), expect.objectContaining({ providerId: 'p', modelId: 'conv-model' }));
+      warn.mockRestore();
+    });
+
+    it('does not check personal providers under the enterprise gateway', async () => {
+      pinConversation();
+      setProviders();
+      vi.mocked(llmResolver.resolveEffectiveLlmCreds).mockReturnValue({
+        apiKey: 'gateway-key',
+        baseUrl: 'https://gateway.example/v1',
+        forceOpenAiCompatible: true,
+      });
+      const result = await compactConversationManually('conv-m');
+      expect(result).toEqual({ compacted: true, reason: 'ok' });
+    });
+
+    it('does not check an enterprise-gateway pin against personal providers', async () => {
+      mockConversations['conv-g'] = {
+        messages: buildRounds(6),
+        model: { providerId: 'enterprise-gateway', modelId: 'gw-model' },
+      };
+      mockSummarize.mockResolvedValue('summary');
+      const result = await compactConversationManually('conv-g');
+      expect(result).toEqual({ compacted: true, reason: 'ok' });
     });
   });
 

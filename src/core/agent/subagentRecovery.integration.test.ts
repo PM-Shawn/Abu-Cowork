@@ -72,7 +72,7 @@ const mockGetActiveProvider = vi.fn(
 const mockResolveAgentModel = vi.hoisted(() => vi.fn(() => 'claude-opus-4-8'));
 vi.mock('../../stores/settingsStore', () => ({
   readConfirmedBrowserPermissionConfig: vi.fn(() => null),
-  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
+  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined, activeModel: { providerId: 'p1', modelId: 'test-model' }, providers: [] }) },
 }));
 
 // subagentLoop.ts imports getActiveProvider/getActiveApiKey/resolveAgentModel
@@ -84,6 +84,9 @@ vi.mock('../../utils/settingsSelectors', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   getActiveApiKey: () => 'sk-test',
   resolveAgentModel: (...args: unknown[]) => mockResolveAgentModel(...args),
+  // The run model stays usable here; refusing an unusable one has its own tests.
+  getModelUnavailableReason: () => null,
+  getModelDisplayLabel: (_settings: unknown, ref: { modelId: string }) => ref.modelId,
 }));
 
 vi.mock('../../stores/discoveredCapabilitiesStore', () => ({

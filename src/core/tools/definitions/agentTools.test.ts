@@ -54,6 +54,7 @@ vi.mock('../../agent/permissionBridge', () => {
 });
 vi.mock('../../agent/subagentLoop', () => ({
   buildSubagentMcpPreflightFailure: vi.fn().mockReturnValue(null),
+  buildSubagentModelUnavailableFailure: vi.fn().mockReturnValue(null),
   runSubagentLoop: vi.fn(),
   extractParentConversationSummary: vi.fn().mockReturnValue(''),
 }));

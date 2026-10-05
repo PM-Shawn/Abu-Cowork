@@ -177,6 +177,89 @@ describe('scheduleStore', () => {
       // nextRunAt should change
       expect(after).not.toBe(before);
     });
+
+    function createFullTask(): string {
+      return useScheduleStore.getState().createTask({
+        name: 'Full task',
+        description: 'Daily digest',
+        prompt: 'summarize',
+        schedule: { frequency: 'daily', time: { hour: 9, minute: 0 } },
+        skillName: 'report',
+        workspacePath: '/workspace/alpha',
+        projectId: 'project-1',
+        outputChannelId: 'channel-1',
+        outputChatIds: 'chat-1',
+        outputUserIds: 'user-1',
+        teamId: 'team-1',
+      });
+    }
+
+    it('removes optional fields that are passed as null', () => {
+      const id = createFullTask();
+
+      useScheduleStore.getState().updateTask(id, {
+        description: null,
+        skillName: null,
+        workspacePath: null,
+        projectId: null,
+        outputChannelId: null,
+        outputChatIds: null,
+        outputUserIds: null,
+        teamId: null,
+      });
+
+      const task = useScheduleStore.getState().tasks[id];
+      expect('description' in task).toBe(false);
+      expect('skillName' in task).toBe(false);
+      expect('workspacePath' in task).toBe(false);
+      expect('projectId' in task).toBe(false);
+      expect('outputChannelId' in task).toBe(false);
+      expect('outputChatIds' in task).toBe(false);
+      expect('outputUserIds' in task).toBe(false);
+      expect('teamId' in task).toBe(false);
+    });
+
+    it('keeps fields that a partial update does not mention', () => {
+      const id = createFullTask();
+
+      useScheduleStore.getState().updateTask(id, { name: 'Renamed' });
+
+      const task = useScheduleStore.getState().tasks[id];
+      expect(task.name).toBe('Renamed');
+      expect(task.description).toBe('Daily digest');
+      expect(task.skillName).toBe('report');
+      expect(task.workspacePath).toBe('/workspace/alpha');
+      expect(task.projectId).toBe('project-1');
+      expect(task.outputChannelId).toBe('channel-1');
+      expect(task.outputChatIds).toBe('chat-1');
+      expect(task.outputUserIds).toBe('user-1');
+      expect(task.teamId).toBe('team-1');
+    });
+
+    it('keeps fields whose value is undefined', () => {
+      const id = createFullTask();
+
+      useScheduleStore.getState().updateTask(id, {
+        description: undefined,
+        skillName: undefined,
+        workspacePath: undefined,
+        projectId: undefined,
+        outputChannelId: undefined,
+        outputChatIds: undefined,
+        outputUserIds: undefined,
+        teamId: undefined,
+      });
+
+      const task = useScheduleStore.getState().tasks[id];
+      expect(task.description).toBe('Daily digest');
+      expect(task.skillName).toBe('report');
+      expect(task.workspacePath).toBe('/workspace/alpha');
+      expect(task.projectId).toBe('project-1');
+      expect(task.outputChannelId).toBe('channel-1');
+      expect(task.outputChatIds).toBe('chat-1');
+      expect(task.outputUserIds).toBe('user-1');
+      expect(task.teamId).toBe('team-1');
+    });
   });
 
   // ── deleteTask ──

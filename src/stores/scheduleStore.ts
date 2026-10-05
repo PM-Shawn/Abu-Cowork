@@ -154,20 +154,26 @@ interface ScheduleActions {
     /** undefined = follow the global settings permission mode (default). */
     permissionMode?: PermissionMode;
   }) => string;
+  /**
+   * Partial update. A key that is absent or `undefined` leaves the field as it
+   * is. The optional string fields (`description`, `skillName`,
+   * `workspacePath`, `projectId`, `outputChannelId`, `outputChatIds`,
+   * `outputUserIds`, `teamId`) take `null` to remove the field from the task.
+   */
   updateTask: (
     id: string,
     data: Partial<{
       name: string;
-      description: string | undefined;
+      description: string | null;
       prompt: string;
       schedule: ScheduleConfig;
-      skillName: string | undefined;
-      workspacePath: string | undefined;
-      projectId: string | undefined;
-      outputChannelId: string | undefined;
-      outputChatIds: string | undefined;
-      outputUserIds: string | undefined;
-      teamId: string | undefined;
+      skillName: string | null;
+      workspacePath: string | null;
+      projectId: string | null;
+      outputChannelId: string | null;
+      outputChatIds: string | null;
+      outputUserIds: string | null;
+      teamId: string | null;
       /** undefined = follow the global settings permission mode. Distinct
        *  from the key being omitted — see the `'permissionMode' in data`
        *  check in the implementation below, which lets a caller explicitly
@@ -247,15 +253,32 @@ export const useScheduleStore = create<ScheduleStore>()(
           const task = state.tasks[id];
           if (!task) return;
           if (data.name !== undefined) task.name = data.name;
-          if (data.description !== undefined) task.description = data.description;
           if (data.prompt !== undefined) task.prompt = data.prompt;
-          if (data.skillName !== undefined) task.skillName = data.skillName;
-          if (data.workspacePath !== undefined) task.workspacePath = data.workspacePath;
-          if (data.projectId !== undefined) task.projectId = data.projectId;
-          if (data.outputChannelId !== undefined) task.outputChannelId = data.outputChannelId;
-          if (data.outputChatIds !== undefined) task.outputChatIds = data.outputChatIds;
-          if (data.outputUserIds !== undefined) task.outputUserIds = data.outputUserIds;
-          if ('teamId' in data) task.teamId = data.teamId;
+
+          if (data.description === null) delete task.description;
+          else if (data.description !== undefined) task.description = data.description;
+
+          if (data.skillName === null) delete task.skillName;
+          else if (data.skillName !== undefined) task.skillName = data.skillName;
+
+          if (data.workspacePath === null) delete task.workspacePath;
+          else if (data.workspacePath !== undefined) task.workspacePath = data.workspacePath;
+
+          if (data.projectId === null) delete task.projectId;
+          else if (data.projectId !== undefined) task.projectId = data.projectId;
+
+          if (data.outputChannelId === null) delete task.outputChannelId;
+          else if (data.outputChannelId !== undefined) task.outputChannelId = data.outputChannelId;
+
+          if (data.outputChatIds === null) delete task.outputChatIds;
+          else if (data.outputChatIds !== undefined) task.outputChatIds = data.outputChatIds;
+
+          if (data.outputUserIds === null) delete task.outputUserIds;
+          else if (data.outputUserIds !== undefined) task.outputUserIds = data.outputUserIds;
+
+          if (data.teamId === null) delete task.teamId;
+          else if (data.teamId !== undefined) task.teamId = data.teamId;
+
           // 'permissionMode' in data (not `!== undefined`): a caller must be
           // able to explicitly reset a task back to "follow settings"
           // (undefined) — the key being *provided* is what matters, not

@@ -1,5 +1,5 @@
 import {
-  Activity, AppWindow, Archive, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, Bot, Brain, Building2, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Chrome, CircleCheck, CircleHelp,
+  Activity, AppWindow, Archive, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, Bot, Brain, Building2, Camera, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Chrome, CircleCheck, CircleHelp,
   Circle, CircleMinus, CircleStop, CircleX, Clock, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, EyeOff, File, FileArchive, FileCode, FileImage, FileJson, FilePen, FilePlus,
   FileSearch, FileText, FileType2, FileWarning, FileX, FlaskConical, Folder, FolderInput, FolderLock, FolderOpen, FolderPlus, Globe, Hand, Hash, Heart, History, ImageIcon, ImageOff, ImagePlus, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
   LoaderCircle, Lock, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Mic, Minimize2, Minus, Monitor, MonitorCog, MousePointer2, Palette, PanelLeft, PanelRight,
@@ -205,6 +205,10 @@ export const AppIcons = {
   fileArchive: FileArchive,
   // Voice input
   microphone: Mic,
+  // Dialogs, viewers and notices (batch 8)
+  camera: Camera,
+  visible: Eye,
+  hidden: EyeOff,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;

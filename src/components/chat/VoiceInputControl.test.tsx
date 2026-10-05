@@ -313,6 +313,61 @@ describe('VoiceInputControl', () => {
       }
     });
 
+    // The card comes back by itself, one fade after the other layer has gone. By then the user may
+    // be typing in the draft again: the returning card does not take the keyboard from them.
+    it('leaves the focus in the draft when it returns after another layer has gone, and takes it again when it opens anew', async () => {
+      const insertAtCursor = vi.fn();
+      const page = (otherOpen: boolean) => (
+        <DesignSystemProvider>
+          <TextArea aria-label="Draft" />
+          <Popover open={otherOpen} trigger={<Button>Other</Button>}>Other layer</Popover>
+          <VoiceInputControl
+            resetKey="conv-1"
+            getDraftSnapshot={() => ({ text: 'draft', start: 5, end: 5 })}
+            insertIfUnchanged={() => false}
+            insertAtCursor={insertAtCursor}
+          />
+        </DesignSystemProvider>
+      );
+      const view = render(page(false));
+      await holdTranscript();
+      // Shown for the first time, the card opens on Insert.
+      await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Insert' })).toHaveFocus());
+      const draft = screen.getByRole('textbox', { name: 'Draft' });
+      const focused: string[] = [];
+      const onFocusIn = (event: FocusEvent) => {
+        if (event.target instanceof HTMLElement) focused.push(event.target.getAttribute('aria-label') ?? event.target.textContent ?? '');
+      };
+      vi.useFakeTimers();
+      try {
+        const settle = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+        view.rerender(page(true));
+        await settle(1000);
+        expect(screen.getByText('Other layer')).toBeInTheDocument();
+        expect(screen.queryByText('你好世界')).toBeNull();
+        view.rerender(page(false));
+        await settle(50);
+        act(() => draft.focus());
+        document.addEventListener('focusin', onFocusIn);
+        await settle(1000);
+        document.removeEventListener('focusin', onFocusIn);
+        expect(screen.getByText('你好世界')).toBeInTheDocument();
+        expect(draft).toHaveFocus();
+        expect(focused).toEqual([]);
+        // Its buttons act as before.
+        act(() => { fireEvent.click(screen.getByRole('button', { name: 'Discard' })); });
+        await settle(1000);
+        expect(screen.queryByText('你好世界')).toBeNull();
+        expect(insertAtCursor).not.toHaveBeenCalled();
+      } finally {
+        document.removeEventListener('focusin', onFocusIn);
+        vi.useRealTimers();
+      }
+      // A new transcript: this card has not been away, so it opens on Insert again.
+      await holdTranscript();
+      await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Insert' })).toHaveFocus());
+    });
+
     it('is offered again after another layer has opened and closed, and Insert inserts exactly that text', async () => {
       const { insertAtCursor } = renderBesideDraft();
       await holdTranscript();

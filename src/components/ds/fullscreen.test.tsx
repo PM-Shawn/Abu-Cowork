@@ -1,0 +1,482 @@
+// @vitest-environment happy-dom
+/// <reference types="@testing-library/jest-dom" />
+import { useState, type ReactNode } from 'react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from './button';
+import { Dialog } from './dialog';
+import { FullscreenSurface } from './fullscreen';
+import { Menu, MenuItem } from './menu';
+import { DesignSystemProvider } from './provider';
+
+// happy-dom does not implement the pointer-capture and scrolling calls Radix menus make while opening.
+beforeAll(() => {
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.setPointerCapture ??= () => undefined;
+  Element.prototype.releasePointerCapture ??= () => undefined;
+  Element.prototype.scrollIntoView ??= () => undefined;
+});
+
+const classes = (element: Element) => (element.getAttribute('class') ?? '').split(/\s+/);
+// The surface's own element: the parent of the content given to it.
+const surfaceOf = (content: HTMLElement) => content.parentElement as HTMLElement;
+const escape = () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' }); };
+// What a layer does once it has left the page runs one timer tick later.
+const settle = () => { act(() => { vi.runOnlyPendingTimers(); }); };
+// A press from the keyboard: the button has the focus, as it has after a real press.
+const press = (name: string) => {
+  const button = screen.getByRole('button', { name });
+  act(() => { button.focus(); });
+  fireEvent.click(button);
+};
+const enterFullscreen = () => press('Enter fullscreen');
+// Radix opens a menu on Enter and puts the focus in it one frame later.
+const openMenu = () => {
+  const trigger = screen.getByRole('button', { name: 'More' });
+  act(() => { trigger.focus(); });
+  fireEvent.keyDown(trigger, { key: 'Enter' });
+  settle();
+};
+
+interface StageProps {
+  open: boolean;
+  layer?: boolean;
+  scrim?: boolean;
+  onExit?: () => void;
+  onModalChange?: (open: boolean) => void;
+  initialFocus?: (surface: HTMLElement) => HTMLElement | null;
+  dialog?: boolean;
+  onDialogChange?: (open: boolean) => void;
+  children?: ReactNode;
+}
+
+// A page with a control outside the surface, the surface, and a dialog that can open over it.
+function Stage({ open, layer = false, scrim = false, onExit = () => undefined, onModalChange, initialFocus, dialog = false, onDialogChange, children }: StageProps) {
+  return (
+    <DesignSystemProvider onModalChange={onModalChange}>
+      <Button>Outside</Button>
+      <FullscreenSurface
+        open={open}
+        onExit={onExit}
+        label="Weather app"
+        layer={layer}
+        scrim={scrim}
+        scrimProps={{ 'data-testid': 'backdrop' }}
+        initialFocus={initialFocus}
+        className="bg-surface"
+        style={{ top: 32 }}
+      >
+        <div data-testid="content">
+          {children ?? (
+            <>
+              <Button>First</Button>
+              <Button data-exit="">Exit</Button>
+            </>
+          )}
+        </div>
+      </FullscreenSurface>
+      <Dialog open={dialog} onOpenChange={onDialogChange} title="Settings"><Button>Save</Button></Dialog>
+    </DesignSystemProvider>
+  );
+}
+
+// Owns the open state, as the app does: onExit closes the surface.
+function Owned({ onExit, ...props }: Omit<StageProps, 'open'> & { defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(props.defaultOpen ?? false);
+  return (
+    <>
+      <Button onClick={() => setOpen(true)}>Enter fullscreen</Button>
+      <Stage {...props} open={open} onExit={() => { onExit?.(); setOpen(false); }} />
+    </>
+  );
+}
+
+beforeEach(() => { vi.useFakeTimers(); });
+afterEach(() => { vi.useRealTimers(); });
+
+describe('FullscreenSurface, closed', () => {
+  it.each([[false], [true]])('renders its content with no surface around it (layer: %s)', (layer) => {
+    render(<Stage open={false} layer={layer} scrim />);
+    const surface = surfaceOf(screen.getByTestId('content'));
+    expect(surface.tagName).toBe('DIV');
+    // The element makes no box of its own: the content lays out as if it were not there.
+    expect(classes(surface)).toEqual(['contents']);
+    expect(surface).not.toHaveAttribute('data-electron-no-drag');
+    expect(surface).not.toHaveAttribute('data-ds-layer');
+    expect(surface).not.toHaveAttribute('role');
+    expect(surface).not.toHaveAttribute('aria-label');
+    expect(surface).not.toHaveAttribute('style');
+    expect(screen.queryByTestId('backdrop')).toBeNull();
+    expect(screen.getByRole('button', { name: 'First' })).toBeInTheDocument();
+  });
+
+  // A focus scope that is mounted takes the keyboard trap from the dialog that is open. A closed
+  // surface (an app block that arrives in the chat behind a dialog) must leave that dialog alone.
+  it('leaves the focus trap of an open dialog alone when it joins the page', () => {
+    function Page({ app }: { app: boolean }) {
+      return (
+        <DesignSystemProvider>
+          <Button>Outside</Button>
+          <Dialog open title="Settings"><Button>Save</Button></Dialog>
+          {app && (
+            <FullscreenSurface open={false} onExit={() => undefined} label="Weather app" layer>
+              <Button>In the app</Button>
+            </FullscreenSurface>
+          )}
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page app={false} />);
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save).toHaveFocus();
+    view.rerender(<Page app />);
+    settle();
+    expect(save).toHaveFocus();
+    // Focus that tries to leave the dialog is pulled back into it.
+    act(() => { screen.getByText('Outside').focus(); });
+    expect(save).toHaveFocus();
+  });
+});
+
+describe('FullscreenSurface, open in place (not a layer)', () => {
+  it('covers the window on the sticky level, off the drag lanes, and is no layer', () => {
+    const onModalChange = vi.fn();
+    render(<Stage open onModalChange={onModalChange} />);
+    const surface = surfaceOf(screen.getByTestId('content'));
+    expect(surface).toHaveAttribute('data-electron-no-drag');
+    expect(classes(surface)).toContain('fixed');
+    expect(classes(surface)).toContain('inset-0');
+    expect(classes(surface)).toContain('z-sticky');
+    expect(classes(surface)).not.toContain('z-dialog');
+    expect(classes(surface)).toContain('bg-surface');
+    expect(surface.style.top).toBe('32px');
+    expect(surface).not.toHaveAttribute('data-ds-layer');
+    expect(surface).not.toHaveAttribute('aria-modal');
+    expect(surface).toHaveAttribute('role', 'group');
+    expect(surface).toHaveAttribute('aria-label', 'Weather app');
+    expect(screen.queryByTestId('backdrop')).toBeNull();
+    expect(onModalChange).not.toHaveBeenCalled();
+  });
+
+  it('never has a backdrop, also when asked for one', () => {
+    render(<Stage open scrim />);
+    expect(screen.queryByTestId('backdrop')).toBeNull();
+  });
+
+  it('leaves the focus where it is when it opens and when it closes', () => {
+    const view = render(<Stage open={false} />);
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    act(() => { outside.focus(); });
+    view.rerender(<Stage open />);
+    settle();
+    expect(outside).toHaveFocus();
+    // Tab is not held inside: the page around it is still there (menus, the title bar).
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    act(() => { exit.focus(); });
+    fireEvent.keyDown(exit, { key: 'Tab' });
+    expect(exit).toHaveFocus();
+    view.rerender(<Stage open={false} />);
+    settle();
+    expect(exit).toHaveFocus();
+  });
+
+  it('leaves on Escape, and listens only while it is open', () => {
+    const onExit = vi.fn();
+    const view = render(<Stage open={false} onExit={onExit} />);
+    escape();
+    expect(onExit).not.toHaveBeenCalled();
+    view.rerender(<Stage open onExit={onExit} />);
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+    view.rerender(<Stage open={false} onExit={onExit} />);
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an Escape pressed inside a menu to the menu', () => {
+    const onExit = vi.fn();
+    render(
+      <Stage open onExit={onExit}>
+        <Menu trigger={<Button>More</Button>}><MenuItem>Reload</MenuItem></Menu>
+      </Stage>,
+    );
+    openMenu();
+    const menu = screen.getByRole('menu');
+    expect(menu).toHaveAttribute('data-ds-layer');
+    // The menu is a layer of the page above the surface.
+    expect(classes(menu)).toContain('z-popover');
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
+    escape();
+    settle();
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onExit).not.toHaveBeenCalled();
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('FullscreenSurface as a layer', () => {
+  it('is a named modal dialog on the dialog level, with the backdrop before it', () => {
+    const onModalChange = vi.fn();
+    render(<Stage open layer scrim onModalChange={onModalChange} />);
+    const surface = surfaceOf(screen.getByTestId('content'));
+    expect(screen.getByRole('dialog', { name: 'Weather app' })).toBe(surface);
+    expect(surface).toHaveAttribute('data-ds-layer');
+    expect(surface).toHaveAttribute('data-state', 'open');
+    expect(surface).toHaveAttribute('aria-modal', 'true');
+    expect(surface).toHaveAttribute('data-electron-no-drag');
+    expect(classes(surface)).toContain('fixed');
+    expect(classes(surface)).toContain('inset-0');
+    expect(classes(surface)).toContain('z-dialog');
+    expect(classes(surface)).not.toContain('z-sticky');
+    expect(classes(surface)).toContain('bg-surface');
+    const backdrop = screen.getByTestId('backdrop');
+    expect(surface.previousElementSibling).toBe(backdrop);
+    expect(classes(backdrop)).toContain('bg-scrim');
+    expect(classes(backdrop)).toContain('fixed');
+    expect(classes(backdrop)).toContain('inset-0');
+    expect(classes(backdrop)).toContain('z-dialog');
+    expect(backdrop).toHaveAttribute('data-electron-no-drag');
+    // The app hides what the page cannot paint over while a layer is open.
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+  });
+
+  it('has no backdrop unless it is asked for one', () => {
+    render(<Stage open layer />);
+    expect(screen.queryByTestId('backdrop')).toBeNull();
+    expect(surfaceOf(screen.getByTestId('content'))).toHaveAttribute('data-ds-layer');
+  });
+
+  it('leaves when its backdrop is pressed', () => {
+    const onExit = vi.fn();
+    render(<Stage open layer scrim onExit={onExit} />);
+    fireEvent.click(screen.getByTestId('backdrop'));
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens on the control initialFocus names, and never inside a frame', () => {
+    const view = render(
+      <Stage open={false} layer initialFocus={(surface) => surface.querySelector<HTMLElement>('[data-exit]')}>
+        <iframe title="App" />
+        <Button>First</Button>
+        <Button data-exit="">Exit</Button>
+      </Stage>,
+    );
+    act(() => { screen.getByRole('button', { name: 'Outside' }).focus(); });
+    view.rerender(
+      <Stage open layer initialFocus={(surface) => surface.querySelector<HTMLElement>('[data-exit]')}>
+        <iframe title="App" />
+        <Button>First</Button>
+        <Button data-exit="">Exit</Button>
+      </Stage>,
+    );
+    expect(screen.getByRole('button', { name: 'Exit' })).toHaveFocus();
+    expect(document.activeElement?.tagName).not.toBe('IFRAME');
+  });
+
+  it('moves the focus out of a frame that had it when it opened', () => {
+    const page = (open: boolean) => (
+      <Stage open={open} layer initialFocus={(surface) => surface.querySelector<HTMLElement>('[data-exit]')}>
+        <iframe title="App" tabIndex={0} />
+        <Button data-exit="">Exit</Button>
+      </Stage>
+    );
+    const view = render(page(false));
+    const frame = screen.getByTitle('App');
+    act(() => { frame.focus(); });
+    expect(frame).toHaveFocus();
+    view.rerender(page(true));
+    expect(screen.getByRole('button', { name: 'Exit' })).toHaveFocus();
+  });
+
+  it('opens on its first control when no control is named, passing over a frame', () => {
+    const page = (open: boolean) => (
+      <Stage open={open} layer>
+        <iframe title="App" tabIndex={0} />
+        <Button>First</Button>
+        <Button>Exit</Button>
+      </Stage>
+    );
+    const view = render(page(false));
+    view.rerender(page(true));
+    expect(screen.getByRole('button', { name: 'First' })).toHaveFocus();
+  });
+
+  it('opens with the focus on its own box when it holds no control', () => {
+    const page = (open: boolean) => <Stage open={open} layer><p>Nothing to press</p></Stage>;
+    const view = render(page(false));
+    view.rerender(page(true));
+    expect(surfaceOf(screen.getByTestId('content'))).toHaveFocus();
+  });
+
+  it('keeps Tab inside, going round from the last control to the first and back', () => {
+    render(<Owned layer scrim />);
+    enterFullscreen();
+    const first = screen.getByRole('button', { name: 'First' });
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    expect(first).toHaveFocus();
+    // Shift+Tab on the first control goes to the last, Tab on the last to the first. Between
+    // them the browser moves the focus itself.
+    expect(fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(exit).toHaveFocus();
+    expect(fireEvent.keyDown(exit, { key: 'Tab' })).toBe(false);
+    expect(first).toHaveFocus();
+    expect(fireEvent.keyDown(first, { key: 'Tab' })).toBe(true);
+    // Focus that code sends outside comes back in.
+    act(() => { screen.getByRole('button', { name: 'Outside' }).focus(); });
+    expect(first).toHaveFocus();
+  });
+
+  it('gives the focus back to the control that had it before, once it has closed', () => {
+    const onModalChange = vi.fn();
+    render(<Owned layer scrim onModalChange={onModalChange} />);
+    const opener = screen.getByRole('button', { name: 'Enter fullscreen' });
+    enterFullscreen();
+    expect(screen.getByRole('button', { name: 'First' })).toHaveFocus();
+    fireEvent.click(screen.getByTestId('backdrop'));
+    settle();
+    expect(opener).toHaveFocus();
+    expect(screen.queryByTestId('backdrop')).toBeNull();
+    expect(classes(surfaceOf(screen.getByTestId('content')))).toEqual(['contents']);
+    // It has no fade: the app hears that it has left as soon as it has, not one fade later.
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('leaves on Escape once, through the layer manager', () => {
+    const onExit = vi.fn();
+    render(<Owned layer scrim onExit={onExit} />);
+    enterFullscreen();
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+    settle();
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an Escape that another handler has used alone', () => {
+    const onExit = vi.fn();
+    render(<Owned layer scrim onExit={onExit} />);
+    enterFullscreen();
+    const used = (event: KeyboardEvent) => event.preventDefault();
+    document.addEventListener('keydown', used, true);
+    try {
+      escape();
+    } finally {
+      document.removeEventListener('keydown', used, true);
+    }
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it('leaves an Escape pressed inside a menu to the menu, which sits on the dialog level', () => {
+    const onExit = vi.fn();
+    render(
+      <Owned layer scrim onExit={onExit}>
+        <Menu trigger={<Button>More</Button>}><MenuItem>Reload</MenuItem></Menu>
+      </Owned>,
+    );
+    enterFullscreen();
+    openMenu();
+    const menu = screen.getByRole('menu');
+    expect(classes(menu)).toContain('z-dialog');
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
+    // The menu is a layer opened inside the surface: the surface stays.
+    expect(surfaceOf(screen.getByTestId('content'))).toHaveAttribute('data-ds-layer');
+    escape();
+    settle();
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onExit).not.toHaveBeenCalled();
+    // The focus is back on the menu's button, inside the surface.
+    expect(screen.getByRole('button', { name: 'More' })).toHaveFocus();
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('is replaced by a dialog that opens: it is told to leave, and the focus stays in the dialog', () => {
+    const onExit = vi.fn();
+    function Page({ dialog }: { dialog: boolean }) {
+      const [open, setOpen] = useState(true);
+      return <Stage open={open} layer scrim dialog={dialog} onExit={() => { onExit(); setOpen(false); }} />;
+    }
+    const view = render(<Page dialog={false} />);
+    expect(screen.getByRole('button', { name: 'First' })).toHaveFocus();
+    view.rerender(<Page dialog />);
+    expect(onExit).toHaveBeenCalledTimes(1);
+    settle();
+    expect(screen.queryByTestId('backdrop')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveFocus();
+  });
+
+  it('is turned away while an approval is on the page: told to leave, and never shown', () => {
+    const onExit = vi.fn();
+    const seen: boolean[] = [];
+    function Page({ open }: { open: boolean }) {
+      return (
+        <DesignSystemProvider>
+          <Dialog open layer="approval" role="alertdialog" title="Run this command?" footer={<Button>Cancel</Button>} />
+          <FullscreenSurface open={open} onExit={onExit} label="Weather app" layer scrim scrimProps={{ 'data-testid': 'backdrop' }}>
+            <div data-testid="content"><Button>First</Button></div>
+          </FullscreenSurface>
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page open={false} />);
+    const observer = new MutationObserver(() => {
+      seen.push(surfaceOf(screen.getByTestId('content')).hasAttribute('data-ds-layer') || screen.queryByTestId('backdrop') !== null);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    view.rerender(<Page open />);
+    observer.takeRecords();
+    observer.disconnect();
+    expect(onExit).toHaveBeenCalledTimes(1);
+    expect(surfaceOf(screen.getByTestId('content'))).not.toHaveAttribute('data-ds-layer');
+    expect(screen.queryByTestId('backdrop')).toBeNull();
+    expect(seen).not.toContain(true);
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+  });
+
+  it('tells the app it has left when it leaves the page while open', () => {
+    const onModalChange = vi.fn();
+    function Page({ mounted }: { mounted: boolean }) {
+      return (
+        <DesignSystemProvider onModalChange={onModalChange}>
+          {mounted && <FullscreenSurface open onExit={() => undefined} label="Weather app" layer><Button>First</Button></FullscreenSurface>}
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page mounted />);
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    view.rerender(<Page mounted={false} />);
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+  });
+});
+
+describe('FullscreenSurface and what is inside it', () => {
+  // A live iframe reloads when its element is rebuilt, so the content is never taken out of the tree.
+  it.each([[false], [true]])('keeps the very same content nodes when it opens and closes (layer: %s)', (layer) => {
+    const page = (open: boolean) => (
+      <Stage open={open} layer={layer} scrim>
+        <iframe title="App" />
+        <Button>Exit</Button>
+      </Stage>
+    );
+    const view = render(page(false));
+    const content = screen.getByTestId('content');
+    const frame = screen.getByTitle('App');
+    const surface = surfaceOf(content);
+    view.rerender(page(true));
+    settle();
+    expect(screen.getByTestId('content')).toBe(content);
+    expect(screen.getByTitle('App')).toBe(frame);
+    expect(surfaceOf(content)).toBe(surface);
+    expect(classes(surface)).toContain('fixed');
+    view.rerender(page(false));
+    settle();
+    expect(screen.getByTestId('content')).toBe(content);
+    expect(screen.getByTitle('App')).toBe(frame);
+    expect(surfaceOf(content)).toBe(surface);
+    expect(classes(surface)).toEqual(['contents']);
+  });
+});

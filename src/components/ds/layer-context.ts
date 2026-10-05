@@ -10,6 +10,8 @@ export interface DialogGuard {
   // Closing the dialog now would cancel work it has in flight (a sign-in round trip, an
   // install). Such a dialog steps aside for an approval and comes back; it is not closed for one.
   isBusy: () => boolean;
+  // The layer's content is on the page and painted (a closed dialog while it fades out).
+  isPainted: () => boolean;
   // Asks whether to discard the unsaved input. `onKeep` runs when the question closes any
   // other way than Discard. Returns a function that takes the question back unanswered.
   confirmDiscard: (onDiscard: () => void, onKeep?: () => void) => () => void;
@@ -33,6 +35,9 @@ export interface LayerEntry {
   release: () => void;
   isDirty: () => boolean;
   isBusy: () => boolean;
+  // Whether the layer's content is still painted on the page. After the layer has closed, the
+  // registry does not count it as gone while this holds, however long its fade runs.
+  isPainted: () => boolean;
   confirmDiscard: (onDiscard: () => void, onKeep?: () => void) => () => void;
   // Among approvals that wait their turn, an urgent one goes to the front of the line. It
   // never takes the place of the approval on the page.
@@ -51,6 +56,8 @@ export interface LayerRegistry {
   register: (entry: LayerEntry) => void;
   unregister: (id: string) => void;
   // The layer is no longer on the page: its fade has ended, or it was taken away without one.
+  // When no such report comes, the registry looks one fade after the layer closed, and again
+  // one fade later for as long as LayerEntry.isPainted() holds.
   left: (id: string) => void;
   // Escape reached a layer that is fading out: the key acts on the top open layer instead.
   escapeTop: () => void;
@@ -187,6 +194,7 @@ export function useLayer(
       focusTaken: () => { closedByRegistry.current = true; },
       isDirty: () => latest.current.guard?.isDirty() ?? false,
       isBusy: () => latest.current.guard?.isBusy() ?? false,
+      isPainted: () => latest.current.guard?.isPainted() ?? false,
       confirmDiscard: (onDiscard, onKeep) => {
         const current = latest.current.guard;
         if (!current) throw new Error('Only a dialog can ask to discard its content');

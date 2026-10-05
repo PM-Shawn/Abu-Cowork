@@ -48,9 +48,9 @@ interface Fading {
 // Also decides which DOM node floating layers portal into.
 // `onModalChange` hears whether a dialog, an alert or an approval is on the page (menus and
 // popovers do not count), once per change. A layer is on the page from the moment it is shown
-// until its fade has ended: it reports that through `left(id)`, and when no report comes (no
-// animation runs with reduced motion) one fade after it closed. The app hides what the page
-// cannot paint over (a native web view) while one is.
+// until its fade has ended: it reports that through `left(id)`. When no report comes, the
+// registry looks one fade after it closed and counts it as gone once its content is no longer
+// painted. The app hides what the page cannot paint over (a native web view) while one is.
 export function LayerProvider({ children, container, onModalChange }: {
   children: ReactNode;
   container?: HTMLElement | null;
@@ -116,14 +116,25 @@ export function LayerProvider({ children, container, onModalChange }: {
       if (isShown(id)) return;
       painted.current.delete(id);
     };
-    // The layer is no longer shown and fades out. When its fade reports no end, it has left one fade later.
-    const startFade = (id: string) => {
+    // The layer is no longer shown and fades out. Its own report that the fade has ended is what
+    // counts. One fade later the registry looks for itself: a layer whose content is still painted
+    // has not left (a fade runs long on a busy main thread), so it looks again one fade later; a
+    // layer whose content has gone with no report (its owner left the page) has left.
+    const startFade = (layer: LayerEntry) => {
+      const { id } = layer;
       if (!painted.current.has(id)) return;
       stopFadeTimer(id);
-      fadeTimers.current.set(id, setTimeout(() => {
-        left(id);
-        publish();
-      }, LAYER_FADE_MS));
+      const look = () => {
+        fadeTimers.current.set(id, setTimeout(() => {
+          if (layer.isPainted()) {
+            look();
+            return;
+          }
+          left(id);
+          publish();
+        }, LAYER_FADE_MS));
+      };
+      look();
     };
     const show = (entry: LayerEntry) => {
       layers.current = [...layers.current.filter((layer) => layer.id !== entry.id), entry];
@@ -172,7 +183,7 @@ export function LayerProvider({ children, container, onModalChange }: {
       layers.current = layers.current.filter((other) => other.id !== layer.id);
       steppedAside.current = [...steppedAside.current, layer];
       layer.hold();
-      startFade(layer.id);
+      startFade(layer);
     };
     // Every window and question that stepped aside returns: the one that left last comes back first.
     const comeBack = () => {
@@ -207,7 +218,7 @@ export function LayerProvider({ children, container, onModalChange }: {
       ));
       const gone = new Set([id, ...dropped.map((layer) => layer.id)]);
       // Whether a layer was shown is read before it is taken off every list the registry keeps.
-      const fading = [...gone].filter(isShown);
+      const fading = layers.current.filter((layer) => gone.has(layer.id));
       // The removed layer first: a dialog inside it would return focus to a control of it.
       const leaving = [...(shown ? [shown] : []), ...dropped].filter((layer) => layer.kind !== 'popover' && isShown(layer.id));
       const leftInLine = waitingApprovals.current.find((layer) => layer.id === id);
@@ -215,7 +226,7 @@ export function LayerProvider({ children, container, onModalChange }: {
       steppedAside.current = steppedAside.current.filter((layer) => !gone.has(layer.id));
       waitingApprovals.current = waitingApprovals.current.filter((layer) => !gone.has(layer.id));
       for (const key of gone) askedOver.current.delete(key);
-      for (const key of fading) startFade(key);
+      for (const layer of fading) startFade(layer);
       for (const layer of leaving) fadingLayers.current.set(layer.id, { entry: layer, taken: false });
       // Never shown: what the registry prepared for its turn is dropped with it.
       if (leftInLine) leftInLine.returnFocus.current = null;

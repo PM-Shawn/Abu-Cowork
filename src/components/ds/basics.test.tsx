@@ -36,6 +36,17 @@ describe('basic components', () => {
     expect(screen.getByText('Loading')).toHaveClass('sr-only');
   });
 
+  // The small spinner sits beside 12px text (a Tag, a row label): its words are that size too.
+  it('Spinner sizes its words with the spinner', () => {
+    const classes = (text: string) => (screen.getByText(text).getAttribute('class') ?? '').split(/\s+/);
+    render(<><Spinner size="sm" label="Checking" /><Spinner label="Loading files" /><Spinner size="lg" label="Starting" /></>);
+    expect(classes('Checking')).toContain('text-ui-sm');
+    expect(classes('Checking')).not.toContain('text-ui');
+    expect(classes('Loading files')).toContain('text-ui');
+    expect(classes('Loading files')).not.toContain('text-ui-sm');
+    expect(classes('Starting')).toContain('text-ui');
+  });
+
   it.each([
     ['success', 'text-success'],
     ['warning', 'text-warning'],

@@ -2005,14 +2005,54 @@ describe('approvals and the windows around them', () => {
     expect(order).toEqual(['modal true', 'modal false', 'focus given back']);
   });
 
-  it('tells the app one fade after a dialog closed when its fade never reports an end', () => {
+  // A fade can end later than its nominal 200 ms when the main thread is busy. Until the content
+  // has left the page the app is not told: what it hides under a dialog would show through it.
+  it('does not tell the app a dialog has left while its content is still on the page, however long the fade runs', () => {
     const onModalChange = vi.fn();
     const view = render(<Desk search onModalChange={onModalChange} />);
     view.rerender(<Desk onModalChange={onModalChange} />);
+    expect(box('Search')).toHaveAttribute('data-state', 'closed');
     expect(onModalChange.mock.calls).toEqual([[true]]);
-    act(() => { vi.advanceTimersByTime(199); });
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(box('Search')).not.toBeNull();
     expect(onModalChange.mock.calls).toEqual([[true]]);
-    act(() => { vi.advanceTimersByTime(1); });
+    act(() => { vi.advanceTimersByTime(313); });
+    expect(box('Search')).not.toBeNull();
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    endFade('Search');
     expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('tells the app within one fade when a fading dialog leaves the page with its owner', () => {
+    const onModalChange = vi.fn();
+    function Page({ open, mounted }: { open: boolean; mounted: boolean }) {
+      return (
+        <DesignSystemProvider onModalChange={onModalChange}>
+          {mounted && <Dialog open={open} title="Search"><input aria-label="Query" /></Dialog>}
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page open mounted />);
+    view.rerender(<Page open={false} mounted />);
+    expect(box('Search')).toHaveAttribute('data-state', 'closed');
+    view.rerender(<Page open={false} mounted={false} />);
+    expect(box('Search')).toBeNull();
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('drops the timer of a dialog that still fades when the provider leaves the page', () => {
+    const onModalChange = vi.fn();
+    const view = render(<Desk search onModalChange={onModalChange} />);
+    view.rerender(<Desk onModalChange={onModalChange} />);
+    act(() => { vi.advanceTimersByTime(250); });
+    expect(box('Search')).not.toBeNull();
+    onModalChange.mockClear();
+    view.unmount();
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(onModalChange).not.toHaveBeenCalled();
   });
 });

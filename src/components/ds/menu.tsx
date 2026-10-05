@@ -42,6 +42,9 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
           collisionPadding={EDGE_GAP}
           onEscapeKeyDown={onEscapeKeyDown}
           onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
+          // React sends a click in the portaled menu up to the menu's React ancestors. A card or a
+          // row that opens on click must not open because its own menu was pressed.
+          onClick={(event) => event.stopPropagation()}
           {...contentProps}
           data-ds-layer
           data-ds-motion

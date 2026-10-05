@@ -49,6 +49,8 @@ export default function AvatarPicker({ value, onChange, children }: {
     // One popover per editor. Escape closes it alone: the design-system layers close one at a time.
     <Popover
       align="start"
+      contentProps={{ 'data-testid': 'avatar-picker' }}
+      label={t.avatarPicker.chooseAvatar}
       onOpenChange={(open) => { if (open) setPendingTint(AVATAR_TINTS[0]); }}
       trigger={(
         <PickerTrigger
@@ -61,15 +63,9 @@ export default function AvatarPicker({ value, onChange, children }: {
         </PickerTrigger>
       )}
     >
-      {/* The popover offers no hook on its own box, so this one child carries the name and the
-          test id, and scrolls when the window is too short for the whole list (the popover keeps
-          its 12px of padding above and below). */}
-      <div
-        role="group"
-        aria-label={t.avatarPicker.chooseAvatar}
-        data-testid="avatar-picker"
-        className="max-h-[calc(var(--radix-popover-content-available-height)_-_1.5rem)] space-y-3 overflow-y-auto"
-      >
+      {/* The popover's own box carries the name and the test id, and scrolls when the window is
+          too short for the whole list. */}
+      <div className="space-y-3">
         <div className="space-y-1" role="group" aria-label={t.avatarPicker.color}>
           <div className="text-ui-sm font-medium text-label-secondary">{t.avatarPicker.color}</div>
           <div className="grid grid-cols-6 gap-1">

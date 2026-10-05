@@ -305,6 +305,37 @@ describe('Menu', () => {
     expect(screen.getByTestId('message-copy')).toBe(screen.getByRole('menuitem', { name: 'Copy' }));
   });
 
+  // React sends a click inside the portaled menu up to the menu's React ancestors. A card or a row
+  // that opens on click must not open because its own menu was pressed.
+  it('keeps a press on the menu from reaching a clickable ancestor, and still runs the chosen item', async () => {
+    const user = userEvent.setup();
+    const onRowClick = vi.fn();
+    const onRename = vi.fn();
+    render(
+      // A stand-in for a card that opens on click and holds a menu.
+      <div role="presentation" onClick={onRowClick}>
+        <Menu trigger={<Button>Actions</Button>}>
+          <MenuLabel>Task</MenuLabel>
+          <MenuItem onSelect={onRename}>Rename</MenuItem>
+        </Menu>
+      </div>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    onRowClick.mockClear();
+
+    // The padding of the panel, a label: places in the menu that are not an item.
+    await user.click(screen.getByRole('menu'));
+    await user.click(screen.getByText('Task'));
+    expect(onRowClick).not.toHaveBeenCalled();
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    expect(onRename).toHaveBeenCalledOnce();
+    expect(onRowClick).not.toHaveBeenCalled();
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
   it('refuses items outside a menu', () => {
     expect(() => render(<MenuItem>Orphan</MenuItem>)).toThrow(/inside <Menu> or <ContextMenu>/);
   });

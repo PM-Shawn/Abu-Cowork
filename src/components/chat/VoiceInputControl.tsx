@@ -200,6 +200,10 @@ export default function VoiceInputControl({
   if (steppedAside && phase.kind !== 'pending') setSteppedAside(false);
   // The card that is open now; its buttons act only on this one.
   const openCard = steppedAside ? null : cardPhase;
+  // The open card is one that has come back after it stepped aside. It returns by itself, a
+  // while after the other layer has gone, so it leaves the focus where the user has put it.
+  const [returning, setReturning] = useState(false);
+  if (returning && openCard === null) setReturning(false);
   useEffect(() => {
     if (!steppedAside) return;
     // The other layer joins the page in the commit that closed the card and leaves it later:
@@ -212,7 +216,9 @@ export default function VoiceInputControl({
       if (anotherLayerIsOpen() || waiting !== null) return;
       waiting = window.setTimeout(() => {
         waiting = null;
-        if (!anotherLayerIsOpen()) setSteppedAside(false);
+        if (anotherLayerIsOpen()) return;
+        setReturning(true);
+        setSteppedAside(false);
       }, LAYER_FADE_MS);
     };
     const observer = new MutationObserver(returnWhenAlone);
@@ -413,6 +419,7 @@ export default function VoiceInputControl({
         <Popover
           open={openCard !== null}
           onOpenChange={(open) => { if (!open) cardClosedForAnotherLayer(); }}
+          onOpenAutoFocus={(event) => { if (returning) event.preventDefault(); }}
           onCloseAutoFocus={(event) => {
             settleFocusAfterCard(event);
             // The card has left the page: nothing of it stays in state.
@@ -442,7 +449,7 @@ export default function VoiceInputControl({
               <p className="mt-2 line-clamp-4 text-ui text-label">{shownCard.text}</p>
               <div className="mt-3 flex justify-end gap-2">
                 <Button variant="plain" size="sm" onClick={closeCard}>{v.discard}</Button>
-                <Button variant="primary" size="sm" autoFocus onClick={insertHeldText}>{v.insert}</Button>
+                <Button variant="primary" size="sm" autoFocus={!returning} onClick={insertHeldText}>{v.insert}</Button>
               </div>
             </>
           )}

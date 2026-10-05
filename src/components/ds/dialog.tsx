@@ -9,6 +9,7 @@ import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
 import { InDialogContext, useLayer, useLayerContainer, useLayerRegistry, useOpenState } from './layer-context';
 import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, DIALOG_VIEWER, SCRIM_MOTION } from './styles';
+import { firstTabbable, lastTabbable } from './tabbable';
 
 const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
 interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
@@ -30,35 +31,6 @@ function hasOnlyCloseButton(content: HTMLElement): boolean {
     if ((element as HTMLElement & { disabled?: boolean }).disabled || element.hidden || hiddenInput) return true;
     return !(element.tabIndex >= 0);
   });
-}
-
-// Whether the Tab key reaches this element inside `content`: the test Radix makes for its own
-// first focus target, with the check that nothing up to the dialog box hides it.
-function isTabbable(element: HTMLElement, content: HTMLElement): boolean {
-  if (!(element.tabIndex >= 0)) return false;
-  const hiddenInput = element instanceof HTMLInputElement && element.type === 'hidden';
-  if ((element as HTMLElement & { disabled?: boolean }).disabled || element.hidden || hiddenInput) return false;
-  for (let node: HTMLElement | null = element; node && node !== content; node = node.parentElement) {
-    const style = getComputedStyle(node);
-    if (style.visibility === 'hidden' || style.display === 'none') return false;
-  }
-  return true;
-}
-
-function firstTabbable(content: HTMLElement, skipLinks = false): HTMLElement | null {
-  for (const element of content.querySelectorAll<HTMLElement>('*')) {
-    if (skipLinks && element.tagName === 'A') continue;
-    if (isTabbable(element, content)) return element;
-  }
-  return null;
-}
-
-function lastTabbable(content: HTMLElement): HTMLElement | null {
-  const all = content.querySelectorAll<HTMLElement>('*');
-  for (let index = all.length - 1; index >= 0; index -= 1) {
-    if (isTabbable(all[index], content)) return all[index];
-  }
-  return null;
 }
 
 // Tab pressed while focus is on the dialog box itself (after a press on an empty part of it, or
@@ -179,11 +151,14 @@ export function Dialog({
 
   const registry = useLayerRegistry();
   const kind = layer === 'approval' ? 'approval' : role === 'alertdialog' ? 'alert' : 'dialog';
+  const contentRef = useRef<HTMLDivElement>(null);
   const {
     id, onCloseAutoFocus, held, aside, admitted, returnFocus: returnTo, onEscapeKeyDown: passEscapeWhileClosing,
   } = useLayer(kind, isOpen, setOpen, {
     isDirty: () => dirtyRef.current,
     isBusy: () => busyRef.current,
+    // The box is on the page until its fade has ended. One that stepped aside is hidden: not painted.
+    isPainted: () => contentRef.current?.isConnected === true && !contentRef.current.hidden,
     confirmDiscard: askToDiscard,
     escape: () => { if (dismissible) requestClose(); },
   }, urgent);
@@ -192,7 +167,6 @@ export function Dialog({
   // under the approval, which is the top layer for Escape, presses and the focus trap. When it
   // returns nothing mounts, so no focus moves by itself: it goes back to the control that had it,
   // or to the dialog's first control when focus would otherwise be left on a layer that is leaving.
-  const contentRef = useRef<HTMLDivElement>(null);
   // The dialog's own discard question is hidden with it and returns with it, unanswered.
   const questionRef = useRef<HTMLDivElement>(null);
   const focusedInside = useRef<HTMLElement | null>(null);
@@ -277,7 +251,12 @@ export function Dialog({
             data-electron-no-drag
             role={role}
             onEscapeKeyDown={(event) => { passEscapeWhileClosing(event); stay?.(event); }}
-            onInteractOutside={(event) => { if (!dismissible || outsidePress === 'ignore') event.preventDefault(); }}
+            onInteractOutside={(event) => {
+              // A press on a notification (its Close, an action such as Undo) is not a press outside
+              // the dialog: the notification list is drawn over every dialog and is no part of the page behind.
+              const onNotification = event.target instanceof Element && event.target.closest('[data-ds-toasts]') !== null;
+              if (!dismissible || outsidePress === 'ignore' || onNotification) event.preventDefault();
+            }}
             onKeyDown={tabFromBox}
             onOpenAutoFocus={(event) => {
               remember(returnTo);

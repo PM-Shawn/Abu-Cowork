@@ -30,6 +30,8 @@ function FakeLayer({ name, kind, dirty = false, busy = false, urgent = false, de
     ? {
         isDirty: () => dirty,
         isBusy: () => busy,
+        // No fade: once it is not shown it is not on the page.
+        isPainted: () => false,
         confirmDiscard: (onDiscard, onKeep) => {
           const pending = { onDiscard, onKeep };
           setPendingDiscard(pending);
@@ -600,7 +602,7 @@ describe('LayerProvider', () => {
 // A layer built by hand: every call the registry makes on it goes into one shared log, in order.
 interface Spy {
   entry: LayerEntry;
-  state: { dirty: boolean; busy: boolean };
+  state: { dirty: boolean; busy: boolean; painted: boolean };
   // The discard question the registry asked on this layer, when one is pending.
   asked: () => PendingDiscard | null;
   confirmDiscard: ReturnType<typeof vi.fn>;
@@ -612,7 +614,8 @@ function spy(log: string[], name: string, kind: LayerKind, options: {
   busy?: boolean;
   urgent?: boolean;
 } = {}): Spy {
-  const state = { dirty: options.dirty ?? false, busy: options.busy ?? false };
+  // `painted`: the layer's content is still on the page after it closed (it fades out).
+  const state = { dirty: options.dirty ?? false, busy: options.busy ?? false, painted: false };
   let pending: PendingDiscard | null = null;
   const confirmDiscard = vi.fn((onDiscard: () => void, onKeep?: () => void) => {
     log.push(`${name}.confirmDiscard`);
@@ -636,6 +639,7 @@ function spy(log: string[], name: string, kind: LayerKind, options: {
     focusTaken: () => { log.push(`${name}.focusTaken`); },
     isDirty: () => state.dirty,
     isBusy: () => state.busy,
+    isPainted: () => state.painted,
     confirmDiscard,
   };
   return { entry, state, asked: () => pending, confirmDiscard };
@@ -1418,6 +1422,74 @@ describe('telling when the last dialog has left the page', () => {
     expect(onModalChange.mock.calls).toEqual([[true], [false]]);
     vi.advanceTimersByTime(LAYER_FADE_MS * 2);
     expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  // On a busy main thread a fade ends later than its nominal length. The timer never says a
+  // layer has left while its content is still on the page: what is under it would show through.
+  it('keeps saying yes after one fade while the content is still on the page, and says no once it has gone', () => {
+    vi.useFakeTimers();
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    const dialog = spy(log, 'dialog', 'dialog');
+    registry.register(dialog.entry);
+    dialog.state.painted = true;
+    registry.unregister('dialog');
+
+    vi.advanceTimersByTime(LAYER_FADE_MS);
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    vi.advanceTimersByTime(LAYER_FADE_MS * 2);
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+
+    // The content has gone and nothing reported it (its owner left the page).
+    dialog.state.painted = false;
+    vi.advanceTimersByTime(LAYER_FADE_MS);
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('says no when the fade reports its end, however late, and looks no more', () => {
+    vi.useFakeTimers();
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    const dialog = spy(log, 'dialog', 'dialog');
+    registry.register(dialog.entry);
+    dialog.state.painted = true;
+    registry.unregister('dialog');
+
+    vi.advanceTimersByTime(LAYER_FADE_MS * 2 + 113);
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    dialog.state.painted = false;
+    registry.left('dialog');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('drops every timer when the provider goes away, also one that waits for content to leave', () => {
+    vi.useFakeTimers();
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry, view } = mountRegistry(onModalChange);
+    const fading = spy(log, 'fading', 'dialog');
+    const gone = spy(log, 'gone', 'dialog');
+    registry.register(fading.entry);
+    fading.state.painted = true;
+    registry.unregister('fading');
+    registry.register(gone.entry);
+    registry.unregister('gone');
+    // One timer has fired and armed itself again; the other is still pending.
+    vi.advanceTimersByTime(LAYER_FADE_MS / 2);
+    expect(vi.getTimerCount()).toBe(2);
+    vi.advanceTimersByTime(LAYER_FADE_MS / 2);
+    expect(vi.getTimerCount()).toBe(1);
+    onModalChange.mockClear();
+
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    fading.state.painted = false;
+    vi.advanceTimersByTime(LAYER_FADE_MS * 4);
+    expect(onModalChange).not.toHaveBeenCalled();
   });
 });
 

@@ -381,6 +381,7 @@ export async function requestFilePermission(request: Parameters<FilePermissionCa
 // ── Workspace Request Infrastructure ──
 
 export interface WorkspaceRequest {
+  id: string;
   reason: string;
   conversationId: string;
   suggestedPath?: string;
@@ -405,6 +406,15 @@ export function getPendingWorkspaceRequest(): WorkspaceRequest | null {
  */
 export function resolveWorkspaceRequest(path: string | null): void {
   approvalBridge.resolveActive('workspace', path);
+}
+
+/**
+ * Resolve one specific workspace request. No-op when that request is no
+ * longer the pending one (timed out, drained, or replaced) — for answers that
+ * arrive after an await, such as a folder picked in the system dialog.
+ */
+export function resolveWorkspaceRequestById(id: string, path: string | null): void {
+  approvalBridge.resolve('workspace', id, path);
 }
 
 /**

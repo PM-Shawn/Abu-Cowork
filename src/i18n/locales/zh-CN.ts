@@ -2366,6 +2366,7 @@ const zhCN: TranslationDict = {
       ],
       authorizeWarning: '阿布可以读写此目录下的所有文件。请确保你信任此操作。',
     },
+    folderRequestEnded: '这次选择文件夹的请求已经结束，刚才选的文件夹没有生效。',
     abuCanDo: '阿布将可以：',
     allowOnce: '允许本次',
     allowAlways: '总是允许',

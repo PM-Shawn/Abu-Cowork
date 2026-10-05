@@ -2364,6 +2364,7 @@ const enUS: TranslationDict = {
       ],
       authorizeWarning: 'Abu can read and write all files under this directory. Make sure you trust this operation.',
     },
+    folderRequestEnded: 'That folder request has already ended, so the folder you picked was not applied.',
     abuCanDo: 'Abu will be able to:',
     allowOnce: 'Allow Once',
     allowAlways: 'Always Allow',

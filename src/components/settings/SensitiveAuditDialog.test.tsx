@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import CloseDialog from '@/components/common/CloseDialog';
 import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -359,18 +360,55 @@ describe('SensitiveAuditDialog', () => {
       expect(within(again).getAllByRole('checkbox')).toHaveLength(3);
     });
 
-    it('goes away without marking the check done when the real settings window yields to a blocking prompt', async () => {
-      render(<><SystemSettingsDialog /><SensitiveAuditDialog /></>, { wrapper: DesignSystemProvider });
+    it('goes away without marking the check done when the real settings window closes for an approval of a task', async () => {
+      function Approval({ shown }: { shown: boolean }) {
+        return (
+          <Dialog open={shown} layer="approval" role="alertdialog" outsidePress="ignore" title="Confirm Action" footer={<Button>Cancel the command</Button>} />
+        );
+      }
+      const page = (approval: boolean) => <><SystemSettingsDialog /><SensitiveAuditDialog /><Approval shown={approval} /></>;
+      const view = render(page(false), { wrapper: DesignSystemProvider });
       askForCheck();
       await screen.findByRole('alertdialog', { name: TITLE });
       expect(screen.getByTestId('settings-view')).toBeInTheDocument();
 
-      // The close-window question arrives: the settings window closes itself to make room.
-      act(() => { usePreviewStore.setState({ appModalOpen: true }); });
-      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      // The approval arrives: the layer registry closes the settings window for it, and the
+      // question asked over that window with it.
+      view.rerender(page(true));
+      expect(await screen.findByRole('alertdialog', { name: 'Confirm Action' })).toBeInTheDocument();
+      expect(screen.queryByRole('alertdialog', { name: TITLE })).toBeNull();
       expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
       expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
       expect(setMemoryPrivate).not.toHaveBeenCalled();
+    });
+
+    it('gives way to the close-window question without marking the check done; the settings window stays', async () => {
+      const onQuit = vi.fn();
+      function CloseQuestion() {
+        const open = usePreviewStore((s) => s.appModalOpen);
+        return (
+          <CloseDialog
+            open={open}
+            hasRunningAgent={false}
+            onQuit={onQuit}
+            onMinimize={() => undefined}
+            onCancel={() => usePreviewStore.getState().setAppModalOpen(false)}
+            onCloseActionChange={() => undefined}
+          />
+        );
+      }
+      render(<><SystemSettingsDialog /><SensitiveAuditDialog /><CloseQuestion /></>, { wrapper: DesignSystemProvider });
+      askForCheck();
+      await screen.findByRole('alertdialog', { name: TITLE });
+
+      // A newer question takes the place of the one on screen.
+      act(() => { usePreviewStore.setState({ appModalOpen: true }); });
+      expect(await screen.findByRole('alertdialog', { name: '关闭窗口' })).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole('alertdialog', { name: TITLE })).toBeNull());
+      expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
+      expect(useSettingsStore.getState().hasRunSensitiveAudit_v015).toBe(false);
+      expect(setMemoryPrivate).not.toHaveBeenCalled();
+      expect(onQuit).not.toHaveBeenCalled();
     });
 
     it('goes away without marking the check done when another dialog takes the place of the settings window', async () => {

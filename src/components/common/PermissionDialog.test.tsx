@@ -322,6 +322,19 @@ describe('path and folder grants as an approval layer', () => {
     expect(button('关闭')).toBeInTheDocument();
   });
 
+  it('describes a request that names no folder by the explanation it shows, once', () => {
+    open(noFolder);
+    expect(approval('选择工作目录')).toHaveAccessibleDescription('阿布需要知道在哪个文件夹里工作');
+    expect(screen.getAllByText('阿布需要知道在哪个文件夹里工作')).toHaveLength(1);
+    // The hint under the button is no part of the description.
+    expect(screen.getByText('仅访问你选择的文件夹')).toBeInTheDocument();
+  });
+
+  it('describes a workspace request that names a folder by its explanation', () => {
+    open(namedFolder);
+    expect(approval('工作区访问权限')).toHaveAccessibleDescription(getI18n().permission.folderSelect?.authorizeDescription ?? 'missing');
+  });
+
   it.each([
     ['a file write grant', fileWrite, '文件写入权限'],
     ['a file read grant', { type: 'file-read', path: FILE }, '文件读取权限'],

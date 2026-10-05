@@ -1,7 +1,6 @@
-import { memo, useLayoutEffect, useRef } from 'react';
+import { memo } from 'react';
 import { Dialog } from '@/components/ds/dialog';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
-import { useBlockingApprovalVisible } from '@/hooks/useBlockingApprovalVisible';
 import { useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 
@@ -10,6 +9,11 @@ import { useSettingsStore } from '@/stores/settingsStore';
  * Escape, the scrim and the close button close it; a menu, select or dialog opened inside
  * it closes first.
  *
+ * An approval of a task takes its place: the layer registry closes the window for one, turns
+ * it away while one is on screen, asks first when a form inside it holds unsaved input, and has
+ * it step aside and return when a form inside it has work in flight. The window watches no
+ * approval queue itself.
+ *
  * `memo`, with no props: the app around it renders again for every piece of a streamed reply,
  * and the page of settings on screen must not render with it.
  */
@@ -17,29 +21,16 @@ export default memo(function SystemSettingsDialog() {
   const open = useSettingsStore((s) => s.systemSettingsOpen);
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const { t } = useI18n();
-  const blocked = useBlockingApprovalVisible();
-
-  // One dialog at a time (spec flow 2): an approval or the close-window question takes over.
-  useLayoutEffect(() => {
-    if (open && blocked) closeSystemSettings();
-  }, [blocked, closeSystemSettings, open]);
-
-  // After a yield the prompt that took over is a legacy modal that takes no focus. Focus stays
-  // off the opener underneath it: Enter there would open the opener's menu over the prompt,
-  // and the Escape that closes the menu would answer the prompt.
-  const blockedRef = useRef(blocked);
-  useLayoutEffect(() => { blockedRef.current = blocked; });
 
   return (
     <Dialog
-      open={open && !blocked}
+      open={open}
       onOpenChange={(next) => { if (!next) closeSystemSettings(); }}
       title={t.settings.title}
       titleHidden
       size="page"
       closeButton={{ 'data-abu-settings-close': '' }}
       contentProps={{ 'data-abu-settings-dialog': '' }}
-      onCloseAutoFocus={(event) => { if (blockedRef.current) event.preventDefault(); }}
       // The window opens on the navigation row of the page in view.
       initialFocus={(content) => content.querySelector<HTMLElement>('nav [aria-current="page"]')}
     >

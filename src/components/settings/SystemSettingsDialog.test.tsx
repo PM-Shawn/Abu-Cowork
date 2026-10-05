@@ -4,8 +4,14 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { create } from 'zustand';
+import AccountLoginDialog from '@/components/account/AccountLoginDialog';
+import CloseDialog from '@/components/common/CloseDialog';
 import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { __resetAccountStoreForTest, useAccountStore } from '@/core/account/accountStore';
+import { drainConfirmationQueue, requestCommandConfirmationForConversation } from '@/core/agent/permissionBridge';
 import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -20,9 +26,47 @@ vi.mock('@/utils/platform', () => ({
 
 // How many times the view inside the window has rendered.
 const viewRenders = vi.hoisted(() => ({ count: 0 }));
+// A form window a settings page opens inside the settings window (the add-service form), and
+// what it reports to the layer registry: unsaved input, or work that closing it would cancel.
+const formInside = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  let state = { open: false, busy: false, dirty: false };
+  return {
+    closes: [] as boolean[],
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    get: () => state,
+    set: (next: Partial<typeof state>) => {
+      state = { ...state, ...next };
+      for (const listener of listeners) listener();
+    },
+  };
+});
 vi.mock('@/components/settings/SystemSettingsModal', async () => {
+  const { useSyncExternalStore } = await import('react');
   const { Button } = await import('@/components/ds/button');
+  const { Dialog } = await import('@/components/ds/dialog');
   const { Select } = await import('@/components/ds/select');
+  const { TextField } = await import('@/components/ds/text-field');
+  function FormInside() {
+    const form = useSyncExternalStore(formInside.subscribe, formInside.get);
+    return (
+      <Dialog
+        open={form.open}
+        busy={form.busy}
+        dirty={form.dirty}
+        onOpenChange={(next) => {
+          formInside.closes.push(next);
+          formInside.set({ open: next });
+        }}
+        title="Add a service"
+      >
+        <TextField aria-label="Service address" defaultValue="" />
+      </Dialog>
+    );
+  }
   return {
     default: () => {
       viewRenders.count += 1;
@@ -39,36 +83,55 @@ vi.mock('@/components/settings/SystemSettingsModal', async () => {
             onValueChange={() => undefined}
             options={[{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }]}
           />
+          <FormInside />
         </div>
       );
     },
   };
 });
 
-// A command approval the tests can raise; the rest of the bridge is the real one.
-const commandApproval = vi.hoisted(() => {
-  const listeners = new Set<() => void>();
-  const state = { pending: null as { conversationId: string } | null };
-  return {
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
-    },
-    get: () => state.pending,
-    set: (next: { conversationId: string } | null) => {
-      state.pending = next;
-      for (const listener of listeners) listener();
-    },
-  };
-});
-vi.mock('@/core/agent/permissionBridge', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/core/agent/permissionBridge')>()),
-  subscribeToCommandConfirmation: commandApproval.subscribe,
-  getPendingCommandConfirmation: commandApproval.get,
-}));
-
 function renderDialog() {
   return render(<SystemSettingsDialog />, { wrapper: DesignSystemProvider });
+}
+
+// An approval of a task, as an approval layer the tests raise and answer.
+const useApproval = create(() => ({ open: false }));
+const onApprovalAnswer = vi.fn();
+function Approval() {
+  const { open } = useApproval();
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onApprovalAnswer}
+      layer="approval"
+      role="alertdialog"
+      outsidePress="ignore"
+      title="Confirm Action"
+      initialFocus={(content) => content.querySelector<HTMLElement>('[data-approval-cancel]')}
+      footer={<><Button data-approval-cancel="">Cancel the command</Button><Button variant="primary">Run the command</Button></>}
+    />
+  );
+}
+const approval = () => screen.queryByRole('alertdialog', { name: 'Confirm Action' });
+
+// The close-window question as the app mounts it: `appModalOpen` is its switch.
+const onQuestionCancel = vi.fn();
+const onQuit = vi.fn();
+function CloseQuestion() {
+  const open = usePreviewStore((s) => s.appModalOpen);
+  return (
+    <CloseDialog
+      open={open}
+      hasRunningAgent={false}
+      onQuit={onQuit}
+      onMinimize={() => undefined}
+      onCancel={() => {
+        usePreviewStore.getState().setAppModalOpen(false);
+        onQuestionCancel();
+      }}
+      onCloseActionChange={() => undefined}
+    />
+  );
 }
 
 // The window opened from a button on the page, the way the account menu opens it.
@@ -103,12 +166,20 @@ describe('SystemSettingsDialog', () => {
     initLanguage('zh-CN');
     platformMock.mac = false;
     viewRenders.count = 0;
+    formInside.set({ open: false, busy: false, dirty: false });
+    formInside.closes.length = 0;
+    onApprovalAnswer.mockReset();
+    onQuestionCancel.mockReset();
+    onQuit.mockReset();
+    useApproval.setState({ open: false });
     usePreviewStore.setState({ appModalOpen: false });
     useSettingsStore.setState({ systemSettingsOpen: true });
   });
 
   afterEach(() => {
     cleanup();
+    formInside.set({ open: false, busy: false, dirty: false });
+    useApproval.setState({ open: false });
     usePreviewStore.setState({ appModalOpen: false });
     useSettingsStore.setState({ systemSettingsOpen: false });
   });
@@ -172,51 +243,241 @@ describe('SystemSettingsDialog', () => {
     expect(isOpen()).toBe(false);
   });
 
-  it('closes itself when the close-window question appears', () => {
-    renderDialog();
-    expect(settingsWindow()).not.toBeNull();
-    act(() => usePreviewStore.setState({ appModalOpen: true }));
-    expect(isOpen()).toBe(false);
-    expect(settingsWindow()).toBeNull();
-  });
+  // The question is about what is on screen: it stacks over the settings window.
+  describe('with the close-window question', () => {
+    const renderWithQuestion = () => render(<><SystemSettingsDialog /><CloseQuestion /></>, { wrapper: DesignSystemProvider });
+    const question = () => screen.queryByRole('alertdialog', { name: '关闭窗口' });
 
-  it('does not open over the close-window question', () => {
-    useSettingsStore.setState({ systemSettingsOpen: false });
-    usePreviewStore.setState({ appModalOpen: true });
-    renderDialog();
-    act(() => useSettingsStore.getState().openSystemSettings());
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(isOpen()).toBe(false);
-  });
+    it('stays open under the question, and one Escape closes the question alone', async () => {
+      const user = userEvent.setup();
+      renderWithQuestion();
+      const window = settingsWindow();
+      act(() => usePreviewStore.setState({ appModalOpen: true }));
 
-  describe('approvals of the conversation in view', () => {
-    beforeEach(() => {
-      useChatStore.setState({ activeConversationId: 'conversation-in-view' });
-      useSettingsStore.setState({ viewMode: 'chat' });
+      expect(question()).toBeInTheDocument();
+      expect(isOpen()).toBe(true);
+      expect(settingsWindow()).toBe(window);
+      expect(window).toHaveAttribute('data-state', 'open');
+      expect(window).not.toHaveAttribute('hidden');
+
+      await user.keyboard('{Escape}');
+      expect(onQuestionCancel).toHaveBeenCalledTimes(1);
+      expect(question()).toBeNull();
+      expect(isOpen()).toBe(true);
+      expect(settingsWindow()).toBe(window);
+      expect(onQuit).not.toHaveBeenCalled();
     });
 
-    afterEach(() => {
-      commandApproval.set(null);
-      useChatStore.setState({ activeConversationId: null });
-      useSettingsStore.setState({ viewMode: 'chat' });
-    });
+    // A window that opens is a new thing on screen: the question about the old one is dropped.
+    it('cancels the question, without quitting, when the window is opened while the question is up', () => {
+      useSettingsStore.setState({ systemSettingsOpen: false });
+      usePreviewStore.setState({ appModalOpen: true });
+      renderWithQuestion();
+      expect(question()).toBeInTheDocument();
 
-    it('closes itself when a command approval appears in the chat view', () => {
-      renderDialog();
+      act(() => useSettingsStore.getState().openSystemSettings());
+      expect(isOpen()).toBe(true);
       expect(settingsWindow()).not.toBeNull();
-      act(() => commandApproval.set({ conversationId: 'conversation-in-view' }));
+      expect(onQuestionCancel).toHaveBeenCalledTimes(1);
+      expect(usePreviewStore.getState().appModalOpen).toBe(false);
+      expect(onQuit).not.toHaveBeenCalled();
+    });
+  });
+
+  // Approvals are layers of their own kind: the layer registry closes the window for one, or has
+  // it step aside when a form inside it holds work in flight. The window watches no queue itself.
+  describe('when an approval arrives', () => {
+    const renderWithApproval = () => render(<><SystemSettingsDialog /><Approval /></>, { wrapper: DesignSystemProvider });
+
+    it('closes for it when nothing in it is in progress, and the approval is not answered', () => {
+      renderWithApproval();
+      expect(settingsWindow()).not.toBeNull();
+
+      act(() => useApproval.setState({ open: true }));
+      expect(isOpen()).toBe(false);
+      expect(settingsWindow()).toBeNull();
+      expect(approval()).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Cancel the command' })).toHaveFocus();
+      expect(onApprovalAnswer).not.toHaveBeenCalled();
+    });
+
+    it('does not come back by itself once the approval is answered', () => {
+      renderWithApproval();
+      act(() => useApproval.setState({ open: true }));
+      act(() => useApproval.setState({ open: false }));
       expect(isOpen()).toBe(false);
       expect(settingsWindow()).toBeNull();
     });
 
-    // The approval is drawn by the chat view; in another view nothing is on screen to yield to.
-    it('opens in another view while that approval is waiting', () => {
-      useSettingsStore.setState({ systemSettingsOpen: false, viewMode: 'automation' });
-      commandApproval.set({ conversationId: 'conversation-in-view' });
-      renderDialog();
-      act(() => useSettingsStore.getState().openSystemSettings());
-      expect(isOpen()).toBe(true);
-      expect(screen.getByRole('dialog', { name: getI18n().settings.title })).toBeInTheDocument();
+    it('is turned away when it is opened while the approval is on screen: closed at once, never on the page', () => {
+      useSettingsStore.setState({ systemSettingsOpen: false });
+      useApproval.setState({ open: true });
+      renderWithApproval();
+      let seen = false;
+      const observer = new MutationObserver(() => { if (settingsWindow()) seen = true; });
+      observer.observe(document.body, { childList: true, subtree: true });
+      try {
+        act(() => useSettingsStore.getState().openSystemSettings());
+        observer.takeRecords();
+        expect(seen).toBe(false);
+        expect(isOpen()).toBe(false);
+        expect(settingsWindow()).toBeNull();
+        expect(approval()).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Cancel the command' })).toHaveFocus();
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+      } finally {
+        observer.disconnect();
+      }
+    });
+
+    it('opens while an approval waits in a queue that no view draws', async () => {
+      useSettingsStore.setState({ systemSettingsOpen: false });
+      useChatStore.setState({ activeConversationId: 'conversation-in-view' });
+      const answers: boolean[] = [];
+      act(() => {
+        void requestCommandConfirmationForConversation(
+          { command: 'echo not-a-real-command', level: 'warn', reason: 'needs a look' },
+          'conversation-in-view',
+        ).then((answer) => { answers.push(answer); });
+      });
+      try {
+        renderDialog();
+        act(() => useSettingsStore.getState().openSystemSettings());
+        expect(isOpen()).toBe(true);
+        expect(screen.getByRole('dialog', { name: getI18n().settings.title })).toBeInTheDocument();
+        expect(answers).toEqual([]);
+      } finally {
+        act(() => { drainConfirmationQueue(); });
+        useChatStore.setState({ activeConversationId: null });
+      }
+    });
+
+    describe('with a form inside it whose work would be cancelled by closing it', () => {
+      it('steps aside with the form, neither closed, and both are back as they were when the approval has gone', async () => {
+        const user = userEvent.setup();
+        renderWithApproval();
+        act(() => formInside.set({ open: true, busy: true }));
+        const window = settingsWindow();
+        const form = screen.getByRole('dialog', { name: 'Add a service' });
+        await user.type(screen.getByRole('textbox', { name: 'Service address' }), 'https://service.example.invalid');
+
+        act(() => useApproval.setState({ open: true }));
+        expect(approval()).toBeInTheDocument();
+        expect(isOpen()).toBe(true);
+        expect(settingsWindow()).toBe(window);
+        expect(window).toHaveAttribute('hidden');
+        expect(form).toHaveAttribute('hidden');
+        expect(formInside.closes).toEqual([]);
+        expect(screen.queryByRole('dialog')).toBeNull();
+
+        // The keyboard acts on the approval alone.
+        await user.keyboard('{Escape}');
+        expect(onApprovalAnswer.mock.calls).toEqual([[false]]);
+        expect(isOpen()).toBe(true);
+        expect(formInside.closes).toEqual([]);
+
+        act(() => useApproval.setState({ open: false }));
+        expect(settingsWindow()).toBe(window);
+        expect(window).not.toHaveAttribute('hidden');
+        expect(form).not.toHaveAttribute('hidden');
+        expect(screen.getByRole('textbox', { name: 'Service address' })).toHaveValue('https://service.example.invalid');
+        expect(isOpen()).toBe(true);
+        expect(formInside.closes).toEqual([]);
+      });
+
+      // The sign-in window opens by itself under the approval with a sign-in under way. When the
+      // approval has gone it is shown; the settings window is not shown over it, nor it over
+      // the settings window, and neither is closed for the other.
+      it('waits, with its form, behind a sign-in window that opened under the approval, and returns when that window has closed', () => {
+        const cancelSignIn = vi.fn();
+        __resetAccountStoreForTest();
+        useAccountStore.setState({ status: 'awaiting_browser', cancel: cancelSignIn });
+        try {
+          render(<><SystemSettingsDialog /><AccountLoginDialog /><Approval /></>, { wrapper: DesignSystemProvider });
+          act(() => formInside.set({ open: true, busy: true }));
+          const window = settingsWindow();
+          const form = screen.getByRole('dialog', { name: 'Add a service' });
+
+          act(() => useApproval.setState({ open: true }));
+          expect(window).toHaveAttribute('hidden');
+          act(() => useSettingsStore.getState().openAccountLogin());
+          expect(document.querySelector('[data-abu-account-dialog]')).toBeNull();
+          expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+
+          act(() => useApproval.setState({ open: false }));
+          const signIn = document.querySelector<HTMLElement>('[data-abu-account-dialog]');
+          expect(signIn).not.toBeNull();
+          expect(signIn).not.toHaveAttribute('hidden');
+          expect(window).toHaveAttribute('hidden');
+          expect(form).toHaveAttribute('hidden');
+          expect(isOpen()).toBe(true);
+          expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+          expect(cancelSignIn).not.toHaveBeenCalled();
+          expect(formInside.closes).toEqual([]);
+
+          // The sign-in finishes in the browser: its window closes itself.
+          act(() => {
+            useAccountStore.setState({ status: 'signed_in', account: { serverUrl: 'https://accounts.example.invalid', userId: 'user-1', kind: 'personal', name: 'Ada', email: null } });
+          });
+          expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+          expect(settingsWindow()).toBe(window);
+          expect(window).not.toHaveAttribute('hidden');
+          expect(form).not.toHaveAttribute('hidden');
+          expect(isOpen()).toBe(true);
+          expect(cancelSignIn).not.toHaveBeenCalled();
+          expect(formInside.closes).toEqual([]);
+        } finally {
+          useSettingsStore.setState({ accountLoginOpen: false });
+          __resetAccountStoreForTest();
+        }
+      });
+    });
+
+    describe('with a form inside it that holds unsaved input', () => {
+      it('asks on the form whether to discard it; the approval waits off the page, unanswered', async () => {
+        renderWithApproval();
+        act(() => formInside.set({ open: true, dirty: true }));
+
+        act(() => useApproval.setState({ open: true }));
+        expect(await screen.findByRole('alertdialog', { name: '放弃这些内容？' })).toBeInTheDocument();
+        expect(approval()).toBeNull();
+        expect(isOpen()).toBe(true);
+        expect(settingsWindow()).not.toBeNull();
+        expect(formInside.closes).toEqual([]);
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+      });
+
+      it('keeps the window and the form after 「继续填写」, with the approval still waiting; it is shown once the form has closed', async () => {
+        const user = userEvent.setup();
+        renderWithApproval();
+        act(() => formInside.set({ open: true, dirty: true }));
+        act(() => useApproval.setState({ open: true }));
+
+        await user.click(await screen.findByRole('button', { name: '继续填写' }));
+        expect(isOpen()).toBe(true);
+        expect(screen.getByRole('dialog', { name: 'Add a service' })).toBeInTheDocument();
+        expect(approval()).toBeNull();
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+
+        // The form is saved and closes: the approval has its turn, and the settings window,
+        // which holds nothing now, closes for it.
+        act(() => formInside.set({ open: false, dirty: false }));
+        expect(approval()).toBeInTheDocument();
+        expect(isOpen()).toBe(false);
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+      });
+
+      it('closes the window and the form after 「放弃」 and shows the approval, unanswered', async () => {
+        const user = userEvent.setup();
+        renderWithApproval();
+        act(() => formInside.set({ open: true, dirty: true }));
+        act(() => useApproval.setState({ open: true }));
+
+        await user.click(await screen.findByRole('button', { name: '放弃' }));
+        expect(isOpen()).toBe(false);
+        expect(approval()).toBeInTheDocument();
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -251,20 +512,34 @@ describe('SystemSettingsDialog', () => {
       expect(opener).toHaveFocus();
     });
 
-    // A legacy prompt takes no focus: with focus on the opener underneath it, Enter would open
-    // the opener's menu over the prompt and the Escape that closes the menu would answer the prompt.
-    it('leaves focus off its opener when it yields to a blocking prompt', async () => {
+    // The approval has the page and the focus. Focus on the opener underneath it would let
+    // Enter open the opener's menu behind the approval.
+    it('leaves the focus on the approval that took its place, and gives it to its opener once the approval is answered', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      renderWithOpener();
+      render(
+        <>
+          <Button onClick={() => useSettingsStore.getState().openSystemSettings()}>Open settings</Button>
+          <SystemSettingsDialog />
+          <Approval />
+        </>,
+        { wrapper: DesignSystemProvider },
+      );
       const opener = screen.getByRole('button', { name: 'Open settings' });
       await user.click(opener);
       expect(settingsWindow()).not.toBeNull();
 
-      act(() => usePreviewStore.setState({ appModalOpen: true }));
+      act(() => useApproval.setState({ open: true }));
       await flushClose();
 
       expect(settingsWindow()).toBeNull();
+      expect(isOpen()).toBe(false);
+      expect(screen.getByRole('button', { name: 'Cancel the command' })).toHaveFocus();
       expect(opener).not.toHaveFocus();
+
+      act(() => useApproval.setState({ open: false }));
+      await flushClose();
+      expect(opener).toHaveFocus();
+      expect(onApprovalAnswer).not.toHaveBeenCalled();
     });
   });
 

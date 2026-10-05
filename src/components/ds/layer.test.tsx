@@ -769,6 +769,202 @@ describe('approval layers', () => {
     });
   });
 
+  // More than one window can be off the page for an approval: one that stepped aside when it
+  // arrived, and busy ones that opened under it. They come back one at a time. A window that
+  // comes back never takes the place of another window, nor of a question that is on the page.
+  describe('several windows waiting to come back', () => {
+    const closes = (log: string[]) => log.filter((line) => line.endsWith('.close'));
+
+    it('brings back one of two busy dialogs that opened under an approval, and the other when that one has left', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'first', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'second', 'dialog', { busy: true }).entry);
+
+      registry.unregister('approval');
+      // The one that left last is shown; the other waits, held.
+      expect(calls(log, 'second')).toEqual(['second.hold', 'second.release']);
+      expect(calls(log, 'first')).toEqual(['first.hold']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('second.escape');
+
+      registry.unregister('second');
+      expect(calls(log, 'first')).toEqual(['first.hold', 'first.release']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('first.escape');
+      expect(closes(log)).toEqual([]);
+    });
+
+    it('keeps the settings window and the form validating inside it aside while a busy sign-in that opened under the approval is on the page', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'settings', 'dialog').entry);
+      registry.register(spy(log, 'provider', 'dialog', { ancestors: ['settings'], busy: true }).entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      expect(log).toEqual(['provider.hold', 'settings.hold', 'login.hold']);
+
+      registry.unregister('approval');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+      expect(calls(log, 'settings')).toEqual(['settings.hold']);
+      expect(calls(log, 'provider')).toEqual(['provider.hold']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('login.escape');
+
+      // The sign-in ends and its window closes: the group returns, the outer window first.
+      registry.unregister('login');
+      expect(calls(log, 'settings')).toEqual(['settings.hold', 'settings.release']);
+      expect(calls(log, 'provider')).toEqual(['provider.hold', 'provider.release']);
+      expect(log.indexOf('settings.release')).toBeLessThan(log.indexOf('provider.release'));
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('provider.escape');
+      expect(closes(log)).toEqual([]);
+    });
+
+    it('does not replace the window that came back first when its work has ended meanwhile', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const second = spy(log, 'second', 'dialog', { busy: true });
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'first', 'dialog', { busy: true }).entry);
+      registry.register(second.entry);
+      second.state.busy = false;
+
+      registry.unregister('approval');
+      expect(calls(log, 'second')).toEqual(['second.hold', 'second.release']);
+      expect(calls(log, 'first')).toEqual(['first.hold']);
+      // Any later change leaves both as they are: a menu opens in the window on the page.
+      registry.register(spy(log, 'menu', 'popover', { ancestors: ['second'] }).entry);
+      expect(calls(log, 'first')).toEqual(['first.hold']);
+      expect(closes(log)).toEqual([]);
+    });
+
+    it('keeps waiting when the user opens another window over the one that came back, and returns when that one closes', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'first', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'second', 'dialog', { busy: true }).entry);
+      registry.unregister('approval');
+      expect(calls(log, 'second')).toEqual(['second.hold', 'second.release']);
+
+      // A window opened by the user replaces the one on the page, as any new window does.
+      registry.register(spy(log, 'search', 'dialog').entry);
+      expect(calls(log, 'second')).toContain('second.close');
+      expect(calls(log, 'first')).toEqual(['first.hold']);
+      expect(calls(log, 'search')).toEqual([]);
+
+      registry.unregister('search');
+      expect(calls(log, 'first')).toEqual(['first.hold', 'first.release']);
+      expect(log).not.toContain('first.close');
+      expect(log).not.toContain('search.close');
+    });
+
+    it('forgets a waiting window that its owner closes: it never comes back', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'first', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'second', 'dialog', { busy: true }).entry);
+      registry.unregister('approval');
+      registry.unregister('first');
+      registry.unregister('second');
+
+      expect(calls(log, 'first')).toEqual(['first.hold']);
+      registry.escapeTop();
+      expect(log.filter((line) => line.endsWith('.escape'))).toEqual([]);
+      expect(closes(log)).toEqual([]);
+    });
+
+    it('steps aside again for the next approval and comes back after it, the window that left last first', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'first', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'second', 'dialog', { busy: true }).entry);
+      registry.unregister('approval');
+      registry.register(spy(log, 'later', 'approval').entry);
+      expect(calls(log, 'second')).toEqual(['second.hold', 'second.release', 'second.hold']);
+      expect(calls(log, 'first')).toEqual(['first.hold']);
+
+      registry.unregister('later');
+      expect(calls(log, 'second')).toEqual(['second.hold', 'second.release', 'second.hold', 'second.release']);
+      expect(calls(log, 'first')).toEqual(['first.hold']);
+      expect(closes(log)).toEqual([]);
+    });
+
+    it('brings a question about the page back first, and the busy dialog only once the question is answered', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'quit', 'alert').entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      expect(log).toEqual(['quit.hold', 'login.hold']);
+
+      registry.unregister('approval');
+      expect(calls(log, 'quit')).toEqual(['quit.hold', 'quit.release']);
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('quit.escape');
+
+      // The question is answered by its owner.
+      registry.unregister('quit');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+      expect(closes(log)).toEqual([]);
+    });
+
+    it('keeps a question aside with the window it was asked over, and brings both back together', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'install', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'question', 'alert').entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      expect(log).toEqual(['question.hold', 'install.hold', 'login.hold']);
+
+      registry.unregister('approval');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+      expect(calls(log, 'install')).toEqual(['install.hold']);
+      expect(calls(log, 'question')).toEqual(['question.hold']);
+
+      registry.unregister('login');
+      expect(calls(log, 'install')).toEqual(['install.hold', 'install.release']);
+      expect(calls(log, 'question')).toEqual(['question.hold', 'question.release']);
+      expect(log.indexOf('install.release')).toBeLessThan(log.indexOf('question.release'));
+      expect(closes(log)).toEqual([]);
+      // The question still belongs to the window: it is answered with cancel when the window leaves.
+      registry.unregister('install');
+      expect(log[log.length - 1]).toBe('question.close');
+    });
+
+    // The user chose to keep the unsaved input, so the approval waits behind that dialog. A busy
+    // dialog that opened meanwhile waits too: it is neither asked about nor closed.
+    it('keeps a busy dialog waiting behind a dialog whose unsaved input the user kept, and brings it back after the approval', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const draft = spy(log, 'draft', 'dialog', { dirty: true });
+      registry.register(draft.entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+
+      draft.asked()?.onKeep?.();
+      expect(draft.confirmDiscard).toHaveBeenCalledTimes(1);
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      expect(calls(log, 'approval')).toEqual(['approval.hold']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('draft.escape');
+
+      // The form is saved and closes: the approval has its turn, the sign-in window after it.
+      registry.unregister('draft');
+      expect(calls(log, 'approval')).toEqual(['approval.hold', 'approval.release']);
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      registry.unregister('approval');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+      expect(closes(log)).toEqual([]);
+    });
+  });
+
   it('holds a second approval and shows it when the first leaves; neither is closed', () => {
     const log: string[] = [];
     const { registry } = mountRegistry();
@@ -1400,6 +1596,31 @@ describe('approval layers on the page', () => {
 
     view.rerender(<Approvals which="none" strict />);
     expect(screen.getByTestId('login')).toBeInTheDocument();
+  });
+
+  it('shows one of two busy windows that opened under an approval, then the other; neither is told to close', () => {
+    const onFirst = vi.fn();
+    const onSecond = vi.fn();
+    render(
+      <LayerProvider>
+        <FakeLayer name="approval" kind="approval" defaultOpen />
+        <FakeLayer name="first" kind="dialog" busy onOpenChange={onFirst} />
+        <FakeLayer name="second" kind="dialog" busy onOpenChange={onSecond} />
+      </LayerProvider>,
+    );
+    act(() => { screen.getByText('open first').click(); });
+    act(() => { screen.getByText('open second').click(); });
+    expect(screen.queryByTestId('first')).toBeNull();
+    expect(screen.queryByTestId('second')).toBeNull();
+
+    act(() => { screen.getByText('close approval').click(); });
+    expect(screen.getByTestId('second')).toBeInTheDocument();
+    expect(screen.queryByTestId('first')).toBeNull();
+
+    act(() => { screen.getByText('close second').click(); });
+    expect(screen.getByTestId('first')).toBeInTheDocument();
+    expect(onFirst.mock.calls).toEqual([[true]]);
+    expect(onSecond.mock.calls).toEqual([[true], [false]]);
   });
 
   it('shows queued approvals one at a time, the urgent one first', () => {

@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import CloseDialog from '@/components/common/CloseDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import {
@@ -86,91 +87,115 @@ describe('AccountLoginDialog opened from the settings window', () => {
     expect(close).toHaveAccessibleName('关闭');
   });
 
-  // The close-window question and the approvals of the task in view are still drawn by the old
-  // modals. A design-system dialog would leave them unable to take a press.
-  describe('while an old blocking prompt is on screen', () => {
+  // The close-window question is a question about what is on screen: it stacks over the sign-in
+  // window, which stays where it is with its sign-in going on.
+  describe('while the close-window question is asked', () => {
     const cancel = vi.fn();
+    const onQuestionCancel = vi.fn();
+    const onQuit = vi.fn();
+    function CloseQuestion() {
+      const open = usePreviewStore((s) => s.appModalOpen);
+      return (
+        <CloseDialog
+          open={open}
+          hasRunningAgent={false}
+          onQuit={onQuit}
+          onMinimize={() => undefined}
+          onCancel={() => {
+            usePreviewStore.getState().setAppModalOpen(false);
+            onQuestionCancel();
+          }}
+          onCloseActionChange={() => undefined}
+        />
+      );
+    }
+    const renderBoth = () => render(<><AccountLoginDialog /><CloseQuestion /></>, { wrapper: DesignSystemProvider });
+    const loginWindow = () => document.querySelector<HTMLElement>('[data-abu-account-dialog]');
+    const question = () => screen.queryByRole('alertdialog', { name: '关闭窗口' });
+
     beforeEach(() => {
       cancel.mockReset();
+      onQuestionCancel.mockReset();
+      onQuit.mockReset();
       useSettingsStore.setState({ systemSettingsOpen: false, accountLoginOpen: true });
       useAccountStore.setState({ status: 'awaiting_browser', cancel });
     });
     afterEach(() => { usePreviewStore.setState({ appModalOpen: false }); });
 
-    it('leaves the page without cancelling the sign-in, and comes back when the prompt has gone', () => {
-      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
-      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toHaveTextContent('请在浏览器中完成登录');
+    it.each(['awaiting_browser', 'exchanging'] as const)('stays on the page under the question with a sign-in that is %s, and nothing is cancelled when the question is', async (status) => {
+      useAccountStore.setState({ status });
+      renderBoth();
+      const window = loginWindow();
+      expect(window).not.toBeNull();
 
       act(() => { usePreviewStore.setState({ appModalOpen: true }); });
-      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(question()).toBeInTheDocument();
+      expect(loginWindow()).toBe(window);
+      expect(window).not.toHaveAttribute('hidden');
+      expect(window).toHaveAttribute('data-state', 'open');
       expect(cancel).not.toHaveBeenCalled();
       expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
-      expect(useAccountStore.getState().status).toBe('awaiting_browser');
+      expect(useAccountStore.getState().status).toBe(status);
 
-      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
-      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toHaveTextContent('请在浏览器中完成登录');
+      // One Escape closes the question alone.
+      await userEvent.setup().keyboard('{Escape}');
+      expect(onQuestionCancel).toHaveBeenCalledTimes(1);
+      expect(question()).toBeNull();
+      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBe(window);
       expect(cancel).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(useAccountStore.getState().status).toBe(status);
+      expect(onQuit).not.toHaveBeenCalled();
     });
 
-    it('leaves and comes back the same way while the sign-in is being completed', () => {
-      useAccountStore.setState({ status: 'exchanging' });
-      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
-      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
-
-      act(() => { usePreviewStore.setState({ appModalOpen: true }); });
-      expect(screen.queryByRole('dialog')).toBeNull();
-      expect(cancel).not.toHaveBeenCalled();
-      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
-      expect(useAccountStore.getState().status).toBe('exchanging');
-
-      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
-      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
-      expect(cancel).not.toHaveBeenCalled();
-      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
-    });
-
-    it('leaves and comes back the same way after a personal sign-in was asked for and has not reached the browser', async () => {
+    it('keeps a personal sign-in that was asked for through the question, and closing the window afterwards still cancels it', async () => {
+      const user = userEvent.setup();
       // The sign-in was asked for and its first step has not answered: the status has not moved yet.
       const startPersonalLogin = vi.fn(() => new Promise<string | null>(() => undefined));
       useAccountStore.setState({ status: 'signed_out', startPersonalLogin });
-      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
-      await userEvent.setup().click(screen.getByRole('button', { name: '个人账号登录' }));
+      renderBoth();
+      await user.click(screen.getByRole('button', { name: '个人账号登录' }));
       expect(startPersonalLogin).toHaveBeenCalledTimes(1);
 
       act(() => { usePreviewStore.setState({ appModalOpen: true }); });
-      expect(screen.queryByRole('dialog')).toBeNull();
+      await user.keyboard('{Escape}');
+      expect(onQuestionCancel).toHaveBeenCalledTimes(1);
       expect(cancel).not.toHaveBeenCalled();
       expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
 
-      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
-      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
-      expect(cancel).not.toHaveBeenCalled();
-      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
       // Still the same sign-in: closing the window now cancels it.
-      await userEvent.setup().keyboard('{Escape}');
+      await user.keyboard('{Escape}');
       expect(cancel).toHaveBeenCalledTimes(1);
       expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
     });
 
-    it('does not appear when it is asked for while the prompt is up, and appears afterwards', () => {
+    // A window that opens is a new thing on screen: the question about the old one is dropped.
+    it('cancels the question, without quitting, when the window is opened while the question is up', () => {
+      useSettingsStore.setState({ accountLoginOpen: false });
+      useAccountStore.setState({ status: 'signed_out' });
       usePreviewStore.setState({ appModalOpen: true });
-      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
-      expect(screen.queryByRole('dialog')).toBeNull();
+      renderBoth();
+      expect(question()).toBeInTheDocument();
 
-      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
+      act(() => { useSettingsStore.getState().openAccountLogin(); });
       expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
+      expect(onQuestionCancel).toHaveBeenCalledTimes(1);
+      expect(usePreviewStore.getState().appModalOpen).toBe(false);
+      expect(onQuit).not.toHaveBeenCalled();
       expect(cancel).not.toHaveBeenCalled();
     });
 
-    it('still closes itself when the sign-in finishes behind the prompt', () => {
-      render(<AccountLoginDialog />, { wrapper: DesignSystemProvider });
+    // The question belongs to the window it was asked over and ends with it.
+    it('closes itself when the sign-in finishes under the question; the question is cancelled, never answered', () => {
+      renderBoth();
       act(() => { usePreviewStore.setState({ appModalOpen: true }); });
       act(() => {
-        useAccountStore.setState({ status: 'signed_in', account: { serverUrl: 'https://accounts.example.com', userId: 'user-1', kind: 'personal', name: 'Ada', email: null } });
+        useAccountStore.setState({ status: 'signed_in', account: { serverUrl: 'https://accounts.example.invalid', userId: 'user-1', kind: 'personal', name: 'Ada', email: null } });
       });
       expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
-      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
-      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(onQuestionCancel).toHaveBeenCalledTimes(1);
+      expect(usePreviewStore.getState().appModalOpen).toBe(false);
+      expect(onQuit).not.toHaveBeenCalled();
       expect(cancel).not.toHaveBeenCalled();
     });
   });
@@ -290,10 +315,10 @@ describe('AccountLoginDialog opened from the settings window', () => {
       expect(onApprovalAnswer).not.toHaveBeenCalled();
     });
 
-    // The window's own way of leaving for an old prompt ends while the approval (the task's grant
-    // window, which that way does not count) is still on screen: the window asks to be shown
-    // again under the approval. It waits; the sign-in goes on.
-    describe('and an old prompt of the task in view comes and goes under it', () => {
+    // While it stands aside for one approval (the task's grant window), other requests of the
+    // task in view come and go in their queues. The window watches none of them: it stays aside,
+    // the sign-in goes on, and it returns when the approval on screen has been answered.
+    describe('and other requests of the task in view come and go while it stands aside', () => {
       beforeEach(() => {
         useChatStore.setState({ activeConversationId: 'conversation-in-view' });
         useSettingsStore.setState({ viewMode: 'chat' });
@@ -325,31 +350,41 @@ describe('AccountLoginDialog opened from the settings window', () => {
         view.rerender(<Page approval />);
         expect(loginWindow()).toHaveAttribute('hidden');
 
+        const window = loginWindow();
         const answers: (string | null)[] = [];
         act(() => { void requestWorkspace('needs a folder', 'conversation-in-view', '/fake/project').then((answer) => { answers.push(answer); }); });
-        expect(loginWindow()).toBeNull();
+        expect(loginWindow()).toBe(window);
+        expect(window).toHaveAttribute('hidden');
         expectStillSigningIn(status);
 
         // Nobody answers the workspace request: it answers itself after 60 seconds.
         act(() => { vi.advanceTimersByTime(60_000); });
         expect(getPendingWorkspaceRequest()).toBeNull();
+        expect(loginWindow()).toBe(window);
+        expect(window).toHaveAttribute('hidden');
         expectStillSigningIn(status);
         expectBackAfterTheApproval(view, status);
+        expect(loginWindow()).toBe(window);
       });
 
       it.each(['awaiting_browser', 'exchanging'] as const)('keeps a sign-in that is %s when the conversation in view changes under the approval', (status) => {
         useAccountStore.setState({ status });
         const view = render(<Page approval={false} />);
         view.rerender(<Page approval />);
+        const window = loginWindow();
         act(() => {
           void requestCommandConfirmationForConversation({ command: 'echo not-a-real-command', level: 'warn', reason: 'needs a look' }, 'conversation-in-view');
         });
-        expect(loginWindow()).toBeNull();
+        expect(loginWindow()).toBe(window);
+        expect(window).toHaveAttribute('hidden');
         expectStillSigningIn(status);
 
         act(() => { useChatStore.setState({ activeConversationId: 'another-conversation' }); });
+        expect(loginWindow()).toBe(window);
+        expect(window).toHaveAttribute('hidden');
         expectStillSigningIn(status);
         expectBackAfterTheApproval(view, status);
+        expect(loginWindow()).toBe(window);
       });
 
       it('keeps a personal sign-in that was asked for when the conversation in view changes under the approval', async () => {
@@ -371,30 +406,101 @@ describe('AccountLoginDialog opened from the settings window', () => {
       });
     });
 
-    // Until the close-window question is a design-system layer the window also leaves the page
-    // for it by itself. The two ways of leaving do not cancel the sign-in between them.
-    it.each(['awaiting_browser', 'exchanging'] as const)('keeps a sign-in that is %s when the close-window question comes and goes while it stands aside', (status) => {
-      useAccountStore.setState({ status });
-      const view = render(<Page approval={false} />);
-      view.rerender(<Page approval />);
-      act(() => { usePreviewStore.setState({ appModalOpen: true }); });
-      expect(loginWindow()).toBeNull();
-      expect(cancel).not.toHaveBeenCalled();
+    // The close-window question asked while the window stands aside stacks over the approval.
+    // It is cancelled when the approval is answered elsewhere; the sign-in window then returns.
+    describe('and the close-window question is asked while it stands aside', () => {
+      const onQuestionCancel = vi.fn();
+      const onQuit = vi.fn();
+      function CloseQuestion() {
+        const open = usePreviewStore((s) => s.appModalOpen);
+        return (
+          <CloseDialog
+            open={open}
+            hasRunningAgent={false}
+            onQuit={onQuit}
+            onMinimize={() => undefined}
+            onCancel={() => {
+              usePreviewStore.getState().setAppModalOpen(false);
+              onQuestionCancel();
+            }}
+            onCloseActionChange={() => undefined}
+          />
+        );
+      }
+      function Both({ approval }: { approval: boolean }) {
+        return (
+          <DesignSystemProvider>
+            <AccountLoginDialog />
+            <Dialog
+              open={approval}
+              onOpenChange={onApprovalAnswer}
+              layer="approval"
+              role="alertdialog"
+              outsidePress="ignore"
+              title="Confirm Action"
+              footer={<Button>Cancel the command</Button>}
+            />
+            <CloseQuestion />
+          </DesignSystemProvider>
+        );
+      }
 
-      // The approval is answered first, then the question is cancelled.
-      view.rerender(<Page approval={false} />);
-      act(() => { usePreviewStore.setState({ appModalOpen: false }); });
-      expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
-      expect(cancel).not.toHaveBeenCalled();
-      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
-      expect(useAccountStore.getState().status).toBe(status);
-      expect(onApprovalAnswer).not.toHaveBeenCalled();
+      beforeEach(() => {
+        onQuestionCancel.mockReset();
+        onQuit.mockReset();
+      });
+      afterEach(() => { usePreviewStore.setState({ appModalOpen: false }); });
+
+      it.each(['awaiting_browser', 'exchanging'] as const)('keeps a sign-in that is %s through the question being asked and cancelled, and returns after the approval', async (status) => {
+        useAccountStore.setState({ status });
+        const view = render(<Both approval={false} />);
+        const window = loginWindow();
+        view.rerender(<Both approval />);
+        expect(window).toHaveAttribute('hidden');
+
+        act(() => { usePreviewStore.setState({ appModalOpen: true }); });
+        expect(screen.getByRole('alertdialog', { name: '关闭窗口' })).toBeInTheDocument();
+        expect(loginWindow()).toBe(window);
+        expect(window).toHaveAttribute('hidden');
+        expect(cancel).not.toHaveBeenCalled();
+
+        await userEvent.setup().keyboard('{Escape}');
+        expect(onQuestionCancel).toHaveBeenCalledTimes(1);
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+        expect(window).toHaveAttribute('hidden');
+        expect(cancel).not.toHaveBeenCalled();
+
+        view.rerender(<Both approval={false} />);
+        expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBe(window);
+        expect(window).not.toHaveAttribute('hidden');
+        expect(cancel).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+        expect(useAccountStore.getState().status).toBe(status);
+        expect(onQuit).not.toHaveBeenCalled();
+      });
+
+      it('returns after an approval that is answered elsewhere while the question is up; the question is cancelled with it', () => {
+        useAccountStore.setState({ status: 'awaiting_browser' });
+        const view = render(<Both approval={false} />);
+        const window = loginWindow();
+        view.rerender(<Both approval />);
+        act(() => { usePreviewStore.setState({ appModalOpen: true }); });
+
+        view.rerender(<Both approval={false} />);
+        expect(onQuestionCancel).toHaveBeenCalledTimes(1);
+        expect(usePreviewStore.getState().appModalOpen).toBe(false);
+        expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBe(window);
+        expect(window).not.toHaveAttribute('hidden');
+        expect(cancel).not.toHaveBeenCalled();
+        expect(onQuit).not.toHaveBeenCalled();
+        expect(useAccountStore.getState().status).toBe('awaiting_browser');
+      });
     });
   });
 
   // The command approval of the task in view, asked through the real approval queue and drawn
-  // the way the chat view draws it. The window's own way of leaving for an old prompt sees this
-  // approval too; with both at work the sign-in still goes on.
+  // the way the chat view draws it. The window declares its sign-in as work in progress and the
+  // layer registry does the rest: that declaration alone keeps the sign-in going.
   describe('when the command approval of the task in view arrives', () => {
     const cancel = vi.fn();
     function ChatApprovals() {
@@ -482,6 +588,38 @@ describe('AccountLoginDialog opened from the settings window', () => {
       expect(cancel).toHaveBeenCalledTimes(1);
     });
 
+    it('closes for the approval when no sign-in is under way: nothing is cancelled, and it does not come back once the approval is answered', async () => {
+      render(<><ChatApprovals /><AccountLoginDialog /></>, { wrapper: DesignSystemProvider });
+      expect(shownLoginWindow()).not.toBeNull();
+
+      const answers = askCommand();
+      expect(screen.getByRole('alertdialog', { name: '操作确认' })).toBeInTheDocument();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      expect(loginWindow()).toBeNull();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(answers).toEqual([]);
+
+      await userEvent.setup().click(screen.getByRole('button', { name: '取消' }));
+      await act(async () => { await Promise.resolve(); });
+      expect(answers).toEqual([false]);
+      expect(loginWindow()).toBeNull();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it('is turned away when it is opened while the approval is on screen, with nothing cancelled and the approval unanswered', () => {
+      useSettingsStore.setState({ accountLoginOpen: false });
+      render(<><ChatApprovals /><AccountLoginDialog /></>, { wrapper: DesignSystemProvider });
+      const answers = askCommand();
+
+      act(() => { useSettingsStore.getState().openAccountLogin(); });
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      expect(loginWindow()).toBeNull();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(answers).toEqual([]);
+      expect(screen.getByRole('alertdialog', { name: '操作确认' })).toBeInTheDocument();
+    });
+
     it('does not answer the approval when the sign-in finishes behind it', async () => {
       useAccountStore.setState({ status: 'awaiting_browser' });
       render(<><ChatApprovals /><AccountLoginDialog /></>, { wrapper: DesignSystemProvider });
@@ -499,8 +637,8 @@ describe('AccountLoginDialog opened from the settings window', () => {
   });
 
   // A file grant and a workspace request of the task in view, asked through the real queues and
-  // drawn the way the chat view draws them. Both are approval layers and both are seen by the
-  // window's own way of leaving for an old prompt; with both at work the sign-in still goes on.
+  // drawn the way the chat view draws them. Both are approval layers: the window steps aside for
+  // them with its sign-in going on.
   describe('when a file grant or a workspace request of the task in view arrives', () => {
     const cancel = vi.fn();
     function ChatGrants() {

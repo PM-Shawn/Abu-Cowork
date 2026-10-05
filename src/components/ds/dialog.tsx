@@ -188,14 +188,17 @@ export function Dialog({
     focusedInside.current = null;
     if (!content) return;
     const quiet = { preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) };
-    if (kept?.isConnected) {
+    // A window returns to the control that had the focus (the field being typed in). A question
+    // returns the way it opened, on the control it names: the approval took the focus by itself,
+    // and a key still being pressed for it must not land on the answer the user had moved to.
+    if (kind !== 'alert' && kept?.isConnected) {
       kept.focus(quiet);
       return;
     }
     // Another layer that is on the page has the focus (a dialog opened inside this one).
     if (document.activeElement?.closest('[data-ds-layer][data-state="open"]:not([hidden])')) return;
     (initialFocusRef.current?.(content) ?? firstTabbable(content, true) ?? content).focus(quiet);
-  }, [aside]);
+  }, [aside, kind]);
   // The owner closed the dialog while the discard question was on screen (a save that was in
   // flight landed): nothing is left to discard, so the question goes unanswered.
   useLayoutEffect(() => {

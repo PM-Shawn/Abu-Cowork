@@ -45,6 +45,9 @@ interface Fading {
 // - An alert that is open when an approval arrives steps aside and comes back, unanswered. An
 //   alert asked while an approval is on the page stacks over it and is answered with cancel when
 //   the approval leaves, like one asked over a dialog.
+// - What comes back takes nobody's place. Several windows can be off the page for one approval
+//   (the one that stepped aside, busy ones that opened under it): they return one at a time, each
+//   when the page holds no other window and no question, and none is closed for another.
 //
 // Also decides which DOM node floating layers portal into.
 // `onModalChange` hears whether a dialog, an alert or an approval is on the page (menus and
@@ -186,11 +189,39 @@ export function LayerProvider({ children, container, onModalChange }: {
       layer.hold();
       startFade(layer);
     };
-    // Every window and question that stepped aside returns: the one that left last comes back first.
+    // What stepped aside returns, and nothing that returns takes another layer's place.
+    // - A question about the page, or about a dialog that is on it, returns first.
+    // - Then the windows, the one that left last first. A window returns to a page with no other
+    //   window and no question on it; with one there it stays aside, and so do the dialogs opened
+    //   inside it and the question asked over it. It returns when that layer has left.
     const comeBack = () => {
-      const back = [...steppedAside.current].reverse();
-      steppedAside.current = [];
-      for (const layer of back) {
+      const aside = [...steppedAside.current].reverse();
+      const wasAside = new Set(aside.map((layer) => layer.id));
+      const ownerAside = (layer: LayerEntry) => {
+        const owner = layer.kind === 'alert' ? askedOver.current.get(layer.id) : undefined;
+        return owner !== undefined && wasAside.has(owner);
+      };
+      const pageQuestions = aside.filter((layer) => layer.kind === 'alert' && !ownerAside(layer));
+      const rest = aside.filter((layer) => !pageQuestions.includes(layer));
+      const staying = new Set<string>();
+      const stays = (layer: LayerEntry) => {
+        if (pageQuestions.includes(layer)) return false;
+        if (layer.kind === 'alert') return staying.has(askedOver.current.get(layer.id) ?? '');
+        const outer = layer.ancestors.filter((id) => wasAside.has(id));
+        // Inside a window that stepped aside with it: they return, or stay, together.
+        if (outer.length > 0) return outer.some((id) => staying.has(id));
+        return layers.current.some((other) => (
+          other.kind === 'alert' || (other.kind === 'dialog' && !layer.ancestors.includes(other.id))
+        ));
+      };
+      for (const layer of [...pageQuestions, ...rest]) {
+        // Gone with a layer that returned before it in this pass.
+        if (!steppedAside.current.includes(layer)) continue;
+        if (stays(layer)) {
+          staying.add(layer.id);
+          continue;
+        }
+        steppedAside.current = steppedAside.current.filter((other) => other !== layer);
         layer.release();
         register(layer);
       }

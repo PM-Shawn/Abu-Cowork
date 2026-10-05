@@ -140,9 +140,10 @@ function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthoriz
   let footer: ReactNode;
   if (asksToPick) {
     title = folderSelectT?.title ?? '';
+    // The explanation is the window's description, as in every other form of it.
+    description = folderSelectT?.description ?? '';
     body = (
       <div className="flex flex-col items-center gap-3 text-center">
-        <p className="text-ui text-label-secondary">{folderSelectT?.description ?? ''}</p>
         {/* Pressing it only opens the system folder picker; the owner authorizes the folder
             that picker returns. */}
         <Button variant="primary" icon={AppIcons.folderOpen} onClick={onChooseFolder}>

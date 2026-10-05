@@ -2019,6 +2019,52 @@ describe('approvals and the windows around them', () => {
     expect(onQuit).not.toHaveBeenCalled();
   });
 
+  // The approval took the focus by itself, and the user may still be pressing keys for it when
+  // the question returns. A question returns the way it opened: on the control that ends nothing.
+  it('brings a question back with the focus on the control it opened on, not on the one the focus had moved to', () => {
+    const onQuit = vi.fn();
+    const view = render(<Desk quit onQuit={onQuit} />);
+    act(() => { screen.getByRole('button', { name: 'Quit' }).focus(); });
+    expect(screen.getByRole('button', { name: 'Quit' })).toHaveFocus();
+
+    view.rerender(<Desk quit command onQuit={onQuit} />);
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk quit onQuit={onQuit} />);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Quit' })).not.toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+  });
+
+  it('brings the question back alone when a busy window opened under the approval, and shows that window once the question has been answered', () => {
+    const onQuit = vi.fn();
+    const onLogin = vi.fn();
+    const view = render(<Desk quit onQuit={onQuit} onLogin={onLogin} />);
+    view.rerender(<Desk quit command onQuit={onQuit} onLogin={onLogin} />);
+    view.rerender(<Desk quit command login onQuit={onQuit} onLogin={onLogin} />);
+    expect(box('Close the window?')).toHaveAttribute('hidden');
+    expect(box('Sign in')).toBeNull();
+
+    // The approval is answered: the question is back, with the focus, and nothing is over it.
+    const sawLogin = watchFor('Sign in');
+    view.rerender(<Desk quit login onQuit={onQuit} onLogin={onLogin} />);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(sawLogin()).toBe(false);
+    expect(box('Close the window?')).not.toHaveAttribute('hidden');
+    expect(screen.getByRole('alertdialog', { name: 'Close the window?' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+    expect(onLogin).not.toHaveBeenCalled();
+
+    // Its owner answers the question: the window that waited is shown.
+    view.rerender(<Desk login onQuit={onQuit} onLogin={onLogin} />);
+    expect(screen.getByRole('dialog', { name: 'Sign in' })).toHaveAttribute('data-state', 'open');
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+    expect(onLogin).not.toHaveBeenCalled();
+  });
+
   it('closes a window that holds nothing when an approval arrives', () => {
     const onLogin = vi.fn();
     const view = render(<Desk login busy={false} onLogin={onLogin} />);

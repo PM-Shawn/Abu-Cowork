@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postcss from 'postcss';
@@ -26,6 +26,71 @@ const SELECTORS: Record<Block, string> = {
 };
 
 const css = readFileSync(TOKENS_PATH, 'utf8');
+const SRC_DIR = path.resolve(path.dirname(TOKENS_PATH), '..');
+
+// The z-index of each layer utility in tokens.css.
+function layerLevels(source: string): Map<string, number> {
+  const levels = new Map<string, number>();
+  postcss.parse(source).walkAtRules('utility', (rule) => {
+    rule.walkDecls('z-index', (decl) => { levels.set(rule.params, Number(decl.value)); });
+  });
+  return levels;
+}
+
+// Every stacking value written by hand in src/: arbitrary classes (`z-[9999]`), Tailwind steps
+// (`z-50`) and inline `zIndex` / `z-index` numbers. Design-system files use the layer utilities.
+function handWrittenLevels(): { file: string; value: number }[] {
+  const found: { file: string; value: number }[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.(tsx?|css)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name) || full === TOKENS_PATH) continue;
+      const text = readFileSync(full, 'utf8');
+      for (const match of text.matchAll(/\bz-\[(\d+)\]|(?<![\w-])z-(\d+)(?![\w-])|\bzIndex:\s*(\d+)|\bz-index:\s*(\d+)/g)) {
+        found.push({ file: path.relative(SRC_DIR, full), value: Number(match[1] ?? match[2] ?? match[3] ?? match[4]) });
+      }
+    }
+  };
+  walk(SRC_DIR);
+  return found;
+}
+
+// A modal design-system layer turns pointer input off for the rest of the page. A hand-drawn
+// overlay painted above it would hide it while presses fall through to it, so every floating
+// level of the design system is above every hand-written stacking value.
+describe('design tokens — layer levels', () => {
+  const levels = layerLevels(css);
+  const level = (name: string) => {
+    const value = levels.get(name);
+    if (value === undefined || Number.isNaN(value)) throw new Error(`${name} has no z-index`);
+    return value;
+  };
+
+  it('keeps the order of the levels: page, popover, dialog, toast, tooltip', () => {
+    const order = ['z-sticky', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip'].map(level);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(new Set(order).size).toBe(order.length);
+  });
+
+  it('finds the hand-written stacking values it is meant to compare with', () => {
+    const values = handWrittenLevels();
+    expect(values.length).toBeGreaterThan(20);
+    expect(Math.max(...values.map((entry) => entry.value))).toBeGreaterThanOrEqual(9999);
+  });
+
+  it.each(['z-popover', 'z-dialog', 'z-toast', 'z-tooltip'])('puts %s above every hand-written stacking value in src/', (name) => {
+    const above = handWrittenLevels().filter((entry) => entry.value >= level(name));
+    expect(above).toEqual([]);
+  });
+
+  it('keeps z-sticky inside the page, below the hand-drawn windows', () => {
+    expect(level('z-sticky')).toBeLessThan(50);
+  });
+});
 
 function collectBlocks(source: string): Record<Block, Map<string, string>> {
   const blocks = Object.fromEntries(

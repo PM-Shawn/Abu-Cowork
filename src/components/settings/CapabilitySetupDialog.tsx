@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { Dialog } from '@/components/ds/dialog';
 import { useI18n } from '@/i18n';
 import {
@@ -19,8 +19,6 @@ import { useChatStore } from '@/stores/chatStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { ensureConversationModelUsable } from '@/components/chat/sendModelGuard';
 import { rehydrateImageData } from '@/core/llm/imageRehydration';
-import { useImageLightboxStore } from '@/stores/imageLightboxStore';
-import { usePreviewStore } from '@/stores/previewStore';
 
 /**
  * Task-local capability onboarding. The originating tool call remains
@@ -32,10 +30,6 @@ export default function CapabilitySetupDialog() {
     getPendingCapabilitySetup,
   );
   const { t } = useI18n();
-  const lightboxOpen = useImageLightboxStore((s) => s.isOpen);
-  // The close-window question is a legacy layer that cannot be used under a modal dialog.
-  const closeQuestionOpen = usePreviewStore((s) => s.appModalOpen);
-  const windowShown = request !== null && !lightboxOpen && !closeQuestionOpen;
   const previousFocus = useRef<Element | null>(null);
   const hadRequest = useRef(false);
 
@@ -47,26 +41,6 @@ export default function CapabilitySetupDialog() {
     hadRequest.current = request !== null;
   }, [request]);
 
-  useEffect(() => {
-    if (!request) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      // The visible, full-window lightbox owns Escape while it is open. A
-      // capability request may arrive asynchronously underneath it; never
-      // turn that same keypress into a hidden permission denial.
-      if (useImageLightboxStore.getState().isOpen) {
-        useImageLightboxStore.getState().close();
-        return;
-      }
-      // The window is the top layer: its Escape goes no further, so a prompt
-      // underneath is not answered by the same key. The dialog's own listener is on
-      // `document` in the capture phase as well and still runs.
-      if (windowShown) event.stopPropagation();
-    };
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [request, windowShown]);
-
   if (!request) return null;
 
   // Runs once the window has gone. Focus returns to where it was when the request arrived,
@@ -75,7 +49,7 @@ export default function CapabilitySetupDialog() {
     // Another dialog took this window's place and holds the focus: leave it there.
     if (event.defaultPrevented) return;
     event.preventDefault();
-    // The next waiting request has opened its own window, or this one only stepped aside.
+    // The next waiting request has opened its own window.
     if (getPendingCapabilitySetup() !== null) return;
     const previous = previousFocus.current;
     if (
@@ -152,16 +126,16 @@ export default function CapabilitySetupDialog() {
 
   // Escape, the scrim and the corner button arrive as a close, and a close is always a
   // refusal. Only the page reporting that setup is complete answers yes. The window is an
-  // approval layer: no other window closes it, a window that opens while it is on screen is
-  // turned away, and it waits its turn behind an approval that is already on the page. The
-  // image viewer covers the whole app, so the window waits for it to close; it steps aside,
-  // unanswered, for the close-window question and comes back when that is cancelled. One
-  // dialog per request: the next waiting request opens as a new dialog.
+  // approval layer and is on the page for as long as its request waits: no other window closes
+  // it, a window that opens while it is on screen is turned away, it waits its turn behind an
+  // approval that is already on the page, and the close-window question stacks over it. Escape
+  // acts on the top layer, so the window keeps no key listener of its own. One dialog per
+  // request: the next waiting request opens as a new dialog.
   return (
     <Dialog
       key={request.id}
       layer="approval"
-      open={windowShown}
+      open
       onOpenChange={(next) => { if (!next) resolveCapabilitySetup(request.id, false); }}
       title={request.target === 'computer'
         ? t.settings.capabilityComputerSetupTitle

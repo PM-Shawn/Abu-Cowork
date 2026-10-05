@@ -465,6 +465,7 @@ export function buildMeta(conv: {
   scheduledTaskId?: string;
   triggerId?: string;
   teamId?: string;
+  goal?: import('@/core/goal/goalTypes').GoalState;
   appBinding?: import('@/types/app').ConversationAppBinding;
   projectId?: string;
   readOnly?: boolean;
@@ -484,6 +485,7 @@ export function buildMeta(conv: {
     scheduledTaskId: conv.scheduledTaskId,
     triggerId: conv.triggerId,
     teamId: conv.teamId,
+    ...(conv.goal ? { goal: conv.goal } : {}),
     appBinding: conv.appBinding,
     projectId: conv.projectId,
     readOnly: conv.readOnly,

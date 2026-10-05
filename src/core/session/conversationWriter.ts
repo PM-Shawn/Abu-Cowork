@@ -93,6 +93,8 @@ export interface ConversationMeta {
   scheduledTaskId?: string;
   triggerId?: string;
   teamId?: string;
+  /** Goal mode objective. Armed/disarmed is process-local and never stored. */
+  goal?: import('@/core/goal/goalTypes').GoalState;
   appBinding?: import('@/types/app').ConversationAppBinding;
   projectId?: string;
   totalCost?: number;

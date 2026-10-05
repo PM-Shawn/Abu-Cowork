@@ -698,6 +698,73 @@ export interface TranslationDict {
       tooFew: string;
       failed: string;
     };
+    /** Goal mode: /goal command feedback, goal bar, round marker, event cards. */
+    goal: {
+      /** Usage hint for /goal. */
+      commandUsage: string;
+      noGoal: string;
+      notAvailable: string;
+      emptyObjective: string;
+      /** {objective} */
+      alreadyExists: string;
+      /** {objective} */
+      created: string;
+      edited: string;
+      paused: string;
+      resumed: string;
+      cleared: string;
+      /** {phase} */
+      cannotChange: string;
+      /** Resume was refused because the goal reached the hard cap on automatic rounds. */
+      roundsExhausted: string;
+      staleRevision: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+      /** Goal bar: status word while the app keeps working on the goal. */
+      barActive: string;
+      /** Status word whenever the app is not working on an unfinished goal by itself. */
+      barPaused: string;
+      /** Status word for a goal that stopped and needs the user. */
+      barBlocked: string;
+      /** After the objective: a run failed and another starts by itself. {minutes} */
+      barRetry: string;
+      /** Hover detail on a goal that paused because a run failed. */
+      stoppedRunError: string;
+      blockedNoProgress: string;
+      blockedRoundLimit: string;
+      blockedTeamLimit: string;
+      blockedDispatchFailed: string;
+      /** {reason} */
+      blockedModel: string;
+      actionPause: string;
+      actionResume: string;
+      actionEdit: string;
+      actionClear: string;
+      actionSave: string;
+      actionCancel: string;
+      editPlaceholder: string;
+      clearConfirmTitle: string;
+      clearConfirmBody: string;
+      /** Asked when /goal names a new objective while another goal is unfinished. */
+      replaceConfirmTitle: string;
+      /** {objective} = the unfinished goal */
+      replaceConfirmBody: string;
+      actionReplace: string;
+      /** Marker in the transcript where the app continued the goal by itself. */
+      roundMarker: string;
+      /** Suffix on a round marker whose run was stopped before it finished. */
+      roundInterrupted: string;
+      /** Suffix on a round marker whose run failed. */
+      roundFailed: string;
+      /** OS notification when the round driver stops a goal. {objective} */
+      notifyBlockedTitle: string;
+      /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
+      maxTurnsAutoContinue: string;
+    };
     /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
      * when the redone turn is not the conversation's last, so later turns
      * would otherwise be silently and permanently discarded. */
@@ -4318,6 +4385,45 @@ export interface TranslationDict {
     statusPaused: string;
     /** Locale-appropriate separator for joining inline lists of items. */
     listSeparator: string;
+    // manage_goal (goal mode)
+    goal: {
+      noConversation: string;
+      invalidAction: string;
+      /** Only the main conversation (not a delegated expert) may manage the goal. */
+      deniedSubagent: string;
+      /** Scheduled / trigger / IM / read-only conversations. */
+      deniedAutomated: string;
+      /** create / edit / pause / resume need a run started by the user's own message. */
+      deniedNeedsHuman: string;
+      /** {min} {rounds} */
+      deniedBlockTooEarly: string;
+      noGoal: string;
+      missingObjective: string;
+      missingEvidence: string;
+      missingReason: string;
+      /** A live goal already exists. {objective} */
+      alreadyExists: string;
+      /** {phase} */
+      invalidTransition: string;
+      staleRevision: string;
+      /** {objective} */
+      created: string;
+      /** {objective} */
+      edited: string;
+      paused: string;
+      resumed: string;
+      /** Resume was asked for a goal that is already working. */
+      alreadyRunning: string;
+      completed: string;
+      /** {reason} */
+      blocked: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+    };
     // report_plan / update_memory / todo_write / log_task_completion
     memory: {
       // reportPlanTool

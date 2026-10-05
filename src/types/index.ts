@@ -474,6 +474,10 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // Goal mode: set on the (isSystem) user message that opens an automatic goal
+  // round, so the UI can render a round marker and the goal tool can tell an
+  // automatic round from a human-initiated run.
+  goalRound?: { goalId: string; revision: number; round: number };
   // Crash-recovery notices remain internal for context/export purposes, but
   // must be visible so the user understands why an earlier task stopped.
   isRecoveryNotice?: boolean;
@@ -566,6 +570,7 @@ export interface Conversation {
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
   teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
+  goal?: import('../core/goal/goalTypes').GoalState;  // Goal mode: the conversation's persistent objective (absent = no goal)
   appBinding?: import('./app').ConversationAppBinding;  // The app (and mode / scene) this conversation was started in; absent = general shell
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)

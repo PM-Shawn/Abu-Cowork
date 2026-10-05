@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { AlertTriangle, Check, Loader2, Play, Settings } from 'lucide-react';
 import type { Message } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
+import { isGoalArmed, subscribeGoalActivation } from '@/core/goal/goalActivation';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { cn } from '@/lib/utils';
 import { format, useI18n } from '@/i18n';
@@ -60,6 +61,15 @@ export default function MaxTurnsNoticeCard({
   const setAction = useChatStore((state) => state.setMaxTurnsNoticeAction);
   const openSystemSettings = useSettingsStore((state) => state.openSystemSettings);
   const addToast = useToastStore((state) => state.addToast);
+  // Goal mode drives the next round itself; a manual Continue here would race it.
+  const goalId = useChatStore((state) => {
+    const goal = state.conversations[conversationId]?.goal;
+    return goal?.phase === 'active' ? goal.id : undefined;
+  });
+  const goalDrivesRounds = useSyncExternalStore(
+    subscribeGoalActivation,
+    () => isGoalArmed(conversationId, goalId),
+  );
 
   // Defensive: `isMaxTurnsNoticeMessage` already requires the payload, so this
   // only fires if a caller renders the card against the wrong message.
@@ -169,8 +179,20 @@ export default function MaxTurnsNoticeCard({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {again ? adjustButton : continueButton}
-        {again ? continueButton : adjustButton}
+        {goalDrivesRounds ? (
+          <>
+            <span className="inline-flex items-center gap-1.5 text-minor text-[var(--abu-text-secondary)]">
+              <Play className="h-3.5 w-3.5" />
+              {t.chat.goal.maxTurnsAutoContinue}
+            </span>
+            {adjustButton}
+          </>
+        ) : (
+          <>
+            {again ? adjustButton : continueButton}
+            {again ? continueButton : adjustButton}
+          </>
+        )}
       </div>
     </div>
   );

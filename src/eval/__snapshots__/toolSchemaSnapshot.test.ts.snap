@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `47`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `48`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
@@ -216,6 +216,20 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "prompt",
       "rule_id",
       "skill_name",
+    ],
+    "requiredParams": [
+      "action",
+    ],
+  },
+  {
+    "name": "manage_goal",
+    "paramNames": [
+      "action",
+      "evidence",
+      "max_rounds",
+      "objective",
+      "reason",
+      "summary",
     ],
     "requiredParams": [
       "action",

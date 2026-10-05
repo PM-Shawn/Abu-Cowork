@@ -2,6 +2,7 @@ import { getDeviceId } from './deviceId'
 import { APP_VERSION } from './version'
 import { getPlatform } from './platform'
 import { useDiagnosticStore, getOverallStatus } from '@/stores/diagnosticStore'
+import { scrubSecrets } from '@/core/diagnostic/scrub'
 import { getTelemetryTarget } from './consoleTelemetryTarget'
 
 export function isDiagnosticUploadUnavailable(error: unknown): boolean {
@@ -65,7 +66,7 @@ export function pushDiagnosticSnapshot(): void {
       appVersion: APP_VERSION,
       platform:   getPlatform() ?? 'unknown',
       overall,
-      results,
+      results:    scrubSecrets(results),
       takenAt:    state.lastCheckedAt,
     }),
   }).catch(() => {})

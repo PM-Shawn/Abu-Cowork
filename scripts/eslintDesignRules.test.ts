@@ -362,4 +362,22 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/todos/useRowFocus.ts')).not.toEqual([]);
   });
+
+  it('checks the approval windows and the close question, tests and helpers included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/common/CommandConfirmDialog.tsx',
+      'src/components/common/CommandConfirmDialog.test.tsx',
+      'src/components/common/PermissionDialog.tsx',
+      'src/components/common/PermissionDialog.test.tsx',
+      'src/components/common/CloseDialog.tsx',
+      'src/components/common/CloseDialog.approvals.test.tsx',
+      'src/components/settings/CapabilitySetupDialog.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/common/approvalQueueView.ts')).not.toEqual([]);
+    expect(await messages(icon, 'src/components/common/approvalQueueView.test.ts')).not.toEqual([]);
+  });
 });

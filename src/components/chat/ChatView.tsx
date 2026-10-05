@@ -8,7 +8,7 @@ import {
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
-import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
+import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -330,23 +330,30 @@ export default function ChatView({
   };
 
   const handleWorkspaceSelect = async () => {
+    const request = workspaceRequest;
+    if (!request) return;
     try {
       const selected = await openDialog({
         directory: true,
         multiple: false,
-        defaultPath: workspaceRequest?.suggestedPath || undefined,
+        defaultPath: request.suggestedPath || undefined,
       });
       if (selected && typeof selected === 'string') {
-        useWorkspaceStore.getState().setWorkspace(selected);
-        if (activeConv?.id) {
-          useChatStore.getState().setConversationWorkspace(activeConv.id, selected);
+        // The system picker can stay open past the request it was opened for
+        // (60s timeout, abort, or a newer request taking its place). A folder
+        // picked for a request that is gone answers nothing and grants nothing.
+        if (getPendingWorkspaceRequest()?.id !== request.id) {
+          useToastStore.getState().addToast({ type: 'info', title: t.permission.folderRequestEnded });
+          return;
         }
-        resolveWorkspaceRequest(selected);
+        useWorkspaceStore.getState().setWorkspace(selected);
+        useChatStore.getState().setConversationWorkspace(request.conversationId, selected);
+        resolveWorkspaceRequestById(request.id, selected);
       } else {
-        resolveWorkspaceRequest(null);
+        resolveWorkspaceRequestById(request.id, null);
       }
     } catch {
-      resolveWorkspaceRequest(null);
+      resolveWorkspaceRequestById(request.id, null);
     }
   };
 

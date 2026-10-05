@@ -2901,6 +2901,8 @@ export interface TranslationDict {
       authorizeCapabilities: string[];
       authorizeWarning: string;
     };
+    /** Toast: a folder was picked after the request it was picked for had ended. */
+    folderRequestEnded: string;
     abuCanDo: string;
     allowOnce: string;
     allowAlways: string;

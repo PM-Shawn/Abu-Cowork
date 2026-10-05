@@ -132,7 +132,8 @@ describe('goalService', () => {
       expect(getGoalActivation('c1', goal.id)).toMatchObject({ armed: false, disarmReason: 'run-error' });
       expect(getGoal('c1')?.phase).toBe('active');
 
-      const resumed = resumeConversationGoal('c1', goalRef(goal));
+      // Disarming may have added working time, which is a write of its own.
+      const resumed = resumeConversationGoal('c1', goalRef(getGoal('c1')!));
       if (!resumed.ok) throw new Error(resumed.error);
       goal = resumed.goal;
       const paused = pauseConversationGoal('c1', goalRef(goal));

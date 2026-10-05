@@ -32,7 +32,7 @@
     "parity:check": "node scripts/parity-check.mjs",
     "pretest": "npm run gen:models:check",
     "test": "vitest run",
-    "test:website": "node --test scripts/website-download-links.test.mjs scripts/website-docs.test.mjs",
+    "test:website": "node --test scripts/website-download-links.test.mjs scripts/website-docs.test.mjs scripts/website-analytics.test.mjs",
     "test:infra": "node --test scripts/changed-lines-coverage.test.mjs scripts/check-branch-protection.test.mjs scripts/ci-workflow.test.mjs scripts/test-inventory.test.mjs scripts/npm-audit-check.test.mjs",
     "test:inventory": "node scripts/test-inventory.mjs --write",
     "test:inventory:check": "node scripts/test-inventory.mjs --check",

@@ -6,7 +6,7 @@ import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Popover } from '@/components/ds/popover';
 import { Spinner } from '@/components/ds/spinner';
-import { FOCUS_RING } from '@/components/ds/styles';
+import { FOCUS_RING, LAYER_FADE_MS } from '@/components/ds/styles';
 import { cn } from '@/lib/utils';
 import { Recording } from '@/core/speech/recording';
 import { transcribeSpeech } from '@/core/speech/speechBridge';
@@ -21,8 +21,6 @@ import { isMacOS, isWindows } from '@/utils/platform';
 /** Recording stops by itself shortly before the host's audio limit. */
 const MAX_RECORDING_SECONDS = 120;
 const WAVE_BARS = 18;
-/** The longest fade of a design-system layer: `duration-base` in src/styles/tokens.css. */
-const LAYER_FADE_MS = 200;
 
 type Phase =
   | { kind: 'idle' }

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { Button } from './button';
 import { Dialog } from './dialog';
@@ -5,7 +6,7 @@ import { Dialog } from './dialog';
 export function ConfirmDialog({ open, title, message, confirmLabel, tone = 'default', onResult }: {
   open: boolean;
   title: string;
-  message?: string;
+  message?: ReactNode;
   confirmLabel: string;
   tone?: 'default' | 'danger';
   onResult: (confirmed: boolean) => void;

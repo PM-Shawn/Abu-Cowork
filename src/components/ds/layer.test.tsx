@@ -1,18 +1,21 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { useState, type ReactNode } from 'react';
-import { render, screen } from '@testing-library/react';
+import { StrictMode, useLayoutEffect, useState, type ReactNode } from 'react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LayerProvider, LayerScope } from './layer';
-import { useLayer, useLayerContainer, useLayerRegistry, useOpenState, type LayerKind } from './layer-context';
+import { useLayer, useLayerContainer, useLayerRegistry, useOpenState, type LayerEntry, type LayerKind, type LayerRegistry } from './layer-context';
+import { LAYER_FADE_MS } from './styles';
 
 interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
 
-function FakeLayer({ name, kind, dirty = false, defaultOpen = false, onOpenChange, children }: {
+function FakeLayer({ name, kind, dirty = false, busy = false, urgent = false, defaultOpen = false, onOpenChange, children }: {
   name: string;
   kind: LayerKind;
   dirty?: boolean;
+  busy?: boolean;
+  urgent?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   children?: ReactNode;
@@ -23,9 +26,10 @@ function FakeLayer({ name, kind, dirty = false, defaultOpen = false, onOpenChang
     setOpenState(next);
   };
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
-  const { id, held } = useLayer(kind, open, setOpen, kind === 'dialog'
+  const { id, held, onCloseAutoFocus } = useLayer(kind, open, setOpen, kind === 'dialog'
     ? {
         isDirty: () => dirty,
+        isBusy: () => busy,
         confirmDiscard: (onDiscard, onKeep) => {
           const pending = { onDiscard, onKeep };
           setPendingDiscard(pending);
@@ -33,11 +37,18 @@ function FakeLayer({ name, kind, dirty = false, defaultOpen = false, onOpenChang
         },
         escape: () => setOpen(false),
       }
-    : undefined);
+    : undefined, urgent);
+  const shown = open && !held;
+  // This layer has no fade: it has left the page as soon as it is no longer shown or no longer
+  // rendered, and says so the way a ds layer does once its fade has ended.
+  useLayoutEffect(() => {
+    if (!shown) onCloseAutoFocus(new Event('focus'));
+    return () => onCloseAutoFocus(new Event('focus'));
+  }, [shown, onCloseAutoFocus]);
   return (
     <div>
       <button type="button" onClick={() => setOpen(true)}>{`open ${name}`}</button>
-      {open && !held && (
+      {shown && (
         <div data-testid={name}>
           <button type="button" onClick={() => setOpen(false)}>{`close ${name}`}</button>
           <LayerScope id={id}>{children}</LayerScope>
@@ -583,6 +594,727 @@ describe('LayerProvider', () => {
 
   it('fails fast outside the provider', () => {
     expect(() => render(<ContainerProbe />)).toThrow(/DesignSystemProvider/);
+  });
+});
+
+// A layer built by hand: every call the registry makes on it goes into one shared log, in order.
+interface Spy {
+  entry: LayerEntry;
+  state: { dirty: boolean; busy: boolean };
+  // The discard question the registry asked on this layer, when one is pending.
+  asked: () => PendingDiscard | null;
+  confirmDiscard: ReturnType<typeof vi.fn>;
+}
+
+function spy(log: string[], name: string, kind: LayerKind, options: {
+  ancestors?: string[];
+  dirty?: boolean;
+  busy?: boolean;
+  urgent?: boolean;
+} = {}): Spy {
+  const state = { dirty: options.dirty ?? false, busy: options.busy ?? false };
+  let pending: PendingDiscard | null = null;
+  const confirmDiscard = vi.fn((onDiscard: () => void, onKeep?: () => void) => {
+    log.push(`${name}.confirmDiscard`);
+    const mine = { onDiscard, onKeep };
+    pending = mine;
+    return () => {
+      log.push(`${name}.withdraw`);
+      if (pending === mine) pending = null;
+    };
+  });
+  const entry: LayerEntry = {
+    id: name,
+    kind,
+    ancestors: options.ancestors ?? [],
+    urgent: options.urgent ?? false,
+    returnFocus: { current: null },
+    close: () => { log.push(`${name}.close`); },
+    escape: () => { log.push(`${name}.escape`); },
+    hold: () => { log.push(`${name}.hold`); },
+    release: () => { log.push(`${name}.release`); },
+    focusTaken: () => { log.push(`${name}.focusTaken`); },
+    isDirty: () => state.dirty,
+    isBusy: () => state.busy,
+    confirmDiscard,
+  };
+  return { entry, state, asked: () => pending, confirmDiscard };
+}
+
+function Grab({ onReady }: { onReady: (registry: LayerRegistry) => void }) {
+  const registry = useLayerRegistry();
+  useLayoutEffect(() => { onReady(registry); }, [registry, onReady]);
+  return null;
+}
+
+function mountRegistry(onModalChange?: (open: boolean) => void) {
+  const grabbed: { registry: LayerRegistry | null } = { registry: null };
+  const onReady = (registry: LayerRegistry) => { grabbed.registry = registry; };
+  const view = render(<LayerProvider onModalChange={onModalChange}><Grab onReady={onReady} /></LayerProvider>);
+  if (!grabbed.registry) throw new Error('The registry did not render');
+  return { registry: grabbed.registry, view };
+}
+
+const calls = (log: string[], name: string) => log.filter((line) => line.startsWith(`${name}.`));
+
+describe('approval layers', () => {
+  it('turns a new dialog away while an approval is on screen: held first, then closed', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'approval', 'approval').entry);
+    registry.register(spy(log, 'search', 'dialog').entry);
+
+    expect(log).toEqual(['search.hold', 'search.close']);
+    // The approval is still the top layer.
+    registry.escapeTop();
+    expect(log).toEqual(['search.hold', 'search.close', 'approval.escape']);
+  });
+
+  it('holds a second approval and shows it when the first leaves; neither is closed', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'first', 'approval').entry);
+    registry.register(spy(log, 'second', 'approval').entry);
+    expect(log).toEqual(['second.hold']);
+
+    registry.unregister('first');
+    expect(calls(log, 'second')).toEqual(['second.hold', 'second.release']);
+    registry.escapeTop();
+    expect(log[log.length - 1]).toBe('second.escape');
+    expect(log).not.toContain('first.close');
+    expect(log).not.toContain('second.close');
+  });
+
+  it('closes an open dialog that holds nothing for an approval', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'settings', 'dialog').entry);
+    registry.register(spy(log, 'approval', 'approval').entry);
+
+    expect(log).toEqual(['settings.close']);
+    registry.escapeTop();
+    expect(log[log.length - 1]).toBe('approval.escape');
+  });
+
+  describe('arriving at a dialog with unsaved input', () => {
+    function arrive() {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const draft = spy(log, 'draft', 'dialog', { dirty: true });
+      const approval = spy(log, 'approval', 'approval');
+      registry.register(draft.entry);
+      registry.register(approval.entry);
+      return { log, registry, draft, approval };
+    }
+
+    it('is held while the dialog asks whether to discard', () => {
+      const { log, registry } = arrive();
+      expect(log).toEqual(['approval.hold', 'draft.confirmDiscard']);
+      // The dialog is still the top layer.
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('draft.escape');
+    });
+
+    it('is shown after Discard, which closes the dialog', () => {
+      const { log, registry, draft } = arrive();
+      draft.asked()?.onDiscard();
+
+      expect(calls(log, 'draft')).toContain('draft.close');
+      expect(calls(log, 'approval')).toEqual(['approval.hold', 'approval.release']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('approval.escape');
+    });
+
+    it('stays held, and is not closed, when the user keeps editing; it is shown when the dialog leaves', () => {
+      const { log, registry, draft } = arrive();
+      draft.asked()?.onKeep?.();
+
+      expect(calls(log, 'approval')).toEqual(['approval.hold']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('draft.escape');
+
+      registry.unregister('draft');
+      expect(calls(log, 'approval')).toEqual(['approval.hold', 'approval.release']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('approval.escape');
+      expect(log).not.toContain('approval.close');
+    });
+
+    it('queues a second approval behind the first while the user keeps editing, without asking again', () => {
+      const { log, registry, draft } = arrive();
+      draft.asked()?.onKeep?.();
+      registry.register(spy(log, 'later', 'approval').entry);
+
+      expect(draft.confirmDiscard).toHaveBeenCalledTimes(1);
+      expect(calls(log, 'later')).toEqual(['later.hold']);
+
+      registry.unregister('draft');
+      expect(calls(log, 'approval')).toEqual(['approval.hold', 'approval.release']);
+      expect(calls(log, 'later')).toEqual(['later.hold']);
+      registry.unregister('approval');
+      expect(calls(log, 'later')).toEqual(['later.hold', 'later.release']);
+    });
+
+    it('turns a new dialog away while the question is on screen, and keeps asking for the approval', () => {
+      const { log, registry, draft } = arrive();
+      registry.register(spy(log, 'search', 'dialog').entry);
+
+      expect(calls(log, 'search')).toEqual(['search.hold', 'search.close']);
+      expect(draft.confirmDiscard).toHaveBeenCalledTimes(1);
+      expect(draft.asked()).not.toBeNull();
+      expect(calls(log, 'approval')).toEqual(['approval.hold']);
+    });
+
+    it('queues a second approval behind the one that is asking; both are shown in turn after Discard', () => {
+      const { log, registry, draft } = arrive();
+      registry.register(spy(log, 'later', 'approval').entry);
+      expect(draft.confirmDiscard).toHaveBeenCalledTimes(1);
+      expect(calls(log, 'later')).toEqual(['later.hold']);
+
+      draft.asked()?.onDiscard();
+      expect(calls(log, 'approval')).toEqual(['approval.hold', 'approval.release']);
+      expect(calls(log, 'later')).toEqual(['later.hold']);
+      registry.unregister('approval');
+      expect(calls(log, 'later')).toEqual(['later.hold', 'later.release']);
+    });
+
+    it('takes its question back when it leaves by itself, and the dialog stays', () => {
+      const { log, registry } = arrive();
+      registry.unregister('approval');
+
+      expect(log).toContain('draft.withdraw');
+      expect(log).not.toContain('draft.close');
+      expect(log).not.toContain('approval.close');
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('draft.escape');
+    });
+  });
+
+  describe('arriving at a dialog whose work would be cancelled by closing it', () => {
+    it('has the dialog step aside, neither closed nor asked, and brings it back when the approval leaves', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const login = spy(log, 'login', 'dialog', { busy: true, dirty: true });
+      registry.register(login.entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+
+      expect(log).toEqual(['login.hold']);
+      expect(login.confirmDiscard).not.toHaveBeenCalled();
+      // A layer that stepped aside takes no Escape.
+      registry.escapeTop();
+      expect(log).toEqual(['login.hold', 'approval.escape']);
+
+      registry.unregister('approval');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('login.escape');
+      expect(log).not.toContain('login.close');
+    });
+
+    it('has the whole group step aside when the busy dialog is inside another: inner first, back outer first', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'settings', 'dialog').entry);
+      registry.register(spy(log, 'provider', 'dialog', { ancestors: ['settings'], busy: true }).entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      expect(log).toEqual(['provider.hold', 'settings.hold']);
+
+      registry.unregister('approval');
+      // The approval hears, once, that another layer has the page.
+      expect(log).toEqual(['provider.hold', 'settings.hold', 'settings.release', 'approval.focusTaken', 'provider.release']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('provider.escape');
+    });
+
+    it('keeps a window that stepped aside off the page when the next approval in line is shown', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'first', 'approval').entry);
+      registry.register(spy(log, 'second', 'approval').entry);
+
+      registry.unregister('first');
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      registry.unregister('second');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+    });
+
+    it('does not bring back a window that was closed while it stood aside', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.unregister('login');
+      registry.unregister('approval');
+
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      expect(log).not.toContain('approval.focusTaken');
+      // Nothing is open: Escape finds no layer.
+      registry.escapeTop();
+      expect(log).toEqual(['login.hold']);
+    });
+  });
+
+  describe('and questions', () => {
+    it('has an open question step aside and brings it back, unanswered, when the approval leaves', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'question', 'alert').entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      expect(log).toEqual(['question.hold']);
+
+      registry.unregister('approval');
+      expect(log).toEqual(['question.hold', 'question.release', 'approval.focusTaken']);
+      expect(log).not.toContain('question.close');
+    });
+
+    it('brings a question back after the busy window it was asked over', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'install', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'question', 'alert').entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      expect(log).toEqual(['question.hold', 'install.hold']);
+
+      registry.unregister('approval');
+      expect(log).toEqual(['question.hold', 'install.hold', 'install.release', 'approval.focusTaken', 'question.release']);
+      // The question still belongs to the window: it is answered with cancel when the window leaves.
+      registry.unregister('install');
+      expect(log[log.length - 1]).toBe('question.close');
+    });
+
+    it('answers a question with cancel when the dialog it was asked over is closed for the approval', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'settings', 'dialog').entry);
+      registry.register(spy(log, 'question', 'alert').entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+
+      expect(log).toEqual(['question.hold', 'question.close', 'settings.close']);
+      registry.unregister('approval');
+      expect(log).not.toContain('question.release');
+    });
+
+    it('brings a question back when the user keeps editing the dialog it was asked over', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const draft = spy(log, 'draft', 'dialog', { dirty: true });
+      registry.register(draft.entry);
+      registry.register(spy(log, 'question', 'alert').entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      expect(calls(log, 'question')).toEqual(['question.hold']);
+
+      draft.asked()?.onKeep?.();
+      expect(calls(log, 'question')).toEqual(['question.hold', 'question.release']);
+      expect(calls(log, 'approval')).toEqual(['approval.hold']);
+    });
+
+    it('stacks a new question over the approval and answers it with cancel when the approval leaves', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'quit', 'alert').entry);
+      expect(log).toEqual([]);
+      registry.escapeTop();
+      expect(log).toEqual(['quit.escape']);
+
+      registry.unregister('approval');
+      expect(log).toEqual(['quit.escape', 'quit.close']);
+    });
+  });
+
+  it('leaves a menu opened while an approval is on screen alone, and the approval too', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'approval', 'approval').entry);
+    registry.register(spy(log, 'menu', 'popover').entry);
+    expect(log).toEqual([]);
+  });
+
+  it('closes a dialog opened inside an approval when the approval leaves', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'setup', 'approval').entry);
+    registry.register(spy(log, 'form', 'dialog', { ancestors: ['setup'] }).entry);
+    expect(log).toEqual([]);
+
+    registry.unregister('setup');
+    expect(log).toEqual(['form.close']);
+  });
+
+  it('puts an urgent approval at the front of the line, and never in place of the one on screen', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'command', 'approval').entry);
+    registry.register(spy(log, 'file', 'approval').entry);
+    registry.register(spy(log, 'workspace', 'approval', { urgent: true }).entry);
+    expect(log).toEqual(['file.hold', 'workspace.hold']);
+
+    registry.unregister('command');
+    expect(log).toEqual(['file.hold', 'workspace.hold', 'workspace.release', 'command.focusTaken']);
+    registry.unregister('workspace');
+    expect(calls(log, 'file')).toEqual(['file.hold', 'file.release']);
+  });
+
+  it('never shows nor releases an approval that left the line before its turn', () => {
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    registry.register(spy(log, 'first', 'approval').entry);
+    registry.register(spy(log, 'second', 'approval').entry);
+    registry.unregister('second');
+    registry.unregister('first');
+    registry.left('first');
+
+    expect(calls(log, 'second')).toEqual(['second.hold']);
+    expect(log).not.toContain('first.focusTaken');
+    // Nothing is left on the page, and nothing takes Escape.
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    registry.escapeTop();
+    expect(log).toEqual(['second.hold']);
+  });
+
+  describe('focus when an approval leaves', () => {
+    it('is marked as taken when the next approval in line is shown', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'first', 'approval').entry);
+      registry.register(spy(log, 'second', 'approval').entry);
+      registry.unregister('first');
+      expect(log).toEqual(['second.hold', 'second.release', 'first.focusTaken']);
+    });
+
+    it('is left to the approval when no layer takes its place', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'only', 'approval').entry);
+      registry.unregister('only');
+      expect(log).toEqual([]);
+    });
+  });
+
+  it('keeps one copy of a layer that registers twice, and the window that stood aside for it stays aside', () => {
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+    registry.register(approval.entry);
+    registry.register(approval.entry);
+
+    expect(calls(log, 'login')).toEqual(['login.hold']);
+    expect(log).not.toContain('approval.close');
+    expect(log).not.toContain('approval.focusTaken');
+    // One copy: Escape reaches it once, and once it has left nothing is on the page.
+    registry.escapeTop();
+    expect(log.filter((line) => line.endsWith('.escape'))).toEqual(['approval.escape']);
+    registry.unregister('approval');
+    registry.unregister('login');
+    registry.left('approval');
+    registry.left('login');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    registry.escapeTop();
+    expect(log.filter((line) => line.endsWith('.escape'))).toEqual(['approval.escape']);
+  });
+
+  it('shows a new approval over one that registered and left in the same step, and brings the window back once', () => {
+    // What StrictMode does to a layer that opens: register, unregister, register.
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+    registry.register(approval.entry);
+    registry.unregister('approval');
+    registry.register(approval.entry);
+
+    expect(calls(log, 'login')).toEqual(['login.hold', 'login.release', 'login.hold']);
+    registry.escapeTop();
+    expect(log[log.length - 1]).toBe('approval.escape');
+    expect(log).not.toContain('approval.close');
+  });
+
+  it('calls nothing on any layer when the provider goes away', () => {
+    vi.useFakeTimers();
+    try {
+      const log: string[] = [];
+      const onModalChange = vi.fn();
+      const { registry, view } = mountRegistry(onModalChange);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      registry.register(spy(log, 'first', 'approval').entry);
+      registry.register(spy(log, 'second', 'approval').entry);
+      const before = [...log];
+      onModalChange.mockClear();
+
+      view.unmount();
+      registry.unregister('first');
+      registry.unregister('second');
+      registry.unregister('login');
+      vi.advanceTimersByTime(LAYER_FADE_MS * 2);
+
+      expect(log).toEqual(before);
+      expect(onModalChange).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Every way a layer can arrive or leave, with an approval on screen, in line, and asking.
+  it('never closes an approval, whatever arrives or leaves around it', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approvals = ['shown', 'queued', 'urgent', 'asking', 'kept', 'nested-owner'];
+    const closed = () => log.filter((line) => line.endsWith('.close') && approvals.some((name) => line === `${name}.close`));
+
+    // On screen, with every other kind arriving and leaving.
+    registry.register(spy(log, 'shown', 'approval').entry);
+    registry.register(spy(log, 'queued', 'approval').entry);
+    registry.register(spy(log, 'urgent', 'approval', { urgent: true }).entry);
+    registry.register(spy(log, 'dialog', 'dialog').entry);
+    registry.register(spy(log, 'dirty', 'dialog', { dirty: true }).entry);
+    registry.register(spy(log, 'busy', 'dialog', { busy: true }).entry);
+    registry.register(spy(log, 'alert', 'alert').entry);
+    registry.register(spy(log, 'other alert', 'alert').entry);
+    registry.register(spy(log, 'menu', 'popover').entry);
+    registry.register(spy(log, 'inner', 'dialog', { ancestors: ['shown'] }).entry);
+    registry.register(spy(log, 'inner alert', 'alert', { ancestors: ['shown'] }).entry);
+    registry.register(spy(log, 'shown', 'approval').entry);
+    registry.unregister('other alert');
+    registry.unregister('menu');
+    registry.unregister('inner');
+    registry.unregister('dialog');
+    registry.unregister('queued');
+    registry.unregister('shown');
+    registry.left('shown');
+    registry.unregister('urgent');
+    expect(closed()).toEqual([]);
+
+    // Asking over unsaved input: discard, keep, the dialog leaving, another dialog and another approval arriving.
+    const draft = spy(log, 'draft', 'dialog', { dirty: true });
+    registry.register(draft.entry);
+    registry.register(spy(log, 'asking', 'approval').entry);
+    registry.register(spy(log, 'search', 'dialog').entry);
+    registry.register(spy(log, 'kept', 'approval').entry);
+    registry.register(spy(log, 'confirm', 'alert').entry);
+    draft.asked()?.onKeep?.();
+    registry.register(spy(log, 'search', 'dialog').entry);
+    registry.unregister('search');
+    registry.register(spy(log, 'settings', 'dialog').entry);
+    draft.asked()?.onDiscard();
+    registry.unregister('asking');
+    registry.unregister('kept');
+    registry.unregister('settings');
+    expect(closed()).toEqual([]);
+
+    // Stepping aside and coming back around it.
+    registry.register(spy(log, 'outer', 'dialog').entry);
+    registry.register(spy(log, 'work', 'dialog', { ancestors: ['outer'], busy: true }).entry);
+    registry.register(spy(log, 'question', 'alert').entry);
+    registry.register(spy(log, 'nested-owner', 'approval').entry);
+    registry.unregister('work');
+    registry.unregister('outer');
+    registry.unregister('nested-owner');
+    expect(closed()).toEqual([]);
+    expect(log.filter((line) => line.endsWith('.escape'))).toEqual([]);
+  });
+});
+
+describe('approval layers on the page', () => {
+  it('shows a dialog that an approval turned away the next time it is opened', async () => {
+    const user = userEvent.setup();
+    const onSearch = vi.fn();
+    render(
+      <LayerProvider>
+        <FakeLayer name="approval" kind="approval" />
+        <FakeLayer name="search" kind="dialog" onOpenChange={onSearch} />
+      </LayerProvider>,
+    );
+    await user.click(screen.getByText('open approval'));
+    await user.click(screen.getByText('open search'));
+    expect(screen.getByTestId('approval')).toBeInTheDocument();
+    expect(screen.queryByTestId('search')).toBeNull();
+    expect(onSearch.mock.calls).toEqual([[true], [false]]);
+
+    await user.click(screen.getByText('close approval'));
+    await user.click(screen.getByText('open search'));
+    expect(screen.getByTestId('search')).toBeInTheDocument();
+  });
+
+  function watchFor(testId: string) {
+    let seen = false;
+    const check = (records: MutationRecord[]) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.dataset.testid === testId || node.querySelector(`[data-testid="${testId}"]`)) seen = true;
+        }
+      }
+    };
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      check(observer.takeRecords());
+      observer.disconnect();
+      return seen;
+    };
+  }
+
+  function Approvals({ which, strict = false }: { which: 'none' | 'command' | 'workspace'; strict?: boolean }) {
+    const tree = (
+      <LayerProvider>
+        <FakeLayer name="login" kind="dialog" busy defaultOpen />
+        {which === 'command' && <FakeLayer key="command" name="command" kind="approval" defaultOpen />}
+        {which === 'workspace' && <FakeLayer key="workspace" name="workspace" kind="approval" defaultOpen />}
+      </LayerProvider>
+    );
+    return strict ? <StrictMode>{tree}</StrictMode> : tree;
+  }
+
+  it('keeps a window that stepped aside off the page when another approval replaces the one on screen in one render', () => {
+    const view = render(<Approvals which="none" />);
+    expect(screen.getByTestId('login')).toBeInTheDocument();
+    view.rerender(<Approvals which="command" />);
+    expect(screen.queryByTestId('login')).toBeNull();
+
+    const sawLogin = watchFor('login');
+    view.rerender(<Approvals which="workspace" />);
+    expect(sawLogin()).toBe(false);
+    expect(screen.queryByTestId('login')).toBeNull();
+    expect(screen.getByTestId('workspace')).toBeInTheDocument();
+
+    view.rerender(<Approvals which="none" />);
+    expect(screen.getByTestId('login')).toBeInTheDocument();
+  });
+
+  it('keeps a window that stepped aside off the page while an approval registers twice under StrictMode', () => {
+    const view = render(<Approvals which="none" strict />);
+    expect(screen.getByTestId('login')).toBeInTheDocument();
+
+    view.rerender(<Approvals which="command" strict />);
+    expect(screen.queryByTestId('login')).toBeNull();
+    const sawLogin = watchFor('login');
+    view.rerender(<Approvals which="workspace" strict />);
+    expect(sawLogin()).toBe(false);
+    expect(screen.getByTestId('workspace')).toBeInTheDocument();
+
+    view.rerender(<Approvals which="none" strict />);
+    expect(screen.getByTestId('login')).toBeInTheDocument();
+  });
+
+  it('shows queued approvals one at a time, the urgent one first', () => {
+    function Queue({ shown }: { shown: boolean }) {
+      return (
+        <LayerProvider>
+          {shown && <FakeLayer name="command" kind="approval" defaultOpen />}
+          <FakeLayer name="file" kind="approval" />
+          <FakeLayer name="workspace" kind="approval" urgent />
+        </LayerProvider>
+      );
+    }
+    const view = render(<Queue shown />);
+    act(() => { screen.getByText('open file').click(); });
+    act(() => { screen.getByText('open workspace').click(); });
+    expect(screen.getByTestId('command')).toBeInTheDocument();
+    expect(screen.queryByTestId('file')).toBeNull();
+    expect(screen.queryByTestId('workspace')).toBeNull();
+
+    view.rerender(<Queue shown={false} />);
+    expect(screen.getByTestId('workspace')).toBeInTheDocument();
+    expect(screen.queryByTestId('file')).toBeNull();
+    act(() => { screen.getByText('close workspace').click(); });
+    expect(screen.getByTestId('file')).toBeInTheDocument();
+  });
+});
+
+describe('telling when the last dialog has left the page', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('says yes when a dialog registers, and no only once it has left the page', () => {
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    registry.register(spy(log, 'dialog', 'dialog').entry);
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+
+    registry.unregister('dialog');
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    registry.left('dialog');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('says no one fade after a dialog unregistered when nothing reports that it left', () => {
+    vi.useFakeTimers();
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    registry.register(spy(log, 'dialog', 'dialog').entry);
+    registry.unregister('dialog');
+
+    vi.advanceTimersByTime(LAYER_FADE_MS - 1);
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    vi.advanceTimersByTime(1);
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('says no once, after the second of two dialogs has left the page', () => {
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    registry.register(spy(log, 'outer', 'dialog').entry);
+    registry.register(spy(log, 'inner', 'dialog', { ancestors: ['outer'] }).entry);
+    registry.unregister('inner');
+    registry.unregister('outer');
+    registry.left('outer');
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    registry.left('inner');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('stays yes when a dialog opens again before its fade has ended, and the old timer is dropped', () => {
+    vi.useFakeTimers();
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    const dialog = spy(log, 'dialog', 'dialog');
+    registry.register(dialog.entry);
+    registry.unregister('dialog');
+    vi.advanceTimersByTime(LAYER_FADE_MS / 2);
+    registry.register(dialog.entry);
+    vi.advanceTimersByTime(LAYER_FADE_MS);
+    registry.left('dialog');
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+  });
+
+  it('counts an approval, and a window that steps aside until it has left the page', () => {
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+    registry.register(spy(log, 'approval', 'approval').entry);
+    registry.left('login');
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+
+    registry.unregister('approval');
+    registry.left('approval');
+    // The window is back.
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    registry.unregister('login');
+    registry.left('login');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('never counts an approval that waits in line', () => {
+    vi.useFakeTimers();
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    registry.register(spy(log, 'first', 'approval').entry);
+    registry.register(spy(log, 'second', 'approval').entry);
+    registry.unregister('second');
+    registry.unregister('first');
+    registry.left('first');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    vi.advanceTimersByTime(LAYER_FADE_MS * 2);
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
   });
 });
 

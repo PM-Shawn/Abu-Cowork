@@ -24,6 +24,9 @@ export function OverlaySection() {
   const [menuTheme, setMenuTheme] = useState('system');
   const [dialogModel, setDialogModel] = useState('sonnet');
   const [pageModel, setPageModel] = useState('opus');
+  const [busyOpen, setBusyOpen] = useState(false);
+  const [busyDraft, setBusyDraft] = useState('');
+  const [approval, setApproval] = useState<'none' | 'first' | 'second'>('none');
 
   const askToDelete = async () => {
     const confirmed = await confirm({
@@ -159,6 +162,48 @@ export function OverlaySection() {
         <Button variant="danger" onClick={() => { void askToDelete(); }}>Confirm dialog</Button>
         <Button onClick={() => { void askToArchive(); }}>Confirm (default tone)</Button>
         <span className="text-ui-sm text-label-secondary">{`Last answer: ${answer}`}</span>
+        <Button onClick={() => setBusyOpen(true)}>Busy window</Button>
+        <Dialog
+          open={busyOpen}
+          onOpenChange={setBusyOpen}
+          busy
+          title="Busy window"
+          description="Work is in flight here. An approval makes this window step aside; it returns as it was."
+          footer={<DialogClose asChild><Button>Close</Button></DialogClose>}
+        >
+          <div className="flex flex-col gap-3">
+            <TextField aria-label="Typed while busy" placeholder="Type something" value={busyDraft} onChange={(event) => setBusyDraft(event.target.value)} />
+            <Button onClick={() => setApproval('first')}>Approval arrives</Button>
+          </div>
+        </Dialog>
+        <Dialog
+          open={approval === 'first'}
+          onOpenChange={(open) => { if (!open) setApproval('none'); }}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          closeButton
+          title="Run this command?"
+          description="Only its own buttons, Escape and the close button answer an approval."
+          initialFocus={(content) => content.querySelector('[data-approval-cancel]')}
+          footer={(
+            <>
+              <Button data-approval-cancel="" onClick={() => setApproval('none')}>Cancel</Button>
+              <Button onClick={() => setRenameOpen(true)}>Open a dialog</Button>
+              <Button variant="primary" onClick={() => setApproval('second')}>Next approval</Button>
+            </>
+          )}
+        />
+        <Dialog
+          open={approval === 'second'}
+          onOpenChange={(open) => { if (!open) setApproval('none'); }}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Allow this folder?"
+          initialFocus={(content) => content.querySelector('[data-approval-cancel]')}
+          footer={<Button data-approval-cancel="" onClick={() => setApproval('none')}>Deny</Button>}
+        />
       </div>
     </Section>
   );

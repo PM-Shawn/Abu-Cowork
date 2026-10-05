@@ -1628,6 +1628,50 @@ describe('approvals and the windows around them', () => {
     }
   });
 
+  it('keeps a busy dialog that opens under an approval off the page from its first render, unclosed, and shows it when the approval has gone', () => {
+    const onLogin = vi.fn();
+    const onCommand = vi.fn();
+    const view = render(<Desk onLogin={onLogin} onCommand={onCommand} />);
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    view.rerender(<Desk command onLogin={onLogin} onCommand={onCommand} />);
+    expect(cancel()).toHaveFocus();
+    takeMoves();
+
+    const sawLogin = watchFor('Sign in');
+    view.rerender(<Desk command login onLogin={onLogin} onCommand={onCommand} />);
+    act(() => { vi.runOnlyPendingTimers(); });
+
+    expect(sawLogin()).toBe(false);
+    expect(box('Sign in')).toBeNull();
+    expect(onLogin).not.toHaveBeenCalled();
+    expect(onCommand).not.toHaveBeenCalled();
+    // The approval keeps the focus.
+    expect(takeMoves()).toEqual([]);
+    expect(cancel()).toHaveFocus();
+
+    // The approval is answered: the window is shown, with the focus on its first control.
+    view.rerender(<Desk login onLogin={onLogin} onCommand={onCommand} />);
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('dialog', { name: 'Sign in' })).toHaveAttribute('data-state', 'open');
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+    expect(onLogin).not.toHaveBeenCalled();
+
+    // Its owner closes it: focus goes where the approval's would have gone, not onto the window.
+    view.rerender(<Desk onLogin={onLogin} onCommand={onCommand} />);
+    expect(endFade('Sign in')).toEqual(['Send']);
+    expect(send).toHaveFocus();
+  });
+
+  it('turns away a dialog that is not busy when it opens under an approval', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk command busy={false} onLogin={onLogin} />);
+    view.rerender(<Desk command login busy={false} onLogin={onLogin} />);
+    expect(onLogin.mock.calls).toEqual([[false]]);
+    expect(box('Sign in')).toBeNull();
+  });
+
   it('shows a dialog that an approval turned away when it is opened after the approval has gone', () => {
     const view = render(<Desk command search />);
     view.rerender(<Desk command />);

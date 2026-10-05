@@ -7,8 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import {
   drainConfirmationQueue,
+  drainWorkspaceRequest,
   getPendingCommandConfirmation,
+  getPendingWorkspaceRequest,
   requestCommandConfirmationForConversation,
+  requestWorkspace,
   resolveCommandConfirmation,
   subscribeToCommandConfirmation,
 } from '@/core/agent/permissionBridge';
@@ -276,6 +279,87 @@ describe('AccountLoginDialog opened from the settings window', () => {
       expect(loginWindow()).toBeNull();
       expect(cancel).not.toHaveBeenCalled();
       expect(onApprovalAnswer).not.toHaveBeenCalled();
+    });
+
+    // The window's own way of leaving for an old prompt ends while the approval (the task's grant
+    // window, which that way does not count) is still on screen: the window asks to be shown
+    // again under the approval. It waits; the sign-in goes on.
+    describe('and an old prompt of the task in view comes and goes under it', () => {
+      beforeEach(() => {
+        useChatStore.setState({ activeConversationId: 'conversation-in-view' });
+        useSettingsStore.setState({ viewMode: 'chat' });
+      });
+      afterEach(() => {
+        act(() => { drainWorkspaceRequest(); drainConfirmationQueue(); });
+        useChatStore.setState({ activeConversationId: null });
+        vi.useRealTimers();
+      });
+
+      function expectStillSigningIn(status: 'awaiting_browser' | 'exchanging') {
+        expect(cancel).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+        expect(useAccountStore.getState().status).toBe(status);
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+      }
+      function expectBackAfterTheApproval(view: ReturnType<typeof render>, status: 'awaiting_browser' | 'exchanging') {
+        expect(screen.queryByRole('dialog')).toBeNull();
+        view.rerender(<Page approval={false} />);
+        expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
+        expect(loginWindow()).not.toHaveAttribute('hidden');
+        expectStillSigningIn(status);
+      }
+
+      it.each(['awaiting_browser', 'exchanging'] as const)('keeps a sign-in that is %s when a workspace request times out under the approval', (status) => {
+        vi.useFakeTimers();
+        useAccountStore.setState({ status });
+        const view = render(<Page approval={false} />);
+        view.rerender(<Page approval />);
+        expect(loginWindow()).toHaveAttribute('hidden');
+
+        const answers: (string | null)[] = [];
+        act(() => { void requestWorkspace('needs a folder', 'conversation-in-view', '/fake/project').then((answer) => { answers.push(answer); }); });
+        expect(loginWindow()).toBeNull();
+        expectStillSigningIn(status);
+
+        // Nobody answers the workspace request: it answers itself after 60 seconds.
+        act(() => { vi.advanceTimersByTime(60_000); });
+        expect(getPendingWorkspaceRequest()).toBeNull();
+        expectStillSigningIn(status);
+        expectBackAfterTheApproval(view, status);
+      });
+
+      it.each(['awaiting_browser', 'exchanging'] as const)('keeps a sign-in that is %s when the conversation in view changes under the approval', (status) => {
+        useAccountStore.setState({ status });
+        const view = render(<Page approval={false} />);
+        view.rerender(<Page approval />);
+        act(() => {
+          void requestCommandConfirmationForConversation({ command: 'echo not-a-real-command', level: 'warn', reason: 'needs a look' }, 'conversation-in-view');
+        });
+        expect(loginWindow()).toBeNull();
+        expectStillSigningIn(status);
+
+        act(() => { useChatStore.setState({ activeConversationId: 'another-conversation' }); });
+        expectStillSigningIn(status);
+        expectBackAfterTheApproval(view, status);
+      });
+
+      it('keeps a personal sign-in that was asked for when the conversation in view changes under the approval', async () => {
+        const startPersonalLogin = vi.fn(() => new Promise<string | null>(() => undefined));
+        useAccountStore.setState({ startPersonalLogin });
+        const view = render(<Page approval={false} />);
+        await userEvent.setup().click(screen.getByRole('button', { name: '个人账号登录' }));
+        view.rerender(<Page approval />);
+        act(() => {
+          void requestCommandConfirmationForConversation({ command: 'echo not-a-real-command', level: 'warn', reason: 'needs a look' }, 'conversation-in-view');
+        });
+        act(() => { useChatStore.setState({ activeConversationId: 'another-conversation' }); });
+
+        expect(cancel).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+        view.rerender(<Page approval={false} />);
+        expect(screen.getByRole('dialog', { name: '登录 / 注册' })).toBeInTheDocument();
+        expect(cancel).not.toHaveBeenCalled();
+      });
     });
 
     // Until the close-window question is a design-system layer the window also leaves the page

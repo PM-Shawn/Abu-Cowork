@@ -35,7 +35,8 @@ interface Fading {
 //   one at the front) and shown when the one before it leaves. One that leaves the line before
 //   its turn is forgotten: it is never released nor shown.
 // - A dialog that opens while an approval is on the page, or while one asks about unsaved input,
-//   is turned away: held, then closed, so it is never on the page.
+//   is turned away: held, then closed, so it is never on the page. One that is busy is held and
+//   not closed: it waits with the dialogs that stepped aside and is shown when no approval is left.
 // - An approval that arrives at an open dialog: a dialog that is busy (closing it would cancel
 //   its work), alone or inside the open one, steps aside with the dialogs around it and comes
 //   back when no approval is left; a dialog with unsaved input asks whether to discard it while
@@ -282,8 +283,18 @@ export function LayerProvider({ children, container, onModalChange }: {
       ));
       const approvalAhead = others.some((layer) => layer.kind === 'approval') || approvalAsking();
       if (entry.kind === 'dialog' && approvalAhead) {
-        // Turned away. Held first, so it is not on the page for the moment it takes its owner to close it.
+        // Held first, so it is not on the page for a moment in either case.
         entry.hold();
+        if (entry.isBusy()) {
+          // Closing it would cancel its work: it waits off the page, never shown over the
+          // approval, and is shown when no approval is left, like a busy dialog that was open
+          // before the approval. It opens by itself then, so focus returns where the approval's will.
+          const ahead = others.find((layer) => layer.kind === 'approval') ?? waiting.current?.entry;
+          entry.returnFocus.current ??= ahead?.returnFocus.current ?? null;
+          steppedAside.current = [...steppedAside.current, entry];
+          return;
+        }
+        // Turned away.
         entry.close();
         return;
       }

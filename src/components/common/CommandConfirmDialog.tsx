@@ -67,7 +67,7 @@ const levelConfig = {
  * The approval of a command, a browser action, an upload or a self-extension.
  *
  * An approval layer: no other window closes it or covers it, and one approval is on the
- * page at a time. It opens with the focus on 「取消」, so Enter and Space pressed as it
+ * page at a time. It opens with the focus on Cancel, so Enter and Space pressed as it
  * appears cancel. Escape and the corner button cancel as well; a press outside does nothing.
  * Only a press on a confirming button confirms.
  */

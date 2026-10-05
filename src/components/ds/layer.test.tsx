@@ -674,6 +674,101 @@ describe('approval layers', () => {
     expect(log).toEqual(['search.hold', 'search.close', 'approval.escape']);
   });
 
+  describe('a busy dialog that arrives while an approval is on screen', () => {
+    it('steps aside from the start, is never closed, and returns when the approval has left', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      // The approval is still the top layer.
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('approval.escape');
+
+      registry.unregister('approval');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+      registry.escapeTop();
+      expect(log[log.length - 1]).toBe('login.escape');
+      expect(log).not.toContain('login.close');
+      expect(log).not.toContain('approval.close');
+    });
+
+    it('returns after the last of two approvals', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'first', 'approval').entry);
+      registry.register(spy(log, 'second', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+
+      registry.unregister('first');
+      expect(calls(log, 'second')).toEqual(['second.hold', 'second.release']);
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+
+      registry.unregister('second');
+      expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+      expect(log).not.toContain('login.close');
+    });
+
+    it('does not return when it left while it waited', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      registry.unregister('login');
+      registry.unregister('approval');
+
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      registry.escapeTop();
+      expect(log).not.toContain('login.escape');
+    });
+
+    it('steps aside the same way while an approval asks about unsaved input', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const draft = spy(log, 'draft', 'dialog', { dirty: true });
+      registry.register(draft.entry);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+
+      expect(calls(log, 'login')).toEqual(['login.hold']);
+      expect(draft.asked()).not.toBeNull();
+      expect(log).not.toContain('login.close');
+    });
+
+    it('is not counted as on the page while it waits', () => {
+      const onModalChange = vi.fn();
+      const log: string[] = [];
+      const { registry } = mountRegistry(onModalChange);
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+      registry.unregister('login');
+      registry.unregister('approval');
+      registry.left('approval');
+      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('takes the return target of the approval on screen when it has none of its own', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const opener = document.createElement('button');
+      const approval = spy(log, 'approval', 'approval');
+      approval.entry.returnFocus.current = opener;
+      const login = spy(log, 'login', 'dialog', { busy: true });
+      registry.register(approval.entry);
+      registry.register(login.entry);
+      expect(login.entry.returnFocus.current).toBe(opener);
+    });
+
+    it('still turns away a dialog that is not busy', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      registry.register(spy(log, 'approval', 'approval').entry);
+      registry.register(spy(log, 'search', 'dialog', { dirty: true }).entry);
+      expect(calls(log, 'search')).toEqual(['search.hold', 'search.close']);
+    });
+  });
+
   it('holds a second approval and shows it when the first leaves; neither is closed', () => {
     const log: string[] = [];
     const { registry } = mountRegistry();

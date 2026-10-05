@@ -616,6 +616,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     ...wireBackedLoopOptions,
     signal: controller.signal,
     settingsReader,
+    // Already live (mirror + pinned model), and the bare getSettingsReader()
+    // is only wired by agentLoopHost — so the usability check reads this one.
+    liveSettingsReader: settingsReader,
     toolInvoker,
     workspaceReader,
     capsPort,

@@ -14,6 +14,7 @@ import { adapterKindFor } from './adapterKind';
 import { createAdapterForKind } from './createAdapter';
 import { providerChatOptions } from './providerChatOptions';
 import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
+import { getModelUnavailableReason } from '../../utils/settingsSelectors';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { settingsForConversation } from '../agent/conversationSettings';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
@@ -66,6 +67,22 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
     getActiveApiKey(settings),
     getActiveProvider(settings)?.baseUrl || undefined,
   )
+
+  // An unusable model (provider removed/turned off, model no longer listed) is
+  // never called — no other model, no default endpoint. The enterprise gateway
+  // supplies its own credentials and its pins have no personal provider entry.
+  const { activeModel } = settings;
+  const modelIssue = effectiveCreds.forceOpenAiCompatible || activeModel.providerId === 'enterprise-gateway'
+    ? null
+    : getModelUnavailableReason(settings, activeModel);
+  if (modelIssue) {
+    console.warn('[llmCall] refused: model unavailable', {
+      reason: modelIssue,
+      providerId: activeModel.providerId,
+      modelId: activeModel.modelId,
+    });
+    throw new Error(`Model unavailable (${modelIssue}): ${activeModel.providerId}/${activeModel.modelId}`);
+  }
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
   const adapter: LLMAdapter = createAdapterForKind(adapterKindFor(getActiveProvider(settings), effectiveCreds.forceOpenAiCompatible));

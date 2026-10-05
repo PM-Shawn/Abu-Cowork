@@ -11,7 +11,7 @@ interface Waiting {
   withdraw: () => void;
 }
 
-// An approval that has left the registry and is still fading out.
+// A dialog, an alert or an approval that has left the registry and is still fading out.
 interface Fading {
   entry: LayerEntry;
   // Another layer has been shown since: it has the focus.
@@ -67,7 +67,10 @@ export function LayerProvider({ children, container, onModalChange }: {
   // Dialogs, alerts and approvals that are shown or still fading out.
   const painted = useRef(new Set<string>());
   const fadeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const fadingApprovals = useRef(new Map<string, Fading>());
+  // Layers that fade out, the one that left first first. A layer shown meanwhile has the page:
+  // each of them gives the focus to nobody when its fade ends, and an approval among the newcomers
+  // returns focus where the first of them would have, since what it finds focused is leaving.
+  const fadingLayers = useRef(new Map<string, Fading>());
   const alive = useRef(true);
   const modalListener = useRef(onModalChange);
   useLayoutEffect(() => { modalListener.current = onModalChange; });
@@ -108,7 +111,7 @@ export function LayerProvider({ children, container, onModalChange }: {
     };
     const left = (id: string) => {
       stopFadeTimer(id);
-      fadingApprovals.current.delete(id);
+      fadingLayers.current.delete(id);
       // Shown again since it began to fade: it is on the page.
       if (isShown(id)) return;
       painted.current.delete(id);
@@ -127,13 +130,15 @@ export function LayerProvider({ children, container, onModalChange }: {
       if (entry.kind === 'popover') return;
       painted.current.add(entry.id);
       stopFadeTimer(entry.id);
-      fadingApprovals.current.delete(entry.id);
-      // An approval that is still fading out: this layer has the page now, and the focus with it.
-      for (const fading of fadingApprovals.current.values()) {
+      fadingLayers.current.delete(entry.id);
+      // A layer that is still fading out: this one has the page now, and the focus with it.
+      for (const fading of fadingLayers.current.values()) {
         if (!fading.taken) {
           fading.taken = true;
           fading.entry.focusTaken();
         }
+        // An approval opens by itself, so the control it finds focused is in a layer that is
+        // leaving. A dialog or an alert is opened by the user and remembers what they pressed.
         if (entry.kind === 'approval') entry.returnFocus.current ??= fading.entry.returnFocus.current;
       }
     };
@@ -203,13 +208,15 @@ export function LayerProvider({ children, container, onModalChange }: {
       const gone = new Set([id, ...dropped.map((layer) => layer.id)]);
       // Whether a layer was shown is read before it is taken off every list the registry keeps.
       const fading = [...gone].filter(isShown);
+      // The removed layer first: a dialog inside it would return focus to a control of it.
+      const leaving = [...(shown ? [shown] : []), ...dropped].filter((layer) => layer.kind !== 'popover' && isShown(layer.id));
       const leftInLine = waitingApprovals.current.find((layer) => layer.id === id);
       layers.current = layers.current.filter((layer) => !gone.has(layer.id));
       steppedAside.current = steppedAside.current.filter((layer) => !gone.has(layer.id));
       waitingApprovals.current = waitingApprovals.current.filter((layer) => !gone.has(layer.id));
       for (const key of gone) askedOver.current.delete(key);
       for (const key of fading) startFade(key);
-      if (shown?.kind === 'approval') fadingApprovals.current.set(id, { entry: shown, taken: false });
+      for (const layer of leaving) fadingLayers.current.set(layer.id, { entry: layer, taken: false });
       // Never shown: what the registry prepared for its turn is dropped with it.
       if (leftInLine) leftInLine.returnFocus.current = null;
       for (const layer of [...layers.current, ...steppedAside.current]) {
@@ -274,11 +281,13 @@ export function LayerProvider({ children, container, onModalChange }: {
         queue(entry);
         return;
       }
+      let questionAside: LayerEntry | undefined;
       for (const layer of others) {
         if (layer.kind === 'popover') dismiss(layer);
         else if (layer.kind === 'alert' && entry.kind === 'approval') {
           // An open question waits, unanswered, for the approval to be answered.
           stepAside(layer);
+          questionAside ??= layer;
         } else if (layer.kind === 'alert' && entry.kind !== 'popover') {
           // A new alert replaces an older one; a new dialog answers an open alert with cancel.
           dismiss(layer);
@@ -332,8 +341,7 @@ export function LayerProvider({ children, container, onModalChange }: {
               );
               return;
             }
-            // Focus returns to where it was before the dialog this approval takes the place of.
-            if (entry.kind === 'approval') entry.returnFocus.current ??= current.returnFocus.current;
+            // The dialog fades out as this layer is shown; show() hands the focus on.
             dismiss(current);
           }
         }
@@ -344,6 +352,9 @@ export function LayerProvider({ children, container, onModalChange }: {
         if (owner) askedOver.current.set(entry.id, owner.id);
       }
       show(entry);
+      // The control the approval finds focused is in the question that stepped aside. Should the
+      // question be gone when the approval leaves, focus returns to where the question would have sent it.
+      if (questionAside) entry.returnFocus.current ??= questionAside.returnFocus.current;
     }
     // One change from outside. Whatever it closes, releases or shows along the way, the line of
     // approvals moves and the app hears about dialogs once, when the change is complete.

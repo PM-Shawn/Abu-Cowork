@@ -691,7 +691,8 @@ describe('approval layers', () => {
     registry.register(spy(log, 'settings', 'dialog').entry);
     registry.register(spy(log, 'approval', 'approval').entry);
 
-    expect(log).toEqual(['settings.close']);
+    // The dialog is closed and told that the approval has the focus: its fade gives it to nobody.
+    expect(log).toEqual(['settings.close', 'settings.focusTaken']);
     registry.escapeTop();
     expect(log[log.length - 1]).toBe('approval.escape');
   });
@@ -890,7 +891,7 @@ describe('approval layers', () => {
       registry.register(spy(log, 'question', 'alert').entry);
       registry.register(spy(log, 'approval', 'approval').entry);
 
-      expect(log).toEqual(['question.hold', 'question.close', 'settings.close']);
+      expect(log).toEqual(['question.hold', 'question.close', 'settings.close', 'settings.focusTaken']);
       registry.unregister('approval');
       expect(log).not.toContain('question.release');
     });
@@ -972,6 +973,108 @@ describe('approval layers', () => {
     expect(onModalChange.mock.calls).toEqual([[true], [false]]);
     registry.escapeTop();
     expect(log).toEqual(['second.hold']);
+  });
+
+  describe('focus when a layer leaves as another is shown', () => {
+    it('hands the return target of a dialog on to the approval that waited behind it, and marks the dialog', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const opener = document.createElement('button');
+      const draft = spy(log, 'draft', 'dialog', { dirty: true });
+      draft.entry.returnFocus.current = opener;
+      const approval = spy(log, 'approval', 'approval');
+      registry.register(draft.entry);
+      registry.register(approval.entry);
+      draft.asked()?.onKeep?.();
+      expect(approval.entry.returnFocus.current).toBeNull();
+
+      registry.unregister('draft');
+      expect(approval.entry.returnFocus.current).toBe(opener);
+      expect(log.slice(-2)).toEqual(['approval.release', 'draft.focusTaken']);
+    });
+
+    it('hands it on after Discard as well', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const opener = document.createElement('button');
+      const draft = spy(log, 'draft', 'dialog', { dirty: true });
+      draft.entry.returnFocus.current = opener;
+      const approval = spy(log, 'approval', 'approval');
+      registry.register(draft.entry);
+      registry.register(approval.entry);
+      draft.asked()?.onDiscard();
+      expect(approval.entry.returnFocus.current).toBe(opener);
+      expect(log).toContain('draft.focusTaken');
+    });
+
+    it('takes the target of the outer dialog when a dialog inside it leaves with it', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const opener = document.createElement('button');
+      const inside = document.createElement('button');
+      const outer = spy(log, 'outer', 'dialog');
+      outer.entry.returnFocus.current = opener;
+      const inner = spy(log, 'inner', 'dialog', { ancestors: ['outer'] });
+      inner.entry.returnFocus.current = inside;
+      const approval = spy(log, 'approval', 'approval');
+      registry.register(outer.entry);
+      registry.register(inner.entry);
+      registry.register(approval.entry);
+      expect(approval.entry.returnFocus.current).toBe(opener);
+      expect(calls(log, 'outer')).toEqual(['outer.close', 'outer.focusTaken']);
+      expect(calls(log, 'inner')).toEqual(['inner.close', 'inner.focusTaken']);
+    });
+
+    it('leaves a dialog that replaces another its own return target, and marks the one that leaves', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const first = spy(log, 'first', 'dialog');
+      first.entry.returnFocus.current = document.createElement('button');
+      const second = spy(log, 'second', 'dialog');
+      registry.register(first.entry);
+      registry.register(second.entry);
+      expect(second.entry.returnFocus.current).toBeNull();
+      expect(log).toEqual(['first.close', 'first.focusTaken']);
+    });
+
+    it('gives an approval the return target of the question that steps aside for it, and of the busy window first', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const asker = document.createElement('button');
+      const question = spy(log, 'question', 'alert');
+      question.entry.returnFocus.current = asker;
+      const approval = spy(log, 'approval', 'approval');
+      registry.register(question.entry);
+      registry.register(approval.entry);
+      expect(approval.entry.returnFocus.current).toBe(asker);
+      registry.unregister('approval');
+      registry.unregister('question');
+
+      const opener = document.createElement('button');
+      const install = spy(log, 'install', 'dialog', { busy: true });
+      install.entry.returnFocus.current = opener;
+      const over = spy(log, 'over', 'alert');
+      over.entry.returnFocus.current = document.createElement('button');
+      const next = spy(log, 'next', 'approval');
+      registry.register(install.entry);
+      registry.register(over.entry);
+      registry.register(next.entry);
+      expect(next.entry.returnFocus.current).toBe(opener);
+    });
+
+    it('marks nothing once the fade of the layer that left has ended', () => {
+      const log: string[] = [];
+      const { registry } = mountRegistry();
+      const first = spy(log, 'first', 'dialog');
+      first.entry.returnFocus.current = document.createElement('button');
+      const approval = spy(log, 'approval', 'approval');
+      registry.register(first.entry);
+      registry.unregister('first');
+      registry.left('first');
+      registry.register(approval.entry);
+      expect(log).toEqual([]);
+      expect(approval.entry.returnFocus.current).toBeNull();
+    });
   });
 
   describe('focus when an approval leaves', () => {

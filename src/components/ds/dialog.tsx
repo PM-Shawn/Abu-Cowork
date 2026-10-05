@@ -193,6 +193,8 @@ export function Dialog({
   // returns nothing mounts, so no focus moves by itself: it goes back to the control that had it,
   // or to the dialog's first control when focus would otherwise be left on a layer that is leaving.
   const contentRef = useRef<HTMLDivElement>(null);
+  // The dialog's own discard question is hidden with it and returns with it, unanswered.
+  const questionRef = useRef<HTMLDivElement>(null);
   const focusedInside = useRef<HTMLElement | null>(null);
   const wasAside = useRef(false);
   const initialFocusRef = useRef(initialFocus);
@@ -202,7 +204,8 @@ export function Dialog({
     if (aside) {
       wasAside.current = true;
       const active = document.activeElement;
-      focusedInside.current = content && active instanceof HTMLElement && content.contains(active) ? active : null;
+      const inside = active instanceof HTMLElement && (content?.contains(active) || questionRef.current?.contains(active));
+      focusedInside.current = inside ? active : null;
       return;
     }
     if (!wasAside.current) return;
@@ -352,6 +355,8 @@ export function Dialog({
       <AlertDialogPrimitive.Root open={discardAsked} onOpenChange={(next) => { if (!next) keep(); }}>
         <AlertDialogPrimitive.Portal container={container}>
           <AlertDialogPrimitive.Content
+            ref={questionRef}
+            hidden={aside}
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
@@ -366,7 +371,12 @@ export function Dialog({
               // The first button is the one that keeps editing, which Radix focuses too.
               focusQuietlyAfterPointer(event, (box) => firstTabbable(box));
             }}
-            onCloseAutoFocus={(event) => giveFocusBack(discardReturnTo, event, false)}
+            onCloseAutoFocus={(event) => {
+              // Discarded: the dialog is leaving too. Its own fade decides where focus goes; a
+              // control of a dialog that is closing is no place to send it.
+              if (!isOpen) event.preventDefault();
+              giveFocusBack(discardReturnTo, event, false);
+            }}
             className={cn(DIALOG_BOX, WIDTH.sm, DIALOG_MOTION, DIALOG_CLOSING)}
           >
             <AlertDialogPrimitive.Title className="text-title text-label">{t.designSystem.discardTitle}</AlertDialogPrimitive.Title>

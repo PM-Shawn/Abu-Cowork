@@ -1517,6 +1517,7 @@ describe('approvals and the windows around them', () => {
   interface DeskProps {
     login?: boolean;
     busy?: boolean;
+    dirty?: boolean;
     command?: boolean;
     folder?: boolean;
     search?: boolean;
@@ -1531,7 +1532,7 @@ describe('approvals and the windows around them', () => {
   }
 
   function Desk({
-    login = false, busy = true, command = false, folder = false, search = false, quit = false,
+    login = false, busy = true, dirty = false, command = false, folder = false, search = false, quit = false,
     onLogin, onCommand, onFolder, onSearch, onQuit, onModalChange, container,
   }: DeskProps) {
     const [email, setEmail] = useState('');
@@ -1539,7 +1540,7 @@ describe('approvals and the windows around them', () => {
       <DesignSystemProvider onModalChange={onModalChange} container={container}>
         <Button>Account</Button>
         <Button>Send</Button>
-        <Dialog open={login} busy={busy} onOpenChange={onLogin} title="Sign in">
+        <Dialog open={login} busy={busy} dirty={dirty} onOpenChange={onLogin} title="Sign in">
           <input aria-label="Email" value={email} onChange={(event) => setEmail(event.target.value)} />
         </Dialog>
         <Dialog
@@ -1817,6 +1818,79 @@ describe('approvals and the windows around them', () => {
     expect(takeMoves()).toEqual(['Email']);
     expect(endFade('Run this command?')).toEqual([]);
     expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+  });
+
+  it('gives focus back to what opened a window whose unsaved input the user discarded for an approval', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk />);
+    const opener = screen.getByRole('button', { name: 'Account' });
+    opener.focus();
+    view.rerender(<Desk login busy={false} dirty onLogin={onLogin} />);
+    view.rerender(<Desk login busy={false} dirty command onLogin={onLogin} />);
+    expect(box('Discard these changes?')).toHaveAttribute('data-state', 'open');
+    expect(box('Run this command?')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(onLogin.mock.calls).toEqual([[false]]);
+    view.rerender(<Desk command onLogin={onLogin} />);
+    expect(cancel()).toHaveFocus();
+    // Neither the question nor the window takes the focus from the approval as it fades.
+    expect(endFade('Discard these changes?')).toEqual([]);
+    expect(endFade('Sign in')).toEqual([]);
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk onLogin={onLogin} />);
+    expect(endFade('Run this command?')).toEqual(['Account']);
+    expect(opener).toHaveFocus();
+  });
+
+  it('gives focus back to what opened a window that closed after the user kept editing, once the approval that waited has gone', () => {
+    const view = render(<Desk />);
+    const opener = screen.getByRole('button', { name: 'Account' });
+    opener.focus();
+    view.rerender(<Desk login busy={false} dirty />);
+    view.rerender(<Desk login busy={false} dirty command />);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(endFade('Discard these changes?')).toEqual(['Email']);
+    expect(box('Run this command?')).toBeNull();
+
+    // The save lands and the owner closes the window: the approval shows, and keeps the focus.
+    takeMoves();
+    view.rerender(<Desk command />);
+    expect(takeMoves()).toEqual(['Cancel']);
+    expect(endFade('Sign in')).toEqual([]);
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk />);
+    expect(endFade('Run this command?')).toEqual(['Account']);
+    expect(opener).toHaveFocus();
+  });
+
+  it('hides the discard question of a busy window with it, and brings both back unanswered', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk login dirty onLogin={onLogin} />);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    const question = box('Discard these changes?') as HTMLElement;
+    expect(question).toHaveAttribute('data-state', 'open');
+    const words = question.textContent;
+    expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus();
+
+    view.rerender(<Desk login dirty command onLogin={onLogin} />);
+    expect(box('Sign in')).toHaveAttribute('hidden');
+    expect(question).toHaveAttribute('hidden');
+    expect(question).toHaveAttribute('data-state', 'open');
+    expect(cancel()).toHaveFocus();
+    takeMoves();
+
+    view.rerender(<Desk login dirty onLogin={onLogin} />);
+    expect(box('Sign in')).not.toHaveAttribute('hidden');
+    expect(box('Discard these changes?')).toBe(question);
+    expect(question).not.toHaveAttribute('hidden');
+    expect(question.textContent).toBe(words);
+    expect(takeMoves()).toEqual(['Keep editing']);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus();
+    expect(onLogin).not.toHaveBeenCalled();
   });
 
   it('gives focus back to what opened the window an approval took the place of', () => {

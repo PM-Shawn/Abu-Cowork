@@ -187,6 +187,65 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     expect(snapshot.results[0]).toMatchObject({ freshness: 'stale' });
   });
 
+  it('redacts secrets carried in live check rows before writing diagnostic-snapshot.json', async () => {
+    const secret = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+    diagnosticRunnerMock.mockResolvedValue([{
+      id: 'mcp:tracker',
+      category: 'mcp',
+      name: 'tracker',
+      status: 'failed',
+      metric: 'error',
+      errorMessage: `connect failed: Authorization: Bearer ${secret}`,
+      errorDetail: `connect failed: Authorization: Bearer ${secret}`,
+      suggestedAction: { type: 'open-toolbox', target: 'mcp', label: 'Open toolbox' },
+      checkedAt: 100,
+      durationMs: 2,
+    }]);
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const raw = String(files['diagnostic-snapshot.json']);
+
+    expect(raw).not.toContain(secret);
+    expect(raw).toContain('[REDACTED]');
+    // 字段名脱敏不能清掉 CheckResult 的正常字段
+    expect(JSON.parse(raw).results[0]).toMatchObject({
+      id: 'mcp:tracker',
+      category: 'mcp',
+      name: 'tracker',
+      status: 'failed',
+      metric: 'error',
+      suggestedAction: { type: 'open-toolbox', target: 'mcp', label: 'Open toolbox' },
+      checkedAt: 100,
+      durationMs: 2,
+      freshness: 'fresh',
+    });
+  });
+
+  it('redacts secrets carried in cached fallback rows before writing diagnostic-snapshot.json', async () => {
+    const secret = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+    diagnosticRunnerMock.mockRejectedValue(new Error('runner unavailable'));
+    useDiagnosticStore.setState({
+      lastCheckedAt: 100,
+      results: {
+        'skills:loader': {
+          id: 'skills:loader',
+          category: 'skills',
+          name: 'skills',
+          status: 'failed',
+          errorDetail: `load failed, api_key=${secret}`,
+          checkedAt: 100,
+          durationMs: 1,
+        },
+      },
+    });
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const raw = String(files['diagnostic-snapshot.json']);
+
+    expect(raw).not.toContain(secret);
+    expect(JSON.parse(raw).results[0]).toMatchObject({ id: 'skills:loader', freshness: 'stale' });
+  });
+
   it('produces no conversations/<id>/ content when conversationIds is empty and there is no active conversation, but still writes environment files', async () => {
     useChatStore.setState({ activeConversationId: null });
 

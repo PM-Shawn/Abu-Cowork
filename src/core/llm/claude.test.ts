@@ -8,20 +8,23 @@ vi.mock('./tauriFetch', () => ({
 // Mock Anthropic SDK — we control the stream behavior
 const mockCreate = vi.fn();
 vi.mock('@anthropic-ai/sdk', () => {
+  class MockAPIError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
   return {
     default: class MockAnthropic {
+      static APIError = MockAPIError;
       messages = { create: mockCreate };
     },
-    APIError: class MockAPIError extends Error {
-      status: number;
-      constructor(status: number, message: string) {
-        super(message);
-        this.status = status;
-      }
-    },
+    APIError: MockAPIError,
   };
 });
 
+import { APIError } from '@anthropic-ai/sdk';
 import { ClaudeAdapter } from './claude';
 import { LLMError } from './adapter';
 import { getTauriFetch } from './tauriFetch';
@@ -162,6 +165,29 @@ describe('ClaudeAdapter', () => {
       // 用户主动停止：按现有路径以 cancelled 结束，不算超时
       await chatPromise;
       expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'cancelled' });
+    });
+  });
+
+  describe('API errors', () => {
+    it('erases the request key a provider echoed in its error body', async () => {
+      vi.useRealTimers();
+      const apiKey = 'abu-test-not-a-secret';
+      mockCreate.mockRejectedValue(new APIError(
+        401,
+        `401 ${JSON.stringify({ error: { message: `the key ${apiKey} was rejected` } })}`,
+      ));
+
+      const failure = await new ClaudeAdapter().chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey, model: 'claude-sonnet-4-6', maxTokens: 1024 },
+        () => {},
+      ).catch((err: unknown) => err);
+
+      expect(failure).toBeInstanceOf(LLMError);
+      const err = failure as LLMError;
+      expect(err.code).toBe('authentication');
+      expect(err.upstream?.summary).toBe('the key [REDACTED] was rejected');
+      expect(JSON.stringify([err.message, err.rawBody, err.upstream])).not.toContain(apiKey);
     });
   });
 

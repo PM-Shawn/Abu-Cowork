@@ -141,6 +141,26 @@ describe('pushDiagnosticSnapshot', () => {
       expect((body.results as unknown[]).length).toBe(2)
     })
 
+    it('redacts secrets carried in a persisted row before posting it', () => {
+      const secret = `sk-test-not-a-secret-${'0'.repeat(12)}`
+      mockGetState.mockReturnValue(makeState([{
+        ...FAILED,
+        errorMessage: `401 Authorization: Bearer ${secret}`,
+        errorDetail: `401 Authorization: Bearer ${secret}`,
+      }]))
+      pushDiagnosticSnapshot()
+      const sent = (vi.mocked(fetch).mock.calls[0] as [string, RequestInit])[1].body as string
+      expect(sent).not.toContain(secret)
+      expect((JSON.parse(sent) as { results: CheckResult[] }).results[0]).toMatchObject({
+        id: FAILED.id,
+        category: FAILED.category,
+        name: FAILED.name,
+        status: 'failed',
+        checkedAt: FAILED.checkedAt,
+        durationMs: FAILED.durationMs,
+      })
+    })
+
     it('includes lastCheckedAt as takenAt', () => {
       mockGetState.mockReturnValue(makeState([PASSED], false, 9_999_999))
       pushDiagnosticSnapshot()

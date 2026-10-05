@@ -1551,7 +1551,10 @@ export default function ChatView({
       )}
 
       {visibleApproval?.kind === 'file' && filePermissionRequest && (
+        // Keyed by request, like the command approval: the next grant in the queue opens from
+        // the default duration with the focus on Deny, also when it asks about the same path.
         <PermissionDialog
+          key={filePermissionRequest.id}
           request={{
             type: filePermissionRequest.capability === 'write' ? 'file-write' : 'file-read',
             path: filePermissionRequest.path,
@@ -1562,7 +1565,9 @@ export default function ChatView({
       )}
 
       {visibleApproval?.kind === 'workspace' && workspaceRequest && (
+        // Keyed by request: a newer request that takes the place of this one is a new window.
         <PermissionDialog
+          key={workspaceRequest.id}
           request={{
             type: 'folder-select',
             reason: workspaceRequest.reason,

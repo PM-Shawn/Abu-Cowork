@@ -546,7 +546,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     await expect(page.getByRole('heading', { name: /^(文件写入权限|File Write Permission)$/ })).toBeVisible({
       timeout: READY_TIMEOUT,
     });
-    await page.getByRole('button', { name: /^(本次会话|This session)$/ }).click();
+    await page.getByRole('radio', { name: /^(本次会话|This session)$/ }).click();
     await page.getByRole('button', { name: /^(允许本次会话|Allow for Session)$/ }).click();
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(6);
     expectToolResultMatches(taskRequests(mock)[5].body, 'write_file', /Successfully wrote|成功/);

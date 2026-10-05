@@ -5,17 +5,26 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
+import PermissionDialog from '@/components/common/PermissionDialog';
 import {
   drainConfirmationQueue,
+  drainFilePermissionQueue,
   drainWorkspaceRequest,
   getPendingCommandConfirmation,
+  getPendingFilePermission,
   getPendingWorkspaceRequest,
   requestCommandConfirmationForConversation,
   requestWorkspace,
   resolveCommandConfirmation,
+  resolveFilePermission,
+  resolveWorkspaceRequest,
   subscribeToCommandConfirmation,
+  subscribeToFilePermission,
+  subscribeToWorkspaceRequest,
 } from '@/core/agent/permissionBridge';
+import * as approvalBridge from '@/core/agent/ports/approvalBridge';
 import { useChatStore } from '@/stores/chatStore';
+import { usePermissionStore } from '@/stores/permissionStore';
 import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -486,6 +495,105 @@ describe('AccountLoginDialog opened from the settings window', () => {
       expect(answers).toEqual([]);
       expect(screen.getByRole('alertdialog', { name: '操作确认' })).toBeInTheDocument();
       expect(cancel).not.toHaveBeenCalled();
+    });
+  });
+
+  // A file grant and a workspace request of the task in view, asked through the real queues and
+  // drawn the way the chat view draws them. Both are approval layers and both are seen by the
+  // window's own way of leaving for an old prompt; with both at work the sign-in still goes on.
+  describe('when a file grant or a workspace request of the task in view arrives', () => {
+    const cancel = vi.fn();
+    function ChatGrants() {
+      const file = useSyncExternalStore(subscribeToFilePermission, getPendingFilePermission);
+      const workspace = useSyncExternalStore(subscribeToWorkspaceRequest, getPendingWorkspaceRequest);
+      const inView = useChatStore((state) => state.activeConversationId);
+      if (workspace && workspace.conversationId === inView) {
+        return (
+          <PermissionDialog
+            key={workspace.id}
+            request={{ type: 'folder-select', reason: workspace.reason, path: workspace.suggestedPath }}
+            onAllow={() => undefined}
+            onAuthorize={() => resolveWorkspaceRequest(workspace.suggestedPath ?? null)}
+            onDeny={() => resolveWorkspaceRequest(null)}
+          />
+        );
+      }
+      if (!file || file.conversationId !== inView) return null;
+      return (
+        <PermissionDialog
+          key={file.id}
+          request={{ type: 'file-write', path: file.path }}
+          onAllow={(duration) => resolveFilePermission(true, file.path, ['read', 'write', 'execute'], duration)}
+          onDeny={() => resolveFilePermission(false)}
+        />
+      );
+    }
+    const shownLoginWindow = () => {
+      const window = document.querySelector<HTMLElement>('[data-abu-account-dialog]');
+      return window && !window.hasAttribute('hidden') ? window : null;
+    };
+
+    beforeEach(() => {
+      cancel.mockReset();
+      usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {} });
+      useChatStore.setState({ activeConversationId: 'conversation-in-view' });
+      useSettingsStore.setState({ systemSettingsOpen: false, accountLoginOpen: true, viewMode: 'chat' });
+      useAccountStore.setState({ status: 'signed_out', cancel });
+    });
+    afterEach(() => {
+      act(() => { drainFilePermissionQueue(); drainWorkspaceRequest(); });
+      vi.useRealTimers();
+      useChatStore.setState({ activeConversationId: null });
+    });
+
+    it.each(['awaiting_browser', 'exchanging'] as const)('goes on with a sign-in that is %s while a file grant is asked and denied', async (status) => {
+      useAccountStore.setState({ status });
+      render(<><ChatGrants /><AccountLoginDialog /></>, { wrapper: DesignSystemProvider });
+      expect(shownLoginWindow()).not.toBeNull();
+
+      const answers: boolean[] = [];
+      act(() => {
+        void approvalBridge.request('file-permission', {
+          conversationId: 'conversation-in-view',
+          payload: { path: '/fake/project/notes.txt', capability: 'write', toolName: 'write_file' },
+        }).then((answer) => { answers.push(answer); });
+      });
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByRole('alertdialog', { name: '文件写入权限' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '拒绝' })).toHaveFocus();
+      expect(shownLoginWindow()).toBeNull();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(answers).toEqual([]);
+
+      await userEvent.setup().keyboard('{Enter}');
+      await act(async () => { await Promise.resolve(); });
+      expect(answers).toEqual([false]);
+      expect(usePermissionStore.getState().hasPermission('/fake/project/notes.txt', 'write')).toBe(false);
+      expect(shownLoginWindow()).not.toBeNull();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(useAccountStore.getState().status).toBe(status);
+    });
+
+    it('goes on with a sign-in while a workspace request is shown and answers itself after 60 seconds', async () => {
+      vi.useFakeTimers();
+      useAccountStore.setState({ status: 'awaiting_browser' });
+      render(<><ChatGrants /><AccountLoginDialog /></>, { wrapper: DesignSystemProvider });
+
+      const answers: (string | null)[] = [];
+      act(() => {
+        void requestWorkspace('needs a folder', 'conversation-in-view', '/fake/project').then((answer) => { answers.push(answer); });
+      });
+      expect(screen.getByRole('alertdialog', { name: '工作区访问权限' })).toBeInTheDocument();
+      expect(shownLoginWindow()).toBeNull();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(answers).toEqual([null]);
+      expect(screen.queryByRole('alertdialog', { name: '工作区访问权限' })).toBeNull();
+      expect(shownLoginWindow()).not.toBeNull();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(useAccountStore.getState().status).toBe('awaiting_browser');
     });
   });
 

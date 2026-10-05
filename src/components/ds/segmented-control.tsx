@@ -12,11 +12,14 @@ export interface SegmentOption {
 }
 
 // A mutually exclusive choice that is always set (e.g. System / Light / Dark).
-export function SegmentedControl({ value, onValueChange, options, label }: {
+export function SegmentedControl({ value, onValueChange, options, label, fullWidth = false }: {
   value: string;
   onValueChange: (value: string) => void;
   options: SegmentOption[];
   label: string;
+  // Fills the width it is given and shares it equally among the options, each on one line:
+  // for a row of four in a narrow window, where the usual side padding would not fit.
+  fullWidth?: boolean;
 }) {
   return (
     <ToggleGroupPrimitive.Root
@@ -24,13 +27,13 @@ export function SegmentedControl({ value, onValueChange, options, label }: {
       value={value}
       onValueChange={(next) => { if (next) onValueChange(next); }}
       aria-label={label}
-      className="inline-flex h-7 items-center gap-1 rounded-control bg-fill p-1"
+      className={cn('h-7 items-center gap-1 rounded-control bg-fill p-1', fullWidth ? 'flex w-full' : 'inline-flex')}
     >
       {options.map((option) => (
         <ToggleGroupPrimitive.Item
           key={option.value}
           value={option.value}
-          className={cn('inline-flex h-5 items-center gap-1 rounded-control px-3 text-ui text-label-secondary transition-colors duration-fast hover:text-label data-[state=on]:bg-raised data-[state=on]:text-label data-[state=on]:shadow-panel', FOCUS_RING)}
+          className={cn('inline-flex h-5 items-center gap-1 rounded-control px-3 text-ui text-label-secondary transition-colors duration-fast hover:text-label data-[state=on]:bg-raised data-[state=on]:text-label data-[state=on]:shadow-panel', fullWidth && 'min-w-0 flex-1 justify-center whitespace-nowrap px-1', FOCUS_RING)}
         >
           {option.icon && <Icon icon={option.icon} size="sm" />}
           {option.label}

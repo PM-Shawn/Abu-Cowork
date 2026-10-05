@@ -258,6 +258,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   // Dialogs, viewers and notices, file by file (batch 8). chat/, panel/ and common/ keep unused legacy files, so no directory glob yet.
   'src/components/common/CommandConfirmDialog*.{ts,tsx}',
   'src/components/common/approvalQueueView*.ts',
+  'src/components/common/PermissionDialog*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

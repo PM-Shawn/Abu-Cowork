@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { GOAL_MAX_MAX_ROUNDS, buildGoalRoundsOptions, sanitizeGoalState } from './goalTypes';
+import { GOAL_MAX_MAX_ROUNDS, sanitizeGoalState } from './goalTypes';
 
 const valid = {
   id: 'g1',
@@ -9,6 +9,7 @@ const valid = {
   maxRounds: 10,
   roundsStarted: 3,
   consecutiveIdleRounds: 1,
+  elapsedMs: 4000,
   createdAt: 1,
   updatedAt: 2,
 };
@@ -36,6 +37,13 @@ describe('goalTypes', () => {
       expect(goal?.consecutiveIdleRounds).toBe(0);
     });
 
+    it('defaults a missing or malformed working time to zero', () => {
+      const { elapsedMs: _elapsedMs, ...withoutElapsed } = valid;
+      expect(sanitizeGoalState(withoutElapsed)?.elapsedMs).toBe(0);
+      expect(sanitizeGoalState({ ...valid, elapsedMs: -5 })?.elapsedMs).toBe(0);
+      expect(sanitizeGoalState({ ...valid, elapsedMs: 'long' })?.elapsedMs).toBe(0);
+    });
+
     it('keeps phase-specific fields only for their phase', () => {
       const blocked = sanitizeGoalState({ ...valid, phase: 'blocked', blockedReason: { code: 'round-limit', message: 'm' }, settledLoopId: 'L' });
       expect(blocked?.blockedReason).toEqual({ code: 'round-limit', message: 'm' });
@@ -47,20 +55,6 @@ describe('goalTypes', () => {
       expect(activeWithStale?.settledLoopId).toBeUndefined();
       const complete = sanitizeGoalState({ ...valid, phase: 'complete', completion: { summary: 's', evidence: ['a', 3] } });
       expect(complete?.completion).toEqual({ summary: 's', evidence: ['a'] });
-    });
-  });
-
-  describe('buildGoalRoundsOptions', () => {
-    it('offers the standard choices in order', () => {
-      expect(buildGoalRoundsOptions(undefined)).toEqual([20, 50, 100, 256, 500, 1000]);
-    });
-
-    it('keeps a valid value set elsewhere, and ignores an invalid one', () => {
-      expect(buildGoalRoundsOptions(30)).toEqual([20, 30, 50, 100, 256, 500, 1000]);
-      expect(buildGoalRoundsOptions(256)).toHaveLength(6);
-      expect(buildGoalRoundsOptions(0)).toHaveLength(6);
-      expect(buildGoalRoundsOptions(5000)).toHaveLength(6);
-      expect(buildGoalRoundsOptions(12.5)).toHaveLength(6);
     });
   });
 });

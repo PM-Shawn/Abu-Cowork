@@ -6,7 +6,7 @@ import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { getI18n, format } from '@/i18n';
 import { notifyGoalBlocked } from '@/utils/notifications';
 import type { Conversation, Message } from '@/types';
-import { isGoalArmed } from './goalActivation';
+import { getGoalActivation, isGoalArmed, resetGoalRetries, setGoalRetry } from './goalActivation';
 import { isGoalEligibleConversation } from './goalAuthority';
 import { buildGoalRoundPrompt } from './goalPrompt';
 import {
@@ -15,9 +15,11 @@ import {
   pauseConversationGoal,
   recordConversationGoalRound,
   startConversationGoalRound,
+  suspendConversationGoalClock,
 } from './goalService';
 import {
   GOAL_MAX_IDLE_ROUNDS,
+  GOAL_RETRY_DELAYS_MS,
   GOAL_TEAM_MAX_DISPATCHES,
   goalRef,
   type GoalBlockedCode,
@@ -35,9 +37,10 @@ import {
  * checkpoint and execution panel all keep working per round, and nothing in
  * the agent loop's own stop logic changes.
  *
- * Error handling follows DSH's driver: an error, output-token exhaustion or a
- * failed dispatch only DISARMS (the goal stays active; the user resumes it);
- * the user pressing Stop pauses it.
+ * A round that ends in an error is retried after GOAL_RETRY_DELAYS_MS (one
+ * wait per attempt) unless the error cannot succeed on a retry; once the
+ * attempts are spent the goal is DISARMED (it stays active; the user resumes
+ * it). The user pressing Stop pauses it.
  */
 
 // ── Pure decision ────────────────────────────────────────────────────────
@@ -46,6 +49,7 @@ export type GoalSettleDecision =
   | { kind: 'ignore' }
   | { kind: 'wait' }
   | { kind: 'disarm'; reason: 'run-error' }
+  | { kind: 'retry'; attempt: number; delayMs: number }
   | { kind: 'pause' }
   | { kind: 'block'; code: GoalBlockedCode }
   | { kind: 'continue' };
@@ -56,6 +60,23 @@ export interface GoalSettleInput {
   reason: AgentLoopDispatchResult['reason'];
   eligible: boolean;
   isTeam: boolean;
+  /** `reason: 'error'` only: whether running again could succeed. */
+  retryable: boolean;
+  /** Automatic retries already made since the last round that did not fail. */
+  retriesUsed: number;
+}
+
+/**
+ * Whether a failed run is worth running again. A request the provider
+ * rejected as invalid (4xx other than timeout / rate limit) or one too large
+ * to send fails the same way every time.
+ */
+export function isRetryableRunError(result: Pick<AgentLoopDispatchResult, 'stopReason' | 'upstream'>): boolean {
+  if (result.stopReason === 'payload_too_large') return false;
+  const status = result.upstream?.status;
+  if (status === undefined) return true;
+  if (status === 408 || status === 429) return true;
+  return status < 400 || status >= 500;
 }
 
 /**
@@ -76,8 +97,13 @@ export function decideAfterSettle(input: GoalSettleInput): GoalSettleDecision {
       return { kind: 'wait' };
     case 'aborted':
       return { kind: 'pause' };
-    case 'error':
-      return { kind: 'disarm', reason: 'run-error' };
+    case 'error': {
+      const delayMs = GOAL_RETRY_DELAYS_MS[input.retriesUsed];
+      if (!input.retryable || !input.eligible || delayMs === undefined || goal.roundsStarted >= goal.maxRounds) {
+        return { kind: 'disarm', reason: 'run-error' };
+      }
+      return { kind: 'retry', attempt: input.retriesUsed + 1, delayMs };
+    }
     case 'completed':
     case 'max_turns':
     case 'no_progress':
@@ -117,6 +143,19 @@ export function summarizeRoundMessages(messages: readonly Message[]): { hadToolC
 /** The automatic round in flight per conversation: where its messages start. */
 const inFlightRounds = new Map<string, { goalId: string; startIndex: number }>();
 
+/** Start the next round after `delayMs`, unless the goal was paused, resumed or cleared meanwhile. */
+function scheduleRetry(conversationId: string, goalId: string, attempt: number, delayMs: number): void {
+  const at = Date.now() + delayMs;
+  suspendConversationGoalClock(conversationId);
+  setGoalRetry(conversationId, goalId, { attempt, at });
+  setTimeout(() => {
+    const pending = getGoalActivation(conversationId, goalId)?.retry;
+    if (!pending || pending.attempt !== attempt || pending.at !== at) return;
+    setGoalRetry(conversationId, goalId, undefined);
+    void startNextRound(conversationId);
+  }, delayMs);
+}
+
 function blockedMessage(code: GoalBlockedCode, goal: GoalState): string {
   switch (code) {
     case 'no-progress':
@@ -153,10 +192,12 @@ async function startNextRound(conversationId: string): Promise<void> {
       goalRound: { goalId: started.goal.id, revision: started.goal.revision, round },
     });
   } catch {
-    // A dispatch that threw before its run settled never reached the settle
-    // seam. Stop automatic rounds; the goal stays active for the user.
+    // A dispatch that threw after its run settled was already handled at the
+    // settle seam, which may have scheduled a retry. One that threw before
+    // settling never got there: stop automatic rounds; the goal stays active
+    // for the user.
     if (inFlightRounds.get(conversationId)?.goalId === started.goal.id) inFlightRounds.delete(conversationId);
-    disarmConversationGoal(conversationId, 'run-error');
+    if (!getGoalActivation(conversationId, started.goal.id)?.retry) disarmConversationGoal(conversationId, 'run-error');
   }
 }
 
@@ -183,12 +224,20 @@ export function handleDispatchSettled(conversationId: string, result: AgentLoopD
     if (recorded.ok) goal = recorded.goal;
   }
 
+  // Whatever settles here supersedes a retry that was still waiting, and any
+  // run that did not fail ends the retry streak. The count lives on the
+  // activation, so pausing, resuming or re-arming the goal ends it too.
+  if (result.reason === 'error') setGoalRetry(conversationId, goal.id, undefined);
+  else resetGoalRetries(conversationId, goal.id);
+
   const decision = decideAfterSettle({
     goal,
     armed: isGoalArmed(conversationId, goal.id),
     reason: result.reason,
     eligible: isGoalEligibleConversation(conversation),
     isTeam: Boolean(conversation.teamId),
+    retryable: isRetryableRunError(result),
+    retriesUsed: getGoalActivation(conversationId, goal.id)?.retriesUsed ?? 0,
   });
 
   switch (decision.kind) {
@@ -197,6 +246,9 @@ export function handleDispatchSettled(conversationId: string, result: AgentLoopD
       return;
     case 'disarm':
       disarmConversationGoal(conversationId, decision.reason);
+      return;
+    case 'retry':
+      scheduleRetry(conversationId, goal.id, decision.attempt, decision.delayMs);
       return;
     case 'pause':
       pauseConversationGoal(conversationId, goalRef(goal));

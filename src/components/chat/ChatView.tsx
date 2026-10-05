@@ -32,7 +32,8 @@ import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
-import { applyGoalCommand, checkGoalCreatable, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
+import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
@@ -217,6 +218,8 @@ export default function ChatView({
   const pendingSearchJump = useChatStore((s) => s.pendingSearchJump);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const renameConversation = useChatStore((s) => s.renameConversation);
+  // Goal mode: `/goal <new>` while another goal is unfinished waits here for the user's answer.
+  const [goalReplacePrompt, setGoalReplacePrompt] = useState<{ objective: string; resolve: (replace: boolean) => void } | null>(null);
   const [isRenamingTitle, setIsRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const titleTeamLeader = useConversationTeamLeader(activeConv?.id);
@@ -842,6 +845,17 @@ export default function ChatView({
     workspacePath?: string | null,
     onAccepted?: () => void,
   ) => {
+    // Goal mode: /goal is handled here, before any dispatch — never sent to the
+    // model. Every form but `/goal <objective>` ends here and needs no model;
+    // that one creates the goal below and sends the objective as the first
+    // message.
+    const goalCommand = parseGoalCommand(text);
+    if (goalCommand && goalCommand.kind !== 'create') {
+      const outcome = applyGoalCommand(activeConv?.id, goalCommand);
+      useToastStore.getState().addToast({ type: outcome.ok ? 'success' : 'error', title: outcome.message });
+      return outcome.ok ? undefined : false;
+    }
+
     // Check the model THIS conversation will run on (its pin, else the global
     // default). Returning false hands the text back to the composer — opening
     // settings used to swallow whatever the user had typed.
@@ -860,18 +874,21 @@ export default function ChatView({
       return;
     }
 
-    // Goal mode: /goal is handled here, before any dispatch — never sent to the
-    // model. Every form but `/goal <objective>` ends here; that one creates the
-    // goal below and sends the objective as the first message.
-    const goalCommand = parseGoalCommand(text);
-    if (goalCommand && goalCommand.kind !== 'create') {
-      const outcome = applyGoalCommand(activeConv?.id, goalCommand);
-      useToastStore.getState().addToast({ type: outcome.ok ? 'success' : 'error', title: outcome.message });
-      return outcome.ok ? undefined : false;
-    }
     if (goalCommand) {
       const precheck = checkGoalCreatable(activeConv?.id, goalCommand.objective);
-      if (!precheck.ok) {
+      if (!precheck.ok && precheck.replaces && activeConv) {
+        // An unfinished goal is in the way: the user decides whether the new
+        // one takes its place. Declining hands the text back to the composer.
+        const unfinished = precheck.replaces;
+        const replace = await new Promise<boolean>((resolve) => {
+          setGoalReplacePrompt({ objective: unfinished.objective, resolve });
+        });
+        if (!replace) return false;
+        if (!clearGoalForReplacement(activeConv.id, unfinished)) {
+          useToastStore.getState().addToast({ type: 'error', title: t.chat.goal.staleRevision });
+          return false;
+        }
+      } else if (!precheck.ok) {
         useToastStore.getState().addToast({ type: 'error', title: precheck.message });
         return false;
       }
@@ -1381,6 +1398,25 @@ export default function ChatView({
     );
   }
 
+  // Goal mode: asked by handleSend, from either view below.
+  const goalReplaceDialog = (
+    <ConfirmDialog
+      open={goalReplacePrompt !== null}
+      title={t.chat.goal.replaceConfirmTitle}
+      message={format(t.chat.goal.replaceConfirmBody, { objective: goalReplacePrompt?.objective ?? '' })}
+      confirmText={t.chat.goal.actionReplace}
+      cancelText={t.chat.goal.actionCancel}
+      onConfirm={() => {
+        goalReplacePrompt?.resolve(true);
+        setGoalReplacePrompt(null);
+      }}
+      onCancel={() => {
+        goalReplacePrompt?.resolve(false);
+        setGoalReplacePrompt(null);
+      }}
+    />
+  );
+
   // Welcome UI renders whenever there's no active conv OR the active conv
   // is still empty (zero messages). Task #38: project "+" button creates
   // a conv immediately (to inherit defaultSkills/defaultMCPServers) — we
@@ -1486,6 +1522,7 @@ export default function ChatView({
                 scenarioPlaceholder={scenarioPlaceholder}
                 onInputChange={handleWelcomeInputChange}
               />
+              {goalReplaceDialog}
             </div>
 
             {/* Scenario Guide — the app's scenes inside an app, Abu's own otherwise */}
@@ -1704,10 +1741,7 @@ export default function ChatView({
                 // Goal mode: the round's opening row is the driver's prompt,
                 // not user input — a marker, then the run as usual.
                 <>
-                  <GoalRoundMarker
-                    message={group[0]}
-                    maxRounds={activeConv.goal?.id === group[0].goalRound.goalId ? activeConv.goal.maxRounds : undefined}
-                  />
+                  <GoalRoundMarker message={group[0]} />
                   {group.length > 1 && (
                     <MessageGroup
                       conversationId={activeConv.id}
@@ -1794,6 +1828,7 @@ export default function ChatView({
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Goal mode: objective, round usage and controls */}
           {activeConv.goal && <GoalBar conversationId={activeConv.id} />}
+          {goalReplaceDialog}
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}
           <QueuedMessagesStrip conversationId={activeConv.id} />

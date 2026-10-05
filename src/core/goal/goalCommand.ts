@@ -11,7 +11,7 @@ import {
   resumeConversationGoal,
 } from './goalService';
 import type { GoalTransitionResult } from './goalTransitions';
-import { GOAL_DEFAULT_MAX_ROUNDS, goalRef, type GoalPhase } from './goalTypes';
+import { goalRef, type GoalPhase, type GoalState } from './goalTypes';
 
 /**
  * `/goal` — the human side of goal mode (same grammar as Codex / DSH):
@@ -56,6 +56,8 @@ export function parseGoalCommand(text: string): GoalCommand | null {
 export interface GoalCommandOutcome {
   ok: boolean;
   message: string;
+  /** Creation is held back only by this unfinished goal; the user may choose to replace it. */
+  replaces?: GoalState;
 }
 
 function phaseLabel(phase: GoalPhase): string {
@@ -68,13 +70,13 @@ function phaseLabel(phase: GoalPhase): string {
   }
 }
 
-export function describeTransitionFailure(result: Extract<GoalTransitionResult, { ok: false }>, maxRounds = GOAL_DEFAULT_MAX_ROUNDS): string {
+export function describeTransitionFailure(result: Extract<GoalTransitionResult, { ok: false }>): string {
   const t = getI18n().chat.goal;
   switch (result.error) {
     case 'no-goal': return t.noGoal;
     case 'stale-revision': return t.staleRevision;
     case 'empty-objective': return t.emptyObjective;
-    case 'rounds-exhausted': return format(t.roundsExhausted, { maxRounds });
+    case 'rounds-exhausted': return t.roundsExhausted;
     case 'missing-evidence':
     case 'invalid-transition':
       return format(t.cannotChange, { phase: result.phase ? phaseLabel(result.phase) : '' });
@@ -89,8 +91,24 @@ export function checkGoalCreatable(conversationId: string | undefined, objective
   const conversation = useChatStore.getState().conversations[conversationId];
   if (conversation && !isGoalEligibleConversation(conversation)) return { ok: false, message: t.notAvailable };
   const goal = conversation?.goal;
-  if (goal && goal.phase !== 'complete') return { ok: false, message: format(t.alreadyExists, { objective: goal.objective }) };
+  if (goal && goal.phase !== 'complete') {
+    return { ok: false, message: format(t.alreadyExists, { objective: goal.objective }), replaces: goal };
+  }
   return { ok: true, message: '' };
+}
+
+/**
+ * Drop the unfinished goal the user chose to replace, so the new one can be
+ * created. `asked` is the goal as it was when the user was asked; it may have
+ * moved on since (a round ended, the model edited or completed it), which
+ * does not change what the user agreed to. Only a different goal in its place
+ * is refused.
+ */
+export function clearGoalForReplacement(conversationId: string, asked: GoalState): boolean {
+  const current = getGoal(conversationId);
+  if (!current || current.phase === 'complete') return true;
+  if (current.id !== asked.id) return false;
+  return clearConversationGoal(conversationId, goalRef(current)).ok;
 }
 
 /** Create the goal (the caller then sends the objective as the first message of round 0). */
@@ -100,7 +118,7 @@ export function createGoalFromCommand(conversationId: string, objective: string,
   if (!precheck.ok) return precheck;
   const result = createConversationGoal(conversationId, { objective, maxRounds });
   if (!result.ok) return { ok: false, message: describeTransitionFailure(result) };
-  return { ok: true, message: format(t.created, { objective: result.goal.objective, maxRounds: result.goal.maxRounds }) };
+  return { ok: true, message: format(t.created, { objective: result.goal.objective }) };
 }
 
 /** Run every /goal form except create, which needs the send path. */
@@ -135,7 +153,7 @@ export function applyGoalCommand(conversationId: string | undefined, command: Ex
     }
     case 'resume':
       result = resumeConversationGoal(conversationId, goalRef(goal), command.extraRounds);
-      if (!result.ok) return { ok: false, message: describeTransitionFailure(result, goal.maxRounds) };
+      if (!result.ok) return { ok: false, message: describeTransitionFailure(result) };
       kickGoalDriver(conversationId);
       return { ok: true, message: t.resumed };
     case 'clear':

@@ -11,7 +11,6 @@ import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { buildAgentMaxTurnsOptions } from '@/core/agent/maxTurnsNotice';
-import { buildGoalRoundsOptions, GOAL_DEFAULT_MAX_ROUNDS } from '@/core/goal/goalTypes';
 import { DEFAULT_MAX_TURNS } from '@/core/agent/loopGuards';
 
 /**
@@ -40,12 +39,6 @@ export default function GeneralSection() {
   const setTheme = useSettingsStore(s => s.setTheme);
   const agentMaxTurns = useSettingsStore(s => s.agentMaxTurns);
   const setAgentMaxTurns = useSettingsStore(s => s.setAgentMaxTurns);
-  const goalDefaultMaxRounds = useSettingsStore(s => s.goalDefaultMaxRounds);
-  const setGoalDefaultMaxRounds = useSettingsStore(s => s.setGoalDefaultMaxRounds);
-  const goalRoundsOptions = buildGoalRoundsOptions(goalDefaultMaxRounds).map((rounds) => ({
-    value: String(rounds),
-    label: format(t.settings.goalDefaultMaxRoundsOption, { n: rounds }),
-  }));
   const maxTurnsOptions = buildAgentMaxTurnsOptions(agentMaxTurns).map((turns) => ({
     value: String(turns),
     label: turns <= 0
@@ -153,22 +146,6 @@ export default function GeneralSection() {
             value={String(agentMaxTurns ?? DEFAULT_MAX_TURNS)}
             options={maxTurnsOptions}
             onChange={(v) => setAgentMaxTurns(Number(v))}
-          />
-        </div>
-      </div>
-
-      {/* Goal mode: default round budget for /goal */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]" data-testid="settings-goal-rounds">
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{t.settings.goalDefaultMaxRounds}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.goalDefaultMaxRoundsDesc}</p>
-        </div>
-        <div className={SETTINGS_CONTROL_WIDTH}>
-          <Select
-            variant="inline"
-            value={String(goalDefaultMaxRounds ?? GOAL_DEFAULT_MAX_ROUNDS)}
-            options={goalRoundsOptions}
-            onChange={(v) => setGoalDefaultMaxRounds(Number(v))}
           />
         </div>
       </div>

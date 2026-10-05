@@ -61,8 +61,6 @@ vi.mock('@/core/agent/behaviorSensor', () => ({
  */
 function capButtons() {
   return screen.getAllByRole('button')
-    // The goal-mode rounds row also reads 「N 轮」; it has its own test file.
-    .filter((b) => !b.closest('[data-testid="settings-goal-rounds"]'))
     .filter((b) => /轮$|不限制/.test(b.textContent ?? ''));
 }
 
@@ -132,6 +130,6 @@ describe('GeneralSection · 最大轮次', () => {
     // Every settings row's control shares one wrapper width, so the column of
     // controls is flush rather than ragged (each Select is `w-full` inside it).
     const wrappers = document.querySelectorAll('.w-40.shrink-0');
-    expect(wrappers.length).toBe(6);
+    expect(wrappers.length).toBe(5);
   });
 });

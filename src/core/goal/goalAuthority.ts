@@ -7,15 +7,14 @@ import { GOAL_BLOCK_AFTER_ROUNDS, type GoalState } from './goalTypes';
  *
  * - Only the conversation's own loop may touch the goal: never a delegated
  *   subagent or team member (`agentRunId` is stamped by the trusted runtime).
- * - Creating, editing or pausing needs a human-initiated run: a real user
- *   message in this very run. An automatic goal round cannot re-scope or
- *   extend its own goal.
+ * - Creating, editing, pausing or resuming needs a human-initiated run: a
+ *   real user message in this very run. An automatic goal round cannot
+ *   re-scope, extend or restart its own goal.
  * - Complete / block are allowed in either kind of run; block only after
  *   GOAL_BLOCK_AFTER_ROUNDS rounds so "hard" is not reported as "blocked".
- * - Resume is never offered to the model: pausing belongs to the user.
  */
 
-export type GoalToolAction = 'get' | 'create' | 'edit' | 'pause' | 'complete' | 'block';
+export type GoalToolAction = 'get' | 'create' | 'edit' | 'pause' | 'resume' | 'complete' | 'block';
 
 export type GoalAuthorityDenial =
   | 'subagent'
@@ -54,6 +53,7 @@ export function checkGoalAuthority(
     case 'create':
     case 'edit':
     case 'pause':
+    case 'resume':
       return isHumanInitiatedRun(context, conversation) ? undefined : 'needs-human-turn';
     case 'complete':
       return undefined;

@@ -46,6 +46,8 @@ export interface GoalState {
   /** Team conversations only: member hand-offs spent across all rounds. */
   teamDispatches?: number;
   completion?: GoalCompletion;
+  /** Time spent working on the goal while automatic rounds were on, in ms. */
+  elapsedMs: number;
   /**
    * The run (loopId) that completed or blocked the goal. Only that run gets
    * the "write a closing note, no more tools" wrap-up in its context tail.
@@ -71,20 +73,10 @@ export const GOAL_BLOCK_AFTER_ROUNDS = 3;
 export const GOAL_MAX_IDLE_ROUNDS = 2;
 /** Goal-wide cap on team member hand-offs (the per-run cap resets each round). */
 export const GOAL_TEAM_MAX_DISPATCHES = 200;
-/** Choices offered in settings for the default round budget. */
-export const GOAL_ROUNDS_CHOICES: readonly number[] = [20, 50, 100, GOAL_DEFAULT_MAX_ROUNDS, 500, GOAL_MAX_MAX_ROUNDS];
-
-/** Settings dropdown values: the standard choices plus a current value set elsewhere. */
-export function buildGoalRoundsOptions(current: number | undefined): number[] {
-  const values = new Set(GOAL_ROUNDS_CHOICES);
-  if (typeof current === 'number' && Number.isInteger(current) && current >= GOAL_MIN_MAX_ROUNDS && current <= GOAL_MAX_MAX_ROUNDS) {
-    values.add(current);
-  }
-  return [...values].sort((a, b) => a - b);
-}
-
-/** Rounds added by the goal bar's "run more" once the budget is spent. */
+/** Rounds added when the user resumes a goal whose budget is spent. */
 export const GOAL_RESUME_EXTRA_ROUNDS = 20;
+/** Waits before each automatic retry of a round that ended in a retryable error. */
+export const GOAL_RETRY_DELAYS_MS: readonly number[] = [60_000, 5 * 60_000, 15 * 60_000];
 export const GOAL_COMPLETION_SUMMARY_MAX_CHARS = 4000;
 export const GOAL_COMPLETION_EVIDENCE_MAX_ITEMS = 20;
 export const GOAL_COMPLETION_EVIDENCE_MAX_CHARS = 500;
@@ -130,6 +122,7 @@ export function sanitizeGoalState(value: unknown): GoalState | undefined {
     maxRounds: Math.min(raw.maxRounds, GOAL_MAX_MAX_ROUNDS),
     roundsStarted: raw.roundsStarted,
     consecutiveIdleRounds: isNonNegativeInt(raw.consecutiveIdleRounds) ? raw.consecutiveIdleRounds : 0,
+    elapsedMs: typeof raw.elapsedMs === 'number' && Number.isFinite(raw.elapsedMs) && raw.elapsedMs >= 0 ? raw.elapsedMs : 0,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
   };

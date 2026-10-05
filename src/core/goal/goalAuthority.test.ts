@@ -16,7 +16,7 @@ const wakeUp: Message = { id: 'u3', role: 'user', content: 'background result', 
 
 const goal = (roundsStarted: number): GoalState => ({
   id: 'g1', revision: 3, objective: 'o', phase: 'active', maxRounds: 10, roundsStarted,
-  consecutiveIdleRounds: 0, createdAt: 1, updatedAt: 1,
+  consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1,
 });
 
 const userRun = (loopId: string) => ({ initiatedBy: 'user' as const, interactionMode: 'foreground' as const, loopId });
@@ -47,8 +47,8 @@ describe('goalAuthority', () => {
       }
     });
 
-    it('lets create / edit / pause through only in a human-initiated run', () => {
-      for (const action of ['create', 'edit', 'pause'] as const) {
+    it('lets create / edit / pause / resume through only in a human-initiated run', () => {
+      for (const action of ['create', 'edit', 'pause', 'resume'] as const) {
         expect(checkGoalAuthority(action, userRun('L1'), c, goal(0))).toBeUndefined();
         expect(checkGoalAuthority(action, userRun('L2'), c, goal(0))).toBe('needs-human-turn');
       }

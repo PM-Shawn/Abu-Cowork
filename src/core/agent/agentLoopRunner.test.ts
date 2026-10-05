@@ -2225,7 +2225,7 @@ describe('agentLoopRunner', () => {
     it('pushes the goal when its revision changes and null when it is cleared', async () => {
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
-      const goal = { id: 'g1', revision: 1, objective: 'o', phase: 'active', maxRounds: 10, roundsStarted: 0, consecutiveIdleRounds: 0, createdAt: 1, updatedAt: 1 };
+      const goal = { id: 'g1', revision: 1, objective: 'o', phase: 'active', maxRounds: 10, roundsStarted: 0, consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1 };
       const base = { workspacePath: '/a', title: 'T1', activeSkills: ['s1'] };
       const index = { 'conv-1': { model: { providerId: 'p', modelId: 'm' } } };
 

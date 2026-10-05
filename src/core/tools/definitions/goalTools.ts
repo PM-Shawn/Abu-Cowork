@@ -9,12 +9,14 @@ import {
   createConversationGoal,
   editConversationGoal,
   getGoal,
+  isGoalDrivingConversation,
   pauseConversationGoal,
+  resumeConversationGoal,
 } from '../../goal/goalService';
 import type { GoalTransitionResult } from '../../goal/goalTransitions';
 import { GOAL_BLOCK_AFTER_ROUNDS, goalRef, type GoalPhase } from '../../goal/goalTypes';
 
-const ACTIONS: readonly GoalToolAction[] = ['get', 'create', 'edit', 'pause', 'complete', 'block'];
+const ACTIONS: readonly GoalToolAction[] = ['get', 'create', 'edit', 'pause', 'resume', 'complete', 'block'];
 
 function phaseLabel(phase: GoalPhase): string {
   const t = getI18n().toolResult.goal;
@@ -63,16 +65,16 @@ export const manageGoalTool: ToolDefinition = {
     '- create: set a goal. Use it when the user\'s own message asks for work to keep going until it is done (in any language, e.g. "finish all of them", "keep going until it passes"). Never create a goal on your own initiative. Only one unfinished goal per conversation.',
     '- edit: replace the objective when the user changes what they want.',
     '- pause: pause automatic rounds when the user asks.',
+    '- resume: restart automatic rounds for a paused, blocked or stopped goal when the user\'s own message asks to continue it (in any language, e.g. "keep going", "continue"). Harmless when the goal is already running.',
     '- complete: mark the goal achieved. Only when the WHOLE objective is done and verified against the workspace and tool results; give a summary and concrete evidence (files produced, checks run, counts). Partial progress is not complete.',
     `- block: mark the goal blocked when no meaningful progress is possible without the user or an external change, after at least ${GOAL_BLOCK_AFTER_ROUNDS} rounds. Difficulty, uncertainty or remaining work is not blocked. State exactly what is needed from the user.`,
-    'You cannot resume a paused or blocked goal; the user does that.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
     properties: {
       action: { type: 'string', enum: [...ACTIONS], description: 'What to do with the goal.' },
       objective: { type: 'string', description: 'create / edit: the goal, stated as a checkable end state in the user\'s words.' },
-      max_rounds: { type: 'number', description: 'create: optional round budget (defaults to the user\'s setting). Only set it when the user asks for a limit.' },
+      max_rounds: { type: 'number', description: 'create: optional round budget. Only set it when the user asks for a limit.' },
       summary: { type: 'string', description: 'complete: what was achieved.' },
       evidence: {
         type: 'array',
@@ -116,7 +118,14 @@ export const manageGoalTool: ToolDefinition = {
         const maxRounds = typeof input.max_rounds === 'number' ? input.max_rounds : undefined;
         const result = createConversationGoal(conversationId, { objective, maxRounds });
         if (!result.ok) return transitionError(result);
-        return format(t.created, { objective: result.goal.objective, maxRounds: result.goal.maxRounds });
+        return format(t.created, { objective: result.goal.objective });
+      }
+      case 'resume': {
+        if (!goal) return t.noGoal;
+        if (isGoalDrivingConversation(conversationId)) return t.alreadyRunning;
+        // No kick: this run's own settle starts the next round.
+        const result = resumeConversationGoal(conversationId, goalRef(goal));
+        return result.ok ? t.resumed : transitionError(result);
       }
       case 'edit': {
         if (!goal) return t.noGoal;

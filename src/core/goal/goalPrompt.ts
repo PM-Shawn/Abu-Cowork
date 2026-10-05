@@ -16,6 +16,7 @@ function activeBlock(goal: GoalState): string {
     `## Active goal (rounds used: ${goal.roundsStarted} of ${goal.maxRounds})`,
     `Objective: ${goal.objective}`,
     'The app starts a new round automatically after this run ends, until the goal is completed, blocked, paused by the user, or out of rounds.',
+    'If the user\'s own message asks to continue or resume the goal, call manage_goal with action "resume" first: automatic rounds may have stopped after an app restart or an error.',
     'Keep working toward the objective. Before claiming completion, verify the WHOLE objective against the workspace and tool results, then call manage_goal with action "complete" and concrete evidence. Partial progress is not completion.',
   ].join('\n');
 }
@@ -44,11 +45,11 @@ export function formatGoalForPrompt(conversationId: string, loopId?: string): st
     case 'blocked':
       if (loopId && goal.settledLoopId === loopId) return wrapUpBlock(goal);
       if (goal.phase === 'blocked') {
-        return `## Goal blocked (waiting for the user)\nObjective: ${goal.objective}\nIf the user's message resolves the blocker, keep working on the objective; the user resumes automatic rounds from the goal bar.`;
+        return `## Goal blocked (waiting for the user)\nObjective: ${goal.objective}\nIf the user's message resolves the blocker or asks to continue, call manage_goal with action "resume" and keep working on the objective.`;
       }
       return '';
     case 'paused':
-      return `## Goal paused by the user\nObjective: ${goal.objective}\nAutomatic rounds are paused. Answer the user's message; do not resume the goal yourself.`;
+      return `## Goal paused by the user\nObjective: ${goal.objective}\nAutomatic rounds are paused. If the user's message asks to continue the goal, call manage_goal with action "resume" and keep working on it; otherwise just answer the message.`;
   }
 }
 

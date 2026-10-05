@@ -6,9 +6,10 @@ vi.mock('./goalDriver', () => ({ kickGoalDriver: (id: string) => kickGoalDriver(
 
 import { getLanguageSetting, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { applyGoalCommand, checkGoalCreatable, createGoalFromCommand, parseGoalCommand } from './goalCommand';
+import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from './goalCommand';
 import { disarmGoal, isGoalArmed, resetGoalActivationsForTest } from './goalActivation';
-import { getGoal } from './goalService';
+import { completeConversationGoal, getGoal, startConversationGoalRound } from './goalService';
+import { goalRef } from './goalTypes';
 
 const cancelStreaming = vi.fn();
 
@@ -75,9 +76,56 @@ describe('goalCommand', () => {
       expect(checkGoalCreatable('c1', 'second')).toMatchObject({ ok: false, message: expect.stringContaining('first') });
     });
 
-    it('creates an armed goal with the default budget', () => {
+    it('names the unfinished goal a new one would replace, and creates after it is dropped', () => {
+      expect(createGoalFromCommand('c1', 'first').ok).toBe(true);
+      const precheck = checkGoalCreatable('c1', 'second');
+      expect(precheck.replaces).toMatchObject({ objective: 'first' });
+      expect(clearGoalForReplacement('c1', precheck.replaces!)).toBe(true);
+      expect(getGoal('c1')).toBeUndefined();
+      expect(createGoalFromCommand('c1', 'second').ok).toBe(true);
+      expect(getGoal('c1')).toMatchObject({ objective: 'second', phase: 'active', roundsStarted: 0 });
+    });
+
+    it('still replaces the goal the user confirmed after it changed while they were deciding', () => {
+      expect(createGoalFromCommand('c1', 'first').ok).toBe(true);
+      const asked = checkGoalCreatable('c1', 'second').replaces!;
+      // A round started and ended while the confirmation was open.
+      const started = startConversationGoalRound('c1', goalRef(getGoal('c1')!));
+      expect(started.ok).toBe(true);
+      expect(getGoal('c1')?.revision).toBeGreaterThan(asked.revision);
+      expect(clearGoalForReplacement('c1', asked)).toBe(true);
+      expect(getGoal('c1')).toBeUndefined();
+    });
+
+    it('has nothing to drop when the goal finished or was cleared while the user was deciding', () => {
+      expect(createGoalFromCommand('c1', 'first').ok).toBe(true);
+      const asked = checkGoalCreatable('c1', 'second').replaces!;
+      completeConversationGoal('c1', goalRef(getGoal('c1')!), { summary: 's', evidence: ['e'] });
+      expect(clearGoalForReplacement('c1', asked)).toBe(true);
+      expect(createGoalFromCommand('c1', 'second').ok).toBe(true);
+    });
+
+    it('does not drop a different goal than the one the user was asked about', () => {
+      expect(createGoalFromCommand('c1', 'first').ok).toBe(true);
+      const asked = checkGoalCreatable('c1', 'second').replaces!;
+      applyGoalCommand('c1', { kind: 'clear' });
+      expect(createGoalFromCommand('c1', 'third').ok).toBe(true);
+      expect(clearGoalForReplacement('c1', asked)).toBe(false);
+      expect(getGoal('c1')?.objective).toBe('third');
+    });
+
+    it('offers no replacement where goal mode is unavailable or the objective is empty', () => {
+      expect(checkGoalCreatable('c1', '  ').replaces).toBeUndefined();
+      seed({ readOnly: true });
+      expect(checkGoalCreatable('c1', 'x').replaces).toBeUndefined();
+    });
+
+    it('creates an armed goal with the built-in budget and does not put the budget in the message', () => {
       const outcome = createGoalFromCommand('c1', '把合同全部提取成表格');
-      expect(outcome).toMatchObject({ ok: true, message: expect.stringContaining('256') });
+      expect(outcome.ok).toBe(true);
+      expect(outcome.message).toContain('把合同全部提取成表格');
+      expect(outcome.message).not.toContain('256');
+      expect(getGoal('c1')?.maxRounds).toBe(256);
       expect(isGoalArmed('c1', getGoal('c1')?.id)).toBe(true);
     });
   });
@@ -121,16 +169,43 @@ describe('goalCommand', () => {
       expect(kickGoalDriver).toHaveBeenCalledWith('c1');
     });
 
-    it('resume after the budget is spent needs extra rounds', () => {
+    it('resume after the budget is spent adds more rounds by itself', () => {
       createGoalFromCommand('c1', 'o');
       const goal = getGoal('c1')!;
       useChatStore.getState().setConversationGoal('c1', {
         ...goal, revision: goal.revision + 1, phase: 'blocked', roundsStarted: goal.maxRounds,
         blockedReason: { code: 'round-limit', message: '' },
       });
-      expect(applyGoalCommand('c1', { kind: 'resume' })).toMatchObject({ ok: false, message: expect.stringContaining('256') });
+      expect(applyGoalCommand('c1', { kind: 'resume' }).ok).toBe(true);
+      expect(getGoal('c1')).toMatchObject({ phase: 'active', maxRounds: 276 });
+    });
+
+    it('resume names its own extra rounds when the user gives a number', () => {
+      createGoalFromCommand('c1', 'o');
+      const goal = getGoal('c1')!;
+      useChatStore.getState().setConversationGoal('c1', {
+        ...goal, revision: goal.revision + 1, phase: 'blocked', roundsStarted: goal.maxRounds,
+        blockedReason: { code: 'round-limit', message: '' },
+      });
       expect(applyGoalCommand('c1', { kind: 'resume', extraRounds: 10 }).ok).toBe(true);
       expect(getGoal('c1')).toMatchObject({ phase: 'active', maxRounds: 266 });
+    });
+
+    it('refuses to resume at the hard cap and says to set a new goal, without a number', () => {
+      createGoalFromCommand('c1', 'o');
+      const goal = getGoal('c1')!;
+      useChatStore.getState().setConversationGoal('c1', {
+        ...goal, revision: goal.revision + 1, phase: 'blocked', maxRounds: 1000, roundsStarted: 1000,
+        blockedReason: { code: 'round-limit', message: '' },
+      });
+      const outcome = applyGoalCommand('c1', { kind: 'resume' });
+      expect(outcome.ok).toBe(false);
+      expect(outcome.message).not.toMatch(/\d/);
+    });
+
+    it('the status echo is the one place that still gives the count', () => {
+      createGoalFromCommand('c1', 'o');
+      expect(applyGoalCommand('c1', { kind: 'status' }).message).toContain('256');
     });
 
     it('edits and clears', () => {

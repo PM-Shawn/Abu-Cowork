@@ -19,10 +19,26 @@ export type GoalDisarmReason =
   /** The goal left the active phase (paused, blocked, completed, cleared). */
   | 'inactive';
 
+/** A round ended in a retryable error; the driver starts another one at `at`. */
+export interface GoalRetry {
+  /** 1-based attempt number. */
+  attempt: number;
+  at: number;
+}
+
 export interface GoalActivation {
   goalId: string;
   armed: boolean;
   disarmReason?: GoalDisarmReason;
+  /**
+   * While armed: start of the working time not yet added to the goal's
+   * `elapsedMs`. Absent while the goal waits for a retry — nothing runs then.
+   */
+  armedAt?: number;
+  /** While armed: the pending automatic retry, if any. */
+  retry?: GoalRetry;
+  /** While armed: automatic retries made since the last run that did not fail. */
+  retriesUsed?: number;
 }
 
 type Listener = (conversationId: string) => void;
@@ -46,8 +62,68 @@ export function isGoalArmed(conversationId: string, goalId: string | undefined):
   return getGoalActivation(conversationId, goalId)?.armed === true;
 }
 
-export function armGoal(conversationId: string, goalId: string): void {
-  activations.set(conversationId, { goalId, armed: true });
+export function armGoal(conversationId: string, goalId: string, now: number): void {
+  activations.set(conversationId, { goalId, armed: true, armedAt: now });
+  notify(conversationId);
+}
+
+/**
+ * Working time since the goal was armed (or since the last call), in ms, and
+ * restart the count from `now`. 0 when the goal is not armed.
+ */
+export function takeArmedElapsed(conversationId: string, goalId: string, now: number): number {
+  const entry = activations.get(conversationId);
+  if (!entry || entry.goalId !== goalId || !entry.armed || entry.armedAt === undefined) return 0;
+  const elapsed = Math.max(0, now - entry.armedAt);
+  activations.set(conversationId, { ...entry, armedAt: now });
+  return elapsed;
+}
+
+/** Stop counting working time for an armed goal until `startArmedClock`. */
+export function suspendArmedClock(conversationId: string, goalId: string): void {
+  const entry = activations.get(conversationId);
+  if (!entry || entry.goalId !== goalId || !entry.armed || entry.armedAt === undefined) return;
+  const next: GoalActivation = { ...entry };
+  delete next.armedAt;
+  activations.set(conversationId, next);
+}
+
+/** Count working time from `now` for an armed goal whose clock is suspended. */
+export function startArmedClock(conversationId: string, goalId: string, now: number): void {
+  const entry = activations.get(conversationId);
+  if (!entry || entry.goalId !== goalId || !entry.armed || entry.armedAt !== undefined) return;
+  activations.set(conversationId, { ...entry, armedAt: now });
+}
+
+/**
+ * Record (or drop, with `undefined`) the pending automatic retry of an armed
+ * goal. Recording one also counts it; the count lasts until `resetGoalRetries`
+ * or until the goal is armed or disarmed again.
+ */
+export function setGoalRetry(conversationId: string, goalId: string, retry: GoalRetry | undefined): void {
+  const entry = activations.get(conversationId);
+  if (!entry || entry.goalId !== goalId || !entry.armed) return;
+  if (!retry && !entry.retry) return;
+  const next: GoalActivation = { ...entry };
+  if (retry) {
+    next.retry = retry;
+    next.retriesUsed = retry.attempt;
+  } else {
+    delete next.retry;
+  }
+  activations.set(conversationId, next);
+  notify(conversationId);
+}
+
+/** A run did not fail: the next failure starts the retry sequence over. */
+export function resetGoalRetries(conversationId: string, goalId: string): void {
+  const entry = activations.get(conversationId);
+  if (!entry || entry.goalId !== goalId || !entry.armed) return;
+  if (!entry.retry && entry.retriesUsed === undefined) return;
+  const next: GoalActivation = { ...entry };
+  delete next.retry;
+  delete next.retriesUsed;
+  activations.set(conversationId, next);
   notify(conversationId);
 }
 

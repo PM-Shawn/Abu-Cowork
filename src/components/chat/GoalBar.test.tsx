@@ -10,7 +10,7 @@ vi.mock('@/core/goal/goalDriver', () => ({ kickGoalDriver: (id: string) => kickG
 import { getLanguageSetting, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
-import { disarmGoal, isGoalArmed, resetGoalActivationsForTest } from '@/core/goal/goalActivation';
+import { disarmGoal, isGoalArmed, resetGoalActivationsForTest, setGoalRetry } from '@/core/goal/goalActivation';
 import { createConversationGoal, getGoal } from '@/core/goal/goalService';
 import type { GoalState } from '@/core/goal/goalTypes';
 import GoalBar from './GoalBar';
@@ -56,40 +56,88 @@ describe('GoalBar', () => {
       expect(container).toBeEmptyDOMElement();
     });
 
-    it('shows the objective, round usage and a pause control while armed', () => {
+    it('is one row while armed: status word, objective and icon controls, with no round count', () => {
       createGoal();
+      setGoal({ roundsStarted: 3 });
       render(<GoalBar conversationId="c1" />);
-      expect(screen.getByText('Extract every contract into summary.xlsx')).toBeInTheDocument();
-      expect(screen.getByText('Round 0 of 10')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Pause/ })).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /Resume/ })).not.toBeInTheDocument();
+      expect(screen.getByTestId('goal-bar')).toHaveTextContent(/^Ongoing goalExtract every contract into summary\.xlsx$/);
+      expect(screen.getByRole('button', { name: 'Pause goal' })).toHaveTextContent('');
+      expect(screen.queryByRole('button', { name: 'Resume goal' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Edit goal' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Clear goal' })).toBeInTheDocument();
     });
 
-    it('says why automatic rounds stopped and offers resume', () => {
+    it('counts the working time up while armed', () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1_000_000);
+        createGoal();
+        setGoal({ elapsedMs: 60_000 });
+        render(<GoalBar conversationId="c1" />);
+        act(() => { vi.advanceTimersByTime(5_000); });
+        expect(screen.getByTestId('goal-bar-aside')).toHaveTextContent(/^1m 5s$/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('shows a goal stopped by a restart or by the user as paused, and offers resume', () => {
+      const goal = createGoal();
+      act(() => disarmGoal('c1', goal.id, 'restart'));
+      render(<GoalBar conversationId="c1" />);
+      expect(screen.getByTestId('goal-bar-status')).toHaveTextContent('Paused goal');
+      expect(screen.getByRole('button', { name: 'Resume goal' })).toBeInTheDocument();
+      expect(screen.queryByTestId('goal-bar-aside')).not.toBeInTheDocument();
+      act(() => disarmGoal('c1', goal.id, 'user-stop'));
+      expect(screen.getByTestId('goal-bar-status')).toHaveTextContent('Paused goal');
+    });
+
+    it('keeps a failed run as the hover detail of a paused goal', () => {
       const goal = createGoal();
       act(() => disarmGoal('c1', goal.id, 'run-error'));
       render(<GoalBar conversationId="c1" />);
-      expect(screen.getByText(/A run failed; automatic rounds stopped/)).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Resume/ })).toBeInTheDocument();
+      expect(screen.getByTestId('goal-bar-status')).toHaveTextContent('Paused goal');
+      expect(screen.getByText('Extract every contract into summary.xlsx')).toHaveAttribute('title', 'Paused after a run failed');
+      expect(screen.getByRole('button', { name: 'Resume goal' })).toBeInTheDocument();
     });
 
-    it('offers more rounds once the budget is spent', () => {
+    it('says when a failed run is retried', () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1_000_000);
+        const goal = createGoal();
+        act(() => setGoalRetry('c1', goal.id, { attempt: 2, at: 1_000_000 + 5 * 60_000 }));
+        render(<GoalBar conversationId="c1" />);
+        expect(screen.getByTestId('goal-bar-status')).toHaveTextContent('Ongoing goal');
+        expect(screen.getByTestId('goal-bar-aside')).toHaveTextContent('A run failed, retrying in 5 min');
+        expect(screen.getByRole('button', { name: 'Pause goal' })).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('offers a plain resume once the automatic work limit is reached', () => {
       createGoal();
       setGoal({ phase: 'blocked', roundsStarted: 10, blockedReason: { code: 'round-limit', message: '' } });
       render(<GoalBar conversationId="c1" />);
-      expect(screen.getByText('All rounds used')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Run 20 more/ })).toBeInTheDocument();
+      expect(screen.getByTestId('goal-bar-status')).toHaveTextContent('Blocked goal');
+      expect(screen.getByText('Extract every contract into summary.xlsx')).toHaveAttribute('title', 'Worked for a long time, stopped for now');
+      expect(screen.getByRole('button', { name: 'Resume goal' })).toBeInTheDocument();
     });
 
-    it('shows the completion summary with expandable evidence', async () => {
+    it('gives the model\'s own reason as the hover detail of a blocked goal', () => {
       createGoal();
-      setGoal({ phase: 'complete', completion: { summary: 'All 300 contracts extracted', evidence: ['summary.xlsx has 300 rows'] } });
+      setGoal({ phase: 'blocked', blockedReason: { code: 'model-reported', message: 'Needs the VPN password' } });
       render(<GoalBar conversationId="c1" />);
-      expect(screen.getByText('Goal complete')).toBeInTheDocument();
-      expect(screen.getByText('All 300 contracts extracted')).toBeInTheDocument();
-      expect(screen.queryByText('summary.xlsx has 300 rows')).not.toBeInTheDocument();
-      await userEvent.click(screen.getByRole('button', { name: /Evidence/ }));
-      expect(screen.getByText('summary.xlsx has 300 rows')).toBeInTheDocument();
+      expect(screen.getByText('Extract every contract into summary.xlsx')).toHaveAttribute('title', 'Needs the VPN password');
+    });
+
+    it('goes away once the goal is complete', () => {
+      createGoal();
+      const { container } = render(<GoalBar conversationId="c1" />);
+      expect(screen.getByTestId('goal-bar')).toBeInTheDocument();
+      setGoal({ phase: 'complete', elapsedMs: 5 * 60_000, completion: { summary: 'All 300 contracts extracted', evidence: ['summary.xlsx has 300 rows'] } });
+      expect(container).toBeEmptyDOMElement();
     });
   });
 
@@ -133,13 +181,17 @@ describe('GoalBar', () => {
 describe('GoalRoundMarker', () => {
   afterEach(() => cleanup());
 
-  it('labels the round, and renders nothing for an ordinary message', () => {
+  it('marks where the app continued the goal, with the time and no round number, and renders nothing for an ordinary message', () => {
+    const timestamp = new Date(2026, 9, 5, 14, 32).getTime();
     const round: Message = {
-      id: 'm', role: 'user', content: '<goal_round/>', timestamp: 1, isSystem: true,
-      goalRound: { goalId: 'g1', revision: 2, round: 3 },
+      id: 'm', role: 'user', content: '<goal_round/>', timestamp, isSystem: true,
+      goalRound: { goalId: 'g1', revision: 2, round: 7 },
     };
-    render(<GoalRoundMarker message={round} maxRounds={10} />);
-    expect(screen.getByText('Goal round 3 of 10')).toBeInTheDocument();
+    render(<GoalRoundMarker message={round} />);
+    const marker = screen.getByTestId('goal-round-marker');
+    expect(marker).toHaveTextContent('Continuing the goal');
+    expect(marker).toHaveTextContent(/32/);
+    expect(marker).not.toHaveTextContent(/7|round/i);
     cleanup();
     const { container } = render(<GoalRoundMarker message={{ ...round, goalRound: undefined }} />);
     expect(container).toBeEmptyDOMElement();
@@ -150,13 +202,13 @@ describe('GoalRoundMarker', () => {
       id: 'm', role: 'user', content: '<goal_round/>', timestamp: 1, isSystem: true,
       goalRound: { goalId: 'g1', revision: 2, round: 1 },
     };
-    render(<GoalRoundMarker message={{ ...round, runState: 'completed' }} maxRounds={10} />);
+    render(<GoalRoundMarker message={{ ...round, runState: 'completed' }} />);
     expect(screen.queryByTestId('goal-round-outcome')).not.toBeInTheDocument();
     cleanup();
-    render(<GoalRoundMarker message={{ ...round, runState: 'interrupted' }} maxRounds={10} />);
+    render(<GoalRoundMarker message={{ ...round, runState: 'interrupted' }} />);
     expect(screen.getByTestId('goal-round-outcome')).toHaveTextContent('stopped');
     cleanup();
-    render(<GoalRoundMarker message={{ ...round, runState: 'connection-failed' }} maxRounds={10} />);
+    render(<GoalRoundMarker message={{ ...round, runState: 'connection-failed' }} />);
     expect(screen.getByTestId('goal-round-outcome')).toHaveTextContent('failed');
   });
 });

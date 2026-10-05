@@ -482,7 +482,7 @@ describe('conversationRunMirror', () => {
     it('patches the goal, clears it on null, and drops a malformed one', () => {
       const goal = {
         id: 'g1', revision: 2, objective: 'o', phase: 'active' as const, maxRounds: 10, roundsStarted: 1,
-        consecutiveIdleRounds: 0, createdAt: 1, updatedAt: 1,
+        consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1,
       };
       const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
       mirror.applyConvPatch({ goal });

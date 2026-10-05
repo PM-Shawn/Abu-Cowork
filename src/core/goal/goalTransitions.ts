@@ -77,6 +77,7 @@ export function createGoal(
       maxRounds: clampMaxRounds(input.maxRounds, GOAL_DEFAULT_MAX_ROUNDS),
       roundsStarted: 0,
       consecutiveIdleRounds: 0,
+      elapsedMs: 0,
       createdAt: input.now,
       updatedAt: input.now,
     },
@@ -156,6 +157,17 @@ export function blockGoal(
     blockedReason: { code: input.reason.code, message: input.reason.message.trim().slice(0, 1000) },
     ...(input.loopId ? { settledLoopId: input.loopId } : {}),
   });
+}
+
+/** Add working time to the goal. Allowed in every phase: the time was already spent. */
+export function addGoalElapsed(
+  current: GoalState | undefined,
+  ref: GoalRef,
+  input: { elapsedMs: number; now: number },
+): GoalTransitionResult {
+  const checked = checkRef(current, ref);
+  if ('ok' in checked) return checked;
+  return next(checked, input.now, { elapsedMs: checked.elapsedMs + Math.max(0, input.elapsedMs) });
 }
 
 /** Count one more automatic round. Only an active goal with budget left may start one. */

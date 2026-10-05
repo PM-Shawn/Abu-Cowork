@@ -91,21 +91,21 @@ test.describe.serial('Goal mode — real Electron', () => {
 
     await expect(goalBar(page)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(goalBar(page)).toContainText(objective);
+    await expect(goalBar(page)).not.toContainText('轮');
     // The objective is the first message, as an ordinary user bubble.
     await expect(page.getByText(objective, { exact: true }).first()).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText(closingNote, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
 
-    // Rounds open with markers, not user bubbles.
+    // Rounds open with markers, not user bubbles — and no round numbers anywhere.
     const markers = page.getByTestId('goal-round-marker');
     await expect(markers).toHaveCount(2, { timeout: READY_TIMEOUT });
-    await expect(markers.nth(0)).toContainText('第 1 / 256 轮');
-    await expect(markers.nth(1)).toContainText('第 2 / 256 轮');
+    await expect(markers.nth(0)).toContainText('继续推进目标');
+    await expect(markers.nth(1)).toContainText('继续推进目标');
+    await expect(markers.nth(0)).not.toContainText('轮');
     await expect(page.getByText(/<goal_round/)).toHaveCount(0);
 
-    await expect(goalBar(page)).toContainText('目标已完成', { timeout: READY_TIMEOUT });
-    await expect(goalBar(page)).toContainText(`abu-e2e-goal-summary-${runId}`);
-    await goalBar(page).getByRole('button', { name: /完成依据/ }).click();
-    await expect(goalBar(page)).toContainText(`abu-e2e-goal-evidence-${runId}`);
+    // A completed goal leaves no bar; the closing note above is what remains.
+    await expect(goalBar(page)).toHaveCount(0, { timeout: READY_TIMEOUT });
 
     // Exactly the four planned requests: nothing ran after the goal settled.
     await page.waitForTimeout(1_500);
@@ -135,7 +135,7 @@ test.describe.serial('Goal mode — real Electron', () => {
 
     await startGoal(page, objective);
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
-    await expect(goalBar(page)).toContainText('自动推进中', { timeout: READY_TIMEOUT });
+    await expect(goalBar(page)).toContainText('进行中', { timeout: READY_TIMEOUT });
 
     await goalBar(page).getByRole('button', { name: /暂停/ }).click();
 
@@ -148,7 +148,7 @@ test.describe.serial('Goal mode — real Electron', () => {
     await goalBar(page).getByRole('button', { name: /继续/ }).click();
 
     await expect(page.getByText(closingNote, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(goalBar(page)).toContainText('目标已完成', { timeout: READY_TIMEOUT });
+    await expect(goalBar(page)).toHaveCount(0, { timeout: READY_TIMEOUT });
     await expect(page.getByTestId('goal-round-marker')).toHaveCount(2);
     expect(taskRequests(mock)).toHaveLength(4);
   });

@@ -4,7 +4,7 @@ import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message, ToolExecutionContext } from '@/types';
 import { manageGoalTool } from './goalTools';
 import { getGoal } from '../../goal/goalService';
-import { isGoalArmed, resetGoalActivationsForTest } from '../../goal/goalActivation';
+import { disarmGoal, isGoalArmed, resetGoalActivationsForTest } from '../../goal/goalActivation';
 
 const humanMessage: Message = { id: 'u1', role: 'user', content: '把 300 份合同全部提取完再停', timestamp: 1, loopId: 'L1' };
 const roundMessage: Message = {
@@ -48,7 +48,7 @@ describe('manage_goal tool', () => {
     it('creates an armed goal from a human-initiated run', async () => {
       const text = await run({ action: 'create', objective: '提取全部 300 份合同到 summary.xlsx' });
       expect(text).toContain('已设定目标');
-      expect(text).toContain('256');
+      expect(text).not.toContain('256');
       const goal = getGoal('c1');
       expect(goal?.phase).toBe('active');
       expect(isGoalArmed('c1', goal?.id)).toBe(true);
@@ -121,7 +121,47 @@ describe('manage_goal tool', () => {
       const text = await run({ action: 'get' });
       expect(text).toContain('整理合同');
       expect(text).toContain('进行中');
-      expect(text).toContain('0 / 256');
+      expect(text).toContain('已自动推进：0 次（上限 256 次）');
+    });
+  });
+
+  describe('resume', () => {
+    it('resumes a paused goal when the user\'s own message asks, and arms it without kicking a round', async () => {
+      await run({ action: 'create', objective: 'o' });
+      await run({ action: 'pause' });
+      expect(await run({ action: 'resume' })).toBe('目标已继续。');
+      const goal = getGoal('c1');
+      expect(goal?.phase).toBe('active');
+      expect(isGoalArmed('c1', goal?.id)).toBe(true);
+    });
+
+    it('re-arms a goal that stopped after a restart or an error', async () => {
+      await run({ action: 'create', objective: 'o' });
+      const goal = getGoal('c1')!;
+      disarmGoal('c1', goal.id, 'restart');
+      expect(await run({ action: 'resume' })).toBe('目标已继续。');
+      expect(isGoalArmed('c1', goal.id)).toBe(true);
+    });
+
+    it('says so, without an error, when the goal is already in progress', async () => {
+      await run({ action: 'create', objective: 'o' });
+      const before = getGoal('c1');
+      expect(await run({ action: 'resume' })).toBe('目标正在进行中。');
+      expect(getGoal('c1')).toEqual(before);
+    });
+
+    it('is refused in an automatic goal round: a goal cannot restart itself', async () => {
+      await run({ action: 'create', objective: 'o' });
+      await run({ action: 'pause' });
+      expect(await run({ action: 'resume' }, goalRoundRun)).toMatch(/^Error:/);
+      expect(getGoal('c1')?.phase).toBe('paused');
+    });
+
+    it('cannot resume a completed goal or a conversation without one', async () => {
+      expect(await run({ action: 'resume' })).toBe('当前对话没有目标。');
+      await run({ action: 'create', objective: 'o' });
+      await run({ action: 'complete', summary: 's', evidence: ['e'] });
+      expect(await run({ action: 'resume' })).toMatch(/^Error:/);
     });
   });
 
@@ -131,8 +171,8 @@ describe('manage_goal tool', () => {
       expect(text).toMatch(/^Error:/);
     });
 
-    it('rejects unknown actions (resume belongs to the user)', async () => {
-      expect(await run({ action: 'resume' })).toMatch(/^Error:/);
+    it('rejects unknown actions', async () => {
+      expect(await run({ action: 'restart' })).toMatch(/^Error:/);
     });
   });
 });

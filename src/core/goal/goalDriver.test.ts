@@ -30,13 +30,13 @@ import {
   summarizeRoundMessages,
 } from './goalDriver';
 import { disarmGoal, getGoalActivation, isGoalArmed, resetGoalActivationsForTest } from './goalActivation';
-import { createConversationGoal, getGoal } from './goalService';
-import { GOAL_TEAM_MAX_DISPATCHES, type GoalState } from './goalTypes';
+import { createConversationGoal, getGoal, pauseConversationGoal, resumeConversationGoal } from './goalService';
+import { GOAL_TEAM_MAX_DISPATCHES, goalRef, type GoalState } from './goalTypes';
 
 function goal(over: Partial<GoalState> = {}): GoalState {
   return {
     id: 'g1', revision: 2, objective: 'o', phase: 'active', maxRounds: 10, roundsStarted: 1,
-    consecutiveIdleRounds: 0, createdAt: 1, updatedAt: 1, ...over,
+    consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1, ...over,
   };
 }
 
@@ -60,7 +60,10 @@ const textTurn: Message = { id: 'a-text', role: 'assistant', content: 'done for 
 
 describe('goalDriver', () => {
   describe('decideAfterSettle', () => {
-    const base = { goal: goal(), armed: true, reason: 'completed' as const, eligible: true, isTeam: false };
+    const base = {
+      goal: goal(), armed: true, reason: 'completed' as const, eligible: true, isTeam: false,
+      retryable: true, retriesUsed: 0,
+    };
 
     it('continues an active, armed goal with budget left', () => {
       expect(decideAfterSettle(base)).toEqual({ kind: 'continue' });
@@ -75,8 +78,21 @@ describe('goalDriver', () => {
       expect(decideAfterSettle({ ...base, armed: false })).toEqual({ kind: 'ignore' });
     });
 
-    it('maps run outcomes the DSH way: error disarms, stop pauses, waiting waits, enqueued is ignored', () => {
-      expect(decideAfterSettle({ ...base, reason: 'error' })).toEqual({ kind: 'disarm', reason: 'run-error' });
+    it('retries a failed run after 1, 5 and 15 minutes, then disarms', () => {
+      expect(decideAfterSettle({ ...base, reason: 'error' })).toEqual({ kind: 'retry', attempt: 1, delayMs: 60_000 });
+      expect(decideAfterSettle({ ...base, reason: 'error', retriesUsed: 1 })).toEqual({ kind: 'retry', attempt: 2, delayMs: 300_000 });
+      expect(decideAfterSettle({ ...base, reason: 'error', retriesUsed: 2 })).toEqual({ kind: 'retry', attempt: 3, delayMs: 900_000 });
+      expect(decideAfterSettle({ ...base, reason: 'error', retriesUsed: 3 })).toEqual({ kind: 'disarm', reason: 'run-error' });
+    });
+
+    it('does not retry an error that would fail the same way, an ineligible conversation or a spent budget', () => {
+      const disarm = { kind: 'disarm', reason: 'run-error' };
+      expect(decideAfterSettle({ ...base, reason: 'error', retryable: false })).toEqual(disarm);
+      expect(decideAfterSettle({ ...base, reason: 'error', eligible: false })).toEqual(disarm);
+      expect(decideAfterSettle({ ...base, reason: 'error', goal: goal({ roundsStarted: 10 }) })).toEqual(disarm);
+    });
+
+    it('maps the other run outcomes the DSH way: stop pauses, waiting waits, enqueued is ignored', () => {
       expect(decideAfterSettle({ ...base, reason: 'aborted' })).toEqual({ kind: 'pause' });
       expect(decideAfterSettle({ ...base, reason: 'awaiting_user' })).toEqual({ kind: 'wait' });
       expect(decideAfterSettle({ ...base, reason: 'enqueued' })).toEqual({ kind: 'ignore' });
@@ -163,13 +179,92 @@ describe('goalDriver', () => {
       expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     });
 
-    it('disarms on a run error but keeps the goal active', async () => {
+    it('disarms at once on an error that cannot succeed on a retry, and keeps the goal active', async () => {
       const created = createArmed();
-      handleDispatchSettled('c1', { reason: 'error', error: 'quota', messageTaken: true });
-      await vi.advanceTimersByTimeAsync(0);
+      handleDispatchSettled('c1', { reason: 'error', error: 'bad request', messageTaken: true, upstream: { status: 400 } });
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
       expect(runAgentLoopDispatched).not.toHaveBeenCalled();
       expect(getGoal('c1')?.phase).toBe('active');
       expect(getGoalActivation('c1', created.id)).toMatchObject({ armed: false, disarmReason: 'run-error' });
+    });
+
+    it('retries a failed run after a minute and stays armed meanwhile', async () => {
+      const created = createArmed();
+      handleDispatchSettled('c1', { reason: 'error', error: 'overloaded', messageTaken: true, upstream: { status: 529 } });
+      expect(getGoalActivation('c1', created.id)).toMatchObject({ armed: true, retry: { attempt: 1 } });
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+      expect(getGoalActivation('c1', created.id)?.retry).toBeUndefined();
+      expect(getGoal('c1')?.roundsStarted).toBe(1);
+    });
+
+    it('gives up after three retries in a row, and a run that works resets the count', async () => {
+      const created = createArmed();
+      const fail = () => handleDispatchSettled('c1', { reason: 'error', error: 'overloaded', messageTaken: true });
+      fail();
+      await vi.advanceTimersByTimeAsync(60_000);
+      appendMessages([toolTurn('read_file')]);
+      handleDispatchSettled('c1', { reason: 'completed' }); // the retry worked → next round, count reset
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runAgentLoopDispatched).toHaveBeenCalledTimes(2);
+      for (const delay of [60_000, 300_000, 900_000]) {
+        fail();
+        expect(isGoalArmed('c1', created.id)).toBe(true);
+        await vi.advanceTimersByTimeAsync(delay);
+      }
+      expect(runAgentLoopDispatched).toHaveBeenCalledTimes(5);
+      fail();
+      expect(getGoalActivation('c1', created.id)).toMatchObject({ armed: false, disarmReason: 'run-error' });
+      expect(getGoal('c1')?.phase).toBe('active');
+    });
+
+    it('drops a waiting retry when the user pauses', async () => {
+      const created = createArmed();
+      handleDispatchSettled('c1', { reason: 'error', error: 'overloaded', messageTaken: true });
+      pauseConversationGoal('c1', goalRef(getGoal('c1')!));
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+      expect(getGoalActivation('c1', created.id)?.retry).toBeUndefined();
+    });
+
+    it('starts the retry count over once the goal was paused and resumed, however it was resumed', async () => {
+      const created = createArmed();
+      const fail = () => handleDispatchSettled('c1', { reason: 'error', error: 'overloaded', messageTaken: true });
+      fail();
+      expect(getGoalActivation('c1', created.id)?.retry?.attempt).toBe(1);
+      pauseConversationGoal('c1', goalRef(getGoal('c1')!));
+      // Resumed without kickGoalDriver, as the model's manage_goal resume does.
+      resumeConversationGoal('c1', goalRef(getGoal('c1')!));
+      fail();
+      expect(getGoalActivation('c1', created.id)?.retry?.attempt).toBe(1);
+    });
+
+    it('does not count the wait before a retry as working time', async () => {
+      vi.setSystemTime(1_000_000);
+      const created = createArmed();
+      vi.setSystemTime(1_010_000);
+      handleDispatchSettled('c1', { reason: 'error', error: 'overloaded', messageTaken: true });
+      expect(getGoal('c1')?.elapsedMs).toBe(10_000);
+      expect(getGoalActivation('c1', created.id)?.armedAt).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+      expect(getGoal('c1')?.elapsedMs).toBe(10_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+      pauseConversationGoal('c1', goalRef(getGoal('c1')!));
+      expect(getGoal('c1')?.elapsedMs).toBe(14_000);
+    });
+
+    it('lets a message from the user take over from a waiting retry', async () => {
+      createArmed();
+      handleDispatchSettled('c1', { reason: 'error', error: 'overloaded', messageTaken: true });
+      appendMessages([toolTurn('read_file')]);
+      handleDispatchSettled('c1', { reason: 'completed' }); // the user's own run settled
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
     });
 
     it('pauses when the user stops the run', () => {

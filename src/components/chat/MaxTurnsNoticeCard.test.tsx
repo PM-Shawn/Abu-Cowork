@@ -89,11 +89,11 @@ describe('MaxTurnsNoticeCard', () => {
   it('leaves the next round to goal mode while a goal is driving the conversation', () => {
     const conv = chatState.conversations['conv-1'] as { id: string; status: string; goal?: unknown };
     conv.goal = { id: 'g1', phase: 'active' };
-    armGoal('conv-1', 'g1');
+    armGoal('conv-1', 'g1', 1);
     try {
       renderCard();
       expect(screen.queryByRole('button', { name: /Continue/i })).not.toBeInTheDocument();
-      expect(screen.getByText(/starts the next round automatically/i)).toBeInTheDocument();
+      expect(screen.getByText(/keeps going automatically/i)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Change the cap/i })).toBeInTheDocument();
     } finally {
       delete conv.goal;

@@ -1,5 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation } from '@/types';
 import {
@@ -9,7 +8,6 @@ import {
   createConversationGoal,
   disarmConversationGoal,
   editConversationGoal,
-  getDefaultGoalMaxRounds,
   getGoal,
   pauseConversationGoal,
   recordConversationGoalRound,
@@ -42,17 +40,58 @@ describe('goalService', () => {
     seed();
   });
 
-  describe('default round budget', () => {
-    afterEach(() => useSettingsStore.setState({ goalDefaultMaxRounds: undefined }));
-
-    it('uses the built-in default, then the user setting, and an explicit budget over both', () => {
-      expect(getDefaultGoalMaxRounds()).toBe(256);
-      useSettingsStore.setState({ goalDefaultMaxRounds: 50 });
-      expect(getDefaultGoalMaxRounds()).toBe(50);
-      const created = createConversationGoal('c1', { objective: 'o' });
-      expect(created).toMatchObject({ ok: true, goal: { maxRounds: 50 } });
+  describe('round budget', () => {
+    it('uses the built-in budget unless the caller names one', () => {
+      expect(createConversationGoal('c1', { objective: 'o' })).toMatchObject({ ok: true, goal: { maxRounds: 256 } });
       clearConversationGoal('c1', goalRef(getGoal('c1')!));
       expect(createConversationGoal('c1', { objective: 'o', maxRounds: 12 })).toMatchObject({ ok: true, goal: { maxRounds: 12 } });
+    });
+
+    it('resuming a goal whose budget is spent adds more rounds; the caller\'s own number wins', () => {
+      const goal = mustCreate();
+      useChatStore.getState().setConversationGoal('c1', {
+        ...goal, revision: goal.revision + 1, phase: 'blocked', roundsStarted: 5,
+        blockedReason: { code: 'round-limit', message: '' },
+      });
+      expect(resumeConversationGoal('c1', goalRef(getGoal('c1')!))).toMatchObject({ ok: true, goal: { phase: 'active', maxRounds: 25 } });
+      pauseConversationGoal('c1', goalRef(getGoal('c1')!));
+      expect(resumeConversationGoal('c1', goalRef(getGoal('c1')!), 3)).toMatchObject({ ok: true, goal: { maxRounds: 28 } });
+    });
+  });
+
+  describe('working time', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000_000);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it('adds the time since the goal was armed on every write, and none while it is paused', () => {
+      mustCreate();
+      expect(getGoal('c1')?.elapsedMs).toBe(0);
+      vi.setSystemTime(1_030_000);
+      startConversationGoalRound('c1', goalRef(getGoal('c1')!));
+      expect(getGoal('c1')?.elapsedMs).toBe(30_000);
+      vi.setSystemTime(1_040_000);
+      pauseConversationGoal('c1', goalRef(getGoal('c1')!));
+      expect(getGoal('c1')?.elapsedMs).toBe(40_000);
+      vi.setSystemTime(2_000_000);
+      resumeConversationGoal('c1', goalRef(getGoal('c1')!));
+      expect(getGoal('c1')?.elapsedMs).toBe(40_000);
+      vi.setSystemTime(2_005_000);
+      completeConversationGoal('c1', goalRef(getGoal('c1')!), { summary: 's', evidence: ['e'] });
+      expect(getGoal('c1')?.elapsedMs).toBe(45_000);
+    });
+
+    it('keeps the time when automatic rounds stop without a phase change', () => {
+      mustCreate();
+      vi.setSystemTime(1_012_000);
+      const before = getGoal('c1')!;
+      disarmConversationGoal('c1', 'run-error');
+      expect(getGoal('c1')).toMatchObject({ phase: 'active', elapsedMs: 12_000, revision: before.revision + 1 });
+      vi.setSystemTime(1_500_000);
+      disarmConversationGoal('c1', 'run-error');
+      expect(getGoal('c1')?.elapsedMs).toBe(12_000);
     });
   });
 
@@ -69,7 +108,7 @@ describe('goalService', () => {
     it('a goal restored from disk is disarmed until the user resumes it', () => {
       const restored: GoalState = {
         id: 'g-old', revision: 4, objective: 'o', phase: 'active', maxRounds: 10, roundsStarted: 2,
-        consecutiveIdleRounds: 0, createdAt: 1, updatedAt: 1,
+        consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1,
       };
       seed(restored);
       expect(getGoalActivation('c1', 'g-old')).toEqual({ goalId: 'g-old', armed: false, disarmReason: 'restart' });

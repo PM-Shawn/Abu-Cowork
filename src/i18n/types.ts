@@ -697,7 +697,7 @@ export interface TranslationDict {
       emptyObjective: string;
       /** {objective} */
       alreadyExists: string;
-      /** {objective} {maxRounds} */
+      /** {objective} */
       created: string;
       edited: string;
       paused: string;
@@ -705,7 +705,7 @@ export interface TranslationDict {
       cleared: string;
       /** {phase} */
       cannotChange: string;
-      /** Resume was refused because the round budget is spent. {maxRounds} */
+      /** Resume was refused because the goal reached the hard cap on automatic rounds. */
       roundsExhausted: string;
       staleRevision: string;
       /** {objective} {phase} {rounds} {maxRounds} */
@@ -714,14 +714,16 @@ export interface TranslationDict {
       phasePaused: string;
       phaseBlocked: string;
       phaseComplete: string;
-      /** Goal bar */
-      barLabel: string;
-      /** {rounds} {maxRounds} */
-      barRounds: string;
-      barRunning: string;
-      stoppedRestart: string;
+      /** Goal bar: status word while the app keeps working on the goal. */
+      barActive: string;
+      /** Status word whenever the app is not working on an unfinished goal by itself. */
+      barPaused: string;
+      /** Status word for a goal that stopped and needs the user. */
+      barBlocked: string;
+      /** After the objective: a run failed and another starts by itself. {minutes} */
+      barRetry: string;
+      /** Hover detail on a goal that paused because a run failed. */
       stoppedRunError: string;
-      stoppedUserStop: string;
       blockedNoProgress: string;
       blockedRoundLimit: string;
       blockedTeamLimit: string;
@@ -730,8 +732,6 @@ export interface TranslationDict {
       blockedModel: string;
       actionPause: string;
       actionResume: string;
-      /** Resume after the round budget is spent: adds {extra} rounds. */
-      actionResumeMore: string;
       actionEdit: string;
       actionClear: string;
       actionSave: string;
@@ -739,14 +739,17 @@ export interface TranslationDict {
       editPlaceholder: string;
       clearConfirmTitle: string;
       clearConfirmBody: string;
-      /** Round marker in the transcript. {round} {maxRounds} */
+      /** Asked when /goal names a new objective while another goal is unfinished. */
+      replaceConfirmTitle: string;
+      /** {objective} = the unfinished goal */
+      replaceConfirmBody: string;
+      actionReplace: string;
+      /** Marker in the transcript where the app continued the goal by itself. */
       roundMarker: string;
       /** Suffix on a round marker whose run was stopped before it finished. */
       roundInterrupted: string;
       /** Suffix on a round marker whose run failed. */
       roundFailed: string;
-      completedTitle: string;
-      evidenceLabel: string;
       /** OS notification when the round driver stops a goal. {objective} */
       notifyBlockedTitle: string;
       /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
@@ -1660,11 +1663,6 @@ export interface TranslationDict {
     agentMaxTurnsOption: string;
     /** Shown only when a cap of "no cap" is already in force from outside the UI. */
     agentMaxTurnsUnlimited: string;
-    /** Goal mode: default round budget for a new goal (settings › general). */
-    goalDefaultMaxRounds: string;
-    goalDefaultMaxRoundsDesc: string;
-    /** One dropdown option. {n} = the number of rounds. */
-    goalDefaultMaxRoundsOption: string;
     composerEnterSends: string;
     /** `{modifier}` = ⌘ / Ctrl. */
     composerEnterNewline: string;
@@ -4283,7 +4281,7 @@ export interface TranslationDict {
       deniedSubagent: string;
       /** Scheduled / trigger / IM / read-only conversations. */
       deniedAutomated: string;
-      /** create / edit / pause need a run started by the user's own message. */
+      /** create / edit / pause / resume need a run started by the user's own message. */
       deniedNeedsHuman: string;
       /** {min} {rounds} */
       deniedBlockTooEarly: string;
@@ -4296,11 +4294,14 @@ export interface TranslationDict {
       /** {phase} */
       invalidTransition: string;
       staleRevision: string;
-      /** {objective} {maxRounds} */
+      /** {objective} */
       created: string;
       /** {objective} */
       edited: string;
       paused: string;
+      resumed: string;
+      /** Resume was asked for a goal that is already working. */
+      alreadyRunning: string;
       completed: string;
       /** {reason} */
       blocked: string;

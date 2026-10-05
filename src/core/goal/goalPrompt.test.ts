@@ -7,7 +7,7 @@ import type { GoalState } from './goalTypes';
 function goal(over: Partial<GoalState> = {}): GoalState {
   return {
     id: 'g1', revision: 2, objective: 'Extract every contract into summary.xlsx', phase: 'active',
-    maxRounds: 256, roundsStarted: 4, consecutiveIdleRounds: 0, createdAt: 1, updatedAt: 1, ...over,
+    maxRounds: 256, roundsStarted: 4, consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1, ...over,
   };
 }
 
@@ -40,11 +40,18 @@ describe('goalPrompt', () => {
       expect(formatGoalForPrompt('c1', 'L8')).toBe('');
     });
 
-    it('tells a later run that a blocked or paused goal waits for the user', () => {
+    it('tells a later run that a blocked or paused goal resumes only when the user asks to continue', () => {
       seed(goal({ phase: 'blocked', blockedReason: { code: 'model-reported', message: 'm' }, settledLoopId: 'L7' }));
       expect(formatGoalForPrompt('c1', 'L8')).toContain('Goal blocked');
+      expect(formatGoalForPrompt('c1', 'L8')).toContain('action "resume"');
       seed(goal({ phase: 'paused' }));
-      expect(formatGoalForPrompt('c1', 'L8')).toContain('do not resume the goal yourself');
+      expect(formatGoalForPrompt('c1', 'L8')).toContain("If the user's message asks to continue the goal");
+      expect(formatGoalForPrompt('c1', 'L8')).toContain('otherwise just answer the message');
+    });
+
+    it('tells an active goal\'s run to resume when the user asks, since automatic rounds may have stopped', () => {
+      seed(goal());
+      expect(formatGoalForPrompt('c1', 'L1')).toContain('call manage_goal with action "resume" first');
     });
   });
 

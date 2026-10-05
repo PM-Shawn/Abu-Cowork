@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  addGoalElapsed,
   blockGoal,
   clampMaxRounds,
   completeGoal,
@@ -21,6 +22,7 @@ function active(over: Partial<GoalState> = {}): GoalState {
     maxRounds: 10,
     roundsStarted: 0,
     consecutiveIdleRounds: 0,
+    elapsedMs: 0,
     createdAt: 1,
     updatedAt: 1,
     ...over,
@@ -179,6 +181,23 @@ describe('goalTransitions', () => {
       expect(r2.teamDispatches).toBe(70);
       const plain = ok(recordGoalRoundOutcome(goal, goalRef(goal), { hadToolCalls: true, teamDispatches: 0, now: 2 }));
       expect(plain.teamDispatches).toBeUndefined();
+    });
+  });
+
+  describe('addGoalElapsed', () => {
+    it('adds working time in any phase and bumps the revision', () => {
+      const goal = active();
+      const added = ok(addGoalElapsed(goal, goalRef(goal), { elapsedMs: 1500, now: 2 }));
+      expect(added).toMatchObject({ elapsedMs: 1500, revision: goal.revision + 1, phase: 'active' });
+      const paused = ok(pauseGoal(added, goalRef(added), 3));
+      expect(ok(addGoalElapsed(paused, goalRef(paused), { elapsedMs: 500, now: 4 })).elapsedMs).toBe(2000);
+    });
+
+    it('ignores a negative amount and rejects a stale reference', () => {
+      const goal = active();
+      expect(ok(addGoalElapsed(goal, goalRef(goal), { elapsedMs: -10, now: 2 })).elapsedMs).toBe(0);
+      expect(addGoalElapsed(goal, { id: goal.id, revision: goal.revision + 1 }, { elapsedMs: 10, now: 2 }))
+        .toMatchObject({ ok: false, error: 'stale-revision' });
     });
   });
 

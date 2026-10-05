@@ -178,23 +178,42 @@ describe('CloseDialog', () => {
     });
   });
 
-  // The app keeps the question mounted and only flips `open`, so the tick is still there the
-  // next time the user asks to close the window.
+  // A question always opens unticked. (The hand-drawn question kept the tick across a cancel;
+  // it opened with no focus, so nothing answered it by Enter. This one opens on a button.)
   describe('the tick across closing and asking again', () => {
-    it('is still there when the question is asked again, and is written with the answer given then', async () => {
+    it.each([
+      ['Escape', async (user: ReturnType<typeof userEvent.setup>) => { await user.keyboard('{Escape}'); }],
+      ['the corner button', async (user: ReturnType<typeof userEvent.setup>) => { await user.click(cornerButton()); }],
+      ['a press around it', async (user: ReturnType<typeof userEvent.setup>) => { await user.click(scrim()); }],
+    ] as const)('is gone after %s: asked again, the box is unticked and Enter minimizes without remembering', async (_name, cancel) => {
       const user = userEvent.setup();
-      const { on, rerender } = renderQuestion();
+      const on = answers();
+      useAppQuestion.setState({ open: true });
+      render(<AppLike on={on} />, { wrapper: DesignSystemProvider });
       await user.click(remember());
       expect(remember()).toBeChecked();
 
+      await cancel(user);
+      expect(on.order).toEqual(['cancel']);
+      act(() => useAppQuestion.setState({ open: true }));
+      expect(await screen.findByRole('checkbox', { name: 'Remember my choice' })).not.toBeChecked();
+      await waitFor(() => expect(minimize()).toHaveFocus());
+      await user.keyboard('{Enter}');
+      expect(on.order).toEqual(['cancel', 'minimize']);
+      expect(on.onCloseActionChange).not.toHaveBeenCalled();
+    });
+
+    it('is gone when the owner closes the question without an answer', async () => {
+      const user = userEvent.setup();
+      const { on, rerender } = renderQuestion();
+      await user.click(remember());
       rerender({ open: false });
-      expect(screen.queryByRole('checkbox')).toBeNull();
       expect(on.order).toEqual([]);
 
       rerender({ open: true });
-      expect(await screen.findByRole('checkbox', { name: 'Remember my choice' })).toBeChecked();
+      expect(await screen.findByRole('checkbox', { name: 'Remember my choice' })).not.toBeChecked();
       await user.click(quit());
-      expect(on.order).toEqual(['remember:quit', 'quit']);
+      expect(on.order).toEqual(['quit']);
     });
 
     it('writes nothing while the question is closed and asked again without an answer', async () => {

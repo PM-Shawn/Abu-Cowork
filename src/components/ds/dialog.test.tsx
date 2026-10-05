@@ -2037,6 +2037,56 @@ describe('approvals and the windows around them', () => {
     expect(onQuit).not.toHaveBeenCalled();
   });
 
+  // After a group returns, the focus is inside its top layer: the question, not the window under it.
+  it('gives the focus to the question when a busy window and the question asked over it return together', () => {
+    const onQuit = vi.fn();
+    const onLogin = vi.fn();
+    const view = render(<Desk login onQuit={onQuit} onLogin={onLogin} />);
+    act(() => { screen.getByRole('textbox', { name: 'Email' }).focus(); });
+    view.rerender(<Desk login quit onQuit={onQuit} onLogin={onLogin} />);
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+
+    view.rerender(<Desk login quit command onQuit={onQuit} onLogin={onLogin} />);
+    expect(box('Sign in')).toHaveAttribute('hidden');
+    expect(box('Close the window?')).toHaveAttribute('hidden');
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk login quit onQuit={onQuit} onLogin={onLogin} />);
+    endFade('Run this command?');
+    expect(box('Sign in')).not.toHaveAttribute('hidden');
+    expect(box('Close the window?')).not.toHaveAttribute('hidden');
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+    expect(onLogin).not.toHaveBeenCalled();
+  });
+
+  it('gives the focus to a confirmation when it returns with the busy window it was asked over', async () => {
+    const answers: boolean[] = [];
+    function Asker() {
+      const confirm = useConfirm();
+      return <Button onClick={() => { void confirm({ title: 'Remove it?', confirmLabel: 'Remove', tone: 'danger' }).then((answer) => { answers.push(answer); }); }}>Ask</Button>;
+    }
+    function Page({ command }: { command: boolean }) {
+      return (
+        <DesignSystemProvider>
+          <Dialog open busy title="Install"><input aria-label="Name" /><Asker /></Dialog>
+          <Dialog open={command} layer="approval" role="alertdialog" outsidePress="ignore" title="Run this command?" initialFocus={cancelOf} footer={<Button data-approval-cancel="">Cancel</Button>} />
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page command={false} />);
+    act(() => { screen.getByRole('button', { name: 'Ask' }).click(); });
+    act(() => { screen.getByRole('button', { name: 'Remove' }).focus(); });
+
+    view.rerender(<Page command />);
+    expect(box('Remove it?')).toHaveAttribute('hidden');
+    view.rerender(<Page command={false} />);
+    endFade('Run this command?');
+    expect(box('Remove it?')).not.toHaveAttribute('hidden');
+    expect(within(box('Remove it?')!).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    expect(answers).toEqual([]);
+  });
+
   it('brings the question back alone when a busy window opened under the approval, and shows that window once the question has been answered', () => {
     const onQuit = vi.fn();
     const onLogin = vi.fn();

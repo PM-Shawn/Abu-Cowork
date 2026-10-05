@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useSyncExternalStore } from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CloseDialog from '@/components/common/CloseDialog';
@@ -618,6 +618,52 @@ describe('AccountLoginDialog opened from the settings window', () => {
       expect(cancel).not.toHaveBeenCalled();
       expect(answers).toEqual([]);
       expect(screen.getByRole('alertdialog', { name: '操作确认' })).toBeInTheDocument();
+    });
+
+    // The close-window question was asked over the sign-in window. Both step aside for the
+    // approval and return together: the focus belongs to the question on top.
+    it('returns under the close-window question with the focus in the question: Enter minimizes and does not cancel the sign-in', async () => {
+      const user = userEvent.setup();
+      const onMinimize = vi.fn();
+      const onQuit = vi.fn();
+      function Question() {
+        const open = usePreviewStore((s) => s.appModalOpen);
+        return (
+          <CloseDialog
+            open={open}
+            hasRunningAgent={false}
+            onQuit={onQuit}
+            onMinimize={onMinimize}
+            onCancel={() => usePreviewStore.getState().setAppModalOpen(false)}
+            onCloseActionChange={() => undefined}
+          />
+        );
+      }
+      useAccountStore.setState({ status: 'awaiting_browser' });
+      try {
+        render(<><ChatApprovals /><AccountLoginDialog /><Question /></>, { wrapper: DesignSystemProvider });
+        act(() => { usePreviewStore.setState({ appModalOpen: true }); });
+        expect(screen.getByRole('button', { name: '最小化到托盘' })).toHaveFocus();
+
+        const answers = askCommand();
+        expect(loginWindow()).toHaveAttribute('hidden');
+        await user.click(screen.getByRole('button', { name: '取消' }));
+        await act(async () => { await Promise.resolve(); });
+        expect(answers).toEqual([false]);
+
+        expect(loginWindow()).not.toHaveAttribute('hidden');
+        expect(screen.getByRole('alertdialog', { name: '关闭窗口' })).not.toHaveAttribute('hidden');
+        await waitFor(() => expect(screen.getByRole('button', { name: '最小化到托盘' })).toHaveFocus());
+
+        await user.keyboard('{Enter}');
+        expect(onMinimize).toHaveBeenCalledTimes(1);
+        expect(cancel).not.toHaveBeenCalled();
+        expect(onQuit).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+        expect(useAccountStore.getState().status).toBe('awaiting_browser');
+      } finally {
+        usePreviewStore.setState({ appModalOpen: false });
+      }
     });
 
     it('does not answer the approval when the sign-in finishes behind it', async () => {

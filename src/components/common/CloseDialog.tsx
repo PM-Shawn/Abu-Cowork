@@ -33,8 +33,15 @@ export default function CloseDialog({
   onCloseActionChange,
 }: CloseDialogProps) {
   const { t } = useI18n();
-  // Lives as long as the app does: the tick is still there the next time the question is asked.
+  // The tick lasts for one asking: it is cleared whenever the question opens or closes, so a
+  // question always opens unticked and an answer given by Enter on opening remembers nothing.
+  // It is kept while the question is open, also while it stands aside for an approval.
   const [remember, setRemember] = useState(false);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    setRemember(false);
+  }
 
   // The question stays on the page while it fades out. Once it has been answered or cancelled,
   // a key on the button that still has the focus answers nothing.

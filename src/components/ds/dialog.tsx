@@ -188,16 +188,28 @@ export function Dialog({
     focusedInside.current = null;
     if (!content) return;
     const quiet = { preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) };
-    // A window returns to the control that had the focus (the field being typed in). A question
-    // returns the way it opened, on the control it names: the approval took the focus by itself,
-    // and a key still being pressed for it must not land on the answer the user had moved to.
-    if (kind !== 'alert' && kept?.isConnected) {
+    const opening = () => (initialFocusRef.current?.(content) ?? firstTabbable(content, true) ?? content).focus(quiet);
+    // After a group has returned the focus is inside its top layer.
+    // A question is that top layer, whatever returned with it, and it returns the way it opened,
+    // on the control it names: the approval took the focus by itself, and a key still being
+    // pressed for it must not land on the answer the user had moved to, nor in the window below.
+    if (kind === 'alert') {
+      opening();
+      return;
+    }
+    // A question on the page is over this window (its own discard question, or one that was
+    // asked over it and returns with it): the focus is the question's.
+    const question = Array.from(document.querySelectorAll<HTMLElement>('[data-ds-layer][role="alertdialog"][data-state="open"]:not([hidden])'))
+      .find((layer) => layer !== content);
+    // A window returns to the control that had the focus (the field being typed in).
+    if (kept?.isConnected && (!question || question.contains(kept))) {
       kept.focus(quiet);
       return;
     }
+    if (question) return;
     // Another layer that is on the page has the focus (a dialog opened inside this one).
     if (document.activeElement?.closest('[data-ds-layer][data-state="open"]:not([hidden])')) return;
-    (initialFocusRef.current?.(content) ?? firstTabbable(content, true) ?? content).focus(quiet);
+    opening();
   }, [aside, kind]);
   // The owner closed the dialog while the discard question was on screen (a save that was in
   // flight landed): nothing is left to discard, so the question goes unanswered.

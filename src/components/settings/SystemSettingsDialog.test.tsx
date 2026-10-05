@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -350,6 +350,49 @@ describe('SystemSettingsDialog', () => {
         act(() => { drainConfirmationQueue(); });
         useChatStore.setState({ activeConversationId: null });
       }
+    });
+
+    // The close-window question was asked over the settings window with a form at work in it.
+    // All three step aside for the approval and return together: the question is on top, so the
+    // focus is in the question, not in a field underneath it.
+    it('returns under the close-window question with the focus in the question: Enter minimizes and no key reaches the form', async () => {
+      const user = userEvent.setup();
+      const onMinimize = vi.fn();
+      function Question() {
+        const open = usePreviewStore((s) => s.appModalOpen);
+        return (
+          <CloseDialog
+            open={open}
+            hasRunningAgent={false}
+            onQuit={onQuit}
+            onMinimize={onMinimize}
+            onCancel={onQuestionCancel}
+            onCloseActionChange={() => undefined}
+          />
+        );
+      }
+      render(<><SystemSettingsDialog /><Approval /><Question /></>, { wrapper: DesignSystemProvider });
+      act(() => formInside.set({ open: true, busy: true }));
+      const field = screen.getByRole('textbox', { name: 'Service address' });
+      await user.type(field, 'https://service.example.invalid');
+      act(() => usePreviewStore.setState({ appModalOpen: true }));
+      expect(screen.getByRole('button', { name: '最小化到托盘' })).toHaveFocus();
+
+      act(() => useApproval.setState({ open: true }));
+      expect(screen.getByRole('button', { name: 'Cancel the command' })).toHaveFocus();
+      act(() => useApproval.setState({ open: false }));
+
+      expect(settingsWindow()).not.toHaveAttribute('hidden');
+      expect(screen.getByRole('alertdialog', { name: '关闭窗口' })).not.toHaveAttribute('hidden');
+      await waitFor(() => expect(screen.getByRole('button', { name: '最小化到托盘' })).toHaveFocus());
+
+      await user.keyboard('x');
+      expect(field).toHaveValue('https://service.example.invalid');
+      await user.keyboard('{Enter}');
+      expect(onMinimize).toHaveBeenCalledTimes(1);
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(formInside.closes).toEqual([]);
+      expect(isOpen()).toBe(true);
     });
 
     describe('with a form inside it whose work would be cancelled by closing it', () => {

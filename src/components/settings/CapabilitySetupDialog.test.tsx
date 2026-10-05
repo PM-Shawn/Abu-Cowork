@@ -23,6 +23,8 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useToastStore } from '@/stores/toastStore';
+import AccountLoginDialog from '@/components/account/AccountLoginDialog';
+import { __resetAccountStoreForTest, useAccountStore } from '@/core/account/accountStore';
 import CapabilitySetupDialog from './CapabilitySetupDialog';
 import SystemSettingsDialog from './SystemSettingsDialog';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
@@ -493,32 +495,31 @@ describe('CapabilitySetupDialog', () => {
       useSettingsStore.setState({ systemSettingsOpen: false });
     });
 
-    it('answers no when another dialog opens and takes its place, and leaves focus in that dialog', async () => {
-      const { promise } = requestFromTask();
+    it('turns away another dialog that opens while it is on screen: the request is not answered and focus stays in the window', async () => {
+      const { state } = requestFromTask();
       renderWindow(
         <>
           <TextArea data-chat-composer aria-label="chat composer" />
           <OtherDialog />
         </>,
       );
-      await screen.findByRole('dialog', { name: 'Connect My Chrome' });
-      const id = getPendingCapabilitySetup()?.id;
+      const dialog = await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+      const request = getPendingCapabilitySetup();
       vi.useFakeTimers();
 
       act(() => useOtherDialog.setState({ open: true }));
-
-      await expect(promise).resolves.toBe(false);
-      expect(resolveCapabilitySetup).toHaveBeenCalledTimes(1);
-      expect(resolveCapabilitySetup).toHaveBeenCalledWith(id, false);
-      expect(setupWindow()).not.toBeInTheDocument();
-      const other = screen.getByRole('dialog', { name: 'Other dialog' });
       await flushClose();
-      expect(other).toContainElement(document.activeElement as HTMLElement);
-      // The composer sits behind the other dialog, so it is hidden from the accessibility tree.
-      expect(screen.getByRole('textbox', { name: 'chat composer', hidden: true })).not.toHaveFocus();
+
+      expect(useOtherDialog.getState().open).toBe(false);
+      expect(screen.queryByRole('dialog', { name: 'Other dialog' })).not.toBeInTheDocument();
+      expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+      expect(state.settled).toBe(false);
+      expect(getPendingCapabilitySetup()).toBe(request);
+      expect(setupWindow()).toBe(dialog);
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
     });
 
-    it('lets the next waiting request take over from the dialog that replaced the first one', async () => {
+    it('keeps the request on screen and the one behind it waiting when another dialog opens; the next is shown once the first is answered', async () => {
       const first = requestFromTask('chrome', 'tool-first');
       const second = requestFromTask('computer', 'tool-second');
       renderWindow(<OtherDialog />);
@@ -526,10 +527,17 @@ describe('CapabilitySetupDialog', () => {
 
       act(() => useOtherDialog.setState({ open: true }));
 
+      expect(useOtherDialog.getState().open).toBe(false);
+      expect(screen.getByRole('dialog', { name: 'Connect My Chrome' })).toBeInTheDocument();
+      expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+      expect(first.state.settled).toBe(false);
+      expect(second.state.settled).toBe(false);
+
+      fireEvent.click(screen.getByRole('button', { name: 'cancel setup' }));
       await expect(first.promise).resolves.toBe(false);
       expect(await screen.findByRole('dialog', { name: 'Enable Computer Use' })).toBeInTheDocument();
       expect(screen.getAllByRole('dialog')).toHaveLength(1);
-      expect(useOtherDialog.getState().open).toBe(false);
+      expect(resolveCapabilitySetup).toHaveBeenCalledTimes(1);
       expect(second.state.settled).toBe(false);
     });
 
@@ -572,20 +580,185 @@ describe('CapabilitySetupDialog', () => {
         expect(second.state.settled).toBe(false);
       });
 
-      it('is refused by Keep editing, one request per decision', async () => {
+      it('goes on waiting, unanswered, after Keep editing, and is shown once that dialog has closed', async () => {
         const { first, second } = await arriveOverUnsavedInput();
 
         fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+        await Promise.resolve();
 
-        await expect(first.promise).resolves.toBe(false);
-        expect(resolveCapabilitySetup).toHaveBeenCalledTimes(1);
-        expect(resolveCapabilitySetup).toHaveBeenCalledWith(expect.stringContaining('tool-first'), false);
-        expect(useOtherDialog.getState().open).toBe(true);
-        // The next waiting request asks the same question; it is not refused along with the first.
-        expect(await screen.findByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
-        expect(setupWindow()).not.toBeInTheDocument();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(first.state.settled).toBe(false);
         expect(second.state.settled).toBe(false);
-        expect(getPendingCapabilitySetup()?.id).toContain('tool-second');
+        expect(useOtherDialog.getState().open).toBe(true);
+        expect(screen.getByRole('dialog', { name: 'Other dialog' })).toBeInTheDocument();
+        // The question is not asked a second time, and the window is still off the page.
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+        expect(setupWindow()).not.toBeInTheDocument();
+        expect(getPendingCapabilitySetup()?.id).toContain('tool-first');
+
+        act(() => useOtherDialog.setState({ open: false, dirty: false }));
+
+        expect(await screen.findByRole('dialog', { name: 'Connect My Chrome' })).toBeInTheDocument();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(first.state.settled).toBe(false);
+        expect(second.state.settled).toBe(false);
+      });
+    });
+
+    describe('with another approval', () => {
+      // A command approval as the chat view shows it: an approval layer of its own.
+      const useCommandApproval = create(() => ({ open: false }));
+      const onCommandAnswer = vi.fn();
+      function CommandApproval() {
+        const { open } = useCommandApproval();
+        return (
+          <Dialog
+            open={open}
+            onOpenChange={onCommandAnswer}
+            layer="approval"
+            role="alertdialog"
+            outsidePress="ignore"
+            title="Confirm Action"
+            footer={<Button>Cancel the command</Button>}
+          />
+        );
+      }
+      const commandApproval = () => screen.queryByRole('alertdialog', { name: 'Confirm Action' });
+
+      beforeEach(() => {
+        onCommandAnswer.mockReset();
+        useCommandApproval.setState({ open: false });
+      });
+      afterEach(() => { useCommandApproval.setState({ open: false }); });
+
+      it('waits off the page, unanswered, behind a command approval that is on screen, and appears when that one is answered', async () => {
+        useCommandApproval.setState({ open: true });
+        renderWindow(<CommandApproval />);
+        expect(commandApproval()).toBeInTheDocument();
+
+        let request!: ReturnType<typeof requestFromTask>;
+        act(() => { request = requestFromTask(); });
+        await Promise.resolve();
+
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+        expect(commandApproval()).toBeInTheDocument();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(onCommandAnswer).not.toHaveBeenCalled();
+        expect(request.state.settled).toBe(false);
+
+        act(() => useCommandApproval.setState({ open: false }));
+
+        expect(await screen.findByRole('dialog', { name: 'Connect My Chrome' })).toBeInTheDocument();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(onCommandAnswer).not.toHaveBeenCalled();
+        expect(request.state.settled).toBe(false);
+      });
+
+      it('is not answered by Escape while it waits behind a command approval: the key goes to the approval on screen', async () => {
+        useCommandApproval.setState({ open: true });
+        renderWindow(<CommandApproval />);
+        let request!: ReturnType<typeof requestFromTask>;
+        act(() => { request = requestFromTask(); });
+        await Promise.resolve();
+
+        await userEvent.setup().keyboard('{Escape}');
+
+        expect(onCommandAnswer.mock.calls).toEqual([[false]]);
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(request.state.settled).toBe(false);
+      });
+
+      it('stays as it is when a command approval arrives; that approval waits off the page and neither is answered', async () => {
+        const { state } = requestFromTask();
+        renderWindow(<CommandApproval />);
+        const dialog = await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+        const request = getPendingCapabilitySetup();
+
+        act(() => useCommandApproval.setState({ open: true }));
+
+        expect(setupWindow()).toBe(dialog);
+        expect(dialog).not.toHaveAttribute('hidden');
+        expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(onCommandAnswer).not.toHaveBeenCalled();
+        expect(state.settled).toBe(false);
+        expect(getPendingCapabilitySetup()).toBe(request);
+
+        // The window is answered by its own button: the command approval takes its turn.
+        fireEvent.click(screen.getByRole('button', { name: 'cancel setup' }));
+        expect(await screen.findByRole('alertdialog', { name: 'Confirm Action' })).toBeInTheDocument();
+        expect(resolveCapabilitySetup).toHaveBeenCalledTimes(1);
+        expect(resolveCapabilitySetup).toHaveBeenCalledWith(request?.id, false);
+        expect(onCommandAnswer).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('over the sign-in window while a sign-in is under way', () => {
+      const cancelSignIn = vi.fn();
+      const signInWindow = () => document.querySelector<HTMLElement>('[data-abu-account-dialog]');
+
+      beforeEach(() => {
+        cancelSignIn.mockReset();
+        __resetAccountStoreForTest();
+        useAccountStore.setState({ status: 'awaiting_browser', cancel: cancelSignIn });
+        useSettingsStore.setState({ accountLoginOpen: true });
+      });
+      afterEach(() => {
+        usePreviewStore.setState({ appModalOpen: false });
+        useSettingsStore.setState({ accountLoginOpen: false });
+        __resetAccountStoreForTest();
+      });
+
+      // The sign-in window comes before the grant window in the app, as here.
+      it('has the sign-in window step aside and return; the sign-in is not cancelled and the request is answered only by its own button', async () => {
+        renderWindow(<AccountLoginDialog />);
+        const signIn = signInWindow();
+        expect(signIn).not.toBeNull();
+
+        let request!: ReturnType<typeof requestFromTask>;
+        act(() => { request = requestFromTask(); });
+        expect(await screen.findByRole('dialog', { name: 'Connect My Chrome' })).toBeInTheDocument();
+        expect(signInWindow()).toBe(signIn);
+        expect(signIn).toHaveAttribute('hidden');
+        expect(cancelSignIn).not.toHaveBeenCalled();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'cancel setup' }));
+        await expect(request.promise).resolves.toBe(false);
+        expect(signInWindow()).toBe(signIn);
+        expect(signIn).not.toHaveAttribute('hidden');
+        expect(cancelSignIn).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+        expect(useAccountStore.getState().status).toBe('awaiting_browser');
+      });
+
+      it('keeps the sign-in and the request when the close-window question comes and goes over both', async () => {
+        renderWindow(<AccountLoginDialog />);
+        let request!: ReturnType<typeof requestFromTask>;
+        act(() => { request = requestFromTask(); });
+        await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+
+        act(() => usePreviewStore.setState({ appModalOpen: true }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(cancelSignIn).not.toHaveBeenCalled();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+
+        act(() => usePreviewStore.setState({ appModalOpen: false }));
+        expect(await screen.findByRole('dialog', { name: 'Connect My Chrome' })).toBeInTheDocument();
+        // The sign-in window waits again: held before it was drawn, or hidden.
+        expect(screen.getAllByRole('dialog')).toHaveLength(1);
+        expect(signInWindow()?.hasAttribute('hidden') ?? true).toBe(true);
+        expect(cancelSignIn).not.toHaveBeenCalled();
+        expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+        expect(request.state.settled).toBe(false);
+        expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+
+        fireEvent.click(screen.getByRole('button', { name: 'cancel setup' }));
+        await expect(request.promise).resolves.toBe(false);
+        await waitFor(() => expect(signInWindow()).not.toBeNull());
+        expect(signInWindow()).not.toHaveAttribute('hidden');
+        expect(cancelSignIn).not.toHaveBeenCalled();
+        expect(useAccountStore.getState().status).toBe('awaiting_browser');
       });
     });
 
@@ -606,17 +779,19 @@ describe('CapabilitySetupDialog', () => {
       expect(request.state.settled).toBe(false);
     });
 
-    it('answers no when the settings window opens over it', async () => {
-      const { promise } = requestFromTask();
+    it('turns the settings window away when it is opened over it, and is not answered', async () => {
+      const { state } = requestFromTask();
       renderWindow(<SystemSettingsDialog />);
-      await screen.findByRole('dialog', { name: 'Connect My Chrome' });
+      const dialog = await screen.findByRole('dialog', { name: 'Connect My Chrome' });
 
       act(() => useSettingsStore.getState().openSystemSettings());
+      await Promise.resolve();
 
-      await expect(promise).resolves.toBe(false);
-      expect(setupWindow()).not.toBeInTheDocument();
-      expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
-      expect(await screen.findByRole('button', { name: 'a settings control' })).toBeInTheDocument();
+      expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+      expect(screen.queryByRole('button', { name: 'a settings control' })).not.toBeInTheDocument();
+      expect(setupWindow()).toBe(dialog);
+      expect(resolveCapabilitySetup).not.toHaveBeenCalled();
+      expect(state.settled).toBe(false);
     });
   });
 

@@ -150,15 +150,17 @@ export default function CapabilitySetupDialog() {
     }
   };
 
-  // Escape, the scrim, the corner button, and another dialog taking this window's place all
-  // arrive as a close, and a close is always a refusal. Only the page reporting that setup
-  // is complete answers yes. The image viewer covers the whole app, so the window waits
-  // for it to close; it steps aside, unanswered, for the close-window question and comes
-  // back when that is cancelled. One dialog per request: the next waiting request opens
-  // as a new dialog.
+  // Escape, the scrim and the corner button arrive as a close, and a close is always a
+  // refusal. Only the page reporting that setup is complete answers yes. The window is an
+  // approval layer: no other window closes it, a window that opens while it is on screen is
+  // turned away, and it waits its turn behind an approval that is already on the page. The
+  // image viewer covers the whole app, so the window waits for it to close; it steps aside,
+  // unanswered, for the close-window question and comes back when that is cancelled. One
+  // dialog per request: the next waiting request opens as a new dialog.
   return (
     <Dialog
       key={request.id}
+      layer="approval"
       open={windowShown}
       onOpenChange={(next) => { if (!next) resolveCapabilitySetup(request.id, false); }}
       title={request.target === 'computer'

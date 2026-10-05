@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { act, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 
 // The window is a design-system dialog, so it renders inside the provider like the app does.
@@ -371,6 +373,86 @@ describe('SkillUploadModal · the window', () => {
     await act(async () => { finish(installed); });
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(mockInstall).toHaveBeenCalledTimes(1);
+  });
+
+  // An import that is running is work in progress: the window steps aside for an approval and
+  // comes back. Nothing here closes it, and it still leaves by itself when the import has ended.
+  describe('when an approval arrives while an import runs', () => {
+    const onApprovalAnswer = vi.fn();
+    const onClose = vi.fn();
+    const onInstalled = vi.fn();
+    function Owner({ approval }: { approval: boolean }) {
+      const [shown, setShown] = useState(true);
+      return (
+        <>
+          <SkillUploadModal open={shown} onClose={() => { onClose(); setShown(false); }} onInstalled={onInstalled} />
+          <Dialog
+            open={approval}
+            onOpenChange={onApprovalAnswer}
+            layer="approval"
+            role="alertdialog"
+            outsidePress="ignore"
+            title="Confirm Action"
+            footer={<Button>Cancel the command</Button>}
+          />
+        </>
+      );
+    }
+    const importWindow = () => Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))
+      .find((element) => element.querySelector('h2')?.textContent === 'Import') ?? null;
+
+    async function startImport() {
+      onApprovalAnswer.mockReset();
+      onClose.mockReset();
+      onInstalled.mockReset();
+      let finish: (result: typeof installed) => void = () => {};
+      mockInstall.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      mockOpenDialog.mockResolvedValue('/Users/test/my-skill' as never);
+      const view = render(<Owner approval={false} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Drop a folder' }));
+      await waitFor(() => expect(mockInstall).toHaveBeenCalledTimes(1));
+      return { finish, view, window: importWindow() };
+    }
+
+    it('steps aside, is not closed, and returns still importing', async () => {
+      const { finish, view, window } = await startImport();
+      expect(window).not.toBeNull();
+
+      view.rerender(<Owner approval />);
+      expect(screen.getByRole('alertdialog', { name: 'Confirm Action' })).toBeInTheDocument();
+      expect(importWindow()).toBe(window);
+      expect(window).toHaveAttribute('hidden');
+      expect(screen.queryByRole('dialog')).toBeNull();
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      expect(onApprovalAnswer.mock.calls).toEqual([[false]]);
+      expect(onClose).not.toHaveBeenCalled();
+
+      view.rerender(<Owner approval={false} />);
+      expect(importWindow()).toBe(window);
+      expect(window).not.toHaveAttribute('hidden');
+      expect(screen.getByRole('button', { name: 'Drop a folder' })).toHaveAttribute('aria-disabled', 'true');
+      expect(onClose).not.toHaveBeenCalled();
+
+      await act(async () => { finish(installed); });
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(onInstalled).toHaveBeenCalledWith('my-skill');
+      expect(mockInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves by itself when the import ends behind the approval, and does not come back', async () => {
+      const { finish, view } = await startImport();
+      view.rerender(<Owner approval />);
+      expect(importWindow()).toHaveAttribute('hidden');
+
+      await act(async () => { finish(installed); });
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(onInstalled).toHaveBeenCalledWith('my-skill');
+      expect(onApprovalAnswer).not.toHaveBeenCalled();
+
+      view.rerender(<Owner approval={false} />);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('imports nothing from a window that is closing', async () => {

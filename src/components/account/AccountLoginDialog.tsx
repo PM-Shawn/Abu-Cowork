@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dialog } from '@/components/ds/dialog';
 import { useBlockingApprovalVisible } from '@/hooks/useBlockingApprovalVisible';
 import { useAccountStore } from '@/core/account/accountStore';
@@ -19,12 +19,19 @@ export default function AccountLoginDialog() {
   const cancel = useAccountStore((state) => state.cancel);
   const signOut = useAccountStore((state) => state.signOut);
   const { t } = useI18n();
+  // A personal sign-in was asked for from this opening and has not ended. The ref is what the
+  // handlers read; the state follows it so the window can say it has work in progress.
   const personalStartRequested = useRef(false);
+  const [personalStartPending, setPersonalStartPending] = useState(false);
+  const markPersonalStart = useCallback((requested: boolean) => {
+    personalStartRequested.current = requested;
+    setPersonalStartPending(requested);
+  }, []);
 
   const cancelAttempt = useCallback(() => {
-    personalStartRequested.current = false;
+    markPersonalStart(false);
     cancel();
-  }, [cancel]);
+  }, [cancel, markPersonalStart]);
 
   const closeDialog = useCallback(() => {
     if (
@@ -37,20 +44,20 @@ export default function AccountLoginDialog() {
 
   useEffect(() => {
     if (open && status === 'signed_in') {
-      personalStartRequested.current = false;
+      markPersonalStart(false);
       close();
     }
-  }, [close, open, status]);
+  }, [close, markPersonalStart, open, status]);
 
   useEffect(() => {
     if (!open) {
-      personalStartRequested.current = false;
+      markPersonalStart(false);
     }
-  }, [open]);
+  }, [markPersonalStart, open]);
 
   useEffect(() => {
-    if (error) personalStartRequested.current = false;
-  }, [error]);
+    if (error) markPersonalStart(false);
+  }, [error, markPersonalStart]);
 
   // An old blocking prompt (an approval of the task in view, the close-window question) cannot
   // take a press under a design-system dialog. The window leaves the page while one is up,
@@ -68,6 +75,9 @@ export default function AccountLoginDialog() {
   return (
     <Dialog
       open={shown}
+      // Closing the window cancels a sign-in that is under way, so it steps aside for an
+      // approval and returns afterwards.
+      busy={status === 'awaiting_browser' || status === 'exchanging' || personalStartPending}
       onOpenChange={(next) => { if (!next) closeDialog(); }}
       title={t.account.loginRegister}
       size="sm"
@@ -82,7 +92,7 @@ export default function AccountLoginDialog() {
         hasAccount={account !== null}
         onPersonalLogin={() => {
           if (!shown) return;
-          personalStartRequested.current = true;
+          markPersonalStart(true);
           void startPersonalLogin();
         }}
         onEnterpriseLogin={() => {

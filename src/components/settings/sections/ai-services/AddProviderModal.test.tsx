@@ -23,6 +23,7 @@ import { computeShowAdvanced, defaultModelDeclaredCapabilities, toggleEffort } f
 import { toModelInfo } from './modelInfoUtil';
 import AddProviderModal from './AddProviderModal';
 import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { getI18n, setLanguage } from '@/i18n';
@@ -2223,6 +2224,138 @@ describe('AddProviderModal — behaviour pins', () => {
         await act(async () => { answers[1]({ success: true, latencyMs: 12 }); });
         expect(screen.getByText(t().settings.validationSuccess.replace('{latency}', '12'))).toBeInTheDocument();
         expect(validateButton()).not.toHaveAttribute('aria-disabled');
+      });
+    });
+
+    // A check that is out is work in progress: closing the window drops its answer. For an
+    // approval the window steps aside, form and check untouched, and comes back.
+    describe('when an approval arrives', () => {
+      type Answer = (result: { success: boolean; latencyMs: number }) => void;
+      const onApprovalAnswer = vi.fn();
+      const onSettingsChange = vi.fn();
+      const approval = (shown: boolean) => (
+        <Dialog
+          open={shown}
+          onOpenChange={onApprovalAnswer}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Confirm Action"
+          footer={<Button>Cancel the command</Button>}
+        />
+      );
+      function openBesideApproval({ insideSettings = false } = {}) {
+        onApprovalAnswer.mockReset();
+        onSettingsChange.mockReset();
+        const onClose = vi.fn();
+        const form = <AddProviderModal open onClose={onClose} />;
+        const page = (shown: boolean) => (
+          <>
+            {insideSettings ? <Dialog open onOpenChange={onSettingsChange} title="Settings">{form}</Dialog> : form}
+            {approval(shown)}
+          </>
+        );
+        const view = render(page(false), { wrapper: DesignSystemProvider });
+        seed([seededDeepSeek]);
+        ui.pickProvider('DeepSeek');
+        fireEvent.change(ui.keyInput(), { target: { value: FAKE_KEY } });
+        ui.pickCuratedModel('DeepSeek V4 Pro');
+        return { onClose, arrive: () => view.rerender(page(true)), leave: () => view.rerender(page(false)) };
+      }
+      function holdChecks(): Answer[] {
+        const answers: Answer[] = [];
+        vi.mocked(checkProviderHealth).mockImplementation(() => new Promise((resolve) => { answers.push(resolve); }));
+        return answers;
+      }
+      // The box of a window that is in the page, on screen or hidden.
+      const box = (title: string) => Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]'))
+        .find((element) => element.querySelector('h2')?.textContent === title) ?? null;
+      const success = (latency: string) => t().settings.validationSuccess.replace('{latency}', latency);
+
+      it('steps aside while a check is out, unasked and unclosed, and returns with its form and the answer that came meanwhile', async () => {
+        const answers = holdChecks();
+        const { onClose, arrive, leave } = openBesideApproval();
+        ui.validate();
+        const form = box(t().settings.addService);
+        expect(form).not.toBeNull();
+
+        arrive();
+        expect(screen.getByRole('alertdialog', { name: 'Confirm Action' })).toBeInTheDocument();
+        expect(box(t().settings.addService)).toBe(form);
+        expect(form).toHaveAttribute('hidden');
+        expect(ui.discardQuestion()).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+
+        // The endpoint answers while the window stands aside.
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+        expect(onClose).not.toHaveBeenCalled();
+
+        leave();
+        expect(box(t().settings.addService)).toBe(form);
+        expect(form).not.toHaveAttribute('hidden');
+        expect(screen.getByText(success('88'))).toBeInTheDocument();
+        expect(ui.keyInput().value).toBe(FAKE_KEY);
+        expect(onClose).not.toHaveBeenCalled();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+        expect(log).toEqual([]);
+        expect(keyOutsideItsInput()).toEqual([]);
+      });
+
+      it('returns still checking when the answer has not come, and shows it when it does', async () => {
+        const answers = holdChecks();
+        const { onClose, arrive, leave } = openBesideApproval();
+        ui.validate();
+        arrive();
+        leave();
+
+        expect(screen.getByText(t().settings.validating)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: t().settings.validateConnection })).toHaveAttribute('aria-disabled', 'true');
+        await act(async () => { answers[0]({ success: true, latencyMs: 12 }); });
+        expect(screen.getByText(success('12'))).toBeInTheDocument();
+        expect(onClose).not.toHaveBeenCalled();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+      });
+
+      it('takes the window it was opened in aside with it, and both return', async () => {
+        const answers = holdChecks();
+        const { onClose, arrive, leave } = openBesideApproval({ insideSettings: true });
+        ui.validate();
+        const settings = box('Settings');
+        const form = box(t().settings.addService);
+
+        arrive();
+        expect(settings).toHaveAttribute('hidden');
+        expect(form).toHaveAttribute('hidden');
+        expect(onSettingsChange).not.toHaveBeenCalled();
+        expect(onClose).not.toHaveBeenCalled();
+
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+        leave();
+        expect(box('Settings')).toBe(settings);
+        expect(box(t().settings.addService)).toBe(form);
+        expect(settings).not.toHaveAttribute('hidden');
+        expect(form).not.toHaveAttribute('hidden');
+        expect(screen.getByText(success('88'))).toBeInTheDocument();
+        expect(ui.keyInput().value).toBe(FAKE_KEY);
+        expect(onSettingsChange).not.toHaveBeenCalled();
+        expect(onClose).not.toHaveBeenCalled();
+      });
+
+      it('asks about the typed input when no check is out; the approval waits off the page, unanswered', () => {
+        const { onClose, arrive } = openBesideApproval();
+
+        arrive();
+        expect(ui.discardQuestion()).not.toBeNull();
+        expect(box('Confirm Action')).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
+
+        ui.keepEditing();
+        expect(box('Confirm Action')).toBeNull();
+        expect(ui.keyInput().value).toBe(FAKE_KEY);
+        expect(onClose).not.toHaveBeenCalled();
+        expect(onApprovalAnswer).not.toHaveBeenCalled();
       });
     });
 

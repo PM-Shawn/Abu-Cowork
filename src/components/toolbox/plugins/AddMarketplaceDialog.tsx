@@ -101,6 +101,8 @@ export default function AddMarketplaceDialog({
       open={open}
       // Escape, a press outside and the close button ask to close; while the directory is being read the window stays.
       onOpenChange={(next) => { if (!next && !reading.current) onClose(); }}
+      // For an approval the window steps aside while it reads, and comes back.
+      busy={busy}
       title={tb.pluginsAddMarketplaceTitle}
       size="md"
       closeButton

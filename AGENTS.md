@@ -583,7 +583,8 @@ off the page, an `urgent` one (the workspace request, which answers itself after
 Arrivals: an approval that meets a dialog with unsaved input waits behind the discard question; a
 `busy` dialog steps aside with the dialogs around it, as does an open question; any other dialog is
 closed, and a question over it cancelled. What steps aside stays mounted and `hidden`, nothing in
-it answered or cancelled, and returns when no approval shows or is due: questions about the page
+it answered or cancelled, and returns when no approval shows or is due, or when the approvals
+that are due wait behind a dialog the user chose to keep editing: questions about the page
 first, then windows, last out first, a window only to a page with no other window or question.
 While an approval shows, a new dialog is turned away unpainted or, if `busy`, waits unmounted; a
 question stacks over the approval and answers alone. A window is `busy` exactly while closing it
@@ -595,8 +596,8 @@ another fades marks it (`focusTaken()`), so that one gives the focus to nobody; 
 over the return target of the layer it follows or that steps aside for it, so the last of a run
 returns the focus to where it was before the run. A window that steps aside moves no focus and
 returns to the control that had it, else its opening control; a question returns on its opening
-control, and a window under it leaves the focus alone. No hand-off drops the focus onto the window
-while a layer or an opener can take it.
+control, and a window under it leaves the focus alone. The registry's hand-offs between layers
+never drop the focus onto the window; a press on an approval's scrim does (Tab brings it back).
 
 A window per request: the owner keys each approval by request id, and for an owner without one
 `PermissionDialog` keys its window by kind and path, so no state and no focus carries over; when
@@ -614,8 +615,8 @@ its fade (`registry.left`), else until a look one fade later, repeated while `is
 
 ds additions: `Dialog` `layer`, `urgent`, `busy`, `outsidePress`, `size="viewer"`; descriptions
 break long words and scroll. `ConfirmOptions.message` is a node. `FullscreenSurface` covers the
-window without moving its content in the page and is the one other place that writes `fixed
-inset-0`: plain, a layout state on `z-sticky`; with `layer`, a dialog to the registry whose first
+window without moving its content in the page and is the one other place in `src/components/ds/`
+that writes `fixed inset-0`: plain, a layout state on `z-sticky`; with `layer`, a dialog to the registry whose first
 focus skips frames; with `scrim`, its box passes presses to the scrim and its direct children take
 them, so pass-through parts sit one level down. `IconButton busy` follows `Button busy`. A `Spinner
 size="sm"` label is `text-ui-sm`, or `labelSize="ui"` where it trades places with 13px words.

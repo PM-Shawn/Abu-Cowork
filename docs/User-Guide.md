@@ -202,7 +202,7 @@ An app is Abu prepared for one line of work: its own home page, a few groups of 
 
 ### Build your own app
 
-Choose **Create app** in the switcher and describe, in the conversation, who the app is for, which groups of scenes it offers and who handles each. Once Abu has written it, open **Extensions → Plugins → Mine**, click **Validate and preview** — the same review screen as a market install — and **Install and enter**. The packaging rules are in the [plugin and app developer spec](plugin-spec.md).
+Choose **Create app** in the switcher and describe, in the conversation, who the app is for, which groups of scenes it offers and who handles each. Once Abu has written it, open **Extensions → Plugins → Mine**, click **Validate and preview** — the same review screen as a market install — and **Install and enter**. The packaging rules are in the [plugin and app developer spec](https://github.com/PM-Shawn/Abu-Cowork/blob/dev/docs/plugin-spec.md).
 
 ## Toolbox: Skills, Agents, and Connectors
 
@@ -324,4 +324,4 @@ Open **Settings → Preferences**. Choose Simplified Chinese, English, or Follow
 If the issue remains, file a reproducible report in [GitHub Issues](https://github.com/PM-Shawn/Abu-Cowork/issues). Do not publish API keys, access tokens, internal addresses, or diagnostic material containing confidential information.
 
 
-[Personal plugins: creation and maintenance (Chinese)](../PLUGINS.zh-CN.md)
+[Personal plugins: creation and maintenance (Chinese)](https://github.com/PM-Shawn/Abu-Cowork/blob/main/PLUGINS.zh-CN.md)

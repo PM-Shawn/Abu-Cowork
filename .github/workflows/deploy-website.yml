@@ -13,6 +13,7 @@ on:
       - 'docs/Installation-Guide*.md'
       - 'scripts/website-download-links.test.mjs'
       - 'scripts/website-docs.test.mjs'
+      - 'scripts/website-analytics.test.mjs'
       - '.github/workflows/deploy-website.yml'
   workflow_dispatch:
 

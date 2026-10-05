@@ -8,22 +8,26 @@ vi.mock('./tauriFetch', () => ({
 // Mock Anthropic SDK — we control the stream behavior
 const mockCreate = vi.fn();
 vi.mock('@anthropic-ai/sdk', () => {
+  class MockAPIError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
   return {
     default: class MockAnthropic {
+      static APIError = MockAPIError;
       messages = { create: mockCreate };
     },
-    APIError: class MockAPIError extends Error {
-      status: number;
-      constructor(status: number, message: string) {
-        super(message);
-        this.status = status;
-      }
-    },
+    APIError: MockAPIError,
   };
 });
 
+import { APIError } from '@anthropic-ai/sdk';
 import { ClaudeAdapter } from './claude';
 import { LLMError } from './adapter';
+import { getTauriFetch } from './tauriFetch';
 
 // Filler timestamp (TESTING.md §3) — not asserted on below.
 const FIXED_TIMESTAMP = 1_700_000_000_000;
@@ -94,6 +98,96 @@ describe('ClaudeAdapter', () => {
       // No error/done events emitted — the failure flows through the thrown error
       expect(events.find((e) => e.type === 'done')).toBeUndefined();
       await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
+      expect(vi.mocked(getTauriFetch).mock.calls).toEqual([[{ localServer: false }]]);
+    });
+
+    it('gives a local Anthropic-format server 10 minutes before its first event, and does not retry that', async () => {
+      // 本机的自定义服务商（apiFormat anthropic）：请求建立后一直没有事件，直到被中止
+      mockCreate.mockImplementation((_params: unknown, options?: { signal?: AbortSignal }) => {
+        const signal = options?.signal;
+        return Promise.resolve({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise((_resolve, reject) => {
+              if (signal?.aborted) return reject(abortError());
+              signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+            }),
+          }),
+        });
+      });
+
+      const adapter = new ClaudeAdapter();
+      const chatPromise = adapter.chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: '', baseUrl: 'http://127.0.0.1:8080', model: 'local-model', maxTokens: 1024, localServer: true },
+        () => {},
+      );
+      let settled = false;
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(chatPromise).rejects.toMatchObject({ code: 'local_server_timeout', retryable: false });
+      // 按本地服务发出请求，传输层不会先于这 10 分钟断开
+      expect(vi.mocked(getTauriFetch).mock.calls).toEqual([[{ localServer: true }]]);
+    });
+
+    it('ends at once when the user stops a local Anthropic-format server during the 10 minute wait', async () => {
+      mockCreate.mockImplementation((_params: unknown, options?: { signal?: AbortSignal }) => {
+        const signal = options?.signal;
+        return Promise.resolve({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise((_resolve, reject) => {
+              if (signal?.aborted) return reject(abortError());
+              signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+            }),
+          }),
+        });
+      });
+
+      const controller = new AbortController();
+      const events: Array<{ type: string; stopReason?: string }> = [];
+      const chatPromise = new ClaudeAdapter().chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey: '', baseUrl: 'http://127.0.0.1:8080', model: 'local-model', maxTokens: 1024, localServer: true, signal: controller.signal },
+        (event) => events.push(event),
+      );
+      let settled = false;
+      chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(false);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      // 用户主动停止：按现有路径以 cancelled 结束，不算超时
+      await chatPromise;
+      expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'cancelled' });
+    });
+  });
+
+  describe('API errors', () => {
+    it('erases the request key a provider echoed in its error body', async () => {
+      vi.useRealTimers();
+      const apiKey = 'abu-test-not-a-secret';
+      mockCreate.mockRejectedValue(new APIError(
+        401,
+        `401 ${JSON.stringify({ error: { message: `the key ${apiKey} was rejected` } })}`,
+      ));
+
+      const failure = await new ClaudeAdapter().chat(
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
+        { apiKey, model: 'claude-sonnet-4-6', maxTokens: 1024 },
+        () => {},
+      ).catch((err: unknown) => err);
+
+      expect(failure).toBeInstanceOf(LLMError);
+      const err = failure as LLMError;
+      expect(err.code).toBe('authentication');
+      expect(err.upstream?.summary).toBe('the key [REDACTED] was rejected');
+      expect(JSON.stringify([err.message, err.rawBody, err.upstream])).not.toContain(apiKey);
     });
   });
 

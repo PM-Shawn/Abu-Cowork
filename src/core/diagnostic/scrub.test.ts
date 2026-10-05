@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { scrubSecrets, stripBinaryContent, scrubMessage } from './scrub';
+import {
+  redactCheckResult,
+  redactFailureText,
+  redactStringValue,
+  scrubSecrets,
+  stripBinaryContent,
+  scrubMessage,
+} from './scrub';
+import type { CheckResult, DiagnosticSnapshot } from './types';
 import type { Message, MessageContent, ToolCall } from '@/types';
 
 // ─── Secret field detection ─────────────────────────────────────────────
@@ -57,6 +65,29 @@ describe('scrubSecrets — value pattern redaction', () => {
   it('redacts Bearer headers case-insensitively', () => {
     expect(scrubSecrets('bearer  abcdef1234567890XYZ')).toContain('[REDACTED]');
     expect(scrubSecrets('Bearer xyz123abcdef0987654321qq')).toContain('[REDACTED]');
+  });
+
+  it('redacts the whole value of an Authorization header, whatever the scheme or length', () => {
+    expect(scrubSecrets('headers: Authorization: Bearer test-bearer-token-not-a-secret'))
+      .toBe('headers: Authorization: [REDACTED]');
+    expect(scrubSecrets('Authorization: Bearer abc123 rejected')).toBe('Authorization: [REDACTED] rejected');
+    expect(scrubSecrets('Proxy-Authorization: Basic dGVzdDpub3QtYS1zZWNyZXQ=')).toBe('Proxy-Authorization: [REDACTED]');
+    expect(scrubSecrets('{"authorization":"Bearer abc:def:not-a-secret"}')).toBe('{"authorization":"[REDACTED]"}');
+    expect(scrubSecrets('body {\\"Authorization\\":\\"Bearer abc123\\"}')).toBe('body {\\"Authorization\\":\\"[REDACTED]\\"}');
+  });
+
+  it('redacts a scheme-less Authorization value without touching what follows it', () => {
+    expect(scrubSecrets('authorization: tok123abc token: tok456def'))
+      .toBe('authorization: [REDACTED] token: [REDACTED]');
+    expect(scrubSecrets('Authorization: tok123abc\nProxy-Authorization: tok456def'))
+      .toBe('Authorization: [REDACTED]\nProxy-Authorization: [REDACTED]');
+    expect(scrubSecrets('Authorization: tok123abc\nX-Request-Id: 42\nHost: x.test'))
+      .toBe('Authorization: [REDACTED]\nX-Request-Id: 42\nHost: x.test');
+    expect(scrubSecrets('authorization=denied reason=expired')).toBe('authorization=[REDACTED] reason=expired');
+  });
+
+  it('redacts a Bearer token that follows a secret-named key', () => {
+    expect(scrubSecrets('api_key: Bearer test-bearer-token-not-a-secret')).toBe('api_key: [REDACTED]');
   });
 
   it('redacts short secret fields embedded in serialized or plain log strings', () => {
@@ -381,5 +412,111 @@ describe('scrubSecrets — reuses the memory-hygiene credential detector', () =>
     const out = scrubSecrets('数据库密钥: tp1234567890abcd 已配置') as string;
     expect(out).not.toContain('tp1234567890abcd');
     expect(out).toContain('密钥');
+  });
+});
+
+// ─── Failure text ───────────────────────────────────────────────────────
+
+describe('redactFailureText', () => {
+  it('erases a known secret whatever its shape, in raw, JSON-escaped and URL-encoded forms', () => {
+    const secret = 'plain/"word+value';
+    const text = [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret), encodeURIComponent(secret).toLowerCase()].join(' | ');
+
+    expect(redactFailureText(text, [secret])).toBe('[REDACTED] | [REDACTED] | [REDACTED] | [REDACTED]');
+  });
+
+  it('skips known secrets shorter than 8 characters', () => {
+    expect(redactFailureText('ollama is not running', ['ollama', '', '   '])).toBe('ollama is not running');
+  });
+
+  it('accepts a known secret containing a lone surrogate', () => {
+    const secret = `lone-\uD800-surrogate`;
+
+    expect(redactFailureText(`rejected ${secret}`, [secret])).toBe('rejected [REDACTED]');
+  });
+
+  it('redacts secret-looking query values and keeps the rest of the URL', () => {
+    expect(redactFailureText('GET (https://gw.example.test/v1/models?key=abc123&page=2&sig=zz#top) failed'))
+      .toBe('GET (https://gw.example.test/v1/models?key=[REDACTED]&page=2&sig=[REDACTED]#top) failed');
+  });
+
+  it('still applies the shape-based redaction of redactStringValue', () => {
+    const shaped = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+
+    expect(redactFailureText(`rejected ${shaped}`)).toBe('rejected [REDACTED]');
+    expect(redactFailureText(`rejected ${shaped}`)).toBe(redactStringValue(`rejected ${shaped}`));
+  });
+
+  it('is idempotent', () => {
+    const once = redactFailureText('https://gw.example.test/sse?token=abc123 api_key=abcdef');
+
+    expect(redactFailureText(once)).toBe(once);
+  });
+
+  it('bounds the scanned text', () => {
+    expect(redactFailureText('x'.repeat(10_000)).length).toBe(4000);
+  });
+});
+
+describe('redactCheckResult', () => {
+  const base: CheckResult = {
+    id: 'mcp:tracker',
+    category: 'mcp',
+    name: 'tracker',
+    status: 'failed',
+    metric: 'error',
+    suggestedAction: { type: 'open-toolbox', target: 'mcp', label: 'Open toolbox' },
+    checkedAt: 1,
+    durationMs: 2,
+    freshness: 'fresh',
+  };
+
+  it('redacts errorMessage and errorDetail and leaves every other field as it was', () => {
+    const row = {
+      ...base,
+      errorMessage: 'unreachable https://gw.example.test/sse?key=abc123',
+      errorDetail: 'unreachable https://gw.example.test/sse?key=abc123\n    at connect',
+    };
+
+    expect(redactCheckResult(row)).toEqual({
+      ...base,
+      errorMessage: 'unreachable https://gw.example.test/sse?key=[REDACTED]',
+      errorDetail: 'unreachable https://gw.example.test/sse?key=[REDACTED]\n    at connect',
+    });
+  });
+
+  it('returns a row without failure text unchanged', () => {
+    expect(redactCheckResult(base)).toBe(base);
+  });
+});
+
+describe('scrubSecrets — diagnostic snapshot shape', () => {
+  it('keeps every DiagnosticSnapshot and CheckResult field name', () => {
+    const snapshot: DiagnosticSnapshot = {
+      schemaVersion: 2,
+      checkStartedAt: 1,
+      takenAt: 2,
+      appVersion: '0.0.0',
+      bundleId: 'com.abu.app.dev',
+      os: 'macos',
+      overall: 'has-failures',
+      freshness: 'stale',
+      staleAgeMs: 3,
+      results: [{
+        id: 'ai-services:p1',
+        category: 'ai-services',
+        name: 'Provider',
+        status: 'failed',
+        metric: '12ms',
+        errorMessage: 'rejected',
+        errorDetail: 'HTTP 401',
+        suggestedAction: { type: 'open-settings', target: 'ai-services', label: 'Open' },
+        checkedAt: 1,
+        durationMs: 2,
+        freshness: 'stale',
+      }],
+    };
+
+    expect(scrubSecrets(snapshot)).toEqual(snapshot);
   });
 });

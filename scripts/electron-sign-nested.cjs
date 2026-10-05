@@ -27,7 +27,8 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const { localizeMacAppName } = require('./electron-localize-app-name.cjs');
 
 /** Dirs under Contents/Resources whose Mach-O contents we own and must sign. */
-const NESTED_BINARY_DIRS = ['native-helper', 'sandbox-launcher', 'python-runtime', 'node-runtime'];
+// speech-runtime: sherpa-onnx .node + ONNX Runtime dylibs loaded by the voice-input worker.
+const NESTED_BINARY_DIRS = ['native-helper', 'sandbox-launcher', 'python-runtime', 'node-runtime', 'speech-runtime'];
 const RUNTIME_MARKERS = [
   { directory: 'node-runtime', executable: ['bin', 'node'], kind: 'node' },
   { directory: 'python-runtime', executable: ['bin', 'python3'], kind: 'python' },

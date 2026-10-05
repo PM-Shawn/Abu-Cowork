@@ -8,13 +8,15 @@ import {
   getActiveProvider,
   getActiveApiKey,
 } from '@/stores/settingsStore';
+import { getModelUnavailableReason } from '@/utils/settingsSelectors';
 import { getSettingsReader } from '@/core/agent/ports/settingsReader';
 import { resolveEffectiveLlmCreds } from '@/core/enterprise/llm-resolver';
-import { ClaudeAdapter } from '@/core/llm/claude';
-import { OpenAICompatibleAdapter } from '@/core/llm/openai-compatible';
+import { adapterKindFor } from '@/core/llm/adapterKind';
+import { createAdapterForKind } from '@/core/llm/createAdapter';
+import { providerChatOptions } from '@/core/llm/providerChatOptions';
 import type { LLMAdapter } from '@/core/llm/adapter';
 
-export type CompactionReason = 'ok' | 'too-few' | 'summarize-failed' | 'no-conversation';
+export type CompactionReason = 'ok' | 'too-few' | 'summarize-failed' | 'no-conversation' | 'model-unavailable';
 
 // Manual /compact is aggressive, matching WorkBuddy / Claude Code: a user who
 // explicitly asks to compact wants it to act, so we summarize (nearly) the whole
@@ -76,8 +78,11 @@ export function landCompactBoundaryMarker(
  * Enterprise gateway mode forces the OpenAI-compatible adapter (LiteLLM exposes
  * that interface) — matching llmCall.ts. Missing the `forceOpenAiCompatible`
  * term would pick the Claude adapter under an enforced gateway and fail the call.
+ *
+ * Returns null when that model can no longer be used (provider removed/turned
+ * off, model no longer listed): it is never called, and no other model is used.
  */
-function resolveSummarizeConfig(convId: string): CompressionConfig {
+async function resolveSummarizeConfig(convId: string): Promise<CompressionConfig | null> {
   const settings = getSettingsReader().getSnapshot();
   const chat = useChatStore.getState();
   const baseModel =
@@ -87,17 +92,27 @@ function resolveSummarizeConfig(convId: string): CompressionConfig {
   const scoped = baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
   const provider = getActiveProvider(scoped);
   const creds = resolveEffectiveLlmCreds(getActiveApiKey(scoped), provider?.baseUrl || undefined);
-  const adapter: LLMAdapter =
-    creds.forceOpenAiCompatible || provider?.apiFormat === 'openai-compatible'
-      ? new OpenAICompatibleAdapter()
-      : new ClaudeAdapter();
+  const modelIssue = creds.forceOpenAiCompatible || baseModel.providerId === 'enterprise-gateway'
+    ? null
+    : getModelUnavailableReason(settings, baseModel);
+  if (modelIssue) {
+    console.warn('[compaction] manual /compact skipped: model unavailable', {
+      reason: modelIssue,
+      providerId: baseModel.providerId,
+      modelId: baseModel.modelId,
+    });
+    return null;
+  }
+  const adapter: LLMAdapter = createAdapterForKind(adapterKindFor(provider, creds.forceOpenAiCompatible));
+  const model = getEffectiveModel(scoped);
   return {
     adapter,
-    model: getEffectiveModel(scoped),
+    model,
     apiKey: creds.apiKey,
     baseUrl: creds.baseUrl,
     conversationId: convId,
     providerInstanceId: provider?.id ?? 'unknown',
+    ...providerChatOptions(provider, model),
   };
 }
 
@@ -132,7 +147,9 @@ export async function compactConversationManually(
   let summaryText: string;
   useChatStore.getState().setIsCompressing(convId, true);
   try {
-    summaryText = await summarizeConversation(plan.middleMessages, resolveSummarizeConfig(convId));
+    const config = await resolveSummarizeConfig(convId);
+    if (!config) return { compacted: false, reason: 'model-unavailable' };
+    summaryText = await summarizeConversation(plan.middleMessages, config);
   } catch {
     return { compacted: false, reason: 'summarize-failed' };
   } finally {

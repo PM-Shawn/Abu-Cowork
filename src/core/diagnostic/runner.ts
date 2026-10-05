@@ -16,6 +16,7 @@ import { runSkillsChecks } from './checks/skills';
 import { runNetworkChecks } from './checks/network';
 import { runAppChecks } from './checks/app';
 import { getI18n } from '@/i18n';
+import { redactCheckResult } from './scrub';
 import type { CheckCategory, CheckResult } from './types';
 
 interface CategoryRunner {
@@ -41,7 +42,7 @@ const RUNNERS: CategoryRunner[] = [
 
 function categoryErrorRow(category: CheckCategory, err: unknown): CheckResult {
   const t = getI18n();
-  return {
+  return redactCheckResult({
     id: `${category}:runner-error`,
     category,
     name: t.diagnostic.checkInternalError,
@@ -51,7 +52,7 @@ function categoryErrorRow(category: CheckCategory, err: unknown): CheckResult {
     checkedAt: Date.now(),
     durationMs: 0,
     freshness: 'unknown',
-  };
+  });
 }
 
 function categoryTimeoutRow(category: CheckCategory, timeoutMs: number): CheckResult {
@@ -74,7 +75,10 @@ async function runWithDeadline(runner: CategoryRunner, timeoutMs: number): Promi
     timeoutId = setTimeout(() => resolve([categoryTimeoutRow(runner.category, timeoutMs)]), timeoutMs);
   });
   try {
-    return await Promise.race([Promise.resolve().then(runner.run), timeout]);
+    // 各项检查把异常和服务端返回的文字原样放进 errorMessage / errorDetail；
+    // 这些行会被保存、显示、复制、写进诊断包并上报，所以在这个唯一出口统一脱敏。
+    const rows = await Promise.race([Promise.resolve().then(runner.run), timeout]);
+    return rows.map(redactCheckResult);
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }

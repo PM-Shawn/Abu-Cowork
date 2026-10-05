@@ -26,6 +26,7 @@ import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
 import { getSkillsGuidance } from './prompts/skillsGuidance';
 import { buildResponseLanguageSection } from './prompts/responseLanguage';
+import { commandsFirstGuidance, openingAppsGuidance, structuredComputerUseGuidance } from './prompts/computerUseGuidance';
 import { BROWSER_NARRATION_RULES } from './browserNarrationRules';
 import type { PromptSection } from '../llm/promptSections';
 import type { TeamRouteContext } from '../team/leaderRoute';
@@ -767,16 +768,13 @@ and keyboard, it is slower than every other channel, and it fails in ways they
 do not. When it is the answer, say so in one line before you start, so the user
 knows their screen is about to be used. When it is not, just do the work.`, cacheable: true });
 
+    if (toolContext?.computerUseTier === 'structured') {
+      sections.push({ name: 'computer-use', text: structuredComputerUseGuidance(isWindows()), cacheable: true });
+    } else {
     sections.push({ name: 'computer-use', text: `\n## Computer Control Capability
 You have the computer tool, which lets you take screenshots and perform mouse and keyboard operations to control any application on the user's screen.
 
-### Core principle: commands first, GUI as fallback
-If something can be done with run_command or another tool, do not use computer to click the GUI.
-1. **run_command handles it directly** → ${isWindows() ? 'file operations, system settings, etc.' : 'file operations, system settings, opening apps, etc.'}
-2. **Open, then GUI** → ${isWindows() ? 'open the app with computer(action="launch_app")' : 'use a command to open the app'}, then use computer to interact with the GUI inside it
-3. **Pure GUI** → only when interactive operation is required and there is no command-line alternative
-
-Do not use computer to re-fetch information you already obtained through other tools.
+${commandsFirstGuidance(isWindows())}
 
 ### Coordinate system
 - Coordinates use the screenshot pixel coordinate system (origin at top-left) and are automatically mapped to the real screen
@@ -795,20 +793,7 @@ acting. So cover more ground per action rather than per reply: type a whole
 string instead of a key at a time, and give drag a path instead of one
 segment.
 
-### Opening apps
-${isWindows()
-  ? `- Use computer(action="launch_app", app="记事本") — by name, never by path. It
-  brings the app forward instead of opening a second copy, returns its window_ref
-  in the same call, and has the app authorized before it starts
-- Do not open apps with run_command, Start-Process, Get-Command or where. Those
-  search PATH, and on a developer's machine PATH often holds a same-named shim
-  from another toolchain: \`notepad\` resolves to a Git-bundled script, not
-  Notepad, and launching it silently does nothing. Measured here, it cost five
-  shell calls and 45 seconds before the model recovered
-- If launch_app reports the app is not installed, ask the user; do not go
-  looking for it yourself`
-  : `- Use run_command: open -a "AppName"; if unsure of the English name, first run ls /Applications | grep -i to find it
-- Do not use open URL as a substitute for opening a desktop app`}
+${openingAppsGuidance(isWindows())}
 - When you need to interact with the GUI, wait 2 seconds after opening before taking a screenshot
 
 ### Operation guidelines
@@ -825,6 +810,7 @@ ${isWindows()
 - Input field issue → click first to confirm focus, then type
 - App is unresponsive → wait longer, or check whether a pop-up is blocking it
 - Cannot complete the task → honestly tell the user where you got stuck`, cacheable: true });
+    }
     } // end of computer-use gate (settingsState.computerUseEnabled)
 
     const electronHost = hasElectronCommandHost();

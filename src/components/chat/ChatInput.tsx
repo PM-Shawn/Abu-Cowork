@@ -5,6 +5,10 @@ import { Input } from '@/components/ui/input';
 import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
+import VoiceInputControl from '@/components/chat/VoiceInputControl';
+import { spaceForInsertion, type VoiceDraftSnapshot } from '@/core/speech/voiceInputText';
+import { useVoiceInputStore } from '@/stores/voiceInputStore';
+import { isSpeechAvailable } from '@/core/speech/speechBridge';
 import { ManagedProviderOfflineBar } from '@/components/chat/ManagedProviderOfflineBar';
 import { useManagedProviderLiveness } from '@/components/chat/useManagedProviderLiveness';
 import { subscribeModelPickerRequest } from '@/components/chat/modelPickerRequest';
@@ -566,6 +570,48 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<InlineSkillInputHandle>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
+  const voiceInputEnabled = useVoiceInputStore((s) => s.enabled);
+  const [voiceInputAvailable] = useState(isSpeechAvailable);
+
+  // Voice input (VoiceInputControl): the transcript lands where the caret was
+  // when recording started, and only if the draft has not changed since —
+  // otherwise the control holds it for an explicit insert.
+  const getVoiceDraftSnapshot = useCallback((): VoiceDraftSnapshot => {
+    const textarea = textareaRef.current;
+    const value = textarea?.value ?? '';
+    return {
+      text: value,
+      start: textarea?.selectionStart ?? value.length,
+      end: textarea?.selectionEnd ?? value.length,
+    };
+  }, []);
+  const insertVoiceText = useCallback((transcript: string, at?: VoiceDraftSnapshot) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return false;
+    if (at && textarea.value !== at.text) return false;
+    textarea.focus();
+    if (at) textarea.setSelectionRange(at.start, at.end);
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const insertion = spaceForInsertion(textarea.value.slice(0, start), transcript);
+    textarea.insertText(insertion);
+    setSelection({ start: start + insertion.length, end: start + insertion.length });
+    return true;
+  }, [setSelection]);
+  const insertVoiceTextIfUnchanged = useCallback(
+    (transcript: string, snapshot: VoiceDraftSnapshot) => insertVoiceText(transcript, snapshot),
+    [insertVoiceText],
+  );
+  const insertVoiceTextAtCursor = useCallback((transcript: string) => {
+    insertVoiceText(transcript);
+  }, [insertVoiceText]);
+  const voiceControl = voiceInputEnabled && voiceInputAvailable ? (
+    <VoiceInputControl
+      resetKey={draftKey}
+      getDraftSnapshot={getVoiceDraftSnapshot}
+      insertIfUnchanged={insertVoiceTextIfUnchanged}
+      insertAtCursor={insertVoiceTextAtCursor}
+    />
+  ) : null;
   const composingRef = useRef(false);
   const isMountedRef = useRef(false);
   const compositionResetTimerRef = useRef<number | null>(null);
@@ -2140,6 +2186,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   />
                 </div>
 
+                {voiceControl}
+
                 <Button
                   size="icon"
                   onClick={handleSend}
@@ -2222,6 +2270,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     <ContextIndicator conversationId={activeConvIdForIndicator} />
                   </div>
                 )}
+
+                {voiceControl}
 
                 {isStreaming ? (
                   <Button

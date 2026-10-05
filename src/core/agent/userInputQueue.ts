@@ -9,6 +9,8 @@
 /** Queued user input entry */
 export interface QueuedInput {
   teamConfirmationRetryId?: string;
+  /** Started from the confirmation strip: the run continues the current team task. */
+  continuesTeamTask?: boolean;
   id: string;
   text: string;
   timestamp: number;
@@ -41,7 +43,13 @@ function notifyListeners(): void {
 /**
  * Enqueue a staged message for a running conversation.
  */
-export function enqueueUserInput(conversationId: string, text: string, isSystem?: boolean, teamConfirmationRetryId?: string): void {
+export function enqueueUserInput(
+  conversationId: string,
+  text: string,
+  isSystem?: boolean,
+  teamConfirmationRetryId?: string,
+  continuesTeamTask?: boolean,
+): void {
   if (!text.trim()) return;
 
   const queue = inputQueues.get(conversationId) ?? [];
@@ -53,6 +61,7 @@ export function enqueueUserInput(conversationId: string, text: string, isSystem?
       timestamp: Date.now(),
       isSystem,
       ...(teamConfirmationRetryId ? { teamConfirmationRetryId } : {}),
+      ...(continuesTeamTask ? { continuesTeamTask } : {}),
     },
   ]);
   notifyListeners();

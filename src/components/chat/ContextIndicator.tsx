@@ -13,7 +13,10 @@ import {
   distributeWithConservation,
   type UsageBreakdownBuckets,
 } from '@/core/context/usageBreakdown';
-import { resolveEffectiveContextWindow } from '@/core/llm/modelCapabilities';
+import { resolveContextWindow } from '@/core/llm/contextWindow';
+import { localServerKind } from '@/core/llm/localProvider';
+import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
+import { useDiscoveredCapsStore } from '@/stores/discoveredCapabilitiesStore';
 import { cn } from '@/lib/utils';
 
 const RING_SIZE = 22;
@@ -86,10 +89,15 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
   const messages = useChatStore((s) => s.conversations[conversationId]?.messages);
   const isCompressing = useChatStore((s) => s.conversations[conversationId]?.isCompressing ?? false);
   const userContextWindow = useSettingsStore((s) => s.contextWindowSize);
-  const convModelId = useChatStore((s) => s.conversations[conversationId]?.model?.modelId);
+  const convModel = useChatStore((s) => s.conversations[conversationId]?.model);
   const globalModelId = useSettingsStore(getEffectiveModel);
+  const globalProviderId = useSettingsStore((s) => s.activeModel.providerId);
+  const providers = useSettingsStore((s) => s.providers);
   // The ring describes THIS conversation, so size it from its own model (#545).
-  const activeModelId = convModelId ?? globalModelId;
+  const activeModelId = convModel?.modelId ?? globalModelId;
+  const provider = providers.find((p) => p.id === (convModel?.providerId ?? globalProviderId));
+  const discoveredWindow = useDiscoveredCapsStore((s) => (provider ? s.get(provider.id, activeModelId)?.contextWindow : undefined));
+  const discoveredProbe = useDiscoveredCapsStore((s) => (provider ? s.get(provider.id, activeModelId)?.contextWindowProbe : undefined));
 
   // agentLoop's published snapshot is the truth: it measures the payload actually
   // sent, so it already reflects compaction, micro-compaction and the hard budget
@@ -140,9 +148,17 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
     // Resolve the denominator locally so the indicator never overstates capacity
     // (e.g. a 200k user setting on a 128k mimo model).
     const tokensUsed = FALLBACK_OVERHEAD_TOKENS + estimateMessageTokens(messages);
-    const tokensMax = resolveEffectiveContextWindow(activeModelId, userContextWindow);
+    const tokensMax = resolveContextWindow({
+      modelId: activeModelId,
+      userSetting: resolveModelDeclared(provider, activeModelId)?.maxInputTokens,
+      probed: provider?.models.find((model) => model.id === activeModelId)?.contextWindow,
+      discovered: discoveredWindow,
+      discoveredProbe,
+      isLocal: localServerKind(provider) !== null,
+      ceiling: userContextWindow,
+    }).size;
     return { percent: getDisplayPercent(tokensUsed, tokensMax), tokensUsed, tokensMax };
-  }, [messages, publishedUsage, userContextWindow, activeModelId]);
+  }, [messages, publishedUsage, userContextWindow, activeModelId, provider, discoveredWindow, discoveredProbe]);
 
   const level: 0 | 1 | 2 | 3 = usage
     ? calculateWarningLevel(usage.tokensUsed, usage.tokensMax)

@@ -4,7 +4,7 @@ import { teamRosterNames } from '../team/leaderRoute';
 import type { ToolCallContext } from '../../types/execution';
 import type { AdapterKind, LLMAdapter } from '../llm/adapter';
 import { promptTokensOf } from '../llm/usageAccounting';
-import { LLMError, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
+import { LLMError, LOG_TOOL_ARG_PREVIEW, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
@@ -88,6 +88,7 @@ import {
   type ToolLoopObservation,
 } from './loopGuards';
 import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
+import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import {
   drainSystemQueuedInputs,
   enqueueUserInput,
@@ -105,12 +106,20 @@ import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { formatGoalForPrompt } from '../goal/goalPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveAgentModelCapabilities, resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
+import { probeContextWindow } from '../llm/contextWindowProbe';
+import { localServerKind } from '../llm/localProvider';
+import { adapterKindFor } from '../llm/adapterKind';
+import { contextTooSmallMessage } from './contextWindowMessages';
+import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
+import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
+import { isWindows } from '../../utils/platform';
 import { prefetchTools } from '../tools/toolPrefetch';
 import {
   classifyTools,
@@ -576,6 +585,10 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 export interface AgentLoopOptions {
   /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
   teamConfirmationRetryId?: string;
+  /** Trusted UI flag: this run continues the conversation's current team task. Never sent to the sidecar. */
+  continuesTeamTask?: boolean;
+  /** Shell-resolved team task, handed to the in-process loop only. Never sent to the sidecar. */
+  teamTaskId?: string;
   /** Override the command confirmation callback (e.g. auto-deny for scheduled tasks) */
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   /** Override the file permission callback (e.g. auto-deny for scheduled tasks) */
@@ -1168,6 +1181,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Team mode: roster the leader may delegate to (enforced in the dispatch tools).
     teamRoster: route.team ? teamRosterNames(route.team) : undefined,
     teamRequirePlanApproval: route.team?.requirePlanApproval === true ? true : undefined,
+    teamTaskId: route.team ? options?.teamTaskId : undefined,
     authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     reportBrowserDenial: (kind) => browserDenials.reportDenial(kind),
@@ -1289,10 +1303,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // selectChatAdapter routes through the sidecar transport when it's healthy
   // ('running'), else falls back to the local in-process adapter — the
   // kind-choosing condition itself is unchanged (P1-1).
-  const adapterKind: AdapterKind =
-    isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible'
-      ? 'openai-compatible'
-      : 'claude';
+  const adapterKind: AdapterKind = adapterKindFor(getActiveProvider(settingsForModel), isEnterpriseGatewayMode);
   const adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
   // Validate required tools are available (blocking check — one-time at start)
@@ -1675,6 +1686,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const autoCompactTracker = new AutoCompactTracker();
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
+  const malformedToolCallGuard = createMalformedToolCallGuard();
+  // 本地服务商每次运行开始问一次实际加载的长度（LM Studio 可以随时换长度重新加载，
+  // Ollama 只报告已加载的模型）；用户填了「上下文长度」就不问
+  let runProbedContextWindow: number | undefined;
+  if (entryProvider && entryModelDeclared?.maxInputTokens === undefined) {
+    runProbedContextWindow = await probeContextWindow(entryProvider, effectiveModelId);
+  }
 
   // Phase 2 relevant-memory injection — content of memories most relevant to
   // *this* user message, surfaced as a dynamic system-prompt section. The
@@ -1833,6 +1851,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     let finalUsage: TokenUsage | undefined;
     let thinkingEndTime: number | undefined;  // Track when thinking ends
     let lastStopReason = '';
+    let malformedToolCallSeen = false;
     let modelSupportsVision = false;
     let streamFlushTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1895,11 +1914,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
       // turns searching capabilities that are already loaded or policy-blocked.
-      const tools = noTools
+      const tools = (noTools
         ? []
         : deferredTools.length === 0
           ? rawTools.filter(tool => tool.name !== TOOL_NAMES.TOOL_SEARCH)
-          : rawTools;
+          : rawTools
+      ).map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows()));
       options?.runtimeEvent?.('agent_tool_exposure', {
         conversationId,
         loopId,
@@ -1917,10 +1937,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // real tool registry executes in the renderer; this name-only snapshot
       // safely crosses that boundary and is re-filtered by the shell registry.
       toolContext.deferredToolNames = deferredTools.map(tool => tool.name);
+      // 本轮给模型的全部工具名（含延后加载的），模型点了不存在的名字时用来回答
+      toolContext.offeredToolNames = [...tools, ...deferredTools].map(tool => tool.name);
       const toolBreakdownWeights = computeToolBreakdownWeights(tools);
       const toolTokens = toolBreakdownWeights.tools + toolBreakdownWeights.mcp;
       const dynamicCapabilities = buildDynamicCapabilities(tools);
-      const deferredToolsSummary = buildDeferredToolsSummary(deferredTools);
+      // 摘要取工具说明的首句，延后加载的工具同样按电脑操控档位换成对应版本
+      const deferredToolsSummary = buildDeferredToolsSummary(
+        deferredTools.map((tool) => adaptComputerToolForTier(tool, toolContext.computerUseTier, isWindows())),
+      );
       const activeSkillContent = await loadActiveSkillContent(
         conv?.activeSkills,
         conv?.activeSkillArgs,
@@ -1973,24 +1998,34 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           ? { thinking: 'uncontrollable' as const }
           : {}),
       };
+      // 窗口按四级优先级取值：用户填写 > 服务报告与超长报错学到的值取小 > 按名字估计
+      const resolvedContextWindow = resolveContextWindow({
+        modelId: effectiveModelId,
+        userSetting: modelDeclared?.maxInputTokens,
+        probed: runProbedContextWindow
+          ?? activeProvider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
+        discovered: discoveredCaps?.contextWindow,
+        discoveredProbe: discoveredCaps?.contextWindowProbe,
+        isLocal: localServerKind(activeProvider) !== null,
+        ceiling: freshSettings.contextWindowSize,
+      });
+      const contextWindowSize = resolvedContextWindow.size;
+      // 回答预留按模型自己的窗口算，全局上限只约束输入
+      const reserveWindowSize = resolvedContextWindow.uncappedSize;
+      // 交给适配器的两项：本地服务首次回答前等 10 分钟且超时不重试；只有用户填写的长度才让 Ollama 按它运行
+      const isLocalServer = localServerKind(activeProvider) !== null;
+      const requestedContextLength = positiveInteger(modelDeclared?.maxInputTokens);
+      const requestedMaxOutputTokens = modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput;
       const reasoningParams = computeReasoningParams(
         effectiveCaps,
-        modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
+        requestedMaxOutputTokens,
+        reserveWindowSize,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
-      // Effective context window = min(model published cap, user setting, runtime-discovered).
-      // This prevents the UI/agent from claiming more capacity than the model actually
-      // supports — e.g. mimo/gpt-4o/kimi at 128k were silently being reported as 200k
-      // because the project default settingsStore.contextWindowSize is 200k.
-      const contextWindowSize = resolveEffectiveContextWindow(
-        effectiveModelId,
-        modelDeclared?.maxInputTokens ?? freshSettings.contextWindowSize,
-        discoveredCaps?.contextWindow,
-      );
 
       // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
       // clamped to the model's true output ceiling so we never re-ask above a known limit.
-      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount);
+      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, reserveWindowSize);
       if (escalation.changed) {
         const escalated = Math.min(escalation.maxOutputTokens, effectiveModelCeiling);
         if (escalated > maxOutputTokens) {
@@ -2088,6 +2123,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 signal: abortController.signal,
                 conversationId,
                 providerInstanceId: activeProvider?.id ?? 'unknown',
+                requestedContextLength,
+                localServer: isLocalServer,
               },
               toolTokens
             );
@@ -2213,6 +2250,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               signal: abortController.signal,
               conversationId,
               providerInstanceId: activeProvider?.id ?? 'unknown',
+              requestedContextLength,
+              localServer: isLocalServer,
             });
           } catch (err) {
             // Defensive: summarizeConversation is contractually no-throw (it
@@ -2275,6 +2314,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const buildProviderAttemptMessages = async (
         baseMessages: Message[],
         budgetWindowSize: number,
+        reserveForOutput: number,
       ) => {
         // Step 4: Rehydrate provider-bound media for this attempt.
         // Delegated media refs are intentionally expanded inside the retry
@@ -2302,7 +2342,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           outboundMessages,
           effectiveSystemPrompt,
           budgetWindowSize,
-          maxOutputTokens,
+          reserveForOutput,
           toolTokens,
         );
         lastProviderMessages = budgetResult.messages;
@@ -2338,6 +2378,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         },
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
+        requestedContextLength,
+        localServer: isLocalServer,
         signal: abortController.signal,
         enableThinking: reasoningParams.enableThinking,
         thinkingBudget: reasoningParams.thinkingBudget,
@@ -2360,7 +2402,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       };
 
       const chatFn = async () => {
-        const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize);
+        const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize, maxOutputTokens);
         if (!primaryBudgetGateLogged && (
           initialBudgetResult.strategy !== 'unchanged'
           || providerBudgetResult.strategy !== 'unchanged'
@@ -2552,6 +2594,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               break;
 
+            case 'malformed_tool_call':
+              // 原文不显示；本轮结束后决定是悄悄重写还是告诉用户
+              malformedToolCallSeen = true;
+              logger.warn('Model wrote a malformed operation into its reply', {
+                rawLength: event.raw.length,
+                rawPreview: event.raw.slice(0, LOG_TOOL_ARG_PREVIEW),
+              });
+              break;
+
             case 'error':
               chatDelta.appendText(conversationId, `\n\n**Error:** ${event.error}`, assistantMsgId);
               break;
@@ -2584,30 +2635,50 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           }
         );
       } catch (retryErr) {
-        // Handle context_too_long with two-stage recovery:
-        // Stage 1: Semantic compression → retry
-        // Stage 2: Hard truncation → retry
-        // Stage 3: Surface error to user
+        // 服务说内容太长：读出真实上限并记住，按新上限整理后重试一次；仍失败就把错误交给外层显示
         if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
-          // Reverse-engineer the real context window from the error message
-          // and persist it. Pattern: "maximum context length is N tokens"
-          // (OpenAI-compatible style). Next request will use this as a cap.
-          const ctxMatch = /maximum context length is (\d+) tokens/i.exec(retryErr.message);
+          const learnedWindow = await learnContextWindowAfterOverflow({
+            error: retryErr,
+            provider: activeProvider,
+            modelId: effectiveModelId,
+            runProbe: runProbedContextWindow,
+            probe: probeContextWindow,
+          });
           let recoveryContextWindowSize = contextWindowSize;
-          if (ctxMatch) {
-            const discoveredWindow = parseInt(ctxMatch[1], 10);
-            if (Number.isFinite(discoveredWindow) && discoveredWindow > 0) {
-              recoveryContextWindowSize = Math.min(contextWindowSize, discoveredWindow);
-              if (activeProvider) {
-                getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
-                logger.info('Persisted discovered context window', {
-                  providerId: activeProvider.id,
-                  modelId: effectiveModelId,
-                  contextWindow: discoveredWindow,
-                });
-              }
+          let recoveryReserveWindowSize = reserveWindowSize;
+          if (learnedWindow !== undefined) {
+            recoveryContextWindowSize = Math.min(contextWindowSize, learnedWindow.size);
+            recoveryReserveWindowSize = Math.min(reserveWindowSize, learnedWindow.size);
+            // 再问一次得到的是服务此刻报告的值，本次运行之后的轮次按它取第 2 级
+            if (learnedWindow.probe !== runProbedContextWindow && learnedWindow.probe !== undefined) {
+              runProbedContextWindow = learnedWindow.probe;
+            }
+            if (activeProvider) {
+              // 带上学到上限那一刻服务报告的值，用户之后在服务里调大长度时，读取端能认出这条记录已经过时
+              getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, learnedWindow.size, learnedWindow.probe);
+              logger.info('Persisted discovered context window', {
+                providerId: activeProvider.id,
+                modelId: effectiveModelId,
+                contextWindow: learnedWindow.size,
+                contextWindowProbe: learnedWindow.probe,
+              });
             }
           }
+          // 回答预算与思考预算都按新上限重新计算，思考预算才不会超过回答预算
+          const recoveryReasoningParams = computeReasoningParams(
+            effectiveCaps,
+            requestedMaxOutputTokens,
+            recoveryReserveWindowSize,
+          );
+          const recoveryMaxOutputTokens = recoveryReasoningParams.maxTokens;
+          // 水位环的分母换成刚学到的真实值
+          chatDelta.setContextUsage(conversationId, {
+            percent: getDisplayPercent(postCompressionTokens, recoveryContextWindowSize),
+            tokensUsed: postCompressionTokens,
+            tokensMax: recoveryContextWindowSize,
+            messageCountAtPublish: historyMessages.length,
+            breakdown: { version: 1, ...breakdown },
+          });
 
           chatDelta.appendText(
             conversationId,
@@ -2617,7 +2688,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
           let recovered = false;
 
-          // Stage 1: Try semantic compression (if not already attempted this turn)
+          // Stage 1: 按新上限做语义压缩
           if (!autoCompactTracker.isDisabled()) {
             try {
               const recoveryCreds = resolveEffectiveLlmCreds(
@@ -2631,8 +2702,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               const compressionResult = await compressContextIfNeeded(
                 boundaryView,
                 effectiveSystemPrompt,
-                contextWindowSize,
-                maxOutputTokens,
+                recoveryContextWindowSize,
+                recoveryMaxOutputTokens,
                 {
                   adapter,
                   model: effectiveModelId,
@@ -2641,6 +2712,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   signal: abortController.signal,
                   conversationId,
                   providerInstanceId: activeProvider?.id ?? 'unknown',
+                  requestedContextLength,
+                  localServer: isLocalServer,
                 },
                 toolTokens
               );
@@ -2649,7 +2722,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   compressionResult.messages,
                   effectiveSystemPrompt,
                   recoveryContextWindowSize,
-                  maxOutputTokens,
+                  recoveryMaxOutputTokens,
                   toolTokens
                 ).messages;
                 autoCompactTracker.recordSuccess();
@@ -2661,11 +2734,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
           }
 
-          // Stage 2: Hard truncation as fallback
+          // Stage 2: 截断，保留第一轮加最后两轮
           if (!recovered) {
             logger.info('Attempting hard truncation recovery');
-            // boundaryView is marker-free (compact view if a marker exists) so
-            // the truncated emergency payload never contains a boundary marker.
             const emergencyRounds = identifyRounds(boundaryView);
             if (emergencyRounds.length > 3) {
               const firstRound = emergencyRounds[0];
@@ -2678,13 +2749,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             recovered = true;
           }
 
-          // Retry with recovered messages through the same provider-attempt seam
-          // as the primary path. These messages were rebuilt from stripped store
-          // copies (compression / round-slicing above), so media expansion and
-          // the final budget gate must happen in the outbound shape.
           const recoveryBudgetResult = await buildProviderAttemptMessages(
             preparedMessages,
             recoveryContextWindowSize,
+            recoveryMaxOutputTokens,
           );
           preparedMessages = recoveryBudgetResult.messages;
           logger.info('Context recovery budget gate applied', {
@@ -2694,13 +2762,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             safetyMarginTokens: recoveryBudgetResult.safetyMarginTokens,
             strategy: recoveryBudgetResult.strategy,
           });
+          const recoveryChatOptions = {
+            ...chatOptions,
+            maxTokens: recoveryMaxOutputTokens,
+            enableThinking: recoveryReasoningParams.enableThinking,
+            thinkingBudget: recoveryReasoningParams.thinkingBudget,
+            reasoningEffort: recoveryReasoningParams.reasoningEffort,
+          };
           try {
-            await adapter.chat(preparedMessages, chatOptions, eventHandler);
+            await adapter.chat(preparedMessages, recoveryChatOptions, eventHandler);
           } catch (retryErr2) {
-            // Stage 3: Even after truncation, still too long — surface error
             if (retryErr2 instanceof LLMError && retryErr2.code === 'context_too_long') {
               logger.error('Context recovery failed after both compression and truncation');
-              throw retryErr2;
             }
             throw retryErr2;
           }
@@ -2873,6 +2946,35 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         getCapsPort().recordReasoningObserved(activeProvider.id, effectiveModelId);
       }
 
+      // 模型把操作写坏了：本轮第一次悄悄让它重写，连续第二次在回答里说明并结束。
+      // 回答撞到输出上限（max_tokens）时操作多半是被截断的，交给下面的截断续写，
+      // 它会调大输出上限；这里不处理，也不消耗重写机会
+      let malformedToolCallGaveUp = false;
+      if (
+        !continueLoop
+        && malformedToolCallSeen
+        && collectedToolCalls.length === 0
+        && lastStopReason !== 'max_tokens'
+      ) {
+        if (malformedToolCallGuard.decide() === 'retry') {
+          chatDelta.addMessage(conversationId, {
+            id: generateId(),
+            role: 'user' as const,
+            content: MALFORMED_TOOL_CALL_NUDGE,
+            timestamp: Date.now(),
+            loopId,
+            isSystem: true as const,
+          });
+          continueLoop = true;
+        } else {
+          malformedToolCallGaveUp = true;
+          chatDelta.appendText(conversationId, `\n\n${getI18n().chat.malformedToolCall}`, assistantMsgId);
+        }
+      } else if (collectedToolCalls.length > 0 && !allToolsUnparseable(collectedToolCalls)) {
+        // 参数全部无法解析的原生调用不算做成了操作，不补回重写机会
+        malformedToolCallGuard.reset();
+      }
+
       // Max Output Tokens recovery: if LLM output was truncated (not tool_use),
       // inject a continuation prompt and retry, up to MAX_OUTPUT_TOKENS_RECOVERY_LIMIT times.
       // This matches Claude Code's max_output_tokens_recovery pattern.
@@ -2940,9 +3042,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Internal wake-ups (for example background-agent results) still belong
       // to this task and need another model turn when the current turn ended in
       // plain text. User-authored follow-ups are deliberately excluded here.
+      // 写坏重写已经放弃时本次运行照样结束，排队的系统输入留给下一次运行开始时取走
       if (
         !continueLoop
         && !awaitingUserRecovery
+        && !malformedToolCallGaveUp
         && hasSystemQueuedInputs(conversationId)
         && !abortController.signal.aborted
       ) {
@@ -2976,7 +3080,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         abortRegistry.clearAbortController(conversationId);
         const endReason = awaitingUserRecovery
           ? 'awaiting_user'
-          : noProgressAborted
+          : noProgressAborted || malformedToolCallGaveUp
           ? 'no_progress'
           : maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
@@ -3017,7 +3121,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         } else if (maxTokensRecoveryExhausted) {
           exitReason = 'error';
           exitError = 'Max output tokens recovery exhausted';
-        } else if (noProgressAborted) {
+        } else if (noProgressAborted || malformedToolCallGaveUp) {
+          // 重写后操作仍然写坏：任务没有做成，按未完成交给调用方
           exitReason = 'no_progress';
         }
         chatDelta.setConversationStatus(
@@ -3241,12 +3346,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         errorCode,
       );
       const isContextBudgetError = err instanceof ContextBudgetError;
+      const contextTooSmall = contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(settingsForModel)));
+      // 窗口放不下说明（含超长恢复后仍放不下）时给用户的是一句普通说明，不加错误前缀
+      const showsContextTooSmall = !managedProviderUnreachable
+        && !(isContextBudgetError && err.code === 'INPUT_TOO_LARGE')
+        && (isContextBudgetError || errorCode === 'context_too_long');
+      // 本地服务 10 分钟没开始回答：同样是一句普通说明，运行按 error 结束
+      const showsLocalServerTimeout = !managedProviderUnreachable && errorCode === 'local_server_timeout';
+      const showsPlainNote = showsContextTooSmall || showsLocalServerTimeout;
       let displayError = managedProviderUnreachable
         ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
-        : isContextBudgetError
-        ? getI18n().chat.contextFixedTooLarge
+        : showsContextTooSmall
+        ? contextTooSmall
+        : showsLocalServerTimeout
+        ? getI18n().chat.localServerNoFirstResponse
         : isLikelyVisionError
         ? getI18n().chat.visionUnsupported
         : isOllamaForbidden
@@ -3262,7 +3377,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       chatDelta.appendText(
         conversationId,
-        `\n\n**Error:** ${displayError}`,
+        showsPlainNote ? `\n\n${displayError}` : `\n\n**Error:** ${displayError}`,
         assistantMsgId
       );
       chatDelta.finishStreaming(conversationId, assistantMsgId);
@@ -3298,7 +3413,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
-  clearRunBounds(loopId);
+  if (!options?.teamTaskId) clearRunBounds(loopId);
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
   if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {
     abortController.abort(new Error('Scoped agent run finished'));

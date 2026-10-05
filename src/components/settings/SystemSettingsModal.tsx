@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint, Zap, UserRound } from 'lucide-react';
+import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint, Zap, UserRound, Mic } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AccountSection, AIServicesSection, AboutSection, SandboxSection, GeneralSection, CapabilitiesSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
@@ -13,6 +13,7 @@ import UsageSection from './sections/UsageSection';
 import EnterpriseSection from './sections/EnterpriseSection';
 import LabsSection from './sections/LabsSection';
 import PetSection from './sections/PetSection';
+import VoiceInputSection from './sections/VoiceInputSection';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_PET } from '@/core/labs/registry';
@@ -45,6 +46,7 @@ export default function SystemSettingsView() {
       { id: 'account', label: t.account.title, icon: UserRound },
       { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
       { id: 'capabilities', label: t.settings.capabilityOverview, icon: Zap },
+      { id: 'voice-input', label: t.voiceInput.title, icon: Mic },
       { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
       { id: 'labs', label: t.settings.labs, icon: FlaskConical },
     ],
@@ -88,6 +90,8 @@ export default function SystemSettingsView() {
         return <CapabilitiesSection />;
       case 'labs':
         return <LabsSection />;
+      case 'voice-input':
+        return <VoiceInputSection />;
       case 'ai-services':
         return <AIServicesSection />;
       case 'sandbox':

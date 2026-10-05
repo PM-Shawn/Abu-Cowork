@@ -26,6 +26,7 @@
 
 import type { Message, MessageContent, ToolCall } from '@/types';
 import { sanitizeMemoryText } from '@/core/memdir/sanitize';
+import type { CheckResult } from './types';
 
 // ════════════════════════════════════════════════════════════════════════
 // Secret redaction
@@ -94,6 +95,14 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
 // recursive field-name scrubbing cannot see the serialized object shape.
 const SERIALIZED_SECRET_VALUE_PATTERN =
   /\b(api[_-]?key|access[_-]?token|token|password|secret|authorization)(["']?\s*[:=]\s*["']?)([^"',}\s]+)/gi;
+
+// An Authorization header value is `<scheme> <credential>` (Bearer, Basic, …).
+// The credential has no minimum length and Basic carries base64, so the whole
+// value goes, scheme included. Only a known scheme word may precede the
+// credential: an arbitrary first word would make a scheme-less value swallow
+// the token after it. `\\?` covers the header inside a JSON-escaped body.
+const AUTHORIZATION_HEADER_PATTERN =
+  /\b((?:proxy-)?authorization\\?["']?\s*[:=]\s*\\?["']?)(?:(?:Bearer|Basic|Digest|Token|Negotiate|NTLM)[ \t]+)?[^\s"',}\\]+/gi;
 
 // ════════════════════════════════════════════════════════════════════════
 // Browser fill values (v0.42.0 incident: a login password left the machine
@@ -210,14 +219,18 @@ function isSecretField(key: string): boolean {
   return SECRET_FIELD_PATTERNS.some((p) => lower.includes(p));
 }
 
-function redactStringValue(s: string): string {
-  let out = s.replace(
-    SERIALIZED_SECRET_VALUE_PATTERN,
-    (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`,
-  );
+/** Redact secret-shaped substrings in one string. */
+export function redactStringValue(s: string): string {
+  // Shape patterns run before the key/value pattern, which stops at whitespace:
+  // on `api_key: Bearer <token>` it would claim only the word `Bearer`.
+  let out = s.replace(AUTHORIZATION_HEADER_PATTERN, `$1${REDACTED}`);
   for (const re of SECRET_VALUE_PATTERNS) {
     out = out.replace(re, REDACTED);
   }
+  out = out.replace(
+    SERIALIZED_SECRET_VALUE_PATTERN,
+    (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`,
+  );
   // Browser-fill echo backstops — see the fill section above.
   out = out.replace(FILLED_ECHO_RE, `$1${REDACTED}$3`);
   out = out.replace(PREVIOUS_VALUE_RE, `$1${REDACTED}$3`);
@@ -258,6 +271,60 @@ export function scrubSecrets(value: unknown, seen: WeakSet<object> = new WeakSet
     }
   }
   return out;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Failure text (exception messages, provider / server error bodies)
+// ════════════════════════════════════════════════════════════════════════
+
+/** 进入脱敏的文字上限：异常文字和服务端响应正文没有长度限制 */
+const FAILURE_TEXT_SCAN_CHARS = 4000;
+/** 短于这个长度的已知密钥（本机服务常填的 ollama、none 这类占位值）不做原文替换，避免把普通文字替换掉 */
+const MIN_EXACT_SECRET_LENGTH = 8;
+// 参数名两侧的长度有上限，匹配耗时与文字长度成线性关系
+const SECRET_QUERY_PARAM_PATTERN =
+  /([?&](?:[\w.-]{0,40}(?:key|token|secret|signature|password|auth)[\w.-]{0,40}|sig)=)[^&#\s"'<>)]+/gi;
+/** URL 里 `scheme://` 与 `@` 之间的账号和密码；两段长度都有上限 */
+const URL_USERINFO_PATTERN = /(\b[a-z][a-z0-9+.-]{0,20}:\/\/)[^\s/?#@"'<>]{1,400}@/gi;
+/** 带 u 标志时只匹配不成对的 surrogate；encodeURIComponent 遇到它会抛出 URIError */
+const LONE_SURROGATE_PATTERN = /[\uD800-\uDFFF]/u;
+
+/** 密钥在失败文字里可能出现的几种写法：原文、JSON 转义、URL 编码（十六进制大小写两种） */
+function secretForms(secret: string): string[] {
+  const forms = [secret, JSON.stringify(secret).slice(1, -1)];
+  if (!LONE_SURROGATE_PATTERN.test(secret)) {
+    const encoded = encodeURIComponent(secret);
+    forms.push(encoded, encoded.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase()));
+  }
+  return forms;
+}
+
+/**
+ * 给一段失败文字脱敏。失败文字来自异常或服务端响应正文，可能带有请求里的
+ * 密钥、Authorization 请求头或带密钥的 URL。`exactSecrets` 是调用方已知的
+ * 密钥，按原文替换，与密钥的形状无关。返回值可能比输入长，需要限制长度的
+ * 调用方在拿到返回值之后再截断。
+ */
+export function redactFailureText(raw: string, exactSecrets: readonly string[] = []): string {
+  let text = raw.slice(0, FAILURE_TEXT_SCAN_CHARS);
+  for (const candidate of exactSecrets) {
+    const secret = candidate.trim();
+    if (secret.length < MIN_EXACT_SECRET_LENGTH) continue;
+    for (const form of secretForms(secret)) text = text.split(form).join(REDACTED);
+  }
+  text = text.replace(URL_USERINFO_PATTERN, `$1${REDACTED}@`);
+  text = text.replace(SECRET_QUERY_PARAM_PATTERN, `$1${REDACTED}`);
+  return redactStringValue(text);
+}
+
+/** 给一条检查结果里的失败文字脱敏，其余字段保持原样。 */
+export function redactCheckResult(row: CheckResult): CheckResult {
+  if (row.errorMessage === undefined && row.errorDetail === undefined) return row;
+  return {
+    ...row,
+    ...(row.errorMessage !== undefined ? { errorMessage: redactFailureText(row.errorMessage) } : {}),
+    ...(row.errorDetail !== undefined ? { errorDetail: redactFailureText(row.errorDetail) } : {}),
+  };
 }
 
 // ════════════════════════════════════════════════════════════════════════

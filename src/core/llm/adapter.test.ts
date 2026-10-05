@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyError,
+  extractContextLimit,
+  isContextOverflowMessage,
   LLMError,
   formatLlmDisplayError,
   formatLlmTerminalError,
@@ -469,5 +471,194 @@ describe('adapter', () => {
       const err = classifyError(429, 'Rate limit exceeded');
       expect(err.retryAfterMs).toBeUndefined();
     });
+  });
+});
+
+describe('context overflow', () => {
+  it('classifies llama.cpp "larger than the max context size" as context_too_long', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: { code: 400, message: 'input (9000 tokens) is larger than the max context size (8192 tokens). skipping', type: 'exceed_context_size_error' },
+    }));
+    expect(err.code).toBe('context_too_long');
+    expect(err.contextLimit).toBe(8192);
+  });
+
+  it('prefers the structured n_ctx field over the sentence', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: {
+        code: 400,
+        message: 'request (9000 tokens) exceeds the available context size (9999 tokens), try increasing it',
+        type: 'exceed_context_size_error',
+        n_prompt_tokens: 9000,
+        n_ctx: 8192,
+      },
+    }));
+    expect(err.contextLimit).toBe(8192);
+  });
+
+  it.each([
+    ['OpenAI', "This model's maximum context length is 16385 tokens. However, your messages resulted in 20000 tokens.", 16385],
+    ['llama.cpp', 'request (9000 tokens) exceeds the available context size (8192 tokens), try increasing it', 8192],
+    ['Ollama', 'The prompt is too long: 9000, model maximum context length: 4096', 4096],
+  ])('reads the limit from the %s sentence', (_label, message, limit) => {
+    expect(extractContextLimit('', message)).toBe(limit);
+  });
+
+  it('leaves the limit empty when nothing names it', () => {
+    const err = classifyError(400, JSON.stringify({
+      error: { message: 'the prompt is longer than the context length currently available to the model' },
+    }));
+    expect(err.code).toBe('context_too_long');
+    expect(err.contextLimit).toBeUndefined();
+  });
+
+  it('never attaches a limit to other errors', () => {
+    expect(classifyError(429, JSON.stringify({ error: { message: 'maximum context length is 8192 tokens' } })).contextLimit).toBeUndefined();
+  });
+
+  it('exposes the overflow wording test for stream errors', () => {
+    expect(isContextOverflowMessage('the prompt is longer than the context length currently available')).toBe(true);
+    expect(isContextOverflowMessage('model runner crashed')).toBe(false);
+  });
+});
+
+describe('Ollama-shaped error bodies', () => {
+  it('reads a plain string error as the message and the summary', () => {
+    const err = classifyError(404, JSON.stringify({ error: "model 'x' not found" }));
+    expect(err.code).toBe('not_found');
+    expect(err.message).toBe("model 'x' not found");
+    expect(err.upstream?.summary).toBe("model 'x' not found");
+  });
+});
+
+describe('secrets echoed by a provider never stay on the LLMError', () => {
+  const requestKey = 'sk-test-not-a-secret';
+  const shapedKey = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+
+  /** Every provider-derived string the error carries or hands to a caller. */
+  function terminalStrings(err: LLMError): string {
+    return JSON.stringify([
+      err.message,
+      err.rawBody,
+      err.upstream,
+      formatLlmTerminalError(err),
+      formatLlmDisplayError(err, err.message, 'empty'),
+    ]);
+  }
+
+  it('erases the request key from an HTML interception page kept as rawBody', () => {
+    const err = classifyError(403, `<html><body>blocked request with key ${requestKey}</body></html>`, [requestKey]);
+
+    expect(err.code).toBe('network_blocked');
+    expect(terminalStrings(err)).not.toContain(requestKey);
+  });
+
+  it.each([
+    ['message', { error: { message: `Incorrect API key provided: ${requestKey}.` } }],
+    ['detail', { detail: `key ${requestKey} is not allowed for this model` }],
+    ['string error', { error: `invalid key ${requestKey}` }],
+  ])('erases the request key echoed in the %s field', (_field, body) => {
+    const err = classifyError(401, JSON.stringify(body), [requestKey]);
+
+    expect(err.code).toBe('authentication');
+    expect(err.upstream?.summary).toContain('[REDACTED]');
+    expect(terminalStrings(err)).not.toContain(requestKey);
+  });
+
+  it.each([
+    ['the request key', `${requestKey} is not a valid key`, [requestKey], '[REDACTED] is not a valid key'],
+    ['a secret-shaped value', `${shapedKey} is not a valid key`, [], '[REDACTED] is not a valid key'],
+  ])('keeps a summary that starts with %s', (_case, message, exactSecrets, summary) => {
+    const err = classifyError(401, JSON.stringify({ error: { message } }), exactSecrets);
+
+    expect(err.upstream?.summary).toBe(summary);
+    expect(formatLlmTerminalError(err)).toBe(summary);
+    expect(normalizeUpstreamErrorDetails(err.upstream)).toEqual({ status: 401, summary });
+  });
+
+  it('still drops a raw JSON array even when it starts with a redaction marker', () => {
+    expect(sanitizeUntrustedLlmErrorText('["[REDACTED]", {"private":"provider body"}]', 'safe fallback'))
+      .toBe('safe fallback');
+    expect(sanitizeUntrustedLlmErrorText('[REDACTED:credential] was rejected', 'safe fallback'))
+      .toBe('[REDACTED:credential] was rejected');
+  });
+
+  it('erases the request key from a plain-text body used as the fallback summary', () => {
+    const err = classifyError(502, `upstream rejected Authorization: Bearer ${requestKey}`, [requestKey]);
+
+    expect(err.upstream?.summary).toContain('[REDACTED]');
+    expect(terminalStrings(err)).not.toContain(requestKey);
+  });
+
+  it('erases the JSON-escaped and URL-encoded forms of the request key', () => {
+    const key = 'test/not"a+secret=key';
+    const err = classifyError(401, JSON.stringify({
+      error: {
+        message: `raw ${key} escaped ${JSON.stringify(key).slice(1, -1)} encoded ${encodeURIComponent(key)}`,
+      },
+    }), [key]);
+
+    expect(err.upstream?.summary).toBe('raw [REDACTED] escaped [REDACTED] encoded [REDACTED]');
+  });
+
+  it('erases the request key from error_type and traceId', () => {
+    const err = classifyError(403, JSON.stringify({
+      error: { message: 'denied', error_type: `denied.${requestKey}`, traceId: `trace-${requestKey}` },
+    }), [requestKey]);
+
+    expect(terminalStrings(err)).not.toContain(requestKey);
+    expect(err.upstream).toMatchObject({ status: 403, summary: 'denied' });
+  });
+
+  it('redacts secret-shaped text without knowing the request key', () => {
+    const err = classifyError(401, JSON.stringify({
+      error: { message: `rejected header Authorization: Bearer ${shapedKey} for /v1/chat?key=not-a-secret-value` },
+    }));
+
+    expect(terminalStrings(err)).not.toContain(shapedKey);
+    expect(terminalStrings(err)).not.toContain('not-a-secret-value');
+  });
+
+  it('keeps the projection when redaction makes the summary longer than the limit', () => {
+    const body = { error: { message: Array.from({ length: 60 }, (_, i) => `token=v${i}`).join(' ') } };
+    const err = classifyError(400, JSON.stringify(body));
+
+    expect(err.upstream?.summary).toBeDefined();
+    expect(err.upstream?.summary?.length).toBeLessThanOrEqual(500);
+    expect(err.upstream?.summary).not.toContain('token=v1 ');
+  });
+
+  it('does not cut a secret in half at the summary limit', () => {
+    const body = { error: { message: `${'x'.repeat(490)} ${shapedKey}` } };
+    const err = classifyError(400, JSON.stringify(body));
+
+    expect(err.upstream?.summary).not.toContain('sk-test');
+  });
+
+  it('leaves ordinary text alone when the configured key is a short placeholder', () => {
+    const err = classifyError(404, JSON.stringify({ error: 'ollama model not found' }), ['ollama']);
+
+    expect(err.upstream?.summary).toBe('ollama model not found');
+  });
+
+  it('keeps classification on the raw body', () => {
+    const err = classifyError(429, JSON.stringify({
+      error: { message: `key ${requestKey} throttled, retry after 7`, code: 'rate_limit_exceeded' },
+    }), [requestKey]);
+
+    expect(err.code).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(7000);
+  });
+
+  it('redacts the message of a hand-built local error on the terminal path', () => {
+    const err = new LLMError(
+      `error sending request for url (https://gateway.example.test/v1/chat/completions?api-key=${shapedKey})`,
+      'network_error',
+      { retryable: true },
+    );
+
+    expect(formatLlmTerminalError(err)).not.toContain(shapedKey);
+    expect(formatLlmTerminalError(err)).toContain('gateway.example.test');
+    expect(formatLlmDisplayError(err, err.message, 'empty')).not.toContain(shapedKey);
   });
 });

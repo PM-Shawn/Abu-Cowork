@@ -4,40 +4,47 @@ import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedContentBlock } from './messageNormalizer';
-import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import {
+  createHeartbeat,
+  anySignal,
+  localFirstResponseTimeoutError,
+  DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS,
+  LOCAL_FIRST_RESPONSE_TIMEOUT_MS,
+} from './heartbeat';
 import { createLogger } from '../logging/logger';
 import { resolveOpenAIBaseUrl, buildFullChatUrl } from './urlUtils';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
 import { observeCompatEvent } from '../observability/compatEvents';
 import { createDefaultUsageRecorder, type UsageAttemptRecorder } from './usageRecorder';
+import { createTextToolCallParser, type TextSegment, type TextToolCall } from './textToolCalls';
 
 const logger = createLogger('openai-compatible');
 
 // ── Hang-ceiling timeout helper (code-review fix #10) ──
 //
-// chat() arms this same pattern at three phases of a request that can each
+// chat() arms this same pattern at two phases of a request that can each
 // hang unbounded if the server accepts the connection but never responds:
-// the initial connect/header wait, the max_tokens-retry connect/header wait,
-// and (non-streaming path) the body-download wait. All three previously
-// duplicated an identical `setTimeout(() => { <flag>=true; streamAbort.abort() },
-// STREAM_HANG_TIMEOUT_MS)` plus a catch that throws the same-shaped LLMError.
+// the initial connect/header wait and the max_tokens-retry connect/header wait.
 // Consolidated here so the timeout semantics (retryable, retryAfterMs) live
 // in one place; only the per-phase message wording still varies by call site.
 
 /**
- * Arm a hang-ceiling timer: aborts `streamAbort` after
- * `STREAM_HANG_TIMEOUT_MS` and flips a flag the caller's catch block can
- * check to distinguish "timed out" from any other abort/connection failure.
- * Returns `timedOut()` (a function, since the flag flips asynchronously
- * after `armHangTimer` returns) and `clear()` to cancel the timer once the
- * awaited operation settles.
+ * Arm a hang-ceiling timer: aborts `streamAbort` after `timeoutMs` (the shared
+ * 180s ceiling unless a caller passes another) and flips a flag the caller's
+ * catch block can check to distinguish "timed out" from any other
+ * abort/connection failure. Returns `timedOut()` (a function, since the flag
+ * flips asynchronously after `armHangTimer` returns) and `clear()` to cancel
+ * the timer once the awaited operation settles.
  */
-function armHangTimer(streamAbort: AbortController): { timedOut: () => boolean; clear: () => void } {
+function armHangTimer(
+  streamAbort: AbortController,
+  timeoutMs: number = STREAM_HANG_TIMEOUT_MS,
+): { timedOut: () => boolean; clear: () => void } {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     streamAbort.abort();
-  }, STREAM_HANG_TIMEOUT_MS);
+  }, timeoutMs);
   return {
     timedOut: () => timedOut,
     clear: () => clearTimeout(timer),
@@ -49,7 +56,7 @@ function armHangTimer(streamAbort: AbortController): { timedOut: () => boolean; 
  * fired before the awaited operation settled. `prefix`/`suffix` carry the
  * per-site phase wording — e.g. `hangTimeoutError('连接超时', '未收到服务器响应头')`
  * reproduces the connect-phase message exactly; `retryable`/`retryAfterMs`
- * are identical across all three call sites.
+ * are identical across both call sites.
  */
 function hangTimeoutError(prefix: string, suffix: string): LLMError {
   return new LLMError(`${prefix}：${STREAM_HANG_TIMEOUT_MS / 1000} 秒${suffix}`, 'network_error', {
@@ -167,12 +174,6 @@ function emitParseableToolCalls(
   return emitted;
 }
 
-// Counter-based tool call ID generator — prevents collisions on rapid parallel calls
-let toolCallCounter = 0;
-function generateToolCallId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${(++toolCallCounter).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-}
-
 // OpenAI multimodal content part
 type OpenAIContentPart =
   | { type: 'text'; text: string }
@@ -202,9 +203,13 @@ function convertTools(tools: ToolDefinition[]) {
 // can't be sent. Leave a text breadcrumb instead of dropping them silently —
 // otherwise the model sees nothing and may claim no file was provided.
 // LLM-facing → English.
-const DOCUMENT_UNSUPPORTED_NOTE =
+export const DOCUMENT_UNSUPPORTED_NOTE =
   '[A document was attached but the current model cannot receive file attachments. ' +
   'Tell the user their model does not support documents, or ask them to paste the relevant text.]';
+
+/** 工具结果里的截图随后作为一条用户消息补发时附带的说明（给模型看，英文）。 */
+export const TOOL_RESULT_IMAGES_NOTE =
+  '[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say "I cannot see the screenshot" — do NOT guess or fabricate what is on screen.';
 
 /** Convert PreparedContentBlock[] to OpenAI content parts */
 function toOpenAIContentParts(blocks: PreparedContentBlock[]): OpenAIContentPart[] {
@@ -303,7 +308,7 @@ function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenA
           result.push({
             role: 'user',
             content: [
-              { type: 'text' as const, text: '[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say "I cannot see the screenshot" — do NOT guess or fabricate what is on screen.' },
+              { type: 'text' as const, text: TOOL_RESULT_IMAGES_NOTE },
               ...pendingImages,
             ],
           });
@@ -398,11 +403,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // invariant for the whole request, so derive it once here.
     const requestHost = (() => { try { return new URL(fullUrl).host; } catch { return ''; } })();
 
-    // Ollama: streaming + tool calling is broken in /v1/chat/completions.
-    // When tools are present and endpoint looks like Ollama, use non-streaming.
-    const isOllamaEndpoint = /localhost:\d{4,5}|127\.0\.0\.1:\d{4,5}|ollama/i.test(baseUrl);
     const hasTools = !!(options.tools && options.tools.length > 0);
-    const useStreaming = !(isOllamaEndpoint && hasTools);
 
     const convertedMessages = convertMessages(messages, options.systemPrompt, options.supportsVision);
     // Volatile context tail rides as the LAST message, after the whole stored
@@ -426,9 +427,9 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       model: options.model,
       messages: convertedMessages,
       max_tokens: options.maxTokens ?? 4096,
-      stream: useStreaming,
+      stream: true,
       // Request token usage in streaming responses (OpenAI-compatible providers, e.g. GLM)
-      ...(useStreaming ? { stream_options: { include_usage: true } } : {}),
+      stream_options: { include_usage: true },
       ...(isOfficialOpenAI && promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
     };
 
@@ -469,7 +470,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     if (options.apiKey) {
       requestHeaders['Authorization'] = `Bearer ${options.apiKey}`;
     }
-    const fetchFn = await getTauriFetch();
+    const fetchFn = await getTauriFetch({ localServer: options.localServer === true });
     // 尝试身份在 fetch 层铸造：下面的限额重试会再走一次 fetch，它在账本里单独
     // 占一条尝试（任务书 U02）。
     const countingFetch: typeof fetchFn = (...args) => {
@@ -493,7 +494,14 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // Connect/header-phase timeout: the idle heartbeat only arms after the body
     // stream is obtained, so a server that accepts the connection but never
     // returns headers would hang here unbounded. Abort once the ceiling is hit.
-    const connectHangTimer = armHangTimer(streamAbort);
+    // 本地服务（LM Studio、本机自定义地址）处理长输入时在处理完之前不回响应头，也不发
+    // 第一段输出：从发出请求到第一段输出算一个整体，最多等 10 分钟，超时不重试；
+    // 云端保持响应头 180 秒。
+    const localServer = options.localServer === true;
+    const firstResponseTimeoutMs = localServer ? LOCAL_FIRST_RESPONSE_TIMEOUT_MS : STREAM_HANG_TIMEOUT_MS;
+    const firstResponseTimeoutError = (): LLMError =>
+      localServer ? localFirstResponseTimeoutError() : hangTimeoutError('连接超时', '未收到服务器响应头');
+    let connectHangTimer = armHangTimer(streamAbort, firstResponseTimeoutMs);
     let response: Awaited<ReturnType<typeof fetchFn>>;
     try {
       response = await countingFetch(fullUrl, {
@@ -503,17 +511,17 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         signal: effectiveSignal,
       });
     } catch (fetchErr) {
+      connectHangTimer.clear();
       // Connection-level failure (DNS, timeout, refused) — not an agent bug
-      if (connectHangTimer.timedOut()) {
-        throw hangTimeoutError('连接超时', '未收到服务器响应头');
-      }
+      if (connectHangTimer.timedOut()) throw firstResponseTimeoutError();
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       throw new LLMError(msg, 'network_error', { retryable: true, retryAfterMs: 2000 });
-    } finally {
-      connectHangTimer.clear();
     }
+    // 云端：响应头到了就结束这一段计时；本地：计时持续到第一段输出
+    if (!localServer) connectHangTimer.clear();
 
     if (!response.ok) {
+      connectHangTimer.clear();
       const errorText = await response.text();
       // Auto-retry once when the model's actual max_tokens limit is lower than
       // what the capabilities registry advertised. Extract the real limit from
@@ -525,10 +533,10 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
           limit: retryLimit,
         });
         body.max_tokens = retryLimit;
-        // The first attempt's connect timer was already cleared, so arm a fresh
-        // one — otherwise a server that stalls on this retry before returning
+        // The first attempt's timer was already cleared, so arm a fresh one —
+        // otherwise a server that stalls on this retry before returning
         // headers would wait unbounded (only a user abort could cancel it).
-        const retryConnectHangTimer = armHangTimer(streamAbort);
+        connectHangTimer = armHangTimer(streamAbort, firstResponseTimeoutMs);
         try {
           response = await countingFetch(fullUrl, {
             method: 'POST',
@@ -537,115 +545,30 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
             signal: effectiveSignal,
           });
         } catch (retryErr) {
-          if (retryConnectHangTimer.timedOut()) {
-            throw hangTimeoutError('连接超时', '未收到服务器响应头');
-          }
+          connectHangTimer.clear();
+          if (connectHangTimer.timedOut()) throw firstResponseTimeoutError();
           throw retryErr instanceof LLMError
             ? retryErr
             : new LLMError(retryErr instanceof Error ? retryErr.message : String(retryErr), 'network_error', { retryable: true, retryAfterMs: 2000 });
-        } finally {
-          retryConnectHangTimer.clear();
         }
+        if (!localServer) connectHangTimer.clear();
         if (!response.ok) {
-          throw classifyError(response.status, await response.text());
+          connectHangTimer.clear();
+          throw classifyError(response.status, await response.text(), [options.apiKey]);
         }
         // Retry succeeded — surface the discovered limit so the caller can
         // persist it. Next request will use the correct value pre-emptively.
         options.onMaxTokensLimitDiscovered?.(retryLimit);
       } else {
-        throw classifyError(response.status, errorText);
+        throw classifyError(response.status, errorText, [options.apiKey]);
       }
-    }
-
-    // ── Non-streaming path (Ollama + tools) ──
-    if (!useStreaming) {
-      // Body-download timeout: the connect timer was cleared once headers arrived,
-      // and the streaming idle-heartbeat only arms for the reader path below — so a
-      // server that returns headers then stalls mid-body would hang response.json()
-      // unbounded. Arm a ceiling that aborts the request so response.json() rejects.
-      const bodyHangTimer = armHangTimer(streamAbort);
-      let data: Record<string, unknown>;
-      try {
-        data = await response.json() as Record<string, unknown>;
-      } catch (jsonErr) {
-        if (bodyHangTimer.timedOut()) {
-          throw hangTimeoutError('响应体读取超时', '未完成');
-        }
-        throw jsonErr;
-      } finally {
-        bodyHangTimer.clear();
-      }
-      const choices = data.choices as Array<Record<string, unknown>> | undefined;
-      const choice = choices?.[0];
-      const msg = choice?.message as Record<string, unknown> | undefined;
-
-      if (msg?.content && typeof msg.content === 'string') {
-        onEvent({ type: 'text', text: msg.content });
-      }
-
-      if (typeof data.model === 'string') recorder.noteServedModel(data.model);
-      // Emit usage before done so agentLoop can capture it in finalUsage
-      const usage = data.usage as Record<string, unknown> | undefined;
-      if (usage) {
-        // 非流式响应里的 usage 就是最终结算。
-        recorder.observeUsage(usage, 'final');
-        onEvent({ type: 'usage', usage: extractUsage(usage) });
-      }
-
-      const toolCalls = msg?.tool_calls as Array<Record<string, unknown>> | undefined;
-      if (toolCalls && toolCalls.length > 0) {
-        for (const tc of toolCalls) {
-          const fn = tc.function as Record<string, unknown>;
-          let input: Record<string, unknown> = {};
-          try { input = JSON.parse(fn.arguments as string); } catch { /* empty */ }
-          onEvent({ type: 'tool_use', id: (tc.id as string) || generateToolCallId('ollama'), name: fn.name as string, input });
-        }
-        onEvent({ type: 'done', stopReason: 'tool_use' });
-      } else {
-        const textContent = typeof msg?.content === 'string' ? msg.content : '';
-        const emittedToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
-
-        // Fallback 1: <tool_call>{json}</tool_call>
-        const textToolCallRegex = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
-        for (const match of textContent.matchAll(textToolCallRegex)) {
-          try {
-            const parsed = JSON.parse(match[1]);
-            const name = parsed.name as string;
-            const args = parsed.arguments ?? parsed.parameters ?? {};
-            const input = typeof args === 'string' ? JSON.parse(args) : args;
-            emittedToolCalls.push({ id: generateToolCallId('text-tc'), name, input });
-          } catch { /* skip */ }
-        }
-
-        // Fallback 2: <|FunctionCallBegin|>[{json array}]<|FunctionCallEnd|> (Doubao/豆包)
-        const doubaoRegex = /<\|FunctionCallBegin\|>([\s\S]*?)<\|FunctionCallEnd\|>/g;
-        for (const match of textContent.matchAll(doubaoRegex)) {
-          try {
-            const raw = JSON.parse(match[1].trim());
-            const calls = Array.isArray(raw) ? raw : [raw];
-            for (const call of calls as Array<Record<string, unknown>>) {
-              const name = call.name as string;
-              const args = call.parameters ?? call.arguments ?? {};
-              const input = typeof args === 'string' ? (JSON.parse(args) as Record<string, unknown>) : (args as Record<string, unknown>);
-              emittedToolCalls.push({ id: generateToolCallId('doubao-tc'), name, input });
-            }
-          } catch { /* skip */ }
-        }
-
-        if (emittedToolCalls.length > 0) {
-          for (const tc of emittedToolCalls) {
-            onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
-          }
-          onEvent({ type: 'done', stopReason: 'tool_use' });
-        } else {
-          onEvent({ type: 'done', stopReason: 'end_turn' });
-        }
-      }
-      return;
     }
 
     const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
+    if (!reader) {
+      connectHangTimer.clear();
+      throw new Error('No response body');
+    }
 
     // Idle timeout: if no data received within the window, treat as a network
     // hang. Aborting streamAbort rejects the pending reader.read() so chat()
@@ -664,162 +587,37 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // After done is emitted, keep looping only to capture the trailing usage chunk
     let doneEmitted = false;
 
-    // Tag parser state — handles <think>, <tool_call>, and <|FunctionCallBegin|> (Doubao) in content
-    let inThinkTag = false;
-    let inToolCallTag = false;
-    let inDoubaoTag = false;   // <|FunctionCallBegin|>...<|FunctionCallEnd|>
-    let pendingContent = '';
-    /** Collected text-based tool calls (from <tool_call> / Doubao tags) */
-    const textToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+    // 正文里的 <think> 与写成文字的操作交给共用解析器（textToolCalls.ts），Ollama 适配器也用它
+    const textParser = createTextToolCallParser(options.tools ?? []);
+    /** Collected text-based tool calls */
+    const textToolCalls: TextToolCall[] = [];
 
-    /** Returns length of longest suffix of `str` that matches a prefix of `tag` */
-    function partialTagMatch(str: string, tag: string): number {
-      const maxCheck = Math.min(str.length, tag.length - 1);
-      for (let len = maxCheck; len > 0; len--) {
-        if (str.endsWith(tag.slice(0, len))) return len;
-      }
-      return 0;
-    }
-
-    /**
-     * Process content chunk, splitting special tags:
-     * - <think>...</think>                          → thinking events
-     * - <tool_call>...</tool_call>                  → buffered, parsed as tool_use on close
-     * - <|FunctionCallBegin|>...<|FunctionCallEnd|> → Doubao/豆包 format, parsed as tool_use
-     * - Everything else                             → text events
-     */
-    function emitContent(chunk: string) {
-      pendingContent += chunk;
-      while (pendingContent) {
-        if (inThinkTag) {
-          const closeIdx = pendingContent.indexOf('</think>');
-          if (closeIdx >= 0) {
-            const thinking = pendingContent.slice(0, closeIdx);
-            if (thinking) onEvent({ type: 'thinking', thinking });
-            pendingContent = pendingContent.slice(closeIdx + 8);
-            inThinkTag = false;
-            continue;
-          }
-          const partialLen = partialTagMatch(pendingContent, '</think>');
-          const safeLen = pendingContent.length - partialLen;
-          if (safeLen > 0) {
-            onEvent({ type: 'thinking', thinking: pendingContent.slice(0, safeLen) });
-            pendingContent = pendingContent.slice(safeLen);
-          }
-          break;
-        } else if (inToolCallTag) {
-          const closeIdx = pendingContent.indexOf('</tool_call>');
-          if (closeIdx >= 0) {
-            const jsonStr = pendingContent.slice(0, closeIdx).trim();
-            pendingContent = pendingContent.slice(closeIdx + 12);
-            inToolCallTag = false;
-            try {
-              const parsed = JSON.parse(jsonStr);
-              const name = parsed.name as string;
-              const args = parsed.arguments ?? parsed.parameters ?? {};
-              const input = typeof args === 'string' ? JSON.parse(args) : args;
-              textToolCalls.push({ id: generateToolCallId('text-tc'), name, input });
-            } catch {
-              // Fallback: some models emit XML attribute format: <tool_name attr1="val">
-              const xmlMatch = /^\s*<([a-zA-Z_][a-zA-Z0-9_-]*)(\s[^>]*)?\s*\/?>\s*$/.exec(jsonStr);
-              if (xmlMatch) {
-                const name = xmlMatch[1];
-                const attrsStr = xmlMatch[2] ?? '';
-                const input: Record<string, unknown> = {};
-                const attrRe = /([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"/g;
-                let m: RegExpExecArray | null;
-                while ((m = attrRe.exec(attrsStr)) !== null) {
-                  input[m[1]] = m[2];
-                }
-                textToolCalls.push({ id: generateToolCallId('text-tc'), name, input });
-              } else {
-                onEvent({ type: 'text', text: `<tool_call>${jsonStr}</tool_call>` });
-              }
-            }
-            continue;
-          }
-          const partialLen = partialTagMatch(pendingContent, '</tool_call>');
-          if (partialLen > 0) break;
-          break;
-        } else if (inDoubaoTag) {
-          // Doubao/豆包 format: JSON array of tool calls between <|FunctionCallBegin|> tags
-          const closeIdx = pendingContent.indexOf('<|FunctionCallEnd|>');
-          if (closeIdx >= 0) {
-            const jsonStr = pendingContent.slice(0, closeIdx).trim();
-            pendingContent = pendingContent.slice(closeIdx + 19); // '<|FunctionCallEnd|>'.length
-            inDoubaoTag = false;
-            try {
-              const raw = JSON.parse(jsonStr);
-              const calls = Array.isArray(raw) ? raw : [raw];
-              for (const call of calls as Array<Record<string, unknown>>) {
-                const name = call.name as string;
-                const args = call.parameters ?? call.arguments ?? {};
-                const input = typeof args === 'string' ? (JSON.parse(args) as Record<string, unknown>) : (args as Record<string, unknown>);
-                textToolCalls.push({ id: generateToolCallId('doubao-tc'), name, input });
-              }
-            } catch {
-              onEvent({ type: 'text', text: `<|FunctionCallBegin|>${jsonStr}<|FunctionCallEnd|>` });
-            }
-            continue;
-          }
-          const partialLen = partialTagMatch(pendingContent, '<|FunctionCallEnd|>');
-          if (partialLen > 0) break;
-          break;
-        } else {
-          const thinkIdx = pendingContent.indexOf('<think>');
-          const toolCallIdx = pendingContent.indexOf('<tool_call>');
-          const doubaoIdx = pendingContent.indexOf('<|FunctionCallBegin|>');
-
-          const earliest = [
-            thinkIdx >= 0 ? { idx: thinkIdx, tag: 'think' as const } : null,
-            toolCallIdx >= 0 ? { idx: toolCallIdx, tag: 'tool_call' as const } : null,
-            doubaoIdx >= 0 ? { idx: doubaoIdx, tag: 'doubao' as const } : null,
-          ].filter(Boolean).sort((a, b) => a!.idx - b!.idx)[0];
-
-          if (earliest) {
-            const text = pendingContent.slice(0, earliest.idx);
-            if (text) onEvent({ type: 'text', text });
-            if (earliest.tag === 'think') {
-              pendingContent = pendingContent.slice(earliest.idx + 7);
-              inThinkTag = true;
-            } else if (earliest.tag === 'tool_call') {
-              pendingContent = pendingContent.slice(earliest.idx + 11);
-              inToolCallTag = true;
-            } else {
-              pendingContent = pendingContent.slice(earliest.idx + 21); // '<|FunctionCallBegin|>'.length
-              inDoubaoTag = true;
-            }
-            continue;
-          }
-
-          const partialThink = partialTagMatch(pendingContent, '<think>');
-          const partialToolCall = partialTagMatch(pendingContent, '<tool_call>');
-          const partialDoubao = partialTagMatch(pendingContent, '<|FunctionCallBegin|>');
-          const maxPartial = Math.max(partialThink, partialToolCall, partialDoubao);
-          const safeLen = pendingContent.length - maxPartial;
-          if (safeLen > 0) {
-            onEvent({ type: 'text', text: pendingContent.slice(0, safeLen) });
-            pendingContent = pendingContent.slice(safeLen);
-          }
-          break;
+    function handleTextSegments(segments: TextSegment[]) {
+      for (const segment of segments) {
+        switch (segment.type) {
+          case 'text':
+            onEvent({ type: 'text', text: segment.text });
+            break;
+          case 'thinking':
+            onEvent({ type: 'thinking', thinking: segment.thinking });
+            break;
+          case 'tool_call':
+            textToolCalls.push(segment.call);
+            break;
+          case 'malformed':
+            onEvent({ type: 'malformed_tool_call', raw: segment.raw });
+            break;
         }
       }
+    }
+
+    function emitContent(chunk: string) {
+      handleTextSegments(textParser.push(chunk));
     }
 
     /** Flush any remaining buffered content */
     function flushPendingContent() {
-      if (pendingContent) {
-        if (inThinkTag) {
-          onEvent({ type: 'thinking', thinking: pendingContent });
-        } else if (inToolCallTag) {
-          onEvent({ type: 'text', text: `<tool_call>${pendingContent}` });
-        } else if (inDoubaoTag) {
-          onEvent({ type: 'text', text: `<|FunctionCallBegin|>${pendingContent}` });
-        } else {
-          onEvent({ type: 'text', text: pendingContent });
-        }
-        pendingContent = '';
-      }
+      handleTextSegments(textParser.flush());
     }
 
     /** Emit all buffered text-based tool calls as tool_use events */
@@ -831,11 +629,17 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       return true;
     }
 
+    // 本地服务的空闲计时从第一段输出才开始，之前由 connectHangTimer 的 10 分钟管着
+    let outputStarted = false;
     try {
-      heartbeat.reset();
+      if (!localServer) heartbeat.reset();
       while (true) {
         const { done: streamDone, value } = await reader.read();
         if (streamDone) break;
+        if (!outputStarted) {
+          outputStarted = true;
+          connectHangTimer.clear();
+        }
         heartbeat.reset();
 
         buffer += decoder.decode(value, { stream: true });
@@ -1070,15 +874,19 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         }
       }
 
-      // Fallback: stream ended without [DONE] or finish_reason — emit pending tool calls and done
+      // Fallback: stream ended without [DONE] or finish_reason — emit pending text, tool calls and done
       if (!doneEmitted) {
+        flushPendingContent();
         for (const [, tc] of toolCallBuffers) {
           const input = buildToolInput(tc, 'stream-end-fallback');
           onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
         }
-        onEvent({ type: 'done', stopReason: toolCallBuffers.size > 0 ? 'tool_use' : 'end_turn' });
+        const hasTextTC = emitTextToolCalls();
+        onEvent({ type: 'done', stopReason: toolCallBuffers.size > 0 || hasTextTC ? 'tool_use' : 'end_turn' });
       }
     } catch (streamErr) {
+      // 本地服务响应头到了但 10 分钟内没有第一段输出：与响应头没到同样处理，不重试
+      if (connectHangTimer.timedOut()) throw firstResponseTimeoutError();
       // Idle-heartbeat abort: surface a clear retryable error (the underlying
       // reject is a generic "Request cancelled" from the aborted body stream).
       if (idleTimedOut) {
@@ -1092,6 +900,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       }
       throw streamErr;
     } finally {
+      connectHangTimer.clear();
       heartbeat.clear();
       reader.releaseLock();
     }

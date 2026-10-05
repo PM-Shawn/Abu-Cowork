@@ -1,16 +1,26 @@
-import { CheckCircle2, Circle, Trash2 } from 'lucide-react';
+import { memo } from 'react';
 import type { Todo } from '@/types/todo';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 
 interface TodoItemProps {
   todo: Todo;
-  onToggle: () => void;
-  onDelete: () => void;
+  onToggle: (id: string) => void;
+  onDelete: (id: string) => void;
   onClick?: () => void;
 }
 
-export default function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItemProps) {
+/**
+ * One row of the todo list. The list can hold hundreds of rows, so a row mounts no tooltip
+ * root (its two icon buttons are named for screen readers only), is `memo`, and takes handlers
+ * that stay the same between renders: typing in the inline form or changing one todo draws no
+ * other row again.
+ */
+const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItemProps) {
   const { t } = useI18n();
   const done = todo.status === 'done';
   const priorityLabel = todo.priority === 'high' ? t.todos.priorityHigh
@@ -18,28 +28,31 @@ export default function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItem
     : todo.priority === 'medium' ? t.todos.priorityMedium
     : null;
   const hasNotes = typeof todo.notes === 'string' && todo.notes.trim().length > 0;
+  // The screen-reader name of the done button: English words, with no translation key yet.
+  const toggleName = done ? 'reopen' : 'complete';
   return (
     <div
+      data-todo-row={todo.id}
       onClick={onClick}
       className={cn(
-        'group flex items-start gap-3 px-3 py-2.5 rounded-lg hover:bg-[var(--abu-bg-hover)] cursor-pointer',
+        'group flex items-start gap-3 rounded-control px-3 py-2 hover:bg-fill-hover',
         done && 'opacity-60',
       )}
     >
-      <button
-        onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        className="shrink-0 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] pt-0.5"
-        aria-label={done ? 'reopen' : 'complete'}
+      <Pressable
+        onClick={(e) => { e.stopPropagation(); onToggle(todo.id); }}
+        className={cn('shrink-0 rounded-control pt-0.5', done ? 'text-label' : 'text-label-tertiary hover:text-label')}
+        aria-label={toggleName}
       >
-        {done ? <CheckCircle2 className="h-5 w-5 text-[var(--abu-clay)]" /> : <Circle className="h-5 w-5" />}
-      </button>
-      <div className="flex-1 min-w-0">
-        <div className={cn('text-body truncate', done && 'line-through text-[var(--abu-text-muted)]')}>
+        <Icon icon={done ? AppIcons.success : AppIcons.todoOpen} size="lg" />
+      </Pressable>
+      <div className="min-w-0 flex-1">
+        <div className={cn('truncate text-ui text-label', done && 'text-label-tertiary line-through')}>
           {todo.title}
         </div>
         {hasNotes && (
           <div className={cn(
-            'text-minor text-[var(--abu-text-muted)] whitespace-pre-wrap line-clamp-3 mt-0.5',
+            'mt-1 line-clamp-3 whitespace-pre-wrap text-ui-sm text-label-secondary',
             done && 'line-through',
           )}>
             {todo.notes}
@@ -47,27 +60,20 @@ export default function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItem
         )}
       </div>
       {priorityLabel && (
-        <span className={cn(
-          'shrink-0 text-caption px-1.5 py-0.5 rounded',
-          todo.priority === 'high' ? 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]'
-            : todo.priority === 'low' ? 'bg-gray-100 dark:bg-[var(--abu-bg-muted)] text-gray-600 dark:text-[var(--abu-text-secondary)]'
-            : 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]',
-        )}>
+        <Tag tone={todo.priority === 'high' ? 'danger' : todo.priority === 'medium' ? 'warning' : 'neutral'}>
           {priorityLabel}
-        </span>
+        </Tag>
       )}
-      {todo.assignee === 'agent' && (
-        <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]">
-          {t.todos.assigneeAgent}
-        </span>
-      )}
-      <button
-        onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        className="opacity-0 group-hover:opacity-100 p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] shrink-0"
-        aria-label="delete"
+      {todo.assignee === 'agent' && <Tag>{t.todos.assigneeAgent}</Tag>}
+      <Pressable
+        aria-label={t.common.delete}
+        onClick={(e) => { e.stopPropagation(); onDelete(todo.id); }}
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-control text-label-secondary opacity-0 hover:bg-fill-hover hover:text-label group-hover:opacity-100 group-focus-within:opacity-100"
       >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
+        <Icon icon={AppIcons.delete} size="sm" />
+      </Pressable>
     </div>
   );
-}
+});
+
+export default TodoItem;

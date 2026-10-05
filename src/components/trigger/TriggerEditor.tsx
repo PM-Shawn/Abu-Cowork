@@ -1,25 +1,159 @@
-import { useState, useEffect, useMemo } from 'react';
-import { useTriggerStore } from '@/stores/triggerStore';
-import { useIMChannelStore } from '@/stores/imChannelStore';
-import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useProjectStore } from '@/stores/projectStore';
-import { useI18n } from '@/i18n';
-import { X } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { Select } from '@/components/ui/select';
+import { useState, useEffect, useId, useMemo } from 'react';
+import { Button, IconButton } from '@/components/ds/button';
+import { Checkbox } from '@/components/ds/checkbox';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { RadioGroup } from '@/components/ds/radio-group';
+import { SegmentedControl } from '@/components/ds/segmented-control';
+import { Select } from '@/components/ds/select';
+import { TextArea } from '@/components/ds/text-area';
+import { TextField } from '@/components/ds/text-field';
 import { outputSender } from '@/core/im/outputSender';
 import { getOutputPlatformOptions } from '@/core/im/platformLabels';
-import type { TriggerCapability, TriggerFilterType, TriggerSourceType, OutputPlatform, OutputExtractMode } from '@/types/trigger';
-import type { IMListenScope } from '@/types/trigger';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { normalizeTriggerCapability } from '@/core/trigger/triggerCapability';
+import { useI18n } from '@/i18n';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { useIMChannelStore } from '@/stores/imChannelStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { useTriggerStore } from '@/stores/triggerStore';
+import type { EditorTemplateDefaults } from '@/stores/triggerStore';
+import type { Trigger, TriggerCapability, TriggerFilterType, TriggerSourceType, OutputPlatform, OutputExtractMode } from '@/types/trigger';
+import type { IMListenScope } from '@/types/trigger';
 
 const SOURCE_TYPES: TriggerSourceType[] = ['http', 'file', 'cron', 'im'];
 const FILTER_TYPES: TriggerFilterType[] = ['always', 'keyword', 'regex'];
+const FILE_EVENTS = ['create', 'modify', 'delete'] as const;
 const STANDARD_CAPABILITIES: Exclude<TriggerCapability, 'custom'>[] = ['read_tools', 'safe_tools', 'full'];
 
-export default function TriggerEditor() {
+/** What a list shows as chosen while the field holds nothing: no skill, no project. A list
+ *  option cannot have an empty value. */
+const NONE = '__none__';
+
+/** What the form holds. The window asks before closing once a field differs from what it opened with. */
+interface Fields {
+  name: string;
+  description: string;
+  prompt: string;
+  sourceType: TriggerSourceType;
+  fileWatchPath: string;
+  fileEvents: string[];
+  filePattern: string;
+  cronInterval: number;
+  // IM source — references a channel
+  imChannelId: string;
+  imListenScope: IMListenScope;
+  imChatId: string;
+  imSenderMatch: string;
+  filterType: TriggerFilterType;
+  keywords: string;
+  regexPattern: string;
+  filterField: string;
+  skillName: string;
+  workspacePath: string;
+  projectId: string;
+  debounceEnabled: boolean;
+  debounceSeconds: number;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  capability: TriggerCapability;
+  // Output config
+  outputEnabled: boolean;
+  outputTarget: 'webhook' | 'im_channel';
+  outputPlatform: OutputPlatform;
+  outputWebhookUrl: string;
+  outputChannelId: string;
+  outputChatIds: string;
+  outputUserIds: string;
+  outputExtractMode: OutputExtractMode;
+  outputCustomTemplate: string;
+  outputCustomHeaders: string;
+}
+
+/** The form for a listener being edited, or for a new one: blank, or filled from a template. */
+function fieldsOf(trigger: Trigger | null, template: EditorTemplateDefaults | null): Fields {
+  const source = trigger?.source;
+  const file = source?.type === 'file' ? source : null;
+  const im = source?.type === 'im' ? source : null;
+  return {
+    name: trigger ? trigger.name : template?.name ?? '',
+    description: trigger?.description ?? '',
+    prompt: trigger ? trigger.action.prompt : template?.prompt ?? '',
+    sourceType: trigger ? trigger.source.type : template?.sourceType ?? 'http',
+    fileWatchPath: file?.path ?? '',
+    fileEvents: file?.events ?? ['create', 'modify'],
+    filePattern: file?.pattern ?? '',
+    cronInterval: source?.type === 'cron' ? source.intervalSeconds : 60,
+    imChannelId: im?.channelId ?? '',
+    imListenScope: im?.listenScope ?? 'mention_only',
+    imChatId: im?.chatId ?? '',
+    imSenderMatch: im?.senderMatch ?? '',
+    filterType: trigger ? trigger.filter.type : template?.filterType ?? 'always',
+    keywords: trigger ? (trigger.filter.keywords ?? []).join(', ') : template?.keywords ?? '',
+    regexPattern: trigger?.filter.pattern ?? '',
+    filterField: trigger?.filter.field ?? '',
+    skillName: trigger?.action.skillName ?? '',
+    workspacePath: trigger?.action.workspacePath ?? '',
+    projectId: trigger?.projectId ?? '',
+    debounceEnabled: trigger ? trigger.debounce.enabled : true,
+    debounceSeconds: trigger ? trigger.debounce.windowSeconds : 300,
+    quietHoursEnabled: trigger?.quietHours?.enabled ?? false,
+    quietHoursStart: trigger?.quietHours?.start ?? '22:00',
+    quietHoursEnd: trigger?.quietHours?.end ?? '08:00',
+    capability: trigger ? normalizeTriggerCapability(trigger.action.capability) : 'read_tools',
+    outputEnabled: trigger?.output?.enabled ?? false,
+    outputTarget: trigger?.output?.target ?? 'webhook',
+    outputPlatform: trigger?.output?.platform ?? 'dchat',
+    outputWebhookUrl: trigger?.output?.webhookUrl ?? '',
+    outputChannelId: trigger?.output?.outputChannelId ?? '',
+    outputChatIds: trigger?.output?.outputChatIds ?? '',
+    outputUserIds: trigger?.output?.outputUserIds ?? '',
+    outputExtractMode: trigger?.output?.extractMode ?? 'last_message',
+    outputCustomTemplate: trigger?.output?.customTemplate ?? '',
+    outputCustomHeaders: trigger?.output?.customHeaders
+      ? Object.entries(trigger.output.customHeaders).map(([k, v]) => `${k}: ${v}`).join('\n')
+      : '',
+  };
+}
+
+/** Whether a field holds what it held when the window opened. The file events are a list. */
+function same(a: Fields[keyof Fields], b: Fields[keyof Fields]): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((item, index) => item === b[index]);
+  return a === b;
+}
+
+/** Header lines of the custom webhook, one per line as "Key: Value". */
+function parseHeaders(text: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (text.trim()) {
+    for (const line of text.split('\n')) {
+      const idx = line.indexOf(':');
+      if (idx > 0) {
+        headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+      }
+    }
+  }
+  return headers;
+}
+
+const FIELD_LABEL = 'mb-1 block text-ui-sm font-medium text-label-secondary';
+const HINT = 'mt-1 text-caption text-label-tertiary';
+// Said in place of a channel list when no channel exists yet.
+const NO_CHANNELS = 'rounded-control bg-fill px-3 py-2 text-ui-sm text-label-tertiary';
+
+/**
+ * The window that creates an event listener or edits one. It stays mounted and is closed, not
+ * removed, so it fades out showing what it showed; a save or a test push pressed in the fading
+ * window does nothing. It asks before it discards what was typed.
+ */
+export default function TriggerEditor({ onCloseAutoFocus }: {
+  // Runs once the window has gone, before the focus returns to what opened it (ds `Dialog`).
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
   const { t } = useI18n();
+  const id = useId();
   const { showEditor, editingTriggerId, editorTemplateDefaults, closeEditor, createTrigger, updateTrigger, triggers, setSelectedTriggerId } =
     useTriggerStore();
   const skills = useDiscoveryStore((s) => s.skills);
@@ -35,166 +169,69 @@ export default function TriggerEditor() {
   const editingCapability = normalizeTriggerCapability(editingTrigger?.action.capability);
 
   // Form state
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [prompt, setPrompt] = useState('');
-  const [filterType, setFilterType] = useState<TriggerFilterType>('always');
-  const [keywords, setKeywords] = useState('');
-  const [regexPattern, setRegexPattern] = useState('');
-  const [filterField, setFilterField] = useState('');
-  const [skillName, setSkillName] = useState('');
-  const [workspacePath, setWorkspacePath] = useState('');
-  const [projectId, setProjectId] = useState('');
-  const [sourceType, setSourceType] = useState<TriggerSourceType>('http');
-  const [fileWatchPath, setFileWatchPath] = useState('');
-  const [fileEvents, setFileEvents] = useState<string[]>(['create', 'modify']);
-  const [filePattern, setFilePattern] = useState('');
-  const [cronInterval, setCronInterval] = useState(60);
-  const [debounceEnabled, setDebounceEnabled] = useState(true);
-  const [debounceSeconds, setDebounceSeconds] = useState(300);
-  const [quietHoursEnabled, setQuietHoursEnabled] = useState(false);
-  const [quietHoursStart, setQuietHoursStart] = useState('22:00');
-  const [quietHoursEnd, setQuietHoursEnd] = useState('08:00');
-  const [capability, setCapability] = useState<TriggerCapability>('read_tools');
-
-  // IM source state — now references a channel
-  const [imChannelId, setImChannelId] = useState('');
-  const [imListenScope, setImListenScope] = useState<IMListenScope>('mention_only');
-  const [imChatId, setImChatId] = useState('');
-  const [imSenderMatch, setImSenderMatch] = useState('');
-
-  // Output config state
-  const [outputEnabled, setOutputEnabled] = useState(false);
-  const [outputTarget, setOutputTarget] = useState<'webhook' | 'im_channel'>('webhook');
-  const [outputPlatform, setOutputPlatform] = useState<OutputPlatform>('feishu');
-  const [outputWebhookUrl, setOutputWebhookUrl] = useState('');
-  const [outputChannelId, setOutputChannelId] = useState('');
-  const [outputChatIds, setOutputChatIds] = useState('');
-  const [outputUserIds, setOutputUserIds] = useState('');
-  const [outputExtractMode, setOutputExtractMode] = useState<OutputExtractMode>('last_message');
-  const [outputCustomTemplate, setOutputCustomTemplate] = useState('');
-  const [outputCustomHeaders, setOutputCustomHeaders] = useState('');
+  const [fields, setFields] = useState<Fields>(() => fieldsOf(null, null));
+  const set = <K extends keyof Fields>(key: K, value: Fields[K]) => setFields((prev) => ({ ...prev, [key]: value }));
+  // What the fields held when the window opened.
+  const [opened, setOpened] = useState<Fields | null>(null);
+  // Which listener the window opened on, and whether it carried rules of the retired custom
+  // level. Both stay as they are while the window fades out, like the fields.
+  const [held, setHeld] = useState<{ id: string | null; custom: boolean }>({ id: null, custom: false });
   const [testPushStatus, setTestPushStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testPushError, setTestPushError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  const {
+    name, description, prompt, sourceType, fileWatchPath, fileEvents, filePattern, cronInterval,
+    imChannelId, imListenScope, imChatId, imSenderMatch, filterType, keywords, regexPattern, filterField,
+    skillName, workspacePath, projectId, debounceEnabled, debounceSeconds, quietHoursEnabled, quietHoursStart,
+    quietHoursEnd, capability, outputEnabled, outputTarget, outputPlatform, outputWebhookUrl, outputChannelId,
+    outputChatIds, outputUserIds, outputExtractMode, outputCustomTemplate, outputCustomHeaders,
+  } = fields;
 
   // Derive the selected IM channel's platform for webhook URL display
   const selectedIMChannel = imChannels.find((c) => c.id === imChannelId);
 
-  // Initialize form when editing
-  useEffect(() => {
-    const triggerToEdit = editingTriggerId
-      ? useTriggerStore.getState().triggers[editingTriggerId]
-      : null;
-    if (triggerToEdit) {
-      setName(triggerToEdit.name);
-      setDescription(triggerToEdit.description ?? '');
-      setPrompt(triggerToEdit.action.prompt);
-      setSourceType(triggerToEdit.source.type);
-      if (triggerToEdit.source.type === 'file') {
-        setFileWatchPath(triggerToEdit.source.path);
-        setFileEvents(triggerToEdit.source.events);
-        setFilePattern(triggerToEdit.source.pattern ?? '');
-      }
-      if (triggerToEdit.source.type === 'cron') {
-        setCronInterval(triggerToEdit.source.intervalSeconds);
-      }
-      if (triggerToEdit.source.type === 'im') {
-        setImChannelId(triggerToEdit.source.channelId);
-        setImListenScope(triggerToEdit.source.listenScope);
-        setImChatId(triggerToEdit.source.chatId ?? '');
-        setImSenderMatch(triggerToEdit.source.senderMatch ?? '');
-      }
-      setFilterType(triggerToEdit.filter.type);
-      setKeywords((triggerToEdit.filter.keywords ?? []).join(', '));
-      setRegexPattern(triggerToEdit.filter.pattern ?? '');
-      setFilterField(triggerToEdit.filter.field ?? '');
-      setSkillName(triggerToEdit.action.skillName ?? '');
-      setWorkspacePath(triggerToEdit.action.workspacePath ?? '');
-      setProjectId(triggerToEdit.projectId ?? '');
-      setDebounceEnabled(triggerToEdit.debounce.enabled);
-      setDebounceSeconds(triggerToEdit.debounce.windowSeconds);
-      setQuietHoursEnabled(triggerToEdit.quietHours?.enabled ?? false);
-      setQuietHoursStart(triggerToEdit.quietHours?.start ?? '22:00');
-      setQuietHoursEnd(triggerToEdit.quietHours?.end ?? '08:00');
-      setCapability(normalizeTriggerCapability(triggerToEdit.action.capability));
-      setOutputEnabled(triggerToEdit.output?.enabled ?? false);
-      setOutputTarget(triggerToEdit.output?.target ?? 'webhook');
-      setOutputPlatform(triggerToEdit.output?.platform ?? 'dchat');
-      setOutputWebhookUrl(triggerToEdit.output?.webhookUrl ?? '');
-      setOutputChannelId(triggerToEdit.output?.outputChannelId ?? '');
-      setOutputChatIds(triggerToEdit.output?.outputChatIds ?? '');
-      setOutputUserIds(triggerToEdit.output?.outputUserIds ?? '');
-      setOutputExtractMode(triggerToEdit.output?.extractMode ?? 'last_message');
-      setOutputCustomTemplate(triggerToEdit.output?.customTemplate ?? '');
-      setOutputCustomHeaders(
-        triggerToEdit.output?.customHeaders
-          ? Object.entries(triggerToEdit.output.customHeaders).map(([k, v]) => `${k}: ${v}`).join('\n')
-          : ''
-      );
-    } else {
-      // Apply template defaults if provided, otherwise reset to blank
-      const tpl = editorTemplateDefaults;
-      setName(tpl?.name ?? '');
-      setDescription('');
-      setPrompt(tpl?.prompt ?? '');
-      setSourceType(tpl?.sourceType ?? 'http');
-      setFileWatchPath('');
-      setFileEvents(['create', 'modify']);
-      setFilePattern('');
-      setCronInterval(60);
-      setImChannelId('');
-      setImListenScope('mention_only');
-      setImChatId('');
-      setImSenderMatch('');
-      setFilterType(tpl?.filterType ?? 'always');
-      setKeywords(tpl?.keywords ?? '');
-      setRegexPattern('');
-      setFilterField('');
-      setSkillName('');
-      setWorkspacePath('');
-      setProjectId('');
-      setDebounceEnabled(true);
-      setDebounceSeconds(300);
-      setQuietHoursEnabled(false);
-      setQuietHoursStart('22:00');
-      setQuietHoursEnd('08:00');
-      setCapability('read_tools');
-      setOutputEnabled(false);
-      setOutputTarget('webhook');
-      setOutputPlatform('dchat');
-      setOutputWebhookUrl('');
-      setOutputChannelId('');
-      setOutputChatIds('');
-      setOutputUserIds('');
-      setOutputExtractMode('last_message');
-      setOutputCustomTemplate('');
-      setOutputCustomHeaders('');
-    }
-    setTestPushStatus('idle');
-    setTestPushError('');
-  }, [editingTriggerId, showEditor, editorTemplateDefaults]);
-
-  // Close on Escape
+  // Initialize the form when the window opens. A change to the listener's runs while the window
+  // is open leaves the form alone: the listener is read from the store here, not subscribed to.
   useEffect(() => {
     if (!showEditor) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeEditor();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showEditor, closeEditor]);
+    const triggerToEdit = editingTriggerId
+      ? useTriggerStore.getState().triggers[editingTriggerId] ?? null
+      : null;
+    // Apply template defaults if provided, otherwise reset to blank
+    const next = fieldsOf(triggerToEdit, triggerToEdit ? null : editorTemplateDefaults);
+    setFields(next);
+    setOpened(next);
+    setHeld({ id: triggerToEdit ? triggerToEdit.id : null, custom: triggerToEdit !== null && next.capability === 'custom' });
+    setTestPushStatus('idle');
+    setTestPushError('');
+    setCopied(false);
+  }, [editingTriggerId, showEditor, editorTemplateDefaults]);
 
-  if (!showEditor) return null;
+  // The listener the window is about: the store's while it is open, the held one while it fades.
+  const editingId = showEditor ? editingTriggerId : held.id;
+  const offersCustom = showEditor ? editingCapability === 'custom' : held.custom;
 
   // P0-3: Duplicate name check
   const isDuplicateName = name.trim() && Object.values(triggers).some(
-    (t) => t.name === name.trim() && t.id !== editingTriggerId
+    (t) => t.name === name.trim() && t.id !== editingId
   );
 
   const filterLabels: Record<TriggerFilterType, string> = {
     always: t.trigger.filterAlways,
     keyword: t.trigger.filterKeyword,
     regex: t.trigger.filterRegex,
+  };
+  const sourceLabels: Record<TriggerSourceType, string> = {
+    http: t.trigger.sourceHttp,
+    file: t.trigger.sourceFile,
+    cron: t.trigger.sourceCron,
+    im: t.trigger.imSource,
+  };
+  const fileEventLabels: Record<(typeof FILE_EVENTS)[number], string> = {
+    create: t.trigger.fileEventCreate,
+    modify: t.trigger.fileEventModify,
+    delete: t.trigger.fileEventDelete,
   };
   const capabilityLabels: Record<TriggerCapability, string> = {
     read_tools: t.trigger.capabilityReadTools,
@@ -208,10 +245,12 @@ export default function TriggerEditor() {
     full: t.trigger.capabilityFullDescription,
     custom: t.trigger.capabilityCustomLegacyDescription,
   };
+  // Each level with what it allows; the rules of the retired custom level stay on offer only
+  // for a listener that still has them.
   const capabilityOptions = [
-    ...STANDARD_CAPABILITIES.map((cap) => ({ value: cap, label: capabilityLabels[cap] })),
-    ...(editingCapability === 'custom'
-      ? [{ value: 'custom', label: t.trigger.capabilityCustomLegacy }]
+    ...STANDARD_CAPABILITIES.map((cap) => ({ value: cap, label: capabilityLabels[cap], description: capabilityDescriptions[cap] })),
+    ...(offersCustom
+      ? [{ value: 'custom', label: t.trigger.capabilityCustomLegacy, description: t.trigger.capabilityCustomLegacyDescription }]
       : []),
   ];
 
@@ -221,7 +260,20 @@ export default function TriggerEditor() {
     label: `${c.name} (${c.platform})`,
   }));
 
+  const imWebhookUrl = selectedIMChannel
+    ? `http://127.0.0.1:${triggerEngine.getServerPort() ?? 18080}/im/${selectedIMChannel.platform}/webhook`
+    : '';
+
+  const dirty = showEditor && opened !== null && (Object.keys(opened) as (keyof Fields)[]).some((key) => !same(fields[key], opened[key]));
+
+  const canSave = Boolean(name.trim()) && Boolean(prompt.trim())
+    && !(sourceType === 'file' && !fileWatchPath.trim())
+    && !(sourceType === 'im' && !imChannelId)
+    && !isDuplicateName;
+
   const handleSave = () => {
+    // The window stays on the page while it fades out; a key press there saves nothing.
+    if (!showEditor) return;
     if (!name.trim() || !prompt.trim()) return;
     if (sourceType === 'file' && !fileWatchPath.trim()) return;
     if (sourceType === 'im' && !imChannelId) return;
@@ -262,15 +314,7 @@ export default function TriggerEditor() {
       : undefined;
 
     // Parse custom headers from textarea (one per line: "Key: Value")
-    const parsedHeaders: Record<string, string> = {};
-    if (outputCustomHeaders.trim()) {
-      for (const line of outputCustomHeaders.split('\n')) {
-        const idx = line.indexOf(':');
-        if (idx > 0) {
-          parsedHeaders[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-        }
-      }
-    }
+    const parsedHeaders = parseHeaders(outputCustomHeaders);
 
     const output = outputEnabled
       ? {
@@ -333,737 +377,606 @@ export default function TriggerEditor() {
     closeEditor();
   };
 
+  // Sends one test message to the webhook as it is typed.
+  const handleTestPush = async () => {
+    // A push cannot be taken back: the fading window sends none.
+    if (!showEditor) return;
+    if (!outputWebhookUrl.trim()) return;
+    setTestPushStatus('testing');
+    const headers = parseHeaders(outputCustomHeaders);
+    const result = await outputSender.testSend(
+      outputPlatform,
+      outputWebhookUrl,
+      Object.keys(headers).length > 0 ? headers : undefined,
+    );
+    setTestPushStatus(result.success ? 'success' : 'error');
+    setTestPushError(result.error ?? '');
+    setTimeout(() => setTestPushStatus('idle'), 3000);
+  };
+
+  // The callback address goes to the clipboard and nowhere else.
+  const handleCopyWebhookUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(imWebhookUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback
+    }
+  };
+
   return (
-    <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) closeEditor(); }}>
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-bg-active)] shrink-0">
-          <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-            {editingTriggerId ? t.trigger.editTrigger : t.trigger.newTrigger}
-          </h2>
-          <button
-            onClick={closeEditor}
-            className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Form */}
-        <div className="px-6 py-4 space-y-4 overflow-auto flex-1">
-          {/* Name */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.trigger.triggerName}
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t.trigger.triggerNamePlaceholder}
-              className={cn(
-                'w-full h-10 px-3 bg-[var(--abu-bg-base)] border rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
-                isDuplicateName ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]'
-              )}
-            />
-            {isDuplicateName && (
-              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.trigger.duplicateName}</p>
-            )}
-          </div>
-
-          {/* Description */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.trigger.description}
-            </label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder={t.trigger.descriptionPlaceholder}
-              rows={2}
-              className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none"
-            />
-          </div>
-
-          {/* Source type */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.trigger.sourceType}
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {SOURCE_TYPES.map((st) => (
-                <button
-                  key={st}
-                  onClick={() => setSourceType(st)}
-                  className={cn(
-                    'px-3 py-1.5 rounded-lg text-minor font-medium transition-colors',
-                    sourceType === st
-                      ? 'bg-[var(--abu-clay)] text-white'
-                      : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                  )}
-                >
-                  {st === 'http' ? t.trigger.sourceHttp : st === 'file' ? t.trigger.sourceFile : st === 'cron' ? t.trigger.sourceCron : t.trigger.imSource}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* File source fields */}
-          {sourceType === 'file' && (
-            <>
-              <div>
-                <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                  {t.trigger.filePath}
-                </label>
-                <input
-                  type="text"
-                  value={fileWatchPath}
-                  onChange={(e) => setFileWatchPath(e.target.value)}
-                  placeholder={t.trigger.filePathPlaceholder}
-                  className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                />
-              </div>
-              <div>
-                <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                  {t.trigger.fileEvents}
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {(['create', 'modify', 'delete'] as const).map((evt) => (
-                    <button
-                      key={evt}
-                      onClick={() =>
-                        setFileEvents((prev) =>
-                          prev.includes(evt) ? prev.filter((e) => e !== evt) : [...prev, evt]
-                        )
-                      }
-                      className={cn(
-                        'px-3 py-1.5 rounded-lg text-minor font-medium transition-colors',
-                        fileEvents.includes(evt)
-                          ? 'bg-[var(--abu-clay)] text-white'
-                          : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                      )}
-                    >
-                      {evt === 'create' ? t.trigger.fileEventCreate : evt === 'modify' ? t.trigger.fileEventModify : t.trigger.fileEventDelete}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                  {t.trigger.filePattern}
-                </label>
-                <input
-                  type="text"
-                  value={filePattern}
-                  onChange={(e) => setFilePattern(e.target.value)}
-                  placeholder={t.trigger.filePatternPlaceholder}
-                  className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                />
-              </div>
-            </>
-          )}
-
-          {/* Cron source fields */}
-          {sourceType === 'cron' && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.trigger.cronInterval}
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  value={cronInterval}
-                  onChange={(e) => setCronInterval(Number(e.target.value) || 60)}
-                  min={10}
-                  placeholder={t.trigger.cronIntervalPlaceholder}
-                  className="w-28 h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                />
-                <span className="text-minor text-[var(--abu-text-tertiary)]">{t.trigger.seconds}</span>
-              </div>
-            </div>
-          )}
-
-          {/* IM source fields */}
-          {sourceType === 'im' && (
-            <>
-              {/* IM Channel select */}
-              <div>
-                <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                  {t.trigger.imSelectChannel}
-                </label>
-                {channelOptions.length > 0 ? (
-                  <Select
-                    value={imChannelId}
-                    onChange={setImChannelId}
-                    placeholder={t.trigger.imSelectChannel}
-                    options={channelOptions}
-                  />
-                ) : (
-                  <p className="text-minor text-[var(--abu-text-muted)] bg-[var(--abu-bg-muted)] rounded-lg px-3 py-2">
-                    {t.trigger.imNoChannels}
-                  </p>
-                )}
-              </div>
-
-              {/* Listen scope */}
-              <div>
-                <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.imListenScope}</label>
-                <div className="space-y-1">
-                  {([
-                    ['mention_only', t.trigger.imScopeMentionOnly],
-                    ['direct_only', t.trigger.imScopeDirectOnly],
-                    ['all', t.trigger.imScopeAll],
-                  ] as [IMListenScope, string][]).map(([scope, label]) => (
-                    <label key={scope} className="flex items-center gap-2 text-minor text-[var(--abu-text-secondary)]">
-                      <input
-                        type="radio"
-                        name="imListenScope"
-                        checked={imListenScope === scope}
-                        onChange={() => setImListenScope(scope)}
-                      />
-                      {label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Chat ID filter (optional) */}
-              <div>
-                <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.imChatId}</label>
-                <input
-                  type="text"
-                  value={imChatId}
-                  onChange={(e) => setImChatId(e.target.value)}
-                  placeholder={t.trigger.imChatIdPlaceholder}
-                  className="w-full h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                />
-              </div>
-
-              {/* Sender match (optional) */}
-              <div>
-                <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.senderMatch}</label>
-                <input
-                  type="text"
-                  value={imSenderMatch}
-                  onChange={(e) => setImSenderMatch(e.target.value)}
-                  placeholder={t.trigger.senderMatchPlaceholder}
-                  className="w-full h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                />
-              </div>
-
-              {/* Webhook callback URL (read-only) */}
-              {selectedIMChannel && (
-                <div>
-                  <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.imWebhookUrl}</label>
-                  <div className="flex gap-2 items-center">
-                    <input
-                      type="text"
-                      value={`http://127.0.0.1:${triggerEngine.getServerPort() ?? 18080}/im/${selectedIMChannel.platform}/webhook`}
-                      readOnly
-                      className="flex-1 h-9 px-3 bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] rounded-lg text-minor text-[var(--abu-text-tertiary)] font-mono select-all"
-                      onClick={(e) => (e.target as HTMLInputElement).select()}
-                    />
-                  </div>
-                  <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.trigger.imWebhookUrlHint}</p>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Prompt */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.trigger.triggerPrompt}
-            </label>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder={t.trigger.triggerPromptPlaceholder}
-              rows={4}
-              className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none"
-            />
-            <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.trigger.promptHint}</p>
-          </div>
-
-          {/* Capability */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.trigger.capability}
-            </label>
-            <Select
-              value={capability}
-              onChange={(value) => setCapability(value as TriggerCapability)}
-              options={capabilityOptions}
-              ariaLabel={t.trigger.capability}
-            />
-            <p className="text-caption text-[var(--abu-text-muted)] mt-1">
-              {capabilityDescriptions[capability]}
-            </p>
-            <p className="text-caption text-[var(--abu-text-muted)] mt-1">
-              {t.trigger.capabilityHint}
-            </p>
-            {capability === 'full' && (
-              <p className="text-caption text-[var(--abu-warning)] mt-1">
-                {t.trigger.capabilityFullWarning}
-              </p>
-            )}
-          </div>
-
-          {/* Filter type */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.trigger.filterType}
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {FILTER_TYPES.map((ft) => (
-                <button
-                  key={ft}
-                  onClick={() => setFilterType(ft)}
-                  className={cn(
-                    'px-3 py-1.5 rounded-lg text-minor font-medium transition-colors',
-                    filterType === ft
-                      ? 'bg-[var(--abu-clay)] text-white'
-                      : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                  )}
-                >
-                  {filterLabels[ft]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Keywords input */}
-          {filterType === 'keyword' && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.trigger.keywords}
-              </label>
-              <input
-                type="text"
-                value={keywords}
-                onChange={(e) => setKeywords(e.target.value)}
-                placeholder={t.trigger.keywordsPlaceholder}
-                className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-              />
-            </div>
-          )}
-
-          {/* Regex input */}
-          {filterType === 'regex' && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.trigger.regexPattern}
-              </label>
-              <input
-                type="text"
-                value={regexPattern}
-                onChange={(e) => setRegexPattern(e.target.value)}
-                placeholder={t.trigger.regexPlaceholder}
-                className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] font-mono"
-              />
-            </div>
-          )}
-
-          {/* Filter field */}
-          {filterType !== 'always' && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.trigger.filterField}
-              </label>
-              <input
-                type="text"
-                value={filterField}
-                onChange={(e) => setFilterField(e.target.value)}
-                placeholder={t.trigger.filterFieldPlaceholder}
-                className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-              />
-            </div>
-          )}
-
-          {/* Debounce */}
-          <div>
-            <label className="flex items-center gap-2 text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              <input
-                type="checkbox"
-                checked={debounceEnabled}
-                onChange={(e) => setDebounceEnabled(e.target.checked)}
-                className="rounded"
-              />
-              {t.trigger.debounceEnabled}
-            </label>
-            {debounceEnabled && (
-              <div className="flex items-center gap-2 mt-1.5">
-                <input
-                  type="number"
-                  value={debounceSeconds}
-                  onChange={(e) => setDebounceSeconds(Number(e.target.value) || 0)}
-                  min={0}
-                  className="w-24 h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                />
-                <span className="text-minor text-[var(--abu-text-tertiary)]">{t.trigger.seconds}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Quiet hours */}
-          <div>
-            <label className="flex items-center gap-2 text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              <input
-                type="checkbox"
-                checked={quietHoursEnabled}
-                onChange={(e) => setQuietHoursEnabled(e.target.checked)}
-                className="rounded"
-              />
-              {t.trigger.quietHoursEnabled}
-            </label>
-            {quietHoursEnabled && (
-              <div className="flex items-center gap-2 mt-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-minor text-[var(--abu-text-tertiary)]">{t.trigger.quietHoursStart}</span>
-                  <input
-                    type="time"
-                    value={quietHoursStart}
-                    onChange={(e) => setQuietHoursStart(e.target.value)}
-                    className="h-9 px-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                  />
-                </div>
-                <span className="text-minor text-[var(--abu-text-tertiary)]">~</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-minor text-[var(--abu-text-tertiary)]">{t.trigger.quietHoursEnd}</span>
-                  <input
-                    type="time"
-                    value={quietHoursEnd}
-                    onChange={(e) => setQuietHoursEnd(e.target.value)}
-                    className="h-9 px-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                  />
-                </div>
-              </div>
-            )}
-            {quietHoursEnabled && (
-              <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.trigger.quietHoursHint}</p>
-            )}
-          </div>
-
-          {/* Output config */}
-          <div className="border-t border-[var(--abu-border)] pt-4">
-            <label className="flex items-center gap-2 text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              <input
-                type="checkbox"
-                checked={outputEnabled}
-                onChange={(e) => setOutputEnabled(e.target.checked)}
-                className="rounded"
-              />
-              {t.trigger.enableOutput}
-            </label>
-
-            {outputEnabled && (
-              <div className="space-y-3 mt-2 ml-0.5">
-                {/* Output target (webhook vs im_channel) */}
-                <div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => setOutputTarget('webhook')}
-                      className={cn(
-                        'px-2.5 py-1 rounded-lg text-caption font-medium transition-colors',
-                        outputTarget === 'webhook'
-                          ? 'bg-[var(--abu-clay)] text-white'
-                          : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                      )}
-                    >
-                      {t.trigger.outputTargetWebhook}
-                    </button>
-                    <button
-                      onClick={() => setOutputTarget('im_channel')}
-                      className={cn(
-                        'px-2.5 py-1 rounded-lg text-caption font-medium transition-colors',
-                        outputTarget === 'im_channel'
-                          ? 'bg-[var(--abu-clay)] text-white'
-                          : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                      )}
-                    >
-                      {t.trigger.outputTargetIMChannel}
-                    </button>
-                  </div>
-                </div>
-
-                {/* im_channel target: channel select + optional chat ID */}
-                {outputTarget === 'im_channel' && (
-                  <>
-                    <div>
-                      <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">
-                        {t.trigger.outputSelectChannel}
-                      </label>
-                      {channelOptions.length > 0 ? (
-                        <Select
-                          value={outputChannelId}
-                          onChange={setOutputChannelId}
-                          placeholder={t.trigger.outputSelectChannel}
-                          options={channelOptions}
-                        />
-                      ) : (
-                        <p className="text-minor text-[var(--abu-text-muted)] bg-[var(--abu-bg-muted)] rounded-lg px-3 py-2">
-                          {t.trigger.imNoChannels}
-                        </p>
-                      )}
-                      {/*
-                        This channel is also where the run ASKS. `triggerEngine`
-                        builds the approval target from this same output config
-                        (`core/im/approvalTarget.ts`), so a confirmation lands
-                        where the results land — and with no channel chosen it
-                        has nowhere to go and is refused. Said here rather than
-                        left for the user to discover as a run that quietly
-                        achieved nothing.
-                      */}
-                      <p className="text-caption text-[var(--abu-text-muted)] mt-1">
-                        {t.trigger.outputChannelApprovalHint}
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.outputToGroup}</label>
-                      <input
-                        type="text"
-                        value={outputChatIds}
-                        onChange={(e) => setOutputChatIds(e.target.value)}
-                        placeholder={t.trigger.outputChatIdPlaceholder}
-                        className="w-full h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.outputToDM}</label>
-                      <input
-                        type="text"
-                        value={outputUserIds}
-                        onChange={(e) => setOutputUserIds(e.target.value)}
-                        placeholder={t.trigger.outputUserIdPlaceholder}
-                        className="w-full h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                      />
-                    </div>
-                  </>
-                )}
-
-                {/* Platform select (only for webhook target) */}
-                {outputTarget === 'webhook' && (
-                <>
-                <div>
-                  <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">
-                    {t.trigger.outputPlatform}
-                  </label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {getOutputPlatformOptions().map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() => setOutputPlatform(opt.value as OutputPlatform)}
-                          className={cn(
-                            'px-2.5 py-1 rounded-lg text-caption font-medium transition-colors',
-                            outputPlatform === opt.value
-                              ? 'bg-[var(--abu-clay)] text-white'
-                              : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Webhook URL */}
-                <div>
-                  <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">
-                    {t.trigger.webhookUrl}
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={outputWebhookUrl}
-                      onChange={(e) => setOutputWebhookUrl(e.target.value)}
-                      placeholder={t.trigger.webhookUrlPlaceholder}
-                      className="flex-1 h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                    />
-                    <button
-                      onClick={async () => {
-                        if (!outputWebhookUrl.trim()) return;
-                        setTestPushStatus('testing');
-                        const headers: Record<string, string> = {};
-                        if (outputCustomHeaders.trim()) {
-                          for (const line of outputCustomHeaders.split('\n')) {
-                            const idx = line.indexOf(':');
-                            if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-                          }
-                        }
-                        const result = await outputSender.testSend(
-                          outputPlatform,
-                          outputWebhookUrl,
-                          Object.keys(headers).length > 0 ? headers : undefined,
-                        );
-                        setTestPushStatus(result.success ? 'success' : 'error');
-                        setTestPushError(result.error ?? '');
-                        setTimeout(() => setTestPushStatus('idle'), 3000);
-                      }}
-                      disabled={!outputWebhookUrl.trim() || testPushStatus === 'testing'}
-                      className={cn(
-                        'px-3 py-1.5 rounded-lg text-caption font-medium transition-colors shrink-0',
-                        outputWebhookUrl.trim()
-                          ? 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                          : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-placeholder)] cursor-not-allowed'
-                      )}
-                    >
-                      {t.trigger.testPush}
-                    </button>
-                  </div>
-                  {testPushStatus === 'success' && (
-                    <p className="text-caption text-[var(--abu-success)] mt-1">{t.trigger.testPushSuccess}</p>
-                  )}
-                  {testPushStatus === 'error' && (
-                    <p className="text-caption text-[var(--abu-danger)] mt-1">{t.trigger.testPushFailed}: {testPushError}</p>
-                  )}
-                </div>
-
-                {/* Custom Headers (only for 'custom' platform) */}
-                {outputPlatform === 'custom' && (
-                  <div>
-                    <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">
-                      {t.trigger.customHeaders}
-                    </label>
-                    <textarea
-                      value={outputCustomHeaders}
-                      onChange={(e) => setOutputCustomHeaders(e.target.value)}
-                      placeholder={t.trigger.customHeadersPlaceholder}
-                      rows={2}
-                      className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-minor text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none font-mono"
-                    />
-                  </div>
-                )}
-                </>
-                )}
-
-                {/* Extract mode */}
-                <div>
-                  <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">
-                    {t.trigger.extractMode}
-                  </label>
-                  <div className="space-y-1">
-                    {([
-                      ['last_message', t.trigger.extractLastMessage],
-                      ['full', t.trigger.extractFull],
-                      ['custom_template', t.trigger.extractTemplate],
-                    ] as [OutputExtractMode, string][]).map(([mode, label]) => (
-                      <label key={mode} className="flex items-center gap-2 text-minor text-[var(--abu-text-secondary)]">
-                        <input
-                          type="radio"
-                          name="extractMode"
-                          checked={outputExtractMode === mode}
-                          onChange={() => setOutputExtractMode(mode)}
-                        />
-                        {label}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Custom template editor */}
-                {outputExtractMode === 'custom_template' && (
-                  <div>
-                    <textarea
-                      value={outputCustomTemplate}
-                      onChange={(e) => setOutputCustomTemplate(e.target.value)}
-                      placeholder={t.trigger.templatePlaceholder}
-                      rows={3}
-                      className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-minor text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none font-mono"
-                    />
-                    <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.trigger.templateVariables}</p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Skill binding */}
-          {skills.length > 0 && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.trigger.bindSkill}
-              </label>
-              <Select
-                value={skillName}
-                onChange={setSkillName}
-                placeholder={t.trigger.bindSkillNone}
-                options={[
-                  { value: '', label: t.trigger.bindSkillNone },
-                  ...skills
-                    .filter((s) => s.userInvocable)
-                    .map((s) => ({ value: s.name, label: s.name })),
-                ]}
-              />
-            </div>
-          )}
-
-          {/* Project selector */}
-          {activeProjects.length > 0 && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.project.projectLabel}
-              </label>
-              <Select
-                value={projectId}
-                onChange={(val) => {
-                  setProjectId(val);
-                  if (val) {
-                    const proj = useProjectStore.getState().projects[val];
-                    if (proj) setWorkspacePath(proj.workspacePath);
-                  }
-                }}
-                options={[
-                  { value: '', label: t.project.projectNone },
-                  ...activeProjects.map((p) => ({
-                    value: p.id,
-                    label: p.name,
-                  })),
-                ]}
-              />
-            </div>
-          )}
-
-          {/* Workspace path */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.trigger.workspacePath}
-            </label>
-            <input
-              type="text"
-              value={projectId ? (useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath) : workspacePath}
-              onChange={(e) => setWorkspacePath(e.target.value)}
-              placeholder={t.trigger.workspacePathPlaceholder}
-              disabled={!!projectId}
-              className={cn(
-                'w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
-                projectId && 'opacity-60 cursor-not-allowed'
-              )}
-            />
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-[var(--abu-bg-active)] shrink-0">
-          <button
-            onClick={closeEditor}
-            className="px-4 py-2 rounded-lg text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-          >
-            {t.common.cancel}
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!name.trim() || !prompt.trim() || (sourceType === 'file' && !fileWatchPath.trim()) || (sourceType === 'im' && !imChannelId) || !!isDuplicateName}
-            className={cn(
-              'px-4 py-2 rounded-lg text-body font-medium transition-colors',
-              name.trim() && prompt.trim() && !(sourceType === 'file' && !fileWatchPath.trim()) && !(sourceType === 'im' && !imChannelId) && !isDuplicateName
-                ? 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
-                : 'bg-[var(--abu-border)] text-[var(--abu-text-tertiary)] cursor-not-allowed'
-            )}
-          >
+    <Dialog
+      open={showEditor}
+      onOpenChange={(next) => { if (!next) closeEditor(); }}
+      title={editingId ? t.trigger.editTrigger : t.trigger.newTrigger}
+      // Wide enough for the four sources in one row, in English as well; the same width as the task editor.
+      size="lg"
+      closeButton
+      dirty={dirty}
+      onCloseAutoFocus={onCloseAutoFocus}
+      footer={(
+        <>
+          <DialogClose asChild><Button variant="plain">{t.common.cancel}</Button></DialogClose>
+          <Button variant="primary" disabled={!canSave} onClick={handleSave}>
             {t.common.save}
-          </button>
+          </Button>
+        </>
+      )}
+    >
+      <div className="space-y-4">
+        {/* Name */}
+        <div>
+          <label htmlFor={`${id}-name`} className={FIELD_LABEL}>{t.trigger.triggerName}</label>
+          <TextField
+            id={`${id}-name`}
+            value={name}
+            onChange={(e) => set('name', e.target.value)}
+            placeholder={t.trigger.triggerNamePlaceholder}
+            invalid={Boolean(isDuplicateName)}
+          />
+          {isDuplicateName && (
+            <div className="mt-1">
+              <InlineMessage tone="danger">{t.trigger.duplicateName}</InlineMessage>
+            </div>
+          )}
+        </div>
+
+        {/* Description */}
+        <div>
+          <label htmlFor={`${id}-description`} className={FIELD_LABEL}>{t.trigger.description}</label>
+          <TextArea
+            id={`${id}-description`}
+            value={description}
+            onChange={(e) => set('description', e.target.value)}
+            placeholder={t.trigger.descriptionPlaceholder}
+            rows={2}
+          />
+        </div>
+
+        {/* Source type */}
+        <div>
+          <div className={FIELD_LABEL}>{t.trigger.sourceType}</div>
+          <SegmentedControl
+            label={t.trigger.sourceType}
+            value={sourceType}
+            onValueChange={(next) => set('sourceType', next as TriggerSourceType)}
+            options={SOURCE_TYPES.map((st) => ({ value: st, label: sourceLabels[st] }))}
+          />
+        </div>
+
+        {/* File source fields */}
+        {sourceType === 'file' && (
+          <>
+            <div>
+              <label htmlFor={`${id}-file-path`} className={FIELD_LABEL}>{t.trigger.filePath}</label>
+              <TextField
+                id={`${id}-file-path`}
+                value={fileWatchPath}
+                onChange={(e) => set('fileWatchPath', e.target.value)}
+                placeholder={t.trigger.filePathPlaceholder}
+              />
+            </div>
+            <div>
+              <div className={FIELD_LABEL}>{t.trigger.fileEvents}</div>
+              {/* Any of the three can be on together. */}
+              <div role="group" aria-label={t.trigger.fileEvents} className="flex flex-wrap items-center gap-4">
+                {FILE_EVENTS.map((evt) => (
+                  <Checkbox
+                    key={evt}
+                    checked={fileEvents.includes(evt)}
+                    onCheckedChange={() =>
+                      setFields((prev) => ({
+                        ...prev,
+                        fileEvents: prev.fileEvents.includes(evt) ? prev.fileEvents.filter((e) => e !== evt) : [...prev.fileEvents, evt],
+                      }))
+                    }
+                    label={fileEventLabels[evt]}
+                  />
+                ))}
+              </div>
+            </div>
+            <div>
+              <label htmlFor={`${id}-file-pattern`} className={FIELD_LABEL}>{t.trigger.filePattern}</label>
+              <TextField
+                id={`${id}-file-pattern`}
+                value={filePattern}
+                onChange={(e) => set('filePattern', e.target.value)}
+                placeholder={t.trigger.filePatternPlaceholder}
+              />
+            </div>
+          </>
+        )}
+
+        {/* Cron source fields */}
+        {sourceType === 'cron' && (
+          <div>
+            <label htmlFor={`${id}-cron`} className={FIELD_LABEL}>{t.trigger.cronInterval}</label>
+            <div className="flex items-center gap-2">
+              <TextField
+                id={`${id}-cron`}
+                type="number"
+                value={cronInterval}
+                onChange={(e) => set('cronInterval', Number(e.target.value) || 60)}
+                min={10}
+                placeholder={t.trigger.cronIntervalPlaceholder}
+                className="w-28"
+              />
+              <span className="text-ui-sm text-label-tertiary">{t.trigger.seconds}</span>
+            </div>
+          </div>
+        )}
+
+        {/* IM source fields */}
+        {sourceType === 'im' && (
+          <>
+            {/* IM Channel select */}
+            <div>
+              <div className={FIELD_LABEL}>{t.trigger.imSelectChannel}</div>
+              {channelOptions.length > 0 ? (
+                <Select
+                  fullWidth
+                  label={t.trigger.imSelectChannel}
+                  value={imChannelId}
+                  onValueChange={(next) => set('imChannelId', next)}
+                  placeholder={t.trigger.imSelectChannel}
+                  options={channelOptions}
+                />
+              ) : (
+                <p className={NO_CHANNELS}>{t.trigger.imNoChannels}</p>
+              )}
+            </div>
+
+            {/* Listen scope */}
+            <div>
+              <div className={FIELD_LABEL}>{t.trigger.imListenScope}</div>
+              <RadioGroup
+                label={t.trigger.imListenScope}
+                value={imListenScope}
+                onValueChange={(next) => set('imListenScope', next as IMListenScope)}
+                options={[
+                  { value: 'mention_only', label: t.trigger.imScopeMentionOnly },
+                  { value: 'direct_only', label: t.trigger.imScopeDirectOnly },
+                  { value: 'all', label: t.trigger.imScopeAll },
+                ]}
+              />
+            </div>
+
+            {/* Chat ID filter (optional) */}
+            <div>
+              <label htmlFor={`${id}-im-chat`} className={FIELD_LABEL}>{t.trigger.imChatId}</label>
+              <TextField
+                id={`${id}-im-chat`}
+                value={imChatId}
+                onChange={(e) => set('imChatId', e.target.value)}
+                placeholder={t.trigger.imChatIdPlaceholder}
+              />
+            </div>
+
+            {/* Sender match (optional) */}
+            <div>
+              <label htmlFor={`${id}-im-sender`} className={FIELD_LABEL}>{t.trigger.senderMatch}</label>
+              <TextField
+                id={`${id}-im-sender`}
+                value={imSenderMatch}
+                onChange={(e) => set('imSenderMatch', e.target.value)}
+                placeholder={t.trigger.senderMatchPlaceholder}
+              />
+            </div>
+
+            {/* Webhook callback URL (read-only) */}
+            {selectedIMChannel && (
+              <div>
+                <label htmlFor={`${id}-im-webhook`} className={FIELD_LABEL}>{t.trigger.imWebhookUrl}</label>
+                <div className="flex items-center gap-2">
+                  <TextField
+                    id={`${id}-im-webhook`}
+                    value={imWebhookUrl}
+                    readOnly
+                    className="font-code"
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                  />
+                  <span className="flex shrink-0">
+                    <IconButton
+                      size="sm"
+                      icon={copied ? AppIcons.done : AppIcons.copy}
+                      label={t.trigger.copyEndpoint}
+                      onClick={() => { void handleCopyWebhookUrl(); }}
+                    />
+                  </span>
+                </div>
+                <p className={HINT}>{t.trigger.imWebhookUrlHint}</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Prompt */}
+        <div>
+          <label htmlFor={`${id}-prompt`} className={FIELD_LABEL}>{t.trigger.triggerPrompt}</label>
+          <TextArea
+            id={`${id}-prompt`}
+            value={prompt}
+            onChange={(e) => set('prompt', e.target.value)}
+            placeholder={t.trigger.triggerPromptPlaceholder}
+            rows={4}
+          />
+          <p className={HINT}>{t.trigger.promptHint}</p>
+        </div>
+
+        {/* Capability: what a run may do unattended. A closed list changes nothing on a key press. */}
+        <div>
+          <div className={FIELD_LABEL}>{t.trigger.capability}</div>
+          <Select
+            fullWidth
+            label={t.trigger.capability}
+            value={capability}
+            onValueChange={(value) => set('capability', value as TriggerCapability)}
+            options={capabilityOptions}
+          />
+          <p className={HINT}>{capabilityDescriptions[capability]}</p>
+          <p className={HINT}>{t.trigger.capabilityHint}</p>
+          {capability === 'full' && (
+            <div className="mt-2">
+              <InlineMessage tone="warning">{t.trigger.capabilityFullWarning}</InlineMessage>
+            </div>
+          )}
+        </div>
+
+        {/* Filter type */}
+        <div>
+          <div className={FIELD_LABEL}>{t.trigger.filterType}</div>
+          <SegmentedControl
+            label={t.trigger.filterType}
+            value={filterType}
+            onValueChange={(next) => set('filterType', next as TriggerFilterType)}
+            options={FILTER_TYPES.map((ft) => ({ value: ft, label: filterLabels[ft] }))}
+          />
+        </div>
+
+        {/* Keywords input */}
+        {filterType === 'keyword' && (
+          <div>
+            <label htmlFor={`${id}-keywords`} className={FIELD_LABEL}>{t.trigger.keywords}</label>
+            <TextField
+              id={`${id}-keywords`}
+              value={keywords}
+              onChange={(e) => set('keywords', e.target.value)}
+              placeholder={t.trigger.keywordsPlaceholder}
+            />
+          </div>
+        )}
+
+        {/* Regex input */}
+        {filterType === 'regex' && (
+          <div>
+            <label htmlFor={`${id}-regex`} className={FIELD_LABEL}>{t.trigger.regexPattern}</label>
+            <TextField
+              id={`${id}-regex`}
+              value={regexPattern}
+              onChange={(e) => set('regexPattern', e.target.value)}
+              placeholder={t.trigger.regexPlaceholder}
+              className="font-code"
+            />
+          </div>
+        )}
+
+        {/* Filter field */}
+        {filterType !== 'always' && (
+          <div>
+            <label htmlFor={`${id}-filter-field`} className={FIELD_LABEL}>{t.trigger.filterField}</label>
+            <TextField
+              id={`${id}-filter-field`}
+              value={filterField}
+              onChange={(e) => set('filterField', e.target.value)}
+              placeholder={t.trigger.filterFieldPlaceholder}
+            />
+          </div>
+        )}
+
+        {/* Debounce */}
+        <div>
+          <Checkbox
+            checked={debounceEnabled}
+            onCheckedChange={(next) => set('debounceEnabled', next)}
+            label={t.trigger.debounceEnabled}
+          />
+          {debounceEnabled && (
+            <div className="mt-2 flex items-center gap-2">
+              <TextField
+                type="number"
+                aria-label={t.trigger.debounce}
+                value={debounceSeconds}
+                onChange={(e) => set('debounceSeconds', Number(e.target.value) || 0)}
+                min={0}
+                className="w-24"
+              />
+              <span className="text-ui-sm text-label-tertiary">{t.trigger.seconds}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Quiet hours */}
+        <div>
+          <Checkbox
+            checked={quietHoursEnabled}
+            onCheckedChange={(next) => set('quietHoursEnabled', next)}
+            label={t.trigger.quietHoursEnabled}
+          />
+          {quietHoursEnabled && (
+            <div className="mt-2 flex items-center gap-2">
+              <label htmlFor={`${id}-quiet-start`} className="text-ui-sm text-label-tertiary">{t.trigger.quietHoursStart}</label>
+              <TextField
+                id={`${id}-quiet-start`}
+                type="time"
+                value={quietHoursStart}
+                onChange={(e) => set('quietHoursStart', e.target.value)}
+                className="w-32"
+              />
+              <span className="text-ui-sm text-label-tertiary">~</span>
+              <label htmlFor={`${id}-quiet-end`} className="text-ui-sm text-label-tertiary">{t.trigger.quietHoursEnd}</label>
+              <TextField
+                id={`${id}-quiet-end`}
+                type="time"
+                value={quietHoursEnd}
+                onChange={(e) => set('quietHoursEnd', e.target.value)}
+                className="w-32"
+              />
+            </div>
+          )}
+          {quietHoursEnabled && (
+            <p className={HINT}>{t.trigger.quietHoursHint}</p>
+          )}
+        </div>
+
+        {/* Output config */}
+        <div className="border-t border-separator pt-4">
+          <Checkbox
+            checked={outputEnabled}
+            onCheckedChange={(next) => set('outputEnabled', next)}
+            label={t.trigger.enableOutput}
+          />
+
+          {outputEnabled && (
+            <div className="mt-3 space-y-3">
+              {/* Output target (webhook vs im_channel) */}
+              <SegmentedControl
+                label={t.trigger.outputConfig}
+                value={outputTarget}
+                onValueChange={(next) => set('outputTarget', next as 'webhook' | 'im_channel')}
+                options={[
+                  { value: 'webhook', label: t.trigger.outputTargetWebhook },
+                  { value: 'im_channel', label: t.trigger.outputTargetIMChannel },
+                ]}
+              />
+
+              {/* im_channel target: channel select + optional chat ID */}
+              {outputTarget === 'im_channel' && (
+                <>
+                  <div>
+                    <div className={FIELD_LABEL}>{t.trigger.outputSelectChannel}</div>
+                    {channelOptions.length > 0 ? (
+                      <Select
+                        fullWidth
+                        label={t.trigger.outputSelectChannel}
+                        value={outputChannelId}
+                        onValueChange={(next) => set('outputChannelId', next)}
+                        placeholder={t.trigger.outputSelectChannel}
+                        options={channelOptions}
+                      />
+                    ) : (
+                      <p className={NO_CHANNELS}>{t.trigger.imNoChannels}</p>
+                    )}
+                    {/*
+                      This channel is also where the run ASKS. `triggerEngine`
+                      builds the approval target from this same output config
+                      (`core/im/approvalTarget.ts`), so a confirmation lands
+                      where the results land — and with no channel chosen it
+                      has nowhere to go and is refused. Said here rather than
+                      left for the user to discover as a run that quietly
+                      achieved nothing.
+                    */}
+                    <p className={HINT}>{t.trigger.outputChannelApprovalHint}</p>
+                  </div>
+                  <div>
+                    <label htmlFor={`${id}-output-chats`} className={FIELD_LABEL}>{t.trigger.outputToGroup}</label>
+                    <TextField
+                      id={`${id}-output-chats`}
+                      value={outputChatIds}
+                      onChange={(e) => set('outputChatIds', e.target.value)}
+                      placeholder={t.trigger.outputChatIdPlaceholder}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor={`${id}-output-users`} className={FIELD_LABEL}>{t.trigger.outputToDM}</label>
+                    <TextField
+                      id={`${id}-output-users`}
+                      value={outputUserIds}
+                      onChange={(e) => set('outputUserIds', e.target.value)}
+                      placeholder={t.trigger.outputUserIdPlaceholder}
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Platform select (only for webhook target) */}
+              {outputTarget === 'webhook' && (
+                <>
+                  <div>
+                    <div className={FIELD_LABEL}>{t.trigger.outputPlatform}</div>
+                    {/* A list, not a row: plugins add platforms, so their number is open. */}
+                    <Select
+                      fullWidth
+                      label={t.trigger.outputPlatform}
+                      value={outputPlatform}
+                      onValueChange={(next) => set('outputPlatform', next as OutputPlatform)}
+                      placeholder={t.trigger.outputPlatform}
+                      options={getOutputPlatformOptions()}
+                    />
+                  </div>
+
+                  {/* Webhook URL */}
+                  <div>
+                    <label htmlFor={`${id}-webhook`} className={FIELD_LABEL}>{t.trigger.webhookUrl}</label>
+                    <div className="flex items-center gap-2">
+                      <TextField
+                        id={`${id}-webhook`}
+                        value={outputWebhookUrl}
+                        onChange={(e) => set('outputWebhookUrl', e.target.value)}
+                        placeholder={t.trigger.webhookUrlPlaceholder}
+                      />
+                      {/* Busy while the push it started is on its way: the focus stays here. */}
+                      <span className="flex shrink-0">
+                        <Button
+                          variant="secondary"
+                          busy={testPushStatus === 'testing'}
+                          disabled={!outputWebhookUrl.trim()}
+                          onClick={() => { void handleTestPush(); }}
+                        >
+                          {t.trigger.testPush}
+                        </Button>
+                      </span>
+                    </div>
+                    {testPushStatus === 'success' && (
+                      <div className="mt-2">
+                        <InlineMessage tone="success">{t.trigger.testPushSuccess}</InlineMessage>
+                      </div>
+                    )}
+                    {testPushStatus === 'error' && (
+                      <div className="mt-2">
+                        <InlineMessage tone="danger">{t.trigger.testPushFailed}: {testPushError}</InlineMessage>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Custom Headers (only for 'custom' platform) */}
+                  {outputPlatform === 'custom' && (
+                    <div>
+                      <label htmlFor={`${id}-headers`} className={FIELD_LABEL}>{t.trigger.customHeaders}</label>
+                      <TextArea
+                        id={`${id}-headers`}
+                        value={outputCustomHeaders}
+                        onChange={(e) => set('outputCustomHeaders', e.target.value)}
+                        placeholder={t.trigger.customHeadersPlaceholder}
+                        rows={2}
+                        className="font-code"
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Extract mode */}
+              <div>
+                <div className={FIELD_LABEL}>{t.trigger.extractMode}</div>
+                <RadioGroup
+                  label={t.trigger.extractMode}
+                  value={outputExtractMode}
+                  onValueChange={(next) => set('outputExtractMode', next as OutputExtractMode)}
+                  options={[
+                    { value: 'last_message', label: t.trigger.extractLastMessage },
+                    { value: 'full', label: t.trigger.extractFull },
+                    { value: 'custom_template', label: t.trigger.extractTemplate },
+                  ]}
+                />
+              </div>
+
+              {/* Custom template editor */}
+              {outputExtractMode === 'custom_template' && (
+                <div>
+                  <TextArea
+                    aria-label={t.trigger.extractTemplate}
+                    value={outputCustomTemplate}
+                    onChange={(e) => set('outputCustomTemplate', e.target.value)}
+                    placeholder={t.trigger.templatePlaceholder}
+                    rows={3}
+                    className="font-code"
+                  />
+                  <p className={HINT}>{t.trigger.templateVariables}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Skill binding */}
+        {skills.length > 0 && (
+          <div>
+            <div className={FIELD_LABEL}>{t.trigger.bindSkill}</div>
+            <Select
+              fullWidth
+              label={t.trigger.bindSkill}
+              value={skillName || NONE}
+              onValueChange={(next) => set('skillName', next === NONE ? '' : next)}
+              options={[
+                { value: NONE, label: t.trigger.bindSkillNone },
+                ...skills
+                  .filter((s) => s.userInvocable)
+                  .map((s) => ({ value: s.name, label: s.name })),
+              ]}
+            />
+          </div>
+        )}
+
+        {/* Project selector */}
+        {activeProjects.length > 0 && (
+          <div>
+            <div className={FIELD_LABEL}>{t.project.projectLabel}</div>
+            <Select
+              fullWidth
+              label={t.project.projectLabel}
+              value={projectId || NONE}
+              onValueChange={(next) => {
+                const val = next === NONE ? '' : next;
+                set('projectId', val);
+                if (val) {
+                  const proj = useProjectStore.getState().projects[val];
+                  if (proj) set('workspacePath', proj.workspacePath);
+                }
+              }}
+              options={[
+                { value: NONE, label: t.project.projectNone },
+                ...activeProjects.map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                })),
+              ]}
+            />
+          </div>
+        )}
+
+        {/* Workspace path */}
+        <div>
+          <label htmlFor={`${id}-workspace`} className={FIELD_LABEL}>{t.trigger.workspacePath}</label>
+          <TextField
+            id={`${id}-workspace`}
+            value={projectId ? (useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath) : workspacePath}
+            onChange={(e) => set('workspacePath', e.target.value)}
+            placeholder={t.trigger.workspacePathPlaceholder}
+            disabled={!!projectId}
+          />
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

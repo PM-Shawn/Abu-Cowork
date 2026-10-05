@@ -1,14 +1,17 @@
-import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Plus, X } from 'lucide-react';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { memo, useCallback, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { Button } from '@/components/ds/button';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { TextArea } from '@/components/ds/text-area';
+import { TextField } from '@/components/ds/text-field';
 import { useTodosStore } from '@/stores/todosStore';
 import { useI18n } from '@/i18n';
 import { windowDragRowProps } from '@/utils/windowDrag';
 import { cn } from '@/lib/utils';
 import TodoItem from './TodoItem';
+import { useRowFocus } from './useRowFocus';
 
 type Tab = 'today' | 'all';
 
@@ -20,7 +23,11 @@ function isSameDay(a: number, b: number): boolean {
     && da.getDate() === db.getDate();
 }
 
-export default function TodoView() {
+/**
+ * The todos page. `App` renders for every piece of a streamed reply, so the page takes no props
+ * and reads one store field at a time.
+ */
+const TodoView = memo(function TodoView() {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>('today');
   const [editorOpen, setEditorOpen] = useState(false);
@@ -37,6 +44,8 @@ export default function TodoView() {
   const createTodo = useTodosStore((s) => s.createTodo);
   const toggleStatus = useTodosStore((s) => s.toggleStatus);
   const deleteTodo = useTodosStore((s) => s.deleteTodo);
+  // A deleted row and the closed form take the focused control with them.
+  const { root, fallback, note } = useRowFocus('data-todo-row');
 
   const openTodos = useMemo(
     () => Object.values(todos)
@@ -65,6 +74,7 @@ export default function TodoView() {
     const title = titleDraft.trim();
     if (!title) return;
     const notes = notesDraft.trim();
+    note(null);
     createTodo({ title, source: 'manual', notes: notes || undefined });
     setTitleDraft('');
     setNotesDraft('');
@@ -72,10 +82,17 @@ export default function TodoView() {
   };
 
   const handleCancel = () => {
+    note(null);
     setTitleDraft('');
     setNotesDraft('');
     setEditorOpen(false);
   };
+
+  // Stable for the memoized rows.
+  const handleDelete = useCallback((id: string) => {
+    note(id);
+    deleteTodo(id);
+  }, [note, deleteTodo]);
 
   // Guard Enter handler against IME composition:
   //   - `e.nativeEvent.isComposing` covers most engines mid-composition
@@ -99,38 +116,36 @@ export default function TodoView() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
-      <div {...windowDragRowProps()} className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
-        <h1 className="text-h-md font-semibold text-[var(--abu-text-primary)]">{t.todos.title}</h1>
+    <div className="flex h-full flex-col bg-surface">
+      <div {...windowDragRowProps()} className="flex items-center justify-between border-b border-separator px-6 py-4">
+        <h1 className="text-title text-label">{t.todos.title}</h1>
         <div className="flex items-center gap-2">
-          <div className="flex gap-1 text-body">
+          <div className="flex gap-1">
             {(['today', 'all'] as Tab[]).map((k) => (
-              <button
+              <Pressable
                 key={k}
+                aria-pressed={tab === k}
                 onClick={() => setTab(k)}
                 className={cn(
-                  'px-3 py-1.5 rounded-md',
-                  tab === k
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]',
+                  'h-7 rounded-control px-3 text-ui',
+                  tab === k ? 'bg-fill-selected text-label' : 'text-label-secondary hover:bg-fill-hover',
                 )}
               >
                 {k === 'today' ? t.todos.tabToday : t.todos.tabAll}
-              </button>
+              </Pressable>
             ))}
           </div>
-          <Button onClick={() => setEditorOpen(true)} disabled={editorOpen}>
-            <Plus className="h-4 w-4 mr-1" />
+          <Button ref={fallback} variant="primary" icon={AppIcons.add} onClick={() => setEditorOpen(true)} disabled={editorOpen}>
             {t.todos.newTodo}
           </Button>
         </div>
       </div>
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-6 py-4">
+      <ScrollArea className="min-h-0 flex-1">
+        <div ref={root} className="px-6 py-4">
           {editorOpen && (
-            <div className="mb-3 p-3 rounded-lg border border-[var(--abu-clay-40)] bg-[var(--abu-bg-card)] space-y-2">
-              <Input
+            <div className="mb-3 space-y-2 rounded-panel border border-separator bg-surface p-3">
+              <TextField
                 autoFocus
                 value={titleDraft}
                 onChange={(e) => setTitleDraft(e.target.value)}
@@ -138,38 +153,33 @@ export default function TodoView() {
                 onCompositionStart={handleCompositionStart}
                 onCompositionEnd={handleCompositionEnd}
                 placeholder={t.todos.placeholder}
-                className="text-body"
               />
-              <Textarea
+              <TextArea
                 value={notesDraft}
                 onChange={(e) => setNotesDraft(e.target.value)}
                 placeholder={t.todos.notesPlaceholder}
-                className="text-body min-h-[64px]"
                 rows={3}
               />
               <div className="flex justify-end gap-2">
-                <Button variant="ghost" size="sm" onClick={handleCancel}>
-                  <X className="h-3.5 w-3.5 mr-1" />
+                <Button variant="plain" size="sm" icon={AppIcons.close} onClick={handleCancel}>
                   {t.common.cancel}
                 </Button>
-                <Button size="sm" onClick={handleSubmit} disabled={!titleDraft.trim()}>
+                <Button variant="secondary" size="sm" onClick={handleSubmit} disabled={!titleDraft.trim()}>
                   {t.common.confirm}
                 </Button>
               </div>
             </div>
           )}
           {list.length === 0 && !editorOpen ? (
-            <div className="px-6 py-10 text-center text-[var(--abu-text-muted)] text-body">
-              {t.todos.empty}
-            </div>
+            <EmptyState icon={AppIcons.todos} title={t.todos.empty} />
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               {list.map((todo) => (
                 <TodoItem
                   key={todo.id}
                   todo={todo}
-                  onToggle={() => toggleStatus(todo.id)}
-                  onDelete={() => deleteTodo(todo.id)}
+                  onToggle={toggleStatus}
+                  onDelete={handleDelete}
                 />
               ))}
             </div>
@@ -178,4 +188,6 @@ export default function TodoView() {
       </ScrollArea>
     </div>
   );
-}
+});
+
+export default TodoView;

@@ -4,7 +4,7 @@ import { loadLocalImage } from '@/utils/pathUtils';
 import { useSettingsStore } from '@/stores/settingsStore';
 import abuAvatar from '@/assets/abu-avatar.png';
 
-const SIZE = { sm: 'h-5 w-5 text-caption', md: 'h-7 w-7 text-minor', lg: 'h-10 w-10 text-h-sm', xl: 'h-20 w-20 text-h-xl' } as const;
+const SIZE = { sm: 'h-5 w-5 text-caption', md: 'h-7 w-7 text-ui-sm', lg: 'h-10 w-10 text-title', xl: 'h-20 w-20 text-title-lg' } as const;
 
 /**
  * An app's logo: the package image (light or dark variant by theme) loaded
@@ -38,7 +38,8 @@ export default function AppLogo({ name, logo, logoDark, general = false, size = 
       if (url) URL.revokeObjectURL(url);
     };
   }, [path]);
-  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--abu-bg-active)] font-semibold text-[var(--abu-text-secondary)] select-none', SIZE[size], className);
+  // The letter mark takes its size from SIZE; font-medium also overrides the weight a title size brings.
+  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control bg-fill font-medium text-label select-none', SIZE[size], className);
   if (general) return <span className={box} data-testid="app-logo" data-app-logo="general"><img src={abuAvatar} alt="" className="h-full w-full object-cover" /></span>;
   if (src) return <span className={box} data-testid="app-logo" data-app-logo="image"><img src={src} alt="" className="h-full w-full object-cover" /></span>;
   return <span className={box} data-testid="app-logo" data-app-logo="letter" aria-hidden="true">{name.trim().charAt(0)}</span>;

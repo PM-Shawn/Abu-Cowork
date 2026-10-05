@@ -326,7 +326,7 @@ async function openAutomationItem(page: Page, tabLabel: RegExp, itemName: string
   await page.getByRole('button', { name: tabLabel }).click();
   const item = page.getByText(itemName, { exact: true });
   if (!await item.isVisible({ timeout: 1_000 }).catch(() => false)) {
-    await page.locator('.border-b').getByRole('button').first().click();
+    await page.getByRole('button', { name: /^(返回列表|Back)$/ }).click();
   }
   await expect(item).toBeVisible({ timeout: READY_TIMEOUT });
   await item.click();
@@ -436,7 +436,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     await expectCurrentChatReady(page);
 
     await openAutomationItem(page, /^(定时任务|Scheduled Tasks)$/, scheduleName);
-    await page.getByTitle(/^(查看会话|View Conversation)$/).click();
+    await page.getByRole('button', { name: /^(查看会话|View Conversation)$/ }).click();
     await expect(page.getByText(/^(思考中|Thinking)(?:\s*\(\d+s\))?$/)).toBeVisible({ timeout: READY_TIMEOUT });
 
     handle.release(scheduleResponse);

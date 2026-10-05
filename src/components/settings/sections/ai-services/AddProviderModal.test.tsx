@@ -73,7 +73,7 @@ vi.mock('@/components/ds/checkbox', async (importOriginal) => {
 // title and the unsaved-input flag the window gives its dialog, whether the content it hands over
 // (shown or not) carries the made-up key anywhere, and the value the key field is rendered with.
 const windowRenders = vi.hoisted(() => ({
-  dialogs: [] as { title: unknown; dirty: unknown; holdsKey: boolean }[],
+  dialogs: [] as { title: unknown; dirty: unknown; holdsKey: boolean; holds: (text: string) => boolean }[],
   keys: [] as string[],
 }));
 
@@ -96,6 +96,8 @@ vi.mock('@/components/ds/dialog', async (importOriginal) => {
         title: props.title,
         dirty: props.dirty,
         holdsKey: carriesText([props.children, props.footer], 'sk-test-not-a-secret'),
+        // Asked later, about the content this render handed over.
+        holds: (text) => carriesText([props.children, props.footer], text),
       });
       return <actual.Dialog {...props} />;
     },
@@ -1152,11 +1154,13 @@ describe('AddProviderModal — behaviour pins', () => {
   function open(editProvider?: ProviderInstance) {
     const onClose = vi.fn();
     const view = render(<AddProviderModal open={true} editProvider={editProvider} onClose={onClose} />, { wrapper: DesignSystemProvider });
+    const close = () => view.rerender(<AddProviderModal open={false} onClose={onClose} />);
+    const show = () => view.rerender(<AddProviderModal open={true} onClose={onClose} />);
     const reopen = () => {
-      view.rerender(<AddProviderModal open={false} onClose={onClose} />);
-      view.rerender(<AddProviderModal open={true} onClose={onClose} />);
+      close();
+      show();
     };
-    return { onClose, reopen };
+    return { onClose, reopen, close, show };
   }
 
   beforeEach(() => {
@@ -2096,6 +2100,130 @@ describe('AddProviderModal — behaviour pins', () => {
 
       expect(button).toHaveFocus();
       expect(button).not.toHaveAttribute('aria-disabled');
+    });
+
+    // Two presses can arrive before the window has drawn the button as busy: the check itself
+    // refuses a second run while the first is out.
+    it('runs one check when the button is pressed twice before the window draws again', async () => {
+      let finish: (result: { success: boolean; latencyMs: number }) => void = () => undefined;
+      vi.mocked(checkProviderHealth).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      fillDeepSeek();
+      const button = screen.getByRole('button', { name: t().settings.validateConnection });
+
+      act(() => {
+        button.click();
+        button.click();
+      });
+      expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+
+      await act(async () => { finish({ success: true, latencyMs: 88 }); });
+      expect(screen.getByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeInTheDocument();
+
+      // Once the answer is in, the button checks again.
+      vi.mocked(checkProviderHealth).mockResolvedValue({ success: true, latencyMs: 12 });
+      await act(async () => { button.click(); });
+      expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+    });
+
+    it('checks again after a check that threw', async () => {
+      vi.mocked(checkProviderHealth).mockRejectedValueOnce(new Error('network down'));
+      fillDeepSeek();
+      const button = screen.getByRole('button', { name: t().settings.validateConnection });
+      await act(async () => { button.click(); });
+      expect(screen.getByText(t().settings.validationFailed)).toBeInTheDocument();
+
+      vi.mocked(checkProviderHealth).mockResolvedValue({ success: true, latencyMs: 12 });
+      await act(async () => { button.click(); });
+      expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+    });
+
+    describe('when the window is closed and opened again while a check is out', () => {
+      type Answer = (result: { success: boolean; latencyMs: number }) => void;
+      // Each check waits until the test answers it; `answers` holds them in the order they started.
+      function holdChecks(): Answer[] {
+        const answers: Answer[] = [];
+        vi.mocked(checkProviderHealth).mockImplementation(() => new Promise((resolve) => { answers.push(resolve); }));
+        return answers;
+      }
+      // The window clears its form once it has closed; that settles before the form is filled again.
+      async function fillAgain() {
+        await act(async () => { await Promise.resolve(); });
+        ui.pickProvider('DeepSeek');
+        fireEvent.change(ui.keyInput(), { target: { value: FAKE_KEY } });
+        ui.pickCuratedModel('DeepSeek V4 Pro');
+      }
+      const validateButton = () => screen.getByRole('button', { name: t().settings.validateConnection });
+
+      it('starts a new check from the reopened window', async () => {
+        holdChecks();
+        const { reopen } = fillDeepSeek();
+        ui.validate();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(1);
+
+        reopen();
+        await fillAgain();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+        ui.validate();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+        expect(screen.getByText(t().settings.validating)).toBeInTheDocument();
+      });
+
+      it('does not show the answer of the old check in the reopened window', async () => {
+        const answers = holdChecks();
+        const { reopen } = fillDeepSeek();
+        ui.validate();
+        reopen();
+        await fillAgain();
+
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+
+        expect(screen.queryByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeNull();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+      });
+
+      it('writes nothing when the answer arrives after the window has closed and stays closed', async () => {
+        const answers = holdChecks();
+        const { close, show } = fillDeepSeek();
+        ui.validate();
+        close();
+        // The window has gone and has forgotten its form: the key is in no content it hands over.
+        await waitFor(() => expect(windowRenders.dialogs.at(-1)?.holdsKey).toBe(false));
+        const drawn = windowRenders.dialogs.length;
+        const answer = t().settings.validationSuccess.replace('{latency}', '88');
+
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+        await act(async () => { await Promise.resolve(); });
+        // However often the closed window is drawn after that, no draw holds the late answer:
+        // a result written into its state would be in the content of the next draw.
+        expect(windowRenders.dialogs.slice(drawn).filter((render) => render.holds(answer))).toEqual([]);
+
+        show();
+        await fillAgain();
+        expect(screen.queryByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeNull();
+        expect(screen.queryByText(t().settings.validating)).toBeNull();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+      });
+
+      it('keeps the new check running when the old one answers late, and shows only the new answer', async () => {
+        const answers = holdChecks();
+        const { reopen } = fillDeepSeek();
+        ui.validate();
+        reopen();
+        await fillAgain();
+        ui.validate();
+
+        await act(async () => { answers[0]({ success: true, latencyMs: 88 }); });
+        expect(validateButton()).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByText(t().settings.validating)).toBeInTheDocument();
+        expect(screen.queryByText(t().settings.validationSuccess.replace('{latency}', '88'))).toBeNull();
+        // Still one check at a time for this opening.
+        ui.validate();
+        expect(checkProviderHealth).toHaveBeenCalledTimes(2);
+
+        await act(async () => { answers[1]({ success: true, latencyMs: 12 }); });
+        expect(screen.getByText(t().settings.validationSuccess.replace('{latency}', '12'))).toBeInTheDocument();
+        expect(validateButton()).not.toHaveAttribute('aria-disabled');
+      });
     });
 
     it('shows the reason when the check fails', async () => {

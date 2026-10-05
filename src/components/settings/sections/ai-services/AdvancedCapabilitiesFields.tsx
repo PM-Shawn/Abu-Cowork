@@ -49,9 +49,10 @@ export default function AdvancedCapabilitiesFields({
               checked={!!declared.supportsImages}
               onCheckedChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))}
               label={t.settings.capImages}
+              aria-describedby={`${fieldId}-images-hint`}
             />
             {/* pl-6 = 勾选框宽度 16px + 间距 8px，说明与「能看图」文字左对齐 */}
-            <span className="pl-6 text-ui-sm text-label-tertiary">{t.settings.capImagesHint}</span>
+            <span id={`${fieldId}-images-hint`} className="pl-6 text-ui-sm text-label-tertiary">{t.settings.capImagesHint}</span>
           </div>
           <Checkbox
             checked={!!declared.supportsReasoning}

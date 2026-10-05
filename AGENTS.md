@@ -515,9 +515,12 @@ registry; the "used by teams" question stays for that case). A question asked fr
 window's menu runs after the menu has gone, over that window; the window ends it when it leaves.
 The handler keeps a `deleting` / `removing` ref so one target gets one delete.
 
-Focus: `toolbox/cardFocus.ts` is the one place that finds a card again after a delete, an uninstall
-or an editor: the focus goes to that card, else the card now at its index, else the last one, else
-the page's 「添加」 button (`focusByTestId`), and never to the window (`focusIsOnWindow`). A switch
+Focus: three helpers keep the focus off the window (`focusIsOnWindow`), one per kind of list.
+`toolbox/cardFocus.ts` finds a card again after a delete, an uninstall or an editor: the focus goes
+to that card, else the card now at its index, else the last one, else the page's 「添加」 button
+(`focusByTestId`). `automation/useListDetailFocus.ts` is for a list and the page of one item that
+replace each other, and `todos/useRowFocus.ts` for rows that hold native buttons (both under
+batch 7b). A switch
 whose own action is running (connecting or disconnecting a connector, turning a plugin on) is
 `Switch busy`, so the focus stays on it; a switch whose feature is unavailable stays `disabled`.
 
@@ -533,6 +536,42 @@ list). Private code that renders these components (and its tests) does so inside
 
 Migration list: `src/components/toolbox/**` is on it; `customize/` and `common/` join file by file
 (unused legacy files there wait for batch 10).
+
+**Other pages (batch 7b)**: the automation page shares the extensions shell: `TopTabNav`, and
+`ToolCard` for task and listener cards. The schedule and trigger editors are `Dialog size="lg"`;
+each fills its form when it opens or moves to another item, from the item as the store holds it at
+that moment, and does not refill when the item changes, so a run recorded meanwhile leaves what was
+typed alone. A small,
+mutually exclusive choice inside a draft form is a `SegmentedControl` (frequency, weekday, source,
+filter, output) or a `RadioGroup` (listen scope, extract mode); a choice from a list (hour, minute,
+skill, project, channel, push platform) and both autonomy choices (a task's and a listener's) are
+`Select`s. A
+`Select` shows its placeholder while the value it holds matches no option, and leaves the owner's
+value alone. A `Dialog` description renders line breaks: the second line of a delete question is the
+name of what it acts on. `Checkbox` takes `aria-describedby` for an explanation shown beside it.
+`LoadError` has its first user in `AppPageView`; the retry tooltip there opens beside the button,
+because the native page is painted over everything below the header row. The inbox has no `primary`
+button; the todos page has one, 「新建待办」.
+
+Focus: `automation/useListDetailFocus.ts` hands the focus between a list and the page of one item
+(cards through `cardProps('automation', id)`, the way back marked `data-automation-back`): to the
+way back on the way in, to the item's card on the way out, else the card that took its place, else
+the create button. It also covers an item deleted from outside while its question or its editor is
+open. `todos/useRowFocus.ts` serves inbox and todo rows: after a row is deleted, an inbox item is
+answered or the inline form closes, the focus goes to the same row's first button, else the next
+row that has one, else a row before, else the header control.
+
+Long lists: todo and inbox rows mount no Tooltip, Menu or Select root. Their icon-only buttons are
+`Pressable`s with an `aria-label` and no tooltip, the one exception to "an icon-only `Pressable` sits
+in a `Tooltip`". `InboxView` and `TodoView` are `memo` with no props, and `TodoItem` is `memo` with
+handlers that stay the same between renders.
+
+`AddProviderModal.handleValidate` owns its re-entry check: `validatingRef` holds the check in flight
+for the current opening, every form reset clears it, and an answer from an earlier opening is
+dropped. `Button busy` is presentation only.
+
+Migration list: `src/components/automation/**`, `schedule/**`, `trigger/**`, `inbox/**`, `todos/**`
+and `app/**` are on it.
 
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one

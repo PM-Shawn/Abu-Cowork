@@ -189,7 +189,7 @@ async function runSchedule(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: /^(定时任务|Scheduled Tasks)$/ }).click();
   const item = page.getByText(name, { exact: true });
   if (!await item.isVisible({ timeout: 1_000 }).catch(() => false)) {
-    await page.locator('.border-b').getByRole('button').first().click();
+    await page.getByRole('button', { name: /^(返回列表|Back)$/ }).click();
   }
   await item.click();
   await page.getByRole('button', { name: /^(立即执行|Run Now)$/ }).click();

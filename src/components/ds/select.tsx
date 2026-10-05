@@ -78,7 +78,9 @@ export function Select({ value, onValueChange, onReselect, options, label, place
     if (!next && picked !== null && picked === value) onReselect?.(picked);
   };
   return (
-    <SelectPrimitive.Root value={value} onValueChange={onValueChange} open={isOpen} onOpenChange={changeOpen} disabled={disabled}>
+    // A value that no option has (a stored choice that is no longer on offer) is shown as no
+    // choice: the placeholder, and no option marked. The owner keeps the value it holds.
+    <SelectPrimitive.Root value={chosen ? value : ''} onValueChange={onValueChange} open={isOpen} onOpenChange={changeOpen} disabled={disabled}>
       <SelectPrimitive.Trigger
         aria-label={label}
         // A closed select never changes its value from a key press. Radix would otherwise pick the

@@ -1,5 +1,5 @@
 /**
- * Keyboard focus for the card grids of the extensions page. A card can leave
+ * Keyboard focus for the card grids of the extensions, experts and automation pages. A card can leave
  * while the focus is on it or on a window it opened: an uninstall or a delete
  * removes it, an install replaces it with another kind of card, an editor takes
  * the place of the list. The focus then goes to that card, else the card that
@@ -7,7 +7,7 @@
  * never ends up on the window.
  */
 
-export type CardKind = 'plugin-mine' | 'plugin-market' | 'plugin-orphan' | 'skill' | 'connector' | 'expert' | 'team';
+export type CardKind = 'plugin-mine' | 'plugin-market' | 'plugin-orphan' | 'skill' | 'connector' | 'expert' | 'team' | 'automation';
 
 const ATTRIBUTE: Record<CardKind, string> = {
   'plugin-mine': 'data-plugin-mine-card',
@@ -17,6 +17,8 @@ const ATTRIBUTE: Record<CardKind, string> = {
   connector: 'data-connector-card',
   expert: 'data-expert-card',
   team: 'data-team-card',
+  // A scheduled task or an event listener on the automation page; one of the two lists is on the page at a time.
+  automation: 'data-automation-entry',
 };
 
 export interface CardPlace {

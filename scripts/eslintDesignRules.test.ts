@@ -281,4 +281,70 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/toolbox/useTrialLauncher.ts')).not.toEqual([]);
   });
+
+  it('checks every file of the automation frame and the scheduled tasks page, tests included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/automation/AutomationView.tsx',
+      'src/components/automation/AutomationView.test.tsx',
+      'src/components/schedule/ScheduleView.tsx',
+      'src/components/schedule/ScheduleTaskCard.tsx',
+      'src/components/schedule/ScheduleTaskDetail.test.tsx',
+      'src/components/schedule/ScheduleRunHistory.tsx',
+      'src/components/schedule/ScheduleEditor.tsx',
+      // The directory entries: a file added to either directory later is checked as well.
+      'src/components/automation/NewFileOfTheDirectory.tsx',
+      'src/components/schedule/NewFileOfTheDirectory.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+  });
+
+  it('checks every file of the event listeners page, tests included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/trigger/TriggerView.tsx',
+      'src/components/trigger/TriggerView.test.tsx',
+      'src/components/trigger/TriggerCard.tsx',
+      'src/components/trigger/TriggerDetail.tsx',
+      'src/components/trigger/TriggerRunHistory.tsx',
+      'src/components/trigger/TriggerEditor.tsx',
+      'src/components/trigger/TriggerEditor.test.tsx',
+      // The directory entry: a file added to the directory later is checked as well.
+      'src/components/trigger/NewFileOfTheDirectory.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+  });
+
+  it('checks every file of the inbox, the todos page and the app page, tests included', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/inbox/InboxView.tsx',
+      'src/components/inbox/InboxView.test.tsx',
+      'src/components/inbox/InboxItem.tsx',
+      'src/components/todos/TodoView.tsx',
+      'src/components/todos/TodoView.test.tsx',
+      'src/components/todos/TodoItem.tsx',
+      'src/components/app/AppPageView.tsx',
+      'src/components/app/AppPageView.test.tsx',
+      'src/components/app/AppLogo.tsx',
+      // The directory entries: a file added to one of the directories later is checked as well.
+      'src/components/inbox/NewFileOfTheDirectory.tsx',
+      'src/components/todos/NewFileOfTheDirectory.tsx',
+      'src/components/app/NewFileOfTheDirectory.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
+  });
+
+  it('checks the automation, inbox and app page files that finished migrating', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    expect(await messages(code, 'src/components/trigger/TriggerEditor.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/schedule/ScheduleEditor.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/inbox/InboxView.tsx')).not.toEqual([]);
+    expect(await messages(code, 'src/components/app/AppPageView.tsx')).not.toEqual([]);
+    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
+    expect(await messages(icon, 'src/components/todos/useRowFocus.ts')).not.toEqual([]);
+  });
 });

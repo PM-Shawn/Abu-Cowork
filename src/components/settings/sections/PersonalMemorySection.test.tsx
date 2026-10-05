@@ -535,6 +535,19 @@ describe('PersonalMemorySection', () => {
         await waitFor(() => expect(screen.queryByText('个人记忆（本页）')).toBeNull());
       });
 
+      // The button is an icon: its name shows when the keyboard reaches it.
+      it('shows the name of the explanation button when the keyboard reaches it', async () => {
+        const user = userEvent.setup();
+        await showList();
+        const info = screen.getByRole('button', { name: '阿布的三层记忆' });
+        await user.tab();
+        expect(info).toHaveFocus();
+        expect(await screen.findByRole('tooltip')).toHaveTextContent('阿布的三层记忆');
+        // It still opens the panel.
+        await user.keyboard('{Enter}');
+        expect(await screen.findByText('个人记忆（本页）')).toBeInTheDocument();
+      });
+
       it('says whether a group and a memory are open, and opens a memory from the keyboard', async () => {
         const user = userEvent.setup();
         await showList();

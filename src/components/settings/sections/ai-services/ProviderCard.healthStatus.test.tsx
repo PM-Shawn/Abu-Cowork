@@ -52,7 +52,7 @@ async function recheckAndFindFailure(): Promise<HTMLElement> {
   return holder;
 }
 
-const CONSOLE_METHODS =['log', 'info', 'warn', 'error', 'debug'] as const;
+const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug'] as const;
 
 describe('ProviderCard after a failed health check', () => {
   let consoleSpies: Array<ReturnType<typeof vi.spyOn>>;

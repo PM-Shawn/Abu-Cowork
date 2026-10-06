@@ -34,6 +34,7 @@ const usageDb = require_('./usageDb.cjs') as {
     lastErrorCode: string | null;
     degradedCode: string | null;
   };
+  purgeUsageLedger: (app: unknown) => { removed: string[] };
   _internal: {
     queryRange: (app: unknown, from: string, to: string) => RangeResult;
     queryConversation: (app: unknown, conversationId: string) => ConversationResult;
@@ -235,6 +236,26 @@ describe('汇总口径', () => {
     expect(range().totals.incompleteAttempts).toBe(1);
   });
 
+  it('推理 token 只累加已知值，输出合计不因它再加一次', () => {
+    const before = range().totals;
+    usageDb.recordUsageAttempt(
+      fakeApp(),
+      attempt({
+        attemptId: 'd',
+        localDate: '2026-09-16',
+        usage: usageOf({ outputTotal: 500, reasoningOutput: 120 }),
+      }),
+    );
+
+    const after = range().totals;
+
+    // 其余几条没有上报推理，不参与求和。
+    expect(before.reasoningKnownSum).toBe(0);
+    expect(after.reasoningKnownSum).toBe(120);
+    // 推理是输出的子项：输出合计只增加这一条的 500。
+    expect(after.outputKnownSum).toBe(before.outputKnownSum + 500);
+  });
+
   it('按本地日历日分组，日期就是快照里的 localDate', () => {
     const byDay = range().byDay;
     expect(byDay.map((d) => d.localDate)).toEqual(['2026-09-15', '2026-09-16']);
@@ -397,6 +418,46 @@ describe('库出问题时', () => {
     expect(usageDb.getUsageHealth().writeFailures).toBe(1);
   });
 
+  it.skipIf(isRoot)('上一版建的库文件是只读的：覆盖索引建不出来，历史数字照常读得到', () => {
+    usageDb.recordUsageAttempt(fakeApp(), attempt({ attemptId: 'a', source: 'main' }));
+    usageDb.recordUsageAttempt(fakeApp(), attempt({ attemptId: 'b', source: 'subagent', skill: 'docx' }));
+    const before = range();
+    usageDb._internal.resetForTest();
+
+    const { DatabaseSync } = require_('node:sqlite') as {
+      DatabaseSync: new (p: string) => {
+        exec: (s: string) => void;
+        prepare: (s: string) => { all: () => { name: string }[] };
+        close: () => void;
+      };
+    };
+    // 删掉覆盖索引，得到加这个索引之前的版本留下的库；再把库文件改成只读，目录保持可写。
+    const older = new DatabaseSync(dbPath());
+    older.exec('DROP INDEX idx_usage_range_cover');
+    older.close();
+    fs.chmodSync(dbPath(), 0o444);
+
+    let after: RangeResult;
+    let indexNames: string[];
+    try {
+      after = range();
+      usageDb._internal.resetForTest();
+      const probe = new DatabaseSync(dbPath());
+      indexNames = probe.prepare('PRAGMA index_list(usage_attempts)').all().map((row) => row.name);
+      probe.close();
+    } finally {
+      fs.chmodSync(dbPath(), 0o644);
+    }
+
+    // 索引确实没建成；少了这一条，下面的断言就可能是在有索引的库上通过的。
+    expect(indexNames).not.toContain('idx_usage_range_cover');
+    expect(after.available).toBe(true);
+    expect(after.health.degradedCode).toBeNull();
+    expect(after.totals).toEqual(before.totals);
+    expect(after.bySource).toEqual(before.bySource);
+    expect(after.byDay).toEqual(before.byDay);
+  });
+
   it('库一时打不开：恢复之后自己接着记，不必重启', () => {
     // 在库文件的位置放一个目录，SQLite 打不开它。这个阻塞方式在 macOS 与 Windows
     // 上是同一种失败，不依赖目录权限位的语义。
@@ -490,6 +551,174 @@ describe('库结构往前走', () => {
     // 补完列之后照常写。
     expect(usageDb.recordUsageAttempt(fakeApp(), attempt({ attemptId: 'att-new' }))).toEqual({ ok: true });
     expect(range().totals.attempts).toBe(2);
+  });
+
+  it('上一版建的库没有范围查询的覆盖索引，打开时补上，汇总不变', () => {
+    usageDb.recordUsageAttempt(fakeApp(), attempt({ attemptId: 'a', source: 'main' }));
+    usageDb.recordUsageAttempt(fakeApp(), attempt({ attemptId: 'b', source: 'subagent', skill: 'docx' }));
+    const before = range();
+    usageDb._internal.resetForTest();
+
+    const { DatabaseSync } = require_('node:sqlite') as {
+      DatabaseSync: new (p: string) => {
+        exec: (s: string) => void;
+        prepare: (s: string) => { all: () => { name: string }[] };
+        close: () => void;
+      };
+    };
+    const indexNames = (): string[] => {
+      const db = new DatabaseSync(dbPath());
+      const names = db.prepare('PRAGMA index_list(usage_attempts)').all().map((row) => row.name);
+      db.close();
+      return names;
+    };
+    // 把索引删掉，得到的就是加这个索引之前的版本留下的库。
+    const older = new DatabaseSync(dbPath());
+    older.exec('DROP INDEX idx_usage_range_cover');
+    older.close();
+    expect(indexNames()).not.toContain('idx_usage_range_cover');
+
+    const after = range();
+    usageDb._internal.resetForTest();
+
+    expect(after.available).toBe(true);
+    expect(after.totals).toEqual(before.totals);
+    expect(after.bySource).toEqual(before.bySource);
+    expect(after.byDay).toEqual(before.byDay);
+    expect(indexNames()).toContain('idx_usage_range_cover');
+  });
+});
+
+describe('清除账本', () => {
+  const SUFFIXES = ['', '-wal', '-shm'];
+
+  function existingFiles(): string[] {
+    return SUFFIXES.filter((suffix) => fs.existsSync(`${dbPath()}${suffix}`));
+  }
+
+  it('主库与两个边文件都删掉，磁盘上不留任何记录', () => {
+    usageDb.recordUsageAttempt(fakeApp(), attempt());
+    // 库还开着的时候三个文件都在；少了这一条，下面的「都删掉了」就可能是空转。
+    expect(existingFiles()).toEqual(SUFFIXES);
+
+    const result = usageDb.purgeUsageLedger(fakeApp());
+
+    expect(result.removed).toContain(usageDb.USAGE_DB_FILENAME);
+    expect(existingFiles()).toEqual([]);
+  });
+
+  it('进程异常退出后留在磁盘上的边文件也一起删掉', () => {
+    usageDb.recordUsageAttempt(fakeApp(), attempt());
+    // 库开着时把三个文件原样复制出来，得到的就是进程被终止那一刻磁盘上的样子：
+    // 最近的记录还在 `-wal` 里，没有任何句柄会去收拾它。
+    const crashedRoot = `${appDataRoot}-crashed`;
+    const crashedDir = path.join(crashedRoot, path.basename(path.dirname(dbPath())));
+    fs.rmSync(crashedRoot, { recursive: true, force: true });
+    fs.mkdirSync(crashedDir, { recursive: true });
+    for (const suffix of SUFFIXES) {
+      fs.copyFileSync(`${dbPath()}${suffix}`, path.join(crashedDir, `${usageDb.USAGE_DB_FILENAME}${suffix}`));
+    }
+    usageDb._internal.resetForTest();
+    appDataRoot = crashedRoot;
+    expect(existingFiles()).toEqual(SUFFIXES);
+
+    const result = usageDb.purgeUsageLedger(fakeApp());
+
+    expect(result.removed.sort()).toEqual(SUFFIXES.map((s) => `${usageDb.USAGE_DB_FILENAME}${s}`).sort());
+    expect(existingFiles()).toEqual([]);
+  });
+
+  it('清除之后查询是空的，统计起点也没有了', () => {
+    usageDb.recordUsageAttempt(fakeApp(), attempt());
+    usageDb.purgeUsageLedger(fakeApp());
+
+    const result = range();
+
+    expect(result.available).toBe(true);
+    expect(result.totals.attempts).toBe(0);
+    expect(result.statsOriginLocalDate).toBeNull();
+  });
+
+  it('清除之后照常能记，同一个 attemptId 重新算一条', () => {
+    usageDb.recordUsageAttempt(fakeApp(), attempt({ revision: 9 }));
+    usageDb.purgeUsageLedger(fakeApp());
+
+    expect(usageDb.recordUsageAttempt(fakeApp(), attempt({ revision: 1 }))).toEqual({ ok: true });
+    expect(range().totals.attempts).toBe(1);
+  });
+
+  it('没有账本文件时什么都不做', () => {
+    expect(usageDb.purgeUsageLedger(fakeApp())).toEqual({ removed: [] });
+    expect(existingFiles()).toEqual([]);
+  });
+
+  it('损坏的库也能清掉，停写状态随之解除', () => {
+    fs.mkdirSync(path.dirname(dbPath()), { recursive: true });
+    fs.writeFileSync(dbPath(), 'this is not a sqlite database at all');
+    expect(usageDb.recordUsageAttempt(fakeApp(), attempt()).ok).toBe(false);
+    expect(usageDb.getUsageHealth().degradedCode).toBe('corrupt');
+
+    usageDb.purgeUsageLedger(fakeApp());
+
+    expect(existingFiles()).toEqual([]);
+    expect(usageDb.getUsageHealth().degradedCode).toBeNull();
+    expect(usageDb.recordUsageAttempt(fakeApp(), attempt())).toEqual({ ok: true });
+  });
+
+  it('删到一半失败：抛出错误，停写状态不留在已经不存在的损坏文件上', () => {
+    fs.mkdirSync(path.dirname(dbPath()), { recursive: true });
+    fs.writeFileSync(dbPath(), 'this is not a sqlite database at all');
+    expect(usageDb.recordUsageAttempt(fakeApp(), attempt()).ok).toBe(false);
+    expect(usageDb.getUsageHealth().degradedCode).toBe('corrupt');
+    // 在 `-wal` 的位置放一个非空目录：删文件的调用删不掉它，两个平台都会报错。
+    fs.mkdirSync(`${dbPath()}-wal`);
+    fs.writeFileSync(path.join(`${dbPath()}-wal`, 'blocker'), 'x');
+
+    expect(() => usageDb.purgeUsageLedger(fakeApp())).toThrow();
+
+    // 主库排在前面，已经删掉了。
+    expect(fs.existsSync(dbPath())).toBe(false);
+    expect(usageDb.getUsageHealth().degradedCode).toBeNull();
+  });
+
+  it('本次运行的健康计数不因清除而改变', () => {
+    usageDb.recordUsageAttempt(fakeApp(), { nonsense: true });
+    usageDb.purgeUsageLedger(fakeApp());
+
+    expect(usageDb.getUsageHealth().rejectedFrames).toBe(1);
+  });
+
+  it('不是一条可以派发的命令', () => {
+    usageDb.recordUsageAttempt(fakeApp(), attempt());
+
+    for (const cmd of ['usage_purge', 'usage_purge_ledger', 'purgeUsageLedger']) {
+      expect(usageDb.usageDispatch(fakeApp(), cmd, {})).toBe(usageDb.USAGE_MISS);
+    }
+    expect(range().totals.attempts).toBe(1);
+  });
+
+  it('除了账本模块自己，没有任何源码调用它', () => {
+    const SOURCE_DIRS = ['electron', 'src', 'sidecar/src', 'scripts'];
+    const SOURCE_EXTENSIONS = ['.cjs', '.mjs', '.js', '.ts', '.tsx'];
+    const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', 'out']);
+
+    function sourceFiles(dir: string): string[] {
+      const found: string[] = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') || SKIPPED_DIRS.has(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) found.push(...sourceFiles(full));
+        else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) found.push(full);
+      }
+      return found;
+    }
+
+    const mentioning = SOURCE_DIRS.flatMap((dir) => sourceFiles(path.join(REPO_ROOT, dir)))
+      .filter((file) => fs.readFileSync(file, 'utf8').includes('purgeUsageLedger'))
+      .map((file) => path.relative(REPO_ROOT, file).split(path.sep).join('/'))
+      .sort();
+
+    expect(mentioning).toEqual(['electron/usageDb.cjs', 'electron/usageDb.test.ts']);
   });
 });
 

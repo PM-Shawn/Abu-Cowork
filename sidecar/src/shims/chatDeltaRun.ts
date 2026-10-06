@@ -20,6 +20,14 @@
  */
 import type { ChatDelta } from '@/core/agent/ports/chatDelta';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setChatDelta()`。sidecar 里每次运行的 chatDelta 由
+ * `agentLoopHost.ts` 创建并经 `agentRunContext.run()` 注入，两次并发的运行互不可见，
+ * 没有模块级的值可以替换，有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getChatDelta(): ChatDelta {
   return getCurrentAgentRunContext().chatDelta;

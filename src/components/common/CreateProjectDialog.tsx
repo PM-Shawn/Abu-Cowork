@@ -82,9 +82,13 @@ export default function CreateProjectDialog({
   // field unless a control has it. The layer that leaves last would return the focus to the
   // control that opened this window, which the new project has taken off the page.
   const pageWatch = useRef<MutationObserver | null>(null);
+  const mounted = useRef(false);
   const focusComposerOncePageIsFree = () => {
     pageWatch.current?.disconnect();
     pageWatch.current = null;
+    // An owner took the window off the page in the step that closed it, and this hook runs
+    // afterwards: nothing would end a watch started now.
+    if (!mounted.current) return;
     // True once no layer is on the page; the focus is then placed and the watch ends.
     const settle = () => {
       if (document.querySelector('[data-ds-layer]:not([hidden])')) return false;
@@ -100,7 +104,13 @@ export default function CreateProjectDialog({
     watch.observe(document.body, { childList: true, subtree: true });
     pageWatch.current = watch;
   };
-  useEffect(() => () => pageWatch.current?.disconnect(), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      pageWatch.current?.disconnect();
+    };
+  }, []);
 
   const nameId = useId();
   const instructionsId = useId();

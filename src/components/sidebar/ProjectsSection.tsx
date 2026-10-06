@@ -9,7 +9,7 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import ProjectItem from './ProjectItem';
-import { projectCreateProps, useProjectRowFocus } from './projectRowFocus';
+import { archivedRowProps, archivedToggleProps, projectCreateProps, useArchivedRowFocus, useProjectRowFocus } from './projectRowFocus';
 import ProjectSettingsDialog from '@/components/common/ProjectSettingsDialog';
 
 // The create project window belongs to the sidebar: a created project turns the sidebar to
@@ -44,6 +44,8 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
   // Dialog state
   // A row whose project is archived or deleted from its own menu hands the focus to a neighbour.
   const noteRowLeaving = useProjectRowFocus();
+  // A row of the archived list whose project is restored or deleted does the same.
+  const noteArchivedRowLeaving = useArchivedRowFocus();
   const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [sectionCollapsed, setSectionCollapsed] = useState(false);
@@ -153,24 +155,34 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
               size="sm"
               onClick={() => setShowArchived(!showArchived)}
               className="font-normal text-label-tertiary hover:text-label-secondary"
+              {...archivedToggleProps}
             >
               {format(t.project.archivedCount, { count: String(archivedProjects.length) })}
             </Button>
             {showArchived && (
               <div className="mt-1 space-y-1">
                 {archivedProjects.map((p) => (
-                  <div key={p.id} className="flex h-6 items-center gap-2 px-2 text-ui-sm text-label-tertiary">
+                  <div key={p.id} className="flex h-6 items-center gap-2 px-2 text-ui-sm text-label-tertiary" {...archivedRowProps(p.id)}>
                     <span className="flex min-w-0 flex-1 items-center gap-2">
                       <Icon icon={AppIcons.folder} size="sm" />
                       <span className="truncate">{p.name}</span>
                     </span>
-                    <Button variant="plain" size="sm" onClick={() => restoreProject(p.id)} className="text-link">
+                    <Button
+                      variant="plain"
+                      size="sm"
+                      onClick={() => {
+                        noteArchivedRowLeaving(p.id);
+                        restoreProject(p.id);
+                      }}
+                      className="text-link"
+                    >
                       {t.project.restore}
                     </Button>
                     <Button
                       variant="danger"
                       size="sm"
                       onClick={() => {
+                        noteArchivedRowLeaving(p.id);
                         // Unlink conversations then delete
                         const convs = Object.values(conversationIndex).filter(c => c.projectId === p.id);
                         const setProj = useChatStore.getState().setConversationProject;

@@ -116,7 +116,7 @@ describe('ComputerUseSetupView', () => {
     rerender(<ComputerUseSetupView {...p} checking />);
     expect(screen.getByText('Checking')).toBeTruthy();
     expect(screen.queryByText('Setup required')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Check again' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Check again' }).getAttribute('aria-disabled')).toBe('true');
     for (const grant of screen.getAllByRole('button', { name: 'Grant access' })) {
       expect(grant.hasAttribute('disabled')).toBe(true);
     }
@@ -126,6 +126,33 @@ describe('ComputerUseSetupView', () => {
     for (const grant of screen.getAllByRole('button', { name: 'Grant access' })) {
       expect(grant.hasAttribute('disabled')).toBe(true);
     }
+  });
+  it('keeps the focus on Check again while its check runs, and checks once', () => {
+    const p = props();
+    const { rerender } = render(<ComputerUseSetupView {...p} />);
+    const check = screen.getByRole('button', { name: 'Check again' });
+    check.focus();
+    fireEvent.click(check);
+
+    rerender(<ComputerUseSetupView {...p} checking />);
+    // The same button, marked busy: not switched off under the keyboard.
+    expect(screen.getByRole('button', { name: 'Check again' })).toBe(check);
+    expect(check.getAttribute('aria-disabled')).toBe('true');
+    expect(check.hasAttribute('disabled')).toBe(false);
+    expect(document.activeElement).toBe(check);
+    fireEvent.click(check);
+    expect(p.onRefresh).toHaveBeenCalledOnce();
+
+    rerender(<ComputerUseSetupView {...p} />);
+    expect(check.hasAttribute('aria-disabled')).toBe(false);
+    expect(document.activeElement).toBe(check);
+  });
+  it('switches Check again off while a permission request, which is not its own action, is running', () => {
+    const p = props();
+    render(<ComputerUseSetupView {...p} requesting="screenRead" />);
+    const check = screen.getByRole('button', { name: 'Check again' });
+    expect(check.hasAttribute('disabled')).toBe(true);
+    expect(check.hasAttribute('aria-disabled')).toBe(false);
   });
   it('offers the restart only when one is required', () => {
     const p = { ...props(), onRelaunch: vi.fn() };

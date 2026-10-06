@@ -2,8 +2,10 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { Button } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -428,7 +430,7 @@ describe('MessageBubble user run status', () => {
       expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
     });
 
-    it('re-checks when the provider is removed while the rewind confirm is open', () => {
+    it('re-checks when the provider is removed while the rewind confirm is open', async () => {
       const failed: Message = { ...baseMessage, runState: 'failed', runError: 'boom', loopId: 'loop-1' };
       const spy = seedConversation([failed, laterTurn], USABLE_PIN);
       const before = useChatStore.getState().conversations['conversation-1'].messages;
@@ -448,6 +450,8 @@ describe('MessageBubble user run status', () => {
         providers: [...state.providers, { ...state.providers.find((p) => p.id === 'anthropic')!, id: 'other', enabled: true }],
       }));
       fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+      // The answer reaches the handler that waits for it.
+      await act(async () => {});
 
       expectNothingSent(spy, before);
     });
@@ -621,5 +625,312 @@ describe('MessageBubble on the design system', () => {
     fireEvent.click(screen.getByRole('button', { name: 'report.pdf' }));
     expect(usePreviewStore.getState().previewFilePath).toBe('/workspace/report.pdf');
     expect(screen.getByRole('button', { name: 'Show in File Manager' })).toBeInTheDocument();
+  });
+});
+
+describe('MessageBubble redo question', () => {
+  const CONVERSATION = 'conversation-1';
+  const question: Message = { ...baseMessage, loopId: 'loop-1' };
+  const answer: Message = { id: 'message-answer', role: 'assistant', content: 'first answer', timestamp: 1, loopId: 'loop-1' };
+  const laterTurns = (count: number): Message[] => Array.from({ length: count }, (_, index) => ({
+    id: `later-${index}`, role: 'user' as const, content: `later ${index}`, timestamp: 10 + index, loopId: `loop-later-${index}`,
+  }));
+  let deleteSpy: MockInstance;
+
+  function seed(messages: Message[], status: Conversation['status'] = 'idle') {
+    setConversation(messages[0], status);
+    useChatStore.setState((state) => ({
+      conversations: {
+        [CONVERSATION]: { ...state.conversations[CONVERSATION], messages, model: { providerId: 'anthropic', modelId: 'model-a' } },
+      },
+    }));
+    deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
+  }
+  const stored = () => useChatStore.getState().conversations[CONVERSATION].messages;
+  const questionTitle = () => screen.queryByText(getI18n().chat.rewindConfirmTitle);
+  const questionText = (count: number) => getI18n().chat.rewindConfirmMessage.replace('{count}', String(count));
+  const press = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
+  // Lets the answer reach the handler that waits for it.
+  const answered = () => act(async () => {});
+
+  beforeEach(() => {
+    initLanguage('en-US');
+    vi.mocked(runAgentLoopDispatched).mockReset();
+    vi.mocked(runAgentLoopDispatched).mockResolvedValue({ reason: 'completed' });
+    useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+    useSettingsStore.setState((state) => ({
+      providers: state.providers.map((provider) =>
+        provider.id === 'anthropic'
+          ? { ...provider, enabled: true, apiKey: 'test-key', models: [...provider.models, { ...provider.models[0], id: 'model-a', label: '' }] }
+          : provider,
+      ),
+    }));
+    useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+    useToastStore.setState(useToastStore.getInitialState(), true);
+  });
+
+  afterEach(() => {
+    deleteSpy.mockRestore();
+    cleanup();
+    useToastStore.setState(useToastStore.getInitialState(), true);
+    useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+    useEnterpriseStore.setState(useEnterpriseStore.getInitialState(), true);
+  });
+
+  it('regenerates at once, with no question, when no turn follows', async () => {
+    seed([question, answer]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    await answered();
+
+    expect(questionTitle()).not.toBeInTheDocument();
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, question.content, { initiatedBy: 'user' });
+  });
+
+  it('asks with the number of turns that follow, and Cancel deletes nothing', async () => {
+    seed([question, answer, ...laterTurns(3)]);
+    const before = stored();
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    expect(questionTitle()).toBeInTheDocument();
+    expect(screen.getByText(questionText(3))).toBeInTheDocument();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+
+    press('Cancel');
+    await answered();
+    expect(questionTitle()).not.toBeInTheDocument();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('deletes and sends once after Confirm', async () => {
+    seed([question, answer, ...laterTurns(2)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    expect(screen.getByText(questionText(2))).toBeInTheDocument();
+    press('Confirm');
+    await answered();
+
+    expect(questionTitle()).not.toBeInTheDocument();
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
+    expect(stored()).toEqual([]);
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, question.content, { initiatedBy: 'user' });
+  });
+
+  it('takes Escape as Cancel', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    const before = stored();
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    expect(questionTitle()).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await answered();
+
+    expect(questionTitle()).not.toBeInTheDocument();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('asks the same question before a retry that would delete later turns', async () => {
+    const failed: Message = { ...question, runState: 'failed', runError: 'boom' };
+    seed([failed, ...laterTurns(2)]);
+    const before = stored();
+    render(<MessageBubble message={failed} />);
+
+    press('Retry');
+    expect(screen.getByText(questionText(2))).toBeInTheDocument();
+    expect(stored()).toBe(before);
+    press('Confirm');
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, failed.id]]);
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the same question before an edited message is sent again', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    const before = stored();
+    render(<MessageBubble message={question} />);
+
+    press('Edit');
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited text' } });
+    press('Save & Resend');
+    expect(screen.getByText(questionText(1))).toBeInTheDocument();
+    expect(stored()).toBe(before);
+    press('Confirm');
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'edited text', { initiatedBy: 'user' });
+  });
+
+  it('offers no redo while the conversation runs', () => {
+    seed([question, answer, ...laterTurns(1)], 'running');
+    render(<><MessageBubble message={question} /><MessageBubble message={answer} hideAvatar /></>);
+
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+  });
+
+  it('still redoes when a run starts on the conversation while the question shows', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    act(() => {
+      useChatStore.setState((state) => ({
+        conversations: { [CONVERSATION]: { ...state.conversations[CONVERSATION], status: 'running' } },
+      }));
+    });
+    expect(questionTitle()).toBeInTheDocument();
+    press('Confirm');
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+  });
+
+  const setStored = (messages: Message[]) => act(() => {
+    useChatStore.setState((state) => ({
+      conversations: { [CONVERSATION]: { ...state.conversations[CONVERSATION], messages } },
+    }));
+  });
+
+  it('asks in a question window that opens on Cancel', () => {
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+
+    const box = screen.getByRole('alertdialog', { name: getI18n().chat.rewindConfirmTitle });
+    expect(box).toHaveTextContent(questionText(1));
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+  });
+
+  it('deletes nothing when the message has left the conversation by the time of the answer', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    await setStored(laterTurns(1));
+    const before = stored();
+    press('Confirm');
+    await answered();
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('deletes nothing when the message it would cut at has left the conversation', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    await setStored([answer, ...laterTurns(1)]);
+    const before = stored();
+    press('Confirm');
+    await answered();
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('deletes nothing when more turns follow at the answer than the question named', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    expect(screen.getByText(questionText(1))).toBeInTheDocument();
+    await setStored([question, answer, ...laterTurns(3)]);
+    const before = stored();
+    press('Confirm');
+    await answered();
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('deletes nothing when the message row has left the page by the time of the answer', async () => {
+    function Host() {
+      const [shown, setShown] = useState(true);
+      return (
+        <>
+          <Button onClick={() => setShown(false)}>take the row away</Button>
+          {shown && <MessageBubble message={answer} />}
+        </>
+      );
+    }
+    seed([question, answer, ...laterTurns(1)]);
+    const before = stored();
+    render(<Host />);
+
+    press('Regenerate');
+    fireEvent.click(screen.getByRole('button', { name: 'take the row away', hidden: true }));
+    press('Confirm');
+    await answered();
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('is answered no by a question that takes its place', async () => {
+    const otherAnswers: boolean[] = [];
+    function Other() {
+      const confirm = useConfirm();
+      return (
+        <Button onClick={() => { void confirm({ title: 'Replace the goal?', confirmLabel: 'Replace' }).then((ok) => otherAnswers.push(ok)); }}>
+          ask about the goal
+        </Button>
+      );
+    }
+    seed([question, answer, ...laterTurns(1)]);
+    const before = stored();
+    render(<><MessageBubble message={answer} /><Other /></>);
+
+    press('Regenerate');
+    fireEvent.click(screen.getByRole('button', { name: 'ask about the goal', hidden: true }));
+    await answered();
+
+    expect(questionTitle()).not.toBeInTheDocument();
+    expect(screen.getByRole('alertdialog', { name: 'Replace the goal?' })).toBeInTheDocument();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+
+    // The answer to the question now on screen is not an answer to the redo question.
+    press('Replace');
+    await answered();
+    expect(otherAnswers).toEqual([true]);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('asks nothing a second time for a second press on Confirm', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    fireEvent.click(confirmButton);
+    fireEvent.click(confirmButton);
+    await answered();
+
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
   });
 });

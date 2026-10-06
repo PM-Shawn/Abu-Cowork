@@ -2,9 +2,13 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StrictMode } from 'react';
+import { StrictMode, useState, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { McpUiHostContext } from '@modelcontextprotocol/ext-apps/app-bridge';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { APPROVAL_TITLE, approvalProbe, windowBox } from '@/test/dsWindows';
 import { initLanguage } from '@/i18n';
 import { buildAppStyleVariables } from '@/core/mcp/appHost';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -61,7 +65,8 @@ interface SessionSink {
 function renderBlock(
   over: Partial<McpAppBlockProps> = {},
   sessionSink: SessionSink = {},
-  options: { strict?: boolean } = {},
+  // `beside` is drawn next to the block, inside the same providers (another window, an approval).
+  options: { strict?: boolean; beside?: ReactNode } = {},
 ) {
   const defaultDeps: McpAppBlockProps['deps'] = {
     readResource: async () => appResource(),
@@ -86,7 +91,12 @@ function renderBlock(
     ...over,
     deps: { ...defaultDeps, ...over.deps },
   };
-  return render(<McpAppBlock {...props} />, options.strict ? { wrapper: StrictMode } : undefined);
+  return render(<><McpAppBlock {...props} />{options.beside}</>, { wrapper: options.strict ? StrictProviders : DesignSystemProvider });
+}
+
+// The open-link question is a design-system window, which needs the provider the app mounts at its root.
+function StrictProviders({ children }: { children: ReactNode }) {
+  return <StrictMode><DesignSystemProvider>{children}</DesignSystemProvider></StrictMode>;
 }
 
 /**
@@ -1004,11 +1014,11 @@ describe('McpAppBlock', () => {
       let promise!: Promise<unknown>;
       await act(async () => {
         promise = sink.handlers!.onopenlink!({ url } as never);
+        // Swallow the rejection until the test awaits it, so a declined prompt
+        // (one declined at once included) does not surface as an unhandled rejection.
+        promise.catch(() => {});
         await Promise.resolve();
       });
-      // Swallow the rejection until the test awaits it, so a declined prompt
-      // does not surface as an unhandled rejection.
-      promise.catch(() => {});
       return { promise };
     }
 
@@ -1047,15 +1057,19 @@ describe('McpAppBlock', () => {
       expect(row).toHaveTextContent('已拒绝打开');
     });
 
-    it('keeps the full URL in a title attribute when it is too long to print', async () => {
+    it('prints a long address whole, and keeps it as the title too', async () => {
       const sink: SessionSink = {};
-      const url = `https://example.com/?q=${'x'.repeat(700)}`;
+      // As long as the host accepts (MAX_APP_LINK_URL_CHARS): what the user decides on is all of it.
+      const url = `https://example.com/?q=${'x'.repeat(2048 - 'https://example.com/?q='.length)}`;
       renderBlock({}, sink);
       await settle();
       const { promise } = await askToOpen(sink, url);
       const shown = screen.getByTestId('mcp-app-open-link-url');
+      expect(url).toHaveLength(2048);
       expect(shown).toHaveAttribute('title', url);
-      expect(shown.textContent!.length).toBeLessThan(url.length);
+      expect(shown.textContent).toBe(url);
+      expect(shown).toHaveClass('break-all');
+      expect(shown).toHaveClass('font-code');
       await act(async () => { fireEvent.click(screen.getByText('取消')); });
       await expect(promise).rejects.toThrow();
     });
@@ -1072,6 +1086,311 @@ describe('McpAppBlock', () => {
       const row = screen.getByTestId('mcp-app-audit-row');
       await act(async () => { fireEvent.click(row.querySelector('button')!); });
       expect(row).toHaveTextContent('已被拦截');
+    });
+
+    // What an answer means, and what ends a request without one. The address in these tests is made up.
+    const FIRST = 'https://first.example.test/path?token=not-a-secret';
+    const SECOND = 'https://second.example.test/other';
+    const shownAddress = () => screen.queryByTestId('mcp-app-open-link-url');
+
+    it('shows the address letter for letter, with the same address as its title', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      expect(shownAddress()!.textContent).toBe(FIRST);
+      expect(shownAddress()).toHaveAttribute('title', FIRST);
+      await act(async () => { fireEvent.click(screen.getByText('取消')); });
+      await expect(promise).rejects.toThrow('user declined');
+    });
+
+    it('opens the address once for one press on 打开', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      await act(async () => { fireEvent.click(screen.getByText('打开')); });
+      await expect(promise).resolves.toEqual({});
+      expect(openLink.mock.calls).toEqual([[FIRST]]);
+      expect(shownAddress()).toBeNull();
+    });
+
+    it('takes Escape as a refusal', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      await act(async () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' }); });
+      await expect(promise).rejects.toThrow('user declined');
+      expect(openLink).not.toHaveBeenCalled();
+      expect(shownAddress()).toBeNull();
+    });
+
+    it('declines a second request outright while the first is being asked, and the first stays', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const first = await askToOpen(sink, FIRST);
+      const second = await askToOpen(sink, SECOND);
+      await expect(second.promise).rejects.toThrow('user declined');
+      expect(shownAddress()!.textContent).toBe(FIRST);
+      expect(openLink).not.toHaveBeenCalled();
+
+      await act(async () => { fireEvent.click(screen.getByText('打开')); });
+      await expect(first.promise).resolves.toEqual({});
+      // The press was for the first address only.
+      expect(openLink.mock.calls).toEqual([[FIRST]]);
+    });
+
+    it('asks again for a request that arrives after an answer', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const first = await askToOpen(sink, FIRST);
+      await act(async () => { fireEvent.click(screen.getByText('取消')); });
+      await expect(first.promise).rejects.toThrow('user declined');
+
+      const second = await askToOpen(sink, SECOND);
+      expect(shownAddress()!.textContent).toBe(SECOND);
+      expect(openLink).not.toHaveBeenCalled();
+      await act(async () => { fireEvent.click(screen.getByText('打开')); });
+      await expect(second.promise).resolves.toEqual({});
+      expect(openLink.mock.calls).toEqual([[SECOND]]);
+    });
+
+    it('refuses and takes the question away when the connector drops', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      setServerStatus('weather', 'connected');
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      await act(async () => { setServerStatus('weather', 'disconnected'); });
+      await settle();
+
+      await expect(promise).rejects.toThrow('user declined');
+      expect(shownAddress()).toBeNull();
+      expect(openLink).not.toHaveBeenCalled();
+    });
+
+    it('refuses and takes the question away when the block leaves the page', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      const view = renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      await act(async () => { view.unmount(); });
+
+      await expect(promise).rejects.toThrow('user declined');
+      expect(shownAddress()).toBeNull();
+      expect(openLink).not.toHaveBeenCalled();
+    });
+
+    const QUESTION = '界面想打开链接';
+
+    it('asks in a question window that opens on 取消', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      const box = screen.getByRole('alertdialog', { name: QUESTION });
+      expect(box).toContainElement(shownAddress());
+      expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
+      expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+
+      await act(async () => { fireEvent.click(screen.getByText('取消')); });
+      await expect(promise).rejects.toThrow('user declined');
+    });
+
+    it('puts the address in the page text and its title, and nowhere else', async () => {
+      const logs = (['log', 'info', 'warn', 'error', 'debug'] as const).map((level) => vi.spyOn(console, level).mockImplementation(() => {}));
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      const carriers = Array.from(document.querySelectorAll('*')).flatMap((element) =>
+        Array.from(element.attributes).filter((attribute) => attribute.value.includes(FIRST)).map((attribute) => `${element.getAttribute('data-testid')}:${attribute.name}`));
+      expect(carriers).toEqual(['mcp-app-open-link-url:title']);
+      await act(async () => { fireEvent.click(screen.getByText('取消')); });
+      await expect(promise).rejects.toThrow('user declined');
+      for (const log of logs) {
+        expect(log.mock.calls.flat().some((value) => String(value).includes(FIRST))).toBe(false);
+      }
+    });
+
+    it('opens the address once when 打开 is pressed twice in one go', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      await act(async () => {
+        const open = screen.getByText('打开');
+        fireEvent.click(open);
+        fireEvent.click(open);
+      });
+      await expect(promise).resolves.toEqual({});
+      expect(openLink.mock.calls).toEqual([[FIRST]]);
+    });
+
+    it('gives a request that follows an answer at once a window of its own', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const first = await askToOpen(sink, FIRST);
+      const firstBox = screen.getByRole('alertdialog', { name: QUESTION });
+      // The user is about to open the first address.
+      screen.getByRole('button', { name: '打开' }).focus();
+
+      let second!: Promise<unknown>;
+      await act(async () => {
+        // The first is refused and the interface asks again before the page has drawn.
+        fireEvent.click(screen.getByText('取消'));
+        second = sink.handlers!.onopenlink!({ url: SECOND } as never);
+        second.catch(() => {});
+        await Promise.resolve();
+      });
+
+      await expect(first.promise).rejects.toThrow('user declined');
+      expect(shownAddress()!.textContent).toBe(SECOND);
+      expect(screen.getByRole('alertdialog', { name: QUESTION })).not.toBe(firstBox);
+      expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
+      expect(openLink).not.toHaveBeenCalled();
+
+      await act(async () => { fireEvent.click(screen.getByText('取消')); });
+      await expect(second).rejects.toThrow('user declined');
+    });
+
+    it('is refused when another window opens and takes its place', async () => {
+      function Other() {
+        const [open, setOpen] = useState(false);
+        return (
+          <>
+            <Button onClick={() => setOpen(true)}>open settings</Button>
+            <Dialog open={open} onOpenChange={setOpen} title="Settings" closeButton />
+          </>
+        );
+      }
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink, { beside: <Other /> });
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'open settings', hidden: true })); });
+
+      await expect(promise).rejects.toThrow('user declined');
+      expect(shownAddress()).toBeNull();
+      expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+      expect(openLink).not.toHaveBeenCalled();
+    });
+
+    it('steps aside for an approval without an answer, and returns on 取消', async () => {
+      const approvalAnswers: boolean[] = [];
+      function Approval() {
+        const [shown, setShown] = useState(false);
+        return (
+          <>
+            <Button onClick={() => setShown(true)}>an approval arrives</Button>
+            <Button onClick={() => setShown(false)}>the approval is answered</Button>
+            {approvalProbe(shown, (open) => approvalAnswers.push(open))}
+          </>
+        );
+      }
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink, { beside: <Approval /> });
+      await settle();
+
+      const { promise } = await askToOpen(sink, FIRST);
+      let settled = false;
+      void promise.then(() => { settled = true; }, () => { settled = true; });
+      // The user had moved to 打开 when the approval arrived.
+      screen.getByRole('button', { name: '打开' }).focus();
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'an approval arrives', hidden: true })); });
+
+      expect(windowBox(APPROVAL_TITLE)).not.toBeNull();
+      expect(windowBox(QUESTION)).toHaveAttribute('hidden');
+      await act(async () => {});
+      expect(settled).toBe(false);
+      expect(approvalAnswers).toEqual([]);
+      expect(openLink).not.toHaveBeenCalled();
+
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'the approval is answered', hidden: true })); });
+      expect(windowBox(QUESTION)).not.toHaveAttribute('hidden');
+      expect(shownAddress()!.textContent).toBe(FIRST);
+      expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
+      expect(settled).toBe(false);
+
+      await act(async () => { fireEvent.click(screen.getByText('打开')); });
+      await expect(promise).resolves.toEqual({});
+      expect(openLink.mock.calls).toEqual([[FIRST]]);
+    });
+
+    it('gives a request from another interface its own window: the first is refused, nothing carries over', async () => {
+      const sinks: Record<string, SessionSink> = {};
+      const openLink = vi.fn();
+      const block = (id: string) => (
+        <McpAppBlock
+          key={id}
+          toolCallId={id}
+          server="weather"
+          resourceUri="ui://weather/view.html"
+          input={{}}
+          result="ok"
+          conversationId="conv-1"
+          deps={{
+            readResource: async () => appResource(),
+            isConnected: () => true,
+            handshakeTimeoutMs: 0,
+            isDark: () => false,
+            openLink,
+            createSession: (options) => {
+              const s = makeSession();
+              sinks[id] = { session: s, handlers: options.handlers };
+              return s;
+            },
+          }}
+        />
+      );
+      render(<>{block('tc-1')}{block('tc-2')}</>, { wrapper: DesignSystemProvider });
+      await settle();
+
+      const first = await askToOpen(sinks['tc-1'], FIRST);
+      const firstBox = screen.getByRole('alertdialog', { name: QUESTION });
+      // The user is about to open the first address.
+      screen.getByRole('button', { name: '打开' }).focus();
+
+      const second = await askToOpen(sinks['tc-2'], SECOND);
+      await act(async () => {});
+
+      await expect(first.promise).rejects.toThrow('user declined');
+      const boxes = screen.getAllByRole('alertdialog', { name: QUESTION });
+      expect(boxes).toHaveLength(1);
+      expect(boxes[0]).not.toBe(firstBox);
+      expect(shownAddress()!.textContent).toBe(SECOND);
+      expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
+      expect(openLink).not.toHaveBeenCalled();
+
+      await act(async () => { fireEvent.click(screen.getByText('打开')); });
+      await expect(second.promise).resolves.toEqual({});
+      expect(openLink.mock.calls).toEqual([[SECOND]]);
     });
   });
 

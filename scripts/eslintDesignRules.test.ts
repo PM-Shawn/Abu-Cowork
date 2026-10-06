@@ -198,7 +198,7 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/toolbox/extensionSource.ts')).not.toEqual([]);
     // common/ and team/ have no directory entry: files that have not migrated stay on the old rules.
-    expect(await messages(code, 'src/components/common/ConfirmDialog.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/common/InlinePermissionRequest.tsx')).toEqual([]);
     expect(await messages(code, 'src/components/team/useConversationTeam.test.tsx')).toEqual([]);
   });
 

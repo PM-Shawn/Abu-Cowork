@@ -2,12 +2,26 @@
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
-import { useState, type ReactElement } from 'react';
+import { useState, type ComponentProps, type ReactElement } from 'react';
 import { exists, mkdir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { APPROVAL_TITLE, approvalProbe, closingWindow, discardQuestion, keepClosingLayersOnScreen, windowBox } from '@/test/dsWindows';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
 import InstructionsEditModal from './InstructionsEditModal';
+
+// The handler the window's Save button was last drawn with, so a test can run it the way no
+// press can: while the button is switched off.
+const saveHandler = vi.hoisted(() => ({ current: undefined as ((event: never) => void) | undefined }));
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    Button: (props: ComponentProps<typeof actual.Button>) => {
+      if (props.variant === 'primary') saveHandler.current = props.onClick as (event: never) => void;
+      return actual.Button(props);
+    },
+  };
+});
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 const t = () => getI18n();
@@ -153,6 +167,25 @@ describe('InstructionsEditModal', () => {
         ui.escape();
         expect(discardQuestion.box()).toBeNull();
         expect(onClose).toHaveBeenCalledTimes(1);
+      });
+
+      // The Save button is switched off then, so no press reaches its handler. The handler holds
+      // the same rule by itself: called directly, it still writes nothing.
+      it('writes nothing when the save handler runs although the button is switched off', async () => {
+        files[FILE] = 'Answer briefly.';
+        vi.mocked(readTextFile).mockRejectedValue(new Error('fake read failure'));
+        const { onClose } = await open();
+        expect(ui.save()).toBeDisabled();
+        log = [];
+
+        await act(async () => { saveHandler.current?.({} as never); });
+        await settle();
+
+        expect(log).toEqual([]);
+        expect(writeTextFile).not.toHaveBeenCalled();
+        expect(mkdir).not.toHaveBeenCalled();
+        expect(files[FILE]).toBe('Answer briefly.');
+        expect(onClose).not.toHaveBeenCalled();
       });
 
       it('treats a failed look for the file the same way', async () => {

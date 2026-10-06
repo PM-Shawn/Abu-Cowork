@@ -27,7 +27,7 @@ import {
   type AppApprovalDecision,
   type McpAppAuditEntry,
 } from '@/core/mcp/appBridgeHandlers';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { ConfirmDialog } from '@/components/ds/confirm-dialog';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
@@ -46,11 +46,6 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 /** How many domains (rejected or accepted) the disclosure line names before it
  *  says "and more" — the note is one line under a tool card, not a report. */
 const MAX_LISTED_DOMAINS = 3;
-
-/** How much of an app-supplied URL the consent dialog prints. The rest is
- *  reachable through the element's `title`, so a long URL neither truncates
- *  away the part that matters nor turns the dialog into a wall of text. */
-const MAX_SHOWN_LINK_CHARS = 512;
 
 type BlockStatus = 'loading' | 'ready' | 'failed' | 'disconnected';
 
@@ -396,8 +391,10 @@ export default function McpAppBlock({
   const [audit, setAudit] = useState<McpAppAuditEntry[]>([]);
   const [rateLimited, setRateLimited] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
-  /** URL awaiting the user's answer in the `ui/open-link` consent dialog. */
-  const [pendingLink, setPendingLink] = useState<string | null>(null);
+  /** The `ui/open-link` request awaiting the user's answer. Each request gets a number, and its
+   *  question window is keyed by it: no window, focus or answer carries over to a later request. */
+  const [pendingLink, setPendingLink] = useState<{ id: number; url: string } | null>(null);
+  const linkRequestCountRef = useRef(0);
   const pendingLinkResolveRef = useRef<((allowed: boolean) => void) | null>(null);
   // Local echo of `ui/update-model-context` so the expander updates even when
   // the block has no message to persist against (replay-only mounts).
@@ -466,15 +463,18 @@ export default function McpAppBlock({
       return;
     }
     pendingLinkResolveRef.current = resolve;
-    setPendingLink(url);
+    linkRequestCountRef.current += 1;
+    setPendingLink({ id: linkRequestCountRef.current, url });
   }), []);
 
   const settleOpenLink = useCallback((allowed: boolean, url: string | null) => {
     const resolve = pendingLinkResolveRef.current;
     pendingLinkResolveRef.current = null;
     setPendingLink(null);
+    // One answer per request: a second press that arrives before the window has left opens nothing.
+    if (!resolve) return;
     if (allowed && url) handlerDepsRef.current.openLink(url);
-    resolve?.(allowed);
+    resolve(allowed);
   }, []);
 
   // ---- 1. Fetch the interface resource -------------------------------------
@@ -961,28 +961,32 @@ export default function McpAppBlock({
         )}
       </div>
       {/* Consent for an app-initiated `ui/open-link`. The URL is shown verbatim
-          (monospace, wrapped) because it is the thing being consented to — a
-          prettified or shortened URL would hide exactly the query string an
-          exfiltration attempt lives in. */}
-      <ConfirmDialog
-        open={pendingLink !== null}
-        title={t.chat.mcpAppOpenLinkTitle}
-        message={(
-          <span
-            data-testid="mcp-app-open-link-url"
-            title={pendingLink ?? undefined}
-            className="block break-all font-mono"
-          >
-            {pendingLink && pendingLink.length > MAX_SHOWN_LINK_CHARS
-              ? `${pendingLink.slice(0, MAX_SHOWN_LINK_CHARS)}…`
-              : pendingLink}
-          </span>
-        )}
-        confirmText={t.chat.mcpAppOpenLinkConfirm}
-        cancelText={t.common.cancel}
-        onConfirm={() => settleOpenLink(true, pendingLink)}
-        onCancel={() => settleOpenLink(false, pendingLink)}
-      />
+          and whole (code font, wrapped; a long one scrolls) because it is the
+          thing being consented to — a prettified or shortened URL would hide
+          exactly the query string an exfiltration attempt lives in.
+          The window is the design-system question, held by this block and not
+          asked through `useConfirm()`: the block takes it off the page when its
+          bridge goes (the request is refused then), and a request from another
+          interface replaces it with a window of its own. It opens on Cancel;
+          Escape, a press outside and a window that takes its place refuse. */}
+      {pendingLink && (
+        <ConfirmDialog
+          key={pendingLink.id}
+          open
+          title={t.chat.mcpAppOpenLinkTitle}
+          message={(
+            <span
+              data-testid="mcp-app-open-link-url"
+              title={pendingLink.url}
+              className="block break-all font-code"
+            >
+              {pendingLink.url}
+            </span>
+          )}
+          confirmLabel={t.chat.mcpAppOpenLinkConfirm}
+          onResult={(allowed) => settleOpenLink(allowed, pendingLink.url)}
+        />
+      )}
     </>
   );
 }

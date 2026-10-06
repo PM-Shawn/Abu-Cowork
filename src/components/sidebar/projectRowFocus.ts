@@ -56,6 +56,47 @@ export function focusProjectRow(place: ProjectRowPlace): boolean {
   return create !== null;
 }
 
+const ARCHIVED_ROW = 'data-archived-project';
+const ARCHIVED_TOGGLE = 'data-archived-toggle';
+
+/** Spread on the row of an archived project. The row is no button: its first button takes the focus. */
+export function archivedRowProps(id: string): Record<string, string> {
+  return { [ARCHIVED_ROW]: id };
+}
+
+/** Spread on the button that shows and hides the archived projects. */
+export const archivedToggleProps: Record<string, string> = { [ARCHIVED_TOGGLE]: '' };
+
+const archivedRows = () => Array.from(document.querySelectorAll<HTMLElement>(`[${ARCHIVED_ROW}]`));
+
+/**
+ * For the list of archived projects. Call the returned function right before a row's project
+ * is restored or deleted. Once the row has left, the focus goes to the row that took its
+ * place, else the one before it, else the button that shows the list. That button leaves with
+ * the last archived project: the focus then goes to the restored project's row, else the last
+ * project row, else the button that creates a project.
+ */
+export function useArchivedRowFocus(): (id: string) => void {
+  const leaving = useRef<ProjectRowPlace | null>(null);
+  const note = useCallback((id: string) => {
+    leaving.current = { id, index: archivedRows().findIndex((row) => row.getAttribute(ARCHIVED_ROW) === id) };
+  }, []);
+  // After every render: the row noted in a handler is gone by the render that follows the store change.
+  useLayoutEffect(() => {
+    const place = leaving.current;
+    if (!place) return;
+    const all = archivedRows();
+    if (all.some((row) => row.getAttribute(ARCHIVED_ROW) === place.id)) return;
+    leaving.current = null;
+    if (!focusIsOnWindow()) return;
+    const neighbour = place.index >= 0 ? all[Math.min(place.index, all.length - 1)] : undefined;
+    const target = neighbour?.querySelector<HTMLElement>('button') ?? document.querySelector<HTMLElement>(`[${ARCHIVED_TOGGLE}]`);
+    if (target) target.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
+    else focusProjectRow({ id: place.id, index: Number.MAX_SAFE_INTEGER });
+  });
+  return note;
+}
+
 /**
  * For the owner of the rows. Call the returned function right before a row's project is
  * archived or deleted: once the row has left and the question that was asked about it has gone,

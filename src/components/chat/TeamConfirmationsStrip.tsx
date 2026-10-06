@@ -204,7 +204,10 @@ function TeamConfirmationsStrip({ conversationId }: { conversationId: string }) 
                 <Button
                   variant="secondary"
                   size="sm"
-                  disabled={saving !== null}
+                  // Its own save is running: busy, so the focus stays on it. While the grant of
+                  // another request is saved it is unavailable, like the other answers.
+                  busy={saving === item.id}
+                  disabled={saving !== null && saving !== item.id}
                   onClick={() => void allowSite(item)}
                   data-testid="team-confirmation-allow-site"
                   aria-label={siteGrantLabel(item)}

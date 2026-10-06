@@ -270,6 +270,8 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/common/InstructionsEditModal*.{ts,tsx}',
   'src/components/common/MemoryViewModal*.{ts,tsx}',
   'src/components/share/**/*.{ts,tsx}',
+  'src/components/chat/composerFocus*.ts',
+  'src/components/chat/rewindQuestion*.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

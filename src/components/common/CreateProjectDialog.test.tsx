@@ -900,6 +900,64 @@ describe('CreateProjectDialog', () => {
         expect(onAnswer).not.toHaveBeenCalled();
       });
 
+      // An owner that takes the window off the page in the step that closes it: the window's
+      // leaving hook then runs after the window has gone, and nothing would end a watch started there.
+      it('starts no watch of the page once its owner has taken it off the page', async () => {
+        onAnswer.mockReset();
+        const watching = new Set<MutationObserver>();
+        const Real = window.MutationObserver;
+        class Counted extends Real {
+          observe(target: Node, options?: MutationObserverInit) {
+            if (target === document.body) watching.add(this);
+            super.observe(target, options);
+          }
+          disconnect() {
+            watching.delete(this);
+            super.disconnect();
+          }
+        }
+        vi.stubGlobal('MutationObserver', Counted);
+        let folderMade!: () => void;
+        vi.mocked(mkdir).mockImplementationOnce(() => new Promise<void>((resolve) => { folderMade = resolve; }));
+        function Page({ approval }: { approval: boolean }) {
+          const [isOpen, setOpen] = useState(false);
+          const [gone, setGone] = useState(false);
+          return (
+            <>
+              {!gone && <Button onClick={() => setOpen(true)}>Open it</Button>}
+              <TextArea data-chat-composer aria-label="Message" />
+              {!gone && <CreateProjectDialog open={isOpen} onClose={() => { setGone(true); setOpen(false); }} />}
+              {approvalProbe(approval, onAnswer)}
+            </>
+          );
+        }
+        const view = render(<Page approval={false} />);
+        const opener = screen.getByRole('button', { name: 'Open it' });
+        opener.focus();
+        fireEvent.click(opener);
+        await settle();
+        fireEvent.click(ui.scratchCard());
+        ui.type(ui.name(), 'Demo');
+        fireEvent.click(ui.create());
+        await settle();
+        view.rerender(<Page approval />);
+        const before = watching.size;
+
+        // The project is created while the approval shows; the owner removes the window, and
+        // the window's leaving hook runs one timer tick later.
+        vi.useFakeTimers();
+        await act(async () => { folderMade(); });
+        await settle();
+        act(() => { vi.runOnlyPendingTimers(); });
+        vi.useRealTimers();
+
+        expect(own()).toBeNull();
+        expect(approval()).not.toBeNull();
+        expect(watching.size).toBe(before);
+        expect(onAnswer).not.toHaveBeenCalled();
+        vi.unstubAllGlobals();
+      });
+
       it('gives Escape to the question alone', async () => {
         const { onClosed, arrive } = await besideApproval();
         ui.type(ui.name(), 'Demo');

@@ -5,8 +5,9 @@
  * Menu: capability, start time, rounds, chat name, end session
  */
 
-import { memo, type ReactNode } from 'react';
+import { memo, useEffect, useRef, type ReactNode } from 'react';
 import { IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons, type AppIconName } from '@/components/ds/icons';
 import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
@@ -80,6 +81,8 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
         rounds={rounds}
         chatName={chatName}
         sessionKey={session?.key}
+        conversationId={conversation.id}
+        title={title}
       />
     </div>
   );
@@ -87,22 +90,59 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
 
 // The bar's conversation prop changes on every streamed token; the menu only takes
 // the values it shows, so it re-renders when one of them changes.
-const IMInfoMenu = memo(function IMInfoMenu({ capabilityLabel, startTime, rounds, chatName, sessionKey }: {
+const IMInfoMenu = memo(function IMInfoMenu({ capabilityLabel, startTime, rounds, chatName, sessionKey, conversationId, title }: {
   capabilityLabel: string;
   startTime: number;
   rounds: number;
   chatName?: string;
   sessionKey?: string;
+  conversationId: string;
+  // The name the bar shows for this conversation; the question names the session by it.
+  title: string;
 }) {
   const { t } = useI18n();
+  const confirm = useConfirm();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // What the menu item chose; it runs once the menu has gone.
+  const pendingRef = useRef<'end' | null>(null);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
-  const handleEndSession = () => {
-    if (!sessionKey || !confirm(t.imChannel.infoBarEndConfirm)) return;
-    useIMChannelStore.getState().removeSession(sessionKey);
+  const endSession = async () => {
+    if (!sessionKey) return;
+    const confirmed = await confirm({
+      title: t.imChannel.infoBarEndSession,
+      message: `${t.imChannel.infoBarEndConfirm}\n${title}`,
+      confirmLabel: t.imChannel.infoBarEndSession,
+      tone: 'danger',
+    });
+    // The bar has left the page (another conversation is in view): this answer ends nothing.
+    if (!confirmed || !mounted.current) return;
+    // The session as it is now: ended meanwhile, or its key taken by a later conversation of the same chat.
+    const store = useIMChannelStore.getState();
+    if (store.sessions[sessionKey]?.conversationId !== conversationId) return;
+    store.removeSession(sessionKey);
   };
 
   return (
-    <Menu align="end" trigger={<IconButton size="sm" icon={AppIcons.more} label={t.sidebar.moreActions} />}>
+    <Menu
+      align="end"
+      // A menu reopened during its exit animation stays mounted and its close hook never
+      // ran for the earlier choice: opening forgets it.
+      onOpenChange={(open) => { if (open) pendingRef.current = null; }}
+      onCloseAutoFocus={(event) => {
+        if (pendingRef.current !== 'end') return;
+        pendingRef.current = null;
+        event.preventDefault();
+        // The question remembers the trigger and returns the focus to it.
+        triggerRef.current?.focus();
+        void endSession();
+      }}
+      trigger={<IconButton ref={triggerRef} size="sm" icon={AppIcons.more} label={t.sidebar.moreActions} />}
+    >
       <div className="w-60">
         <InfoRow icon="capability" label={t.imChannel.infoBarCapability} value={capabilityLabel} />
         <InfoRow icon="clock" label={t.imChannel.infoBarStarted} value={formatTime(startTime)} />
@@ -111,7 +151,7 @@ const IMInfoMenu = memo(function IMInfoMenu({ capabilityLabel, startTime, rounds
         {sessionKey && (
           <>
             <MenuSeparator />
-            <MenuItem tone="danger" icon={AppIcons.error} onSelect={handleEndSession}>
+            <MenuItem tone="danger" icon={AppIcons.error} onSelect={() => { pendingRef.current = 'end'; }}>
               {t.imChannel.infoBarEndSession}
             </MenuItem>
           </>

@@ -163,7 +163,7 @@ Consistent with the house voice style — use numbers when you have them:
 ## Checklist (run through before creating a release)
 
 - [ ] **Both changelogs written for this version**: `CHANGELOG.md` (English) and `CHANGELOG.zh-CN.md` (Chinese)?
-- [ ] **`npm run release:check` passes** (version consistency + both changelog sections in the right language)? CI also gates this in the `preflight` job, but run it locally first.
+- [ ] **`npm run release:check` passes** (version consistency + both changelog sections in the right language + no sidecar shim classified `feature-gap`)? CI also gates this in the `preflight` job, but run it locally first.
 - [ ] Tag pushed **on its own** (`git push origin vX.Y.Z`), not with `--tags`?
 - [ ] Does the title have a descriptive subtitle?
 - [ ] Does every bullet clearly state the user-facing impact?

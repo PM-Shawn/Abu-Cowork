@@ -57,7 +57,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
      - **`CHANGELOG.zh-CN.md`（中文）** → 驱动 latest.json 的 `notes_i18n["zh-CN"]`。
      - CI publish job 把两份各抽该版段写进 `latest.json.notes_i18n`；**客户端 `checker.ts` 按 UI locale（`getLocale()`）选对应语言**推给更新弹窗，官网按页面语言取。
      - ⚠️ 两份同版号、结构对应，但**语言不混**：CHANGELOG.md 全英文、CHANGELOG.zh-CN.md 全中文。v0.31.0 之前的历史仅英文版有，不用回填。
-   - ✅ **发版前跑 `npm run release:check`**（`scripts/release-preflight.mjs`）：校验五个文件的版本号一致（`package.json`、`package-lock.json` 的两个字段、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`）+ 两份 CHANGELOG 该版段都在且语言正确（英文版无 CJK、中文版有中文）。CI 也把它挂成 `release.yml` 的 `preflight` job（tag 一推先跑，**任一项不对就整个发版红、包都不出**）；本地先跑省一次 CI 往返。
+   - ✅ **发版前跑 `npm run release:check`**（`scripts/release-preflight.mjs`）：校验五个文件的版本号一致（`package.json`、`package-lock.json` 的两个字段、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`）+ 两份 CHANGELOG 该版段都在且语言正确（英文版无 CJK、中文版有中文）+ `sidecar/src/shims/` 下含 `throw` 语句的文件都写明了分类，并且没有一个是 `feature-gap`（分类含义见 `sidecar/src/shims/shimThrowKind.ts`）。CI 也把它挂成 `release.yml` 的 `preflight` job（tag 一推先跑，**任一项不对就整个发版红、包都不出**）；本地先跑省一次 CI 往返。
 3. 在 `dev` 的候选提交上打一个最终 RC tag；等三平台原生构建、签名/公证、安装态冒烟和发布预检全部通过。
 4. `git checkout main && git pull --ff-only origin main && git merge --ff-only dev` — `main` 只 fast-forward 到这个已经在 `dev` 验证过的**同一 SHA**，不使用 GitHub squash/rebase/cherry-pick 生成孪生提交。
 5. `git push origin main`，然后 `git tag vX.Y.Z && git push origin vX.Y.Z`。主分支保护要求该 SHA 先在 `dev` 上获得 `promotion-ready`，任意 feature/main 直推都会被拒绝。⚠️ **别用 `git push origin main --tags`**。

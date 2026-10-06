@@ -45,6 +45,14 @@ import { sendRequest, sendNotification } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getCurrentSubagentRunContext } from '../subagentRunContext';
 import type { HookEvent } from '@/core/agent/lifecycleHooks';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `resolveRunId()`。`emitHook()` 只在一次运行的作用域内被调用，
+ * 两种运行上下文都取不到 runId 说明调用来自作用域之外。hook 事件本身照常转发给
+ * shell，由 shell 里注册的监听者处理。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 function resolveRunId(): string {
   try {

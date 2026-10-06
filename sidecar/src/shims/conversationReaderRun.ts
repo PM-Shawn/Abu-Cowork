@@ -9,6 +9,14 @@
  */
 import type { ConversationReader } from '@/core/agent/ports/conversationReader';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setConversationReader()`。sidecar 里 conversationReader 读的是
+ * 当前这次运行的会话镜像，由 `agentRunContext.run()` 注入，没有模块级的值可以替换，
+ * 有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getConversationReader(): ConversationReader {
   return getCurrentAgentRunContext().conversationReader;

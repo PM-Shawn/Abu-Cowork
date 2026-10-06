@@ -133,6 +133,17 @@
 import * as fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import type { BigIntStats, Dirent } from 'node:fs';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 本文件用 `node:fs` 完整实现了被用到的文件操作。三处抛出错误：
+ *   - `rejectUnsupportedOptions()`：调用方传了本文件无法照办的选项（例如 `baseDir`，
+ *     sidecar 里没有 Tauri 应用目录的映射）。直接拒绝，避免忽略选项后读写到别的路径。
+ *   - 写入数据是 `ReadableStream`：直接拒绝，避免把 `[object ReadableStream]` 写进文件。
+ *   - `exists()` 把 `ENOENT` 之外的文件系统错误原样报给调用方，与真实插件的行为相同。
+ * 现在能到达 sidecar 的调用方都不传这些选项，也不传 `ReadableStream`。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'input-check';
 
 /** Mirrors plugin-fs's `WriteFileOptions`; `baseDir` is typed only to be rejected. */
 export interface FsWriteFileOptions {

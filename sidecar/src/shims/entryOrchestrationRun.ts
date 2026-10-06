@@ -15,6 +15,15 @@
  * loudly if ever actually reached (wiring-bug signal), same discipline as
  * `orchestratorRun.ts`.
  */
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * `precomputeOrchestration()` 直接抛出错误。`agentLoop.ts` 只在没有收到
+ * `options.orchestration` 时才动态加载本模块，而 `agentLoopHost.ts` 每次都传入这个
+ * 选项，sidecar 里这条回退分支不会执行。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
+
 export function precomputeOrchestration(..._args: unknown[]): never {
   throw new Error(
     '[sidecar] entryOrchestration.ts\'s precomputeOrchestration() reached inside the sidecar bundle — agentLoopHost.ts should always inject a precomputed AgentLoopOptions.orchestration for every sidecar-run main loop. This indicates a wiring bug, not a legitimate "no orchestration available" case.',

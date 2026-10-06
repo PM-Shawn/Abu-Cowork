@@ -23,6 +23,15 @@
  * anywhere else in the bundle graph fails loudly instead of silently
  * dragging the real module in).
  */
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * `routeInput()` 与 `buildSystemPromptSections()` 都直接抛出错误。orchestrator 只在
+ * shell 一侧、主循环入口处运行一次，`agentLoopHost.ts` 每次都把算好的结果作为
+ * `AgentLoopOptions.orchestration` 传进来，sidecar 里没有会执行到这两个函数的路径。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
+
 function throwWiringBug(name: string): never {
   throw new Error(
     `[sidecar] orchestrator.ts's ${name}() reached inside the sidecar bundle — agentLoopHost.ts should always inject a precomputed AgentLoopOptions.orchestration for every sidecar-run main loop. This indicates a wiring bug, not a legitimate "orchestrator not available" case.`,

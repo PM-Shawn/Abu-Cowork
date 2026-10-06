@@ -588,6 +588,48 @@ describe('MemoryViewModal', () => {
         expect(h.clearAllMemories).not.toHaveBeenCalled();
       });
 
+      // The clear question comes after a scan. A delete question opened during that scan would be
+      // replaced by it while the user is answering: an answer meant for one memory would clear all.
+      it('asks nothing about one memory while the scan for the clear question runs', async () => {
+        await open();
+        await ui.expand(TEA);
+        const scanning = held<MemoryHeader[]>();
+        h.scanMemoryFiles.mockReturnValueOnce(scanning.promise);
+        fireEvent.click(ui.clearButton()!);
+
+        fireEvent.click(ui.deleteButton());
+        await settle();
+        expect(ui.question()).not.toBeInTheDocument();
+
+        await act(async () => { scanning.resolve([TEA, PNPM]); });
+        await settle();
+        expect(ui.question()).toHaveTextContent(t().panel.memoryClearTitle);
+        // The clear question opened with nothing before it, on its cancelling button.
+        expect(within(ui.question()!).getByRole('button', { name: t().common.cancel })).toHaveFocus();
+        fireEvent.click(document.activeElement as HTMLElement, { detail: 0 });
+        await settle();
+        expect(h.clearAllMemories).not.toHaveBeenCalled();
+        expect(h.deleteMemory).not.toHaveBeenCalled();
+      });
+
+      it('starts no clear while the question about one memory shows', async () => {
+        await open();
+        await ui.expand(TEA);
+        fireEvent.click(ui.deleteButton());
+        expect(ui.question()).toHaveTextContent(TEA.name);
+        const scans = h.scanMemoryFiles.mock.calls.length;
+
+        // The window is under the question, out of the accessibility tree: found as a hidden button.
+        fireEvent.click(screen.getByRole('button', { name: t().panel.memoryClear, hidden: true }));
+        await settle();
+
+        expect(h.scanMemoryFiles).toHaveBeenCalledTimes(scans);
+        expect(ui.question()).toHaveTextContent(TEA.name);
+        await ui.answer(t().common.cancel);
+        expect(h.clearAllMemories).not.toHaveBeenCalled();
+        expect(h.deleteMemory).not.toHaveBeenCalled();
+      });
+
       it('is not asked again about a memory whose delete is under way: one memory, one delete', async () => {
         await open();
         const deleting = held<void>();

@@ -472,11 +472,13 @@ export default function MessageBubble({
     // Refuse before anything is deleted; the editor stays open so the edit survives.
     if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
-    setIsEditing(false);
 
     const proceed = async () => {
       // Re-check: the provider may have been removed while the confirm was open.
       if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
+      // The editor closes only now that the edited message is sent. Until then it stays, with
+      // what was typed: a no to the question, or a resend refused at the answer, loses nothing.
+      setIsEditing(false);
       // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
       useChatStore.getState().deleteMessagesFrom(convId, message.id);
       // Re-attach the original routing prefix (@expert or /skill) so the

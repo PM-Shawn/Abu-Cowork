@@ -2,26 +2,21 @@
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
-import { useState, type ComponentProps, type ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { exists, mkdir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { APPROVAL_TITLE, approvalProbe, closingWindow, discardQuestion, keepClosingLayersOnScreen, windowBox } from '@/test/dsWindows';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
 import InstructionsEditModal from './InstructionsEditModal';
 
-// The handler the window's Save button was last drawn with, so a test can run it the way no
-// press can: while the button is switched off.
-const saveHandler = vi.hoisted(() => ({ current: undefined as ((event: never) => void) | undefined }));
-vi.mock('@/components/ds/button', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/components/ds/button')>();
-  return {
-    ...actual,
-    Button: (props: ComponentProps<typeof actual.Button>) => {
-      if (props.variant === 'primary') saveHandler.current = props.onClick as (event: never) => void;
-      return actual.Button(props);
-    },
-  };
-});
+// The click handler React holds for a button, so one test can run it the way no press can: while
+// the button is switched off. React keeps an element's props on the element under a key of its own.
+function clickHandlerOf(button: HTMLElement): (event: never) => void {
+  const key = Object.keys(button).find((name) => name.startsWith('__reactProps$'));
+  const props = key ? (button as unknown as Record<string, { onClick?: (event: never) => void }>)[key] : undefined;
+  if (!props?.onClick) throw new Error('The button has no click handler');
+  return props.onClick;
+}
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 const t = () => getI18n();
@@ -178,7 +173,8 @@ describe('InstructionsEditModal', () => {
         expect(ui.save()).toBeDisabled();
         log = [];
 
-        await act(async () => { saveHandler.current?.({} as never); });
+        const handler = clickHandlerOf(ui.save());
+        await act(async () => { handler({} as never); });
         await settle();
 
         expect(log).toEqual([]);

@@ -145,18 +145,28 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
 
   // The memories that have a question open or a delete under way: one delete per memory.
   const deleting = useRef(new Set<string>());
+  // One question of this window at a time: from the press until its answer (the scan before the
+  // clear question included), the other question is not asked. The clear question comes after a
+  // scan, so without this it could take the place of a delete question the user is answering.
+  const asking = useRef(false);
   const handleDelete = async (header: MemoryHeader) => {
     // The window keeps rendering while it fades out: nothing is asked or deleted then.
-    if (!open || deleting.current.has(header.filePath)) return;
+    if (!open || asking.current || deleting.current.has(header.filePath)) return;
     deleting.current.add(header.filePath);
     try {
       // Asked inside the click handler, so the question ends with the window, answered with cancel.
-      const confirmed = await confirm({
-        title: t.memory.deleteTitle,
-        message: header.name,
-        confirmLabel: t.common.delete,
-        tone: 'danger',
-      });
+      asking.current = true;
+      let confirmed: boolean;
+      try {
+        confirmed = await confirm({
+          title: t.memory.deleteTitle,
+          message: header.name,
+          confirmLabel: t.common.delete,
+          tone: 'danger',
+        });
+      } finally {
+        asking.current = false;
+      }
       if (!confirmed) return;
       // The list may have changed while the question was open: only a memory still listed is deleted.
       const index = headersRef.current.findIndex((item) => item.filePath === header.filePath);
@@ -177,34 +187,44 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
   const clearing = useRef(false);
   const handleClear = async () => {
     // Nothing is asked from a window that is fading out, nor while a clear is under way.
-    if (!open || clearing.current) return;
+    if (!open || asking.current || clearing.current) return;
     clearing.current = true;
     try {
-      // The question says how many memories will go, so the folder is scanned now: a task may
-      // have written memories since the window opened. Clearing removes what a scan lists.
-      let found: MemoryHeader[] | null;
-      try {
-        found = newestFirst(await scanMemoryFiles(wsPath));
-      } catch {
-        found = null;
-      }
-      // The scan took a moment: the window may have closed or moved to another folder meanwhile.
-      if (!isOpen.current || folderRef.current !== wsPath) return;
-      if (found) {
-        setHeaders(found);
-        if (found.length === 0) {
-          removedAt.current = 0;
-          return;
+      // The scan and the question after it; true when the user chose to clear.
+      const ask = async () => {
+        // The question says how many memories will go, so the folder is scanned now: a task may
+        // have written memories since the window opened. Clearing removes what a scan lists.
+        let found: MemoryHeader[] | null;
+        try {
+          found = newestFirst(await scanMemoryFiles(wsPath));
+        } catch {
+          found = null;
         }
+        // The scan took a moment: the window may have closed or moved to another folder meanwhile.
+        if (!isOpen.current || folderRef.current !== wsPath) return false;
+        if (found) {
+          setHeaders(found);
+          if (found.length === 0) {
+            removedAt.current = 0;
+            return false;
+          }
+        }
+        const sentence = isPersonal ? t.sidebar.personalMemoryClearMessage : t.panel.memoryClearMessage;
+        return confirm({
+          title: t.panel.memoryClearTitle,
+          // The second line is the count of that scan; without a scan the question has no number.
+          message: found ? `${sentence}\n${format(t.memory.entryCount, { count: String(found.length) })}` : sentence,
+          confirmLabel: t.panel.memoryClearConfirm,
+          tone: 'danger',
+        });
+      };
+      asking.current = true;
+      let confirmed: boolean;
+      try {
+        confirmed = await ask();
+      } finally {
+        asking.current = false;
       }
-      const sentence = isPersonal ? t.sidebar.personalMemoryClearMessage : t.panel.memoryClearMessage;
-      const confirmed = await confirm({
-        title: t.panel.memoryClearTitle,
-        // The second line is the count of that scan; without a scan the question has no number.
-        message: found ? `${sentence}\n${format(t.memory.entryCount, { count: String(found.length) })}` : sentence,
-        confirmLabel: t.panel.memoryClearConfirm,
-        tone: 'danger',
-      });
       // Nothing is cleared once the list has emptied.
       if (!confirmed || headersRef.current.length === 0) return;
       await clearAllMemories(wsPath);

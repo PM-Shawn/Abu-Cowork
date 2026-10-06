@@ -84,7 +84,8 @@ for (const route of ['main', 'direct', 'delegate', 'batch'] as const) {
       const page = await launched.app.firstWindow();
       // The first-run guide is a modal window: the page behind it is out of the accessibility tree,
       // so until the provider setup has taken the guide away the message field is found by its mark.
-      await expect(page.locator('[data-chat-composer]').first()).toBeVisible({ timeout: 45_000 });
+      // Strict, as the role query was: the page has one message field.
+      await expect(page.locator('[data-chat-composer]')).toBeVisible({ timeout: 45_000 });
       await configureLocalMockProvider(page, `http://2130706433:${address.port}/v1`, { supportsTools: true, permissionMode: 'standard' });
       await page.reload();
       await expect(page.getByRole('textbox')).toBeVisible({ timeout: 45_000 });

@@ -546,7 +546,8 @@ describe('MessageBubble on the design system', () => {
     }
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('first answer'));
-    expect(container.querySelector('button[aria-label="Copy"] svg.lucide-check')).not.toBeNull();
+    // The icon changes after the copy has resolved, one step later than the call.
+    await waitFor(() => expect(container.querySelector('button[aria-label="Copy"] svg.lucide-check')).not.toBeNull());
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(container.querySelector('button[aria-label="Copy"] svg.lucide-copy')).not.toBeNull();
   });
@@ -772,6 +773,86 @@ describe('MessageBubble redo question', () => {
 
     expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
     expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'edited text', { initiatedBy: 'user' });
+  });
+
+  // What was typed into the editor is never lost by the cautious answer: the editor stays while
+  // the question shows and closes only when the edited message is sent.
+  describe('the editor of a message whose resend asks first', () => {
+    const editor = () => screen.queryByRole('textbox');
+    function editAndPressResend() {
+      press('Edit');
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited text' } });
+      const resend = screen.getByRole('button', { name: 'Save & Resend' });
+      resend.focus();
+      fireEvent.click(resend);
+      return resend;
+    }
+
+    it('stays open with its text while the question shows', () => {
+      seed([question, answer, ...laterTurns(1)]);
+      render(<MessageBubble message={question} />);
+
+      editAndPressResend();
+
+      expect(questionTitle()).toBeInTheDocument();
+      expect(screen.getByRole('textbox', { hidden: true })).toHaveValue('edited text');
+    });
+
+    it('is still there after Cancel, with the text and the focus back on its button', async () => {
+      seed([question, answer, ...laterTurns(1)]);
+      const before = stored();
+      render(<MessageBubble message={question} />);
+
+      const resend = editAndPressResend();
+      press('Cancel');
+      await answered();
+
+      expect(questionTitle()).not.toBeInTheDocument();
+      expect(editor()).toHaveValue('edited text');
+      expect(resend).toBeInTheDocument();
+      // The question hands the focus back one step after it has left the page.
+      await waitFor(() => expect(resend).toHaveFocus());
+      expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+      expect(stored()).toBe(before);
+    });
+
+    it('is still there when the confirmed resend is refused because the conversation changed', async () => {
+      seed([question, answer, ...laterTurns(1)]);
+      render(<MessageBubble message={question} />);
+
+      editAndPressResend();
+      await setStored([question, answer, ...laterTurns(3)]);
+      press('Confirm');
+      await answered();
+
+      expect(editor()).toHaveValue('edited text');
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    });
+
+    it('closes once the answer is yes and the edited message is sent', async () => {
+      seed([question, answer, ...laterTurns(1)]);
+      render(<MessageBubble message={question} />);
+
+      editAndPressResend();
+      press('Confirm');
+      await answered();
+
+      expect(editor()).not.toBeInTheDocument();
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'edited text', { initiatedBy: 'user' });
+    });
+
+    it('closes at once when no turn follows and nothing is asked', async () => {
+      seed([question, answer]);
+      render(<MessageBubble message={question} />);
+
+      editAndPressResend();
+      await answered();
+
+      expect(questionTitle()).not.toBeInTheDocument();
+      expect(editor()).not.toBeInTheDocument();
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'edited text', { initiatedBy: 'user' });
+    });
   });
 
   it('offers no redo while the conversation runs', () => {

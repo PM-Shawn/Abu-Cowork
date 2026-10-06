@@ -119,7 +119,10 @@ const IMInfoMenu = memo(function IMInfoMenu({ capabilityLabel, startTime, rounds
       confirmLabel: t.imChannel.infoBarEndSession,
       tone: 'danger',
     });
-    // The bar has left the page (another conversation is in view): this answer ends nothing.
+    // The bar has left the page (a conversation that is no IM conversation is in view): this
+    // answer ends nothing. The chat page keeps one bar for every IM conversation, so a switch
+    // between two of them leaves it mounted; the answer then still acts on the session the
+    // question named, through the key and the conversation it was asked with.
     if (!confirmed || !mounted.current) return;
     // The session as it is now: ended meanwhile, or its key taken by a later conversation of the same chat.
     const store = useIMChannelStore.getState();

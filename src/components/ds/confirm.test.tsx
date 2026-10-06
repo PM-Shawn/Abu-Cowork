@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useEffect, useState } from 'react';
-import { act, render as renderTree, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as renderTree, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TOAST_SETTLE_MS } from './styles';
 import { Button } from './button';
 import { useConfirm, type Confirm } from './confirm-context';
 import { ConfirmDialog } from './confirm-dialog';
@@ -340,6 +341,123 @@ describe('useConfirm', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
     expect(onResult).not.toHaveBeenCalled();
     restore();
+  });
+
+  describe('a question that takes the place of another', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    const answers: string[] = [];
+    function askFor(name: string, title: string, confirmLabel: string) {
+      if (!captured) throw new Error('Capture did not render');
+      const confirm = captured;
+      act(() => { void confirm({ title, confirmLabel, tone: 'danger' }).then((confirmed) => answers.push(`${name}:${confirmed}`)); });
+    }
+    const flush = () => act(async () => { await Promise.resolve(); });
+    // What follows a window that left the page: its focus hand-back runs one timer tick later.
+    const tick = () => act(() => { vi.advanceTimersByTime(20); });
+    // A pointer press reports detail 1; a click raised by Enter or Space reports 0.
+    const pointerPress = (name: string) => fireEvent.click(screen.getByRole('button', { name }), { detail: 1 });
+    function Page() {
+      return (
+        <>
+          <Button>Opener</Button>
+          <Capture onReady={keep} />
+        </>
+      );
+    }
+    function setUp() {
+      answers.length = 0;
+      captured = null;
+      renderTree(<Page />, { wrapper: DesignSystemProvider });
+      screen.getByRole('button', { name: 'Opener' }).focus();
+    }
+
+    it('opens in a window of its own, on Cancel: Enter meant for the first answers the second with no', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      const first = screen.getByRole('alertdialog', { name: 'Delete one memory?' });
+      // The user has moved to the confirming button of the first question.
+      screen.getByRole('button', { name: 'Delete' }).focus();
+
+      askFor('B', 'Clear every memory?', 'Clear all');
+      await flush();
+      tick();
+
+      const second = screen.getByRole('alertdialog', { name: 'Clear every memory?' });
+      expect(second).not.toBe(first);
+      expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+      const cancel = screen.getByRole('button', { name: 'Cancel' });
+      expect(cancel).toHaveFocus();
+      expect(answers).toEqual(['A:false']);
+
+      // Enter on the control that has the focus.
+      fireEvent.click(document.activeElement as HTMLElement, { detail: 0 });
+      await flush();
+      expect(answers).toEqual(['A:false', 'B:false']);
+    });
+
+    it('takes no pointer press on its buttons until it has settled, and then acts', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      askFor('B', 'Clear every memory?', 'Clear all');
+      await flush();
+
+      // A press that was on its way to the first question's button lands on the second's.
+      pointerPress('Clear all');
+      pointerPress('Cancel');
+      await flush();
+      expect(screen.getByRole('alertdialog', { name: 'Clear every memory?' })).toBeInTheDocument();
+      expect(answers).toEqual(['A:false']);
+      // Nothing about the button says it is held back.
+      expect(screen.getByRole('button', { name: 'Clear all' })).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Clear all' })).not.toHaveAttribute('aria-disabled');
+
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
+      pointerPress('Clear all');
+      await flush();
+      expect(answers).toEqual(['A:false', 'B:true']);
+    });
+
+    it('never holds the keyboard back: Enter on the confirming button the user moved to acts at once', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      askFor('B', 'Clear every memory?', 'Clear all');
+      await flush();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Clear all' }), { detail: 0 });
+      await flush();
+      expect(answers).toEqual(['A:false', 'B:true']);
+    });
+
+    it('acts at once on a pointer press when no question was there before it', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      pointerPress('Delete');
+      await flush();
+      expect(answers).toEqual(['A:true']);
+
+      // The next question follows an answered one, not a question on screen: not held back either.
+      askFor('B', 'Clear every memory?', 'Clear all');
+      pointerPress('Clear all');
+      await flush();
+      expect(answers).toEqual(['A:true', 'B:true']);
+    });
+
+    it('returns the focus to the control that had it before the first question, after the last answer', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      askFor('B', 'Clear every memory?', 'Clear all');
+      await flush();
+      tick();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }), { detail: 0 });
+      await flush();
+      tick();
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Opener' })).toHaveFocus();
+    });
   });
 
   it('fails fast outside DesignSystemProvider', () => {

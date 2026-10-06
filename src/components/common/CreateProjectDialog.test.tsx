@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
 import { useState, type ReactElement } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { APPROVAL_TITLE, approvalProbe, closingWindow, discardQuestion, finishClosing, keepClosingLayersOnScreen, windowBox } from '@/test/dsWindows';
@@ -245,6 +245,25 @@ describe('CreateProjectDialog', () => {
       expect(h.log).toEqual([`mkdir ${PROJECTS}/Demo`, `mkdir ${PROJECTS}/Demo/.abu`]);
       expect(onClose).not.toHaveBeenCalled();
       expect(ui.instructions().value).toBe('Answer briefly.');
+    });
+
+    // A create that fails tells the user nothing: the window stays as it was, without a message.
+    it.each([
+      ['the folder cannot be made', () => { vi.mocked(mkdir).mockRejectedValueOnce(new Error('made-up refusal')); }],
+      ['the instructions cannot be written', () => { vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('made-up refusal')); }],
+    ])('shows no message when %s', async (_what, refuse) => {
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      refuse();
+      await openScratch();
+      ui.type(ui.name(), 'Demo');
+      ui.type(ui.instructions(), 'Answer briefly.');
+
+      fireEvent.click(ui.create());
+      await settle();
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      expect(ui.create()).toBeEnabled();
     });
 
     // The window closed between making the folder and creating the project: the project is still
@@ -662,6 +681,24 @@ describe('CreateProjectDialog', () => {
     });
 
     describe('while it fades out', () => {
+      // The folder is a project now. The window keeps what it showed: no word about a folder that is taken.
+      it('shows no folder conflict after it created the project for that folder', async () => {
+        keepClosingLayersOnScreen();
+        vi.mocked(openDialog).mockResolvedValue('/fake/work/reports');
+        const { close } = open();
+        await settle();
+        fireEvent.click(ui.existingCard());
+        await settle();
+
+        fireEvent.click(ui.create());
+        await settle();
+        close();
+
+        expect(closingWindow()).toHaveTextContent('/fake/work/reports');
+        expect(closingWindow()).not.toHaveTextContent(t().project.folderConflict.replace('{name}', 'reports'));
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      });
+
       it('creates nothing when Create is pressed', async () => {
         keepClosingLayersOnScreen();
         const { onClose, close } = await openScratch();
@@ -810,6 +847,57 @@ describe('CreateProjectDialog', () => {
         await settle();
         expect(onClosed).toHaveBeenCalledTimes(1);
         expect(h.log.filter((entry) => entry.startsWith('mkdir'))).toHaveLength(1);
+      });
+
+      // The project was created while the window stood aside, and the page has moved to it: the
+      // control that opened the window is gone. Once the approval has left, the focus is in the
+      // message field, as after any create.
+      // The window's own leaving hook runs one timer tick after it left the page: before the
+      // approval leaves, as in the app, or after it.
+      it.each(['before', 'after'] as const)('puts the focus in the message field after the approval, when the project was created meanwhile (its leaving hook ran %s the approval left)', async (hookRan) => {
+        onAnswer.mockReset();
+        let folderMade!: () => void;
+        vi.mocked(mkdir).mockImplementationOnce(() => new Promise<void>((resolve) => { folderMade = resolve; }));
+        function Page({ approval }: { approval: boolean }) {
+          const [isOpen, setOpen] = useState(false);
+          const [moved, setMoved] = useState(false);
+          return (
+            <>
+              {!moved && <Button onClick={() => setOpen(true)}>Open it</Button>}
+              <TextArea data-chat-composer aria-label="Message" />
+              <CreateProjectDialog open={isOpen} onClose={() => { setMoved(true); setOpen(false); }} />
+              {approvalProbe(approval, onAnswer)}
+            </>
+          );
+        }
+        const view = render(<Page approval={false} />);
+        const opener = screen.getByRole('button', { name: 'Open it' });
+        opener.focus();
+        fireEvent.click(opener);
+        await settle();
+        fireEvent.click(ui.scratchCard());
+        ui.type(ui.name(), 'Demo');
+        fireEvent.click(ui.create());
+        await settle();
+
+        view.rerender(<Page approval />);
+        if (hookRan === 'before') vi.useFakeTimers();
+        await act(async () => { folderMade(); });
+        await settle();
+        if (hookRan === 'before') {
+          act(() => { vi.runOnlyPendingTimers(); });
+          vi.useRealTimers();
+        }
+        expect(own()).toBeNull();
+        expect(approval()).not.toBeNull();
+        expect(screen.getByLabelText('Message')).not.toHaveFocus();
+
+        view.rerender(<Page approval={false} />);
+
+        // The page is watched for the layer to leave; the watcher answers after the change.
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+        expect(approval()).toBeNull();
+        expect(onAnswer).not.toHaveBeenCalled();
       });
 
       it('gives Escape to the question alone', async () => {

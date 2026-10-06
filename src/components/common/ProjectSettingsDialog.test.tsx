@@ -4,8 +4,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { act, cleanup, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState, type ReactElement } from 'react';
-import { APPROVAL_TITLE, approvalProbe, closingWindow, discardQuestion, keepClosingLayersOnScreen, windowBox } from '@/test/dsWindows';
+import { APPROVAL_TITLE, approvalProbe, closingWindow, discardQuestion, finishClosing, keepClosingLayersOnScreen, windowBox } from '@/test/dsWindows';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { projectCreateProps, projectRowProps } from '@/components/sidebar/projectRowFocus';
 import { format, getI18n, initLanguage } from '@/i18n';
 import type { Project } from '@/types/project';
 import ProjectSettingsDialog from './ProjectSettingsDialog';
@@ -639,6 +641,89 @@ describe('ProjectSettingsDialog', () => {
         expect(h.log).toEqual(['archiveProject p1', 'onClose']);
         expect(discardQuestion.box()).toBeNull();
         expect(onClose).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // The row that opened the window leaves the list with its project.
+    describe('where the focus goes once it has closed', () => {
+      function Owner() {
+        const projects = projectStore((s) => s.projects);
+        const [projectId, setProjectId] = useState<string | null>(null);
+        return (
+          <>
+            <Button {...projectCreateProps}>Create a project</Button>
+            {Object.values(projects).filter((p) => !p.archived).map((p) => (
+              <Button key={p.id} {...projectRowProps(p.id)} onClick={() => setProjectId(p.id)}>{p.name}</Button>
+            ))}
+            <ProjectSettingsDialog open={projectId !== null} onClose={() => setProjectId(null)} projectId={projectId} />
+          </>
+        );
+      }
+      const pageButton = (name: string) => screen.getByRole('button', { name });
+      function openFrom(name: string) {
+        keepClosingLayersOnScreen();
+        render(<Owner />);
+        pageButton(name).focus();
+        fireEvent.click(pageButton(name));
+      }
+      async function archiveIt() {
+        fireEvent.click(ui.archive());
+        fireEvent.click(ui.confirmArchive());
+        await settle();
+        finishClosing();
+      }
+      const travel = project({ id: 'p2', name: 'Travel', workspacePath: '/fake/work/travel' });
+      const garden = project({ id: 'p0', name: 'Garden', workspacePath: '/fake/work/garden' });
+
+      it('goes to the row that took the place of the archived project', async () => {
+        seed(garden, project(), travel);
+        openFrom('Reports');
+
+        await archiveIt();
+
+        expect(screen.queryByRole('button', { name: 'Reports' })).not.toBeInTheDocument();
+        expect(pageButton('Travel')).toHaveFocus();
+      });
+
+      it('goes to the row before it when the archived project was the last', async () => {
+        seed(garden, project());
+        openFrom('Reports');
+
+        await archiveIt();
+
+        expect(pageButton('Garden')).toHaveFocus();
+      });
+
+      it('goes to the create button when no project is left', async () => {
+        seed(project());
+        openFrom('Reports');
+
+        await archiveIt();
+
+        expect(pageButton('Create a project')).toHaveFocus();
+      });
+
+      it('returns to the row that opened it when nothing was archived', () => {
+        seed(garden, project(), travel);
+        openFrom('Reports');
+
+        ui.escape();
+        finishClosing();
+
+        expect(pageButton('Reports')).toHaveFocus();
+      });
+
+      it('returns to its own row the next time, after an archive in an earlier opening', async () => {
+        seed(garden, project(), travel);
+        openFrom('Reports');
+        await archiveIt();
+
+        pageButton('Garden').focus();
+        fireEvent.click(pageButton('Garden'));
+        ui.escape();
+        finishClosing();
+
+        expect(pageButton('Garden')).toHaveFocus();
       });
     });
 

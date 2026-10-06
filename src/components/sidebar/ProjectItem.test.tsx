@@ -214,6 +214,59 @@ describe('ProjectItem — project row', () => {
     }
   });
 
+  // The row leaves the page with its project: its owner is told first, so it can move the focus
+  // to the row that takes its place.
+  it.each([
+    ['归档', '归档项目', '归档', 'archiveProject'],
+    ['删除', '删除项目', '删除', 'deleteProject'],
+  ] as const)('tells its owner the row is about to leave before 「%s」 takes the project away', async (item, question, answer, action) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const onLeaving = vi.fn();
+      renderItem([], { onLeaving });
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+      await user.click(await screen.findByRole('menuitem', { name: item }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const asked = await screen.findByRole('alertdialog', { name: question });
+      expect(onLeaving).not.toHaveBeenCalled();
+
+      await user.click(within(asked).getByRole('button', { name: answer }));
+
+      expect(onLeaving).toHaveBeenCalledTimes(1);
+      expect(onLeaving).toHaveBeenCalledWith('p1');
+      const storeCall = mocks.project[action] as ReturnType<typeof vi.fn>;
+      expect(storeCall).toHaveBeenCalledWith('p1');
+      expect(onLeaving.mock.invocationCallOrder[0]).toBeLessThan(storeCall.mock.invocationCallOrder[0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says nothing to its owner when the question is cancelled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const onLeaving = vi.fn();
+      renderItem([], { onLeaving });
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+      await user.click(await screen.findByRole('menuitem', { name: '归档' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const asked = await screen.findByRole('alertdialog', { name: '归档项目' });
+
+      await user.click(within(asked).getByRole('button', { name: '取消' }));
+
+      expect(onLeaving).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks its name as the project row, so the focus can find it', () => {
+    renderItem([]);
+    expect(screen.getByRole('button', { name: 'fastapi-bridge-dev' })).toHaveAttribute('data-project-row', 'p1');
+  });
+
   it('opens project settings only after the menu has gone, with focus back on the row, which the window returns to', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

@@ -9,6 +9,7 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import ProjectItem from './ProjectItem';
+import { projectCreateProps, useProjectRowFocus } from './projectRowFocus';
 import ProjectSettingsDialog from '@/components/common/ProjectSettingsDialog';
 
 // The create project window belongs to the sidebar: a created project turns the sidebar to
@@ -41,6 +42,8 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
   const setViewMode = useSettingsStore((s) => s.setViewMode);
 
   // Dialog state
+  // A row whose project is archived or deleted from its own menu hands the focus to a neighbour.
+  const noteRowLeaving = useProjectRowFocus();
   const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [sectionCollapsed, setSectionCollapsed] = useState(false);
@@ -112,6 +115,7 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
             size="sm"
             onClick={onCreateProject}
             className="opacity-0 group-hover/header:opacity-100 focus-visible:opacity-100"
+            {...projectCreateProps}
           />
         </div>
 
@@ -126,6 +130,7 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
                 expanded={expandedIds.includes(project.id)}
                 onNewTask={handleNewTask}
                 onOpenSettings={(id) => setSettingsProjectId(id)}
+                onLeaving={noteRowLeaving}
               />
             ))}
           </div>

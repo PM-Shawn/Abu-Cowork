@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ds/button';
 import { MultiCombobox } from '@/components/ds/combobox';
 import { useConfirm } from '@/components/ds/confirm-context';
@@ -9,6 +9,7 @@ import { Popover } from '@/components/ds/popover';
 import { Pressable } from '@/components/ds/pressable';
 import { Select } from '@/components/ds/select';
 import { TextField } from '@/components/ds/text-field';
+import { focusProjectRow, projectRowPlace, type ProjectRowPlace } from '@/components/sidebar/projectRowFocus';
 import { format, useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -115,6 +116,17 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
   const chosenServers = form?.defaultMCPServers;
   const mcpOptions = useMemo(() => withChosen(Object.keys(mcpServers), chosenServers ?? []), [mcpServers, chosenServers]);
 
+  // The window archived its project: the row that opened it has left the list, so the focus
+  // goes to the row that took its place once the window has gone.
+  const archivedRow = useRef<ProjectRowPlace | null>(null);
+  const afterClosed = (event: Event) => {
+    const place = archivedRow.current;
+    archivedRow.current = null;
+    // Another layer has taken the focus already.
+    if (!place || event.defaultPrevented) return;
+    if (focusProjectRow(place)) event.preventDefault();
+  };
+
   const handleSave = () => {
     // The window keeps rendering while it fades out: nothing is saved then.
     if (!isOpen || !form || !form.name.trim()) return;
@@ -140,6 +152,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
       tone: 'danger',
     });
     if (!confirmed || !useProjectStore.getState().projects[id]) return;
+    archivedRow.current = projectRowPlace(id);
     archiveProject(id);
     onClose();
   };
@@ -159,6 +172,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
       size="md"
       closeButton
       dirty={form !== null && filled !== null && !sameForm(form, filled)}
+      onCloseAutoFocus={afterClosed}
       footer={(
         <>
           <DialogClose asChild><Button variant="plain">{t.project.cancel}</Button></DialogClose>

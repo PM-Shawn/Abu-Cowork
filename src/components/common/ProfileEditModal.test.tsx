@@ -39,7 +39,11 @@ class HeldReader {
   static readers: HeldReader[] = [];
   result: string | null = null;
   onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
   readAsDataURL(_file: Blob) { HeldReader.readers.push(this); }
+  fail() { act(() => { this.onerror?.(); }); }
+  abort() { act(() => { this.onabort?.(); }); }
   finish(result: string) {
     this.result = result;
     act(() => { this.onload?.(); });
@@ -285,6 +289,17 @@ describe('ProfileEditModal', () => {
       });
     });
 
+    // The form is filled when the window opens; what is saved elsewhere meanwhile leaves it alone.
+    it('keeps what was typed when the saved values change while it is open', () => {
+      open();
+      ui.type('Mango');
+
+      act(() => { useSettingsStore.setState({ userNickname: 'Saved elsewhere', userAvatar: OLD_PICTURE }); });
+
+      expect(ui.nickname().value).toBe('Mango');
+      expect(ui.picture()).not.toBeInTheDocument();
+    });
+
     describe('a picture that is still being read', () => {
       it('is dropped when the window was closed and opened again meanwhile', () => {
         const { close, reopen } = open();
@@ -384,6 +399,57 @@ describe('ProfileEditModal', () => {
         expect(onClosed).not.toHaveBeenCalled();
         expect(onAnswer).not.toHaveBeenCalled();
         expect(h.log).toEqual([]);
+      });
+
+      // A read that ended without a picture is over: the window, unchanged, is closed for the approval.
+      it.each(['fail', 'abort'] as const)('is closed for the approval after the read of a picture ended with %s', (ending) => {
+        const { onClosed, arrive } = besideApproval();
+        const reader = ui.choosePicture();
+        reader[ending]();
+
+        arrive();
+
+        expect(onClosed).toHaveBeenCalledTimes(1);
+        expect(own()).toBeNull();
+        expect(approval()).not.toBeNull();
+        expect(onAnswer).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('a picture that cannot be read', () => {
+      it('leaves the picture as it was, says nothing, and asks nothing on Escape', () => {
+        useSettingsStore.setState({ userAvatar: OLD_PICTURE });
+        const { onClose } = open();
+        const reader = ui.choosePicture();
+
+        reader.fail();
+
+        expect(ui.picture()).toHaveAttribute('src', OLD_PICTURE);
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        ui.escape();
+        expect(discardQuestion.box()).toBeNull();
+        expect(onClose).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not end the read of a picture chosen after it', () => {
+        const onAnswer = vi.fn();
+        const onClose = vi.fn();
+        const page = (approval: boolean) => (
+          <>
+            <ProfileEditModal open onClose={onClose} />
+            {approvalProbe(approval, onAnswer)}
+          </>
+        );
+        const view = render(page(false));
+        const first = ui.choosePicture();
+        ui.choosePicture();
+        first.fail();
+
+        view.rerender(page(true));
+
+        // The second read is still under way: the window steps aside for the approval.
+        expect(windowBox(t().sidebar.editProfile)).toHaveAttribute('hidden');
+        expect(onClose).not.toHaveBeenCalled();
       });
     });
   });

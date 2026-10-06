@@ -9,6 +9,7 @@ import { Button, IconButton } from './button';
 import { Dialog } from './dialog';
 import { AppIcons } from './icons';
 import { Menu, MenuItem } from './menu';
+import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
 import { TextField } from './text-field';
 import { Tooltip } from './tooltip';
@@ -211,6 +212,111 @@ describe('Tooltip and Escape', () => {
     view.unmount();
     expect(listeners.count()).toBe(0);
     listeners.restore();
+  });
+
+  // A tooltip that is fading out is still on the page, and Radix still counts it as the top
+  // layer for Escape. The key acts on the layer underneath all the same.
+  describe('while the tooltip fades out', () => {
+    const fadingTooltip = () => document.querySelector<HTMLElement>('.z-tooltip[data-state="closed"]');
+    function endFade() {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { fadingTooltip()!.dispatchEvent(ended); });
+    }
+
+    it('one Escape closes the dialog under it', async () => {
+      const user = userEvent.setup();
+      const onOpenChange = vi.fn();
+      render(
+        <DesignSystemProvider>
+          <Dialog trigger={<Button>Open</Button>} onOpenChange={onOpenChange} title="Detail">
+            <IconButton icon={AppIcons.more} label="More" />
+            <TextField aria-label="Name" />
+          </Dialog>
+        </DesignSystemProvider>,
+      );
+      screen.getByRole('button', { name: 'Open' }).focus();
+      await user.keyboard('{Enter}');
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('More');
+      onOpenChange.mockClear();
+      keepClosingLayersOnScreen();
+      await user.tab();
+      expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus();
+      expect(fadingTooltip()).not.toBeNull();
+
+      await user.keyboard('{Escape}');
+
+      expect(onOpenChange).toHaveBeenCalledTimes(1);
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      expect(fadingTooltip()).toBeNull();
+    });
+
+    it('one Escape closes the menu that its control opened', async () => {
+      const user = userEvent.setup();
+      render(
+        <DesignSystemProvider>
+          <Menu trigger={<IconButton icon={AppIcons.more} label="More" />}>
+            <MenuItem>Edit</MenuItem>
+          </Menu>
+        </DesignSystemProvider>,
+      );
+      await user.tab();
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('More');
+      keepClosingLayersOnScreen();
+      await user.keyboard('{Enter}');
+      expect(screen.getByRole('menu')).toHaveAttribute('data-state', 'open');
+      expect(fadingTooltip()).not.toBeNull();
+
+      await user.keyboard('{Escape}');
+
+      expect(screen.getByRole('menu')).toHaveAttribute('data-state', 'closed');
+      expect(fadingTooltip()).toBeNull();
+    });
+
+    it('one Escape closes the popover that its control opened', async () => {
+      const user = userEvent.setup();
+      render(
+        <DesignSystemProvider>
+          <Popover label="Details" trigger={<IconButton icon={AppIcons.more} label="More" />}>
+            <Button>Inside</Button>
+          </Popover>
+        </DesignSystemProvider>,
+      );
+      await user.tab();
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('More');
+      keepClosingLayersOnScreen();
+      await user.keyboard('{Enter}');
+      expect(screen.getByRole('dialog', { name: 'Details' })).toHaveAttribute('data-state', 'open');
+      expect(fadingTooltip()).not.toBeNull();
+
+      await user.keyboard('{Escape}');
+
+      expect(document.querySelector('[role="dialog"][aria-label="Details"]')).toHaveAttribute('data-state', 'closed');
+      expect(fadingTooltip()).toBeNull();
+    });
+
+    it('listens for keys until the fade has ended, and no longer', async () => {
+      const user = userEvent.setup();
+      const listeners = trackWindowKeydownListeners();
+      render(
+        <DesignSystemProvider>
+          <IconButton icon={AppIcons.more} label="More" />
+          <Button>Next</Button>
+        </DesignSystemProvider>,
+      );
+      await user.tab();
+      expect(await screen.findByRole('tooltip')).toBeInTheDocument();
+      keepClosingLayersOnScreen();
+
+      await user.tab();
+      expect(fadingTooltip()).not.toBeNull();
+      expect(listeners.count()).toBe(1);
+
+      endFade();
+      expect(fadingTooltip()).toBeNull();
+      expect(listeners.count()).toBe(0);
+      listeners.restore();
+    });
   });
 
   it('focus handed back by code shows no tooltip after a pointer choice, and shows it after a key press', async () => {

@@ -331,7 +331,11 @@ describe('Sidebar — Recents row menu', () => {
     };
     const renderSidebar = () => render(<><Sidebar /><ToasterMount /></>, { wrapper: DesignSystemProvider });
     beforeEach(() => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
+      // Time moves only when a test moves it: the offer's five seconds are counted, not waited for.
+      vi.useFakeTimers();
+      // Testing Library waits one zero-length timer after each user action and moves a fake
+      // clock itself only through a global named `jest`; this hands it Vitest's clock.
+      vi.stubGlobal('jest', { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) });
       clearNotices();
       resetChat({
         conversationIndex: { c1: CONVERSATION, c2: OTHER },
@@ -340,6 +344,7 @@ describe('Sidebar — Recents row menu', () => {
     });
     afterEach(() => {
       act(() => clearNotices());
+      vi.unstubAllGlobals();
       vi.useRealTimers();
     });
 
@@ -367,7 +372,7 @@ describe('Sidebar — Recents row menu', () => {
     async function deleteRow(user: ReturnType<typeof userEvent.setup>, title: string) {
       const row = screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
       await user.click(within(row).getByRole('button', { name: '更多操作' }));
-      await user.click(await screen.findByRole('menuitem', { name: '删除会话' }));
+      await user.click(screen.getByRole('menuitem', { name: '删除会话' }));
       await act(() => vi.advanceTimersByTimeAsync(0));
     }
 

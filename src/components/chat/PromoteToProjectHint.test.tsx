@@ -165,6 +165,7 @@ describe('PromoteToProjectHint', () => {
       expect(ui.hint()).not.toBeInTheDocument();
       expect(closingWindow()).toHaveTextContent(t().project.createTitle);
       expect(closingWindow()).toHaveTextContent(FOLDER);
+      expect(closingWindow()).not.toHaveTextContent(format(t().project.folderConflict, { name: 'notes' }));
       expect(ui.name().value).toBe('notes');
 
       finishClosing();

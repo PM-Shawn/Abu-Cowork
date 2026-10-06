@@ -12,6 +12,7 @@ import { lastInputWasPointer } from '@/components/ds/input-modality';
 import { Pressable } from '@/components/ds/pressable';
 import { TextArea } from '@/components/ds/text-area';
 import { TextField } from '@/components/ds/text-field';
+import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -62,6 +63,9 @@ export default function CreateProjectDialog({
   const [instructions, setInstructions] = useState('');
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [defaultProjectsDir, setDefaultProjectsDir] = useState('');
+  // The project that already uses the chosen folder, as found when the folder was chosen. It is
+  // not looked up again: once this window has created the project, the folder is its own.
+  const [conflictProject, setConflictProject] = useState<string | null>(null);
   // The folder that was found to hold a project configuration.
   const [folderWithConfig, setFolderWithConfig] = useState<string | null>(null);
   // From the press on Create until the project exists or the attempt has failed.
@@ -73,6 +77,30 @@ export default function CreateProjectDialog({
   useLayoutEffect(() => {
     if (open) created.current = false;
   }, [open]);
+
+  // Waits for the layers that are on the page to leave it, then puts the focus in the message
+  // field unless a control has it. The layer that leaves last would return the focus to the
+  // control that opened this window, which the new project has taken off the page.
+  const pageWatch = useRef<MutationObserver | null>(null);
+  const focusComposerOncePageIsFree = () => {
+    pageWatch.current?.disconnect();
+    pageWatch.current = null;
+    // True once no layer is on the page; the focus is then placed and the watch ends.
+    const settle = () => {
+      if (document.querySelector('[data-ds-layer]:not([hidden])')) return false;
+      if (focusIsOnWindow()) focusComposer();
+      return true;
+    };
+    if (settle()) return;
+    const watch = new MutationObserver(() => {
+      if (!settle()) return;
+      watch.disconnect();
+      pageWatch.current = null;
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
+    pageWatch.current = watch;
+  };
+  useEffect(() => () => pageWatch.current?.disconnect(), []);
 
   const nameId = useId();
   const instructionsId = useId();
@@ -99,6 +127,7 @@ export default function CreateProjectDialog({
       setProjectName(presetName ?? '');
       setInstructions('');
       setSelectedFolder(presetFolder ?? null);
+      setConflictProject(presetFolder ? getProjectByWorkspace(presetFolder)?.name ?? null : null);
       setFolderWithConfig(null);
     }
   }
@@ -113,7 +142,6 @@ export default function CreateProjectDialog({
     return () => { current = false; };
   }, [selectedFolder]);
   const hasAbuConfig = selectedFolder !== null && folderWithConfig === selectedFolder;
-  const conflictProject = selectedFolder ? getProjectByWorkspace(selectedFolder)?.name ?? null : null;
 
   // A step replaces the control that had the focus: the focus goes to the first control of the
   // new step, and on the way back to the way that was chosen.
@@ -137,6 +165,7 @@ export default function CreateProjectDialog({
       if (selected) {
         const folderPath = selected as string;
         setSelectedFolder(folderPath);
+        setConflictProject(getProjectByWorkspace(folderPath)?.name ?? null);
         if (!projectName) setProjectName(getBaseName(folderPath));
       }
     } catch (err) {
@@ -190,8 +219,9 @@ export default function CreateProjectDialog({
 
       if (!finalFolder) return;
 
-      // Past this point the folder exists: the project is created even when the window was
-      // closed meanwhile, so a folder is never left without its project.
+      // The folder is there (made above, or chosen): the project is created even when the window
+      // was closed meanwhile. A folder that was made stays on disk without a project only when
+      // its instructions could not be written (the return above).
       const projectId = createProject({
         name: projectName.trim(),
         workspacePath: finalFolder,
@@ -256,9 +286,11 @@ export default function CreateProjectDialog({
       onCloseAutoFocus={(event) => {
         const wasCreated = created.current;
         created.current = false;
-        // Another layer has taken the focus already.
-        if (!wasCreated || event.defaultPrevented) return;
-        if (focusComposer()) event.preventDefault();
+        if (!wasCreated) return;
+        // Another layer has the focus (an approval the window stood aside for): the message
+        // field gets it once that layer has left.
+        if (event.defaultPrevented) focusComposerOncePageIsFree();
+        else if (focusComposer()) event.preventDefault();
       }}
       header={mode !== null && !presetMode ? (
         <IconButton icon={AppIcons.back} label={t.schedule.backToList} onClick={backToModes} />

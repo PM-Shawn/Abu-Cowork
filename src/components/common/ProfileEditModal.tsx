@@ -32,16 +32,17 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
   const reading = useRef<FileReader | null>(null);
   const [isReading, setIsReading] = useState(false);
 
-  // The form shows the saved values each time the window opens, and when they change while it is open.
-  const [shownFor, setShownFor] = useState<string | null>(null);
-  const saved = `${userNickname}\u0000${userAvatar}`;
-  if (open && shownFor !== saved) {
-    setShownFor(saved);
-    setNickname(userNickname);
-    setAvatar(userAvatar);
-  } else if (!open && shownFor !== null) {
-    setShownFor(null);
-    setIsReading(false);
+  // The form is filled with the saved values each time the window opens, and keeps what it
+  // showed while it fades out.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setNickname(userNickname);
+      setAvatar(userAvatar);
+    } else {
+      setIsReading(false);
+    }
   }
   useLayoutEffect(() => {
     if (!open) reading.current = null;
@@ -61,15 +62,20 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
     const reader = new FileReader();
     reading.current = reader;
     setIsReading(true);
-    reader.onload = () => {
-      // An earlier opening's read, or one a newer choice has replaced.
-      if (reading.current !== reader) return;
+    // True for the read that is under way; false for an earlier opening's read, or one a newer
+    // choice has replaced. The read is over either way it ends.
+    const end = () => {
+      if (reading.current !== reader) return false;
       reading.current = null;
       setIsReading(false);
-      if (typeof reader.result === 'string') {
-        setAvatar(reader.result);
-      }
+      return true;
     };
+    reader.onload = () => {
+      if (end() && typeof reader.result === 'string') setAvatar(reader.result);
+    };
+    // A picture that could not be read leaves the picture as it was.
+    reader.onerror = () => { end(); };
+    reader.onabort = () => { end(); };
     reader.readAsDataURL(file);
   };
 

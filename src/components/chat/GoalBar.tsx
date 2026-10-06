@@ -113,7 +113,9 @@ function GoalBar({ conversationId }: { conversationId: string }) {
   }, [ticking]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
-  // The bar is gone (another conversation is in view): an answer that comes then clears nothing.
+  // False once this bar has unmounted. ChatView mounts one bar per conversation (keyed by its
+  // id), so that happens when the conversation leaves the view or its goal goes away; a yes to
+  // the clearing question that arrives afterwards clears nothing.
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;

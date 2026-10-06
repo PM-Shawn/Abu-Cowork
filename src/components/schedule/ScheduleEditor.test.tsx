@@ -11,11 +11,17 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import type { IMChannel } from '@/types/imChannel';
 import type { Project } from '@/types/project';
+import { useTeamStore, type Team } from '@/stores/teamStore';
 import type { ScheduledTask } from '@/types/schedule';
 import ScheduleEditor from './ScheduleEditor';
 
-const teams = vi.hoisted(() => ({ list: [] as Array<{ id: string; name: string; avatar?: string }> }));
-vi.mock('@/core/team/useVisibleTeams', () => ({ useVisibleTeams: () => teams.list }));
+// `list` stands in for the visible teams. A block that sets `fromStore` gets the real hook
+// instead, which reads the team store; the flag stays the same for the whole of a test.
+const teams = vi.hoisted(() => ({ list: [] as Array<{ id: string; name: string; avatar?: string }>, fromStore: false }));
+vi.mock('@/core/team/useVisibleTeams', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/team/useVisibleTeams')>();
+  return { useVisibleTeams: () => (teams.fromStore ? actual.useVisibleTeams() : teams.list) };
+});
 
 const realActions = useScheduleStore.getState();
 const createTask = vi.fn<typeof realActions.createTask>();
@@ -651,7 +657,13 @@ const channel = {
   name: 'Ops channel',
 } as IMChannel;
 
-const team = { id: 'team-1', name: 'Alpha team' };
+const team: Team = {
+  id: 'team-1',
+  name: 'Alpha team',
+  leaderRoleId: 'role-1',
+  memberRoleIds: ['role-1'],
+  createdAt: BASE_TIME,
+};
 
 function resetStores() {
   useScheduleStore.setState({
@@ -666,7 +678,7 @@ function resetStores() {
   useDiscoveryStore.setState({ skills: [], agents: [], isLoading: false });
   useIMChannelStore.setState({ channels: {} });
   useProjectStore.setState({ projects: {} });
-  teams.list = [];
+  useTeamStore.setState({ teams: [], managedTeamSources: {} });
 }
 
 function openEditorOnTask(fields: Partial<ScheduledTask>): ScheduledTask {
@@ -687,7 +699,7 @@ function openEditorOnTask(fields: Partial<ScheduledTask>): ScheduledTask {
   });
   useIMChannelStore.setState({ channels: { [channel.id]: channel } });
   useProjectStore.setState({ projects: { [project.id]: project } });
-  teams.list = [team];
+  useTeamStore.setState({ teams: [team] });
   useScheduleStore.setState({
     tasks: { [task.id]: task },
     showEditor: true,
@@ -703,12 +715,15 @@ function savedTask(): ScheduledTask {
 describe('ScheduleEditor clearing optional settings', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
+    // These tests read the teams the way the app does: the real hook over the team store.
+    teams.fromStore = true;
     resetStores();
   });
 
   afterEach(() => {
     cleanup();
     resetStores();
+    teams.fromStore = false;
   });
 
   it('saves an emptied description', async () => {

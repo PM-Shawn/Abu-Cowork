@@ -1820,8 +1820,9 @@ export default function ChatView({
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
-          {/* Goal mode: objective, round usage and controls */}
-          {activeConv.goal && <GoalBar conversationId={activeConv.id} />}
+          {/* Goal mode: objective, round usage and controls. Keyed by conversation: an inline
+              edit or a clearing question opened in one conversation belongs to that one only. */}
+          {activeConv.goal && <GoalBar key={activeConv.id} conversationId={activeConv.id} />}
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}
           <QueuedMessagesStrip conversationId={activeConv.id} />

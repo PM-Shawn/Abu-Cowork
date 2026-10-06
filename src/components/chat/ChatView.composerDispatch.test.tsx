@@ -202,6 +202,57 @@ describe('ChatView welcome composer dispatch ownership', () => {
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 
+  describe('a goal bar per conversation', () => {
+    // Two conversations in the chat view, each with its own unfinished goal.
+    async function twoConversationsWithGoals(): Promise<{ a: string; b: string }> {
+      const { createGoalFromCommand } = await import('@/core/goal/goalCommand');
+      const store = useChatStore.getState();
+      const a = store.createConversation();
+      const b = store.createConversation();
+      store.addMessage(a, { id: 'message-a', role: 'user', content: 'work in A', loopId: 'loop-a', timestamp: 1 });
+      store.addMessage(b, { id: 'message-b', role: 'user', content: 'work in B', loopId: 'loop-b', timestamp: 2 });
+      expect(createGoalFromCommand(a, 'Objective of A').ok).toBe(true);
+      expect(createGoalFromCommand(b, 'Objective of B').ok).toBe(true);
+      useChatStore.setState({ activeConversationId: a });
+      return { a, b };
+    }
+    const goalOf = (id: string) => useChatStore.getState().conversations[id].goal;
+
+    it('closes an inline edit with the conversation it was opened in, and writes none of its text into the next goal', async () => {
+      const goalText = getI18n().chat.goal;
+      const { a, b } = await twoConversationsWithGoals();
+      render(<ChatView />);
+      await userEvent.click(within(screen.getByTestId('goal-bar')).getByRole('button', { name: goalText.actionEdit }));
+      expect(within(screen.getByTestId('goal-bar')).getByRole('textbox', { name: goalText.actionEdit })).toHaveValue('Objective of A');
+
+      act(() => useChatStore.setState({ activeConversationId: b }));
+
+      const bar = screen.getByTestId('goal-bar');
+      expect(bar).toHaveTextContent('Objective of B');
+      expect(within(bar).queryByRole('textbox')).toBeNull();
+      expect(within(bar).queryByRole('button', { name: goalText.actionSave })).toBeNull();
+      expect(goalOf(b)).toMatchObject({ objective: 'Objective of B' });
+      expect(goalOf(a)).toMatchObject({ objective: 'Objective of A' });
+    });
+
+    it('clears no goal when the clearing question is answered after the conversation changed under it', async () => {
+      const goalText = getI18n().chat.goal;
+      const { a, b } = await twoConversationsWithGoals();
+      render(<ChatView />);
+      await userEvent.click(within(screen.getByTestId('goal-bar')).getByRole('button', { name: goalText.actionClear }));
+      const question = screen.getByRole('alertdialog', { name: goalText.clearConfirmTitle });
+      expect(question).toHaveTextContent('Objective of A');
+
+      // The question is modal, so only code can change the conversation in view while it is open.
+      act(() => useChatStore.setState({ activeConversationId: b }));
+      await userEvent.click(within(question).getByRole('button', { name: goalText.actionClear }));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+
+      expect(goalOf(a)).toMatchObject({ objective: 'Objective of A' });
+      expect(goalOf(b)).toMatchObject({ objective: 'Objective of B' });
+    });
+  });
+
   it('keeps the composer empty after a post-commit dispatch failure', async () => {
     configureApiKey();
     dispatchMock.mockResolvedValueOnce({

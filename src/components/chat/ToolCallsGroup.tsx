@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useId } from 'react';
 import type { ToolCall, ToolResultContent, Message } from '@/types';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
@@ -341,6 +341,7 @@ export function ToolResultImagePreview({
   frameClassName: string;
 }) {
   const { t } = useI18n();
+  const thumbnailId = useId();
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
   // The file `resolvedSrc` was read from.
   const resolvedPathRef = useRef<string | null>(null);
@@ -444,7 +445,8 @@ export function ToolResultImagePreview({
       // The app's image viewer shows it enlarged. A saved image goes there as the very file this
       // thumbnail read: the viewer finds files by name, and two tool images can share one name.
       onClick={(event) => useImageLightboxStore.getState().open([{
-        id: block.outputRef?.relPath ?? `${alt}:${src}`,
+        // An inline image is named after this thumbnail, never after its bytes.
+        id: block.outputRef?.relPath ?? `${alt}:${thumbnailId}`,
         mediaType: block.source.media_type,
         data: block.source.data,
         filePath: resolvedPathRef.current ?? undefined,

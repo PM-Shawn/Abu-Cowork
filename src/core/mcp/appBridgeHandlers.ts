@@ -123,14 +123,20 @@ export const MAX_CONCURRENT_APP_RESOURCE_READS = 4;
  */
 export const FULLSCREEN_GESTURE_WINDOW_MS = 2_000;
 /**
- * How long a USER-initiated exit from fullscreen suppresses app fullscreen
- * requests. Without it an app can re-request the moment the overlay closes and
- * hold the window hostage; and the very click that closed the overlay is itself
- * a gesture, so the cool-down has to outrank the gesture check.
+ * How long an exit from fullscreen that the HOST made suppresses app fullscreen
+ * requests: the user's own (exit button, backdrop, Escape) and the one made
+ * when a window or an approval of the user's took the app's place. Without it
+ * an app can re-request the moment the overlay closes and hold the window
+ * hostage; and the very click that closed the overlay is itself a gesture, so
+ * the cool-down has to outrank the gesture check. An app that puts ITSELF back
+ * inline starts no cool-down.
  */
 export const FULLSCREEN_EXIT_COOLDOWN_MS = 5_000;
 /** Denial handed to an app that asked for fullscreen unprompted. */
 export const FULLSCREEN_GESTURE_REQUIRED_MESSAGE = 'fullscreen requires a user gesture';
+/** Denial handed to an app that asked for fullscreen while the user has
+ *  something open: the app never takes its place. */
+export const FULLSCREEN_OCCUPIED_MESSAGE = 'fullscreen is unavailable while a window, a question or an approval is open';
 /** Denial handed to an app that piled up more reads than the block allows. */
 export const TOO_MANY_RESOURCE_READS_MESSAGE = 'too many concurrent resource reads';
 /**
@@ -364,11 +370,22 @@ export interface AppBridgeHandlerDeps {
    */
   lastUserGestureAt?(): number | undefined;
   /**
-   * When the user last left fullscreen THEMSELVES (close button, backdrop,
-   * Escape), or `undefined` if they never did. An app-driven return to inline
-   * must NOT set this — it is the signal that the user said no.
+   * When the HOST last took the app out of fullscreen, or `undefined` if it
+   * never did: the user left (exit button, backdrop, Escape), or a window or an
+   * approval of the user's took the app's place. An app-driven return to inline
+   * must NOT set this — it is the signal that the app is not wanted there now.
    */
   lastUserExitAt?(): number | undefined;
+  /**
+   * Whether the user has something open or due on the page right now: a window,
+   * a question or an approval that is shown, waits its turn or stepped aside
+   * (menus and popovers do not count). While it holds, a fullscreen request is
+   * refused: the interface is not the user's content, so it never closes or
+   * cancels what the user has open and never takes the focus out of a field.
+   * Answers `false` while this block itself is the fullscreen surface. Read at
+   * call time.
+   */
+  pageOccupied?(): boolean;
   onAudit(entry: McpAppAuditEntry): void;
   onRateLimited(): void;
   now?(): number;
@@ -470,21 +487,29 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
    * Order matters: the cool-down is checked BEFORE the gesture, because the
    * click that closed the overlay is itself a gesture on the host wrapper and
    * would otherwise re-authorise the very thing the user just refused.
+   *
+   * Then the page: while the user has a window, a question or an approval open
+   * or due, the answer is no, whatever gesture or grace the app has — and that
+   * refusal spends no grace and starts no cool-down, so the app loses nothing
+   * for having asked at the wrong moment.
+   *
+   * Returns the denial to hand to the app, or `null` when it may go fullscreen.
    */
-  const mayGoFullscreen = (): boolean => {
+  const mayGoFullscreen = (): string | null => {
     const t = now();
     const exitedAt = deps.lastUserExitAt?.();
     if (exitedAt !== undefined) {
       fullscreenGraceAvailable = false;
-      if (t - exitedAt < FULLSCREEN_EXIT_COOLDOWN_MS) return false;
+      if (t - exitedAt < FULLSCREEN_EXIT_COOLDOWN_MS) return FULLSCREEN_GESTURE_REQUIRED_MESSAGE;
     }
+    if (deps.pageOccupied?.()) return FULLSCREEN_OCCUPIED_MESSAGE;
     const gestureAt = deps.lastUserGestureAt?.();
-    if (gestureAt !== undefined && t - gestureAt <= FULLSCREEN_GESTURE_WINDOW_MS) return true;
+    if (gestureAt !== undefined && t - gestureAt <= FULLSCREEN_GESTURE_WINDOW_MS) return null;
     if (fullscreenGraceAvailable) {
       fullscreenGraceAvailable = false;
-      return true;
+      return null;
     }
-    return false;
+    return FULLSCREEN_GESTURE_REQUIRED_MESSAGE;
   };
 
   return {
@@ -746,9 +771,8 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
         );
       }
       // Going back to inline is always allowed — only the escalation is gated.
-      if (mode === 'fullscreen' && !mayGoFullscreen()) {
-        return refuse('denied', DENIED, FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
-      }
+      const denial = mode === 'fullscreen' ? mayGoFullscreen() : null;
+      if (denial !== null) return refuse('denied', DENIED, denial);
       deps.setDisplayMode(mode);
       return { mode };
     },

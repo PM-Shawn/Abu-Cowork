@@ -139,14 +139,17 @@ describe('FullscreenSurface, closed', () => {
 });
 
 describe('FullscreenSurface, open in place (not a layer)', () => {
-  it('covers the window on the sticky level, off the drag lanes, and is no layer', () => {
+  it('covers the window on its own level, off the drag lanes, and is no layer', () => {
     const onModalChange = vi.fn();
     render(<Stage open onModalChange={onModalChange} />);
     const surface = surfaceOf(screen.getByTestId('content'));
     expect(surface).toHaveAttribute('data-electron-no-drag');
     expect(classes(surface)).toContain('fixed');
     expect(classes(surface)).toContain('inset-0');
-    expect(classes(surface)).toContain('z-sticky');
+    // Above what the page pins (the window's title-bar controls), under every floating level.
+    expect(classes(surface)).toContain('z-fullscreen');
+    expect(classes(surface)).not.toContain('z-sticky');
+    expect(classes(surface)).not.toContain('z-popover');
     expect(classes(surface)).not.toContain('z-dialog');
     expect(classes(surface)).toContain('bg-surface');
     expect(surface.style.top).toBe('32px');
@@ -212,6 +215,51 @@ describe('FullscreenSurface, open in place (not a layer)', () => {
     expect(onExit).not.toHaveBeenCalled();
     escape();
     expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  // The focus is on the page body (after a press on a scrim): the key is pressed outside every
+  // layer, and the window on top uses it. One press, one thing closed.
+  it('stays when the Escape closed a window that is open over it', () => {
+    const onExit = vi.fn();
+    const onDialogChange = vi.fn();
+    render(<Stage open onExit={onExit} dialog onDialogChange={onDialogChange} />);
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    expect(onDialogChange.mock.calls).toEqual([[false]]);
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it('stays when the Escape refused an approval that shows over it', () => {
+    const onExit = vi.fn();
+    const answers: boolean[] = [];
+    render(
+      <DesignSystemProvider>
+        <FullscreenSurface open onExit={onExit} label="Notes">
+          <div data-testid="content"><Button>First</Button></div>
+        </FullscreenSurface>
+        <Dialog open onOpenChange={(open) => answers.push(open)} layer="approval" role="alertdialog" outsidePress="ignore" title="Run this command?" footer={<Button>Cancel</Button>} />
+      </DesignSystemProvider>,
+    );
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    expect(answers).toEqual([false]);
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it('stays when another handler has used the Escape', () => {
+    const onExit = vi.fn();
+    render(<Stage open onExit={onExit} />);
+    const used = (event: KeyboardEvent) => event.preventDefault();
+    document.addEventListener('keydown', used, true);
+    try {
+      escape();
+    } finally {
+      document.removeEventListener('keydown', used, true);
+    }
+    expect(onExit).not.toHaveBeenCalled();
   });
 });
 

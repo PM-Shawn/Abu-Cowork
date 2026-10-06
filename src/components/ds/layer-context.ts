@@ -64,6 +64,11 @@ export interface LayerRegistry {
   discardQuestion: (id: string, shown: boolean) => void;
   // Escape reached a layer that is fading out: the key acts on the top open layer instead.
   escapeTop: () => void;
+  // Read only. True while the user has something open or due: a window, a question or an approval
+  // is shown, an approval waits its turn, or something stepped aside or waits behind a question
+  // about unsaved input. Menus and popovers do not count, nor does a layer that is fading out.
+  // For content that is not the user's (a connector's interface) before it asks for the window.
+  isOccupied: () => boolean;
 }
 
 export const LayerContext = createContext<LayerRegistry | null>(null);

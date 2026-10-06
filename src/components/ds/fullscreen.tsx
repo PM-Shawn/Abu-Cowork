@@ -64,8 +64,11 @@ function firstControl(surface: HTMLElement): HTMLElement | null {
 // (a Dialog portals its content, which rebuilds it). Closed, its element makes no box
 // (`display: contents`) and `className` / `style` do not apply.
 //
-// Plain form: a layout state of a panel. It sits on the sticky level, under menus and dialogs,
-// moves no focus, and Escape leaves it unless the key was pressed inside a design-system layer.
+// Plain form: a layout state of a panel. It sits on a level of its own (`z-fullscreen`): above
+// what the page pins, the window's title-bar controls included, and under menus, dialogs, toasts
+// and tooltips. The caller passes no stacking class. It moves no focus, and Escape leaves it
+// unless the key was pressed inside a design-system layer or something else has used the key
+// (a window over the panel that closed on it, an approval that it refused).
 //
 // `layer`: a dialog as far as the layer manager and the user can tell. One at a time (a dialog
 // or an approval that opens replaces it, and it is turned away while an approval is on the page),
@@ -131,12 +134,13 @@ export function FullscreenSurface({
       // An Escape pressed inside a menu, a popover or a question belongs to that layer.
       const within = event.target instanceof Element ? event.target.closest('[data-ds-layer]') : null;
       if (within && within !== rootRef.current) return;
+      // A layer above has used the key (it closed on it, or refused an approval), wherever the
+      // focus was: one press, one thing closed.
+      if (event.defaultPrevented) return;
       if (!layer) {
         exitRef.current();
         return;
       }
-      // A layer above has used the key.
-      if (event.defaultPrevented) return;
       event.preventDefault();
       registry.escapeTop();
     };
@@ -187,7 +191,7 @@ export function FullscreenSurface({
       <div
         ref={attach}
         {...surfaceProps}
-        className={shown ? cn(COVER, layer ? 'z-dialog' : 'z-sticky', 'outline-none', className, trapped && scrim && SEE_THROUGH) : 'contents'}
+        className={shown ? cn(COVER, layer ? 'z-dialog' : 'z-fullscreen', 'outline-none', className, trapped && scrim && SEE_THROUGH) : 'contents'}
         style={shown ? style : undefined}
         onKeyDown={(event) => scopeKeyDown.current?.(event)}
       >

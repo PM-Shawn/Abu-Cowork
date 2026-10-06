@@ -78,8 +78,8 @@ describe('design tokens — layer levels', () => {
     return value;
   };
 
-  it('keeps the order of the levels: page, popover, dialog, toast, tooltip', () => {
-    const order = ['z-sticky', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip'].map(level);
+  it('keeps the order of the levels: page, fullscreen panel, popover, dialog, toast, tooltip', () => {
+    const order = ['z-sticky', 'z-fullscreen', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip'].map(level);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(new Set(order).size).toBe(order.length);
   });

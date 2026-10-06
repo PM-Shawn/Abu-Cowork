@@ -5,9 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode, useState, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { McpUiHostContext } from '@modelcontextprotocol/ext-apps/app-bridge';
+import CloseDialog from '@/components/common/CloseDialog';
 import { Button } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
 import { Dialog } from '@/components/ds/dialog';
+import { Menu, MenuItem } from '@/components/ds/menu';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TextField } from '@/components/ds/text-field';
 import { APPROVAL_TITLE, approvalProbe, windowBox } from '@/test/dsWindows';
 import { initLanguage } from '@/i18n';
 import { buildAppStyleVariables } from '@/core/mcp/appHost';
@@ -817,6 +821,156 @@ describe('McpAppBlock', () => {
       expect(sink.sessions).toHaveLength(1);
     });
 
+    // The interface asks by itself: nothing in the block was pressed. It is not the user's
+    // content, so it never takes the place of what the user has open, and never moves the focus.
+    describe('a fullscreen request while the user has something open', () => {
+      const REFUSAL = /while a window, a question or an approval is open/;
+      async function expectRefused(sink: SessionSink) {
+        await expect(
+          sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never),
+        ).rejects.toThrow(REFUSAL);
+        await act(async () => {});
+        expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
+        expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
+        expect(screen.queryByTestId('mcp-app-fullscreen-exit')).toBeNull();
+        // The app was never told it is fullscreen.
+        expect(sink.session!.hostContextPatches.some((patch) => patch.displayMode === 'fullscreen')).toBe(false);
+      }
+      // The refusal spent nothing: with the page free again, the same unprompted request is honoured.
+      async function expectGraceStillThere(sink: SessionSink) {
+        let answer: unknown;
+        await act(async () => {
+          answer = await sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never);
+        });
+        expect(answer).toEqual({ mode: 'fullscreen' });
+        expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'fullscreen');
+        expect(screen.getByTestId('mcp-app-fullscreen-exit')).toHaveFocus();
+      }
+
+      it.each([
+        ['a plain window', {}],
+        ['a window whose work would be cancelled', { busy: true }],
+        ['a window with unsaved input', { dirty: true }],
+      ] as const)('leaves %s open, with the focus in its field, and asks nothing', async (_name, windowProps) => {
+        const changes: boolean[] = [];
+        function Window() {
+          const [open, setOpen] = useState(true);
+          return (
+            <>
+              <Button onClick={() => setOpen(false)}>the owner closes the window</Button>
+              <Dialog open={open} onOpenChange={(next) => { changes.push(next); setOpen(next); }} title="Settings" closeButton {...windowProps}>
+                <TextField aria-label="Name" />
+              </Dialog>
+            </>
+          );
+        }
+        const sink: SessionSink = {};
+        renderBlock({}, sink, { beside: <Window /> });
+        await settle();
+        const field = screen.getByRole('textbox', { name: 'Name' });
+        act(() => { field.focus(); });
+        const frame = screen.getByTestId('mcp-app-frame', { exact: true });
+
+        await expectRefused(sink);
+
+        expect(changes).toEqual([]);
+        expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+        expect(windowBox('Settings')).not.toHaveAttribute('hidden');
+        // No question about unsaved input was put to the user.
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+        expect(field).toHaveFocus();
+        expect(screen.getByTestId('mcp-app-frame')).toBe(frame);
+
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'the owner closes the window', hidden: true })); });
+        await act(async () => {});
+        await expectGraceStillThere(sink);
+      });
+
+      it('leaves a question unanswered', async () => {
+        const answers: boolean[] = [];
+        function Asker() {
+          const confirm = useConfirm();
+          return (
+            <Button onClick={() => { void confirm({ title: 'Delete this file?', confirmLabel: 'Delete', tone: 'danger' }).then((answer) => answers.push(answer)); }}>
+              ask to delete
+            </Button>
+          );
+        }
+        const sink: SessionSink = {};
+        renderBlock({}, sink, { beside: <Asker /> });
+        await settle();
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'ask to delete' })); });
+        const question = screen.getByRole('alertdialog', { name: 'Delete this file?' });
+        const focused = document.activeElement;
+        expect(question.contains(focused)).toBe(true);
+
+        await expectRefused(sink);
+
+        expect(answers).toEqual([]);
+        expect(screen.getByRole('alertdialog', { name: 'Delete this file?' })).toBe(question);
+        expect(document.activeElement).toBe(focused);
+
+        // The user answers; only then is the page free.
+        await act(async () => { fireEvent.click(focused as HTMLElement); });
+        await act(async () => {});
+        expect(answers).toEqual([false]);
+        await expectGraceStillThere(sink);
+      });
+
+      it('leaves the close-window question alone: nothing quits, minimizes or cancels', async () => {
+        const answered = { quit: vi.fn(), minimize: vi.fn(), cancel: vi.fn(), remember: vi.fn() };
+        const sink: SessionSink = {};
+        renderBlock({}, sink, {
+          beside: (
+            <CloseDialog
+              open
+              hasRunningAgent={false}
+              onQuit={answered.quit}
+              onMinimize={answered.minimize}
+              onCancel={answered.cancel}
+              onCloseActionChange={answered.remember}
+            />
+          ),
+        });
+        await settle();
+        const question = screen.getByRole('alertdialog');
+        const focused = document.activeElement;
+        expect(question.contains(focused)).toBe(true);
+
+        await expectRefused(sink);
+
+        for (const answer of Object.values(answered)) expect(answer).not.toHaveBeenCalled();
+        expect(screen.getByRole('alertdialog')).toBe(question);
+        expect(document.activeElement).toBe(focused);
+      });
+
+      it('still goes fullscreen with a menu open: a menu is nothing the user would lose', async () => {
+        const sink: SessionSink = {};
+        renderBlock({}, sink, {
+          beside: <Menu trigger={<Button>More</Button>} defaultOpen><MenuItem>Reload</MenuItem></Menu>,
+        });
+        await settle();
+        expect(screen.getByRole('menu')).toBeInTheDocument();
+
+        await expectGraceStillThere(sink);
+      });
+
+      it('answers a repeated request while it is the fullscreen surface itself as before', async () => {
+        const sink: SessionSink = {};
+        renderBlock({}, sink);
+        await settle();
+        await goFullscreen(sink);
+        // A press on the block, then the app asks again: it is fullscreen already.
+        await act(async () => { fireEvent.pointerDown(screen.getByTestId('mcp-app-block')); });
+        let answer: unknown;
+        await act(async () => {
+          answer = await sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never);
+        });
+        expect(answer).toEqual({ mode: 'fullscreen' });
+        expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'fullscreen');
+      });
+    });
+
     describe('with an approval', () => {
       const approvalAnswers: boolean[] = [];
       function Approval() {
@@ -851,7 +1005,7 @@ describe('McpAppBlock', () => {
         expect(sink.sessions).toHaveLength(1);
       });
 
-      it('does not go fullscreen over an approval: the app is told it is inline, the approval stays unanswered', async () => {
+      it('is refused fullscreen while an approval shows: the app hears the refusal, the approval stays unanswered', async () => {
         const sink: SessionSink = {};
         renderBlock({}, sink, { beside: <Approval /> });
         await settle();
@@ -860,24 +1014,37 @@ describe('McpAppBlock', () => {
         const focused = document.activeElement;
         expect(approval.contains(focused)).toBe(true);
 
-        await goFullscreen(sink);
+        // The answer is a refusal, not "fullscreen" followed by "inline".
+        await expect(
+          sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never),
+        ).rejects.toThrow(/while a window, a question or an approval is open/);
         await act(async () => {});
 
         expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
         expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
         expect(screen.queryByTestId('mcp-app-fullscreen-exit')).toBeNull();
-        expect(sink.session!.hostContextPatches.at(-1)).toEqual({ displayMode: 'inline' });
+        expect(sink.session!.hostContextPatches.some((patch) => patch.displayMode === 'fullscreen')).toBe(false);
         expect(windowBox(APPROVAL_TITLE)).not.toHaveAttribute('hidden');
         expect(document.activeElement).toBe(focused);
         expect(approvalAnswers).toEqual([]);
 
-        // Enter and Space pressed where the app was answer nothing. Escape refuses, as it does
-        // anywhere while an approval shows; nothing allows.
+        // Enter and Space pressed where the app is answer nothing.
         const block = screen.getByTestId('mcp-app-block');
         for (const key of ['Enter', ' ']) fireEvent.keyDown(block, { key });
         expect(approvalAnswers).toEqual([]);
-        fireEvent.keyDown(block, { key: 'Escape' });
-        expect(approvalAnswers).toEqual([false]);
+
+        // The refusal spent no grace and started no cool-down: once the approval has been
+        // answered, the same unprompted request is honoured.
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'the approval is answered', hidden: true })); });
+        await act(async () => {});
+        expect(windowBox(APPROVAL_TITLE)).toBeNull();
+        let answer: unknown;
+        await act(async () => {
+          answer = await sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never);
+        });
+        expect(answer).toEqual({ mode: 'fullscreen' });
+        expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'fullscreen');
+        expect(approvalAnswers).toEqual([]);
       });
     });
 

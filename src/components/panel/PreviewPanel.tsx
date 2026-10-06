@@ -831,17 +831,15 @@ export default function PreviewPanel({
   if (!previewFilePath) return null;
 
   return (
-    // Fullscreen is a layout state of the panel, no dialog: the surface covers the window on the
-    // sticky level, under the panel's own menus, and Escape leaves it unless the key was pressed
-    // inside a menu or a window. Out of fullscreen the surface makes no box.
+    // Fullscreen is a layout state of the panel, no dialog: the surface covers the window, the
+    // title-bar controls included, on the level the design system gives it, under the panel's
+    // own menus. Escape leaves it unless the key was pressed inside a menu or a window, or
+    // closed one. Out of fullscreen the surface makes no box.
     <FullscreenSurface
       open={isFullscreen}
       onExit={exitFullscreen}
       label={fileName}
-      // The macOS title-bar controls are fixed on the sticky level and come later in the page,
-      // so a surface on that level is painted under them. The panel takes the popover level:
-      // above the window chrome, and still under its own menus, which are drawn after it.
-      className="z-popover bg-surface"
+      className="bg-surface"
       style={isWindows() ? WINDOWS_FULLSCREEN_STYLE : undefined}
     >
     <div data-electron-no-drag className="flex h-full flex-col">

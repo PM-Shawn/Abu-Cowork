@@ -311,8 +311,11 @@
    design-system layer (the largest such value in src/ is 10001). A modal layer takes pointer
    input away from everything else on the page, so it has to be the thing on top: what is seen
    is what takes the press. scripts/designTokens.test.ts reads the hand-drawn values and fails
-   when one reaches these levels. z-sticky stays inside the page. */
+   when one reaches these levels. z-sticky stays inside the page. z-fullscreen is a panel that
+   covers the window as a layout state (FullscreenSurface, plain form): above what the page pins,
+   the window's title-bar controls included, and under every floating level. */
 @utility z-sticky { z-index: 10; }
+@utility z-fullscreen { z-index: 50; }
 @utility z-popover { z-index: 11000; }
 @utility z-dialog { z-index: 12000; }
 @utility z-toast { z-index: 13000; }

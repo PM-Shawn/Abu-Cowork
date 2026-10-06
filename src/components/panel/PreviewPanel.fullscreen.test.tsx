@@ -79,7 +79,7 @@ describe('PreviewPanel fullscreen layout', () => {
     expect(screen.queryByRole('button', { name: /^(关闭预览|Close preview)$/ })).toBeNull();
   });
 
-  it('is a layout state of the panel on the sticky level: no dialog, no scrim, and Escape leaves it', () => {
+  it('is a layout state of the panel on the fullscreen level: no dialog, no scrim, and Escape leaves it', () => {
     const { container } = renderImagePreview();
     const surface = container.firstElementChild!;
     expect(surface).toHaveClass('contents');
@@ -87,9 +87,11 @@ describe('PreviewPanel fullscreen layout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: FULLSCREEN }));
 
-    // Above the window's title-bar controls (sticky level), under dialogs.
-    expect(surface).toHaveClass('z-popover');
+    // The level is the surface's own: above the window's title-bar controls, under every
+    // floating level. The panel passes no stacking class.
+    expect(surface).toHaveClass('z-fullscreen');
     expect(surface).not.toHaveClass('z-sticky');
+    expect(surface).not.toHaveClass('z-popover');
     expect(surface).not.toHaveClass('z-dialog');
     expect(surface).toHaveClass('bg-surface');
     expect(surface).toHaveAttribute('data-electron-no-drag');

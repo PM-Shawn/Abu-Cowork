@@ -30,6 +30,7 @@ import { ConfirmDialog } from '@/components/ds/confirm-dialog';
 import { FullscreenSurface } from '@/components/ds/fullscreen';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
+import { useLayerRegistry } from '@/components/ds/layer-context';
 import { Pressable } from '@/components/ds/pressable';
 import { StatusIcon } from '@/components/ds/status-icon';
 import type { ConfirmationInfo } from '@/core/tools/registry';
@@ -422,11 +423,19 @@ export default function McpAppBlock({
    * `lastUserGestureAt` is the last pointerdown/keydown the HOST saw inside this
    * block — a gesture inside the sandboxed iframe never crosses the document
    * boundary, so this is all the host can honestly know. `lastUserExitAt` is set
-   * ONLY when the user left fullscreen themselves; an app-driven return to
-   * inline must not look like the user saying no.
+   * whenever the HOST takes the app out of fullscreen (`exitFullscreen`: the
+   * user left, or a window or an approval took the app's place); an app-driven
+   * return to inline must not look like that. `pageOccupied` is read from the
+   * layer registry: while the user has a window, a question or an approval open
+   * or due, the app's request is refused before it can take anything's place.
    */
   const lastUserGestureAtRef = useRef<number | undefined>(undefined);
   const lastUserExitAtRef = useRef<number | undefined>(undefined);
+  const layerRegistry = useLayerRegistry();
+  // The mode on the page, for the bridge's handlers: while this block is the
+  // fullscreen surface, the layer the registry holds is the block itself.
+  const displayModeRef = useRef(displayMode);
+  useEffect(() => { displayModeRef.current = displayMode; }, [displayMode]);
   const noteUserGesture = useCallback(() => {
     lastUserGestureAtRef.current = Date.now();
   }, []);
@@ -620,6 +629,7 @@ export default function McpAppBlock({
       setDisplayMode: (mode) => setDisplayMode(mode),
       lastUserGestureAt: () => lastUserGestureAtRef.current,
       lastUserExitAt: () => lastUserExitAtRef.current,
+      pageOccupied: () => displayModeRef.current !== 'fullscreen' && layerRegistry.isOccupied(),
       // Per-kind caps (see `appendAuditRow`): a resource-read storm must not
       // be able to push the tool-call rows out of the trail.
       onAudit: (entry) => setAudit((prev) => appendAuditRow(prev, entry)),

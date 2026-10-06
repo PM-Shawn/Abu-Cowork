@@ -273,7 +273,7 @@ describe('ToolResultImagePreview', () => {
     expect(viewer.isOpen).toBe(true);
     expect(viewer.activeIndex).toBe(0);
     expect(viewer.items).toEqual([{
-      id: 'Screenshot:data:image/png;base64,iVBORw0KGgo=',
+      id: expect.stringMatching(/^Screenshot:/),
       mediaType: 'image/png',
       data: 'iVBORw0KGgo=',
       filePath: undefined,
@@ -284,6 +284,32 @@ describe('ToolResultImagePreview', () => {
     // The enlarged image is the viewer's to draw: the thumbnail draws no layer of its own.
     expect(screen.getAllByRole('img')).toHaveLength(1);
     expect(document.querySelector('.fixed')).toBeNull();
+  });
+
+  it('names an inline image for the viewer with a short id of its own, never with its bytes', () => {
+    const bytes = 'iVBORw0KGgo'.repeat(400);
+    const big: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: bytes } };
+    render(
+      <>
+        <ToolResultImagePreview block={big} conversationId="conv-1" alt="Image" frameClassName="frame" thumbnailClassName="thumb" />
+        <ToolResultImagePreview block={big} conversationId="conv-1" alt="Image" frameClassName="frame" thumbnailClassName="thumb" />
+      </>,
+    );
+    const [first, second] = screen.getAllByRole('button', { name: 'Image' });
+
+    fireEvent.click(first);
+    const firstId = useImageLightboxStore.getState().items[0].id;
+    fireEvent.click(first);
+    const again = useImageLightboxStore.getState().items[0].id;
+    fireEvent.click(second);
+    const secondId = useImageLightboxStore.getState().items[0].id;
+
+    expect(firstId.length).toBeLessThan(40);
+    expect(firstId).not.toContain('iVBORw0KGgo');
+    // The same thumbnail is the same image to the viewer; another thumbnail is another image,
+    // also when it holds the same bytes.
+    expect(again).toBe(firstId);
+    expect(secondId).not.toBe(firstId);
   });
 
   it('hands the viewer the saved file its thumbnail shows', async () => {

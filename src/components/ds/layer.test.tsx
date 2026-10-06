@@ -1838,6 +1838,84 @@ describe('telling when the last dialog has left the page', () => {
   });
 });
 
+// What content that is not the user's asks before it takes the window.
+describe('telling whether the user has something open or due', () => {
+  it('is free on an empty page and with a menu or a popover open', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    expect(registry.isOccupied()).toBe(false);
+    registry.register(spy(log, 'menu', 'popover').entry);
+    expect(registry.isOccupied()).toBe(false);
+  });
+
+  it.each(['dialog', 'alert', 'approval'] as const)('is occupied while a %s is shown, and free once it has been taken off', (kind) => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'shown', kind).entry);
+    expect(registry.isOccupied()).toBe(true);
+    registry.unregister('shown');
+    // A layer that only fades out no longer counts.
+    expect(registry.isOccupied()).toBe(false);
+    expect(log).toEqual([]);
+  });
+
+  it('is occupied while an approval waits its turn', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'first', 'approval').entry);
+    registry.register(spy(log, 'second', 'approval').entry);
+    registry.unregister('first');
+    // The second one is shown now.
+    expect(registry.isOccupied()).toBe(true);
+    registry.unregister('second');
+    expect(registry.isOccupied()).toBe(false);
+  });
+
+  it('is occupied while a busy window has stepped aside, with the approval gone or not', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
+    registry.register(spy(log, 'approval', 'approval').entry);
+    expect(calls(log, 'login')).toEqual(['login.hold']);
+    expect(registry.isOccupied()).toBe(true);
+    registry.unregister('approval');
+    // The window is back.
+    expect(calls(log, 'login')).toEqual(['login.hold', 'login.release']);
+    expect(registry.isOccupied()).toBe(true);
+    registry.unregister('login');
+    expect(registry.isOccupied()).toBe(false);
+  });
+
+  it('is occupied while an approval waits behind a window the user chose to keep editing', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const form = spy(log, 'form', 'dialog', { dirty: true });
+    registry.register(form.entry);
+    registry.register(spy(log, 'approval', 'approval').entry);
+    // The form asks about its input; the approval waits behind the question.
+    expect(registry.isOccupied()).toBe(true);
+    form.asked()?.onKeep?.();
+    expect(registry.isOccupied()).toBe(true);
+    registry.unregister('form');
+    // The approval is shown.
+    expect(registry.isOccupied()).toBe(true);
+    registry.unregister('approval');
+    expect(registry.isOccupied()).toBe(false);
+  });
+
+  it('changes nothing by being asked', () => {
+    const log: string[] = [];
+    const onModalChange = vi.fn();
+    const { registry } = mountRegistry(onModalChange);
+    registry.register(spy(log, 'window', 'dialog').entry);
+    onModalChange.mockClear();
+    registry.isOccupied();
+    registry.isOccupied();
+    expect(log).toEqual([]);
+    expect(onModalChange).not.toHaveBeenCalled();
+  });
+});
+
 describe('useOpenState', () => {
   it('keeps its own state and reports every change', async () => {
     const user = userEvent.setup();

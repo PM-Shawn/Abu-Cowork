@@ -455,6 +455,12 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
         const open = layers.current;
         [...open].reverse().find((layer) => !open.some((other) => other.ancestors.includes(layer.id)))?.escape();
       },
+      isOccupied: () => (
+        layers.current.some((layer) => layer.kind !== 'popover')
+        || waitingApprovals.current.length > 0
+        || steppedAside.current.length > 0
+        || waiting.current !== null
+      ),
     };
   }, [container]);
   return <LayerContext.Provider value={registry}>{children}</LayerContext.Provider>;

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { describe, it, expect } from 'vitest';
+import { overlayLintConfig } from '../eslint.config.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const eslint = new ESLint({ cwd: repoRoot });
@@ -392,5 +393,30 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     ]) {
       expect(await messages(code, file), file).not.toEqual([]);
     }
+  });
+});
+
+describe('overlayLintConfig', { timeout: 60_000 }, () => {
+  const FILE = 'src/components/__overlay_fixture__.tsx';
+
+  async function overlayMessages(migrated: string[], code: string): Promise<string[]> {
+    const overlay = new ESLint({ cwd: repoRoot, overrideConfigFile: true, overrideConfig: overlayLintConfig(migrated) });
+    const [result] = await overlay.lintText(code, { filePath: path.join(repoRoot, FILE) });
+    return result.messages.map((m) => m.message);
+  }
+
+  it('applies the design-system rules to the files it is given', async () => {
+    const palette = await overlayMessages(['src/**/*.tsx'], component('<div className="bg-gray-100" />'));
+    expect(palette.some((m) => m.startsWith('Design system'))).toBe(true);
+    expect(await overlayMessages(['src/**/*.tsx'], component('<div className="bg-surface text-label rounded-panel" />'))).toEqual([]);
+    const icon = await overlayMessages(['src/**/*.tsx'], `import { X } from 'lucide-react';\n${component('<X />')}`);
+    expect(icon.some((m) => m.includes('render icons through Icon + AppIcons'))).toBe(true);
+  });
+
+  it('holds only the base rules when no file has migrated', async () => {
+    const palette = await overlayMessages([], component('<div className="bg-gray-100" />'));
+    expect(palette.some((m) => m.startsWith('Design system'))).toBe(false);
+    // The base rules are in force: an unused variable is reported.
+    expect(await overlayMessages([], 'const unused = 1;\n')).not.toEqual([]);
   });
 });

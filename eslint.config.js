@@ -333,6 +333,77 @@ const DESIGN_IMPORT_RESTRICTION = {
   patterns: [{ group: ['@radix-ui/*', 'radix-ui/*'], message: 'Design system: use the wrappers in @/components/ds.' }],
 }
 
+const BASE_BLOCK = {
+  files: ['**/*.{ts,tsx}'],
+  extends: [
+    js.configs.recommended,
+    tseslint.configs.recommended,
+    reactHooks.configs.flat.recommended,
+    reactRefresh.configs.vite,
+  ],
+  languageOptions: {
+    ecmaVersion: 2020,
+    globals: globals.browser,
+  },
+  rules: {
+    '@typescript-eslint/no-unused-vars': ['error', {
+      argsIgnorePattern: '^_',
+      varsIgnorePattern: '^_',
+      destructuredArrayIgnorePattern: '^_',
+    }],
+    // CLAUDE.md forbids `any` — enforce via lint, not just convention.
+    // Use `unknown` or proper types; opt out locally with
+    // `// eslint-disable-next-line @typescript-eslint/no-explicit-any`
+    // only when a third-party type is genuinely untypable.
+    '@typescript-eslint/no-explicit-any': 'error',
+    // The Electron host's `plugin:updater|check` is three-state: metadata /
+    // null / `{ status: 'disabled' }` marker (updaterHost.cjs header). The
+    // plugin's stock check() wrapper predates the marker and blindly wraps
+    // any truthy result in `new Update(...)` — a caller using it would turn
+    // the marker into a bogus "update available" (the v0.41.0 misleading-
+    // update incident, reintroduced). All checks must go through
+    // src/core/updates/checker.ts, which invokes the command directly.
+    'no-restricted-imports': ['error', {
+      paths: UPDATER_IMPORT_RESTRICTION,
+    }],
+    // These rules from React hooks recommended are too strict for legitimate patterns
+    // like form initialization, syncing derived state, and dynamic icon components
+    'react-hooks/set-state-in-effect': 'off',
+    'react-hooks/purity': 'off',
+    'react-hooks/static-components': 'off',
+    // Typography guardrail — enforce the 8-token font-size scale (index.css
+    // `--text-*`). Ban arbitrary `text-[Npx]` and Tailwind default named
+    // sizes so the whole app stays on one scale. Both are at zero after the
+    // 2026-07 migration; this keeps them there. Use text-caption/minor/body
+    // /h-xs/h-sm/h-md/h-lg/h-xl. (Colors are intentionally NOT covered yet —
+    // link/status colors are still raw Tailwind, a separate follow-up.)
+    // Semantic-color guardrail — enforce the --abu-{danger,warning,success,
+    // info,link} token scale (index.css). Ban raw Tailwind status/link hues
+    // in text/bg/border/ring/fill so link + status colors stay tokenized and
+    // theme-aware. Neutral grays and categorical hues (purple/teal) are NOT
+    // covered. See CLAUDE.md §6.2.
+    'no-restricted-syntax': ['error', ...TYPOGRAPHY_SELECTORS, ...STATUS_COLOR_SELECTORS],
+  },
+}
+
+// The rules for a repository that is compiled into this app from a sibling
+// directory and has no node_modules of its own: the base block, plus the
+// design-system rules for the files that repository lists as migrated. Its
+// config file calls this, so the globs are relative to that repository.
+export function overlayLintConfig(migrated) {
+  if (migrated.length === 0) return defineConfig([BASE_BLOCK])
+  return defineConfig([
+    BASE_BLOCK,
+    {
+      files: migrated,
+      rules: {
+        'no-restricted-syntax': ['error', ...DESIGN_TYPOGRAPHY_SELECTORS, ...DESIGN_VALUE_SELECTORS, ...DESIGN_STRUCTURE_SELECTORS],
+        'no-restricted-imports': ['error', DESIGN_IMPORT_RESTRICTION],
+      },
+    },
+  ])
+}
+
 export default defineConfig([
   // `.wt-*/` and `.claude/worktrees/` are nested git worktrees (feature branches)
   // checked out inside the repo. Each carries its own tsconfig, which makes
@@ -364,58 +435,7 @@ export default defineConfig([
     'electron/browser-runtime/dist',
     'electron/chrome-bridge-runtime/dist',
   ]),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      js.configs.recommended,
-      tseslint.configs.recommended,
-      reactHooks.configs.flat.recommended,
-      reactRefresh.configs.vite,
-    ],
-    languageOptions: {
-      ecmaVersion: 2020,
-      globals: globals.browser,
-    },
-    rules: {
-      '@typescript-eslint/no-unused-vars': ['error', {
-        argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_',
-        destructuredArrayIgnorePattern: '^_',
-      }],
-      // CLAUDE.md forbids `any` — enforce via lint, not just convention.
-      // Use `unknown` or proper types; opt out locally with
-      // `// eslint-disable-next-line @typescript-eslint/no-explicit-any`
-      // only when a third-party type is genuinely untypable.
-      '@typescript-eslint/no-explicit-any': 'error',
-      // The Electron host's `plugin:updater|check` is three-state: metadata /
-      // null / `{ status: 'disabled' }` marker (updaterHost.cjs header). The
-      // plugin's stock check() wrapper predates the marker and blindly wraps
-      // any truthy result in `new Update(...)` — a caller using it would turn
-      // the marker into a bogus "update available" (the v0.41.0 misleading-
-      // update incident, reintroduced). All checks must go through
-      // src/core/updates/checker.ts, which invokes the command directly.
-      'no-restricted-imports': ['error', {
-        paths: UPDATER_IMPORT_RESTRICTION,
-      }],
-      // These rules from React hooks recommended are too strict for legitimate patterns
-      // like form initialization, syncing derived state, and dynamic icon components
-      'react-hooks/set-state-in-effect': 'off',
-      'react-hooks/purity': 'off',
-      'react-hooks/static-components': 'off',
-      // Typography guardrail — enforce the 8-token font-size scale (index.css
-      // `--text-*`). Ban arbitrary `text-[Npx]` and Tailwind default named
-      // sizes so the whole app stays on one scale. Both are at zero after the
-      // 2026-07 migration; this keeps them there. Use text-caption/minor/body
-      // /h-xs/h-sm/h-md/h-lg/h-xl. (Colors are intentionally NOT covered yet —
-      // link/status colors are still raw Tailwind, a separate follow-up.)
-      // Semantic-color guardrail — enforce the --abu-{danger,warning,success,
-      // info,link} token scale (index.css). Ban raw Tailwind status/link hues
-      // in text/bg/border/ring/fill so link + status colors stay tokenized and
-      // theme-aware. Neutral grays and categorical hues (purple/teal) are NOT
-      // covered. See CLAUDE.md §6.2.
-      'no-restricted-syntax': ['error', ...TYPOGRAPHY_SELECTORS, ...STATUS_COLOR_SELECTORS],
-    },
-  },
+  BASE_BLOCK,
   {
     files: DESIGN_SYSTEM_UI_FILES,
     rules: {

@@ -984,8 +984,7 @@ function App() {
             Self-gates on hasAcknowledgedDisclaimer in settingsStore. */}
         <DisclaimerBanner />
 
-        {/* Enterprise policy confirmation modal (z-[60], above all overlays).
-            Only appears when the tool dispatcher detects a require_confirmation policy. */}
+        {/* Enterprise policy confirmation: an approval layer since batch 9; renders nothing in the OSS build. */}
         <PolicyConfirmModal />
 
         {/* Cloud announcement banner — shows the first unseen announcement */}

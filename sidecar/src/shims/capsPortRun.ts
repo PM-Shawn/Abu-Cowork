@@ -13,6 +13,14 @@
  */
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setCapsPort()`。sidecar 里 capsPort 是每次运行各自的
+ * 快照，由 `agentRunContext.run()` 注入，没有模块级的值可以替换，
+ * 有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getCapsPort(): CapsPort {
   return getCurrentAgentRunContext().capsPort;

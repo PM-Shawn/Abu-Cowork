@@ -22,6 +22,15 @@
 import type { AuthorizedPathsReader } from '@/core/agent/ports/authorizedPathsReader';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { sendRequest } from '../rpcClient';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 两处抛出错误，都只在两端接错时出现：
+ *   - shell 对 `workspace.authorizedWritablePaths` 的回复应当是数组。回复成别的类型时
+ *     拒绝继续，避免命令在可写路径为空的沙箱里运行。
+ *   - `setAuthorizedPathsReader()`：本文件只有反向 RPC 这一种实现，没有可以替换的值。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 function createSidecarAuthorizedPathsReader(): AuthorizedPathsReader {
   return {

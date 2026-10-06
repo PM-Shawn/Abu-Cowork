@@ -69,6 +69,13 @@ import { scopeSubagentLoopProgress } from '@/core/agent/subagentProgressIdentity
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getSettingsMirrorReader } from '../settingsMirror';
 import { sendRequest } from '../rpcClient';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 本文件在 sidecar 进程内完整运行嵌套的子代理。唯一一处抛出错误在 `runSubagent()`
+ * 开头：先向 shell 询问这次直接委派是否允许，shell 没有明确答复允许就拒绝启动。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'input-check';
 
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
   const ctx = getCurrentAgentRunContext();

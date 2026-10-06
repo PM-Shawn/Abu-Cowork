@@ -58,6 +58,7 @@
     "build:electron-chrome-bridge-runtime": "node scripts/build-electron-chrome-bridge-runtime.mjs",
     "build:electron-browser-runtime": "npm run build:browser-extension && node scripts/build-electron-browser-runtime.mjs && npm run build:electron-chrome-bridge-runtime",
     "build:sidecar": "node scripts/build-sidecar.mjs",
+    "bench:usage-ledger": "node scripts/usage-ledger-benchmark.cjs",
     "build:native-helper": "cargo build --manifest-path electron/native-helper/Cargo.toml --release",
     "verify:windows-computer-use": "node electron/spike/windowsComputerUseVerify.cjs",
     "verify:windows-computer-use:text": "node electron/spike/windowsAxReplaceTextVerify.cjs",

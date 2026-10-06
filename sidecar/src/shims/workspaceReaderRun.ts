@@ -13,6 +13,14 @@
  */
 import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setWorkspaceReader()`。sidecar 里 workspaceReader 读的是
+ * 当前这次运行的工作区路径快照，由 `agentRunContext.run()` 注入，没有模块级的值
+ * 可以替换，有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getWorkspaceReader(): WorkspaceReader {
   return getCurrentAgentRunContext().workspaceReader;

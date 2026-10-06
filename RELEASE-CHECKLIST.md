@@ -41,7 +41,7 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 ## 2. Verify — fail here, not after tagging
 
 ```bash
-npm run release:check      # version match across 5 files + both changelog sections in the right language
+npm run release:check      # version match across 5 files + both changelog sections in the right language + no sidecar shim classified feature-gap
 npm run build              # gen:models:check + tsc + vite build
 npm run lint
 npm test

@@ -9,7 +9,13 @@ import {
   collectBundleFiles,
   resolveConversationIds,
 } from './collect';
+import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '@/stores/chatStore';
+import {
+  emptyUsageAggregate,
+  emptyUsageHealth,
+  emptyUsageRangeResult,
+} from '@/core/usage/usageLedgerClient';
 import type { Conversation, Message } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import { clearLogs, createLogger } from '@/core/logging/logger';
@@ -161,6 +167,50 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     expect(manifest.files.map((entry: { path: string }) => entry.path)).toEqual(
       expect.arrayContaining(['manifest.json', 'README.txt', 'diagnostic-snapshot.json']),
     );
+  });
+
+  it('writes the usage ledger summary as diagnostic metadata', async () => {
+    const totals = { ...emptyUsageAggregate(), attempts: 7, inputKnownSum: 70 };
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'usage_query_range') return undefined;
+      return {
+        ...emptyUsageRangeResult(),
+        available: true,
+        totals,
+        bySource: [{ source: 'main', ...totals }],
+        statsOriginLocalDate: '2026-09-19',
+        health: { ...emptyUsageHealth(), writeFailures: 2, lastErrorCode: 'SQLITE_CANTOPEN' },
+      };
+    });
+
+    try {
+      const { files } = await collectBundleFiles({ includeRawText: false, conversationIds: [] });
+      const summary = JSON.parse(String(files['usage/summary.json']));
+      const manifest = JSON.parse(String(files['manifest.json']));
+
+      expect(summary).toMatchObject({
+        schemaVersion: 1,
+        available: true,
+        statsOriginLocalDate: '2026-09-19',
+        allTime: { totals: { attempts: 7, inputKnownSum: 70 }, bySource: [{ source: 'main', attempts: 7 }] },
+        health: { writeFailures: 2, lastErrorCode: 'SQLITE_CANTOPEN' },
+      });
+      expect(manifest.files).toContainEqual(
+        expect.objectContaining({ path: 'usage/summary.json', privacy: 'diagnostic-metadata' }),
+      );
+    } finally {
+      vi.mocked(invoke).mockReset();
+    }
+  });
+
+  it('still writes a usage summary when the ledger cannot be read', async () => {
+    const { files } = await collectBundleFiles({ includeRawText: false, conversationIds: [] });
+
+    expect(JSON.parse(String(files['usage/summary.json']))).toMatchObject({
+      schemaVersion: 1,
+      available: false,
+      allTime: { totals: { attempts: 0 } },
+    });
   });
 
   it('marks cached fallback results stale instead of presenting them as live', async () => {

@@ -104,7 +104,7 @@ interface OverlayRoot {
 /**
  * An overlay root is a fixed-position layer that can cover the chrome: either a
  * full-window scrim (`fixed inset-0`) or a stack anchored to the top edge
- * (`fixed top-* z-*`).
+ * (`fixed top-* z-*`, e.g. the toast container).
  */
 function findOverlayRoots(source: string): OverlayRoot[] {
   const roots: OverlayRoot[] = [];
@@ -138,7 +138,7 @@ describe('overlay layers opt out of the OS drag lanes', () => {
       (sum, file) => sum + findOverlayRoots(fs.readFileSync(file, 'utf8')).length,
       0,
     );
-    expect(total).toBeGreaterThan(16);
+    expect(total).toBeGreaterThan(17);
   });
 
   it('marks every fixed overlay root with data-electron-no-drag', () => {
@@ -163,6 +163,7 @@ describe('overlay layers opt out of the OS drag lanes', () => {
     // spelled out, not just as one line in the generic list above.
     const reported = [
       'components/ds/dialog.tsx', // the settings window, the task's capability window and every dialog draw their scrim here
+      'components/ds/toaster.tsx', // the notification list sits at top-4, fully inside the band
     ];
     for (const relative of reported) {
       const source = fs.readFileSync(path.join(SRC_DIR, relative), 'utf8');
@@ -170,17 +171,6 @@ describe('overlay layers opt out of the OS drag lanes', () => {
       expect(roots.length, `${relative} should still declare an overlay root`).toBeGreaterThan(0);
       expect(roots.every((root) => root.marked), `${relative} lost its ${MARKER} marker`).toBe(true);
     }
-  });
-
-  it('marks the notification list, which grows up from the bottom edge towards the band', () => {
-    // The list is anchored to the bottom, so the scanner above does not see it. A tall stack in a
-    // short window still reaches the top band, where an unmarked list would lose its presses.
-    const source = fs.readFileSync(path.join(SRC_DIR, 'components/ds/toaster.tsx'), 'utf8');
-    const at = source.indexOf('<section');
-    expect(at, 'ds/toaster.tsx should still render its list in a section').toBeGreaterThan(-1);
-    const tag = readOpeningTag(source, at) ?? '';
-    expect(tag).toContain('data-ds-toasts');
-    expect(tag, `the notification list lost its ${MARKER} marker`).toContain(MARKER);
   });
 });
 

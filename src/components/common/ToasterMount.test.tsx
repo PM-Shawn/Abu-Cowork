@@ -52,10 +52,10 @@ describe('ToasterMount', () => {
     expect(within(region()).getByText('The disk is full')).toBeInTheDocument();
   });
 
-  it('shows the newest three of four', () => {
+  it('shows the first three of four; the fourth waits', () => {
     render(<ToasterMount />, { wrapper: DesignSystemProvider });
     for (const n of [1, 2, 3, 4]) add({ type: 'info', title: `Notice ${n}` });
-    expect(shownTitles()).toEqual(['Notice 2', 'Notice 3', 'Notice 4']);
+    expect(shownTitles()).toEqual(['Notice 1', 'Notice 2', 'Notice 3']);
     expect(useToastStore.getState().toasts).toHaveLength(4);
   });
 
@@ -154,13 +154,19 @@ describe('ToasterMount', () => {
 describe('ToasterMount and the store clock', () => {
   beforeEach(() => { vi.useFakeTimers(); });
 
-  it('brings back a failure that stays until closed once newer notifications have gone', async () => {
+  // One error per failed draft, added in one loop: every one is on the page for its full 3 s.
+  it('shows each of five errors for its full time, in the order they arrived', async () => {
     render(<ToasterMount />, { wrapper: DesignSystemProvider });
-    add({ type: 'error', title: 'Upload failed', duration: 0 });
-    for (const n of [1, 2, 3]) add({ type: 'info', title: `Notice ${n}` });
-    expect(shownTitles()).toEqual(['Notice 1', 'Notice 2', 'Notice 3']);
-    await advance(3000);
-    expect(shownTitles()).toEqual(['Upload failed']);
+    for (const n of [1, 2, 3, 4, 5]) add({ type: 'error', title: `Draft ${n} failed` });
+    expect(shownTitles()).toEqual(['Draft 1 failed', 'Draft 2 failed', 'Draft 3 failed']);
+    await advance(2999);
+    expect(shownTitles()).toEqual(['Draft 1 failed', 'Draft 2 failed', 'Draft 3 failed']);
+    await advance(1);
+    expect(shownTitles()).toEqual(['Draft 4 failed', 'Draft 5 failed']);
+    await advance(2999);
+    expect(shownTitles()).toEqual(['Draft 4 failed', 'Draft 5 failed']);
+    await advance(1);
+    expect(shownTitles()).toEqual([]);
   });
 
   it('leaves the timing to the store: 3 s, 10 s with actions, and no end for duration 0', async () => {

@@ -2,20 +2,22 @@ import { useLayoutEffect, useRef, type FocusEvent, type MouseEvent } from 'react
 import { createPortal } from 'react-dom';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import type { Toast } from '@/stores/toastStore';
+import { MAX_VISIBLE_TOASTS, type Toast } from '@/stores/toastStore';
 import { Button, IconButton } from './button';
 import { AppIcons } from './icons';
 import { useLayerContainer } from './layer-context';
 import { StatusIcon } from './status-icon';
 import { FLOAT_SURFACE } from './styles';
 
-export const MAX_VISIBLE_TOASTS = 3;
-
 const TONE = { success: 'success', warning: 'warning', error: 'danger', info: 'info' } as const;
 
-const TOAST_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[state=open]:duration-base data-[state=open]:ease-enter';
+const TOAST_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2data-[state=open]:duration-base data-[state=open]:ease-enter';
 
-// Shows toastStore's notifications; the store decides when each one expires. The list is
+// Shows toastStore's notifications: the first three; the rest wait their turn, and the store
+// starts each one's time when it is shown. The list sits at the top centre of the window with the
+// newest on top (drawn reversed; the page order stays arrival order): measured, this place covers no
+// approval button and keeps the newest one's title and close button clear of the native browser view,
+// which fills the right panel below the tab row. The list is
 // not a layer and never takes Escape, so Escape keeps closing whatever dialog is open.
 // The live region wraps the list and is not atomic, so only a new notification is read.
 // Radix turns pointer input off on <body> while a modal dialog is open; the list turns it back on
@@ -30,14 +32,14 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   // The notification that holds the focus, and what had the focus before it entered the list.
   // A notification never takes the focus by itself; a press on one of its buttons or Tab brings it here.
   const held = useRef<{ id: string; returnTo: HTMLElement | null } | null>(null);
-  const visible = toasts.slice(-MAX_VISIBLE_TOASTS);
+  const visible = toasts.slice(0, MAX_VISIBLE_TOASTS);
 
-  // The notification that held the focus has left (dismissed, expired, or pushed out by newer ones):
+  // The notification that held the focus has left (dismissed or expired):
   // the focus must not stay on the window. After a pointer press it goes back to what had it before.
   // From the keyboard, or when the notification left by itself, it goes to the close button now at
   // its place, or the newest one left, and back to what had it once the list is empty.
   useLayoutEffect(() => {
-    const shown = toasts.slice(-MAX_VISIBLE_TOASTS);
+    const shown = toasts.slice(0, MAX_VISIBLE_TOASTS);
     const last = dismissed.current;
     const hold = held.current;
     const lastGone = last !== null && !toasts.some((toast) => toast.id === last.id);
@@ -99,11 +101,11 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
       aria-label={t.designSystem.notifications}
       data-ds-toasts
       data-electron-no-drag
-      className="pointer-events-auto fixed bottom-4 right-4 z-toast w-80"
+      className="pointer-events-auto fixed top-4 left-1/2 z-toast w-80 -translate-x-1/2"
       onBlur={onListBlur}
     >
       <div aria-live="polite" aria-atomic="false">
-        <ol ref={listRef} className="flex flex-col gap-2">
+        <ol ref={listRef} className="flex flex-col-reverse gap-2">
           {visible.map((toast, index) => (
             <li
               key={toast.id}
@@ -115,7 +117,7 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
               <StatusIcon tone={TONE[toast.type]} size="sm" />
               <div className="min-w-0 flex-1">
                 <p className="break-words text-ui font-medium text-label">{toast.title}</p>
-                {toast.message && <p className="mt-1 break-words text-ui-sm text-label-secondary">{toast.message}</p>}
+                {toast.message && <p className="mt-1 max-h-32 overflow-y-auto break-words text-ui-sm text-label-secondary">{toast.message}</p>}
                 {toast.actions && toast.actions.length > 0 && (
                   <div className="mt-2 flex gap-2">
                     {toast.actions.map((action) => (

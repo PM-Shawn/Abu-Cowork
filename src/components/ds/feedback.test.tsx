@@ -5,7 +5,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { getLanguageSetting, setLanguage } from '@/i18n';
-import type { Toast } from '@/stores/toastStore';
+import { MAX_VISIBLE_TOASTS, type Toast } from '@/stores/toastStore';
 import { Button } from './button';
 import { Dialog } from './dialog';
 import { EmptyState } from './empty-state';
@@ -13,7 +13,7 @@ import { AppIcons } from './icons';
 import { InlineMessage } from './inline-message';
 import { LoadError } from './load-error';
 import { DesignSystemProvider } from './provider';
-import { MAX_VISIBLE_TOASTS, Toaster } from './toaster';
+import { Toaster } from './toaster';
 
 const toast = (n: number, extra: Partial<Toast> = {}): Toast => ({ id: `t${n}`, type: 'success', title: `Saved ${n}`, ...extra });
 
@@ -73,13 +73,14 @@ describe('feedback components', () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
-  it('Toaster shows at most three notifications, newest last', () => {
+  // The ones that arrived first are shown; later ones wait their turn (the store starts their time then).
+  it('Toaster shows at most three notifications, the earliest three, and the rest wait', () => {
     render(<ToasterHarness initial={[1, 2, 3, 4, 5].map((n) => toast(n))} />, { wrapper: DesignSystemProvider });
     expect(MAX_VISIBLE_TOASTS).toBe(3);
-    expect(shown().queryByText('Saved 1')).toBeNull();
-    expect(shown().queryByText('Saved 2')).toBeNull();
+    expect(shown().getByText('Saved 1')).toBeInTheDocument();
     expect(shown().getByText('Saved 3')).toBeInTheDocument();
-    expect(shown().getByText('Saved 5')).toBeInTheDocument();
+    expect(shown().queryByText('Saved 4')).toBeNull();
+    expect(shown().queryByText('Saved 5')).toBeNull();
   });
 
   it('Toaster names its region with the localized label', () => {
@@ -130,13 +131,13 @@ describe('feedback components', () => {
     expect(shownTitles()).toEqual([]);
   });
 
-  it('Toaster keeps store order when a hidden older notification comes back', async () => {
+  it('Toaster brings the next waiting notification in when a shown one is closed', async () => {
     const user = userEvent.setup();
-    render(<ToasterHarness initial={[1, 2, 3, 4].map((n) => toast(n))} />, { wrapper: DesignSystemProvider });
-    expect(shownTitles()).toEqual(['Saved 2', 'Saved 3', 'Saved 4']);
-    const newest = document.querySelectorAll('li[data-ds-motion]')[2];
-    await user.click(within(newest as HTMLElement).getByRole('button', { name: 'Close' }));
+    render(<ToasterHarness initial={[1, 2, 3, 4, 5].map((n) => toast(n))} />, { wrapper: DesignSystemProvider });
     expect(shownTitles()).toEqual(['Saved 1', 'Saved 2', 'Saved 3']);
+    const second = document.querySelectorAll('li[data-ds-motion]')[1];
+    await user.click(within(second as HTMLElement).getByRole('button', { name: 'Close' }));
+    expect(shownTitles()).toEqual(['Saved 1', 'Saved 3', 'Saved 4']);
   });
 
   it('Escape closes an open dialog even after a notification arrives', async () => {
@@ -352,12 +353,36 @@ describe('feedback components', () => {
     expect(document.body).toHaveFocus();
   });
 
+  // Top centre, newest on top: the place measured to cover no approval button and to keep the
+  // newest notification's title and close button clear of the native browser view.
+  it('Toaster sits at the top centre of the window with the newest notification on top', () => {
+    render(<ToasterHarness initial={[toast(1), toast(2)]} />, { wrapper: DesignSystemProvider });
+    const region = screen.getByRole('region', { name: 'Notifications' });
+    for (const name of ['fixed', 'top-4', 'left-1/2', '-translate-x-1/2', 'z-toast', 'w-80']) expect(region).toHaveClass(name);
+    expect(region).not.toHaveClass('bottom-4');
+    expect(region).not.toHaveClass('right-4');
+    // The list keeps arrival order in the page (so a reader hears additions last) and is drawn reversed.
+    expect(shownTitles()).toEqual(['Saved 1', 'Saved 2']);
+    expect(within(region).getByRole('list')).toHaveClass('flex-col-reverse');
+  });
+
   // A file name or a key with no space in it would otherwise run past the card and off the window.
   it('Toaster breaks a long word in the title and in the message', () => {
     const name = 'averylongfoldername_'.repeat(8);
     render(<ToasterHarness initial={[toast(1, { type: 'error', title: `Could not save ${name}`, message: `/fake/project/${name}` })]} />, { wrapper: DesignSystemProvider });
     expect(shown().getByText(`Could not save ${name}`)).toHaveClass('break-words');
     expect(shown().getByText(`/fake/project/${name}`)).toHaveClass('break-words');
+  });
+
+  // A message can list every file that failed (the skill history's revert): it scrolls inside the
+  // notification, so three of them still fit the window and the title and close button stay put.
+  it('Toaster limits the height of a message and lets it scroll', () => {
+    const message = Array.from({ length: 40 }, (_, n) => `skills/fake/file-${n}.md: permission denied`).join('; ');
+    render(<ToasterHarness initial={[toast(1, { type: 'error', title: 'Revert failed', message })]} />, { wrapper: DesignSystemProvider });
+    const text = shown().getByText(message);
+    expect(text).toHaveClass('max-h-32');
+    expect(text).toHaveClass('overflow-y-auto');
+    expect(shown().getByText('Revert failed')).not.toHaveClass('max-h-32');
   });
 
   it('Toaster closes a notification from its close button', async () => {

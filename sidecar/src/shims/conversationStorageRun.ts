@@ -97,6 +97,16 @@ import { createConversationPaths, type ConversationPaths } from '@/core/session/
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import * as fs from 'node:fs/promises';
 import { appDataDir } from '@tauri-apps/api/path';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 本文件导出的三个函数都是完整实现。两处抛出错误都在读取 ledger 文件的
+ * `readLedgerText()`：
+ *   - 调用方给出大于零的 `uptoBytes`，文件却不存在：两端对会话目录的认识不一致，
+ *     抛出 `LedgerWatermarkError`，避免把它当成空会话继续。
+ *   - 调用方要求 `strictRead` 时，把 `ENOENT` 之外的读取错误原样报给调用方。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'input-check';
 
 export async function replaceMessageById(convId: string, message: Message): Promise<void> {
   getCurrentAgentRunContext().pushFrame({ p: 'session', m: 'replaceMessageById', a: [convId, message] });

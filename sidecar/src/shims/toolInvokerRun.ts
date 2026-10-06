@@ -29,6 +29,14 @@
  */
 import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setToolInvoker()`。sidecar 里 toolInvoker 把工具调用经
+ * `tool.invoke` 交回 shell 执行，每次运行各有一个，由 `agentRunContext.run()` 注入，
+ * 没有模块级的值可以替换，有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getToolInvoker(): ToolInvoker {
   return getCurrentAgentRunContext().toolInvoker;

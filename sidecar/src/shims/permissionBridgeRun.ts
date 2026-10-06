@@ -86,6 +86,17 @@ import type { LoopContext } from '@/core/agent/permissionBridge';
 import { sendNotification } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getCurrentSubagentRunContext } from '../subagentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 三处抛出错误，正确运行的 sidecar 都走不到：
+ *   - `resolveRunId()`：四个 drain 函数只在一次运行的作用域内被调用，两种运行上下文
+ *     都取不到 runId 说明调用来自作用域之外。
+ *   - `requestCommandConfirmation()` 与 `requestFilePermission()`：`agentLoop.ts` 只把
+ *     它们当作默认回调的值往下传，sidecar 里接收回调的两处都不使用它，工具调用一律经
+ *     `tool.invoke` 交回 shell，由 shell 用自己的会话回调向用户确认。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 function resolveRunId(): string {
   try {

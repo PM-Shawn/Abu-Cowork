@@ -93,5 +93,18 @@ test.describe.serial('Electron diagnostic export', () => {
     expect(['fresh', 'unknown']).toContain(snapshot.freshness);
     expect(timeline.schemaVersion).toBe(1);
     expect(Array.isArray(timeline.runs)).toBe(true);
+
+    // 用量汇总取自主进程的账本：这里读到 available 为 true，说明 renderer → 主进程 →
+    // SQLite 这条查询链在真实的壳里是通的。全新的数据目录里还没有任何请求。
+    const usage = JSON.parse(strFromU8(archive['usage/summary.json'])) as Record<string, unknown>;
+    expect(usage).toMatchObject({
+      schemaVersion: 1,
+      available: true,
+      statsOriginLocalDate: null,
+      allTime: { totals: { attempts: 0 }, bySource: [] },
+      recentDays: { byDay: [] },
+      health: { writeFailures: 0, rejectedFrames: 0, degradedCode: null },
+      rendererSendFailures: 0,
+    });
   });
 });

@@ -10,6 +10,8 @@ import {
   type UsageRangeResult,
 } from '@/core/usage/usageLedgerClient';
 import { useUsageLedger, type UsagePeriod } from '@/core/usage/useUsageLedger';
+import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -329,16 +331,33 @@ export default function UsageSection() {
   const maxModelTokens = byModel[0] ? rowTokens(byModel[0]) : 0;
   const maxSkillTokens = bySkill[0] ? rowTokens(bySkill[0]) : 0;
 
+  // 企业构建在这个位置挂一行说明；个人版没有注册，什么都不渲染。
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseConfig = enterpriseMode.kind === 'enterprise'
+    ? enterpriseMode.config
+    : enterpriseMode.kind === 'offline'
+      ? enterpriseMode.lastConfig
+      : null;
+  const EnterpriseUsageNote = getEnterpriseMount('usageNote');
+
   return (
     <div className="space-y-6">
       <SettingsSectionHeader title={t.usage.title} />
 
-      <UsageLedgerNote
-        statsOrigin={data.statsOriginLocalDate}
-        health={data.health}
-        stale={stale}
-        unknownAttempts={Math.max(totals.inputUnknownAttempts, totals.outputUnknownAttempts)}
-      />
+      <div className="space-y-1">
+        <UsageLedgerNote
+          statsOrigin={data.statsOriginLocalDate}
+          health={data.health}
+          stale={stale}
+          unknownAttempts={Math.max(totals.inputUnknownAttempts, totals.outputUnknownAttempts)}
+        />
+        {enterpriseBinding && EnterpriseUsageNote && (
+          <EnterpriseUsageNote binding={enterpriseBinding} config={enterpriseConfig} />
+        )}
+      </div>
 
       {/* Period switcher */}
       <div>

@@ -12,12 +12,16 @@
  *      src-tauri/Cargo.lock — and, when --tag is passed, matches the tag.
  *   2. CHANGELOG.md has this version's section, English only (no CJK).
  *   3. CHANGELOG.zh-CN.md has this version's section, containing Chinese (CJK).
- *   4. Local runs read GitHub branch protection and compare it with the
+ *   4. sidecar/src/shims/ 下含 `throw` 语句的文件都写明了分类，并且没有一个是
+ *      `feature-gap`（sidecar 缺少一段用户路径需要的能力）。分类的含义见
+ *      sidecar/src/shims/shimThrowKind.ts。
+ *   5. Local runs read GitHub branch protection and compare it with the
  *      committed policy. Release CI opts out explicitly because its token lacks
  *      administration:read; it never claims to have performed this check.
  *
  * Pre-release tags (vX.Y.Z-rc1) skip the changelog checks — RC builds only
- * exercise signing/notarization and may have no changelog entry.
+ * exercise signing/notarization and may have no changelog entry. 第 4 项对
+ * pre-release tag 同样执行。
  *
  * See RELEASING.md and the Release Process in CLAUDE.md for the convention.
  */
@@ -26,6 +30,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { shouldCheckBranchProtection } from './check-branch-protection.mjs';
+import { checkShimThrowKindsForRelease } from './sidecar-shim-throw-kinds.mjs';
 
 const args = process.argv.slice(2);
 const tagIdx = args.indexOf('--tag');
@@ -109,6 +114,13 @@ if (!isPrerelease) {
   else if (!CJK.test(zh)) fail(`CHANGELOG.zh-CN.md v${ref} section has no Chinese text — it must be the Chinese changelog`);
 }
 
+// ── 4. Sidecar shim throw kinds ──
+// 用抛出错误顶替一段功能的 shim，调用处一旦把错误吞掉，用户就会在毫无察觉的情况下
+// 丢失数据。分类为 `feature-gap` 的 shim 不允许随版本发出去。
+for (const problem of checkShimThrowKindsForRelease(path.join('sidecar', 'src', 'shims'))) {
+  fail(`sidecar shim: ${problem}`);
+}
+
 // The release workflow cannot read branch protection with GITHUB_TOKEN. It
 // passes --skip-branch-protection explicitly and the workflow structure test
 // pins that boundary. Local `npm run release:check` takes this read-only path.
@@ -137,7 +149,9 @@ if (errors.length) {
     '\nFix before tagging. Convention (RELEASING.md): CHANGELOG.md is English, ' +
       'CHANGELOG.zh-CN.md is Chinese, and the version must match across package.json, ' +
       'package-lock.json, tauri.conf.json, Cargo.toml, and Cargo.lock. ' +
-      'Re-sync the lockfile with `npm install --package-lock-only`. Branch-protection ' +
+      'Re-sync the lockfile with `npm install --package-lock-only`. A sidecar shim ' +
+      'classified "feature-gap" must be implemented before the release ' +
+      '(sidecar/src/shims/shimThrowKind.ts). Branch-protection ' +
       'drift must be restored separately; this preflight never mutates GitHub.\n',
   );
   process.exit(1);

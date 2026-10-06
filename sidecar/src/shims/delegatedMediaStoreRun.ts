@@ -15,6 +15,16 @@ import { dirname, resolve, sep } from 'node:path';
 import { getBootstrap } from '../bootstrap';
 import { isMediaRef, isOpaqueMediaId, type MediaRef } from '@/core/subagent/delegatedUserTurn';
 import { hasDelegatedMediaSignature, validateDelegatedMediaInput } from '@/core/subagent/delegatedMediaValidation';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 本文件用 `node:fs` 完整实现了委派媒体的保存与读取。抛出的都是
+ * `DelegatedMediaStoreError`，按错误码分三种：
+ *   - `invalid-media`：媒体内容没有通过校验（过大，或者与声明的类型不符）。
+ *   - `corrupt-media`：读写过程被取消，或者已有文件没有通过完整性校验。
+ *   - `persist-failed`：会话 id 或目标路径不合法，或者写入磁盘失败。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'input-check';
 
 export interface DelegatedMediaInput {
   bytes: Uint8Array;

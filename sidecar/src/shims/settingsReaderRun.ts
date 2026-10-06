@@ -23,6 +23,13 @@
  * "escalate cleanly instead of silently degrade" the card requires).
  */
 import type { SettingsReader } from '@/core/agent/ports/settingsReader';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在默认 reader 的 `getSnapshot()`。`subagentHost.ts` 每次启动子代理
+ * 都显式传入 settingsReader，只有漏传的时候才会读到这个默认值。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 function throwingDefault(): SettingsReader {
   return {

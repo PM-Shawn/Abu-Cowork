@@ -526,6 +526,81 @@ describe('Sidebar — Recents row menu', () => {
 
       expect(order).toEqual(['load', 'export', 'delete']);
     });
+
+    // The row leaves under the focus: it goes on to a row, never to the window and never to the offer.
+    describe('and the keyboard focus', () => {
+      const page = <><Sidebar /><ToasterMount /></>;
+      // The store here is a plain object: the delete takes the conversation out of it, and the
+      // test draws the sidebar again, as the store's change does in the app.
+      const removesFromTheList = () => vi.fn((id: string) => {
+        const index = { ...(chat.state.conversationIndex as Record<string, unknown>) };
+        delete index[id];
+        chat.state = { ...chat.state, conversationIndex: index };
+      });
+      const rowOf = (title: string) => screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
+
+      it('goes to the row that took the deleted one\'s place, and the offer is not given it', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        resetChat({
+          conversationIndex: { c1: CONVERSATION, c2: OTHER },
+          exportConversation: vi.fn((id: string) => `{"id":"${id}"}`),
+          deleteConversation: removesFromTheList(),
+        });
+        const view = renderSidebar();
+        // The newest conversation is the first row.
+        await deleteRow(user, 'Travel plan');
+        act(() => view.rerender(page));
+
+        expect(screen.queryByText('Travel plan')).toBeNull();
+        expect(rowOf('Quarterly summary')).toHaveFocus();
+        expect(offer()).not.toBeNull();
+        expect(offer()!.contains(document.activeElement)).toBe(false);
+      });
+
+      it('goes to the row before it when the last row is deleted', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        resetChat({
+          conversationIndex: { c1: CONVERSATION, c2: OTHER },
+          exportConversation: vi.fn((id: string) => `{"id":"${id}"}`),
+          deleteConversation: removesFromTheList(),
+        });
+        const view = renderSidebar();
+        await deleteRow(user, 'Quarterly summary');
+        act(() => view.rerender(page));
+
+        expect(rowOf('Travel plan')).toHaveFocus();
+      });
+
+      it('goes to 新任务 when no row is left', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        resetChat({
+          conversationIndex: { c1: CONVERSATION },
+          exportConversation: vi.fn((id: string) => `{"id":"${id}"}`),
+          deleteConversation: removesFromTheList(),
+        });
+        const view = renderSidebar();
+        await deleteRow(user, 'Quarterly summary');
+        act(() => view.rerender(page));
+
+        expect(within(mainNav()).getByRole('button', { name: '新任务' })).toHaveFocus();
+      });
+
+      it('stays where the user has put it meanwhile', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        resetChat({
+          conversationIndex: { c1: CONVERSATION, c2: OTHER },
+          exportConversation: vi.fn((id: string) => `{"id":"${id}"}`),
+          deleteConversation: removesFromTheList(),
+        });
+        const view = renderSidebar();
+        await deleteRow(user, 'Travel plan');
+        const elsewhere = within(mainNav()).getByRole('button', { name: '扩展' });
+        act(() => { elsewhere.focus(); });
+        act(() => view.rerender(page));
+
+        expect(elsewhere).toHaveFocus();
+      });
+    });
   });
 
   it('opens the same menu on right-click', async () => {

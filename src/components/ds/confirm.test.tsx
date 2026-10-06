@@ -10,6 +10,7 @@ import { Button } from './button';
 import { useConfirm, type Confirm } from './confirm-context';
 import { ConfirmDialog } from './confirm-dialog';
 import { Dialog } from './dialog';
+import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
 
 const DELETE = { title: 'Delete this channel?', message: 'Messages already sent stay in the task.', confirmLabel: 'Delete', tone: 'danger' } as const;
@@ -571,6 +572,55 @@ describe('useConfirm', () => {
       tick();
       expect(screen.queryByRole('alertdialog')).toBeNull();
       expect(screen.getByRole('button', { name: 'Opener' })).toHaveFocus();
+    });
+
+    it('returns the focus to that control while a popover is open: a popover is no window', async () => {
+      // A popover that opens by itself and stays (a held voice transcript), here while the
+      // second question is on the page.
+      function WithPopover() {
+        const [open, setOpen] = useState(false);
+        return (
+          <>
+            <Button>Opener</Button>
+            <Button onClick={() => setOpen(true)}>a popover opens</Button>
+            <Capture onReady={keep} />
+            <Popover
+              trigger={<Button>Transcript</Button>}
+              open={open}
+              onOpenChange={setOpen}
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              staysOnOutsidePress
+              label="Held transcript"
+            >
+              Held words
+            </Popover>
+          </>
+        );
+      }
+      answers.length = 0;
+      captured = null;
+      renderTree(<WithPopover />, { wrapper: DesignSystemProvider });
+      const opener = screen.getByRole('button', { name: 'Opener' });
+      opener.focus();
+      askFor('A', 'Delete one memory?', 'Delete');
+      askFor('B', 'Clear every memory?', 'Clear all');
+      await flush();
+      tick();
+      act(() => { fireEvent.click(screen.getByRole('button', { name: 'a popover opens', hidden: true })); });
+      await flush();
+      tick();
+      const popover = screen.getByRole('dialog', { name: 'Held transcript', hidden: true });
+      expect(popover).toHaveAttribute('data-state', 'open');
+      expect(screen.getByRole('alertdialog', { name: 'Clear every memory?' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }), { detail: 0 });
+      await flush();
+      tick();
+
+      expect(answers).toEqual(['A:false', 'B:false']);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(popover).toHaveAttribute('data-state', 'open');
+      expect(opener).toHaveFocus();
     });
   });
 

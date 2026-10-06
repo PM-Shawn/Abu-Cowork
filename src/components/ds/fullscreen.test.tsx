@@ -7,6 +7,7 @@ import { Button } from './button';
 import { Dialog } from './dialog';
 import { FullscreenSurface } from './fullscreen';
 import { Menu, MenuItem } from './menu';
+import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
 
 // happy-dom does not implement the pointer-capture and scrolling calls Radix menus make while opening.
@@ -173,13 +174,211 @@ describe('FullscreenSurface, open in place (not a layer)', () => {
     view.rerender(<Stage open />);
     settle();
     expect(outside).toHaveFocus();
-    // Tab is not held inside: the page around it is still there (menus, the title bar).
     const exit = screen.getByRole('button', { name: 'Exit' });
     act(() => { exit.focus(); });
-    fireEvent.keyDown(exit, { key: 'Tab' });
-    expect(exit).toHaveFocus();
     view.rerender(<Stage open={false} />);
     settle();
+    expect(exit).toHaveFocus();
+  });
+
+  // The page under the surface cannot be seen: Tab never walks onto it, where Enter would act
+  // on a control the user does not see.
+  it('keeps Tab inside, going round from the last control to the first and back', () => {
+    render(<Stage open />);
+    const first = screen.getByRole('button', { name: 'First' });
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    act(() => { exit.focus(); });
+    // fireEvent returns false when the key was used (default prevented).
+    expect(fireEvent.keyDown(exit, { key: 'Tab' })).toBe(false);
+    expect(first).toHaveFocus();
+    expect(fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(exit).toHaveFocus();
+  });
+
+  it('leaves Tab between its own controls to the browser', () => {
+    render(
+      <Stage open>
+        <Button>First</Button>
+        <Button>Middle</Button>
+        <Button>Exit</Button>
+      </Stage>,
+    );
+    const first = screen.getByRole('button', { name: 'First' });
+    const middle = screen.getByRole('button', { name: 'Middle' });
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    act(() => { first.focus(); });
+    expect(fireEvent.keyDown(first, { key: 'Tab' })).toBe(true);
+    act(() => { middle.focus(); });
+    expect(fireEvent.keyDown(middle, { key: 'Tab' })).toBe(true);
+    expect(fireEvent.keyDown(middle, { key: 'Tab', shiftKey: true })).toBe(true);
+    act(() => { exit.focus(); });
+    expect(fireEvent.keyDown(exit, { key: 'Tab', shiftKey: true })).toBe(true);
+    expect(exit).toHaveFocus();
+  });
+
+  it('brings the focus in when Tab is pressed on the page it covers', () => {
+    render(<Stage open />);
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    const first = screen.getByRole('button', { name: 'First' });
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    act(() => { outside.focus(); });
+    expect(fireEvent.keyDown(outside, { key: 'Tab' })).toBe(false);
+    expect(first).toHaveFocus();
+    act(() => { outside.focus(); });
+    expect(fireEvent.keyDown(outside, { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(exit).toHaveFocus();
+    // The focus is on the window itself.
+    act(() => { exit.blur(); });
+    expect(document.body).toHaveFocus();
+    expect(fireEvent.keyDown(document.body, { key: 'Tab' })).toBe(false);
+    expect(first).toHaveFocus();
+  });
+
+  it('uses the key and moves nothing when it holds no control', () => {
+    render(<Stage open><span>Nothing to press</span></Stage>);
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    act(() => { outside.focus(); });
+    expect(fireEvent.keyDown(outside, { key: 'Tab' })).toBe(false);
+    expect(outside).toHaveFocus();
+  });
+
+  // A frame that has the focus keeps every key, so Tab out of a frame at either end of the
+  // surface is caught by a stop that turns the focus round.
+  it('turns the focus round at a stop before and after its content', () => {
+    render(<Stage open />);
+    const surface = surfaceOf(screen.getByTestId('content'));
+    const first = screen.getByRole('button', { name: 'First' });
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    const stops = Array.from(surface.querySelectorAll<HTMLElement>('[data-ds-focus-guard]'));
+    expect(stops).toHaveLength(2);
+    expect(surface.firstElementChild).toBe(stops[0]);
+    expect(surface.lastElementChild).toBe(stops[1]);
+    expect(stops[0].tabIndex).toBe(0);
+    expect(stops[1].tabIndex).toBe(0);
+    act(() => { stops[1].focus(); });
+    expect(first).toHaveFocus();
+    act(() => { stops[0].focus(); });
+    expect(exit).toHaveFocus();
+    // The stops are not controls of the surface: the round skips them.
+    expect(fireEvent.keyDown(exit, { key: 'Tab' })).toBe(false);
+    expect(first).toHaveFocus();
+  });
+
+  it.each([
+    ['closed', { open: false }],
+    ['a layer', { open: true, layer: true }],
+  ])('has no such stops and holds no Tab of its own when it is %s', (_name, props) => {
+    render(<Stage {...props} />);
+    settle();
+    const surface = surfaceOf(screen.getByTestId('content'));
+    expect(surface.querySelector('[data-ds-focus-guard]')).toBeNull();
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    expect(fireEvent.keyDown(outside, { key: 'Tab' })).toBe(true);
+  });
+
+  it('leaves Tab inside a menu opened over it to the menu', () => {
+    render(
+      <Stage open>
+        <Button>First</Button>
+        <Menu trigger={<Button>More</Button>}><MenuItem>Reload</MenuItem></Menu>
+      </Stage>,
+    );
+    openMenu();
+    const menu = screen.getByRole('menu');
+    const inMenu = document.activeElement as HTMLElement;
+    expect(menu).toContainElement(inMenu);
+    fireEvent.keyDown(inMenu, { key: 'Tab' });
+    expect(inMenu).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'First', hidden: true })).not.toHaveFocus();
+  });
+
+  // The layer's box is portaled out of the surface: a Tab between two of its controls is the
+  // browser's, and the surface does not take it for a Tab pressed on the covered page.
+  it('leaves Tab inside a popover opened over it to the popover', () => {
+    render(
+      <Stage open>
+        <Button>First</Button>
+        <Popover trigger={<Button>Filters</Button>} label="Filters">
+          <Button>Newest</Button>
+          <Button>Oldest</Button>
+        </Popover>
+      </Stage>,
+    );
+    press('Filters');
+    settle();
+    const newest = screen.getByRole('button', { name: 'Newest' });
+    expect(screen.getByRole('dialog', { name: 'Filters' })).toHaveAttribute('data-ds-layer');
+    act(() => { newest.focus(); });
+    expect(fireEvent.keyDown(newest, { key: 'Tab' })).toBe(true);
+    expect(newest).toHaveFocus();
+  });
+
+  // After a press on an approval's scrim the focus is on the window. The next Tab is the
+  // approval's to bring back: the surface under it must not take the focus for a control there.
+  it('leaves Tab to a window or an approval that is open over it, wherever the focus is', () => {
+    render(
+      <DesignSystemProvider>
+        <FullscreenSurface open onExit={() => undefined} label="Notes">
+          <div data-testid="content"><Button>First</Button></div>
+        </FullscreenSurface>
+        <Dialog open layer="approval" role="alertdialog" outsidePress="ignore" title="Run this command?" footer={<Button>Cancel</Button>} />
+      </DesignSystemProvider>,
+    );
+    settle();
+    act(() => { (document.activeElement as HTMLElement).blur(); });
+    expect(document.body).toHaveFocus();
+
+    expect(fireEvent.keyDown(document.body, { key: 'Tab' })).toBe(true);
+
+    expect(screen.getByRole('button', { name: 'First', hidden: true })).not.toHaveFocus();
+  });
+
+  // A preview tab that is fullscreen stays so when another tab takes its place: its panel is
+  // hidden with the surface in it, and Tab belongs to the page again.
+  it.each([
+    ['the hidden attribute', { hidden: true }],
+    ['display: none', { style: { display: 'none' } }],
+  ])('holds no Tab while an element around it is taken off the page with %s', (_name, wrapperProps) => {
+    render(
+      <DesignSystemProvider>
+        <Button>Outside</Button>
+        <div {...wrapperProps}>
+          <FullscreenSurface open onExit={() => undefined} label="Notes">
+            <div data-testid="content"><Button>First</Button></div>
+          </FullscreenSurface>
+        </div>
+      </DesignSystemProvider>,
+    );
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    act(() => { outside.focus(); });
+
+    expect(fireEvent.keyDown(outside, { key: 'Tab' })).toBe(true);
+    expect(outside).toHaveFocus();
+    act(() => { outside.blur(); });
+    expect(fireEvent.keyDown(document.body, { key: 'Tab', shiftKey: true })).toBe(true);
+    expect(document.body).toHaveFocus();
+  });
+
+  it('leaves a Tab that another handler has used alone', () => {
+    render(<Stage open />);
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    act(() => { exit.focus(); });
+    const used = (event: KeyboardEvent) => event.preventDefault();
+    document.addEventListener('keydown', used, true);
+    try {
+      fireEvent.keyDown(exit, { key: 'Tab' });
+    } finally {
+      document.removeEventListener('keydown', used, true);
+    }
+    expect(exit).toHaveFocus();
+  });
+
+  it('holds Tab only while it is open', () => {
+    const view = render(<Stage open />);
+    const exit = screen.getByRole('button', { name: 'Exit' });
+    act(() => { exit.focus(); });
+    view.rerender(<Stage open={false} />);
+    expect(fireEvent.keyDown(exit, { key: 'Tab' })).toBe(true);
     expect(exit).toHaveFocus();
   });
 

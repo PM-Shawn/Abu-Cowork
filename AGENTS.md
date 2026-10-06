@@ -648,7 +648,8 @@ notice (`sidebar/undoOffer.ts`, `UNDO_OFFER_MS`); equal notices merge, so it und
 only. The sandbox notice's 「前往安全设置」 opens the settings window on the sandbox page
 (`openSystemSettings('sandbox')`).
 
-Windows: `CreateProjectDialog` (rendered by `Sidebar`), `ProjectSettingsDialog`,
+Windows: `CreateProjectDialog` (rendered by `Sidebar`, and with presets by
+`chat/PromoteToProjectHint`), `ProjectSettingsDialog`,
 `ProfileEditModal`, `GuideModal`, `InstructionsEditModal`, `MemoryViewModal` and
 `ShareExportDialog` are `Dialog`s. `dirty`: create project, project settings, edit profile,
 instructions. `busy`: create project while it creates, edit profile while a picture is read,
@@ -671,7 +672,10 @@ which is answered `false`. A replacing question takes no pointer press that bega
 `TOAST_SETTLE_MS` of its appearing; the keyboard is not held. An answer belongs to the question
 whose window was pressed. The provider returns the focus of a question to where it was before the
 first of the questions that followed each other, and only when no window or approval is open or
-that place is inside the top one: never onto the page under an open layer. An owner whose own
+that place is inside the top one: never onto the page under an open layer. The boxes of `Popover`,
+`Combobox` and `MultiCombobox` have the role `dialog` and are no windows; they carry
+`data-ds-popover`, and code that looks for the top window excludes them by it (menus and select
+lists have roles of their own). An owner whose own
 questions can overlap excludes them (`MemoryViewModal`, `asking`). The redo actions (regenerate,
 retry, edit and resend) ask through `chat/rewindQuestion.ts`, which re-reads at the answer: its row
 still mounted, no run started on the conversation meanwhile, the same messages and the same count
@@ -695,7 +699,14 @@ refused while a window, a question or an approval is on the page, waits or has s
 (`mayGoFullscreen`, with `pageOccupied` read from `LayerRegistry.isOccupied()`; menus and popovers
 do not count), and the refusal spends no grace and starts no cool-down. The preview panel
 fullscreen is the plain `FullscreenSurface`: on `z-fullscreen`, with no stacking class from page
-code, `role="group"`, no focus moved. Escape leaves it unless the key was pressed inside a ds layer
+code, `role="group"`, no focus moved when it opens or closes. The page it covers cannot be seen, so
+Tab stays among the surface's own controls, round from the last to the first and back, and a Tab
+pressed on the covered page comes in; a ds layer opened over it (`[data-ds-layer]`) keeps its own
+keys, the surface takes no Tab at all while a window, a question or an approval shows over it or
+while it is not displayed (a preview tab that is not in view keeps its fullscreen state under
+`hidden`), and the rest of the page is never made `inert`, because floating layers are portaled there.
+The surface's first and last child are its two Tab stops (`data-ds-focus-guard`), which turn the
+focus round when it comes out of a frame; the caller's content sits between them. Escape leaves it unless the key was pressed inside a ds layer
 or something else has used it (`defaultPrevented`). Closed, a `FullscreenSurface` is
 `display: contents`, so its content brings its own layout box.
 
@@ -704,7 +715,13 @@ action that replaces the page with the chat page (start a conversation with an e
 of a run); it takes the focus from no control and from no layer. `sidebar/projectRowFocus.ts`:
 after a project row is archived or deleted, from its menu or from its settings window, the focus
 goes to the row now at its place, else the last row, else the create button; `useArchivedRowFocus`
-serves the archived list. In the image viewer a gallery arrow that reaches an end hands the focus
+serves the archived list. `sidebar/conversationRowFocus.ts`: after a conversation is deleted from
+its row menu the focus goes to the row now at its place, else the last row, else 「新任务」, and only
+when it would otherwise be on the window; a row that leaves while its menu is still closing is
+handled from the menu's close hook, and the undo notice is never given the focus. A control that
+leaves a window under the focus hands it on first (edit profile's 「恢复默认」, to the nickname
+field). The settings window puts the focus in the composer when the control that opened it has left
+the page (the first-run guide's link). In the image viewer a gallery arrow that reaches an end hands the focus
 to the other arrow. A ds `Tooltip` listens for Escape for as long as
 its box is on the page, so an Escape pressed while it fades still acts on the layer underneath.
 
@@ -712,7 +729,8 @@ Tests: a component that renders `FullscreenSurface` or calls `useConfirm` needs
 `DesignSystemProvider`. `src/test/dsWindows.ts` holds the helpers for a window's fade and for an
 approval that arrives over a window.
 
-Migration list: `common/ToasterMount`, the six windows in `common/`, `src/components/share/**`,
+Migration list: `common/ToasterMount`, the six windows in `common/`, `common/DefaultUserAvatar`,
+`src/components/share/**`,
 `chat/composerFocus`, `chat/rewindQuestion`, `McpAppBlock`, `ImageLightbox`, `ToolCallsGroup`,
 `DetailBlockView`, `RenderableCodeBlock` and `panel/PreviewPanel` are on it. The directory globs
 for `chat/`, `panel/` and `common/` wait for batch 10: those directories still hold unused legacy

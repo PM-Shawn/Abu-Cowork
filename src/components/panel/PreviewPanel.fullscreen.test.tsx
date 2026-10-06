@@ -101,8 +101,11 @@ describe('PreviewPanel fullscreen layout', () => {
     expect(surface).not.toHaveAttribute('data-ds-layer');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.querySelector('.bg-scrim')).toBeNull();
-    // The panel's own column fills the surface.
-    expect(surface.firstElementChild).toHaveClass('h-full');
+    // The panel's own column fills the surface, between the surface's two Tab stops.
+    const [before, column, after] = Array.from(surface.children);
+    expect(before).toHaveAttribute('data-ds-focus-guard');
+    expect(column).toHaveClass('h-full');
+    expect(after).toHaveAttribute('data-ds-focus-guard');
 
     fireEvent.keyDown(document.body, { key: 'Escape' });
 

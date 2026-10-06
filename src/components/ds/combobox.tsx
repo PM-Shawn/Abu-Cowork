@@ -119,6 +119,8 @@ function ComboboxPanel({ layer, triggerRef, onLeave, options, isSelected, onPick
           onLeave();
         }}
         data-ds-layer
+        // Its role is dialog, as a window's is: this tells it from one (read by ConfirmProvider).
+        data-ds-popover
         data-ds-motion
         data-electron-no-drag
         className={cn(level, 'w-(--radix-popover-trigger-width) min-w-56 origin-(--radix-popover-content-transform-origin) p-1', FLOAT_SURFACE, FLOAT_MOTION)}

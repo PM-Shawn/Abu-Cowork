@@ -39,6 +39,7 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
+import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
 import { UNDO_OFFER_MS } from './undoOffer';
 import { useToastStore } from '@/stores/toastStore';
 import { isMacOS, isWindows } from '@/utils/platform';
@@ -139,6 +140,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const renameAfterClose = useRef<string | null>(null);
   // The conversation whose export window opens once the row menu has gone.
   const exportAfterClose = useRef<string | null>(null);
+  // After a conversation is deleted the focus goes on to a row, never to the window.
+  const rowFocus = useConversationRowFocus();
 
   // Guide modal state lives in the store so it can be reopened from Settings ›
   // About. Auto-opens on first launch only (below).
@@ -195,6 +198,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     await loadConversation(convId);
     // Save conversation data for undo before deleting
     const json = exportConversation(convId);
+    rowFocus.note(convId);
     deleteConversation(convId);
     if (json) {
       // One offer at a time: the notification list shows equal notifications as one, the newest,
@@ -238,6 +242,9 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       setEditingId(renameId);
     } else if (exportId) {
       void handleExport(exportId);
+    } else {
+      // 删除会话 took the row away while the menu was closing: the focus goes on to a row.
+      rowFocus.afterMenuClose(event);
     }
   };
   // Reopening a row menu during its exit animation keeps it mounted, so the close hook
@@ -246,6 +253,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     if (!open) return;
     renameAfterClose.current = null;
     exportAfterClose.current = null;
+    rowFocus.forget();
   };
 
   // One menu for a row, shown both by right-click and by the "⋯" button.
@@ -506,6 +514,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               return (
               <div
                 key={conv.id}
+                {...conversationRowProps(conv.id)}
                 role="button"
                 tabIndex={0}
                 onClick={() => {

@@ -10,6 +10,7 @@ import CloseDialog from '@/components/common/CloseDialog';
 import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TextArea } from '@/components/ds/text-area';
 import { __resetAccountStoreForTest, useAccountStore } from '@/core/account/accountStore';
 import { drainConfirmationQueue, requestCommandConfirmationForConversation } from '@/core/agent/permissionBridge';
 import { getI18n, initLanguage } from '@/i18n';
@@ -553,6 +554,33 @@ describe('SystemSettingsDialog', () => {
 
       expect(settingsWindow()).toBeNull();
       expect(opener).toHaveFocus();
+    });
+
+    // The first-run guide's link opens the window and leaves the page with the guide.
+    it('puts the focus in the message field when the control that opened it has left the page', async () => {
+      function Page() {
+        const [guide, setGuide] = useState(true);
+        return (
+          <>
+            {guide && (
+              <Button onClick={() => { setGuide(false); useSettingsStore.getState().openSystemSettings(); }}>Guide link</Button>
+            )}
+            <TextArea aria-label="Message" data-chat-composer="" />
+            <SystemSettingsDialog />
+          </>
+        );
+      }
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<Page />, { wrapper: DesignSystemProvider });
+      await user.click(screen.getByRole('button', { name: 'Guide link' }));
+      expect(settingsWindow()).not.toBeNull();
+
+      await user.keyboard('{Escape}');
+      await flushClose();
+      await flushClose();
+
+      expect(settingsWindow()).toBeNull();
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus();
     });
 
     // The approval has the page and the focus. Focus on the opener underneath it would let

@@ -266,6 +266,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/common/CreateProjectDialog*.{ts,tsx}',
   'src/components/common/ProjectSettingsDialog*.{ts,tsx}',
   'src/components/common/ProfileEditModal*.{ts,tsx}',
+  'src/components/common/DefaultUserAvatar*.{ts,tsx}',
   'src/components/common/GuideModal*.{ts,tsx}',
   'src/components/common/InstructionsEditModal*.{ts,tsx}',
   'src/components/common/MemoryViewModal*.{ts,tsx}',

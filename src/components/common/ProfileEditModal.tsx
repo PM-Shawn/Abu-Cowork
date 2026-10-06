@@ -1,9 +1,10 @@
-import { useId, useLayoutEffect, useRef, useState, type ChangeEvent } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type ChangeEvent, type MouseEvent } from 'react';
 import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { Button } from '@/components/ds/button';
 import { Dialog, DialogClose } from '@/components/ds/dialog';
 import { HiddenFileInput } from '@/components/ds/file-input';
 import { Icon } from '@/components/ds/icon';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
 import { TextField } from '@/components/ds/text-field';
@@ -81,7 +82,12 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
 
   const isModified = avatar !== '' || nickname !== '';
 
-  const handleReset = () => {
+  const handleReset = (event: MouseEvent<HTMLButtonElement>) => {
+    // The button leaves the window with what it restores. The focus it holds goes to the
+    // nickname field first, so it does not drop onto the window's box.
+    if (document.activeElement === event.currentTarget) {
+      document.getElementById(nicknameId)?.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
+    }
     setAvatar('');
     setNickname('');
   };

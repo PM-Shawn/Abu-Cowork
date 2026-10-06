@@ -86,8 +86,10 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     if (event.defaultPrevented || !target?.isConnected) return;
     // A window or an approval that is on the page owns the focus: the place is used only when it
     // is inside the top one. Otherwise the question's own window returns the focus to where it was
-    // when it opened, inside that layer, and never onto the page under it.
-    const layers = document.querySelectorAll<HTMLElement>('[data-ds-layer][data-state="open"]:is([role="dialog"], [role="alertdialog"]):not([hidden])');
+    // when it opened, inside that layer, and never onto the page under it. A popover or a list
+    // with a search box has the role of a window and is none (`data-ds-popover`); menus and
+    // select lists have roles of their own.
+    const layers = document.querySelectorAll<HTMLElement>('[data-ds-layer][data-state="open"]:is([role="dialog"], [role="alertdialog"]):not([data-ds-popover]):not([hidden])');
     const top = layers.length > 0 ? layers[layers.length - 1] : null;
     if (top && !top.contains(target)) return;
     event.preventDefault();

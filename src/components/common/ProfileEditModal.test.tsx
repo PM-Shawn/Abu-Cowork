@@ -170,6 +170,30 @@ describe('ProfileEditModal', () => {
       fireEvent.click(ui.save());
       expect(h.log).toEqual(['setUserNickname []', 'setUserAvatar []', 'onClose']);
     });
+
+    // The button leaves the window with what it restored: the focus goes to the nickname field
+    // first, so it never drops onto the window's box.
+    it('hands the focus to the nickname field when the defaults are restored from the button that has it', () => {
+      useSettingsStore.setState({ userNickname: 'Mango', userAvatar: '' });
+      open();
+      const reset = ui.reset()!;
+      act(() => { reset.focus(); });
+
+      fireEvent.click(reset);
+
+      expect(ui.reset()).toBeNull();
+      expect(ui.nickname()).toHaveFocus();
+    });
+
+    it('leaves the focus where it is when the button did not have it', () => {
+      useSettingsStore.setState({ userNickname: 'Mango', userAvatar: '' });
+      open();
+      act(() => { ui.save().focus(); });
+
+      fireEvent.click(ui.reset()!);
+
+      expect(ui.save()).toHaveFocus();
+    });
   });
 
   describe('closing', () => {

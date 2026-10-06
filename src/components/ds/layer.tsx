@@ -55,10 +55,13 @@ interface Fading {
 // until its fade has ended: it reports that through `left(id)`. When no report comes, the
 // registry looks one fade after it closed and counts it as gone once its content is no longer
 // painted. The app hides what the page cannot paint over (a native web view) while one is.
-export function LayerProvider({ children, container, onModalChange }: {
+// `onApprovalChange` hears whether an approval is shown (not one that waits its turn, and not one
+// that is fading out), once per change. The app shows fewer notifications beside one.
+export function LayerProvider({ children, container, onModalChange, onApprovalChange }: {
   children: ReactNode;
   container?: HTMLElement | null;
   onModalChange?: (open: boolean) => void;
+  onApprovalChange?: (shown: boolean) => void;
 }) {
   // The layers that are shown.
   const layers = useRef<LayerEntry[]>([]);
@@ -79,6 +82,9 @@ export function LayerProvider({ children, container, onModalChange }: {
   const modalListener = useRef(onModalChange);
   useLayoutEffect(() => { modalListener.current = onModalChange; });
   const modalOpen = useRef(false);
+  const approvalListener = useRef(onApprovalChange);
+  useLayoutEffect(() => { approvalListener.current = onApprovalChange; });
+  const approvalOnPage = useRef(false);
   // Alert id → the innermost dialog or approval that was open when the alert was asked. The alert
   // is a question about that layer, so it is answered with cancel when the layer goes away for
   // any reason.
@@ -102,6 +108,11 @@ export function LayerProvider({ children, container, onModalChange }: {
 
     // After the registry has settled: one register or unregister can close and reopen others.
     const publish = () => {
+      const approval = approvalShown();
+      if (approval !== approvalOnPage.current) {
+        approvalOnPage.current = approval;
+        approvalListener.current?.(approval);
+      }
       const open = painted.current.size > 0 || layers.current.some((layer) => layer.kind !== 'popover');
       if (open === modalOpen.current) return;
       modalOpen.current = open;

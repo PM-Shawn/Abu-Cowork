@@ -461,6 +461,31 @@ describe('LayerProvider', () => {
       expect(onModalChange.mock.calls).toEqual([[true], [false]]);
     });
 
+    // The app shows one notification beside an approval; this is how it learns that one is shown.
+    it('says when an approval is on the page, once per change, and not for a dialog or an alert', async () => {
+      const user = userEvent.setup();
+      const onApprovalChange = vi.fn();
+      render(
+        <LayerProvider onApprovalChange={onApprovalChange}>
+          <FakeLayer name="dialog" kind="dialog" />
+          <FakeLayer name="alert" kind="alert" />
+          <FakeLayer name="approval" kind="approval" />
+          <FakeLayer name="second" kind="approval" />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open alert'));
+      await user.click(screen.getByText('close alert'));
+      expect(onApprovalChange).not.toHaveBeenCalled();
+      await user.click(screen.getByText('open approval'));
+      expect(onApprovalChange.mock.calls).toEqual([[true]]);
+      // A second approval waits its turn and is shown when the first one leaves: still one report.
+      await user.click(screen.getByText('open second'));
+      await user.click(screen.getByText('close approval'));
+      expect(onApprovalChange.mock.calls).toEqual([[true]]);
+      await user.click(screen.getByText('close second'));
+      expect(onApprovalChange.mock.calls).toEqual([[true], [false]]);
+    });
+
     it('counts an alert that is open by itself', async () => {
       const user = userEvent.setup();
       const onModalChange = vi.fn();

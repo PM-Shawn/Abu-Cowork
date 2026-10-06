@@ -37,6 +37,17 @@ describe('sandbox recovery', () => {
       expect(toast.actions?.map((candidate) => candidate.label)).toEqual(['授权此目录', '前往安全设置']);
     });
 
+    it('shows one notification per blocked folder however often the write is retried', () => {
+      for (let n = 1; n <= 5; n += 1) showSandboxBlockedToast(`echo abu > '/fake/project/output/out-${n}.txt'`);
+      expect(useToastStore.getState().toasts.map((toast) => toast.message)).toEqual(['被拦截的目录: /fake/project/output']);
+      for (const folder of ['a', 'b', 'c', 'd']) showSandboxBlockedToast(`echo abu > '/fake/project/${folder}/out.txt'`);
+      expect(useToastStore.getState().toasts).toHaveLength(5);
+      // The folder blocked again comes back as the newest.
+      showSandboxBlockedToast("echo abu > '/fake/project/a/again.txt'");
+      expect(useToastStore.getState().toasts).toHaveLength(5);
+      expect(useToastStore.getState().toasts.at(-1)?.message).toBe('被拦截的目录: /fake/project/a');
+    });
+
     it('前往安全设置 opens the settings window on the security page', () => {
       showSandboxBlockedToast("echo abu > '/fake/project/output/out.txt'");
       action('前往安全设置').onClick();

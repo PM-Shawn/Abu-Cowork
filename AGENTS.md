@@ -705,6 +705,7 @@ pressed on the covered page comes in; a ds layer opened over it (`[data-ds-layer
 keys, the surface takes no Tab at all while a window, a question or an approval shows over it or
 while it is not displayed (a preview tab that is not in view keeps its fullscreen state under
 `hidden`), and the rest of the page is never made `inert`, because floating layers are portaled there.
+While the preview is fullscreen the notice list, the banners and the title bar take the pointer only.
 The surface's first and last child are its two Tab stops (`data-ds-focus-guard`), which turn the
 focus round when it comes out of a frame; the caller's content sits between them. Escape leaves it unless the key was pressed inside a ds layer
 or something else has used it (`defaultPrevented`). Closed, a `FullscreenSurface` is

@@ -4,6 +4,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { registerEnterpriseMount, type SlotProps } from '@/core/enterprise/mounts-registry';
+import type { EnterpriseBinding, EnterpriseConfigSnapshot } from '@/core/enterprise/types';
 import { localDateOf } from '@/core/llm/usageAccounting';
 import {
   emptyUsageAggregate,
@@ -13,6 +15,7 @@ import {
 } from '@/core/usage/usageLedgerClient';
 import type { UsageLedgerView, UsagePeriod } from '@/core/usage/useUsageLedger';
 import { initLanguage } from '@/i18n';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import UsageSection from './UsageSection';
 
 // The page's only data source, answered from what the test puts in `ledger`.
@@ -186,6 +189,110 @@ describe('UsageSection', () => {
       setLedger({ health }, {}, true);
       show();
       expect(screen.getByText('还没有记录 · 用量暂时记不上，聊天不受影响 · 有 6 次请求未能记录，统计可能不完整 · 暂未更新')).toBeInTheDocument();
+    });
+  });
+
+  // The line under the ledger note is private-repository code in an enterprise build. Here it is a
+  // marker, so the tests can see where the page puts it and what it hands it.
+  describe('the enterprise note slot', () => {
+    // Made-up values. None of the three secrets may reach the page.
+    const SECRETS = ['access-token-not-real', 'refresh-token-not-real', 'sk-test-not-a-secret'];
+    const binding: EnterpriseBinding = {
+      serverUrl: 'https://abu.example.test',
+      orgId: 'org-1',
+      orgName: 'Example Org',
+      userId: 'user-1',
+      userName: 'Ada',
+      userEmail: 'ada@example.test',
+      deptId: null,
+      roleId: null,
+      accessToken: SECRETS[0],
+      refreshToken: SECRETS[1],
+      boundAt: '2026-09-30T08:15:00.000Z',
+      llmEndpoint: 'https://abu.example.test/litellm',
+      llmVirtualKey: SECRETS[2],
+      llmKeyExpiresAt: null,
+    };
+    const snapshot: EnterpriseConfigSnapshot = {
+      brand: { name: 'Example Org', logoUrl: null, primaryColor: null },
+      defaultSoul: null,
+      policyDefaults: {},
+      modules: ['core'],
+      licenseStatus: 'valid',
+      serverTime: '2026-10-01T00:00:00.000Z',
+      fetchedAt: 0,
+    };
+    const handed: SlotProps[] = [];
+    function NoteMarker(props: SlotProps) {
+      handed.push(props);
+      return <p data-testid="enterprise-usage-note" />;
+    }
+    const note = () => screen.queryByTestId('enterprise-usage-note');
+
+    beforeEach(() => { handed.length = 0; });
+    afterEach(() => {
+      registerEnterpriseMount('usageNote', undefined);
+      useEnterpriseStore.setState({ mode: { kind: 'personal' } });
+    });
+
+    it('draws nothing there in a personal build', () => {
+      show();
+      const ledgerNote = screen.getByText('还没有记录');
+      expect(note()).toBeNull();
+      expect((ledgerNote.parentElement as HTMLElement).children).toHaveLength(1);
+    });
+
+    it('draws nothing there when nothing is registered, bound or not', () => {
+      useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: snapshot } });
+      show();
+      expect(note()).toBeNull();
+      expect((screen.getByText('还没有记录').parentElement as HTMLElement).children).toHaveLength(1);
+    });
+
+    it('leaves a registered note out while the app is not bound', () => {
+      registerEnterpriseMount('usageNote', NoteMarker);
+      show();
+      expect(note()).toBeNull();
+      expect(handed).toEqual([]);
+    });
+
+    it('puts the registered note right under the ledger note and hands it the binding and the configuration', () => {
+      registerEnterpriseMount('usageNote', NoteMarker);
+      useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: snapshot } });
+      show();
+      const ledgerNote = screen.getByText('还没有记录');
+      expect(ledgerNote.nextElementSibling).toBe(note());
+      expect((ledgerNote.parentElement as HTMLElement).children).toHaveLength(2);
+      expect(handed.at(-1)).toEqual({ binding, config: snapshot });
+      // The time range still follows the two lines.
+      expect((note() as HTMLElement).compareDocumentPosition(periodControl('全部')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('hands an offline binding the last configuration it had', () => {
+      registerEnterpriseMount('usageNote', NoteMarker);
+      useEnterpriseStore.setState({ mode: { kind: 'offline', binding, lastConfig: snapshot, reason: 'network' } });
+      show();
+      expect(note()).toBeInTheDocument();
+      expect(handed.at(-1)).toEqual({ binding, config: snapshot });
+    });
+
+    it('hands over an empty configuration as it is', () => {
+      registerEnterpriseMount('usageNote', NoteMarker);
+      useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: null } });
+      show();
+      expect(handed.at(-1)).toEqual({ binding, config: null });
+    });
+
+    it('writes nothing of the binding onto the page itself', () => {
+      registerEnterpriseMount('usageNote', NoteMarker);
+      useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: snapshot } });
+      show();
+      const attributes = [...document.querySelectorAll('*')].flatMap((element) => (
+        [...element.attributes].map((attribute) => `${attribute.name}=${attribute.value}`)
+      ));
+      const everything = [document.body.textContent ?? '', ...attributes].join('\n');
+      for (const secret of SECRETS) expect(everything).not.toContain(secret);
+      expect(everything).not.toContain(binding.userEmail);
     });
   });
 

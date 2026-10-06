@@ -214,7 +214,7 @@ describe('ProjectItem — project row', () => {
     }
   });
 
-  it('opens project settings only after the menu has gone, with focus off the row behind it', async () => {
+  it('opens project settings only after the menu has gone, with focus back on the row, which the window returns to', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -227,9 +227,7 @@ describe('ProjectItem — project row', () => {
       await act(() => vi.runOnlyPendingTimersAsync());
       expect(screen.queryByRole('menu')).toBeNull();
       expect(onOpenSettings).toHaveBeenCalledWith('p1');
-      // The settings dialog is a legacy one that takes no focus: Enter on the row
-      // behind it must not act, so focus stays on the page body.
-      expect(document.activeElement).toBe(document.body);
+      expect(header).toHaveFocus();
     } finally {
       vi.useRealTimers();
     }

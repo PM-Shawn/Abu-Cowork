@@ -51,7 +51,8 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   useLayoutEffect(() => {
     const order = newestFirst(toasts).map((toast) => toast.id);
     const before = arrangement.current;
-    const until = Date.now() + TOAST_SETTLE_MS;
+    // Time that only moves forward: the time of day can be set back, which would stretch the interval.
+    const until = performance.now() + TOAST_SETTLE_MS;
     const next = new Map<string, number>();
     order.forEach((id, index) => {
       const was = before.indexOf(id);
@@ -94,7 +95,7 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   }, [toasts]);
 
   // A pointer press on a notification that is still settling: dropped.
-  const isSettling = (id: string, event: MouseEvent) => event.detail !== 0 && Date.now() < (settling.current.get(id) ?? 0);
+  const isSettling = (id: string, event: MouseEvent) => event.detail !== 0 && performance.now() < (settling.current.get(id) ?? 0);
 
   const dismiss = (id: string, index: number, event: MouseEvent) => {
     if (isSettling(id, event)) return;
@@ -150,7 +151,10 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
             >
               <StatusIcon tone={TONE[toast.type]} size="sm" />
               <div className="min-w-0 flex-1">
-                <p className="break-words text-ui font-medium text-label">{toast.title}</p>
+                {/* Three lines of a title show (18px each) and eight of a message; more scrolls, so a notification
+                    has a greatest height: with two buttons 242px, which ends above the answer buttons of the
+                    close question in a 900×500 window. */}
+                <p className="max-h-13.5 overflow-y-auto break-words text-ui font-medium text-label">{toast.title}</p>
                 {toast.message && <p className="mt-1 max-h-32 overflow-y-auto break-words text-ui-sm text-label-secondary">{toast.message}</p>}
                 {toast.actions && toast.actions.length > 0 && (
                   <div className="mt-2 flex gap-2">

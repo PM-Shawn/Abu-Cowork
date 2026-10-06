@@ -9,10 +9,11 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import ProjectItem from './ProjectItem';
-import CreateProjectDialog from '@/components/common/CreateProjectDialog';
 import ProjectSettingsDialog from '@/components/common/ProjectSettingsDialog';
 
-export default function ProjectsSection() {
+// The create project window belongs to the sidebar: a created project turns the sidebar to
+// the file tree, which takes this section off the page.
+export default function ProjectsSection({ onCreateProject }: { onCreateProject: () => void }) {
   const { t } = useI18n();
   const projectsMap = useProjectStore((s) => s.projects);
   const restoreProject = useProjectStore((s) => s.restoreProject);
@@ -40,7 +41,6 @@ export default function ProjectsSection() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
 
   // Dialog state
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [sectionCollapsed, setSectionCollapsed] = useState(false);
@@ -110,7 +110,7 @@ export default function ProjectsSection() {
             icon={AppIcons.add}
             label={t.project.createProject}
             size="sm"
-            onClick={() => setShowCreateDialog(true)}
+            onClick={onCreateProject}
             className="opacity-0 group-hover/header:opacity-100 focus-visible:opacity-100"
           />
         </div>
@@ -133,7 +133,7 @@ export default function ProjectsSection() {
           <Button
             variant="plain"
             size="sm"
-            onClick={() => setShowCreateDialog(true)}
+            onClick={onCreateProject}
             className="w-full justify-start font-normal text-label-tertiary hover:text-label"
           >
             + {t.project.emptyState}
@@ -182,12 +182,6 @@ export default function ProjectsSection() {
           </div>
         )}
       </div>
-
-      {/* Create Project Dialog */}
-      <CreateProjectDialog
-        open={showCreateDialog}
-        onClose={() => setShowCreateDialog(false)}
-      />
 
       {/* Project Settings Dialog */}
       <ProjectSettingsDialog

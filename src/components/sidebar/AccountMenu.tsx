@@ -253,7 +253,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             <div className="truncate text-caption text-label-tertiary">{accountDetail}</div>
           </div>
         </div>
-        <MenuItem icon={AppIcons.rename} onSelect={() => openAfterClose(onEditProfile)}>
+        <MenuItem icon={AppIcons.rename} onSelect={() => openAfterClose(onEditProfile, true)}>
           {t.sidebar.editProfile}
         </MenuItem>
 

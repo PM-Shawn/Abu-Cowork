@@ -263,6 +263,10 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/common/PermissionDialog*.{ts,tsx}',
   'src/components/common/CloseDialog*.{ts,tsx}',
   'src/components/common/ToasterMount*.{ts,tsx}',
+  'src/components/common/CreateProjectDialog*.{ts,tsx}',
+  'src/components/common/ProjectSettingsDialog*.{ts,tsx}',
+  'src/components/common/ProfileEditModal*.{ts,tsx}',
+  'src/components/common/GuideModal*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

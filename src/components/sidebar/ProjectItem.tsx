@@ -65,10 +65,10 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const [showAll, setShowAll] = useState(false);
   // What a menu item starts once its menu has gone: a rename field, a confirmation or
   // a legacy dialog must not open while the closing menu still holds focus.
-  // `holdFocus`: the rename field and the legacy dialogs (项目设置, 导出会话) must not
+  // `holdFocus`: the rename field and the legacy dialog (导出会话) must not
   // have the menu hand focus back to its trigger or the row — the field needs it, and
-  // behind a legacy dialog Enter would reopen the menu. The confirmations are ds
-  // dialogs that take focus and give it back themselves.
+  // behind a legacy dialog Enter would reopen the menu. The confirmations and 项目设置 are
+  // ds dialogs that take focus and give it back themselves.
   const afterMenuClose = useRef<{ run: () => void; holdFocus: boolean } | null>(null);
 
   // Reopening a menu during its exit animation gives it new content, and the close hook
@@ -122,7 +122,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       <MenuItem icon={project.pinned ? AppIcons.unpin : AppIcons.pin} onSelect={() => togglePin(project.id)}>
         {project.pinned ? t.project.unpin : t.project.pin}
       </MenuItem>
-      <MenuItem icon={AppIcons.settings} onSelect={() => { afterMenuClose.current = { run: () => onOpenSettings(project.id), holdFocus: true }; }}>
+      <MenuItem icon={AppIcons.settings} onSelect={() => { afterMenuClose.current = { run: () => onOpenSettings(project.id), holdFocus: false }; }}>
         {t.project.editSettings}
       </MenuItem>
       <MenuItem

@@ -426,6 +426,17 @@ describe('feedback components', () => {
     expect(shown().getByText('Revert failed')).not.toHaveClass('max-h-32');
   });
 
+  // A caller can pass a whole sentence as the title (the goal bar does): three lines of it show and
+  // the rest scrolls, so one notification has a known greatest height.
+  it('Toaster limits the height of a title and lets it scroll', () => {
+    const title = 'The goal was not updated because '.repeat(12);
+    render(<ToasterHarness initial={[toast(1, { type: 'error', title })]} />, { wrapper: DesignSystemProvider });
+    const text = shown().getByText(title.trim());
+    expect(text).toHaveClass('max-h-13.5');
+    expect(text).toHaveClass('overflow-y-auto');
+    expect(text).toHaveClass('break-words');
+  });
+
   it('Toaster closes a notification from its close button', async () => {
     const user = setupUser();
     const onDismissed = vi.fn();
@@ -525,6 +536,34 @@ describe('Toaster press guard', () => {
     advance(TOAST_SETTLE_MS);
     press('Authorize 1');
     expect(first).toHaveBeenCalledOnce();
+  });
+
+  // The interval does not read the time of day: after the system time is set back, a press is
+  // held back for the interval and no longer.
+  it('takes a press after the interval when the system time was set back meanwhile', () => {
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+    const first = vi.fn();
+    const page = (toasts: Toast[]) => <Toaster toasts={toasts} onDismiss={() => undefined} />;
+    const { rerender } = render(page([]), { wrapper: DesignSystemProvider });
+    rerender(page([authorize(1, first)]));
+    vi.setSystemTime(new Date('2026-01-01T11:00:00Z'));
+    advance(TOAST_SETTLE_MS - 1);
+    press('Authorize 1');
+    expect(first).not.toHaveBeenCalled();
+    advance(1);
+    press('Authorize 1');
+    expect(first).toHaveBeenCalledOnce();
+  });
+
+  it('holds a press back for the whole interval when the system time was set forward meanwhile', () => {
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+    const first = vi.fn();
+    const page = (toasts: Toast[]) => <Toaster toasts={toasts} onDismiss={() => undefined} />;
+    const { rerender } = render(page([]), { wrapper: DesignSystemProvider });
+    rerender(page([authorize(1, first)]));
+    vi.setSystemTime(new Date('2026-01-01T13:00:00Z'));
+    press('Authorize 1');
+    expect(first).not.toHaveBeenCalled();
   });
 
   it('lets the keyboard act inside the interval and shows no disabled state', () => {

@@ -44,14 +44,23 @@ function generateId(): string {
 // its clock stopped and returns, with the time it had left, when a place frees: the last one
 // pushed out first. `duration` 0 means until dismissed; such a toast is pushed out and returns
 // like any other, so it never blocks the list.
+// A toast that returns stays at least this long, so one that was pushed out with a moment left
+// does not flash. Only this floor can add to a toast's time on screen beyond its duration.
+export const MIN_RETURN_MS = 1000;
+
 interface Clock {
   // 0 = until dismissed.
   duration: number;
   remaining: number;
   startedAt: number;
+  // It has been on screen before: the next time it comes on screen it returns.
+  shownBefore: boolean;
   timeout: ReturnType<typeof setTimeout> | null;
 }
 const clocks = new Map<string, Clock>();
+
+// Time that only moves forward: the time of day can be set back while a toast is on screen.
+const monotonicNow = () => performance.now();
 
 const labels = (toast: Omit<Toast, 'id'>) => (toast.actions ?? []).map((action) => action.label).join('\u0000');
 // The same thing said again: adding it shows the one that is there, it does not add another.
@@ -63,18 +72,19 @@ export const useToastStore = create<ToastStore>()(
     const syncClocks = () => {
       const { toasts, places } = get();
       const shown = new Set(toasts.slice(-places).map((toast) => toast.id));
-      const now = Date.now();
+      const now = monotonicNow();
       for (const { id } of toasts) {
         const clock = clocks.get(id);
         if (!clock || clock.duration <= 0) continue;
         if (shown.has(id)) {
           if (clock.timeout !== null) continue;
           clock.startedAt = now;
-          clock.timeout = setTimeout(() => drop(id), clock.remaining);
+          clock.timeout = setTimeout(() => drop(id), clock.shownBefore ? Math.max(clock.remaining, MIN_RETURN_MS) : clock.remaining);
+          clock.shownBefore = true;
         } else if (clock.timeout !== null) {
           clearTimeout(clock.timeout);
           clock.timeout = null;
-          clock.remaining = Math.max(1, clock.remaining - (now - clock.startedAt));
+          clock.remaining = Math.min(clock.duration, Math.max(0, clock.remaining - (now - clock.startedAt)));
         }
       }
     };
@@ -103,7 +113,7 @@ export const useToastStore = create<ToastStore>()(
         // Actionable toasts get longer duration by default
         const duration = toast.duration ?? (toast.actions ? 10000 : 3000);
         stopClock(id);
-        clocks.set(id, { duration, remaining: duration, startedAt: 0, timeout: null });
+        clocks.set(id, { duration, remaining: duration, startedAt: 0, shownBefore: false, timeout: null });
         set((state) => {
           state.toasts = state.toasts.filter((t) => t.id !== id);
           state.toasts.push({ ...toast, id });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MAX_VISIBLE_TOASTS, VISIBLE_TOASTS_BESIDE_DECISION, useToastStore } from './toastStore';
+import { MAX_VISIBLE_TOASTS, MIN_RETURN_MS, VISIBLE_TOASTS_BESIDE_DECISION, useToastStore } from './toastStore';
 
 const titles = () => useToastStore.getState().toasts.map((toast) => toast.title);
 // What the list shows: the newest ones, as many as there are places.
@@ -168,6 +168,75 @@ describe('toastStore', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(titles()).toEqual([]);
       expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  describe('a notification that returns', () => {
+    it('stays for a second when it had almost no time left', async () => {
+      expect(MIN_RETURN_MS).toBe(1000);
+      for (const n of [1, 2, 3]) add({ type: 'info', title: `notice ${n}` });
+      await vi.advanceTimersByTimeAsync(2900);
+      // The first is pushed out with 100 ms left and returns 100 ms later, when the other two end.
+      add({ type: 'info', title: 'late' });
+      expect(shown()).toEqual(['notice 2', 'notice 3', 'late']);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(shown()).toEqual(['notice 1', 'late']);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(shown()).toEqual(['notice 1', 'late']);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(shown()).toEqual(['late']);
+    });
+
+    it('stays for a second each time it returns, and for what it had left when that is more', async () => {
+      add({ type: 'info', title: 'short' });
+      await vi.advanceTimersByTimeAsync(2950);
+      for (const n of [1, 2, 3]) add({ type: 'info', title: `first wave ${n}`, duration: 500 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(shown()).toEqual(['short']);
+      // Pushed out again half way through its second.
+      await vi.advanceTimersByTimeAsync(500);
+      for (const n of [1, 2, 3]) add({ type: 'info', title: `second wave ${n}`, duration: 500 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(shown()).toEqual(['short']);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(shown()).toEqual(['short']);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(titles()).toEqual([]);
+    });
+
+    it('gives a new notification shorter than a second its own duration', async () => {
+      add({ type: 'info', title: 'brief', duration: 300 });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(titles()).toEqual([]);
+    });
+
+    // The clocks do not read the time of day: setting the system time back or forward changes nothing.
+    it('keeps the time it had left when the system time is set back while it is on screen', async () => {
+      vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+      add({ type: 'info', title: 'a' });
+      await vi.advanceTimersByTimeAsync(1000);
+      vi.setSystemTime(new Date('2026-01-01T11:00:00Z'));
+      for (const n of [1, 2, 3]) add({ type: 'info', title: `long ${n}`, duration: 5000 });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(shown()).toEqual(['a']);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(shown()).toEqual(['a']);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(titles()).toEqual([]);
+    });
+
+    it('never has more than its duration left', async () => {
+      vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+      add({ type: 'info', title: 'a' });
+      await vi.advanceTimersByTimeAsync(10);
+      vi.setSystemTime(new Date('2026-01-01T11:59:00Z'));
+      for (const n of [1, 2, 3]) add({ type: 'info', title: `kept ${n}`, duration: 0 });
+      for (const n of [1, 2, 3]) remove(`kept ${n}`);
+      expect(shown()).toEqual(['a']);
+      await vi.advanceTimersByTimeAsync(2989);
+      expect(shown()).toEqual(['a']);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(titles()).toEqual([]);
     });
   });
 

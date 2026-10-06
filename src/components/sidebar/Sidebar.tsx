@@ -24,6 +24,7 @@ import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import { resolveText } from '@/core/app/appBinding';
 import type { AppNavItem } from '@/types/app';
+import CreateProjectDialog from '@/components/common/CreateProjectDialog';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -38,6 +39,8 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
+import { UNDO_OFFER_MS } from './undoOffer';
+import { useToastStore } from '@/stores/toastStore';
 import { isMacOS, isWindows } from '@/utils/platform';
 
 /** A nav item's label: the package's own title when it gives one, else Abu's name for that entry. */
@@ -131,10 +134,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const showFileTree = usePreviewStore((s) => s.fileTreeMode);
   const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
 
-  // Undo delete state
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; data: string } | null>(null);
-  const undoTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
   const renameAfterClose = useRef<string | null>(null);
@@ -167,6 +166,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   // Profile edit modal state
   const [profileOpen, setProfileOpen] = useState(false);
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
 
   // Sort by createdAt to keep positions stable during status updates
   // Filter out conversations belonging to projects, scheduled tasks, or triggers — they appear in their own sections
@@ -195,18 +195,14 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     const json = exportConversation(convId);
     deleteConversation(convId);
     if (json) {
-      // Cancel any previous undo timer
-      clearTimeout(undoTimerRef.current);
-      setPendingDelete({ id: convId, data: json });
-      undoTimerRef.current = setTimeout(() => setPendingDelete(null), 5000);
-    }
-  };
-
-  const handleUndoDelete = () => {
-    if (pendingDelete) {
-      importConversation(pendingDelete.data, { keepPermissionMode: true });
-      clearTimeout(undoTimerRef.current);
-      setPendingDelete(null);
+      // One offer at a time: the notification list shows equal notifications as one, the newest,
+      // with its time started again. So only the last delete can be undone.
+      useToastStore.getState().addToast({
+        type: 'info',
+        title: t.sidebar.conversationDeleted,
+        duration: UNDO_OFFER_MS,
+        actions: [{ label: t.sidebar.undo, onClick: () => { importConversation(json, { keepPermissionMode: true }); } }],
+      });
     }
   };
 
@@ -448,7 +444,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       /* Scrollable middle section: projects + scheduled + triggers + recents */
       <ScrollArea className="flex-1 min-h-0">
         {/* Projects Section */}
-        <ProjectsSection />
+        <ProjectsSection onCreateProject={() => setCreateProjectOpen(true)} />
 
         {/* Recents Section */}
         <div className="px-4 pt-2">
@@ -602,6 +598,10 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       {/* Profile edit modal */}
       <ProfileEditModal open={profileOpen} onClose={() => setProfileOpen(false)} />
 
+      {/* Opened from the projects section; kept here so it outlives that section when a new
+          project turns the sidebar to its file tree. */}
+      <CreateProjectDialog open={createProjectOpen} onClose={() => setCreateProjectOpen(false)} />
+
       {/* Share export preview */}
       {shareConvId && (
         <ShareExportDialog
@@ -611,23 +611,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
         />
       )}
 
-
-      {/* Undo delete toast */}
-      {pendingDelete && (
-        <div
-          role="alert"
-          aria-live="assertive"
-          data-electron-no-drag
-          data-ds-motion
-          data-state="open"
-          className="fixed bottom-6 left-1/2 z-toast flex -translate-x-1/2 items-center gap-3 rounded-panel bg-raised px-4 py-2 text-label shadow-float data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[state=open]:duration-base data-[state=open]:ease-enter"
-        >
-          <span className="text-ui">{t.sidebar.conversationDeleted}</span>
-          <Button size="sm" icon={AppIcons.undo} onClick={handleUndoDelete}>
-            {t.sidebar.undo}
-          </Button>
-        </div>
-      )}
     </div>
   );
 }

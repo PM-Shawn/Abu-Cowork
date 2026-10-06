@@ -211,6 +211,13 @@ export function Dialog({
     if (document.activeElement?.closest('[data-ds-layer][data-state="open"]:not([hidden])')) return;
     opening();
   }, [aside, kind]);
+  // The discard question is on the page (not while it is hidden with a dialog that stepped aside).
+  const discardShown = discardAsked && !aside;
+  useLayoutEffect(() => {
+    if (!discardShown) return;
+    registry.discardQuestion(id, true);
+    return () => registry.discardQuestion(id, false);
+  }, [discardShown, id, registry]);
   // The owner closed the dialog while the discard question was on screen (a save that was in
   // flight landed): nothing is left to discard, so the question goes unanswered.
   useLayoutEffect(() => {

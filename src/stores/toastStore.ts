@@ -30,10 +30,10 @@ interface ToastActions {
 
 export type ToastStore = ToastState & ToastActions;
 
-// The list shows the newest toasts: three, and one while an approval is on the page (the
-// approval's text and buttons stay clear of it).
+// The list shows the newest toasts: three, and one while the user is asked to decide something
+// (an approval, a question): no toast may lie over the buttons that answer.
 export const MAX_VISIBLE_TOASTS = 3;
-export const VISIBLE_TOASTS_BESIDE_APPROVAL = 1;
+export const VISIBLE_TOASTS_BESIDE_DECISION = 1;
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
@@ -122,7 +122,7 @@ export const useToastStore = create<ToastStore>()(
   }),
 );
 
-// For the layer provider's `onApprovalChange`.
-export function setToastPlacesForApproval(approvalShown: boolean): void {
-  useToastStore.getState().setPlaces(approvalShown ? VISIBLE_TOASTS_BESIDE_APPROVAL : MAX_VISIBLE_TOASTS);
+// For the layer provider's `onDecisionChange`.
+export function setToastPlacesForDecision(decisionAsked: boolean): void {
+  useToastStore.getState().setPlaces(decisionAsked ? VISIBLE_TOASTS_BESIDE_DECISION : MAX_VISIBLE_TOASTS);
 }

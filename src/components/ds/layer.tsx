@@ -55,13 +55,15 @@ interface Fading {
 // until its fade has ended: it reports that through `left(id)`. When no report comes, the
 // registry looks one fade after it closed and counts it as gone once its content is no longer
 // painted. The app hides what the page cannot paint over (a native web view) while one is.
-// `onApprovalChange` hears whether an approval is shown (not one that waits its turn, and not one
-// that is fading out), once per change. The app shows fewer notifications beside one.
-export function LayerProvider({ children, container, onModalChange, onApprovalChange }: {
+// `onDecisionChange` hears whether the user is being asked to decide something: an approval or a
+// question (an alert, or a dialog's question about unsaved input) is shown — not one that waits
+// its turn, and not one that is fading out — once per change. The app shows one notification
+// then, so that none lies over the buttons that answer. Ordinary dialogs do not count.
+export function LayerProvider({ children, container, onModalChange, onDecisionChange }: {
   children: ReactNode;
   container?: HTMLElement | null;
   onModalChange?: (open: boolean) => void;
-  onApprovalChange?: (shown: boolean) => void;
+  onDecisionChange?: (asked: boolean) => void;
 }) {
   // The layers that are shown.
   const layers = useRef<LayerEntry[]>([]);
@@ -82,9 +84,11 @@ export function LayerProvider({ children, container, onModalChange, onApprovalCh
   const modalListener = useRef(onModalChange);
   useLayoutEffect(() => { modalListener.current = onModalChange; });
   const modalOpen = useRef(false);
-  const approvalListener = useRef(onApprovalChange);
-  useLayoutEffect(() => { approvalListener.current = onApprovalChange; });
-  const approvalOnPage = useRef(false);
+  const decisionListener = useRef(onDecisionChange);
+  useLayoutEffect(() => { decisionListener.current = onDecisionChange; });
+  const decisionAsked = useRef(false);
+  // Dialogs whose own question about unsaved input is on the page. That question is no layer.
+  const discardQuestions = useRef(new Set<string>());
   // Alert id → the innermost dialog or approval that was open when the alert was asked. The alert
   // is a question about that layer, so it is answered with cancel when the layer goes away for
   // any reason.
@@ -108,10 +112,10 @@ export function LayerProvider({ children, container, onModalChange, onApprovalCh
 
     // After the registry has settled: one register or unregister can close and reopen others.
     const publish = () => {
-      const approval = approvalShown();
-      if (approval !== approvalOnPage.current) {
-        approvalOnPage.current = approval;
-        approvalListener.current?.(approval);
+      const asked = discardQuestions.current.size > 0 || layers.current.some((layer) => layer.kind === 'approval' || layer.kind === 'alert');
+      if (asked !== decisionAsked.current) {
+        decisionAsked.current = asked;
+        decisionListener.current?.(asked);
       }
       const open = painted.current.size > 0 || layers.current.some((layer) => layer.kind !== 'popover');
       if (open === modalOpen.current) return;
@@ -440,6 +444,12 @@ export function LayerProvider({ children, container, onModalChange, onApprovalCh
       unregister: (id) => change(() => remove(id)),
       register: (entry) => change(() => register(entry)),
       left: (id) => change(() => left(id)),
+      discardQuestion: (id, shown) => {
+        if (!alive.current) return;
+        if (shown) discardQuestions.current.add(id);
+        else discardQuestions.current.delete(id);
+        publish();
+      },
       // The top open layer is the last one opened that has no open layer inside it.
       escapeTop: () => {
         const open = layers.current;

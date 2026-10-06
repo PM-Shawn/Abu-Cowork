@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MAX_VISIBLE_TOASTS, VISIBLE_TOASTS_BESIDE_APPROVAL, useToastStore } from './toastStore';
+import { MAX_VISIBLE_TOASTS, VISIBLE_TOASTS_BESIDE_DECISION, useToastStore } from './toastStore';
 
 const titles = () => useToastStore.getState().toasts.map((toast) => toast.title);
 // What the list shows: the newest ones, as many as there are places.
@@ -45,7 +45,7 @@ describe('toastStore', () => {
 
   it('has three places, and one beside an approval', () => {
     expect(MAX_VISIBLE_TOASTS).toBe(3);
-    expect(VISIBLE_TOASTS_BESIDE_APPROVAL).toBe(1);
+    expect(VISIBLE_TOASTS_BESIDE_DECISION).toBe(1);
     expect(useToastStore.getState().places).toBe(3);
   });
 
@@ -223,7 +223,7 @@ describe('toastStore', () => {
     it('with one place shows the newest alone; the others keep their time and return with the places', async () => {
       for (const n of [1, 2, 3]) add({ type: 'info', title: `notice ${n}` });
       await vi.advanceTimersByTimeAsync(1000);
-      useToastStore.getState().setPlaces(VISIBLE_TOASTS_BESIDE_APPROVAL);
+      useToastStore.getState().setPlaces(VISIBLE_TOASTS_BESIDE_DECISION);
       expect(shown()).toEqual(['notice 3']);
       expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(1999);
@@ -243,7 +243,7 @@ describe('toastStore', () => {
     });
 
     it('a notification that arrives while there is one place takes it', () => {
-      useToastStore.getState().setPlaces(VISIBLE_TOASTS_BESIDE_APPROVAL);
+      useToastStore.getState().setPlaces(VISIBLE_TOASTS_BESIDE_DECISION);
       add({ type: 'info', title: 'first' });
       add({ type: 'error', title: 'second' });
       expect(shown()).toEqual(['second']);

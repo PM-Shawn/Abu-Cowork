@@ -9,7 +9,7 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import { getLanguageSetting, setLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { MAX_VISIBLE_TOASTS, setToastPlacesForApproval, useToastStore } from '@/stores/toastStore';
+import { MAX_VISIBLE_TOASTS, setToastPlacesForDecision, useToastStore } from '@/stores/toastStore';
 import ToasterMount from './ToasterMount';
 
 // Counts renders of the real list: the wrapper runs the real component inside its own render.
@@ -170,20 +170,22 @@ describe('ToasterMount', () => {
   });
 });
 
-describe('ToasterMount beside an approval', () => {
+// A notification must never lie over the buttons of a window that asks the user to decide something.
+describe('ToasterMount while the user is asked to decide', () => {
   beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
 
-  const Page = ({ approval }: { approval: boolean }) => (
-    <>
-      <Dialog open={approval} layer="approval" role="alertdialog" title="Run this command?" />
-      <ToasterMount />
-    </>
-  );
-  const provider = { wrapper: ({ children }: { children: ReactNode }) => <DesignSystemProvider onApprovalChange={setToastPlacesForApproval}>{children}</DesignSystemProvider> };
+  const provider = { wrapper: ({ children }: { children: ReactNode }) => <DesignSystemProvider onDecisionChange={setToastPlacesForDecision}>{children}</DesignSystemProvider> };
+  const three = () => { for (const n of [1, 2, 3]) add({ type: 'info', title: `Notice ${n}`, duration: 0 }); };
 
   it('shows the newest notification alone while an approval is on the page, and the others return after', () => {
+    const Page = ({ approval }: { approval: boolean }) => (
+      <>
+        <Dialog open={approval} layer="approval" role="alertdialog" title="Run this command?" />
+        <ToasterMount />
+      </>
+    );
     const { rerender } = render(<Page approval={false} />, provider);
-    for (const n of [1, 2, 3]) add({ type: 'info', title: `Notice ${n}`, duration: 0 });
+    three();
     expect(shownTitles()).toEqual(['Notice 3', 'Notice 2', 'Notice 1']);
     rerender(<Page approval />);
     expect(screen.getByRole('alertdialog', { name: 'Run this command?' })).toBeInTheDocument();
@@ -194,6 +196,56 @@ describe('ToasterMount beside an approval', () => {
     expect(shownTitles()).toEqual(['Send blocked']);
     rerender(<Page approval={false} />);
     expect(shownTitles()).toEqual(['Send blocked', 'Notice 3', 'Notice 2']);
+  });
+
+  it('shows one notification while a question is asked (the close question, a confirmation)', () => {
+    const Page = ({ question }: { question: boolean }) => (
+      <>
+        <Dialog open={question} role="alertdialog" title="Close the window?" />
+        <ToasterMount />
+      </>
+    );
+    const { rerender } = render(<Page question={false} />, provider);
+    three();
+    rerender(<Page question />);
+    expect(screen.getByRole('alertdialog', { name: 'Close the window?' })).toBeInTheDocument();
+    expect(shownTitles()).toEqual(['Notice 3']);
+    rerender(<Page question={false} />);
+    expect(shownTitles()).toEqual(['Notice 3', 'Notice 2', 'Notice 1']);
+  });
+
+  it('shows one notification while a window asks whether to discard what was typed', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <>
+        <Dialog open dirty title="Rename task" onOpenChange={() => undefined} />
+        <ToasterMount />
+      </>,
+      provider,
+    );
+    three();
+    // An ordinary window, even with unsaved input, leaves the three places.
+    expect(shownTitles()).toEqual(['Notice 3', 'Notice 2', 'Notice 1']);
+    await user.keyboard('{Escape}');
+    const question = screen.getByRole('alertdialog');
+    expect(shownTitles()).toEqual(['Notice 3']);
+    // Keep editing: the question leaves, the window stays, the notifications return.
+    await user.click(within(question).getAllByRole('button')[0]);
+    expect(screen.getByRole('dialog', { name: 'Rename task' })).toBeInTheDocument();
+    expect(shownTitles()).toEqual(['Notice 3', 'Notice 2', 'Notice 1']);
+  });
+
+  it('keeps three places beside an ordinary window', () => {
+    render(
+      <>
+        <Dialog open title="Settings" onOpenChange={() => undefined} />
+        <ToasterMount />
+      </>,
+      provider,
+    );
+    three();
+    expect(shownTitles()).toEqual(['Notice 3', 'Notice 2', 'Notice 1']);
+    expect(useToastStore.getState().places).toBe(3);
   });
 });
 

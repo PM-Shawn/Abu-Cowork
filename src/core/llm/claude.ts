@@ -516,7 +516,7 @@ export class ClaudeAdapter implements LLMAdapter {
       if (err instanceof LLMError) throw err;
       // Classify Anthropic SDK errors
       if (err instanceof Anthropic.APIError) {
-        throw classifyError(err.status, err.message);
+        throw classifyError(err.status, err.message, [options.apiKey]);
       }
       // Network errors
       if (err instanceof TypeError && err.message.includes('fetch')) {

@@ -217,18 +217,19 @@ export default function ScheduleEditor({ onCloseAutoFocus }: {
       : workspacePath;
 
     if (editingTaskId) {
+      // The form holds every field, so an empty optional field is removed (null).
       updateTask(editingTaskId, {
         name: name.trim(),
-        description: description.trim() || undefined,
+        description: description.trim() || null,
         prompt: prompt.trim(),
-        teamId: teamId || undefined,
+        teamId: teamId || null,
         schedule,
-        skillName: skillName || undefined,
-        workspacePath: effectiveWorkspace || undefined,
-        projectId: projectId || undefined,
-        outputChannelId: outputChannelId || undefined,
-        outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : undefined,
-        outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : undefined,
+        skillName: skillName || null,
+        workspacePath: effectiveWorkspace || null,
+        projectId: projectId || null,
+        outputChannelId: outputChannelId || null,
+        outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : null,
+        outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : null,
         permissionMode,
       });
     } else {

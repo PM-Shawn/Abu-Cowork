@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { setLanguage } from '@/i18n';
 import { useTriggerStore } from '@/stores/triggerStore';
 import type { TriggerAction } from '@/types/trigger';
-import { manageTriggerTool } from './automationTools';
+import { useScheduleStore } from '@/stores/scheduleStore';
+import { manageScheduledTaskTool, manageTriggerTool } from './automationTools';
 import { resolveTriggerCallbacks } from '@/core/trigger/triggerPermission';
 import { createAuthorizationScope, disposeAuthorizationScope } from '@/core/tools/pathSafety';
 
@@ -185,5 +186,78 @@ describe('manageTriggerTool', () => {
     });
 
     expect(useTriggerStore.getState().triggers[triggerId].action).toEqual(originalAction);
+  });
+});
+
+describe('manageScheduledTaskTool', () => {
+  function createFullTask(): string {
+    return useScheduleStore.getState().createTask({
+      name: 'Full task',
+      description: 'Daily digest',
+      prompt: 'summarize',
+      schedule: { frequency: 'daily', time: { hour: 9, minute: 0 } },
+      skillName: 'report',
+      workspacePath: '/workspace/alpha',
+      projectId: 'project-1',
+      outputChannelId: 'channel-1',
+      outputChatIds: 'chat-1',
+      outputUserIds: 'user-1',
+      teamId: 'team-1',
+    });
+  }
+
+  beforeEach(() => {
+    setLanguage('en-US');
+    useScheduleStore.setState({
+      tasks: {},
+      activeTaskId: null,
+      selectedTaskId: null,
+      showEditor: false,
+      editingTaskId: null,
+    });
+  });
+
+  it('keeps every field an update does not mention', async () => {
+    const taskId = createFullTask();
+
+    await manageScheduledTaskTool.execute({
+      action: 'update',
+      task_id: taskId,
+      name: 'Renamed',
+    });
+
+    const task = useScheduleStore.getState().tasks[taskId];
+    expect(task.name).toBe('Renamed');
+    expect(task.description).toBe('Daily digest');
+    expect(task.prompt).toBe('summarize');
+    expect(task.schedule).toEqual({ frequency: 'daily', time: { hour: 9, minute: 0 } });
+    expect(task.skillName).toBe('report');
+    expect(task.workspacePath).toBe('/workspace/alpha');
+    expect(task.projectId).toBe('project-1');
+    expect(task.outputChannelId).toBe('channel-1');
+    expect(task.outputChatIds).toBe('chat-1');
+    expect(task.outputUserIds).toBe('user-1');
+    expect(task.teamId).toBe('team-1');
+  });
+
+  it('writes the fields an update provides', async () => {
+    const taskId = createFullTask();
+
+    await manageScheduledTaskTool.execute({
+      action: 'update',
+      task_id: taskId,
+      description: 'Weekly digest',
+      skill_name: 'summary',
+      workspace_path: '/workspace/beta',
+      time_hour: 18,
+    });
+
+    const task = useScheduleStore.getState().tasks[taskId];
+    expect(task.description).toBe('Weekly digest');
+    expect(task.skillName).toBe('summary');
+    expect(task.workspacePath).toBe('/workspace/beta');
+    expect(task.schedule).toEqual({ frequency: 'daily', time: { hour: 18, minute: 0 } });
+    expect(task.name).toBe('Full task');
+    expect(task.projectId).toBe('project-1');
   });
 });

@@ -59,6 +59,7 @@ import {
 import type { Conversation, Message, AgentStatus, ToolCall } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import { appendBoundedSubagentToolCall } from '@/core/session/durableToolResultContent';
+import { sanitizeGoalState, type GoalState } from '@/core/goal/goalTypes';
 
 export interface ConversationRunMirrorSeed {
   conversation: Conversation;
@@ -70,6 +71,8 @@ export interface ConversationPatch {
   title?: string;
   activeSkills?: string[];
   model?: { providerId: string; modelId: string };
+  /** Goal mode state; `null` = the goal was cleared. */
+  goal?: GoalState | null;
 }
 
 export interface ConversationRunMirror {
@@ -336,6 +339,12 @@ export function createConversationRunMirror(
     if (Object.prototype.hasOwnProperty.call(patch, 'model')) {
       conversation.model = patch.model;
       if (indexEntry) indexEntry = { ...indexEntry, model: patch.model };
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'goal')) {
+      // Validate: the patch crosses a process boundary.
+      const goal = sanitizeGoalState(patch.goal);
+      if (goal) conversation.goal = goal;
+      else delete conversation.goal;
     }
   }
 

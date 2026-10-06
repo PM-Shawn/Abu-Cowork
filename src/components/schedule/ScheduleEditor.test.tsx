@@ -9,11 +9,19 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useScheduleStore } from '@/stores/scheduleStore';
+import type { IMChannel } from '@/types/imChannel';
+import type { Project } from '@/types/project';
+import { useTeamStore, type Team } from '@/stores/teamStore';
 import type { ScheduledTask } from '@/types/schedule';
 import ScheduleEditor from './ScheduleEditor';
 
-const teams = vi.hoisted(() => ({ list: [] as Array<{ id: string; name: string; avatar?: string }> }));
-vi.mock('@/core/team/useVisibleTeams', () => ({ useVisibleTeams: () => teams.list }));
+// `list` stands in for the visible teams. A block that sets `fromStore` gets the real hook
+// instead, which reads the team store; the flag stays the same for the whole of a test.
+const teams = vi.hoisted(() => ({ list: [] as Array<{ id: string; name: string; avatar?: string }>, fromStore: false }));
+vi.mock('@/core/team/useVisibleTeams', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/team/useVisibleTeams')>();
+  return { useVisibleTeams: () => (teams.fromStore ? actual.useVisibleTeams() : teams.list) };
+});
 
 const realActions = useScheduleStore.getState();
 const createTask = vi.fn<typeof realActions.createTask>();
@@ -265,7 +273,8 @@ describe('ScheduleEditor', () => {
     expect(screen.queryByPlaceholderText('群 ID，多个用逗号分隔')).toBeNull();
     await user.click(saveButton());
 
-    expect(updateTask.mock.calls[0][1]).toMatchObject({ outputChannelId: undefined, outputChatIds: undefined, outputUserIds: undefined });
+    // An update names an emptied optional field with null, which the store removes from the task.
+    expect(updateTask.mock.calls[0][1]).toMatchObject({ outputChannelId: null, outputChatIds: null, outputUserIds: null });
   });
 
   it('closes from 取消 without saving', async () => {
@@ -437,11 +446,11 @@ describe('ScheduleEditor', () => {
       await user.click(saveButton());
 
       expect(updateTask.mock.calls[0][1]).toMatchObject({
-        skillName: undefined,
+        skillName: null,
         permissionMode: undefined,
-        outputChannelId: undefined,
-        outputChatIds: undefined,
-        outputUserIds: undefined,
+        outputChannelId: null,
+        outputChatIds: null,
+        outputUserIds: null,
       });
       expect('permissionMode' in updateTask.mock.calls[0][1]).toBe(true);
     });
@@ -624,5 +633,212 @@ describe('ScheduleEditor', () => {
     expect(screen.getByRole('heading', { name: '新建任务' })).toBeVisible();
     expect(nameField()).toHaveValue('');
     expect(promptField()).toHaveValue('');
+  });
+});
+
+// These tests save through the store's own `updateTask`, so they read what the task holds after
+// the save: an emptied optional field is gone from it.
+const BASE_TIME = 1_700_000_000_000;
+
+const project: Project = {
+  id: 'project-1',
+  name: 'Alpha project',
+  workspacePath: '/workspace/alpha',
+  pinned: false,
+  archived: false,
+  createdAt: BASE_TIME,
+  updatedAt: BASE_TIME,
+  lastActiveAt: BASE_TIME,
+};
+
+const channel = {
+  id: 'channel-1',
+  platform: 'feishu',
+  name: 'Ops channel',
+} as IMChannel;
+
+const team: Team = {
+  id: 'team-1',
+  name: 'Alpha team',
+  leaderRoleId: 'role-1',
+  memberRoleIds: ['role-1'],
+  createdAt: BASE_TIME,
+};
+
+function resetStores() {
+  useScheduleStore.setState({
+    tasks: {},
+    activeTaskId: null,
+    selectedTaskId: null,
+    showEditor: false,
+    editingTaskId: null,
+    createTask: realActions.createTask,
+    updateTask: realActions.updateTask,
+  });
+  useDiscoveryStore.setState({ skills: [], agents: [], isLoading: false });
+  useIMChannelStore.setState({ channels: {} });
+  useProjectStore.setState({ projects: {} });
+  useTeamStore.setState({ teams: [], managedTeamSources: {} });
+}
+
+function openEditorOnTask(fields: Partial<ScheduledTask>): ScheduledTask {
+  const task: ScheduledTask = {
+    id: 'task-1',
+    name: 'Nightly report',
+    prompt: 'collect the numbers',
+    schedule: { frequency: 'daily', time: { hour: 3, minute: 0 } },
+    status: 'active',
+    createdAt: BASE_TIME,
+    updatedAt: BASE_TIME,
+    runs: [],
+    totalRuns: 0,
+    ...fields,
+  };
+  useDiscoveryStore.setState({
+    skills: [{ name: 'report', description: 'Builds a report', userInvocable: true }],
+  });
+  useIMChannelStore.setState({ channels: { [channel.id]: channel } });
+  useProjectStore.setState({ projects: { [project.id]: project } });
+  useTeamStore.setState({ teams: [team] });
+  useScheduleStore.setState({
+    tasks: { [task.id]: task },
+    showEditor: true,
+    editingTaskId: task.id,
+  });
+  return task;
+}
+
+function savedTask(): ScheduledTask {
+  return useScheduleStore.getState().tasks['task-1'];
+}
+
+describe('ScheduleEditor clearing optional settings', () => {
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    // These tests read the teams the way the app does: the real hook over the team store.
+    teams.fromStore = true;
+    resetStores();
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetStores();
+    teams.fromStore = false;
+  });
+
+  it('saves an emptied description', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({ description: 'Daily digest' });
+    renderEditor();
+
+    await user.clear(screen.getByPlaceholderText('描述这个任务的目的...'));
+    await user.click(saveButton());
+
+    expect(useScheduleStore.getState().showEditor).toBe(false);
+    expect(savedTask().description).toBeUndefined();
+  });
+
+  it('saves the skill switched to none', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({ skillName: 'report' });
+    renderEditor();
+
+    expect(select('绑定技能')).toHaveTextContent('report');
+    await pick(user, '绑定技能', '不绑定');
+    await user.click(saveButton());
+
+    expect(savedTask().skillName).toBeUndefined();
+  });
+
+  it('saves the project switched to none', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({ projectId: project.id, workspacePath: project.workspacePath });
+    renderEditor();
+
+    expect(select('所属项目')).toHaveTextContent('Alpha project');
+    await pick(user, '所属项目', '不关联项目');
+    await user.click(saveButton());
+
+    expect(savedTask().projectId).toBeUndefined();
+  });
+
+  it('saves an emptied workspace path', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({ workspacePath: '/workspace/alpha' });
+    renderEditor();
+
+    await user.clear(screen.getByPlaceholderText('可选，指定工作目录'));
+    await user.click(saveButton());
+
+    expect(savedTask().workspacePath).toBeUndefined();
+  });
+
+  it('saves the push channel switched to none together with its recipients', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({ outputChannelId: channel.id, outputChatIds: 'chat-1', outputUserIds: 'user-1' });
+    renderEditor();
+
+    expect(select('结果与审批推送频道')).toHaveTextContent('Ops channel (feishu)');
+    await pick(user, '结果与审批推送频道', '不推送');
+    await user.click(saveButton());
+
+    const saved = savedTask();
+    expect(saved.outputChannelId).toBeUndefined();
+    expect(saved.outputChatIds).toBeUndefined();
+    expect(saved.outputUserIds).toBeUndefined();
+  });
+
+  it('saves emptied push recipients while keeping the channel', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({ outputChannelId: channel.id, outputChatIds: 'chat-1', outputUserIds: 'user-1' });
+    renderEditor();
+
+    await user.clear(screen.getByPlaceholderText('群 ID，多个用逗号分隔'));
+    await user.clear(screen.getByPlaceholderText('用户 ID，多个用逗号分隔'));
+    await user.click(saveButton());
+
+    const saved = savedTask();
+    expect(saved.outputChannelId).toBe(channel.id);
+    expect(saved.outputChatIds).toBeUndefined();
+    expect(saved.outputUserIds).toBeUndefined();
+  });
+
+  it('saves the team switched to none', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({ teamId: team.id });
+    renderEditor();
+
+    expect(select('交给专家团（可选）')).toHaveTextContent('Alpha team');
+    await pick(user, '交给专家团（可选）', '不指定，普通任务');
+    await user.click(saveButton());
+
+    expect(savedTask().teamId).toBeUndefined();
+  });
+
+  it('keeps the optional settings when they are left untouched', async () => {
+    const user = userEvent.setup();
+    openEditorOnTask({
+      description: 'Daily digest',
+      skillName: 'report',
+      workspacePath: project.workspacePath,
+      projectId: project.id,
+      outputChannelId: channel.id,
+      outputChatIds: 'chat-1',
+      outputUserIds: 'user-1',
+      teamId: team.id,
+    });
+    renderEditor();
+
+    await user.click(saveButton());
+
+    const saved = savedTask();
+    expect(saved.description).toBe('Daily digest');
+    expect(saved.skillName).toBe('report');
+    expect(saved.workspacePath).toBe(project.workspacePath);
+    expect(saved.projectId).toBe(project.id);
+    expect(saved.outputChannelId).toBe(channel.id);
+    expect(saved.outputChatIds).toBe('chat-1');
+    expect(saved.outputUserIds).toBe('user-1');
+    expect(saved.teamId).toBe(team.id);
   });
 });

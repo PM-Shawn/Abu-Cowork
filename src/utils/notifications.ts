@@ -15,6 +15,7 @@ import {
   requestPermission,
 } from '@tauri-apps/plugin-notification';
 import { publish } from '@/core/notice/bus';
+import { isGoalDrivingConversation } from '@/core/goal/goalService';
 import {
   setNotificationPermission,
   clearDockBadgeCount,
@@ -49,6 +50,10 @@ export const clearDockBadge = clearDockBadgeCount;
  * Send a task completion notification.
  */
 export async function notifyTaskCompleted(conversationTitle: string, conversationId?: string): Promise<void> {
+  // Goal mode: one run per round — up to hundreds while the user is away.
+  // Rounds stay quiet; the run that settles the goal (or the driver's block)
+  // is what reaches the user.
+  if (conversationId && isGoalDrivingConversation(conversationId)) return;
   publish({
     type: 'task_complete',
     source: 'agent',
@@ -93,6 +98,16 @@ export async function notifyTeamConfirmationPending(title: string, conversationI
     source: 'agent',
     payload: { title, conversationId },
     dedupKey: `team_confirm:${conversationId}:${title}`,
+  });
+}
+
+/** Goal mode: the round driver stopped a goal (no progress, rounds or hand-offs used up). */
+export async function notifyGoalBlocked(title: string, conversationId: string): Promise<void> {
+  publish({
+    type: 'stuck_detection',
+    source: 'agent',
+    payload: { title, conversationId },
+    dedupKey: `goal_blocked:${conversationId}:${title}:${Date.now()}`,
   });
 }
 

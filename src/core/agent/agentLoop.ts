@@ -104,6 +104,7 @@ import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
+import { formatGoalForPrompt } from '../goal/goalPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
@@ -363,7 +364,7 @@ export function resolveTools(
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
   blockedTools?: string[],
-  prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
+  prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number; hasGoal?: boolean },
   allowedTools?: string[],
   conversationId?: string,
   allowedToolsAreExactSnapshot = false,
@@ -510,6 +511,7 @@ function sanitizeTailBody(text: string): string {
 }
 
 export function buildVolatileContextTail(parts: {
+  goalState?: string;
   todoState?: string;
   relevantMemoriesSection?: string;
   compressionApplied?: boolean;
@@ -518,6 +520,7 @@ export function buildVolatileContextTail(parts: {
   if (parts.compressionApplied) {
     body.push('[The earlier conversation history has been compressed and older details summarized. If the user mentions early details you are unsure about, say so honestly and ask them to confirm — do not fabricate.]');
   }
+  if (parts.goalState) body.push(parts.goalState);
   if (parts.todoState) body.push(parts.todoState);
   if (parts.relevantMemoriesSection) body.push(parts.relevantMemoriesSection);
   if (body.length === 0) return undefined;
@@ -666,6 +669,13 @@ export interface AgentLoopOptions {
    * the conversation snapshot instead of appending a duplicate.
    */
   prePersistedUserMessageId?: string;
+  /**
+   * Goal mode: this run is an automatic goal round started by goalDriver. Its
+   * opening user message is written as an internal (`isSystem`) row carrying
+   * this metadata, so the chat shows a round marker instead of a user bubble
+   * and the goal tool can tell it apart from a human-initiated run.
+   */
+  goalRound?: { goalId: string; revision: number; round: number };
   /** Process-local structured diagnostics hook. The shell and sidecar inject
    * their own sinks; it is deliberately omitted from the wire contract. */
   runtimeEvent?: (event: string, attributes: {
@@ -1284,6 +1294,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         name: route.delegateAgent.name,
         description: route.delegateAgent.description,
       } : undefined,
+      ...(options?.goalRound ? { isSystem: true, goalRound: options.goalRound } : {}),
     });
     options?.onMessageTaken?.(userMessageId);
   }
@@ -1876,6 +1887,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
         activeSkills: activeSkillObjects,
         turnCount,
+        hasGoal: conv?.goal !== undefined,
       };
 
       // What the roster was filtered by, carried to the execution boundary so
@@ -2038,6 +2050,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       //   context tail appended after the history instead (see
       //   buildVolatileContextTail below).
       const todoState = formatPlannedStepsForPrompt(conversationId);
+      const goalState = formatGoalForPrompt(conversationId, loopId);
       const dynamicSections: PromptSection[] = [];
       if (dynamicCapabilities) {
         dynamicSections.push({ name: 'mcp-capabilities', text: dynamicCapabilities, cacheable: true });
@@ -2160,6 +2173,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // append it AFTER placing the history cache breakpoint, so the stored
       // prefix stays fully cached and only this small tail is re-billed.
       const volatileContextTail = buildVolatileContextTail({
+        goalState,
         todoState,
         relevantMemoriesSection,
         compressionApplied,

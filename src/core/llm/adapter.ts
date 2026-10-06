@@ -1,6 +1,7 @@
 import type { StreamEvent, Message, ToolDefinition, BuiltinSearchMethod, UpstreamErrorDetails } from '../../types';
 import type { PromptSection } from './promptSections';
 import type { Logger } from '../logging/logger';
+import { redactFailureText } from '../diagnostic/scrub';
 
 /**
  * Chars of a failed tool call's raw `arguments` to keep in the on-disk
@@ -204,7 +205,9 @@ export class LLMError extends Error {
       contextLimit?: number;
     }
   ) {
-    super(message);
+    // message 会进入日志、聊天记录和界面。连接失败这类本地构造的错误直接使用
+    // 异常文字，其中可能带有含密钥的 URL，所以在构造时统一脱敏。
+    super(redactFailureText(message));
     this.name = 'LLMError';
     this.code = code;
     this.retryable = options?.retryable ?? false;
@@ -218,6 +221,8 @@ export class LLMError extends Error {
 
 const UPSTREAM_ERROR_SUMMARY_MAX_CHARS = 500;
 const UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS = 256;
+/** 从服务端错误正文里取出、交给脱敏的文字上限 */
+const UPSTREAM_ERROR_SCAN_MAX_CHARS = 4000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -265,7 +270,8 @@ export function isUnsafeStructuredLlmErrorText(value: unknown): boolean {
     } catch {
       // A truncated/pretty-printed JSON object or array is still a raw
       // provider body even though one line cannot be parsed in isolation.
-      return /^[{[]/.test(payload);
+      // 以脱敏标记（[REDACTED] / [REDACTED:…]）开头的是普通文字。
+      return /^[{[]/.test(payload) && !/^\[REDACTED[\]:]/.test(payload);
     }
   });
 }
@@ -349,21 +355,46 @@ function firstBoundedString(
   return undefined;
 }
 
-/** Build the only provider-error projection allowed to cross the terminal wire. */
+/**
+ * 服务端可能在错误正文里原样带回请求的密钥或 Authorization 请求头。顺序是先
+ * 脱敏、后截断：脱敏后的文字可能变长；先截断会让一个密钥只留下无法识别的前半段。
+ */
+function redactedBounded(value: string | undefined, exactSecrets: readonly string[], maxChars: number): string {
+  if (!value) return '';
+  return redactFailureText(value, exactSecrets).trim().slice(0, maxChars).trim();
+}
+
+/**
+ * Build the only provider-error projection allowed to cross the terminal wire.
+ * `exactSecrets` 是这次请求自己带的密钥，按原文从每个字段里去掉。
+ */
 export function extractUpstreamErrorDetails(
   statusCode: number,
   rawBody: string,
   fallbackMessage: string,
+  exactSecrets: readonly string[] = [],
 ): UpstreamErrorDetails {
   const records = providerErrorRecords(rawBody);
-  const errorType = firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
-  const traceId = firstBoundedString(records, ['traceId', 'trace_id'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
-  const structuredSummary = firstBoundedString(records, ['message', 'detail', 'error'], UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+  const errorType = redactedBounded(
+    firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_SCAN_MAX_CHARS),
+    exactSecrets,
+    UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS,
+  );
+  const traceId = redactedBounded(
+    firstBoundedString(records, ['traceId', 'trace_id'], UPSTREAM_ERROR_SCAN_MAX_CHARS),
+    exactSecrets,
+    UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS,
+  );
+  const structuredSummary = redactedBounded(
+    firstBoundedString(records, ['message', 'detail', 'error'], UPSTREAM_ERROR_SCAN_MAX_CHARS),
+    exactSecrets,
+    UPSTREAM_ERROR_SUMMARY_MAX_CHARS,
+  );
   // For a parsed JSON body with no human-readable message/detail, omit the
   // summary instead of copying the whole JSON object into the UI card. Plain
   // text provider bodies still use the bounded fallback.
   const fallbackSummary = records.length === 0 && !parsesAsJson(rawBody)
-    ? fallbackMessage.trim().slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS)
+    ? redactedBounded(fallbackMessage, exactSecrets, UPSTREAM_ERROR_SUMMARY_MAX_CHARS)
     : '';
   return {
     status: statusCode,
@@ -520,8 +551,14 @@ export function extractContextLimit(rawBody: string, message: string): number | 
 /**
  * Classify an HTTP status code and error message into an LLMError.
  * Accepts raw response body — will extract a clean message from JSON if possible.
+ * `exactSecrets` 是这次请求自己带的密钥。分类读取原始正文；写进 LLMError 的
+ * `message`、`rawBody`、`upstream` 三处文字都已脱敏。
  */
-export function classifyError(statusCode: number, rawBody: string): LLMError {
+export function classifyError(
+  statusCode: number,
+  rawBody: string,
+  exactSecrets: readonly string[] = [],
+): LLMError {
   // Detect HTML response before any JSON parsing — a WAF / reverse-proxy
   // intercepted the request and returned an error page instead of an API response.
   if (isHtmlBody(rawBody)) {
@@ -532,15 +569,16 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
       {
         retryable: false,
         statusCode,
-        rawBody: rawBody.slice(0, 500),
+        rawBody: redactFailureText(rawBody, exactSecrets).slice(0, 500),
         upstream: extractUpstreamErrorDetails(statusCode, '', message),
       },
     );
   }
 
-  const message = extractApiErrorMessage(rawBody);
-  const stored = rawBody.slice(0, 1000);
-  const upstream = extractUpstreamErrorDetails(statusCode, rawBody, message);
+  const rawMessage = extractApiErrorMessage(rawBody);
+  const message = redactFailureText(rawMessage, exactSecrets);
+  const stored = redactFailureText(rawBody, exactSecrets).slice(0, 1000);
+  const upstream = extractUpstreamErrorDetails(statusCode, rawBody, rawMessage, exactSecrets);
 
   // Rate limiting. A gateway answers 429 for two different situations, and
   // only one of them clears on its own: per-minute throttling is worth waiting
@@ -553,7 +591,7 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
         retryable: false, statusCode, rawBody: stored, upstream,
       });
     }
-    const retryAfter = extractRetryAfter(message);
+    const retryAfter = extractRetryAfter(rawMessage);
     return new LLMError(message, 'rate_limit', {
       retryable: true, retryAfterMs: retryAfter, statusCode, rawBody: stored, upstream,
     });
@@ -598,10 +636,10 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
 
   // Bad request — check for context length
   if (statusCode === 400) {
-    if (isContextOverflowMessage(message)) {
+    if (isContextOverflowMessage(rawMessage)) {
       return new LLMError(message, 'context_too_long', {
         retryable: false, statusCode, rawBody: stored, upstream,
-        contextLimit: extractContextLimit(rawBody, message),
+        contextLimit: extractContextLimit(rawBody, rawMessage),
       });
     }
     return new LLMError(message, 'invalid_request', {

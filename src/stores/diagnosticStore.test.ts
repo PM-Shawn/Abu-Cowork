@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { CheckCategory, CheckResult } from '@/core/diagnostic/types';
 
@@ -35,6 +36,34 @@ function aiRow(): CheckResult {
     durationMs: 0,
   };
 }
+
+describe('diagnosticStore persisted rows', () => {
+  it('redacts failure text that an earlier version persisted unredacted', () => {
+    const secret = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+    const migrate = useDiagnosticStore.persist.getOptions().migrate!;
+
+    const migrated = migrate({
+      results: {
+        'mcp:tracker': {
+          ...aiRow(),
+          id: 'mcp:tracker',
+          category: 'mcp',
+          errorMessage: `connect failed: api_key=${secret}`,
+          errorDetail: 'https://gateway.example.test/sse?key=not-a-secret-value → 401',
+        },
+        'app:version': appRow('v0.36.0'),
+      },
+      lastCheckedAt: 1_000,
+      includeRawText: false,
+    }, 2) as { results: Record<string, CheckResult>; includeRawText: boolean };
+
+    expect(JSON.stringify(migrated)).not.toContain(secret);
+    expect(JSON.stringify(migrated)).not.toContain('not-a-secret-value');
+    expect(migrated.results['mcp:tracker']).toMatchObject({ id: 'mcp:tracker', status: 'failed' });
+    expect(migrated.results['app:version']).toEqual(appRow('v0.36.0'));
+    expect(migrated.includeRawText).toBe(false);
+  });
+});
 
 describe('diagnosticStore.refreshApp', () => {
   beforeEach(() => {

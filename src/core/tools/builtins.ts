@@ -34,6 +34,7 @@ import { webSearchTool, httpFetchTool } from './definitions/webTools';
 
 // --- Memory tools ---
 import { reportPlanTool, updateMemoryTool, logTaskCompletionTool } from './definitions/memoryTools';
+import { manageGoalTool } from './definitions/goalTools';
 import { recallTool, readMemoryTool } from './definitions/recallTool';
 import { updateSoulTool } from './definitions/updateSoulTool';
 
@@ -82,6 +83,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(useSkillTool);
   toolRegistry.register(readSkillFileTool);
   toolRegistry.register(reportPlanTool);
+  toolRegistry.register(manageGoalTool);
   toolRegistry.register(generateImageTool);
   toolRegistry.register(processImageTool);
   toolRegistry.register(showWidgetTool);

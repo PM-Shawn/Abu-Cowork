@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Dialog } from '@/components/ds/dialog';
-import { useBlockingApprovalVisible } from '@/hooks/useBlockingApprovalVisible';
 import { useAccountStore } from '@/core/account/accountStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
@@ -19,12 +18,19 @@ export default function AccountLoginDialog() {
   const cancel = useAccountStore((state) => state.cancel);
   const signOut = useAccountStore((state) => state.signOut);
   const { t } = useI18n();
+  // A personal sign-in was asked for from this opening and has not ended. The ref is what the
+  // handlers read; the state follows it so the window can say it has work in progress.
   const personalStartRequested = useRef(false);
+  const [personalStartPending, setPersonalStartPending] = useState(false);
+  const markPersonalStart = useCallback((requested: boolean) => {
+    personalStartRequested.current = requested;
+    setPersonalStartPending(requested);
+  }, []);
 
   const cancelAttempt = useCallback(() => {
-    personalStartRequested.current = false;
+    markPersonalStart(false);
     cancel();
-  }, [cancel]);
+  }, [cancel, markPersonalStart]);
 
   const closeDialog = useCallback(() => {
     if (
@@ -37,44 +43,39 @@ export default function AccountLoginDialog() {
 
   useEffect(() => {
     if (open && status === 'signed_in') {
-      personalStartRequested.current = false;
+      markPersonalStart(false);
       close();
     }
-  }, [close, open, status]);
+  }, [close, markPersonalStart, open, status]);
 
   useEffect(() => {
     if (!open) {
-      personalStartRequested.current = false;
+      markPersonalStart(false);
     }
-  }, [open]);
+  }, [markPersonalStart, open]);
 
   useEffect(() => {
-    if (error) personalStartRequested.current = false;
-  }, [error]);
-
-  // An old blocking prompt (an approval of the task in view, the close-window question) cannot
-  // take a press under a design-system dialog. The window leaves the page while one is up,
-  // the sign-in goes on, and the window is back when the prompt has gone. Remove with batch 8.
-  const blocked = useBlockingApprovalVisible();
-  const blockedRef = useRef(blocked);
-  useLayoutEffect(() => { blockedRef.current = blocked; });
+    if (error) markPersonalStart(false);
+  }, [error, markPersonalStart]);
 
   // The window is on screen until it is closed or the sign-in has finished. It stays on the
   // page while it fades out; its buttons do nothing then.
-  const shown = open && status !== 'signed_in' && !blocked;
+  const shown = open && status !== 'signed_in';
   // A finished sign-in fades out on the sentence it was showing.
   const pageStatus: LoginPageStatus = status === 'signed_in' ? 'exchanging' : status;
 
   return (
     <Dialog
       open={shown}
+      // Closing the window cancels a sign-in that is under way, so it steps aside for an
+      // approval and returns afterwards. With no sign-in under way it closes for one, as any
+      // window does, and cancels nothing.
+      busy={status === 'awaiting_browser' || status === 'exchanging' || personalStartPending}
       onOpenChange={(next) => { if (!next) closeDialog(); }}
       title={t.account.loginRegister}
       size="sm"
       closeButton={{ 'data-abu-account-dialog-close': '' }}
       contentProps={{ 'data-abu-account-dialog': '' }}
-      // The prompt that took over takes no focus; focus stays off the opener underneath it.
-      onCloseAutoFocus={(event) => { if (blockedRef.current) event.preventDefault(); }}
     >
       <LoginPage
         status={pageStatus}
@@ -82,7 +83,7 @@ export default function AccountLoginDialog() {
         hasAccount={account !== null}
         onPersonalLogin={() => {
           if (!shown) return;
-          personalStartRequested.current = true;
+          markPersonalStart(true);
           void startPersonalLogin();
         }}
         onEnterpriseLogin={() => {

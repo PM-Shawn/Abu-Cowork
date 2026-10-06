@@ -426,6 +426,8 @@ export default function InstallDisclosureDialog({
       open={open}
       // Escape, a press outside and the close button ask to close; an installation that is running is never left.
       onOpenChange={(next) => { if (!next && !installing) onCancel(); }}
+      // For an approval the window steps aside while it installs, and comes back.
+      busy={installing}
       // A draft's preview takes the place of the draft's detail window: same width, a title row as
       // tall as that window's header and the same content height, so the window does not jump
       // when one replaces the other. The title is the window's one heading in both forms.

@@ -255,6 +255,11 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/inbox/**/*.{ts,tsx}',
   'src/components/todos/**/*.{ts,tsx}',
   'src/components/app/**/*.{ts,tsx}',
+  // Dialogs, viewers and notices, file by file (batch 8). chat/, panel/ and common/ keep unused legacy files, so no directory glob yet.
+  'src/components/common/CommandConfirmDialog*.{ts,tsx}',
+  'src/components/common/approvalQueueView*.ts',
+  'src/components/common/PermissionDialog*.{ts,tsx}',
+  'src/components/common/CloseDialog*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',
@@ -306,7 +311,7 @@ const DESIGN_IMPORT_RESTRICTION = {
     { name: 'radix-ui', message: 'Design system: use the wrappers in @/components/ds.' },
     { name: 'cmdk', message: 'Design system: use Combobox from @/components/ds/combobox.' },
   ],
-  patterns: [{ group: ['@radix-ui/*'], message: 'Design system: use the wrappers in @/components/ds.' }],
+  patterns: [{ group: ['@radix-ui/*', 'radix-ui/*'], message: 'Design system: use the wrappers in @/components/ds.' }],
 }
 
 export default defineConfig([

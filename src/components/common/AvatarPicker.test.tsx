@@ -146,6 +146,20 @@ describe('AvatarPicker', () => {
     expect(screen.getByRole('group', { name: getI18n().avatarPicker.icon })).toBeInTheDocument();
   });
 
+  it('puts its name and its test id on the popover box itself, which scrolls inside the room it has', async () => {
+    const user = userEvent.setup();
+    render(<AvatarPicker onChange={vi.fn()} />);
+    await user.click(screen.getByTestId('avatar-picker-trigger'));
+    const picker = screen.getByTestId('avatar-picker');
+    expect(picker).toHaveAttribute('data-ds-layer');
+    expect(picker).toHaveAttribute('role', 'dialog');
+    expect(screen.getByRole('dialog', { name: getI18n().avatarPicker.chooseAvatar })).toBe(picker);
+    expect(classes(picker)).toContain('max-h-(--radix-popover-content-available-height)');
+    // One element carries the name: nothing inside repeats it.
+    expect(picker.querySelector(`[aria-label="${getI18n().avatarPicker.chooseAvatar}"]`)).toBeNull();
+    expect(picker.querySelector('[class*="max-h-"]')).toBeNull();
+  });
+
   it('names every cell and marks the chosen cells with a fill and a check mark, never with the focus ring', async () => {
     const user = userEvent.setup();
     render(<AvatarPicker value="icon:code/purple" onChange={vi.fn()} />);

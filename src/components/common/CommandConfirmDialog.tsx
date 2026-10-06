@@ -1,6 +1,8 @@
-import { useEffect, useCallback, useLayoutEffect, useRef, useState } from 'react';
-import { AlertTriangle, ShieldAlert, ShieldX, X } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { StatusIcon } from '@/components/ds/status-icon';
 import { format, useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { grantBrowserPermissionTargets } from '@/core/permissions/browserPermissionConfig';
@@ -53,41 +55,22 @@ interface CommandConfirmDialogProps {
   isRequestActive?: () => boolean;
 }
 
+// The level shows as a status icon (color with its shape) and in the title's words.
 const levelConfig = {
-  warn: {
-    icon: AlertTriangle,
-    iconColor: 'text-[var(--abu-warning)]',
-    bgColor: 'bg-[var(--abu-warning-bg)]',
-    borderColor: 'border-[var(--abu-warning)]',
-    titleKey: 'title' as const,
-    descKey: 'description' as const,
-  },
-  danger: {
-    icon: ShieldAlert,
-    iconColor: 'text-[var(--abu-danger)]',
-    bgColor: 'bg-[var(--abu-danger-bg)]',
-    borderColor: 'border-[var(--abu-danger)]',
-    titleKey: 'titleDanger' as const,
-    descKey: 'descriptionDanger' as const,
-  },
-  block: {
-    icon: ShieldX,
-    iconColor: 'text-[var(--abu-danger)]',
-    bgColor: 'bg-[var(--abu-danger-bg)]',
-    borderColor: 'border-[var(--abu-danger)]',
-    titleKey: 'titleBlock' as const,
-    descKey: 'descriptionBlock' as const,
-  },
-  safe: {
-    icon: AlertTriangle,
-    iconColor: 'text-[var(--abu-success)]',
-    bgColor: 'bg-[var(--abu-success-bg)]',
-    borderColor: 'border-[var(--abu-success)]',
-    titleKey: 'title' as const,
-    descKey: 'description' as const,
-  },
-};
+  warn: { tone: 'warning', titleKey: 'title', descKey: 'description' },
+  danger: { tone: 'danger', titleKey: 'titleDanger', descKey: 'descriptionDanger' },
+  block: { tone: 'danger', titleKey: 'titleBlock', descKey: 'descriptionBlock' },
+  safe: { tone: 'success', titleKey: 'title', descKey: 'description' },
+} as const;
 
+/**
+ * The approval of a command, a browser action, an upload or a self-extension.
+ *
+ * An approval layer: no other window closes it or covers it, and one approval is on the
+ * page at a time. It opens with the focus on Cancel, so Enter and Space pressed as it
+ * appears cancel. Escape and the corner button cancel as well; a press outside does nothing.
+ * Only a press on a confirming button confirms.
+ */
 export default function CommandConfirmDialog({
   request,
   onConfirm: confirm,
@@ -108,7 +91,6 @@ export default function CommandConfirmDialog({
   const onConfirm = useCallback(() => { if (!saving && current()) confirm(); }, [saving, current, confirm]);
   const permissions = useSettingsStore((state) => state.browserPermissionConfigV2);
   const config = levelConfig[request.level];
-  const Icon = config.icon;
   const isBlocked = request.level === 'block';
   /**
    * An upload is a browser action wearing its own wording (acceptance F5).
@@ -207,162 +189,116 @@ export default function CommandConfirmDialog({
     if (saved) onCancel(); else setSaveFailed(true);
   }, [request.browserOrigin, current, saving, onCancel, setSaving, setSaveFailed]);
 
-  // Close on Escape key
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      onCancel();
-    }
-  }, [onCancel]);
-
-  useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
+  const title = isUpload
+    ? uploadTitle
+    : request.kind === 'browser'
+      ? t.commandConfirm.browserTitle
+      : request.kind === 'self-extension'
+        ? t.commandConfirm.selfExtensionTitle
+        : t.commandConfirm[config.titleKey];
+  const description = isUpload
+    ? t.commandConfirm.browserUploadDescription
+    : request.kind === 'browser'
+      ? t.commandConfirm.browserDescription
+      : request.kind === 'self-extension'
+        ? t.commandConfirm.selfExtensionDescription
+        : t.commandConfirm[config.descKey];
 
   return (
-    <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-md mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
-        {saveFailed && <p role="alert" className="px-6 pt-4 text-minor text-[var(--abu-danger)]">{t.settings.browserSaveFailed}</p>}
-
-        {/* Header */}
-        <div className="relative px-6 pt-6 pb-4 shrink-0">
-          <button
-            onClick={onCancel}
-            className="absolute top-4 right-4 p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
-
-          <div className="flex items-start gap-4">
-            <div className={`p-3 rounded-xl ${config.bgColor}`}>
-              <Icon className={`h-6 w-6 ${config.iconColor}`} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">
-                {isUpload
-                  ? uploadTitle
-                  : request.kind === 'browser'
-                    ? t.commandConfirm.browserTitle
-                    : request.kind === 'self-extension'
-                      ? t.commandConfirm.selfExtensionTitle
-                      : t.commandConfirm[config.titleKey]}
-              </h2>
-              <p className="text-body text-[var(--abu-text-tertiary)] mt-0.5">
-                {isUpload
-                  ? t.commandConfirm.browserUploadDescription
-                  : request.kind === 'browser'
-                    ? t.commandConfirm.browserDescription
-                    : request.kind === 'self-extension'
-                      ? t.commandConfirm.selfExtensionDescription
-                      : t.commandConfirm[config.descKey]}
-              </p>
-            </div>
-          </div>
+    <Dialog
+      open
+      layer="approval"
+      role="alertdialog"
+      size="md"
+      closeButton
+      outsidePress="ignore"
+      // Escape and the corner button. The layer registry never closes an approval.
+      onOpenChange={(next) => { if (!next) onCancel(); }}
+      title={title}
+      description={description}
+      initialFocus={(content) => content.querySelector<HTMLElement>('[data-approval-cancel]')}
+      header={(
+        <div className="flex items-start gap-3">
+          <StatusIcon tone={config.tone} size="lg" />
         </div>
-
-        {/* Scrollable body: command + reason */}
-        <div className="flex-1 overflow-y-auto min-h-0 px-6 pb-4">
-          {/* Command display */}
-          <div className="px-4 py-3 bg-[#1a1a1a] rounded-lg border border-[#333]">
-            <code className="text-body text-[#e0e0e0] font-mono break-all whitespace-pre-wrap">
-              {request.command}
-            </code>
-          </div>
-
-          {isBrowserKind && request.browserPermissionTargets && <div className="mt-3 text-minor break-all text-[var(--abu-text-muted)]">{request.browserPermissionTargets.map((target, index) => <p key={index}>{target.origin}{target.embeddedIn ? ` (${format(t.settings.browserEmbeddedScope, { origin: target.embeddedIn })})` : ''}</p>)}</div>}
-
-          {/* Which PAGE this is happening on. For an action aimed into a
-              third-party region the command line above names the REGION, and
-              without this the user would be approving something for a page the
-              dialog never mentions. */}
-          {isBrowserKind && !request.browserPermissionTargets
-            && request.browserPageOrigin
-            && request.browserPageOrigin !== request.browserOrigin && (
-            <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
-              {format(t.commandConfirm.browserPageOrigin, { origin: request.browserPageOrigin })}
-            </p>
-          )}
-
-          {/* The page's embedded regions — named before, not after, the click
-              that would authorize them. Capped: what is not printed here is
-              not granted, and the overflow says so rather than going quiet. */}
-          {!request.browserPermissionTargets && embeddedOrigins.length > 0 && (
-            <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
-              {format(t.commandConfirm.browserEmbeddedOrigins, { origins: embeddedOrigins.join('、') })}
-              {unlistedEmbeddedCount > 0 && (
-                <> {format(t.commandConfirm.browserEmbeddedOriginsMore, { count: unlistedEmbeddedCount })}</>
-              )}
-            </p>
-          )}
-
-          {/* Reason */}
-          {request.reason && (
-            <div className={`mt-4 p-3 ${config.bgColor} border ${config.borderColor} rounded-lg`}>
-              <div className="flex gap-2">
-                <Icon className={`h-4 w-4 ${config.iconColor} shrink-0 mt-0.5`} />
-                <p className={`text-minor ${config.iconColor.replace('text-', 'text-').replace('-500', '-700').replace('-600', '-800')} leading-relaxed`}>
-                  {request.reason}
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="flex flex-col gap-3 px-6 py-6 shrink-0 border-t border-[var(--abu-bg-muted)]">
-          <div className="flex gap-3">
-          <Button
-            variant="outline"
-            onClick={onCancel}
-            className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
-          >
-            {t.commandConfirm.cancel}
-          </Button>
-          {!isBlocked && (
-            <Button
-              disabled={saving} onClick={onConfirm}
-              className={`flex-1 h-10 text-body ${
-                request.level === 'danger'
-                  ? 'bg-[var(--abu-danger-solid)] hover:opacity-90'
-                  : 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]'
-              } text-white`}
-            >
-              {isUpload
-                ? (offerSiteGrant
-                    ? t.commandConfirm.browserUploadConfirmOnce
-                    : t.commandConfirm.browserUploadConfirm)
-                : isBrowserKind ? t.settings.browserRequestOnce : t.commandConfirm.confirm}
+      )}
+      footer={(
+        <div className="flex w-full flex-col gap-2">
+          <div className="flex gap-2">
+            <Button variant="secondary" data-approval-cancel="" onClick={onCancel}>
+              {t.commandConfirm.cancel}
             </Button>
-          )}
-          {!isBlocked && offerSiteGrant && (
-            // The more consequential choice stays visually secondary: the
-            // conversation-scoped button keeps the primary styling so the
-            // safer default is the visually dominant one.
-            <Button
-              variant="outline"
-              disabled={saving} onClick={() => void handleAlwaysAllowSite()}
-              className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
-              title={request.browserOrigin}
-            >
-              {alwaysAllowSiteLabel}
-            </Button>
-          )}
+            {!isBlocked && (
+              <Button variant="primary" busy={saving} onClick={onConfirm}>
+                {isUpload
+                  ? (offerSiteGrant
+                      ? t.commandConfirm.browserUploadConfirmOnce
+                      : t.commandConfirm.browserUploadConfirm)
+                  : isBrowserKind ? t.settings.browserRequestOnce : t.commandConfirm.confirm}
+              </Button>
+            )}
+            {!isBlocked && offerSiteGrant && (
+              // The more consequential choice stays visually secondary: the
+              // conversation-scoped button is the one filled button, so the
+              // safer default is the visually dominant one.
+              <Button variant="secondary" busy={saving} onClick={() => void handleAlwaysAllowSite()} title={request.browserOrigin}>
+                {alwaysAllowSiteLabel}
+              </Button>
+            )}
           </div>
           {offerSiteBlock && (
-            // Second row, ghost styling: a standing block is consequential but
-            // never the action we nudge toward, so it stays visually quiet
-            // while remaining reachable without leaving the dialog.
-            <Button
-              variant="ghost"
-              disabled={saving} onClick={() => void handleBlockSite()}
-              className="h-8 w-full text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
-              title={request.browserOrigin}
-            >
+            // Second row, small: a standing block is consequential but never
+            // the action we nudge toward, so it stays visually quiet while
+            // remaining reachable without leaving the dialog.
+            <Button variant="danger" size="sm" busy={saving} onClick={() => void handleBlockSite()} title={request.browserOrigin}>
               {t.commandConfirm.browserBlockSite}
             </Button>
           )}
         </div>
+      )}
+    >
+      <div className="space-y-3">
+        {saveFailed && <InlineMessage tone="danger">{t.settings.browserSaveFailed}</InlineMessage>}
+
+        {/* The command, verbatim. E2E reads it as a `code` element. */}
+        <pre className="whitespace-pre-wrap break-all rounded-control bg-code p-3 font-code text-ui-sm text-label">
+          <code>{request.command}</code>
+        </pre>
+
+        {isBrowserKind && request.browserPermissionTargets && request.browserPermissionTargets.length > 0 && (
+          <div className="break-all text-ui-sm text-label-tertiary">
+            {request.browserPermissionTargets.map((target, index) => (
+              <p key={index}>{target.origin}{target.embeddedIn ? ` (${format(t.settings.browserEmbeddedScope, { origin: target.embeddedIn })})` : ''}</p>
+            ))}
+          </div>
+        )}
+
+        {/* Which PAGE this is happening on. For an action aimed into a
+            third-party region the command line above names the REGION, and
+            without this the user would be approving something for a page the
+            dialog never mentions. */}
+        {isBrowserKind && !request.browserPermissionTargets
+          && request.browserPageOrigin
+          && request.browserPageOrigin !== request.browserOrigin && (
+          <p className="break-all text-ui-sm text-label-tertiary">
+            {format(t.commandConfirm.browserPageOrigin, { origin: request.browserPageOrigin })}
+          </p>
+        )}
+
+        {/* The page's embedded regions — named before, not after, the click
+            that would authorize them. Capped: what is not printed here is
+            not granted, and the overflow says so rather than going quiet. */}
+        {!request.browserPermissionTargets && embeddedOrigins.length > 0 && (
+          <p className="break-all text-ui-sm text-label-tertiary">
+            {format(t.commandConfirm.browserEmbeddedOrigins, { origins: embeddedOrigins.join('、') })}
+            {unlistedEmbeddedCount > 0 && (
+              <> {format(t.commandConfirm.browserEmbeddedOriginsMore, { count: unlistedEmbeddedCount })}</>
+            )}
+          </p>
+        )}
+
+        {request.reason && <InlineMessage tone={config.tone}>{request.reason}</InlineMessage>}
       </div>
-    </div>
+    </Dialog>
   );
 }

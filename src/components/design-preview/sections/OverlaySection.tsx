@@ -3,6 +3,8 @@ import { Button } from '@/components/ds/button';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { FullscreenSurface } from '@/components/ds/fullscreen';
+import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { Popover } from '@/components/ds/popover';
@@ -24,6 +26,10 @@ export function OverlaySection() {
   const [menuTheme, setMenuTheme] = useState('system');
   const [dialogModel, setDialogModel] = useState('sonnet');
   const [pageModel, setPageModel] = useState('opus');
+  const [busyOpen, setBusyOpen] = useState(false);
+  const [busyDraft, setBusyDraft] = useState('');
+  const [approval, setApproval] = useState<'none' | 'first' | 'second'>('none');
+  const [fullscreen, setFullscreen] = useState(false);
 
   const askToDelete = async () => {
     const confirmed = await confirm({
@@ -159,6 +165,78 @@ export function OverlaySection() {
         <Button variant="danger" onClick={() => { void askToDelete(); }}>Confirm dialog</Button>
         <Button onClick={() => { void askToArchive(); }}>Confirm (default tone)</Button>
         <span className="text-ui-sm text-label-secondary">{`Last answer: ${answer}`}</span>
+        <Button onClick={() => setBusyOpen(true)}>Busy window</Button>
+        <Dialog
+          open={busyOpen}
+          onOpenChange={setBusyOpen}
+          busy
+          title="Busy window"
+          description="Work is in flight here. An approval makes this window step aside; it returns as it was."
+          footer={<DialogClose asChild><Button>Close</Button></DialogClose>}
+        >
+          <div className="flex flex-col gap-3">
+            <TextField aria-label="Typed while busy" placeholder="Type something" value={busyDraft} onChange={(event) => setBusyDraft(event.target.value)} />
+            <Button onClick={() => setApproval('first')}>Approval arrives</Button>
+          </div>
+        </Dialog>
+        <Dialog
+          open={approval === 'first'}
+          onOpenChange={(open) => { if (!open) setApproval('none'); }}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          closeButton
+          title="Run this command?"
+          description="Only its own buttons, Escape and the close button answer an approval."
+          initialFocus={(content) => content.querySelector('[data-approval-cancel]')}
+          footer={(
+            <>
+              <Button data-approval-cancel="" onClick={() => setApproval('none')}>Cancel</Button>
+              <Button onClick={() => setRenameOpen(true)}>Open a dialog</Button>
+              <Button variant="primary" onClick={() => setApproval('second')}>Next approval</Button>
+            </>
+          )}
+        />
+        <Dialog
+          open={approval === 'second'}
+          onOpenChange={(open) => { if (!open) setApproval('none'); }}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Allow this folder?"
+          initialFocus={(content) => content.querySelector('[data-approval-cancel]')}
+          footer={<Button data-approval-cancel="" onClick={() => setApproval('none')}>Deny</Button>}
+        />
+        <Dialog
+          size="viewer"
+          title="Viewer window"
+          titleHidden
+          closeButton
+          trigger={<Button>Viewer window</Button>}
+        >
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <div role="img" aria-label="Placeholder image" className="flex h-full max-h-80 w-full max-w-xl items-center justify-center rounded-panel bg-fill text-label-tertiary">
+              <Icon icon={AppIcons.imageGen} size="lg" />
+            </div>
+          </div>
+        </Dialog>
+        {/* The block stays where it is in the page; the surface shows the same elements over the window. */}
+        <FullscreenSurface
+          open={fullscreen}
+          onExit={() => setFullscreen(false)}
+          label="Fullscreen surface"
+          layer
+          scrim
+          initialFocus={(surface) => surface.querySelector<HTMLElement>('[data-fullscreen-toggle]')}
+          className="flex items-center justify-center p-8"
+        >
+          <div className="flex items-center gap-3 rounded-panel border border-separator bg-raised px-3 py-2">
+            <span className="text-ui-sm text-label-secondary">{fullscreen ? 'Shown over the window, in place.' : 'A block that can fill the window.'}</span>
+            <Button data-fullscreen-toggle="" onClick={() => setFullscreen((value) => !value)}>
+              {fullscreen ? 'Exit fullscreen' : 'Fullscreen surface'}
+            </Button>
+          </div>
+        </FullscreenSurface>
       </div>
     </Section>
   );

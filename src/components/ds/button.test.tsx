@@ -121,6 +121,35 @@ describe('IconButton', () => {
     expect(button).not.toHaveClass('hover:text-label');
   });
 
+  // An icon button whose own action is running keeps the keyboard where it is, like Button busy.
+  it('keeps focus and its name and takes no press while busy', async () => {
+    const user = userEvent.setup();
+    const onClick = vi.fn();
+    const { rerender } = render(<IconButton icon={AppIcons.reload} label="Reload" onClick={onClick} />, { wrapper: DesignSystemProvider });
+    const button = screen.getByRole('button', { name: 'Reload' });
+    await user.tab();
+    expect(button).toHaveFocus();
+
+    rerender(<IconButton icon={AppIcons.reload} label="Reload" busy onClick={onClick} />);
+    expect(screen.getByRole('button', { name: 'Reload' })).toBe(button);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).not.toHaveAttribute('disabled');
+    expect(button).not.toHaveAttribute('busy');
+    expect(button).toHaveClass('aria-disabled:opacity-40');
+    expect(button).toHaveClass('aria-disabled:pointer-events-none');
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    await user.click(button);
+    expect(onClick).not.toHaveBeenCalled();
+
+    rerender(<IconButton icon={AppIcons.reload} label="Reload" onClick={onClick} />);
+    expect(button).toHaveFocus();
+    expect(button).not.toHaveAttribute('aria-disabled');
+    await user.keyboard('{Enter}');
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
   // A pressed toggle keeps its selected fill while the pointer rests on it; callers only set aria-pressed.
   it('gives a pressed toggle its own fill, text color, hover and press-down classes', () => {
     render(<IconButton icon={AppIcons.preview} label="Preview" aria-pressed />, { wrapper: DesignSystemProvider });

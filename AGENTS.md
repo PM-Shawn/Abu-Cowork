@@ -393,8 +393,8 @@ Files matched by `DESIGN_SYSTEM_MIGRATED_FILES` / `DESIGN_SYSTEM_UI_FILES` in `e
 must use only design-system token classes. ESLint bans arbitrary values
 (`bg-[…]`, `text-[…]`, `z-[…]`, `rounded-[…]`, `shadow-[…]`, `duration-[…]`), Tailwind palette
 colors (`gray-*`, `white`, …), and hand-written scrims (`fixed inset-0`) in both lists. Raw form
-controls and direct `lucide-react` / `radix-ui` / `cmdk` imports are banned only in
-`DESIGN_SYSTEM_MIGRATED_FILES`, because `src/components/ds/` is where those wrappers live.
+controls and direct `lucide-react` / `radix-ui` (subpaths included) / `cmdk` imports are banned only
+in `DESIGN_SYSTEM_MIGRATED_FILES`, because `src/components/ds/` is where those wrappers live.
 Both lists also ban legacy class names: shadcn color names (`bg-background`,
 `text-muted-foreground`…), legacy font sizes (`text-minor`, `text-h-*`), and Tailwind's own
 radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `duration-150`,
@@ -444,11 +444,12 @@ fade; do not remount it to get one. A secret field that offers show / hide is
 `settings/SecretField`; a secret field that only masks stays a `TextField type="password"` (IM App
 Secret). Neither puts the value anywhere but the input. Confirmations go through `useConfirm`, name
 what they act on and re-read their target after the answer; a form that can fail stays in a
-`Dialog`. A confirmation or `role="alertdialog"` window asked while a dialog is open belongs to the
-innermost open dialog: it is answered with cancel when that dialog leaves, and dialogs opened
-inside a dialog are closed by the registry together with it, so an owner never has to close a
-nested window itself. `role="alertdialog"` registers as an alert: it stacks over the open dialog, a
-new alert or a new dialog replaces it, and it is never held. Use it for a question about what is on
+`Dialog`. A confirmation or `role="alertdialog"` window asked while a dialog or an approval is open
+belongs to the innermost open one: it is answered with cancel when that layer leaves, and dialogs
+opened inside a dialog or an approval are closed by the registry together with it, so an owner
+never has to close a nested window itself. `role="alertdialog"` on a dialog that is no approval
+registers as an alert: it stacks over the open dialog or approval, a new alert or a new dialog
+replaces it, and it steps aside for an approval that arrives. Use it for a question about what is on
 screen (a confirmation, the privacy check, a site removal), never for a form. A dialog keeps
 rendering while it fades out and its content takes no pointer input then. A layer that is closing
 takes no Escape: the key acts on the top open layer. Closing guards: a handler
@@ -460,10 +461,7 @@ Store writes and switches need no guard. Each guard has a test (`getComputedStyl
 cleared once the window has closed. `Dialog dismissible={false}` is for a window only its own
 buttons may close; a dismissible dialog whose only control is its corner close button opens with
 focus on its own box. `LayerProvider.onModalChange` feeds `previewStore.dsModalOpen`, which hides
-the native browser view under any dialog or confirmation. Until batch 8 replaces
-`CommandConfirmDialog` / `PermissionDialog` / `CloseDialog`: the settings window closes when one
-appears (`useBlockingApprovalVisible`), the sign-in window hides and returns, and the task's grant
-window steps aside only for the close-window question. All three go with that batch.
+the native browser view under any dialog or confirmation.
 
 Keyboard focus in dialogs and settings pages: a dialog opens on its first control, or on the one
 `Dialog initialFocus` names (the settings window opens on the navigation row of the page in view);
@@ -573,11 +571,73 @@ dropped. `Button busy` is presentation only.
 Migration list: `src/components/automation/**`, `schedule/**`, `trigger/**`, `inbox/**`, `todos/**`
 and `app/**` are on it.
 
+**Approvals, focus and stacking (batch 8a)**: an approval is a `Dialog layer="approval"`. The
+command approval and the path or workspace grant are `role="alertdialog" outsidePress="ignore"` and
+open on `data-approval-cancel` (取消 / 拒绝; a workspace request that names no folder has one
+button, the folder picker); the task grant window keeps `role="dialog"`, refuses on a press
+outside, and opens on its page's way back, which refuses. Only its own buttons answer an approval;
+Escape and the corner button refuse. The registry never closes one, and no other layer,
+notification, conversation switch or window close answers one. One shows at a time; the rest wait
+off the page, an `urgent` one (the workspace request, which answers itself after 60 s) first.
+
+Arrivals: an approval that meets a dialog with unsaved input waits behind the discard question; a
+`busy` dialog steps aside with the dialogs around it, as does an open question; any other dialog is
+closed, and a question over it cancelled. What steps aside stays mounted and `hidden`, nothing in
+it answered or cancelled, and returns when no approval shows or is due, or when the approvals
+that are due wait behind a dialog the user chose to keep editing: questions about the page
+first, then windows, last out first, a window only to a page with no other window or question.
+While an approval shows, a new dialog is turned away unpainted or, if `busy`, waits unmounted; a
+question stacks over the approval and answers alone. A window is `busy` exactly while closing it
+would cancel work in flight (sign-in, `InstallDisclosureDialog`, `AddMarketplaceDialog`,
+`AddProviderModal`, `SkillUploadModal`).
+
+Focus: the registry hands the focus on between layers that follow each other. A layer shown while
+another fades marks it (`focusTaken()`), so that one gives the focus to nobody; an approval takes
+over the return target of the layer it follows or that steps aside for it, so the last of a run
+returns the focus to where it was before the run. A window that steps aside moves no focus and
+returns to the control that had it, else its opening control; a question returns on its opening
+control, and a window under it leaves the focus alone. The registry's hand-offs between layers
+never drop the focus onto the window; a press on an approval's scrim does (Tab brings it back).
+
+A window per request: the owner keys each approval by request id, and for an owner without one
+`PermissionDialog` keys its window by kind and path, so no state and no focus carries over; when
+allow turns into grant for good under the focus, the focus moves to cancel. `ChatView` renders one
+approval, of the conversation in view, in the order of `approvalQueueView.ts`. The close question
+is an alert that opens on 「最小化到托盘」, unticked: only its two buttons answer, the tick is
+written only with a pressed answer, and its handlers return once it is closing.
+
+Stacking: the floating levels in `tokens.css` (`z-popover` and up) sit above every stacking value
+hand-written in `src/`: a modal ds layer takes pointer input from the rest of the page, so what is
+seen has to be what takes the press. `scripts/designTokens.test.ts` guards this, blind to values
+outside `src/`, imported constants and run-time values; page code never writes a value at or above
+`z-popover`. `onModalChange` follows what is painted: a layer counts until it reports the end of
+its fade (`registry.left`), else until a look one fade later, repeated while `isPainted()` holds.
+
+ds additions: `Dialog` `layer`, `urgent`, `busy`, `outsidePress`, `size="viewer"`; descriptions
+break long words and scroll. `ConfirmOptions.message` is a node. `FullscreenSurface` covers the
+window without moving its content in the page and is the one other place in `src/components/ds/`
+that writes `fixed inset-0`: plain, a layout state on `z-sticky`; with `layer`, a dialog to the registry whose first
+focus skips frames; with `scrim`, its box passes presses to the scrim and its direct children take
+them, so pass-through parts sit one level down. `IconButton busy` follows `Button busy`. A `Spinner
+size="sm"` label is `text-ui-sm`, or `labelSize="ui"` where it trades places with 13px words.
+`Popover` takes `contentProps`, `label`, `onOpenAutoFocus` and scrolls inside the room beside its
+trigger. `Menu` content stops clicks, also for `click` listeners on `document`: outside-press code
+listens for `pointerdown` / `mousedown`. The `Toaster` list takes pointer input over a modal layer,
+and a press on it is no press outside a dialog. A `SegmentedControl` (`fullWidth`: equal shares)
+that is a dialog's first control does not let Shift+Tab out.
+
+`useBlockingApprovalVisible` is gone: no ds window watches an approval queue or another window.
+Until batch 8b, hand-drawn windows listen for Escape on `document`, so one Escape can close such a
+window with the ds layer over it (it cancels or refuses, never grants), and the legacy image viewer
+closes itself while an approval is pending. Migration list: `common/CommandConfirmDialog`,
+`PermissionDialog`, `CloseDialog`, `approvalQueueView`.
+
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one
 menu/popover open at a time, and `useConfirm()`); use `useConfirm()` instead of
-`window.confirm()`, `Dialog` for every modal (it owns the only scrim and asks before
-discarding `dirty` input), and `InlineMessage` / `Toaster` / `EmptyState` / `LoadError`
+`window.confirm()`, `Dialog` for every modal (it draws the scrim, as only `FullscreenSurface`
+also does, and asks before discarding `dirty` input), and `InlineMessage` / `Toaster` /
+`EmptyState` / `LoadError`
 for feedback. Icon-only buttons are `IconButton` with a `label`. A tooltip is not a layer:
 Escape hides it and still acts on the layer underneath, and focus moved by code after a
 pointer action opens no tooltip (after a key press it does). A confirmation from

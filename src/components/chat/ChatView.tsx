@@ -49,6 +49,7 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
+import { pickVisibleApproval } from '@/components/common/approvalQueueView';
 import abuAvatar from '@/assets/abu-avatar.png';
 import WelcomeAvatar from '@/components/chat/WelcomeAvatar';
 import IMInfoBar from './IMInfoBar';
@@ -304,6 +305,12 @@ export default function ChatView({
   const pendingUserQuestions = useSyncExternalStore(
     subscribeUserQuestion,
     getPendingUserQuestions
+  );
+
+  // The workspace request first: it answers itself 60 seconds after it was asked.
+  const visibleApproval = pickVisibleApproval(
+    { command: commandConfirmRequest, file: filePermissionRequest, workspace: workspaceRequest },
+    activeConvId,
   );
 
   const handleCommandConfirm = () => {
@@ -1529,9 +1536,13 @@ export default function ChatView({
         )}
       </div>
 
-      {/* Command Confirmation Dialog — only show if it belongs to this conversation */}
-      {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
+      {/* One approval at a time, and only one that belongs to this conversation. The others
+          wait in their queues, unanswered. */}
+      {visibleApproval?.kind === 'command' && commandConfirmRequest && (
+        // Keyed by request: the next one in the queue is a new window, which opens with the
+        // focus on its Cancel button like the first.
         <CommandConfirmDialog
+          key={commandConfirmRequest.id}
           request={commandConfirmRequest.info}
           isRequestActive={() => getPendingCommandConfirmation() === commandConfirmRequest}
           onConfirm={handleCommandConfirm}
@@ -1539,9 +1550,11 @@ export default function ChatView({
         />
       )}
 
-      {/* File Permission Dialog — only show if it belongs to this conversation */}
-      {filePermissionRequest && filePermissionRequest.conversationId === activeConvId && (
+      {visibleApproval?.kind === 'file' && filePermissionRequest && (
+        // Keyed by request, like the command approval: the next grant in the queue opens from
+        // the default duration with the focus on Deny, also when it asks about the same path.
         <PermissionDialog
+          key={filePermissionRequest.id}
           request={{
             type: filePermissionRequest.capability === 'write' ? 'file-write' : 'file-read',
             path: filePermissionRequest.path,
@@ -1551,9 +1564,10 @@ export default function ChatView({
         />
       )}
 
-      {/* Workspace Selection Dialog — only show if it belongs to this conversation */}
-      {workspaceRequest && workspaceRequest.conversationId === activeConvId && (
+      {visibleApproval?.kind === 'workspace' && workspaceRequest && (
+        // Keyed by request: a newer request that takes the place of this one is a new window.
         <PermissionDialog
+          key={workspaceRequest.id}
           request={{
             type: 'folder-select',
             reason: workspaceRequest.reason,

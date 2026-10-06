@@ -27,7 +27,7 @@ export function ThinkingStatusLine({
 }) {
   return (
     <div className={cn('flex items-center', className)}>
-      <Spinner size="sm" label={label} />
+      <Spinner size="sm" labelSize="ui" label={label} />
     </div>
   );
 }

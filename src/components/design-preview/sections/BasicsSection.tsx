@@ -26,6 +26,7 @@ export function BasicsSection() {
             <IconButton size={size} icon={AppIcons.more} label="Show more actions" />
             <IconButton size={size} variant="secondary" icon={AppIcons.copy} label="Copy code" />
             <IconButton size={size} variant="primary" icon={AppIcons.add} label="Send message" />
+            <IconButton size={size} icon={AppIcons.retry} label="Reload the list" busy />
           </div>
         ))}
         <div className="flex items-center gap-4">
@@ -50,6 +51,7 @@ export function BasicsSection() {
         <Separator decorative={false} />
         <div className="flex h-6 items-center gap-4">
           <Spinner label="Saving" size="sm" />
+          <Spinner label="Checking for updates" size="sm" labelSize="ui" />
           <Spinner label="Reading 9 files" />
           <Spinner label="Loading the task" size="lg" />
           <Spinner label="Syncing" labelHidden />

@@ -160,6 +160,8 @@ describe('ComputerUseSetupView', () => {
     rerender(<ComputerUseSetupView {...p} checking />);
     expect(spinners()).toHaveLength(1);
     expect(screen.getByRole('status').textContent).toBe('Checking');
+    // The status title it stands in for is text-ui.
+    expect(screen.getByText('Checking')).toHaveClass('text-ui');
     expect(screen.getByRole('button', { name: 'Check again' }).querySelector('[data-ds-spinner]')).toBeNull();
   });
   it('shows no spinner while waiting for the user: a system permission prompt or Finder', () => {

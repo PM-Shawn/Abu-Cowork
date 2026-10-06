@@ -10,6 +10,7 @@ import { useState, type ReactElement } from 'react';
 import { act, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 
 vi.mock('@/core/plugin/loadMarketplace', async (importOriginal) => ({
@@ -265,6 +266,97 @@ describe('AddMarketplaceDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: getI18n().designSystem.discard }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // Reading a directory is work in progress: the window steps aside for an approval and comes
+  // back. Nothing is cancelled, and it still leaves through its own onClose when the read ends.
+  describe('when an approval arrives while the directory is being read', () => {
+    const onApprovalAnswer = vi.fn();
+    function Owner({ approval }: { approval: boolean }) {
+      const [shown, setShown] = useState(true);
+      return (
+        <>
+          <AddMarketplaceDialog open={shown} home={HOME} onClose={() => { onClose(); setShown(false); }} onAdded={onAdded} />
+          <Dialog
+            open={approval}
+            onOpenChange={onApprovalAnswer}
+            layer="approval"
+            role="alertdialog"
+            outsidePress="ignore"
+            title="Confirm Action"
+            footer={<Button>Cancel the command</Button>}
+          />
+        </>
+      );
+    }
+    const marketplaceWindow = () => document.querySelector<HTMLElement>('[data-testid="plugin-add-marketplace"]');
+
+    async function startReading() {
+      onApprovalAnswer.mockReset();
+      const reading = deferred<Marketplace>();
+      vi.mocked(loadMarketplaceFromDir).mockReturnValue(reading.promise);
+      const view = render(<Owner approval={false} />);
+      type('/markets/demo');
+      fireEvent.click(submit());
+      await waitFor(() => expect(loadMarketplaceFromDir).toHaveBeenCalledTimes(1));
+      return { reading, view, window: marketplaceWindow() };
+    }
+
+    it('steps aside with what was typed, is not closed, and returns still reading', async () => {
+      const { reading, view, window } = await startReading();
+
+      view.rerender(<Owner approval />);
+      expect(screen.getByRole('alertdialog', { name: 'Confirm Action' })).toBeInTheDocument();
+      expect(marketplaceWindow()).toBe(window);
+      expect(window).toHaveAttribute('hidden');
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.queryByRole('alertdialog', { name: getI18n().designSystem.discardTitle })).toBeNull();
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      expect(onApprovalAnswer.mock.calls).toEqual([[false]]);
+      expect(onClose).not.toHaveBeenCalled();
+
+      view.rerender(<Owner approval={false} />);
+      expect(marketplaceWindow()).toBe(window);
+      expect(window).not.toHaveAttribute('hidden');
+      expect(input().value).toBe('/markets/demo');
+      expect(submit()).toHaveAttribute('aria-disabled', 'true');
+      expect(onClose).not.toHaveBeenCalled();
+
+      await act(async () => { reading.resolve(demo); });
+      expect(addMarketplace).toHaveBeenCalledTimes(1);
+      expect(onAdded).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(loadMarketplaceFromDir).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves through its own onClose when the read ends behind the approval, and does not come back', async () => {
+      const { reading, view } = await startReading();
+      view.rerender(<Owner approval />);
+      expect(marketplaceWindow()).toHaveAttribute('hidden');
+
+      await act(async () => { reading.resolve(demo); });
+      expect(calls).toEqual(['addMarketplace:demo-market:/real/markets/demo', 'onAdded:demo-market', 'onClose']);
+      expect(onApprovalAnswer).not.toHaveBeenCalled();
+
+      view.rerender(<Owner approval={false} />);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows why the read failed when it fails behind the approval and the window returns', async () => {
+      const { reading, view, window } = await startReading();
+      view.rerender(<Owner approval />);
+
+      await act(async () => { reading.reject(new Error('unreadable')); });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(marketplaceWindow()).toBe(window);
+
+      view.rerender(<Owner approval={false} />);
+      expect(window).not.toHaveAttribute('hidden');
+      expect(screen.getByText('unreadable')).toBeInTheDocument();
+      expect(input().value).toBe('/markets/demo');
+      expect(onClose).not.toHaveBeenCalled();
+    });
   });
 
   describe('while the window fades out', () => {

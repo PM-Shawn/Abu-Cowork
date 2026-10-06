@@ -22,7 +22,7 @@ export const buttonVariants = cva(
 );
 
 export const iconButtonVariants = cva(
-  `inline-flex shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-fast hover:text-label ${FOCUS_RING} ${DISABLED}`,
+  `inline-flex shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-fast hover:text-label ${FOCUS_RING} ${DISABLED} ${BUSY}`,
   {
     variants: {
       variant: {

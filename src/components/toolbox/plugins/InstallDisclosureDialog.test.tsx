@@ -2,6 +2,8 @@
 import type { ReactElement } from 'react';
 import { render as renderBare, screen, fireEvent, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import InstallDisclosureDialog from './InstallDisclosureDialog';
 import { formatServerCommand } from './serverCommand';
@@ -589,6 +591,95 @@ describe('InstallDisclosureDialog: the window', () => {
     fireEvent.click(screen.getByTestId('plugin-install-confirm'));
     expect(onConfirm).not.toHaveBeenCalled();
     computedStyle.mockRestore();
+  });
+});
+
+// An installation that is running is work in progress: the window steps aside for an approval
+// and comes back. Nothing here cancels, and the owner still closes it when the install ends.
+describe('InstallDisclosureDialog and an approval that arrives', () => {
+  const onApprovalAnswer = vi.fn();
+  function page(props: React.ComponentProps<typeof InstallDisclosureDialog>, approval: boolean) {
+    return (
+      <>
+        <InstallDisclosureDialog {...props} />
+        <Dialog
+          open={approval}
+          onOpenChange={onApprovalAnswer}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Confirm Action"
+          footer={<Button>Cancel the command</Button>}
+        />
+      </>
+    );
+  }
+  const installWindow = () => document.querySelector<HTMLElement>('[data-testid="plugin-install-disclosure"]');
+  function installProps(installing: boolean) {
+    return {
+      open: true,
+      entryName: 'weather',
+      state: { kind: 'ready', disclosure } as const,
+      installing,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    };
+  }
+
+  it('steps aside while installing, untouched, and returns when the approval has been answered', () => {
+    onApprovalAnswer.mockReset();
+    const props = installProps(true);
+    const view = render(page(props, false));
+    const window = installWindow();
+    expect(window).not.toBeNull();
+
+    view.rerender(page(props, true));
+    expect(screen.getByRole('alertdialog', { name: 'Confirm Action' })).toBeInTheDocument();
+    expect(installWindow()).toBe(window);
+    expect(window).toHaveAttribute('hidden');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Escape belongs to the approval while the window is hidden.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(onApprovalAnswer.mock.calls).toEqual([[false]]);
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(props.onConfirm).not.toHaveBeenCalled();
+
+    view.rerender(page(props, false));
+    expect(installWindow()).toBe(window);
+    expect(window).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('plugin-install-confirm')).toHaveTextContent(getI18n().toolbox.pluginsInstalling);
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(props.onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('does not come back when its owner closed it while it stood aside: the install ended behind the approval', () => {
+    onApprovalAnswer.mockReset();
+    const props = installProps(true);
+    const view = render(page(props, false));
+    view.rerender(page(props, true));
+    expect(installWindow()).toHaveAttribute('hidden');
+
+    // The owner hears that the install has ended and closes the window.
+    view.rerender(page({ ...props, open: false, installing: false }, true));
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(onApprovalAnswer).not.toHaveBeenCalled();
+
+    view.rerender(page({ ...props, open: false, installing: false }, false));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(installWindow()?.getAttribute('data-state') ?? 'closed').toBe('closed');
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(props.onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('is closed for the approval while nothing is installing: that is a cancel, as Escape is', () => {
+    onApprovalAnswer.mockReset();
+    const props = installProps(false);
+    const view = render(page(props, false));
+    view.rerender(page(props, true));
+
+    expect(props.onCancel).toHaveBeenCalledTimes(1);
+    expect(props.onConfirm).not.toHaveBeenCalled();
+    expect(onApprovalAnswer).not.toHaveBeenCalled();
   });
 });
 

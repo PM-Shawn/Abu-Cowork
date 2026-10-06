@@ -13,7 +13,6 @@ import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Select } from '@/components/ds/select';
 import { Spinner } from '@/components/ds/spinner';
-import { BUSY } from '@/components/ds/styles';
 import { cn } from '@/lib/utils';
 import { useToastStore } from '@/stores/toastStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
@@ -616,8 +615,7 @@ export default function MarketplaceBrowser({
                 size="sm"
                 icon={AppIcons.retry}
                 label={tb.pluginsRefreshMarketplace}
-                aria-disabled={loading || undefined}
-                className={BUSY}
+                busy={loading}
                 onClick={() => { if (!loading) setReload(value => value + 1); }}
               />
             )}

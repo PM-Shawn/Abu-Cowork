@@ -129,8 +129,11 @@ describe('TeamTab', () => {
     expect(leaderCard.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
     const leading = within(leaderCard).getByRole('status');
     expect(leading).toHaveTextContent('运行中');
-    expect(within(leading).getByText('运行中')).not.toHaveClass('sr-only');
-    expect(leading).toHaveClass('text-ui');
+    // The words carry the size: the same one as 「等待指令」 in the idle state (next test).
+    const runningWords = within(leading).getByText('运行中');
+    expect(runningWords).not.toHaveClass('sr-only');
+    expect(runningWords).toHaveClass('text-ui');
+    expect(runningWords).not.toHaveClass('text-ui-sm');
     expect(leading).toHaveClass('text-label-secondary');
     expect(leaderCard).not.toHaveTextContent('等待指令');
   });
@@ -147,6 +150,7 @@ describe('TeamTab', () => {
     // Same size and tone as the running sentence, so the line stays steady when the state changes.
     const waiting = within(leaderCard).getByText('等待指令');
     expect(waiting).toHaveClass('text-ui');
+    expect(waiting).not.toHaveClass('text-ui-sm');
     expect(waiting).toHaveClass('text-label-secondary');
     expect(waiting).not.toHaveClass('text-caption');
     expect(waiting).not.toHaveClass('text-label-tertiary');

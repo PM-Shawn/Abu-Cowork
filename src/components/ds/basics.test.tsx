@@ -36,6 +36,36 @@ describe('basic components', () => {
     expect(screen.getByText('Loading')).toHaveClass('sr-only');
   });
 
+  // The small spinner sits beside 12px text (a Tag, a row label): its words are that size too.
+  it('Spinner sizes its words with the spinner', () => {
+    const classes = (text: string) => (screen.getByText(text).getAttribute('class') ?? '').split(/\s+/);
+    render(<><Spinner size="sm" label="Checking" /><Spinner label="Loading files" /><Spinner size="lg" label="Starting" /></>);
+    expect(classes('Checking')).toContain('text-ui-sm');
+    expect(classes('Checking')).not.toContain('text-ui');
+    expect(classes('Loading files')).toContain('text-ui');
+    expect(classes('Loading files')).not.toContain('text-ui-sm');
+    expect(classes('Starting')).toContain('text-ui');
+  });
+
+  // The words carry the size. A size on the status element would say nothing about what is shown.
+  it('Spinner puts no text size on its status element', () => {
+    render(<><Spinner size="sm" label="Checking" /><Spinner label="Loading files" /></>);
+    for (const status of screen.getAllByRole('status')) {
+      const tokens = (status.getAttribute('class') ?? '').split(/\s+/);
+      expect(tokens).not.toContain('text-ui');
+      expect(tokens).not.toContain('text-ui-sm');
+    }
+  });
+
+  // A small spinner that trades places with 13px words (a menu item, a notice, a status row) keeps their size.
+  it('Spinner can keep the regular text size beside the small icon', () => {
+    const { container } = render(<Spinner size="sm" labelSize="ui" label="Checking" />);
+    const tokens = (screen.getByText('Checking').getAttribute('class') ?? '').split(/\s+/);
+    expect(tokens).toContain('text-ui');
+    expect(tokens).not.toContain('text-ui-sm');
+    expect(container.querySelector('svg')).toHaveAttribute('width', '14');
+  });
+
   it.each([
     ['success', 'text-success'],
     ['warning', 'text-warning'],

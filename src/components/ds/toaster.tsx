@@ -18,6 +18,9 @@ const TOAST_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 d
 // Shows toastStore's notifications; the store decides when each one expires. The list is
 // not a layer and never takes Escape, so Escape keeps closing whatever dialog is open.
 // The live region wraps the list and is not atomic, so only a new notification is read.
+// Radix turns pointer input off on <body> while a modal dialog is open; the list turns it back on
+// for itself (`pointer-events-auto`), so Close and an action such as Undo can be pressed then too.
+// A dialog does not take such a press for a press outside it (`data-ds-toasts`, read in Dialog).
 export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: string) => void }) {
   const { t } = useI18n();
   const container = useLayerContainer();
@@ -43,7 +46,7 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   };
 
   return createPortal(
-    <section aria-label={t.designSystem.notifications} data-electron-no-drag className="fixed bottom-4 right-4 z-toast w-80">
+    <section aria-label={t.designSystem.notifications} data-ds-toasts data-electron-no-drag className="pointer-events-auto fixed bottom-4 right-4 z-toast w-80">
       <div aria-live="polite" aria-atomic="false">
         <ol ref={listRef} className="flex flex-col gap-2">
           {visible.map((toast, index) => (

@@ -179,8 +179,116 @@ describe('WorkspaceSection', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     expect(order).not.toContain('dialog-with-menu');
     expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
-    // The legacy dialog is on top; the focus is not left on the card behind it.
-    expect(folderCard()).not.toHaveFocus();
+    // The window has the focus, on Deny; it is not left on the card behind it.
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+  });
+
+  // The window that asks for access to a folder chosen here. What each answer records is
+  // pinned through the real permission and workspace stores.
+  describe('access to a folder without permission', () => {
+    const grants = () => {
+      const { persistedGrants, sessionGrants } = usePermissionStore.getState();
+      return { persisted: persistedGrants, session: sessionGrants };
+    };
+    // The folder the suite starts with has a grant for the session; nothing else has one.
+    const sessionPaths = () => Object.keys(grants().session);
+    // One of the four durations.
+    const duration = (name: string) => screen.getByRole('radio', { name });
+    // The allowing button. With the grant for good chosen, the duration carries nearly the same words.
+    const allow = (name: string) => screen.getByRole('button', { name });
+    async function chooseGamma(user: ReturnType<typeof userEvent.setup>) {
+      renderSection();
+      await settle();
+      await user.click(folderCard());
+      await user.click(screen.getByRole('menuitemradio', { name: 'gamma' }));
+      expect(await screen.findByRole('heading', { name: PERMISSION_TITLE })).toBeInTheDocument();
+    }
+
+    it('names the folder and grants nothing by opening', async () => {
+      await chooseGamma(userEvent.setup());
+      expect(screen.getByText(GAMMA)).toBeInTheDocument();
+      expect(sessionPaths()).toEqual([BETA]);
+      expect(grants().persisted).toEqual({});
+      expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
+    });
+
+    it('records a grant for the session and switches the workspace on Allow for Session', async () => {
+      const user = userEvent.setup();
+      useChatStore.setState({ activeConversationId: 'conv-1', conversations: { 'conv-1': { id: 'conv-1', messages: [] } } } as never);
+      await chooseGamma(user);
+
+      await user.click(allow('Allow for Session'));
+      expect(grants().session[GAMMA]).toEqual(expect.objectContaining({
+        path: GAMMA, capabilities: ['read', 'write', 'execute'], duration: 'session', expiresAt: null,
+      }));
+      expect(grants().persisted).toEqual({});
+      expect(useWorkspaceStore.getState().currentPath).toBe(GAMMA);
+      expect(useChatStore.getState().conversations['conv-1'].workspacePath).toBe(GAMMA);
+      expect(screen.queryByRole('heading', { name: PERMISSION_TITLE })).not.toBeInTheDocument();
+    });
+
+    it('records a grant for good only after the second press', async () => {
+      const user = userEvent.setup();
+      await chooseGamma(user);
+
+      await user.click(duration('Always allow'));
+      await user.click(allow('Always Allow'));
+      expect(grants().persisted).toEqual({});
+      expect(sessionPaths()).toEqual([BETA]);
+      expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
+      expect(screen.getByRole('heading', { name: PERMISSION_TITLE })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Confirm' }));
+      expect(grants().persisted[GAMMA]).toEqual(expect.objectContaining({
+        capabilities: ['read', 'write', 'execute'], duration: 'always', expiresAt: null,
+      }));
+      expect(useWorkspaceStore.getState().currentPath).toBe(GAMMA);
+    });
+
+    it.each([
+      ['Deny', async (user: ReturnType<typeof userEvent.setup>) => { await user.click(screen.getByRole('button', { name: 'Deny' })); }],
+      ['Escape', async (user: ReturnType<typeof userEvent.setup>) => { await user.keyboard('{Escape}'); }],
+    ] as const)('records nothing and keeps the workspace on %s', async (_name, answer) => {
+      const user = userEvent.setup();
+      await chooseGamma(user);
+
+      await answer(user);
+      await waitFor(() => expect(screen.queryByRole('heading', { name: PERMISSION_TITLE })).not.toBeInTheDocument());
+      expect(sessionPaths()).toEqual([BETA]);
+      expect(grants().persisted).toEqual({});
+      expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
+    });
+
+    it('opens with the focus on Deny: Enter pressed as it appears records nothing and keeps the workspace', async () => {
+      const user = userEvent.setup();
+      await chooseGamma(user);
+      expect(screen.getByRole('alertdialog', { name: PERMISSION_TITLE })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(screen.queryByRole('heading', { name: PERMISSION_TITLE })).not.toBeInTheDocument());
+      expect(sessionPaths()).toEqual([BETA]);
+      expect(grants().persisted).toEqual({});
+      expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
+    });
+
+    it('asks in the same way for a folder from the system folder picker', async () => {
+      const user = userEvent.setup();
+      vi.mocked(openDialog).mockResolvedValue(GAMMA);
+      renderSection();
+      await settle();
+      await user.click(folderCard());
+      await user.click(screen.getByRole('menuitem', { name: 'Select other folder...' }));
+
+      expect(await screen.findByRole('heading', { name: PERMISSION_TITLE })).toBeInTheDocument();
+      expect(screen.getByText(GAMMA)).toBeInTheDocument();
+      expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
+      expect(sessionPaths()).toEqual([BETA]);
+
+      await user.click(allow('Allow for Session'));
+      expect(useWorkspaceStore.getState().currentPath).toBe(GAMMA);
+      expect(sessionPaths()).toEqual([BETA, GAMMA]);
+    });
   });
 
   it('opens the system folder picker only after the menu has closed', async () => {

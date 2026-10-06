@@ -207,7 +207,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
             saveState === 'error' ? 'text-danger' : 'text-label-secondary',
           )}>
             {saveState === 'saving' ? (
-              <Spinner size="sm" label={t.panel.saving} />
+              <Spinner size="sm" labelSize="ui" label={t.panel.saving} />
             ) : (
               <>
                 <StatusIcon tone={saveState === 'saved' ? 'success' : 'danger'} size="sm" />

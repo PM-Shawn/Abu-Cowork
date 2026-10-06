@@ -166,6 +166,86 @@ describe('feedback components', () => {
     expect(shownTitles()).toEqual([]);
   });
 
+  // Radix turns pointer input off on <body> while a modal dialog is open. The notification list
+  // is portaled into <body> and turns it back on for itself, so Close and Undo can be pressed.
+  it('Toaster takes pointer input while a modal dialog has turned it off on the page', async () => {
+    const user = userEvent.setup();
+    const onDismissed = vi.fn();
+    const onUndo = vi.fn();
+    // What the Tailwind class does in the app; the test page has no stylesheet.
+    const sheet = document.createElement('style');
+    sheet.textContent = '.pointer-events-auto { pointer-events: auto; }';
+    document.head.appendChild(sheet);
+    const before = document.body.style.pointerEvents;
+    try {
+      render(
+        <ToasterHarness
+          initial={[toast(1, { type: 'info', title: 'Task deleted', actions: [{ label: 'Undo', onClick: onUndo }] }), toast(2)]}
+          onDismissed={onDismissed}
+        />,
+        { wrapper: DesignSystemProvider },
+      );
+      const region = screen.getByRole('region', { name: 'Notifications' });
+      expect((region.getAttribute('class') ?? '').split(/\s+/)).toContain('pointer-events-auto');
+      document.body.style.pointerEvents = 'none';
+      expect(getComputedStyle(document.body).pointerEvents).toBe('none');
+
+      await user.click(screen.getByRole('button', { name: 'Undo' }));
+      expect(onUndo).toHaveBeenCalledOnce();
+      expect(onDismissed.mock.calls).toEqual([['t1']]);
+      await user.click(screen.getByRole('button', { name: 'Close' }));
+      expect(onDismissed.mock.calls).toEqual([['t1'], ['t2']]);
+    } finally {
+      document.body.style.pointerEvents = before;
+      sheet.remove();
+    }
+  });
+
+  // A press on a notification is not a press outside the dialog: the dialog stays, with what is in it.
+  it('a press on a notification leaves the open dialog open, and a press on the scrim still closes it', async () => {
+    const user = userEvent.setup();
+    const onDialogChange = vi.fn();
+    const onDismissed = vi.fn();
+    const onUndo = vi.fn();
+    const sheet = document.createElement('style');
+    sheet.textContent = '.pointer-events-auto { pointer-events: auto; }';
+    document.head.appendChild(sheet);
+    function Page() {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <Dialog open={open} onOpenChange={(next) => { onDialogChange(next); setOpen(next); }} title="Rename task">
+            <input aria-label="New name" />
+          </Dialog>
+          <ToasterHarness
+            initial={[toast(1, { type: 'info', title: 'Task deleted', actions: [{ label: 'Undo', onClick: onUndo }] }), toast(2)]}
+            onDismissed={onDismissed}
+          />
+        </>
+      );
+    }
+    try {
+      render(<Page />, { wrapper: DesignSystemProvider });
+      const dialog = screen.getByRole('dialog', { name: 'Rename task' });
+      // Radix has turned pointer input off on the page behind the dialog.
+      expect(document.body.style.pointerEvents).toBe('none');
+
+      await user.click(screen.getByRole('button', { name: 'Undo', hidden: true }));
+      expect(onUndo).toHaveBeenCalledOnce();
+      expect(onDismissed.mock.calls).toEqual([['t1']]);
+      await user.click(screen.getByRole('button', { name: 'Close', hidden: true }));
+      expect(onDismissed.mock.calls).toEqual([['t1'], ['t2']]);
+      expect(onDialogChange).not.toHaveBeenCalled();
+      expect(dialog).toBeInTheDocument();
+
+      const scrim = document.querySelector('.bg-scrim') as HTMLElement;
+      await user.click(scrim);
+      expect(onDialogChange.mock.calls).toEqual([[false]]);
+    } finally {
+      sheet.remove();
+    }
+  });
+
   it('Toaster closes a notification from its close button', async () => {
     const user = userEvent.setup();
     const onDismissed = vi.fn();

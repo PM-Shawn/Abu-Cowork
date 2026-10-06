@@ -278,6 +278,22 @@ describe('useConfirm', () => {
     expect(settled).toBe(false);
   });
 
+  it('shows a message given as an element inside the question', () => {
+    render('provider');
+    if (!captured) throw new Error('Capture did not render');
+    const confirm = captured;
+    act(() => {
+      void confirm({
+        title: 'Open this link?',
+        message: <code data-testid="link-address">https://example.test/docs</code>,
+        confirmLabel: 'Open',
+      });
+    });
+    const question = screen.getByRole('alertdialog', { name: 'Open this link?' });
+    expect(question).toContainElement(screen.getByTestId('link-address'));
+    expect(screen.getByTestId('link-address')).toHaveTextContent('https://example.test/docs');
+  });
+
   it('fails fast outside DesignSystemProvider', () => {
     expect(() => render('bare')).toThrow(/DesignSystemProvider/);
   });

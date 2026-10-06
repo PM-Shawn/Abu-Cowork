@@ -345,6 +345,8 @@ export default function SkillUploadModal({ open = true, onClose, onInstalled, on
       open={open}
       // Escape, a press outside and the close button ask to close; while an import runs the window stays.
       onOpenChange={(next) => { if (!next && !importing.current) onClose(); }}
+      // For an approval the window steps aside while it imports, and comes back.
+      busy={importInProgress}
       title={t.toolbox.importEntry}
       size="md"
       closeButton

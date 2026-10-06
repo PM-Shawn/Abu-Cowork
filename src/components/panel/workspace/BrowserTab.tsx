@@ -710,7 +710,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           {controlNotice === 'yielding' && (
             // Same inset as the notices it trades places with, so the words stay in one column.
             <div className="flex items-center px-3 py-2">
-              <Spinner size="sm" label={t.workspace.browser.yielding} />
+              <Spinner size="sm" labelSize="ui" label={t.workspace.browser.yielding} />
             </div>
           )}
           {controlNotice === 'human' && (

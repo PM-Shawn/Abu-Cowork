@@ -1151,6 +1151,9 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       size="lg"
       closeButton
       dirty={dirty}
+      // A check that is out is dropped when the window closes: for an approval the window steps
+      // aside, with the window it was opened in, and comes back.
+      busy={validating}
       footer={(
         <>
           {/* Left: delete (edit mode only), validate connection and its result */}

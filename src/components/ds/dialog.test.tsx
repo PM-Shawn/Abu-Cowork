@@ -3,7 +3,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { Combobox } from './combobox';
 import { useConfirm } from './confirm-context';
@@ -1367,5 +1367,832 @@ describe('Escape while the layer above fades out', () => {
     expect(document.querySelector('[role="menu"]')).toBeNull();
     expect(screen.getByRole('dialog')).toHaveAttribute('data-state', 'open');
     expect(document.body.style.pointerEvents).toBe('none');
+  });
+});
+
+describe('Dialog size viewer, long descriptions and presses outside', () => {
+  it('size viewer fills the window up to a 24px margin and hands its whole box to the content', () => {
+    render(<Dialog open title="Image" titleHidden size="viewer" closeButton><p>Picture</p></Dialog>, { wrapper: DesignSystemProvider });
+    const dialog = screen.getByRole('dialog', { name: 'Image' });
+    expect(dialog).toHaveClass('inset-6');
+    expect(dialog).toHaveClass('p-0');
+    expect(dialog).not.toHaveClass('max-w-md');
+    expect(dialog).not.toHaveClass('-translate-x-1/2');
+    const body = screen.getByText('Picture').parentElement;
+    expect(body).toHaveClass('flex-1');
+    expect(body).toHaveClass('min-h-0');
+    expect(body).toHaveClass('flex-col');
+    expect(body).not.toHaveClass('mt-4');
+    expect(body).not.toHaveClass('overflow-y-auto');
+    expect(document.querySelector('[data-ds-dialog-close]')).toHaveClass('absolute');
+  });
+
+  it('breaks and scrolls a description that is longer than the window', () => {
+    const long = 'x'.repeat(3000);
+    render(<Dialog open title="Archive these files?" description={long} />, { wrapper: DesignSystemProvider });
+    const description = screen.getByText(long);
+    expect(description).toHaveClass('break-words');
+    expect(description).toHaveClass('max-h-60');
+    expect(description).toHaveClass('overflow-y-auto');
+  });
+
+  it('ignores a press outside with outsidePress="ignore", and still closes on Escape', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const onOpenChange = vi.fn();
+    render(
+      <>
+        <p>Elsewhere</p>
+        <Dialog open onOpenChange={onOpenChange} title="Run this command?" outsidePress="ignore" footer={<Button>Cancel</Button>} />
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(document.querySelector('.bg-scrim') as Element);
+    await user.click(screen.getByText('Elsewhere'));
+    expect(onOpenChange).not.toHaveBeenCalled();
+    await user.keyboard('{Escape}');
+    expect(onOpenChange.mock.calls).toEqual([[false]]);
+  });
+
+  it('takes urgent only on an approval', () => {
+    render(
+      <>
+        <Dialog open layer="approval" urgent title="Allow this folder?" />
+        {/* @ts-expect-error -- urgent orders the line of approvals; a plain dialog has no line */}
+        <Dialog urgent title="Search" />
+        {/* @ts-expect-error -- the same with the layer spelled out */}
+        <Dialog layer="dialog" urgent title="Settings" />
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    expect(screen.getByRole('dialog', { name: 'Allow this folder?' })).toBeInTheDocument();
+  });
+});
+
+describe('approvals and the windows around them', () => {
+  let restoreStyles: (() => void) | null = null;
+  // A closed layer has an exit animation here, as in the app: it stays on the page until its fade
+  // ends. A hidden one is not displayed, so Radix takes it away at once when it closes.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    const real = window.getComputedStyle.bind(window);
+    const spy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const styles = real(element, pseudo);
+      return new Proxy(styles, {
+        get(target, prop) {
+          if (prop === 'display' && element.hasAttribute('hidden')) return 'none';
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    restoreStyles = () => spy.mockRestore();
+    moves = [];
+    document.addEventListener('focusin', onFocusIn);
+  });
+  afterEach(() => {
+    document.removeEventListener('focusin', onFocusIn);
+    restoreStyles?.();
+    restoreStyles = null;
+    vi.useRealTimers();
+  });
+
+  // Every element that received the focus, in order. Where the focus ends up is not enough: the
+  // focus trap of the layer on the page pulls it back after a layer that left has taken it away.
+  let moves: string[] = [];
+  const onFocusIn = (event: FocusEvent) => {
+    const target = event.target;
+    moves.push(target instanceof HTMLElement ? (target.getAttribute('aria-label') ?? target.textContent ?? target.tagName) : 'other');
+  };
+  const takeMoves = () => {
+    const seen = moves;
+    moves = [];
+    return seen;
+  };
+
+  // The box of the window with this title, open or fading out.
+  function box(title: string): HTMLElement | null {
+    const boxes = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]'));
+    return boxes.find((element) => element.querySelector('h2')?.textContent === title) ?? null;
+  }
+
+  // The fade of this window ends; what a layer does once it has gone runs one timer tick later.
+  // Returns every element that received the focus because of it.
+  function endFade(title: string): string[] {
+    const element = box(title);
+    if (!element) throw new Error(`No window titled ${title} is on the page`);
+    expect(element).toHaveAttribute('data-state', 'closed');
+    takeMoves();
+    const ended = new Event('animationend', { bubbles: true });
+    Object.defineProperty(ended, 'animationName', { value: 'exit' });
+    act(() => { element.dispatchEvent(ended); });
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(box(title)).toBeNull();
+    return takeMoves();
+  }
+
+  // Records whether the window with this title was ever on the page while it watched.
+  function watchFor(title: string) {
+    let seen = false;
+    const look = () => { if (box(title)) seen = true; };
+    const check = (records: MutationRecord[]) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof HTMLElement && node.textContent?.includes(title)) seen = true;
+        }
+      }
+      look();
+    };
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
+    return () => {
+      check(observer.takeRecords());
+      observer.disconnect();
+      return seen;
+    };
+  }
+
+  const cancelOf = (content: HTMLElement) => content.querySelector<HTMLElement>('[data-approval-cancel]');
+
+  interface DeskProps {
+    login?: boolean;
+    busy?: boolean;
+    dirty?: boolean;
+    command?: boolean;
+    folder?: boolean;
+    search?: boolean;
+    quit?: boolean;
+    onLogin?: (open: boolean) => void;
+    onCommand?: (open: boolean) => void;
+    onFolder?: (open: boolean) => void;
+    onSearch?: (open: boolean) => void;
+    onQuit?: (open: boolean) => void;
+    onModalChange?: (open: boolean) => void;
+    container?: HTMLElement;
+  }
+
+  function Desk({
+    login = false, busy = true, dirty = false, command = false, folder = false, search = false, quit = false,
+    onLogin, onCommand, onFolder, onSearch, onQuit, onModalChange, container,
+  }: DeskProps) {
+    const [email, setEmail] = useState('');
+    return (
+      <DesignSystemProvider onModalChange={onModalChange} container={container}>
+        <Button>Account</Button>
+        <Button>Send</Button>
+        <Dialog open={login} busy={busy} dirty={dirty} onOpenChange={onLogin} title="Sign in">
+          <input aria-label="Email" value={email} onChange={(event) => setEmail(event.target.value)} />
+        </Dialog>
+        <Dialog
+          open={command}
+          onOpenChange={onCommand}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Run this command?"
+          initialFocus={cancelOf}
+          footer={<><Button data-approval-cancel="">Cancel</Button><Button variant="primary">Run</Button></>}
+        />
+        <Dialog
+          open={folder}
+          onOpenChange={onFolder}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Allow this folder?"
+          initialFocus={cancelOf}
+          footer={<><Button data-approval-cancel="">Deny</Button><Button variant="primary">Allow</Button></>}
+        />
+        <Dialog open={search} onOpenChange={onSearch} title="Search"><input aria-label="Query" /></Dialog>
+        <Dialog
+          open={quit}
+          onOpenChange={onQuit}
+          role="alertdialog"
+          title="Close the window?"
+          footer={<><Button>Minimize</Button><Button variant="primary">Quit</Button></>}
+        />
+      </DesignSystemProvider>
+    );
+  }
+
+  const cancel = () => screen.getByRole('button', { name: 'Cancel' });
+
+  it('turns away a dialog opened while an approval is on screen: it is told to close and is never on the page', () => {
+    const onSearch = vi.fn();
+    const onCommand = vi.fn();
+    const view = render(<Desk command onSearch={onSearch} onCommand={onCommand} />);
+    expect(cancel()).toHaveFocus();
+
+    const sawSearch = watchFor('Search');
+    view.rerender(<Desk command search onSearch={onSearch} onCommand={onCommand} />);
+    act(() => { vi.runOnlyPendingTimers(); });
+
+    expect(sawSearch()).toBe(false);
+    expect(onSearch.mock.calls).toEqual([[false]]);
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(screen.getByRole('alertdialog', { name: 'Run this command?' })).toHaveAttribute('data-state', 'open');
+    expect(cancel()).toHaveFocus();
+  });
+
+  it('keeps a dialog that is rendered already open off the page, and the focus in the approval, when layers portal into a given node', () => {
+    // Radix mounts a portal into <body> one render late, into a given node at once: there a
+    // dialog that is open in its first render would join the page, take the focus and fade out
+    // before the registry is heard.
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    function Page({ search, onSearch }: { search: boolean; onSearch: (open: boolean) => void }) {
+      return (
+        <DesignSystemProvider container={host}>
+          <Dialog open layer="approval" title="Run this command?" initialFocus={cancelOf} footer={<Button data-approval-cancel="">Cancel</Button>} />
+          {search && <Dialog open onOpenChange={onSearch} title="Search"><input aria-label="Query" /></Dialog>}
+        </DesignSystemProvider>
+      );
+    }
+    try {
+      const onSearch = vi.fn();
+      const view = render(<Page search={false} onSearch={onSearch} />);
+      expect(cancel()).toHaveFocus();
+      takeMoves();
+
+      const sawSearch = watchFor('Search');
+      view.rerender(<Page search onSearch={onSearch} />);
+      act(() => { vi.runOnlyPendingTimers(); });
+
+      expect(sawSearch()).toBe(false);
+      expect(takeMoves()).toEqual([]);
+      expect(onSearch.mock.calls).toEqual([[false]]);
+      expect(cancel()).toHaveFocus();
+      view.unmount();
+    } finally {
+      host.remove();
+    }
+  });
+
+  it('keeps a busy dialog that opens under an approval off the page from its first render, unclosed, and shows it when the approval has gone', () => {
+    const onLogin = vi.fn();
+    const onCommand = vi.fn();
+    const view = render(<Desk onLogin={onLogin} onCommand={onCommand} />);
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    view.rerender(<Desk command onLogin={onLogin} onCommand={onCommand} />);
+    expect(cancel()).toHaveFocus();
+    takeMoves();
+
+    const sawLogin = watchFor('Sign in');
+    view.rerender(<Desk command login onLogin={onLogin} onCommand={onCommand} />);
+    act(() => { vi.runOnlyPendingTimers(); });
+
+    expect(sawLogin()).toBe(false);
+    expect(box('Sign in')).toBeNull();
+    expect(onLogin).not.toHaveBeenCalled();
+    expect(onCommand).not.toHaveBeenCalled();
+    // The approval keeps the focus.
+    expect(takeMoves()).toEqual([]);
+    expect(cancel()).toHaveFocus();
+
+    // The approval is answered: the window is shown, with the focus on its first control.
+    view.rerender(<Desk login onLogin={onLogin} onCommand={onCommand} />);
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('dialog', { name: 'Sign in' })).toHaveAttribute('data-state', 'open');
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+    expect(onLogin).not.toHaveBeenCalled();
+
+    // Its owner closes it: focus goes where the approval's would have gone, not onto the window.
+    view.rerender(<Desk onLogin={onLogin} onCommand={onCommand} />);
+    expect(endFade('Sign in')).toEqual(['Send']);
+    expect(send).toHaveFocus();
+  });
+
+  it('turns away a dialog that is not busy when it opens under an approval', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk command busy={false} onLogin={onLogin} />);
+    view.rerender(<Desk command login busy={false} onLogin={onLogin} />);
+    expect(onLogin.mock.calls).toEqual([[false]]);
+    expect(box('Sign in')).toBeNull();
+  });
+
+  it('shows a dialog that an approval turned away when it is opened after the approval has gone', () => {
+    const view = render(<Desk command search />);
+    view.rerender(<Desk command />);
+    view.rerender(<Desk />);
+    endFade('Run this command?');
+    view.rerender(<Desk search />);
+    expect(screen.getByRole('dialog', { name: 'Search' })).toHaveAttribute('data-state', 'open');
+    expect(screen.getByRole('textbox', { name: 'Query' })).toHaveFocus();
+  });
+
+  it('has a busy window step aside for an approval and brings it back as it was, with focus where it belongs at every step', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk onLogin={onLogin} />);
+    const opener = screen.getByRole('button', { name: 'Account' });
+    opener.focus();
+    view.rerender(<Desk login onLogin={onLogin} />);
+    const email = screen.getByRole('textbox', { name: 'Email' });
+    fireEvent.change(email, { target: { value: 'ada@example.test' } });
+    expect(email).toHaveFocus();
+    const window = box('Sign in');
+    const scrims = () => Array.from(document.querySelectorAll('.bg-scrim')).filter((scrim) => !scrim.hasAttribute('hidden'));
+    expect(scrims()).toHaveLength(1);
+    takeMoves();
+
+    // The approval arrives: the window is hidden, with its scrim, and its owner hears nothing.
+    view.rerender(<Desk login command onLogin={onLogin} />);
+    expect(box('Sign in')).toBe(window);
+    expect(window).toHaveAttribute('hidden');
+    expect(scrims()).toHaveLength(1);
+    expect(screen.queryByRole('dialog', { name: 'Sign in' })).toBeNull();
+    expect(screen.getByRole('alertdialog', { name: 'Run this command?' })).toHaveAttribute('data-state', 'open');
+    expect(takeMoves()).toEqual(['Cancel']);
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(takeMoves()).toEqual([]);
+    expect(cancel()).toHaveFocus();
+    expect(onLogin).not.toHaveBeenCalled();
+
+    // The approval is answered: the same window is back with what was typed, and focus where it was in it.
+    view.rerender(<Desk login onLogin={onLogin} />);
+    expect(box('Sign in')).toBe(window);
+    expect(window).not.toHaveAttribute('hidden');
+    expect(email).toBeInTheDocument();
+    expect(email).toHaveValue('ada@example.test');
+    expect(takeMoves()).toEqual(['Email']);
+    expect(endFade('Run this command?')).toEqual([]);
+    // The approval has gone, and what it hid from screen readers is theirs again.
+    expect(screen.getByRole('dialog', { name: 'Sign in' })).toBe(window);
+    expect(screen.getByRole('textbox', { name: 'Email' })).toBe(email);
+    expect(email).toHaveFocus();
+    expect(onLogin).not.toHaveBeenCalled();
+
+    // Its owner closes it: focus returns to the button that opened it the first time.
+    view.rerender(<Desk onLogin={onLogin} />);
+    expect(endFade('Sign in')).toEqual(['Account']);
+    expect(opener).toHaveFocus();
+  });
+
+  it('keeps focus in the next approval in line after the first one has faded out', () => {
+    const onFolder = vi.fn();
+    const view = render(<Desk />);
+    screen.getByRole('button', { name: 'Send' }).focus();
+    view.rerender(<Desk command />);
+    view.rerender(<Desk command folder onFolder={onFolder} />);
+    expect(box('Allow this folder?')).toBeNull();
+    expect(onFolder).not.toHaveBeenCalled();
+
+    view.rerender(<Desk folder onFolder={onFolder} />);
+    expect(screen.getByRole('alertdialog', { name: 'Allow this folder?' })).toHaveAttribute('data-state', 'open');
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+    expect(onFolder).not.toHaveBeenCalled();
+  });
+
+  it('gives focus back to where it was before the approval when no layer takes its place', () => {
+    const view = render(<Desk />);
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    view.rerender(<Desk command />);
+    expect(cancel()).toHaveFocus();
+    view.rerender(<Desk />);
+    expect(endFade('Run this command?')).toEqual(['Send']);
+    expect(send).toHaveFocus();
+  });
+
+  it('gives focus back to where it was before the first approval after two approvals in a row', () => {
+    const view = render(<Desk />);
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    view.rerender(<Desk command />);
+    view.rerender(<Desk command folder />);
+    view.rerender(<Desk folder />);
+    expect(endFade('Run this command?')).toEqual([]);
+    view.rerender(<Desk />);
+    expect(endFade('Allow this folder?')).toEqual(['Send']);
+    expect(send).toHaveFocus();
+  });
+
+  it('keeps focus in an approval that is shown in the render in which the one before it leaves', () => {
+    // The chat view renders one approval at a time: the next one is not in line, it arrives as the first leaves.
+    const view = render(<Desk />);
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    view.rerender(<Desk command />);
+    view.rerender(<Desk folder />);
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+
+    view.rerender(<Desk />);
+    expect(endFade('Allow this folder?')).toEqual(['Send']);
+  });
+
+  it('gives focus back to what opened a window that closed while it stood aside for an approval', () => {
+    const view = render(<Desk />);
+    const opener = screen.getByRole('button', { name: 'Account' });
+    opener.focus();
+    view.rerender(<Desk login />);
+    view.rerender(<Desk login command />);
+    // Its work ended and its owner closed it while the approval was on screen: focus stays in the approval.
+    takeMoves();
+    view.rerender(<Desk command />);
+    // It was hidden, so it goes without a fade; what a layer does once it has gone runs one timer tick later.
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(box('Sign in')).toBeNull();
+    expect(takeMoves()).toEqual([]);
+    expect(cancel()).toHaveFocus();
+    view.rerender(<Desk />);
+    expect(endFade('Run this command?')).toEqual(['Account']);
+    expect(opener).toHaveFocus();
+  });
+
+  it('brings back a busy window opened inside another one, with what was typed in it and the focus in it', () => {
+    // The window inside lives in the content of the outer one: both stay mounted while they stand aside.
+    function Section() {
+      const [adding, setAdding] = useState(false);
+      const [key, setKey] = useState('');
+      return (
+        <>
+          <Button onClick={() => setAdding(true)}>Add provider</Button>
+          <Dialog open={adding} onOpenChange={setAdding} busy title="Add provider">
+            <input aria-label="Key" value={key} onChange={(event) => setKey(event.target.value)} />
+          </Dialog>
+        </>
+      );
+    }
+    function Page({ command }: { command: boolean }) {
+      return (
+        <DesignSystemProvider>
+          <Dialog open title="Settings"><Section /></Dialog>
+          <Dialog open={command} layer="approval" title="Run this command?" initialFocus={cancelOf} footer={<Button data-approval-cancel="">Cancel</Button>} />
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page command={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
+    const key = screen.getByRole('textbox', { name: 'Key' });
+    fireEvent.change(key, { target: { value: 'sk-test-not-a-secret' } });
+    expect(key).toHaveFocus();
+
+    view.rerender(<Page command />);
+    expect(box('Settings')).toHaveAttribute('hidden');
+    expect(box('Add provider')).toHaveAttribute('hidden');
+    expect(cancel()).toHaveFocus();
+    takeMoves();
+
+    view.rerender(<Page command={false} />);
+    expect(box('Settings')).not.toHaveAttribute('hidden');
+    expect(box('Add provider')).not.toHaveAttribute('hidden');
+    expect(key).toBeInTheDocument();
+    expect(key).toHaveValue('sk-test-not-a-secret');
+    // The window inside gets the focus back; the outer one does not take it for its own first control.
+    expect(takeMoves()).toEqual(['Key']);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('textbox', { name: 'Key' })).toBe(key);
+    expect(key).toHaveFocus();
+  });
+
+  it('puts focus on the first control of a window that comes back when none of its controls had it', () => {
+    const view = render(<Desk login />);
+    (document.activeElement as HTMLElement).blur();
+    expect(document.body).toHaveFocus();
+    view.rerender(<Desk login command />);
+    expect(cancel()).toHaveFocus();
+    takeMoves();
+
+    view.rerender(<Desk login />);
+    expect(takeMoves()).toEqual(['Email']);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+  });
+
+  it('gives focus back to what opened a window whose unsaved input the user discarded for an approval', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk />);
+    const opener = screen.getByRole('button', { name: 'Account' });
+    opener.focus();
+    view.rerender(<Desk login busy={false} dirty onLogin={onLogin} />);
+    view.rerender(<Desk login busy={false} dirty command onLogin={onLogin} />);
+    expect(box('Discard these changes?')).toHaveAttribute('data-state', 'open');
+    expect(box('Run this command?')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(onLogin.mock.calls).toEqual([[false]]);
+    view.rerender(<Desk command onLogin={onLogin} />);
+    expect(cancel()).toHaveFocus();
+    // Neither the question nor the window takes the focus from the approval as it fades.
+    expect(endFade('Discard these changes?')).toEqual([]);
+    expect(endFade('Sign in')).toEqual([]);
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk onLogin={onLogin} />);
+    expect(endFade('Run this command?')).toEqual(['Account']);
+    expect(opener).toHaveFocus();
+  });
+
+  it('gives focus back to what opened a window that closed after the user kept editing, once the approval that waited has gone', () => {
+    const view = render(<Desk />);
+    const opener = screen.getByRole('button', { name: 'Account' });
+    opener.focus();
+    view.rerender(<Desk login busy={false} dirty />);
+    view.rerender(<Desk login busy={false} dirty command />);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(endFade('Discard these changes?')).toEqual(['Email']);
+    expect(box('Run this command?')).toBeNull();
+
+    // The save lands and the owner closes the window: the approval shows, and keeps the focus.
+    takeMoves();
+    view.rerender(<Desk command />);
+    expect(takeMoves()).toEqual(['Cancel']);
+    expect(endFade('Sign in')).toEqual([]);
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk />);
+    expect(endFade('Run this command?')).toEqual(['Account']);
+    expect(opener).toHaveFocus();
+  });
+
+  it('hides the discard question of a busy window with it, and brings both back unanswered', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk login dirty onLogin={onLogin} />);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    const question = box('Discard these changes?') as HTMLElement;
+    expect(question).toHaveAttribute('data-state', 'open');
+    const words = question.textContent;
+    expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus();
+
+    view.rerender(<Desk login dirty command onLogin={onLogin} />);
+    expect(box('Sign in')).toHaveAttribute('hidden');
+    expect(question).toHaveAttribute('hidden');
+    expect(question).toHaveAttribute('data-state', 'open');
+    expect(cancel()).toHaveFocus();
+    takeMoves();
+
+    view.rerender(<Desk login dirty onLogin={onLogin} />);
+    expect(box('Sign in')).not.toHaveAttribute('hidden');
+    expect(box('Discard these changes?')).toBe(question);
+    expect(question).not.toHaveAttribute('hidden');
+    expect(question.textContent).toBe(words);
+    expect(takeMoves()).toEqual(['Keep editing']);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus();
+    expect(onLogin).not.toHaveBeenCalled();
+  });
+
+  it('gives focus back to what opened the window an approval took the place of', () => {
+    const view = render(<Desk />);
+    const opener = screen.getByRole('button', { name: 'Account' });
+    opener.focus();
+    view.rerender(<Desk login busy={false} />);
+    view.rerender(<Desk login busy={false} command />);
+    view.rerender(<Desk command />);
+    expect(endFade('Sign in')).toEqual([]);
+    view.rerender(<Desk />);
+    expect(endFade('Run this command?')).toEqual(['Account']);
+  });
+
+  it('keeps a window that stepped aside off the page when one approval replaces another in one render', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk login />);
+    view.rerender(<Desk login command onLogin={onLogin} />);
+    const window = box('Sign in') as HTMLElement;
+    expect(window).toHaveAttribute('hidden');
+
+    // Any change of the window's hidden state would be recorded here.
+    const shown: boolean[] = [];
+    const observer = new MutationObserver((records) => { for (const record of records) shown.push(!(record.target as HTMLElement).hidden); });
+    observer.observe(window, { attributes: true, attributeFilter: ['hidden'] });
+    takeMoves();
+    view.rerender(<Desk login folder onLogin={onLogin} />);
+    for (const record of observer.takeRecords()) shown.push(!(record.target as HTMLElement).hidden);
+    observer.disconnect();
+
+    expect(shown).toEqual([]);
+    expect(window).toHaveAttribute('hidden');
+    expect(takeMoves()).toEqual(['Deny']);
+    expect(screen.getByRole('alertdialog', { name: 'Allow this folder?' })).toHaveAttribute('data-state', 'open');
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+    expect(onLogin).not.toHaveBeenCalled();
+
+    view.rerender(<Desk login onLogin={onLogin} />);
+    expect(box('Sign in')).toBe(window);
+    expect(window).not.toHaveAttribute('hidden');
+  });
+
+  it('shows an urgent approval before one that was already in line, and never in place of the one on screen', () => {
+    function Line({ command, file, workspace }: { command: boolean; file: boolean; workspace: boolean }) {
+      return (
+        <DesignSystemProvider>
+          <Dialog open={command} layer="approval" title="Run this command?" />
+          <Dialog open={file} layer="approval" title="Allow writing this file?" />
+          <Dialog open={workspace} layer="approval" urgent title="Use this folder?" />
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Line command file={false} workspace={false} />);
+    view.rerender(<Line command file workspace={false} />);
+    view.rerender(<Line command file workspace />);
+    expect(screen.getByRole('dialog', { name: 'Run this command?' })).toHaveAttribute('data-state', 'open');
+    expect(box('Use this folder?')).toBeNull();
+
+    view.rerender(<Line command={false} file workspace />);
+    expect(screen.getByRole('dialog', { name: 'Use this folder?' })).toHaveAttribute('data-state', 'open');
+    expect(box('Allow writing this file?')).toBeNull();
+    endFade('Run this command?');
+    view.rerender(<Line command={false} file workspace={false} />);
+    expect(screen.getByRole('dialog', { name: 'Allow writing this file?' })).toHaveAttribute('data-state', 'open');
+  });
+
+  it('has a question step aside for an approval and brings it back unanswered', () => {
+    const onQuit = vi.fn();
+    const view = render(<Desk quit onQuit={onQuit} />);
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+
+    view.rerender(<Desk quit command onQuit={onQuit} />);
+    expect(box('Close the window?')).toHaveAttribute('hidden');
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk quit onQuit={onQuit} />);
+    expect(box('Close the window?')).not.toHaveAttribute('hidden');
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('alertdialog', { name: 'Close the window?' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+  });
+
+  // The approval took the focus by itself, and the user may still be pressing keys for it when
+  // the question returns. A question returns the way it opened: on the control that ends nothing.
+  it('brings a question back with the focus on the control it opened on, not on the one the focus had moved to', () => {
+    const onQuit = vi.fn();
+    const view = render(<Desk quit onQuit={onQuit} />);
+    act(() => { screen.getByRole('button', { name: 'Quit' }).focus(); });
+    expect(screen.getByRole('button', { name: 'Quit' })).toHaveFocus();
+
+    view.rerender(<Desk quit command onQuit={onQuit} />);
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk quit onQuit={onQuit} />);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Quit' })).not.toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+  });
+
+  // After a group returns, the focus is inside its top layer: the question, not the window under it.
+  it('gives the focus to the question when a busy window and the question asked over it return together', () => {
+    const onQuit = vi.fn();
+    const onLogin = vi.fn();
+    const view = render(<Desk login onQuit={onQuit} onLogin={onLogin} />);
+    act(() => { screen.getByRole('textbox', { name: 'Email' }).focus(); });
+    view.rerender(<Desk login quit onQuit={onQuit} onLogin={onLogin} />);
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+
+    view.rerender(<Desk login quit command onQuit={onQuit} onLogin={onLogin} />);
+    expect(box('Sign in')).toHaveAttribute('hidden');
+    expect(box('Close the window?')).toHaveAttribute('hidden');
+    expect(cancel()).toHaveFocus();
+
+    view.rerender(<Desk login quit onQuit={onQuit} onLogin={onLogin} />);
+    endFade('Run this command?');
+    expect(box('Sign in')).not.toHaveAttribute('hidden');
+    expect(box('Close the window?')).not.toHaveAttribute('hidden');
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+    expect(onLogin).not.toHaveBeenCalled();
+  });
+
+  it('gives the focus to a confirmation when it returns with the busy window it was asked over', async () => {
+    const answers: boolean[] = [];
+    function Asker() {
+      const confirm = useConfirm();
+      return <Button onClick={() => { void confirm({ title: 'Remove it?', confirmLabel: 'Remove', tone: 'danger' }).then((answer) => { answers.push(answer); }); }}>Ask</Button>;
+    }
+    function Page({ command }: { command: boolean }) {
+      return (
+        <DesignSystemProvider>
+          <Dialog open busy title="Install"><input aria-label="Name" /><Asker /></Dialog>
+          <Dialog open={command} layer="approval" role="alertdialog" outsidePress="ignore" title="Run this command?" initialFocus={cancelOf} footer={<Button data-approval-cancel="">Cancel</Button>} />
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page command={false} />);
+    act(() => { screen.getByRole('button', { name: 'Ask' }).click(); });
+    act(() => { screen.getByRole('button', { name: 'Remove' }).focus(); });
+
+    view.rerender(<Page command />);
+    expect(box('Remove it?')).toHaveAttribute('hidden');
+    view.rerender(<Page command={false} />);
+    endFade('Run this command?');
+    expect(box('Remove it?')).not.toHaveAttribute('hidden');
+    expect(within(box('Remove it?')!).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    expect(answers).toEqual([]);
+  });
+
+  it('brings the question back alone when a busy window opened under the approval, and shows that window once the question has been answered', () => {
+    const onQuit = vi.fn();
+    const onLogin = vi.fn();
+    const view = render(<Desk quit onQuit={onQuit} onLogin={onLogin} />);
+    view.rerender(<Desk quit command onQuit={onQuit} onLogin={onLogin} />);
+    view.rerender(<Desk quit command login onQuit={onQuit} onLogin={onLogin} />);
+    expect(box('Close the window?')).toHaveAttribute('hidden');
+    expect(box('Sign in')).toBeNull();
+
+    // The approval is answered: the question is back, with the focus, and nothing is over it.
+    const sawLogin = watchFor('Sign in');
+    view.rerender(<Desk quit login onQuit={onQuit} onLogin={onLogin} />);
+    expect(endFade('Run this command?')).toEqual([]);
+    expect(sawLogin()).toBe(false);
+    expect(box('Close the window?')).not.toHaveAttribute('hidden');
+    expect(screen.getByRole('alertdialog', { name: 'Close the window?' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Minimize' })).toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+    expect(onLogin).not.toHaveBeenCalled();
+
+    // Its owner answers the question: the window that waited is shown.
+    view.rerender(<Desk login onQuit={onQuit} onLogin={onLogin} />);
+    expect(screen.getByRole('dialog', { name: 'Sign in' })).toHaveAttribute('data-state', 'open');
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+    expect(onQuit).not.toHaveBeenCalled();
+    expect(onLogin).not.toHaveBeenCalled();
+  });
+
+  it('closes a window that holds nothing when an approval arrives', () => {
+    const onLogin = vi.fn();
+    const view = render(<Desk login busy={false} onLogin={onLogin} />);
+    view.rerender(<Desk login busy={false} command onLogin={onLogin} />);
+    expect(onLogin.mock.calls).toEqual([[false]]);
+    expect(cancel()).toHaveFocus();
+  });
+
+  it('tells the app the last dialog has left when its fade has ended, not when it closed', () => {
+    const order: string[] = [];
+    function Page({ open }: { open: boolean }) {
+      return (
+        <DesignSystemProvider onModalChange={(modal) => order.push(`modal ${modal}`)}>
+          <Dialog open={open} title="Search" onCloseAutoFocus={() => order.push('focus given back')}>
+            <input aria-label="Query" />
+          </Dialog>
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page open />);
+    expect(order).toEqual(['modal true']);
+
+    view.rerender(<Page open={false} />);
+    expect(box('Search')).toHaveAttribute('data-state', 'closed');
+    expect(order).toEqual(['modal true']);
+    endFade('Search');
+    // Radix reports that the content has gone; the layer says so before the caller hears it.
+    expect(order).toEqual(['modal true', 'modal false', 'focus given back']);
+  });
+
+  // A fade can end later than its nominal 200 ms when the main thread is busy. Until the content
+  // has left the page the app is not told: what it hides under a dialog would show through it.
+  it('does not tell the app a dialog has left while its content is still on the page, however long the fade runs', () => {
+    const onModalChange = vi.fn();
+    const view = render(<Desk search onModalChange={onModalChange} />);
+    view.rerender(<Desk onModalChange={onModalChange} />);
+    expect(box('Search')).toHaveAttribute('data-state', 'closed');
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(box('Search')).not.toBeNull();
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    act(() => { vi.advanceTimersByTime(313); });
+    expect(box('Search')).not.toBeNull();
+    expect(onModalChange.mock.calls).toEqual([[true]]);
+    endFade('Search');
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('tells the app within one fade when a fading dialog leaves the page with its owner', () => {
+    const onModalChange = vi.fn();
+    function Page({ open, mounted }: { open: boolean; mounted: boolean }) {
+      return (
+        <DesignSystemProvider onModalChange={onModalChange}>
+          {mounted && <Dialog open={open} title="Search"><input aria-label="Query" /></Dialog>}
+        </DesignSystemProvider>
+      );
+    }
+    const view = render(<Page open mounted />);
+    view.rerender(<Page open={false} mounted />);
+    expect(box('Search')).toHaveAttribute('data-state', 'closed');
+    view.rerender(<Page open={false} mounted={false} />);
+    expect(box('Search')).toBeNull();
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('drops the timer of a dialog that still fades when the provider leaves the page', () => {
+    const onModalChange = vi.fn();
+    const view = render(<Desk search onModalChange={onModalChange} />);
+    view.rerender(<Desk onModalChange={onModalChange} />);
+    act(() => { vi.advanceTimersByTime(250); });
+    expect(box('Search')).not.toBeNull();
+    onModalChange.mockClear();
+    view.unmount();
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(onModalChange).not.toHaveBeenCalled();
   });
 });

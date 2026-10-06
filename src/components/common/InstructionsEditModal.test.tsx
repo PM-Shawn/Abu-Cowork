@@ -130,13 +130,55 @@ describe('InstructionsEditModal', () => {
       expect(log).toEqual([`exists ${FILE}`]);
     });
 
-    it('starts empty when the file cannot be read', async () => {
-      files[FILE] = 'Answer briefly.';
-      vi.mocked(readTextFile).mockRejectedValue(new Error('fake read failure'));
+    // A file that is there and could not be read is never offered as an empty one: saving
+    // would replace instructions the user has not seen.
+    describe('when the file is there and cannot be read', () => {
+      it('says so with the reason, offers no field, and saves nothing', async () => {
+        files[FILE] = 'Answer briefly.';
+        vi.mocked(readTextFile).mockRejectedValue(new Error('fake read failure'));
 
-      await open();
+        const { onClose } = await open();
 
-      expect(ui.field().value).toBe('');
+        const message = screen.getByRole('alert');
+        expect(message).toHaveTextContent(t().panel.failedToReadFile);
+        expect(message).toHaveTextContent('fake read failure');
+        expect(ui.queryField()).not.toBeInTheDocument();
+        expect(ui.save()).toBeDisabled();
+        fireEvent.click(ui.save());
+        await settle();
+        expect(writeTextFile).not.toHaveBeenCalled();
+        expect(mkdir).not.toHaveBeenCalled();
+        expect(files[FILE]).toBe('Answer briefly.');
+
+        ui.escape();
+        expect(discardQuestion.box()).toBeNull();
+        expect(onClose).toHaveBeenCalledTimes(1);
+      });
+
+      it('treats a failed look for the file the same way', async () => {
+        files[FILE] = 'Answer briefly.';
+        vi.mocked(exists).mockRejectedValueOnce(new Error('fake lookup failure'));
+
+        await open();
+
+        expect(screen.getByRole('alert')).toHaveTextContent('fake lookup failure');
+        expect(ui.queryField()).not.toBeInTheDocument();
+        expect(ui.save()).toBeDisabled();
+      });
+
+      it('offers the text again at the next opening once the file can be read', async () => {
+        files[FILE] = 'Answer briefly.';
+        vi.mocked(readTextFile).mockRejectedValueOnce(new Error('fake read failure'));
+        const { close, reopen } = await open();
+
+        close();
+        reopen();
+        await settle();
+
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(ui.field().value).toBe('Answer briefly.');
+        expect(ui.save()).not.toBeDisabled();
+      });
     });
 
     it('shows no field while the file is being read, and saves nothing then', async () => {

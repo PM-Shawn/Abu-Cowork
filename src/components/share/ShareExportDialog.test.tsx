@@ -70,6 +70,15 @@ const ui = {
   escape: () => fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' }),
 };
 
+// After a failure there is no bundle to export: Export takes no press. It stays in the tab
+// order, so a focus that was on it is not dropped onto the window.
+function expectNoExport() {
+  expect(ui.exportButton()).toHaveAttribute('aria-disabled', 'true');
+  expect(ui.exportButton()).not.toBeDisabled();
+  fireEvent.click(ui.exportButton());
+  expect(saveDialog).not.toHaveBeenCalled();
+}
+
 // The owner hears that the window closed once the window has left the page, one timer tick
 // after its content has gone. The tests that close the window hold the clock and move it here.
 const holdTheClock = () => { vi.useFakeTimers(); };
@@ -183,14 +192,14 @@ describe('ShareExportDialog', () => {
       await settle();
 
       expect(screen.getByText(format(t().share.exportError, { error: 'fake build failure' }))).toBeInTheDocument();
-      expect(ui.exportButton()).toBeDisabled();
+      expectNoExport();
     });
 
     it('shows that the export failed when the conversation is not there', async () => {
       await open(null);
 
       expect(screen.getByText(format(t().share.exportError, { error: 'conversation not found' }))).toBeInTheDocument();
-      expect(ui.exportButton()).toBeDisabled();
+      expectNoExport();
     });
   });
 
@@ -379,7 +388,8 @@ describe('ShareExportDialog', () => {
 
       expect(screen.getByText(format(t().share.exportError, { error: 'fake write failure' }))).toBeInTheDocument();
       expect(onClose).not.toHaveBeenCalled();
-      expect(ui.exportButton()).toBeDisabled();
+      vi.mocked(saveDialog).mockClear();
+      expectNoExport();
     });
 
     it('exports nothing before the bundle is ready', async () => {
@@ -507,8 +517,7 @@ describe('ShareExportDialog', () => {
       });
     });
 
-    // Export cannot be pressed after a failed write: the focus that was on it goes to Cancel.
-    it('moves the focus from Export to Cancel when the write fails', async () => {
+    it('keeps the focus on Export when the write fails', async () => {
       await open();
       vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('fake write failure'));
       const button = ui.exportButton();
@@ -518,7 +527,31 @@ describe('ShareExportDialog', () => {
       await settle();
 
       expect(screen.getByRole('alert')).toBeInTheDocument();
-      expect(ui.cancel()).toHaveFocus();
+      expect(ui.exportButton()).toHaveFocus();
+    });
+
+    // Each conversation has a window of its own. One that its owner has taken off the page
+    // (another conversation's export took its place) says nothing: the owner's `onClose`
+    // would close the window that is there now.
+    it('tells its owner nothing once the owner has replaced it with the window of another conversation', async () => {
+      holdTheClock();
+      useChatStore.setState({
+        exportConversationForShare: (async (id: string) => bundleOf([message('m1', 'user', `Fake question of ${id}`)])) as never,
+      });
+      const onClosed = vi.fn();
+      function Keyed({ convId }: { convId: string }) {
+        return <ShareExportDialog key={convId} convId={convId} defaultFilename={FILENAME} onClose={onClosed} />;
+      }
+      const view = render(<Keyed convId="c1" />);
+      await settle();
+      expect(screen.getByText('Fake question of c1')).toBeInTheDocument();
+
+      view.rerender(<Keyed convId="c2" />);
+      await settle();
+      leavePage();
+
+      expect(onClosed).not.toHaveBeenCalled();
+      expect(screen.getByText('Fake question of c2')).toBeInTheDocument();
     });
 
     describe('while an export is under way', () => {
@@ -676,6 +709,31 @@ describe('ShareExportDialog', () => {
         fireEvent.click(ui.exportButton());
         await settle();
         expect(writeTextFile).toHaveBeenCalledTimes(1);
+      });
+
+      it('returns with the failure and the focus inside it when the write failed behind the approval', async () => {
+        const { onClosed, arrive, leave } = await besideApproval();
+        const choosing = held<string | null>();
+        vi.mocked(saveDialog).mockReturnValueOnce(choosing.promise);
+        vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('fake write failure'));
+        const button = ui.exportButton();
+        act(() => button.focus());
+        fireEvent.click(button);
+        await settle();
+        const window = own()!;
+
+        arrive();
+        await act(async () => { choosing.resolve(CHOSEN); });
+        await settle();
+        expect(onAnswer).not.toHaveBeenCalled();
+        leave();
+        leavePage();
+
+        expect(window).not.toHaveAttribute('hidden');
+        expect(screen.getByRole('alert')).toHaveTextContent('fake write failure');
+        expect(window).toContainElement(document.activeElement as HTMLElement);
+        expect(document.activeElement).not.toBe(document.body);
+        expect(onClosed).not.toHaveBeenCalled();
       });
 
       // A window opened while an approval shows is turned away before it is painted; its owner

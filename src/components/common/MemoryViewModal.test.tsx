@@ -74,6 +74,11 @@ const ui = {
   // The delete button of the memory that is open; the question has a button of the same name.
   deleteButton: () => within(screen.getByRole('dialog')).getByRole('button', { name: t().common.delete }),
   clearButton: () => screen.queryByRole('button', { name: t().panel.memoryClear }),
+  // The window scans the folder once more before it asks, so the question comes a moment later.
+  pressClear: async () => {
+    fireEvent.click(ui.clearButton() as HTMLElement);
+    await settle();
+  },
   // The Close button at the bottom; the corner button has the same name and comes last.
   closeButton: () => screen.getAllByRole('button', { name: t().common.close })[0],
   question: () => screen.queryByRole('alertdialog'),
@@ -306,7 +311,7 @@ describe('MemoryViewModal', () => {
       await open();
       h.log.length = 0;
 
-      fireEvent.click(ui.clearButton()!);
+      await ui.pressClear();
       const question = ui.question()!;
       expect(question).toHaveTextContent(t().panel.memoryClearTitle);
       expect(question).toHaveTextContent(t().panel.memoryClearMessage);
@@ -314,7 +319,7 @@ describe('MemoryViewModal', () => {
 
       await ui.answer(t().panel.memoryClearConfirm);
 
-      expect(h.log).toEqual([`clear ${FOLDER}`]);
+      expect(h.log).toEqual([`scan ${FOLDER}`, `clear ${FOLDER}`]);
       expect(screen.getByText(t().panel.memoryEmpty)).toBeInTheDocument();
       expect(ui.clearButton()).not.toBeInTheDocument();
       expect(ui.question()).not.toBeInTheDocument();
@@ -323,7 +328,7 @@ describe('MemoryViewModal', () => {
     it('clears nothing when the answer is to cancel', async () => {
       await open();
 
-      fireEvent.click(ui.clearButton()!);
+      await ui.pressClear();
       await ui.answer(t().common.cancel);
 
       expect(h.clearAllMemories).not.toHaveBeenCalled();
@@ -333,7 +338,7 @@ describe('MemoryViewModal', () => {
     it('names the personal memories and clears the personal folder', async () => {
       await open(PERSONAL);
 
-      fireEvent.click(ui.clearButton()!);
+      await ui.pressClear();
       expect(ui.question()).toHaveTextContent(t().sidebar.personalMemoryClearMessage);
       await ui.answer(t().panel.memoryClearConfirm);
 
@@ -344,7 +349,7 @@ describe('MemoryViewModal', () => {
       h.clearAllMemories.mockRejectedValue(new Error('fake clear failure'));
       await open();
 
-      fireEvent.click(ui.clearButton()!);
+      await ui.pressClear();
       await ui.answer(t().panel.memoryClearConfirm);
 
       expect(ui.names()).toHaveLength(4);
@@ -459,7 +464,7 @@ describe('MemoryViewModal', () => {
         await settle();
         expect(h.deleteMemory).not.toHaveBeenCalled();
 
-        fireEvent.click(ui.clearButton()!);
+        await ui.pressClear();
         expect(within(ui.question()!).getByRole('button', { name: t().common.cancel })).toHaveFocus();
       });
 
@@ -501,6 +506,7 @@ describe('MemoryViewModal', () => {
         const clear = ui.clearButton()!;
         act(() => clear.focus());
         fireEvent.click(clear);
+        await settle();
         await ui.answer(t().panel.memoryClearConfirm);
         expect(ui.closeButton()).toHaveFocus();
       });
@@ -524,9 +530,62 @@ describe('MemoryViewModal', () => {
       it('says how many memories clearing takes, on a line of its own', async () => {
         await open();
 
-        fireEvent.click(ui.clearButton()!);
+        await ui.pressClear();
 
         expect(ui.question()).toHaveTextContent(format(t().memory.entryCount, { count: '4' }));
+      });
+
+      // A running task can write memories while the window is open: the number in the question
+      // is of a scan made when 清空 is pressed, and the list shows the same memories.
+      it('counts the memories that are there when Clear is pressed, not when the window opened', async () => {
+        await open();
+        stored = [...stored, memory('late-1.md', 'Written later, one', 1), memory('late-2.md', 'Written later, two', 2)];
+        h.log.length = 0;
+
+        await ui.pressClear();
+
+        expect(h.log).toEqual([`scan ${FOLDER}`]);
+        expect(ui.question()).toHaveTextContent(format(t().memory.entryCount, { count: '6' }));
+        await ui.answer(t().common.cancel);
+        expect(ui.names()).toHaveLength(6);
+      });
+
+      it('asks without a number when the scan before the question fails', async () => {
+        await open();
+        h.scanMemoryFiles.mockRejectedValueOnce(new Error('fake scan failure'));
+
+        await ui.pressClear();
+
+        const question = ui.question()!;
+        expect(question).toHaveTextContent(t().panel.memoryClearMessage);
+        expect(question.textContent).not.toMatch(/\d/);
+        await ui.answer(t().panel.memoryClearConfirm);
+        expect(h.clearAllMemories).toHaveBeenCalledWith(FOLDER);
+      });
+
+      it('asks nothing when the scan finds no memory left, and shows the empty list', async () => {
+        await open();
+        stored = [];
+
+        await ui.pressClear();
+
+        expect(ui.question()).not.toBeInTheDocument();
+        expect(screen.getByText(t().panel.memoryEmpty)).toBeInTheDocument();
+        expect(h.clearAllMemories).not.toHaveBeenCalled();
+      });
+
+      it('asks nothing when the window was closed while the folder was being scanned', async () => {
+        const { close } = await open();
+        const scanning = held<MemoryHeader[]>();
+        h.scanMemoryFiles.mockReturnValueOnce(scanning.promise);
+        fireEvent.click(ui.clearButton()!);
+
+        close();
+        await act(async () => { scanning.resolve([TEA]); });
+        await settle();
+
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+        expect(h.clearAllMemories).not.toHaveBeenCalled();
       });
 
       it('is not asked again about a memory whose delete is under way: one memory, one delete', async () => {
@@ -550,10 +609,10 @@ describe('MemoryViewModal', () => {
         await open();
         const clearing = held<number>();
         h.clearAllMemories.mockImplementationOnce(async () => clearing.promise);
-        fireEvent.click(ui.clearButton()!);
+        await ui.pressClear();
         await ui.answer(t().panel.memoryClearConfirm);
 
-        fireEvent.click(ui.clearButton()!);
+        await ui.pressClear();
 
         expect(ui.question()).not.toBeInTheDocument();
         await act(async () => { clearing.resolve(4); });
@@ -597,7 +656,7 @@ describe('MemoryViewModal', () => {
         await ui.expand(TEA);
         fireEvent.click(ui.deleteButton());
         await ui.answer(t().common.delete);
-        fireEvent.click(ui.clearButton()!);
+        await ui.pressClear();
 
         await act(async () => { deleting.resolve(); });
         await settle();
@@ -658,6 +717,8 @@ describe('MemoryViewModal', () => {
         expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
         expect(h.deleteMemory).not.toHaveBeenCalled();
         expect(h.clearAllMemories).not.toHaveBeenCalled();
+        // Not even the scan that comes before the clear question.
+        expect(h.scanMemoryFiles).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -702,7 +763,7 @@ describe('MemoryViewModal', () => {
           await ui.expand(PNPM);
           fireEvent.click(ui.deleteButton());
         } else {
-          fireEvent.click(ui.clearButton()!);
+          await ui.pressClear();
         }
         expect(ui.question()).toBeInTheDocument();
 

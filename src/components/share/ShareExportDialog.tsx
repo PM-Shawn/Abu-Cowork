@@ -19,7 +19,6 @@ import { Dialog, DialogClose } from '@/components/ds/dialog';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
-import { lastInputWasPointer } from '@/components/ds/input-modality';
 import { Spinner } from '@/components/ds/spinner';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n, format } from '@/i18n';
@@ -55,8 +54,16 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
   // The content of the window; present while the window is on the page, hidden or not.
   const contentRef = useRef<HTMLDivElement>(null);
   const told = useRef(false);
+  // True once the owner has taken this window off the page. Its close-focus hook still runs a
+  // moment later, and the owner's `onClose` would then close whatever window is there by then
+  // (the export window of another conversation): a removed window tells nobody.
+  const removed = useRef(false);
+  useEffect(() => {
+    removed.current = false;
+    return () => { removed.current = true; };
+  }, []);
   const tellOwner = () => {
-    if (told.current) return;
+    if (told.current || removed.current) return;
     told.current = true;
     onCloseRef.current();
   };
@@ -96,18 +103,7 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
     };
   }, [convId, exportForShare, open]);
 
-  // A failed write leaves Export unavailable under the focus; the focus then moves to Cancel
-  // so that it does not end up on the window.
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const exportRef = useRef<HTMLButtonElement>(null);
-  const failed = state.phase === 'error';
-  useLayoutEffect(() => {
-    if (!failed || !isOpen.current) return;
-    const active = document.activeElement;
-    const lost = active === exportRef.current || active === document.body
-      || (active instanceof HTMLElement && active.hasAttribute('data-ds-layer') && active.contains(cancelRef.current));
-    if (lost) cancelRef.current?.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
-  }, [failed]);
 
   const exportingRef = useRef(false);
   const handleExport = async () => {
@@ -157,12 +153,15 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <DialogClose asChild><Button ref={cancelRef} variant="plain">{t.share.cancel}</Button></DialogClose>
+            {/* Not ready yet: disabled, and the window opens on Cancel. After a failure there is
+                nothing to export either, but the focus may be on this button (a failed write),
+                also when the window returns from behind an approval: it stays focusable then
+                and takes no press. */}
             <Button
-              ref={exportRef}
               variant="primary"
               icon={AppIcons.download}
-              busy={exporting}
-              disabled={state.phase !== 'ready'}
+              busy={exporting || state.phase === 'error'}
+              disabled={state.phase === 'loading'}
               onClick={handleExport}
             >
               {t.share.exportBtn}

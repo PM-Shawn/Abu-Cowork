@@ -82,9 +82,13 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
   // What the handlers read after a question or a file call: the list and the folder as they are then.
   const headersRef = useRef(headers);
   const folderRef = useRef(wsPath);
+  // Whether the window is on the page and open: false once it is closing or has been taken away.
+  const isOpen = useRef(open);
   useLayoutEffect(() => {
     headersRef.current = headers;
     folderRef.current = wsPath;
+    isOpen.current = open;
+    return () => { isOpen.current = false; };
   });
 
   useEffect(() => {
@@ -176,11 +180,28 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
     if (!open || clearing.current) return;
     clearing.current = true;
     try {
+      // The question says how many memories will go, so the folder is scanned now: a task may
+      // have written memories since the window opened. Clearing removes what a scan lists.
+      let found: MemoryHeader[] | null;
+      try {
+        found = newestFirst(await scanMemoryFiles(wsPath));
+      } catch {
+        found = null;
+      }
+      // The scan took a moment: the window may have closed or moved to another folder meanwhile.
+      if (!isOpen.current || folderRef.current !== wsPath) return;
+      if (found) {
+        setHeaders(found);
+        if (found.length === 0) {
+          removedAt.current = 0;
+          return;
+        }
+      }
       const sentence = isPersonal ? t.sidebar.personalMemoryClearMessage : t.panel.memoryClearMessage;
       const confirmed = await confirm({
         title: t.panel.memoryClearTitle,
-        // The second line says how many memories the list holds.
-        message: `${sentence}\n${format(t.memory.entryCount, { count: String(headers.length) })}`,
+        // The second line is the count of that scan; without a scan the question has no number.
+        message: found ? `${sentence}\n${format(t.memory.entryCount, { count: String(found.length) })}` : sentence,
         confirmLabel: t.panel.memoryClearConfirm,
         tone: 'danger',
       });

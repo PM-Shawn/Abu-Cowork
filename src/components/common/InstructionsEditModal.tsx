@@ -23,6 +23,9 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Why the file could not be read. The file may be there with instructions in it, so the window
+  // offers no empty field then and saves nothing: a save would replace what was not read.
+  const [unreadable, setUnreadable] = useState<string | null>(null);
 
   // The window shows the file of one folder for one opening. It starts over when it opens and
   // when the folder changes while it is open, so the text on screen is always the text of the
@@ -36,6 +39,7 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
       setContent('');
       setLoaded('');
       setError(null);
+      setUnreadable(null);
     }
   }
 
@@ -55,17 +59,21 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
     if (!open) return;
     let cancelled = false;
     async function loadContent() {
+      // A file that does not exist is an empty text. A failed look for the file or a failed read
+      // is not: the text is unknown.
       let text = '';
+      let failure: string | null = null;
       try {
         const abuMdPath = joinPath(workspacePath, '.abu', 'ABU.md');
         if (await exists(abuMdPath)) text = await readTextFile(abuMdPath);
-      } catch {
-        text = '';
+      } catch (err) {
+        failure = err instanceof Error ? err.message : String(err);
       }
       // A read of an earlier opening, or of the folder shown before, is dropped.
       if (cancelled) return;
       setContent(text);
       setLoaded(text);
+      setUnreadable(failure);
       setLoading(false);
     }
     void loadContent();
@@ -89,7 +97,8 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
   const savingRef = useRef(false);
   const handleSave = async () => {
     // The window keeps rendering while it fades out: nothing is saved then. One save at a time.
-    if (!open || loading || savingRef.current) return;
+    // Nothing is saved over a file that could not be read.
+    if (!open || loading || unreadable !== null || savingRef.current) return;
     const mine = opening.current;
     savingRef.current = true;
     setSaving(true);
@@ -128,7 +137,7 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
       footer={(
         <>
           <DialogClose asChild><Button ref={cancelRef} variant="plain">{t.common.cancel}</Button></DialogClose>
-          <Button variant="primary" busy={saving} disabled={loading} onClick={handleSave}>
+          <Button variant="primary" busy={saving} disabled={loading || unreadable !== null} onClick={handleSave}>
             {saving ? t.panel.instructionsSaving : t.common.save}
           </Button>
         </>
@@ -138,6 +147,11 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
         <div className="flex justify-center py-8">
           <Spinner label={t.common.loading} />
         </div>
+      ) : unreadable !== null ? (
+        <InlineMessage tone="danger">
+          <div className="font-medium">{t.panel.failedToReadFile}</div>
+          <div className="break-words">{unreadable}</div>
+        </InlineMessage>
       ) : (
         <TextArea
           ref={focusField}

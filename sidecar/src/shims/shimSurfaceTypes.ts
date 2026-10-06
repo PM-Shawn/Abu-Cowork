@@ -50,6 +50,9 @@
  * Add the `import type` pair and both assertions below. You cannot forget:
  * `shimSurfaceCoverage.test.ts` fails if this file's import list and
  * `build-sidecar.mjs`'s shim map disagree.
+ *
+ * 新的 shim 如果含有 `throw` 语句，还要导出 `SHIM_THROW_KIND` 并写明原因，
+ * 规则见 `shimThrowKind.ts`；同一个测试文件会检查。
  */
 import type * as realLogger from '@/core/logging/logger';
 import type * as shimLogger from './logger';

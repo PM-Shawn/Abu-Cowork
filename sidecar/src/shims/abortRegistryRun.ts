@@ -13,6 +13,14 @@
  */
 import type { AbortRegistry } from '@/core/agent/ports/abortRegistry';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setAbortRegistry()`。sidecar 里 abortRegistry 由
+ * `agentRunContext.run()` 按每次运行注入，没有模块级的值可以替换，
+ * 有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getAbortRegistry(): AbortRegistry {
   return getCurrentAgentRunContext().abortRegistry;

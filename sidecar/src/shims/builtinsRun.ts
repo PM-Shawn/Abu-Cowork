@@ -38,6 +38,14 @@
 import { sendNotification } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getCurrentSubagentRunContext } from '../subagentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `resolveRunId()`。清理技能 hook 的三个函数只在一次运行的作用域内
+ * 被调用，两种运行上下文都取不到 runId 说明调用来自作用域之外。清理通知与两个
+ * computer use 开关本身照常转发给 shell。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 function resolveRunId(): string {
   try {

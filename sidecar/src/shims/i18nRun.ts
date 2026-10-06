@@ -39,6 +39,16 @@ import enUS from '@/i18n/locales/en-US';
 import type { SupportedLocale, TranslationDict } from '@/i18n/types';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getCurrentSubagentRunContext } from '../subagentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 两处抛出错误都在 `getLocale()`，正确运行的 sidecar 走不到：
+ *   - 两种运行上下文都取不到语言，说明调用来自一次运行的作用域之外。
+ *   - 运行上下文里的语言是两种受支持语言之外的值。两个宿主都从 shell 的设置里取这个值，
+ *     出现别的值说明两端对不上。
+ * 两种情况都不按某个默认语言继续，避免用错输出语言。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 const locales: Record<SupportedLocale, TranslationDict> = {
   'zh-CN': zhCN,

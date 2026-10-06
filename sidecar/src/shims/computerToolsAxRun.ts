@@ -28,6 +28,16 @@
  * nothing to scope. They exist so `shimSurfaceTypes.ts` can prove the arity
  * matches rather than having to allowlist this export.
  */
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * `closeAxSession()` 直接抛出错误。AX 会话由 shell 一侧的原生命令创建和持有，sidecar
+ * 进程里没有这份状态，在这里无法关闭它。关闭由 shell 完成：`agentLoopRunner.ts` 在
+ * 一次 sidecar 运行结束时调用真实的 `closeAxSession()`。`agentLoop.ts` 的四个调用处
+ * 对加载模块和调用本身各有一层 `.catch(() => {})`，这里抛出错误不影响主循环。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'shell-side';
+
 export async function closeAxSession(_conversationId?: string, _loopId?: string): Promise<void> {
   throw new Error(
     '[sidecar] tools/definitions/computerTools.ts\'s closeAxSession() reached inside the sidecar bundle — AX session state is shell-side-only (native Tauri commands), unreachable from the sidecar process regardless of shimming. Both call-site layers in agentLoop.ts already swallow this via .catch(() => {}), so this is a safe no-op, not a crash.',

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { createMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import MaxTurnsNoticeCard from './MaxTurnsNoticeCard';
+import { armGoal, resetGoalActivationsForTest } from '@/core/goal/goalActivation';
 
 const mockRunAgentLoop = vi.fn();
 const mockSetAction = vi.fn();
@@ -83,6 +84,21 @@ describe('MaxTurnsNoticeCard', () => {
     expect(screen.getByRole('heading', { name: /200 turns/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Continue/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Change the cap/i })).toBeInTheDocument();
+  });
+
+  it('leaves the next round to goal mode while a goal is driving the conversation', () => {
+    const conv = chatState.conversations['conv-1'] as { id: string; status: string; goal?: unknown };
+    conv.goal = { id: 'g1', phase: 'active' };
+    armGoal('conv-1', 'g1', 1);
+    try {
+      renderCard();
+      expect(screen.queryByRole('button', { name: /Continue/i })).not.toBeInTheDocument();
+      expect(screen.getByText(/keeps going automatically/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Change the cap/i })).toBeInTheDocument();
+    } finally {
+      delete conv.goal;
+      resetGoalActivationsForTest();
+    }
   });
 
   it('reports the cap the RUN used, not whatever the setting says now', () => {

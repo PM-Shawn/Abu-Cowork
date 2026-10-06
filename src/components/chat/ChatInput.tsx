@@ -31,6 +31,7 @@ import { isImageFile } from '@/components/chat/FileAttachment';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { parseGoalCommand } from '@/core/goal/goalCommand';
 import { requestDispatchInput } from '@/core/agent/dispatchCancel';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { collectMemberDispatches, findRunningDispatch, parseMemberAddress } from '@/components/team/teamDispatches';
@@ -1773,6 +1774,26 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       message = bodyParts;
     }
 
+    // Goal mode: `/goal …` is an instruction to the app, never a message for
+    // the model, so it must not wait in the queue behind the running task (a
+    // goal keeps the conversation running, which is exactly when the user
+    // types `/goal pause`). It goes to the send handler at once; the text
+    // stays in the composer when the handler refuses it.
+    const sendGoalCommandNow = () => {
+      void Promise.resolve(onSend(message)).then(
+        (accepted) => {
+          if (accepted !== false) resetInput();
+        },
+        // A send that fails did not take the command: it is still in the composer.
+        () => {},
+      );
+    };
+    const isGoalCommand = images.length === 0 && parseGoalCommand(message) !== null;
+    if (isGoalCommand && isRunning) {
+      sendGoalCommandNow();
+      return;
+    }
+
     // Mid-task input: if agent is running, stage the message in the queue
     // strip above the composer (cancellable) instead of starting a new loop.
     // It becomes a transcript bubble only when the loop drains it.
@@ -1815,6 +1836,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // chain is still live, and that chain's final queue drain runs in the
       // same microtask turn as the guard release — a keydown can never land
       // between them, so a message staged now is always picked up.
+      if (isGoalCommand) {
+        sendGoalCommandNow();
+        return;
+      }
       if (activeConv?.id && message && !hasRuntimeAttachments) {
         enqueueUserInput(activeConv.id, message);
         resetInput();

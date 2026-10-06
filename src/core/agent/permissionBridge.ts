@@ -412,6 +412,15 @@ export function resolveWorkspaceRequest(path: string | null): void {
 }
 
 /**
+ * Resolve one specific workspace request. No-op when that request is no
+ * longer the pending one (timed out, drained, or replaced) — for answers that
+ * arrive after an await, such as a folder picked in the system dialog.
+ */
+export function resolveWorkspaceRequestById(id: string, path: string | null): void {
+  approvalBridge.resolve('workspace', id, path);
+}
+
+/**
  * Drain workspace request — reject pending request on abort
  */
 export function drainWorkspaceRequest(): void {

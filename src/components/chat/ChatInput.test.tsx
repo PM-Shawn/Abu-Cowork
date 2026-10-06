@@ -313,6 +313,80 @@ describe('ChatInput per-conversation drafts', () => {
     clearInputQueue(conversationId);
   });
 
+  it('hands a /goal command to the send handler while the chat is running, never to the queue', async () => {
+    const conversationId = useChatStore.getState().createConversation();
+    const onSend = vi.fn(() => undefined);
+    render(<ChatInput variant="chat" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    act(() => {
+      useChatStore.getState().setConversationStatus(conversationId, 'running');
+    });
+
+    fireEvent.change(textarea, { target: { value: '/goal pause' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]).toEqual(['/goal pause']);
+    expect(getQueuedInputs(conversationId)).toHaveLength(0);
+    await waitFor(() => expect(textarea.value).toBe(''));
+  });
+
+  it('keeps a refused /goal command in the composer while the chat is running', async () => {
+    const conversationId = useChatStore.getState().createConversation();
+    const onSend = vi.fn(() => Promise.resolve(false));
+    render(<ChatInput variant="chat" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    act(() => {
+      useChatStore.getState().setConversationStatus(conversationId, 'running');
+    });
+
+    fireEvent.change(textarea, { target: { value: '/goal edit' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(getQueuedInputs(conversationId)).toHaveLength(0);
+    expect(textarea.value).toBe('/goal edit');
+  });
+
+  it('keeps a /goal command in the composer when the send handler fails while the chat is running', async () => {
+    const conversationId = useChatStore.getState().createConversation();
+    const onSend = vi.fn(() => Promise.reject(new Error('dispatch failed')));
+    render(<ChatInput variant="chat" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    act(() => {
+      useChatStore.getState().setConversationStatus(conversationId, 'running');
+    });
+
+    fireEvent.change(textarea, { target: { value: '/goal ship the report' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(textarea.value).toBe('/goal ship the report');
+    expect(getQueuedInputs(conversationId)).toHaveLength(0);
+  });
+
+  it('hands a /goal command to the send handler while an earlier send is still settling', async () => {
+    const conversationId = useChatStore.getState().createConversation();
+    const pending = deferred<boolean | void>();
+    const onSend = vi.fn((text: string): Promise<boolean | void> | void => (text === 'start work' ? pending.promise : undefined));
+    render(<ChatInput variant="chat" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: 'start work' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    fireEvent.change(textarea, { target: { value: '/goal clear' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls[1][0]).toBe('/goal clear');
+    expect(getQueuedInputs(conversationId)).toHaveLength(0);
+    await act(async () => {
+      pending.resolve(true);
+      await pending.promise;
+    });
+  });
+
   it('queues a pure-text follow-up while a previous initial send promise is still pending and the chat is running', async () => {
     const conversationId = useChatStore.getState().createConversation();
     const pending = deferred<boolean | void>();

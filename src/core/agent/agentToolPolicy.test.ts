@@ -8,7 +8,7 @@ describe('agentToolPolicy', () => {
     const definition = { name: 'expert', tools: ['read_file'], disallowedTools: ['run_agent_batch'] } as never;
     const route = { type: 'agent' as const, name: 'expert', cleanInput: 'task', definition };
     expect(agentToolPolicyForRoute(route)).toEqual({ tools: ['read_file'], disallowedTools: ['run_agent_batch'], protocolTools: [] });
-    expect(agentToolPolicyForRoute({ ...route, team: {} as never })?.protocolTools).toEqual(['report_plan', 'delegate_to_agent', 'run_agent_batch']);
+    expect(agentToolPolicyForRoute({ ...route, team: {} as never })?.protocolTools).toEqual(['report_plan', 'delegate_to_agent', 'run_agent_batch', 'manage_goal']);
     for (const type of ['general', 'skill', 'delegate'] as const) {
       expect(agentToolPolicyForRoute({ ...route, type, team: {} as never })).toBeUndefined();
     }

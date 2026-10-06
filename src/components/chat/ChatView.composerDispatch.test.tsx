@@ -139,6 +139,69 @@ describe('ChatView welcome composer dispatch ownership', () => {
     }
   });
 
+  it('/goal <objective> sets an armed goal on the new conversation and sends only the objective', async () => {
+    configureApiKey();
+    dispatchMock.mockResolvedValueOnce({ reason: 'completed' });
+    render(<ChatView />);
+    await submitWelcome('/goal 把合同全部提取成表格');
+
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+    const [convId, text] = dispatchMock.mock.calls[0] as [string, string];
+    expect(text).toBe('把合同全部提取成表格');
+    const goal = useChatStore.getState().conversations[convId].goal;
+    expect(goal).toMatchObject({ objective: '把合同全部提取成表格', phase: 'active', roundsStarted: 0 });
+    const { isGoalArmed } = await import('@/core/goal/goalActivation');
+    expect(isGoalArmed(convId, goal?.id)).toBe(true);
+  });
+
+  it('/goal pause without a goal never dispatches and says so', async () => {
+    configureApiKey();
+    render(<ChatView />);
+    await submitWelcome('/goal pause');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.length).toBeGreaterThan(0));
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts[0].title).toBe(getI18n().chat.goal.noGoal);
+  });
+
+  it('/goal <new> over an unfinished goal asks first: cancel keeps the goal and the text, confirm replaces it', async () => {
+    configureApiKey();
+    dispatchMock.mockResolvedValue({ reason: 'completed' });
+    const goalText = getI18n().chat.goal;
+    const convId = useChatStore.getState().createConversation();
+    const { createGoalFromCommand } = await import('@/core/goal/goalCommand');
+    expect(createGoalFromCommand(convId, 'first objective').ok).toBe(true);
+    const firstGoalId = useChatStore.getState().conversations[convId].goal?.id;
+    useChatStore.setState({ activeConversationId: convId });
+    render(<ChatView />);
+
+    const textarea = await submitWelcome('/goal second objective');
+    expect(await screen.findByText(goalText.replaceConfirmTitle)).toBeInTheDocument();
+    expect(screen.getByText(/first objective.*is not finished/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+    await waitFor(() => expect(textarea).toHaveValue('/goal second objective'));
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().conversations[convId].goal).toMatchObject({ id: firstGoalId, objective: 'first objective' });
+
+    await userEvent.type(textarea, '{Enter}');
+    await userEvent.click(await screen.findByRole('button', { name: goalText.actionReplace }));
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+    expect((dispatchMock.mock.calls[0] as [string, string])[1]).toBe('second objective');
+    const goal = useChatStore.getState().conversations[convId].goal;
+    expect(goal).toMatchObject({ objective: 'second objective', phase: 'active', roundsStarted: 0 });
+    expect(goal?.id).not.toBe(firstGoalId);
+  });
+
+  it('/goal without a usable model still answers and leaves settings closed', async () => {
+    render(<ChatView />);
+    await submitWelcome('/goal');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.length).toBeGreaterThan(0));
+    expect(useToastStore.getState().toasts[0].title).toBe(getI18n().chat.goal.noGoal);
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
   it('keeps the composer empty after a post-commit dispatch failure', async () => {
     configureApiKey();
     dispatchMock.mockResolvedValueOnce({

@@ -142,6 +142,8 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/chatSpacing.ts',
   'src/components/chat/UsageChip.tsx',
   'src/components/chat/ConvIdBadge*.{ts,tsx}',
+  'src/components/chat/GoalBar*.{ts,tsx}',
+  'src/components/chat/GoalRoundMarker*.{ts,tsx}',
   // Right panel, file by file (batch 5). PreviewPanel and the panel directory glob join in batch 8 with the in-place fullscreen.
   'src/components/panel/RightPanel*.{ts,tsx}',
   'src/components/panel/panelWidths*.ts',

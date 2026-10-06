@@ -29,7 +29,7 @@ import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync
 import RightPanel from '@/components/panel/RightPanel';
 import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
-import ToastContainer from '@/components/common/ToastContainer';
+import ToasterMount from '@/components/common/ToasterMount';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { initPlatform } from '@/utils/platform';
@@ -947,7 +947,7 @@ function App() {
 
         {mac && <WindowTitleBar {...windowTitleBarProps} />}
 
-        <ToastContainer />
+        <ToasterMount />
 
         <ImageLightbox />
 

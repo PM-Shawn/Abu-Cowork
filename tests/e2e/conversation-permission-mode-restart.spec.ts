@@ -382,12 +382,14 @@ test.describe.serial('#549 P2b per-conversation permission mode — real Electro
     await openConversation(page, marker);
     await expect(permissionChip(page, MODE_STANDARD)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText(replies[0], { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    // Silently: no dialog, and no toast. ToastContainer
-    // (src/components/common/ToastContainer.tsx) renders its fixed
-    // `role="status"` region only while a toast is up, so an absent region is
+    // Silently: no dialog, and no toast. The notification region
+    // (src/components/ds/toaster.tsx, mounted by ToasterMount) is always on
+    // the page and holds one list item per toast, so a region with no item is
     // the DOM's way of saying nothing was announced.
     await expect(page.getByRole('heading', { name: CONFIRM_DIALOG })).toHaveCount(0);
-    await expect(page.locator('div.fixed[role="status"][aria-live="polite"]')).toHaveCount(0);
+    const notifications = page.getByRole('region', { name: /^(通知|Notifications)$/ });
+    await expect(notifications).toHaveCount(1);
+    await expect(notifications.getByRole('listitem')).toHaveCount(0);
 
     // The conversation works as one that never had a mode of its own, and the
     // next index write leaves the refused value out of the file.

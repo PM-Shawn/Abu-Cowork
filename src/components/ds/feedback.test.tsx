@@ -246,6 +246,120 @@ describe('feedback components', () => {
     }
   });
 
+  // A notification's button takes the focus when it is pressed. Once the notification has left,
+  // the focus is back on what had it before, not on the window.
+  it('Toaster hands the focus back to what had it after a pointer press on an action or on Close', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <input aria-label="Draft" />
+        <ToasterHarness initial={[toast(1, { type: 'info', title: 'Task deleted', actions: [{ label: 'Undo', onClick: () => undefined }] }), toast(2)]} />
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    const draft = screen.getByRole('textbox', { name: 'Draft' });
+    draft.focus();
+    await user.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(shownTitles()).toEqual(['Saved 2']);
+    expect(draft).toHaveFocus();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(shownTitles()).toEqual([]);
+    expect(draft).toHaveFocus();
+  });
+
+  it('Toaster hands the focus back once the last notification is closed from the keyboard', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <input aria-label="Draft" />
+        <ToasterHarness initial={[toast(1), toast(2)]} />
+      </>,
+      { wrapper: DesignSystemProvider },
+    );
+    const draft = screen.getByRole('textbox', { name: 'Draft' });
+    draft.focus();
+    await user.tab();
+    expect(document.activeElement?.closest('li')?.textContent).toContain('Saved 1');
+    await user.keyboard('{Enter}');
+    // The next notification first: a keyboard user may want to close that one too.
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(shownTitles()).toEqual([]);
+    expect(draft).toHaveFocus();
+  });
+
+  it('Toaster moves the focus on when the notification that holds it expires', async () => {
+    const user = userEvent.setup();
+    const page = (toasts: Toast[]) => (
+      <>
+        <input aria-label="Draft" />
+        <Toaster toasts={toasts} onDismiss={() => undefined} />
+      </>
+    );
+    const { rerender } = render(page([toast(1), toast(2)]), { wrapper: DesignSystemProvider });
+    const draft = screen.getByRole('textbox', { name: 'Draft' });
+    draft.focus();
+    await user.tab();
+    expect(document.activeElement?.closest('li')?.textContent).toContain('Saved 1');
+    rerender(page([toast(2)]));
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    rerender(page([]));
+    expect(draft).toHaveFocus();
+  });
+
+  it('Toaster never takes the focus when a notification arrives or leaves by itself', async () => {
+    const user = userEvent.setup();
+    const page = (toasts: Toast[]) => (
+      <>
+        <input aria-label="Draft" />
+        <input aria-label="Other" />
+        <Toaster toasts={toasts} onDismiss={() => undefined} />
+      </>
+    );
+    const { rerender } = render(page([]), { wrapper: DesignSystemProvider });
+    const draft = screen.getByRole('textbox', { name: 'Draft' });
+    const other = screen.getByRole('textbox', { name: 'Other' });
+    draft.focus();
+    rerender(page([toast(1, { actions: [{ label: 'Undo', onClick: () => undefined }] })]));
+    expect(draft).toHaveFocus();
+    rerender(page([]));
+    expect(draft).toHaveFocus();
+
+    // The focus was in a notification and the user has moved it elsewhere since: it stays there.
+    rerender(page([toast(2)]));
+    await user.tab();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    other.focus();
+    rerender(page([]));
+    expect(other).toHaveFocus();
+  });
+
+  it('Toaster leaves the focus alone when what had it is no longer on the page', async () => {
+    const user = userEvent.setup();
+    const page = (toasts: Toast[], withDraft: boolean) => (
+      <>
+        {withDraft && <input aria-label="Draft" />}
+        <Toaster toasts={toasts} onDismiss={() => undefined} />
+      </>
+    );
+    const { rerender } = render(page([toast(1)], true), { wrapper: DesignSystemProvider });
+    screen.getByRole('textbox', { name: 'Draft' }).focus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    rerender(page([toast(1)], false));
+    rerender(page([], false));
+    expect(document.body).toHaveFocus();
+  });
+
+  // A file name or a key with no space in it would otherwise run past the card and off the window.
+  it('Toaster breaks a long word in the title and in the message', () => {
+    const name = 'averylongfoldername_'.repeat(8);
+    render(<ToasterHarness initial={[toast(1, { type: 'error', title: `Could not save ${name}`, message: `/fake/project/${name}` })]} />, { wrapper: DesignSystemProvider });
+    expect(shown().getByText(`Could not save ${name}`)).toHaveClass('break-words');
+    expect(shown().getByText(`/fake/project/${name}`)).toHaveClass('break-words');
+  });
+
   it('Toaster closes a notification from its close button', async () => {
     const user = userEvent.setup();
     const onDismissed = vi.fn();

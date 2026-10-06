@@ -208,7 +208,9 @@ async function expectBlockedSend(
   await input.fill(marker);
   await input.press('Enter');
 
-  await expect(page.getByRole('status').getByText(toast, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(
+    page.getByRole('region', { name: /^(通知|Notifications)$/ }).getByText(toast, { exact: true }),
+  ).toBeVisible({ timeout: READY_TIMEOUT });
   await expect(input).toHaveValue(marker);
   await expect(messagesWith(page, marker)).toHaveCount(0);
   await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0);

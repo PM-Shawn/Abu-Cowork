@@ -262,6 +262,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/common/approvalQueueView*.ts',
   'src/components/common/PermissionDialog*.{ts,tsx}',
   'src/components/common/CloseDialog*.{ts,tsx}',
+  'src/components/common/ToasterMount*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

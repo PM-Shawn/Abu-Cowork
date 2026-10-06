@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useEffect, useState } from 'react';
-import { act, render as renderTree, screen } from '@testing-library/react';
+import { act, render as renderTree, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { useConfirm, type Confirm } from './confirm-context';
+import { ConfirmDialog } from './confirm-dialog';
 import { Dialog } from './dialog';
 import { DesignSystemProvider } from './provider';
 
@@ -292,6 +293,53 @@ describe('useConfirm', () => {
     const question = screen.getByRole('alertdialog', { name: 'Open this link?' });
     expect(question).toContainElement(screen.getByTestId('link-address'));
     expect(screen.getByTestId('link-address')).toHaveTextContent('https://example.test/docs');
+  });
+
+  // happy-dom lays nothing out: the message is 882px tall in a box of 240px.
+  function tallMessage() {
+    const isMessage = (element: Element) => element.classList.contains('max-h-60');
+    const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) { return isMessage(this) ? 882 : 0; });
+    const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return isMessage(this) ? 240 : 0; });
+    return () => { scroll.mockRestore(); client.mockRestore(); };
+  }
+  const LONG_ADDRESS = `https://long.example.test/?q=${'x'.repeat(2000)}`;
+
+  it('opens on Cancel when its message is too long for its box, and Tab reaches the message', async () => {
+    const restore = tallMessage();
+    const user = userEvent.setup();
+    render('provider');
+    if (!captured) throw new Error('Capture did not render');
+    const confirm = captured;
+    act(() => { void confirm({ title: 'Open this link?', message: <code data-testid="link-address">{LONG_ADDRESS}</code>, confirmLabel: 'Open' }); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
+    const message = screen.getByRole('group', { name: 'Open this link?' });
+    expect(message).toContainElement(screen.getByTestId('link-address'));
+    await user.tab({ shift: true });
+    expect(message).toHaveFocus();
+    // Enter on the text answers nothing.
+    await user.keyboard('{Enter}');
+    expect(screen.getByRole('alertdialog', { name: 'Open this link?' })).toBeInTheDocument();
+    restore();
+  });
+
+  it('does the same for a question a page holds itself', async () => {
+    const restore = tallMessage();
+    const user = userEvent.setup();
+    const onResult = vi.fn();
+    renderTree(
+      <ConfirmDialog open title="Open this link?" message={LONG_ADDRESS} confirmLabel="Open" onResult={onResult} />,
+      { wrapper: DesignSystemProvider },
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
+    const message = screen.getByRole('group', { name: 'Open this link?' });
+    await user.tab({ shift: true });
+    expect(message).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    expect(onResult).not.toHaveBeenCalled();
+    restore();
   });
 
   it('fails fast outside DesignSystemProvider', () => {

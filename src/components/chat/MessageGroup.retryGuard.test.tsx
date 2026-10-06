@@ -248,6 +248,42 @@ describe('MessageGroup retry question', () => {
     expect(stored()).toBe(before);
   });
 
+  const setStatus = (status: Conversation['status']) => act(() => {
+    useChatStore.setState((state) => ({
+      conversations: { [CONVERSATION]: { ...state.conversations[CONVERSATION], status } },
+    }));
+  });
+
+  it('deletes nothing when a run has started on the conversation by the time of the answer', async () => {
+    seed([userMessage, assistantMessage, laterTurn]);
+    render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
+
+    pressRetry();
+    setStatus('running');
+    const before = stored();
+    fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+    await answered();
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  // The retry of a failed step is offered while another part of the conversation runs; a
+  // question asked then is answered as before.
+  it('still retries when the conversation was already running when the question was asked', async () => {
+    seed([userMessage, assistantMessage, laterTurn]);
+    setStatus('running');
+    render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
+
+    pressRetry();
+    fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, assistantMessage.id]]);
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+  });
+
   it('deletes nothing when more turns follow at the answer than the question named', async () => {
     seed([userMessage, assistantMessage, laterTurn]);
     render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);

@@ -158,7 +158,9 @@ test('a finished batch turn keeps its work-process steps and member process acro
   try {
     let page = await launched.app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await expect(page.getByRole('textbox').first()).toBeVisible({ timeout: 45_000 });
+    // The first-run guide is a modal window: the page behind it is out of the accessibility tree,
+    // so until the guide is dismissed the message field is found by its mark and not by its role.
+    await expect(page.locator('[data-chat-composer]').first()).toBeVisible({ timeout: 45_000 });
     await dismissFirstRunOverlays(page);
     await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true, permissionMode: 'standard' });
     await expect(page.getByRole('textbox').first()).toBeVisible({ timeout: 45_000 });

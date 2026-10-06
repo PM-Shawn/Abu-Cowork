@@ -110,7 +110,9 @@ test('a stopped batch member reads as stopped in its own tab while the batch kee
   try {
     const page = await launched.app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await expect(page.getByRole('textbox').first()).toBeVisible({ timeout: 45_000 });
+    // The first-run guide is a modal window: the page behind it is out of the accessibility tree,
+    // so until the guide is dismissed the message field is found by its mark and not by its role.
+    await expect(page.locator('[data-chat-composer]').first()).toBeVisible({ timeout: 45_000 });
     await dismissFirstRunOverlays(page);
     await page.evaluate(({ name, members }) => {
       const previous = JSON.parse(localStorage.getItem('abu-team') ?? '{}');

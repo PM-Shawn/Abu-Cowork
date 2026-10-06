@@ -1396,6 +1396,87 @@ describe('Dialog size viewer, long descriptions and presses outside', () => {
     expect(description).toHaveClass('overflow-y-auto');
   });
 
+  // happy-dom lays nothing out: the description is as tall as the test says, in a box of 240px.
+  function descriptionIs(height: number) {
+    const isDescription = (element: Element) => element.classList.contains('max-h-60');
+    const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) { return isDescription(this) ? height : 0; });
+    const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return isDescription(this) ? Math.min(height, 240) : 0; });
+    return () => { scroll.mockRestore(); client.mockRestore(); };
+  }
+  const ADDRESS = `https://long.example.test/?q=${'x'.repeat(2000)}`;
+  const question = (description: ReactNode, closeOnly = false) => (
+    <Dialog
+      open
+      role="alertdialog"
+      title="Open this link?"
+      description={description}
+      closeButton={closeOnly}
+      footer={closeOnly ? undefined : <><Button>Cancel</Button><Button>Open</Button></>}
+    />
+  );
+
+  it('makes a description taller than its box a named scroll region the Tab key reaches, and still opens on the first button', async () => {
+    const restore = descriptionIs(882);
+    const user = userEvent.setup();
+    render(question(ADDRESS), { wrapper: DesignSystemProvider });
+    const description = screen.getByText(ADDRESS);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
+    expect(description).toHaveAttribute('tabindex', '0');
+    expect(description).toHaveAttribute('role', 'group');
+    expect(description).toHaveAccessibleName('Open this link?');
+    expect(description).toHaveClass('focus-visible:ring-2');
+
+    // The whole order: the text, then the two buttons, and round again.
+    await user.tab({ shift: true });
+    expect(description).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Open' })).toHaveFocus();
+    restore();
+  });
+
+  it('adds no Tab stop for a description that fits its box', async () => {
+    const restore = descriptionIs(36);
+    const user = userEvent.setup();
+    render(question('https://example.test/docs'), { wrapper: DesignSystemProvider });
+    const description = screen.getByText('https://example.test/docs');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
+    expect(description).not.toHaveAttribute('tabindex');
+    expect(description).not.toHaveAttribute('role');
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: 'Open' })).toHaveFocus();
+    restore();
+  });
+
+  it('follows the description when it grows past its box or shrinks back into it', () => {
+    let restore = descriptionIs(36);
+    const view = render(question('short'), { wrapper: DesignSystemProvider });
+    expect(screen.getByText('short')).not.toHaveAttribute('tabindex');
+    restore();
+
+    restore = descriptionIs(882);
+    view.rerender(question(ADDRESS));
+    expect(screen.getByText(ADDRESS)).toHaveAttribute('tabindex', '0');
+    restore();
+
+    restore = descriptionIs(36);
+    view.rerender(question('short again'));
+    expect(screen.getByText('short again')).not.toHaveAttribute('tabindex');
+    restore();
+  });
+
+  it('still opens on its own box when the close button is the only control and the description scrolls', async () => {
+    const restore = descriptionIs(882);
+    render(question(ADDRESS, true), { wrapper: DesignSystemProvider });
+
+    await waitFor(() => expect(screen.getByRole('alertdialog', { name: 'Open this link?' })).toHaveFocus());
+    expect(screen.getByText(ADDRESS)).toHaveAttribute('tabindex', '0');
+    restore();
+  });
+
   it('ignores a press outside with outsidePress="ignore", and still closes on Escape', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const onOpenChange = vi.fn();

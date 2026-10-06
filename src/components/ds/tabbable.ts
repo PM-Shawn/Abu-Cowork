@@ -13,9 +13,11 @@ export function isTabbable(element: HTMLElement, content: HTMLElement): boolean 
   return true;
 }
 
-export function firstTabbable(content: HTMLElement, skipLinks = false): HTMLElement | null {
+// `except` is passed over: a text that scrolls is a Tab stop and no place for a layer to open on.
+export function firstTabbable(content: HTMLElement, skipLinks = false, except: Element | null = null): HTMLElement | null {
   for (const element of content.querySelectorAll<HTMLElement>('*')) {
     if (skipLinks && element.tagName === 'A') continue;
+    if (element === except) continue;
     if (isTabbable(element, content)) return element;
   }
   return null;

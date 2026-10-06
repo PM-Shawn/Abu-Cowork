@@ -782,7 +782,9 @@ describe('MessageBubble redo question', () => {
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
   });
 
-  it('still redoes when a run starts on the conversation while the question shows', async () => {
+  // An IM message, a goal's next round or a message from the pet window can start a run on the
+  // conversation while the question shows. The question was asked about a conversation at rest.
+  it('deletes nothing when a run has started on the conversation by the time of the answer', async () => {
     seed([question, answer, ...laterTurns(1)]);
     render(<MessageBubble message={answer} />);
 
@@ -792,7 +794,29 @@ describe('MessageBubble redo question', () => {
         conversations: { [CONVERSATION]: { ...state.conversations[CONVERSATION], status: 'running' } },
       }));
     });
+    const before = stored();
     expect(questionTitle()).toBeInTheDocument();
+    press('Confirm');
+    await answered();
+
+    expect(questionTitle()).not.toBeInTheDocument();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(stored()).toBe(before);
+  });
+
+  it('redoes when the run that started while the question showed has ended by the time of the answer', async () => {
+    seed([question, answer, ...laterTurns(1)]);
+    render(<MessageBubble message={answer} />);
+
+    press('Regenerate');
+    for (const status of ['running', 'idle'] as const) {
+      act(() => {
+        useChatStore.setState((state) => ({
+          conversations: { [CONVERSATION]: { ...state.conversations[CONVERSATION], status } },
+        }));
+      });
+    }
     press('Confirm');
     await answered();
 

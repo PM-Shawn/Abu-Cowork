@@ -453,7 +453,9 @@ test('专家团里「这个任务里都允许」只在本任务内生效，可�
     app = (await launchAbuElectron(dataRoot)).app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await page.waitForLoadState('domcontentloaded');
-    await expect(page.getByRole('textbox').first()).toBeVisible({ timeout: READY_TIMEOUT });
+    // The first-run guide is a modal window: the page behind it is out of the accessibility tree,
+    // so until the guide is dismissed the message field is found by its mark and not by its role.
+    await expect(page.locator('[data-chat-composer]').first()).toBeVisible({ timeout: READY_TIMEOUT });
     await dismissFirstRunOverlays(page);
     await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true, supportsReasoning: null, permissionMode: 'standard' });
 

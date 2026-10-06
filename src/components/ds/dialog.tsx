@@ -1,5 +1,5 @@
 import { AlertDialog as AlertDialogPrimitive, Dialog as DialogPrimitive, VisuallyHidden } from 'radix-ui';
-import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
@@ -8,7 +8,7 @@ import { AppIcons } from './icons';
 import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
 import { InDialogContext, useLayer, useLayerContainer, useLayerRegistry, useOpenState } from './layer-context';
-import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, DIALOG_VIEWER, SCRIM_MOTION } from './styles';
+import { DIALOG_BOX, DIALOG_CLOSING, DIALOG_MOTION, DIALOG_PAGE, DIALOG_VIEWER, FOCUS_RING, SCRIM_MOTION } from './styles';
 import { firstTabbable, lastTabbable } from './tabbable';
 
 const WIDTH = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-3xl' } as const;
@@ -22,11 +22,12 @@ const PLACEMENT = { center: '', top: 'top-1/7 translate-y-0 max-h-[calc(100dvh*6
 // True when the dialog has a close button and nothing else the Tab key can reach. Every element
 // is asked the way Radix asks when it looks for the first focus target, so an editable box, a
 // summary, a frame or a media player counts as a control like a button does.
-function hasOnlyCloseButton(content: HTMLElement): boolean {
+// A description that scrolls is a Tab stop and no control.
+function hasOnlyCloseButton(content: HTMLElement, description: Element | null): boolean {
   const close = content.querySelector('[data-ds-dialog-close]');
   if (!close) return false;
   return Array.from(content.querySelectorAll<HTMLElement>('*')).every((element) => {
-    if (close.contains(element)) return true;
+    if (close.contains(element) || element === description) return true;
     const hiddenInput = element instanceof HTMLInputElement && element.type === 'hidden';
     if ((element as HTMLElement & { disabled?: boolean }).disabled || element.hidden || hiddenInput) return true;
     return !(element.tabIndex >= 0);
@@ -152,6 +153,23 @@ export function Dialog({
   const registry = useLayerRegistry();
   const kind = layer === 'approval' ? 'approval' : role === 'alertdialog' ? 'alert' : 'dialog';
   const contentRef = useRef<HTMLDivElement>(null);
+  // A description taller than its box scrolls. The keyboard has to reach it to scroll it (a long
+  // address in a question is read whole before it is answered), so it is then a Tab stop named
+  // after the dialog's title; one that fits adds no stop. Holds the title's id while it scrolls.
+  const descriptionRef = useRef<HTMLParagraphElement | null>(null);
+  const [scrollingDescriptionName, setScrollingDescriptionName] = useState<string | null>(null);
+  const measureDescription = useCallback(() => {
+    const box = descriptionRef.current;
+    const scrolls = box !== null && box.scrollHeight > box.clientHeight;
+    setScrollingDescriptionName(scrolls ? box.closest('[data-ds-layer]')?.getAttribute('aria-labelledby') ?? '' : null);
+  }, []);
+  // Measured when the description joins the page (the portal draws it after this component has
+  // rendered) and after every render that may have changed its words.
+  const holdDescription = useCallback((box: HTMLParagraphElement | null) => {
+    descriptionRef.current = box;
+    measureDescription();
+  }, [measureDescription]);
+  useLayoutEffect(measureDescription);
   const {
     id, onCloseAutoFocus, held, aside, admitted, returnFocus: returnTo, onEscapeKeyDown: passEscapeWhileClosing,
   } = useLayer(kind, isOpen, setOpen, {
@@ -188,7 +206,7 @@ export function Dialog({
     focusedInside.current = null;
     if (!content) return;
     const quiet = { preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) };
-    const opening = () => (initialFocusRef.current?.(content) ?? firstTabbable(content, true) ?? content).focus(quiet);
+    const opening = () => (initialFocusRef.current?.(content) ?? firstTabbable(content, true, descriptionRef.current) ?? content).focus(quiet);
     // After a group has returned the focus is inside its top layer.
     // A question is that top layer, whatever returned with it, and it returns the way it opened,
     // on the control it names: the approval took the focus by itself, and a key still being
@@ -287,7 +305,7 @@ export function Dialog({
               // The close button is the only control (an enlarged image): focus goes to the box.
               // On the button it would show the button's tooltip the moment the dialog opens.
               // Tab still reaches the button.
-              if (hasOnlyCloseButton(content)) {
+              if (hasOnlyCloseButton(content, descriptionRef.current)) {
                 event.preventDefault();
                 content.focus();
                 return;
@@ -296,6 +314,14 @@ export function Dialog({
               if (named) {
                 event.preventDefault();
                 named.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+                return;
+              }
+              // A description that scrolls is the first Tab stop in the box: the dialog opens on
+              // the control after it (the cancelling button of a question), never on the text.
+              const description = descriptionRef.current;
+              if (description && firstTabbable(content, true) === description) {
+                event.preventDefault();
+                (firstTabbable(content, true, description) ?? content).focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
                 return;
               }
               // Radix's own choice, links aside as it does.
@@ -325,7 +351,13 @@ export function Dialog({
                 {description && (
                   // A line break in the words is kept: a question names what it acts on on a line of its own.
                   // Words longer than the dialog (a path, an address) break, and many lines scroll.
-                  <DialogPrimitive.Description className="mt-1 max-h-60 overflow-y-auto whitespace-pre-line break-words text-ui text-label-secondary">{description}</DialogPrimitive.Description>
+                  <DialogPrimitive.Description
+                    ref={holdDescription}
+                    {...(scrollingDescriptionName === null ? {} : { tabIndex: 0, role: 'group', 'aria-labelledby': scrollingDescriptionName })}
+                    className={cn('mt-1 max-h-60 overflow-y-auto whitespace-pre-line break-words text-ui text-label-secondary', scrollingDescriptionName !== null && cn('rounded-control', FOCUS_RING))}
+                  >
+                    {description}
+                  </DialogPrimitive.Description>
                 )}
                 {/* With a hidden title the header is the top row: it stops short of the close button's corner. */}
                 {header && <div className={cn('shrink-0', !titleHidden && 'mt-4', titleHidden && closeButton && 'pr-8')}>{header}</div>}

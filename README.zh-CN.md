@@ -123,7 +123,7 @@
 
 ### AI 服务与模型
 
-- **12+ 云端厂商** — Anthropic Claude、OpenAI、DeepSeek、通义千问(百炼)、豆包(火山引擎)、Moonshot、智谱、MiniMax、SiliconFlow、七牛、OpenRouter 等
+- **12+ 云端厂商** — Anthropic Claude、OpenAI、DeepSeek、通义千问(百炼)、豆包(火山引擎)、Moonshot、智谱、MiniMax、SiliconFlow、七牛、OpenRouter、Requesty 等
 - **本地模型** — Ollama 零配置接入，自动发现本地模型
 - **自定义接入** — 支持任意 OpenAI 兼容 / Anthropic 兼容 API 端点
 - **Provider 管理** — 添加、编辑、删除、排序，连接健康检查 + 延迟检测

@@ -20,6 +20,7 @@ const PRESET_GROUP_KEYS = [
   { key: 'openai', labelKey: 'openaiCompatible' as const },
   { key: 'qiniu', labelKey: 'qiniuCloud' as const },
   { key: 'openrouter', labelKey: 'openrouter' as const },
+  { key: 'requesty', labelKey: 'requesty' as const },
   { key: 'local', labelKey: 'localModels' as const },
 ] as const;
 

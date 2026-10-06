@@ -1,10 +1,18 @@
-import { useState, useEffect } from 'react';
-import { useI18n, format } from '@/i18n';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { Disclosure } from '@/components/ds/disclosure';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
+import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 import { scanMemoryFiles, readMemoryFile } from '@/core/memdir/scan';
 import { deleteMemory, clearAllMemories } from '@/core/memdir/write';
 import type { MemoryHeader, MemoryType } from '@/core/memdir/types';
-import ConfirmDialog from './ConfirmDialog';
-import { ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { useI18n, format } from '@/i18n';
 
 interface ProjectMemoryProps {
   open: boolean;
@@ -21,13 +29,6 @@ interface PersonalMemoryProps {
 }
 
 type MemoryViewModalProps = ProjectMemoryProps | PersonalMemoryProps;
-
-const TYPE_COLORS: Record<MemoryType, string> = {
-  user: 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]',
-  project: 'bg-purple-100 text-purple-700 dark:bg-purple-400/15 dark:text-purple-300',
-  feedback: 'bg-teal-100 text-teal-700 dark:bg-teal-400/15 dark:text-teal-300',
-  reference: 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]',
-};
 
 function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): string {
   const map: Record<MemoryType, string> = {
@@ -50,47 +51,78 @@ function formatAge(timestamp: number, t: ReturnType<typeof useI18n>['t']): strin
   return format(t.memory.monthsAgo, { n: String(Math.floor(days / 30)) });
 }
 
+const newestFirst = (items: MemoryHeader[]) => items.sort((a, b) => b.updated - a.updated);
+
 export default function MemoryViewModal(props: MemoryViewModalProps) {
   const { open, onClose, scope } = props;
   const { t } = useI18n();
+  const confirm = useConfirm();
   const [headers, setHeaders] = useState<MemoryHeader[]>([]);
+  // The content of the memories that were opened, by file.
   const [expandedContent, setExpandedContent] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<MemoryHeader | null>(null);
 
   const isPersonal = scope === 'personal';
   const wsPath = isPersonal ? null : props.workspacePath;
+
+  // The window lists one folder for one opening. It starts over when it opens and when the
+  // folder changes while it is open; once closed it keeps what it showed while it fades out.
+  const shownFor = open ? wsPath ?? '' : undefined;
+  const [listedFor, setListedFor] = useState<string | undefined>(undefined);
+  if (shownFor !== listedFor) {
+    setListedFor(shownFor);
+    if (shownFor !== undefined) {
+      setLoading(true);
+      setExpandedId(null);
+      setExpandedContent({});
+    }
+  }
+
+  // What the handlers read after a question or a file call: the list and the folder as they are then.
+  const headersRef = useRef(headers);
+  const folderRef = useRef(wsPath);
+  useLayoutEffect(() => {
+    headersRef.current = headers;
+    folderRef.current = wsPath;
+  });
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     async function load() {
-      setLoading(true);
+      let items: MemoryHeader[];
       try {
-        const items = await scanMemoryFiles(wsPath);
-        if (!cancelled) setHeaders(items.sort((a, b) => b.updated - a.updated));
+        items = newestFirst(await scanMemoryFiles(wsPath));
       } catch {
-        if (!cancelled) setHeaders([]);
-      } finally {
-        if (!cancelled) setLoading(false);
+        items = [];
       }
+      // A scan of an earlier opening, or of the folder shown before, is dropped.
+      if (cancelled) return;
+      setHeaders(items);
+      setLoading(false);
     }
-    load();
+    void load();
     return () => { cancelled = true; };
   }, [open, wsPath]);
 
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
-
-  if (!open) return null;
+  // A removed row takes the focus with it: the browser puts it on the page, and the dialog then
+  // on its own box. `removedAt` is the place the memory had in the list; the focus goes to the
+  // row now at that place, else the last row, else the Close button.
+  const listRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const removedAt = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const place = removedAt.current;
+    removedAt.current = null;
+    if (place === null || !open) return;
+    const active = document.activeElement;
+    const onOwnBox = active instanceof HTMLElement && active.hasAttribute('data-ds-layer') && closeRef.current !== null && active.contains(closeRef.current);
+    if (!focusIsOnWindow() && !onOwnBox) return;
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('button[aria-expanded]') ?? []);
+    const target = rows[Math.min(place, rows.length - 1)] ?? closeRef.current;
+    target?.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
+  }, [headers, open]);
 
   const handleExpand = async (header: MemoryHeader) => {
     const id = header.filename;
@@ -99,161 +131,137 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
       return;
     }
     setExpandedId(id);
-    if (!expandedContent[id]) {
+    if (!expandedContent[header.filePath]) {
       const file = await readMemoryFile(header.filePath);
       if (file) {
-        setExpandedContent(prev => ({ ...prev, [id]: file.content }));
+        setExpandedContent((prev) => ({ ...prev, [header.filePath]: file.content }));
       }
     }
   };
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
+  // The memories that have a question open or a delete under way: one delete per memory.
+  const deleting = useRef(new Set<string>());
+  const handleDelete = async (header: MemoryHeader) => {
+    // The window keeps rendering while it fades out: nothing is asked or deleted then.
+    if (!open || deleting.current.has(header.filePath)) return;
+    deleting.current.add(header.filePath);
     try {
-      await deleteMemory(deleteTarget.filename, wsPath);
-      setDeleteTarget(null);
-      const items = await scanMemoryFiles(wsPath);
-      setHeaders(items.sort((a, b) => b.updated - a.updated));
+      // Asked inside the click handler, so the question ends with the window, answered with cancel.
+      const confirmed = await confirm({
+        title: t.memory.deleteTitle,
+        message: header.name,
+        confirmLabel: t.common.delete,
+        tone: 'danger',
+      });
+      if (!confirmed) return;
+      // The list may have changed while the question was open: only a memory still listed is deleted.
+      const index = headersRef.current.findIndex((item) => item.filePath === header.filePath);
+      if (index === -1) return;
+      await deleteMemory(header.filename, wsPath);
+      const items = newestFirst(await scanMemoryFiles(wsPath));
+      // The scan belongs to the folder the delete was made in.
+      if (folderRef.current !== wsPath) return;
+      removedAt.current = index;
+      setHeaders(items);
     } catch (err) {
       console.error('Failed to delete memory:', err);
+    } finally {
+      deleting.current.delete(header.filePath);
     }
   };
 
+  const clearing = useRef(false);
   const handleClear = async () => {
+    // Nothing is asked from a window that is fading out, nor while a clear is under way.
+    if (!open || clearing.current) return;
+    clearing.current = true;
     try {
+      const sentence = isPersonal ? t.sidebar.personalMemoryClearMessage : t.panel.memoryClearMessage;
+      const confirmed = await confirm({
+        title: t.panel.memoryClearTitle,
+        // The second line says how many memories the list holds.
+        message: `${sentence}\n${format(t.memory.entryCount, { count: String(headers.length) })}`,
+        confirmLabel: t.panel.memoryClearConfirm,
+        tone: 'danger',
+      });
+      // Nothing is cleared once the list has emptied.
+      if (!confirmed || headersRef.current.length === 0) return;
       await clearAllMemories(wsPath);
+      if (folderRef.current !== wsPath) return;
+      removedAt.current = 0;
       setHeaders([]);
-      setShowClearConfirm(false);
     } catch (err) {
       console.error('Failed to clear memory:', err);
+    } finally {
+      clearing.current = false;
     }
   };
 
   const title = isPersonal ? t.sidebar.personalMemoryTitle : t.panel.memoryTitle;
   const desc = isPersonal ? t.sidebar.personalMemoryDesc : t.panel.memoryDesc;
-  const accentColor = isPersonal ? 'var(--abu-clay)' : '#8b7ec8';
 
   return (
-    <>
-      <ConfirmDialog
-        open={showClearConfirm}
-        title={t.panel.memoryClearTitle}
-        message={isPersonal ? t.sidebar.personalMemoryClearMessage : t.panel.memoryClearMessage}
-        confirmText={t.panel.memoryClearConfirm}
-        cancelText={t.common.cancel}
-        onConfirm={handleClear}
-        onCancel={() => setShowClearConfirm(false)}
-        variant="danger"
-      />
-
-      <ConfirmDialog
-        open={!!deleteTarget}
-        title={t.memory.deleteTitle}
-        message={deleteTarget?.name ?? ''}
-        confirmText={t.common.delete}
-        cancelText={t.common.cancel}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteTarget(null)}
-        variant="danger"
-      />
-
-      <div
-        data-electron-no-drag
-        className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] flex flex-col p-6 animate-in zoom-in-95 duration-150">
-          <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-1">
-            {title}
-          </h3>
-          <p className="text-body text-[var(--abu-text-muted)] mb-4">
-            {desc}
-          </p>
-
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div
-                className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin"
-                style={{ borderColor: accentColor, borderTopColor: 'transparent' }}
-              />
-            </div>
-          ) : headers.length > 0 ? (
-            <div className="max-h-[60vh] overflow-y-auto space-y-2 mb-4">
-              <div className="text-minor text-[var(--abu-text-placeholder)] mb-2">
-                {format(t.memory.entryCount, { count: String(headers.length) })}
-              </div>
-              {headers.map((header) => (
-                <div
-                  key={header.filename}
-                  className="border border-[var(--abu-border)] rounded-lg bg-[var(--abu-bg-muted)] overflow-hidden"
-                >
-                  <div
-                    className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[var(--abu-bg-hover)] transition-colors"
-                    onClick={() => handleExpand(header)}
-                  >
-                    <span className={`text-caption font-medium px-1.5 py-0.5 rounded shrink-0 ${TYPE_COLORS[header.type]}`}>
-                      {getTypeLabel(header.type, t)}
-                    </span>
-                    <span className="text-minor text-[var(--abu-text-primary)] flex-1 truncate">
-                      {header.name}
-                    </span>
-                    <span className="text-caption text-[var(--abu-text-placeholder)] whitespace-nowrap shrink-0">
-                      {formatAge(header.updated, t)}
-                    </span>
-                    {expandedId === header.filename ? (
-                      <ChevronUp className="h-3 w-3 text-[var(--abu-text-placeholder)] shrink-0" />
-                    ) : (
-                      <ChevronDown className="h-3 w-3 text-[var(--abu-text-placeholder)] shrink-0" />
-                    )}
-                  </div>
-
-                  {expandedId === header.filename && (
-                    <div className="px-3 pb-2.5 border-t border-[var(--abu-bg-active)]">
-                      <p className="text-caption text-[var(--abu-text-tertiary)] leading-relaxed mt-2 whitespace-pre-wrap">
-                        {expandedContent[header.filename] ?? header.description}
-                      </p>
-                      <div className="flex justify-end mt-2">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setDeleteTarget(header); }}
-                          className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex items-center justify-center py-12">
-              <p className="text-body text-[var(--abu-text-placeholder)]">
-                {t.panel.memoryEmpty}
-              </p>
-            </div>
-          )}
-
-          <div className="flex gap-3">
-            {headers.length > 0 && (
-              <button
-                onClick={() => setShowClearConfirm(true)}
-                className="px-4 py-2.5 rounded-lg text-body font-medium text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-              >
-                {t.panel.memoryClear}
-              </button>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={title}
+      description={desc}
+      size="md"
+      closeButton
+      // The list is not there yet when the window opens; it opens on Close, which deletes nothing.
+      initialFocus={() => closeRef.current}
+      footer={(
+        <div className="flex w-full items-center justify-between gap-2">
+          <div>
+            {!loading && headers.length > 0 && (
+              <Button variant="danger" size="sm" onClick={handleClear}>{t.panel.memoryClear}</Button>
             )}
-            <div className="flex-1" />
-            <button
-              onClick={onClose}
-              className="px-4 py-2.5 rounded-lg text-body font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-            >
-              {t.common.close}
-            </button>
           </div>
+          <DialogClose asChild><Button ref={closeRef} variant="secondary">{t.common.close}</Button></DialogClose>
         </div>
-      </div>
-    </>
+      )}
+    >
+      {loading ? (
+        <div className="flex justify-center py-8">
+          <Spinner label={t.common.loading} />
+        </div>
+      ) : headers.length > 0 ? (
+        <div ref={listRef} className="flex flex-col gap-1">
+          <div className="text-ui-sm text-label-tertiary">
+            {format(t.memory.entryCount, { count: String(headers.length) })}
+          </div>
+          {headers.map((header) => (
+            <Disclosure
+              key={header.filename}
+              open={expandedId === header.filename}
+              onOpenChange={() => { void handleExpand(header); }}
+              title={(
+                <span className="flex min-w-0 flex-1 items-center gap-2">
+                  <span className="flex shrink-0"><Tag>{getTypeLabel(header.type, t)}</Tag></span>
+                  <span className="min-w-0 flex-1 truncate">{header.name}</span>
+                  <span className="shrink-0 whitespace-nowrap text-caption font-normal text-label-tertiary">
+                    {formatAge(header.updated, t)}
+                  </span>
+                </span>
+              )}
+            >
+              <p className="whitespace-pre-wrap break-words text-caption text-label-tertiary">
+                {expandedContent[header.filePath] ?? header.description}
+              </p>
+              <div className="mt-1 flex justify-end">
+                <IconButton
+                  size="sm"
+                  icon={AppIcons.delete}
+                  label={t.common.delete}
+                  onClick={() => { void handleDelete(header); }}
+                />
+              </div>
+            </Disclosure>
+          ))}
+        </div>
+      ) : (
+        <EmptyState title={t.panel.memoryEmpty} />
+      )}
+    </Dialog>
   );
 }

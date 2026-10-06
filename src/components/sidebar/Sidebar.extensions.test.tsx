@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { keepClosingLayersOnScreen } from '@/test/dsWindows';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -68,7 +69,10 @@ vi.mock('@/components/common/CreateProjectDialog', async () => {
   };
 });
 vi.mock('@/components/panel/WorkspaceFileTree', () => ({ default: () => null }));
-vi.mock('@/components/share/ShareExportDialog', () => ({ default: () => null }));
+// Stands in for the export window: it shows which conversation it was opened for.
+vi.mock('@/components/share/ShareExportDialog', () => ({
+  default: ({ convId }: { convId: string }) => <div data-testid="share-export-window" data-conversation={convId} />,
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readTextFile: vi.fn() }));
 vi.mock('@/utils/platform', () => ({ isMacOS: () => true, isWindows: () => false }));
@@ -318,6 +322,55 @@ describe('Sidebar — Recents row menu', () => {
       await act(() => vi.runOnlyPendingTimersAsync());
       expect(field).toHaveFocus();
       expect(field.closest('[role="button"]')).toHaveAttribute('tabindex', '0');
+    });
+  });
+
+  // The export window is a dialog that gives the focus back to where it was when it opened, so
+  // it opens from the menu's close-focus hook, after the menu has returned the focus.
+  describe('export', () => {
+    beforeEach(() => {
+      // The menu's close-focus hook runs from a timer; the tests run it themselves.
+      vi.useFakeTimers();
+      resetChat({ conversationIndex: { c1: CONVERSATION }, loadConversation: vi.fn(async () => undefined) });
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    const openRowMenu = () => {
+      const more = screen.getByRole('button', { name: '更多操作' });
+      act(() => more.focus());
+      fireEvent.pointerDown(more, { button: 0 });
+      return more;
+    };
+
+    it('reads the conversation and opens the window only once the menu has gone, with the focus back on the row button', async () => {
+      renderSidebar();
+      const more = openRowMenu();
+
+      fireEvent.click(screen.getByRole('menuitem', { name: '导出会话' }));
+      expect(chat.state.loadConversation).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('share-export-window')).toBeNull();
+
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(chat.state.loadConversation).toHaveBeenCalledWith('c1');
+      expect(screen.getByTestId('share-export-window')).toHaveAttribute('data-conversation', 'c1');
+      expect(more).toHaveFocus();
+    });
+
+    it('opens no window for a choice made in a menu that was opened again before it had gone', async () => {
+      const fades = keepClosingLayersOnScreen();
+      renderSidebar();
+      const more = openRowMenu();
+      fireEvent.click(screen.getByRole('menuitem', { name: '导出会话' }));
+
+      // Still on the page, fading: the row button opens it again.
+      fireEvent.pointerDown(more, { button: 0 });
+      fades.mockRestore();
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      await act(() => vi.runOnlyPendingTimersAsync());
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(chat.state.loadConversation).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('share-export-window')).toBeNull();
     });
   });
 

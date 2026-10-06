@@ -137,6 +137,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
   const renameAfterClose = useRef<string | null>(null);
+  // The conversation whose export window opens once the row menu has gone.
+  const exportAfterClose = useRef<string | null>(null);
 
   // Guide modal state lives in the store so it can be reopened from Settings ›
   // About. Auto-opens on first launch only (below).
@@ -221,20 +223,29 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   const activeProjects = Object.values(projectsMap).filter((p) => !p.archived);
 
-  // 重命名 only marks the row; the rename field opens once the menu has gone, from its
-  // close-focus hook, and preventDefault stops the menu handing focus back to the
-  // trigger or the row so the field keeps it.
-  const startRenameAfterClose = (event: Event) => {
-    const convId = renameAfterClose.current;
-    if (!convId) return;
+  // 重命名 and 导出会话 only mark the row; what they open comes once the menu has gone, from
+  // its close-focus hook. For the rename field preventDefault stops the menu handing focus
+  // back to the trigger or the row, so the field keeps it. The export window is a dialog
+  // that gives the focus back to where it was when it opened: the menu returns it to the
+  // row's button or the row first, and the window opens after that.
+  const runAfterMenuClose = (event: Event) => {
+    const renameId = renameAfterClose.current;
+    const exportId = exportAfterClose.current;
     renameAfterClose.current = null;
-    event.preventDefault();
-    setEditingId(convId);
+    exportAfterClose.current = null;
+    if (renameId) {
+      event.preventDefault();
+      setEditingId(renameId);
+    } else if (exportId) {
+      void handleExport(exportId);
+    }
   };
   // Reopening a row menu during its exit animation keeps it mounted, so the close hook
-  // never runs for the earlier 重命名. Drop it on open, or the next Escape would start it.
-  const dropRenameOnOpen = (open: boolean) => {
-    if (open) renameAfterClose.current = null;
+  // never runs for the earlier choice. Drop it on open, or the next Escape would start it.
+  const dropActionOnOpen = (open: boolean) => {
+    if (!open) return;
+    renameAfterClose.current = null;
+    exportAfterClose.current = null;
   };
 
   // One menu for a row, shown both by right-click and by the "⋯" button.
@@ -242,11 +253,11 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     const convMeta = conversationIndex[convId];
     return (
       <>
-        {/* Rename starts from the menu's close-focus hook; see startRenameAfterClose. */}
+        {/* Rename and export start from the menu's close-focus hook; see runAfterMenuClose. */}
         <MenuItem icon={AppIcons.rename} onSelect={() => { renameAfterClose.current = convId; }}>
           {t.sidebar.renameConversation}
         </MenuItem>
-        <MenuItem icon={AppIcons.download} onSelect={() => { void handleExport(convId); }}>
+        <MenuItem icon={AppIcons.download} onSelect={() => { exportAfterClose.current = convId; }}>
           {t.sidebar.exportConversation}
         </MenuItem>
         {activeProjects.length > 0 && (
@@ -482,8 +493,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           <RowMenus
             items={conversationMenuItems}
             moreLabel={t.sidebar.moreActions}
-            onOpenChange={dropRenameOnOpen}
-            onCloseAutoFocus={startRenameAfterClose}
+            onOpenChange={dropActionOnOpen}
+            onCloseAutoFocus={runAfterMenuClose}
             className="space-y-1"
           >
             {(menus) => sortedConvs.map((conv) => {
@@ -602,9 +613,10 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           project turns the sidebar to its file tree. */}
       <CreateProjectDialog open={createProjectOpen} onClose={() => setCreateProjectOpen(false)} />
 
-      {/* Share export preview */}
+      {/* Share export preview: a window per conversation, taken off the page once it says it has closed. */}
       {shareConvId && (
         <ShareExportDialog
+          key={shareConvId}
           convId={shareConvId}
           defaultFilename={`abu-conversation-${conversationIndex[shareConvId]?.title || shareConvId}.abu.json`}
           onClose={() => setShareConvId(null)}

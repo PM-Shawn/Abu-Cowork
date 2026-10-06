@@ -378,6 +378,41 @@ describe('WorkspaceSection', () => {
     await waitFor(() => expect(useWorkspaceStore.getState().currentPath).toBe(BETA));
   });
 
+  // The two windows are opened by a press on their entry: each gives the focus back to it.
+  it('opens the instructions window from its entry, and the entry has the focus again once the window has closed', async () => {
+    const user = userEvent.setup();
+    renderSection();
+    await settle();
+    const entry = screen.getByRole('button', { name: 'Instructions · Click to add' });
+
+    await user.click(entry);
+    expect(await screen.findByRole('dialog', { name: 'Project Instructions' })).toBeInTheDocument();
+    vi.mocked(exists).mockClear();
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(entry).toHaveFocus());
+    // The section looks for the file again when the window closes.
+    expect(exists).toHaveBeenCalledWith(`${ALPHA}/.abu/ABU.md`);
+  });
+
+  it('opens the memory window from its entry, and the entry has the focus again once the window has closed', async () => {
+    const user = userEvent.setup();
+    renderSection();
+    await settle();
+    const entry = screen.getByRole('button', { name: 'Project Memory · None' });
+
+    await user.click(entry);
+    expect(await screen.findByRole('dialog', { name: 'Project Memory' })).toBeInTheDocument();
+    vi.mocked(scanMemoryFiles).mockClear();
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(entry).toHaveFocus());
+    // The section scans the folder again when the window closes.
+    expect(scanMemoryFiles).toHaveBeenCalledWith(ALPHA);
+  });
+
   // The summary stays open while a reply streams. The section reads only the workspace,
   // the active conversation id and the project list, so a streamed character must not
   // re-render its tooltip button or its menu.

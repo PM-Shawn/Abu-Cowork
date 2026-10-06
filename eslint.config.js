@@ -267,6 +267,9 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/common/ProjectSettingsDialog*.{ts,tsx}',
   'src/components/common/ProfileEditModal*.{ts,tsx}',
   'src/components/common/GuideModal*.{ts,tsx}',
+  'src/components/common/InstructionsEditModal*.{ts,tsx}',
+  'src/components/common/MemoryViewModal*.{ts,tsx}',
+  'src/components/share/**/*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

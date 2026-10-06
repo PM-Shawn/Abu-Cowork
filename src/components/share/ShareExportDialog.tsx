@@ -8,13 +8,19 @@
  *   3. Lightweight message preview (text-only — not a full MessageBubble)
  *
  * Clicking "Export" triggers a Tauri save-dialog and writes the JSON.
- * Cancel / backdrop click dismisses without writing anything.
+ * Cancel, Escape, the corner button and a press outside dismiss without writing anything.
  */
 
-import { useEffect, useState } from 'react';
-import { X, Eye, EyeOff, Download, ShieldAlert, Wrench, MessageSquare } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { Button } from '@/components/ds/button';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { Spinner } from '@/components/ds/spinner';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n, format } from '@/i18n';
 import { serializeShareBundle, type ShareBundle } from '@/core/session/shareBundle';
@@ -40,7 +46,31 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
+  // The owner mounts this window to open it and takes it off the page when told it has closed.
+  // The window closes itself first and tells the owner once it has left the page, so it fades
+  // out like every other window. It never opens again: the next export is a new window.
+  const [open, setOpen] = useState(true);
+  const isOpen = useRef(true);
+  const onCloseRef = useRef(onClose);
+  // The content of the window; present while the window is on the page, hidden or not.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const told = useRef(false);
+  const tellOwner = () => {
+    if (told.current) return;
+    told.current = true;
+    onCloseRef.current();
+  };
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+    isOpen.current = open;
+    // Closed before it was ever on the page (turned away because an approval is showing):
+    // there is no fade to wait for.
+    if (!open && !contentRef.current) tellOwner();
+  });
+
   useEffect(() => {
+    // Closing stops the build: a window that is fading out keeps what it showed.
+    if (!open) return;
     let cancelled = false;
     const controller = new AbortController();
     exportForShare(convId, {
@@ -56,7 +86,7 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
         setState({ phase: 'ready', bundle });
       })
       .catch((err: unknown) => {
-        // Ignore the abort we triggered on unmount.
+        // Ignore the abort we triggered on close or unmount.
         if (cancelled || controller.signal.aborted) return;
         setState({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
       });
@@ -64,11 +94,28 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
       cancelled = true;
       controller.abort();
     };
-  }, [convId, exportForShare]);
+  }, [convId, exportForShare, open]);
 
+  // A failed write leaves Export unavailable under the focus; the focus then moves to Cancel
+  // so that it does not end up on the window.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const exportRef = useRef<HTMLButtonElement>(null);
+  const failed = state.phase === 'error';
+  useLayoutEffect(() => {
+    if (!failed || !isOpen.current) return;
+    const active = document.activeElement;
+    const lost = active === exportRef.current || active === document.body
+      || (active instanceof HTMLElement && active.hasAttribute('data-ds-layer') && active.contains(cancelRef.current));
+    if (lost) cancelRef.current?.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
+  }, [failed]);
+
+  const exportingRef = useRef(false);
   const handleExport = async () => {
-    if (state.phase !== 'ready' || exporting) return;
+    // The window keeps rendering while it fades out: nothing is exported then. One export at a time.
+    if (!open || state.phase !== 'ready' || exportingRef.current) return;
+    exportingRef.current = true;
     setExporting(true);
+    let written = false;
     try {
       const filePath = await saveDialog({
         defaultPath: defaultFilename,
@@ -76,94 +123,68 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
       });
       if (filePath) {
         await writeTextFile(filePath, serializeShareBundle(state.bundle));
-        onClose();
+        written = true;
+        setOpen(false);
       }
     } catch (err) {
-      setState({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
+      // A window that is fading out shows nothing new.
+      if (isOpen.current) setState({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
     } finally {
-      setExporting(false);
+      exportingRef.current = false;
+      // After the file is written the window leaves as it is, its button still marked.
+      if (!written && isOpen.current) setExporting(false);
     }
   };
 
   return (
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[760px] max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 pt-5 pb-3 border-b border-[var(--abu-border)]">
-          <div>
-            <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-              {t.share.exportDialogTitle}
-            </h3>
-            <p className="text-minor text-[var(--abu-text-tertiary)] mt-0.5">
-              {t.share.tierStandard} — {t.share.tierNote}
-            </p>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) setOpen(false); }}
+      onCloseAutoFocus={tellOwner}
+      title={t.share.exportDialogTitle}
+      description={`${t.share.tierStandard} — ${t.share.tierNote}`}
+      size="xl"
+      closeButton
+      // The save dialog is open or the file is being written: the window steps aside for an
+      // approval and is still there for a failed write.
+      busy={exporting}
+      // Export is not ready when the window opens; it opens on Cancel, which writes nothing.
+      initialFocus={() => cancelRef.current}
+      footer={(
+        <div className="flex w-full items-center justify-between gap-3">
+          <div className="min-w-0 text-ui-sm text-label-tertiary">
+            {state.phase === 'ready' && <StatsLine bundle={state.bundle} />}
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-md hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-tertiary)]"
-            aria-label="close"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          {state.phase === 'loading' && (
-            <div className="py-8 flex flex-col items-center gap-3">
-              <div className="text-body text-[var(--abu-text-tertiary)]">
-                {progress ? `${t.share.loading} ${progress.done}/${progress.total}` : t.share.loading}
-              </div>
-              {progress && progress.total > 0 && (
-                <div className="w-2/3 h-1 rounded-full bg-[var(--abu-bg-active)] overflow-hidden">
-                  <div
-                    className="h-full bg-[var(--abu-clay)] transition-[width] duration-150"
-                    style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-          {state.phase === 'error' && (
-            <div className="text-body text-[var(--abu-danger)] py-8 text-center">
-              {format(t.share.exportError, { error: state.message })}
-            </div>
-          )}
-          {state.phase === 'ready' && <BundlePreview bundle={state.bundle} />}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-3 border-t border-[var(--abu-border)]">
-          <div className="text-minor text-[var(--abu-text-tertiary)]">
-            {state.phase === 'ready' && (
-              <StatsLine bundle={state.bundle} />
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              className="px-3 py-1.5 rounded-md text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]"
-            >
-              {t.share.cancel}
-            </button>
-            <button
+          <div className="flex shrink-0 items-center gap-2">
+            <DialogClose asChild><Button ref={cancelRef} variant="plain">{t.share.cancel}</Button></DialogClose>
+            <Button
+              ref={exportRef}
+              variant="primary"
+              icon={AppIcons.download}
+              busy={exporting}
+              disabled={state.phase !== 'ready'}
               onClick={handleExport}
-              disabled={state.phase !== 'ready' || exporting}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[var(--abu-clay)] text-white text-body hover:bg-[var(--abu-clay-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Download className="h-3.5 w-3.5" />
               {t.share.exportBtn}
-            </button>
+            </Button>
           </div>
         </div>
+      )}
+    >
+      <div ref={contentRef}>
+        {state.phase === 'loading' && (
+          <div className="flex justify-center py-8">
+            <Spinner label={progress ? `${t.share.loading} ${progress.done}/${progress.total}` : t.share.loading} />
+          </div>
+        )}
+        {state.phase === 'error' && (
+          <InlineMessage tone="danger">
+            <span className="break-words">{format(t.share.exportError, { error: state.message })}</span>
+          </InlineMessage>
+        )}
+        {state.phase === 'ready' && <BundlePreview bundle={state.bundle} />}
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -171,50 +192,64 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
 // Inner sections
 // ───────────────────────────────────────────────────────────────────────────
 
+function SectionTitle({ icon, iconClassName, children }: { icon: typeof AppIcons.visible; iconClassName: string; children: ReactNode }) {
+  return (
+    <div className="mb-2 flex items-center gap-2 text-ui font-medium text-label">
+      <Icon icon={icon} size="sm" className={iconClassName} />
+      {children}
+    </div>
+  );
+}
+
+// One line of what the recipient will see (a check) or will not see (a cross).
+function VisibilityItem({ seen, children }: { seen: boolean; children: ReactNode }) {
+  return (
+    <li className="flex items-start gap-2">
+      <span className="flex h-4 shrink-0 items-center">
+        <Icon icon={seen ? AppIcons.done : AppIcons.close} size="sm" className={seen ? 'text-success' : 'text-label-tertiary'} />
+      </span>
+      <span className="min-w-0">{children}</span>
+    </li>
+  );
+}
+
 function BundlePreview({ bundle }: { bundle: ShareBundle }) {
   const { t } = useI18n();
   return (
     <div className="flex flex-col gap-4">
       {/* Visibility summary */}
       <section className="grid grid-cols-2 gap-3">
-        <div className="rounded-lg border border-[var(--abu-border)] p-3">
-          <div className="flex items-center gap-1.5 mb-2 text-body font-medium text-[var(--abu-text-primary)]">
-            <Eye className="h-3.5 w-3.5 text-[var(--abu-success)]" />
-            {t.share.visibleToOthers}
-          </div>
-          <ul className="space-y-1 text-minor text-[var(--abu-text-secondary)]">
-            <li>✅ {t.share.itemMessages}</li>
-            <li>✅ {t.share.itemToolCalls}</li>
+        <div className="rounded-panel border border-separator p-3">
+          <SectionTitle icon={AppIcons.visible} iconClassName="text-label-secondary">{t.share.visibleToOthers}</SectionTitle>
+          <ul className="flex flex-col gap-1 text-ui-sm text-label-secondary">
+            <VisibilityItem seen>{t.share.itemMessages}</VisibilityItem>
+            <VisibilityItem seen>{t.share.itemToolCalls}</VisibilityItem>
           </ul>
         </div>
-        <div className="rounded-lg border border-[var(--abu-border)] p-3">
-          <div className="flex items-center gap-1.5 mb-2 text-body font-medium text-[var(--abu-text-primary)]">
-            <EyeOff className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
-            {t.share.hiddenFromOthers}
-          </div>
-          <ul className="space-y-1 text-minor text-[var(--abu-text-secondary)]">
-            <li>❌ {t.share.itemUserFiles}</li>
-            <li>❌ {t.share.itemCredentials}</li>
-            <li>❌ {t.share.itemAiGenerated}</li>
+        <div className="rounded-panel border border-separator p-3">
+          <SectionTitle icon={AppIcons.hidden} iconClassName="text-label-secondary">{t.share.hiddenFromOthers}</SectionTitle>
+          <ul className="flex flex-col gap-1 text-ui-sm text-label-secondary">
+            <VisibilityItem seen={false}>{t.share.itemUserFiles}</VisibilityItem>
+            <VisibilityItem seen={false}>{t.share.itemCredentials}</VisibilityItem>
+            <VisibilityItem seen={false}>{t.share.itemAiGenerated}</VisibilityItem>
           </ul>
         </div>
       </section>
 
       {/* Redaction summary */}
-      <section className="rounded-lg border border-[var(--abu-border)] p-3">
-        <div className="flex items-center gap-1.5 mb-2 text-body font-medium text-[var(--abu-text-primary)]">
-          <ShieldAlert className="h-3.5 w-3.5 text-[var(--abu-warning)]" />
+      <section className="rounded-panel border border-separator p-3">
+        <SectionTitle icon={AppIcons.warning} iconClassName="text-warning">
           {t.share.redactionTitle}
           {bundle.stats.redactionCount > 0 && (
-            <span className="text-minor text-[var(--abu-text-tertiary)] ml-1">
+            <span className="text-ui-sm font-normal text-label-tertiary">
               · {format(t.share.redactionCount, { count: bundle.stats.redactionCount })}
             </span>
           )}
-        </div>
+        </SectionTitle>
         {bundle.stats.redactionCount === 0 ? (
-          <p className="text-minor text-[var(--abu-text-tertiary)]">{t.share.noRedaction}</p>
+          <p className="text-ui-sm text-label-tertiary">{t.share.noRedaction}</p>
         ) : (
-          <ul className="space-y-0.5 text-minor text-[var(--abu-text-secondary)] font-mono">
+          <ul className="flex flex-col gap-1 font-code text-ui-sm text-label-secondary">
             {summarizeRedactionKinds(bundle).map((line) => (
               <li key={line}>• {line}</li>
             ))}
@@ -225,20 +260,17 @@ function BundlePreview({ bundle }: { bundle: ShareBundle }) {
       {/* Message preview — mirrors ChatView's bubble layout (user right, assistant
           left with Abu avatar) so the recipient sees the same visual they would
           in a live conversation. */}
-      <section className="rounded-lg border border-[var(--abu-border)] p-3">
-        <div className="flex items-center gap-1.5 mb-3 text-body font-medium text-[var(--abu-text-primary)]">
-          <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-          {t.share.previewTitle}
-        </div>
+      <section className="rounded-panel border border-separator p-3">
+        <SectionTitle icon={AppIcons.conversation} iconClassName="text-label-secondary">{t.share.previewTitle}</SectionTitle>
         {bundle.messages.length === 0 ? (
-          <p className="text-minor text-[var(--abu-text-tertiary)]">{t.share.previewEmpty}</p>
+          <p className="text-ui-sm text-label-tertiary">{t.share.previewEmpty}</p>
         ) : (
-          <div className="flex flex-col gap-4 max-h-[420px] overflow-y-auto px-3 py-3 bg-[var(--abu-bg-base)] rounded-md">
+          <div className="flex max-h-100 flex-col gap-4 overflow-y-auto rounded-control bg-code p-3">
             {bundle.messages.slice(0, 50).map((msg) => (
               <SharePreviewMessage key={msg.id} message={msg} />
             ))}
             {bundle.messages.length > 50 && (
-              <p className="text-caption text-[var(--abu-text-muted)] text-center pt-1">
+              <p className="pt-1 text-center text-caption text-label-tertiary">
                 … {bundle.messages.length - 50} more
               </p>
             )}
@@ -266,14 +298,14 @@ function SharePreviewMessage({ message }: { message: Message }) {
 
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end w-full">
-        <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
+      <div className="flex w-full justify-end">
+        <div className="flex max-w-5/6 flex-col items-end gap-2">
           {(imageCount > 0 || otherCount > 0) && (
             <AttachmentSummary imageCount={imageCount} otherCount={otherCount} align="right" />
           )}
           {truncated && (
-            <div className="px-4 py-2.5 rounded-2xl rounded-br-sm bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]">
-              <div className="text-body leading-relaxed break-words">
+            <div className="rounded-panel bg-fill px-4 py-2 text-label">
+              <div className="break-words text-body">
                 <MarkdownRenderer content={truncated} variant="user" />
               </div>
             </div>
@@ -285,14 +317,14 @@ function SharePreviewMessage({ message }: { message: Message }) {
 
   // Assistant / system — left-aligned with Abu avatar.
   return (
-    <div className="flex gap-3 w-full">
-      <img src={abuAvatar} alt="" className="h-7 w-7 rounded-full shrink-0 mt-1 object-cover" />
-      <div className="flex-1 min-w-0 flex flex-col gap-2">
+    <div className="flex w-full gap-3">
+      <img src={abuAvatar} alt="" className="mt-1 size-7 shrink-0 rounded-full object-cover" />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
         {toolCalls.map((tc, i) => (
           <ToolCallPreviewCard key={tc.id ?? `${tc.name}-${i}`} toolCall={tc} />
         ))}
         {truncated && (
-          <div className="text-body leading-relaxed text-[var(--abu-text-primary)] break-words">
+          <div className="break-words text-body text-label">
             <MarkdownRenderer content={truncated} variant="assistant" />
           </div>
         )}
@@ -315,7 +347,7 @@ function AttachmentSummary({
 }) {
   return (
     <div
-      className={`flex gap-2 text-caption text-[var(--abu-text-tertiary)] ${align === 'right' ? 'justify-end' : 'justify-start'}`}
+      className={`flex gap-2 text-caption text-label-tertiary ${align === 'right' ? 'justify-end' : 'justify-start'}`}
     >
       {imageCount > 0 && <span>🖼️ × {imageCount}</span>}
       {otherCount > 0 && <span>📄 × {otherCount}</span>}
@@ -335,16 +367,16 @@ function ToolCallPreviewCard({ toolCall }: { toolCall: ToolCall }) {
       : null;
 
   return (
-    <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-3 py-2 text-body">
-      <div className="flex items-center gap-1.5 font-medium text-[var(--abu-text-secondary)]">
-        <Wrench className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+    <div className="rounded-panel border border-separator bg-fill px-3 py-2 text-ui">
+      <div className="flex items-center gap-2 font-medium text-label-secondary">
+        <Icon icon={AppIcons.tool} size="sm" />
         <span>{t.task.calledTool}</span>
-        <code className="font-mono text-minor px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-primary)]">
+        <code className="rounded-control bg-code px-1 font-code text-ui-sm text-label">
           {toolCall.name}
         </code>
       </div>
       {resultSnippet && (
-        <div className="mt-1.5 pl-5 text-minor text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-words max-h-24 overflow-hidden">
+        <div className="mt-2 max-h-24 overflow-hidden whitespace-pre-wrap break-words pl-5 font-code text-ui-sm text-label-tertiary">
           {resultSnippet}
         </div>
       )}
@@ -355,7 +387,7 @@ function ToolCallPreviewCard({ toolCall }: { toolCall: ToolCall }) {
 function StatsLine({ bundle }: { bundle: ShareBundle }) {
   const { t } = useI18n();
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-2">
       <span>{format(t.share.statsMessages, { count: bundle.messages.length })}</span>
       <span>·</span>
       <span>{format(t.share.statsAttachments, { count: bundle.stats.attachmentCount })}</span>

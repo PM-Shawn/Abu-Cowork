@@ -66,7 +66,10 @@ vi.mock('@/components/ds/menu', async (importOriginal) => {
 });
 
 vi.mock('./ImportedBadge', () => ({ default: () => null }));
-vi.mock('@/components/share/ShareExportDialog', () => ({ default: () => null }));
+// Stands in for the export window: it shows which conversation it was opened for.
+vi.mock('@/components/share/ShareExportDialog', () => ({
+  default: ({ convId }: { convId: string }) => <div data-testid="share-export-window" data-conversation={convId} />,
+}));
 
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.chat),
@@ -410,6 +413,25 @@ describe('ProjectItem — task rows', () => {
     await user.click(await screen.findByRole('menuitem', { name: '删除会话' }));
     expect(mocks.chat.deleteConversation).toHaveBeenCalledWith('c1');
     expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+  });
+
+  // The export window is a dialog that gives the focus back to where it was when it opened.
+  it('opens the export window after the menu has gone, with the focus back on the button that opened the menu', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderItem([makeConv(0)]);
+      const more = screen.getByRole('button', { name: '更多操作' });
+      await user.click(more);
+      await user.click(await screen.findByRole('menuitem', { name: '导出会话' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(mocks.chat.loadConversation).toHaveBeenCalledWith('c0');
+      expect(screen.getByTestId('share-export-window')).toHaveAttribute('data-conversation', 'c0');
+      expect(more).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('opens the task when the row itself is clicked', async () => {

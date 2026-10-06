@@ -1,7 +1,12 @@
-import { useState, useEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { useI18n } from '@/i18n';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs';
+import { Button } from '@/components/ds/button';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { Spinner } from '@/components/ds/spinner';
+import { TextArea } from '@/components/ds/text-area';
+import { useI18n } from '@/i18n';
 import { joinPath } from '@/utils/pathUtils';
 
 interface InstructionsEditModalProps {
@@ -13,47 +18,80 @@ interface InstructionsEditModalProps {
 export default function InstructionsEditModal({ open, onClose, workspacePath }: InstructionsEditModalProps) {
   const { t } = useI18n();
   const [content, setContent] = useState('');
+  // The text as it was read from the file: the text differs from it once something was typed.
+  const [loaded, setLoaded] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    setError(null);
-    let cancelled = false;
-    async function loadContent() {
+  // The window shows the file of one folder for one opening. It starts over when it opens and
+  // when the folder changes while it is open, so the text on screen is always the text of the
+  // folder a save writes to. Once closed it keeps what it showed while it fades out.
+  const shownFor = open ? workspacePath : null;
+  const [filledFor, setFilledFor] = useState<string | null>(null);
+  if (shownFor !== filledFor) {
+    setFilledFor(shownFor);
+    if (shownFor !== null) {
       setLoading(true);
-      try {
-        const abuMdPath = joinPath(workspacePath, '.abu', 'ABU.md');
-        const fileExists = await exists(abuMdPath);
-        if (fileExists) {
-          const text = await readTextFile(abuMdPath);
-          if (!cancelled) setContent(text);
-        } else {
-          if (!cancelled) setContent('');
-        }
-      } catch {
-        if (!cancelled) setContent('');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      setContent('');
+      setLoaded('');
+      setError(null);
     }
-    loadContent();
-    return () => { cancelled = true; };
+  }
+
+  // Counts the openings (a folder change is one too): a save belongs to the opening it was started in.
+  const opening = useRef(0);
+  const isOpen = useRef(open);
+  // True from the start of an opening until its text field has appeared.
+  const fieldFocusDue = useRef(false);
+  useLayoutEffect(() => {
+    isOpen.current = open;
+    if (!open) return;
+    opening.current += 1;
+    fieldFocusDue.current = true;
   }, [open, workspacePath]);
 
   useEffect(() => {
     if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
+    let cancelled = false;
+    async function loadContent() {
+      let text = '';
+      try {
+        const abuMdPath = joinPath(workspacePath, '.abu', 'ABU.md');
+        if (await exists(abuMdPath)) text = await readTextFile(abuMdPath);
+      } catch {
+        text = '';
+      }
+      // A read of an earlier opening, or of the folder shown before, is dropped.
+      if (cancelled) return;
+      setContent(text);
+      setLoaded(text);
+      setLoading(false);
+    }
+    void loadContent();
+    return () => { cancelled = true; };
+  }, [open, workspacePath]);
 
-  if (!open || typeof document === 'undefined') return null;
+  // The window opens while the file is being read, with no text field yet, so its first focus
+  // is on Cancel. The field takes the focus once, when it appears, unless the user has moved
+  // the focus to another control meanwhile.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const focusField = useCallback((field: HTMLTextAreaElement | null) => {
+    if (!field || !fieldFocusDue.current) return;
+    fieldFocusDue.current = false;
+    const active = document.activeElement;
+    const onNoOtherControl = active === cancelRef.current || active === document.body
+      || (active instanceof HTMLElement && active.hasAttribute('data-ds-layer') && active.contains(field));
+    if (!isOpen.current || !onNoOtherControl) return;
+    field.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+  }, []);
 
+  const savingRef = useRef(false);
   const handleSave = async () => {
+    // The window keeps rendering while it fades out: nothing is saved then. One save at a time.
+    if (!open || loading || savingRef.current) return;
+    const mine = opening.current;
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -63,71 +101,61 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
       }
       const abuMdPath = joinPath(abuDir, 'ABU.md');
       await writeTextFile(abuMdPath, content);
-      onClose();
+      // A window that was closed meanwhile is reported closed again: the owner then looks for
+      // the file that now exists. A later opening is not closed by this save.
+      if (opening.current === mine) onClose();
     } catch (err) {
       console.error('Failed to save instructions:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      // The message belongs to the opening that saved, and a window that is fading out shows nothing new.
+      if (opening.current === mine && isOpen.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
-  return createPortal(
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] flex flex-col p-6 animate-in zoom-in-95 duration-150">
-        <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-1">
-          {t.panel.instructionsTitle}
-        </h3>
-        <p className="text-body text-[var(--abu-text-muted)] mb-4">
-          {t.panel.instructionsDesc}
-        </p>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="w-5 h-5 border-2 border-[var(--abu-clay)] border-t-transparent rounded-full animate-spin" />
-          </div>
-        ) : (
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder={t.panel.instructionsPlaceholder}
-            className="min-h-[280px] max-h-[50vh] w-full px-3 py-3 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:border-[var(--abu-clay)] transition-colors resize-none font-mono leading-relaxed"
-          />
-        )}
-
-        {error && (
-          <div
-            role="alert"
-            className="mt-3 px-3 py-2 rounded-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] text-minor text-[var(--abu-danger)] leading-relaxed break-words"
-          >
-            <div className="font-medium mb-0.5">{t.panel.instructionsSaveFailed}</div>
-            <div className="text-[var(--abu-danger)]">{error}</div>
-          </div>
-        )}
-
-        <div className="flex gap-3 mt-4">
-          <button
-            onClick={onClose}
-            className="flex-1 py-2.5 rounded-lg text-body font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-          >
-            {t.common.cancel}
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || loading}
-            className="flex-1 py-2.5 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors disabled:opacity-50"
-          >
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={t.panel.instructionsTitle}
+      description={t.panel.instructionsDesc}
+      size="md"
+      closeButton
+      dirty={content !== loaded}
+      // Closing never stops a save, but a window closed for an approval would not show a failed one.
+      busy={saving}
+      footer={(
+        <>
+          <DialogClose asChild><Button ref={cancelRef} variant="plain">{t.common.cancel}</Button></DialogClose>
+          <Button variant="primary" busy={saving} disabled={loading} onClick={handleSave}>
             {saving ? t.panel.instructionsSaving : t.common.save}
-          </button>
+          </Button>
+        </>
+      )}
+    >
+      {loading ? (
+        <div className="flex justify-center py-8">
+          <Spinner label={t.common.loading} />
         </div>
-      </div>
-    </div>,
-    document.body
+      ) : (
+        <TextArea
+          ref={focusField}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          placeholder={t.panel.instructionsPlaceholder}
+          className="min-h-50 max-h-100 font-code"
+        />
+      )}
+
+      {error && (
+        <div className="mt-3">
+          <InlineMessage tone="danger">
+            <div className="font-medium">{t.panel.instructionsSaveFailed}</div>
+            <div className="break-words">{error}</div>
+          </InlineMessage>
+        </div>
+      )}
+    </Dialog>
   );
 }

@@ -16,6 +16,14 @@
  */
 import type { ExecutionPort } from '@/core/agent/ports/executionPort';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setExecutionPort()`。sidecar 里 executionPort 把执行步骤编成帧
+ * 发给 shell，每次运行各有一个，由 `agentRunContext.run()` 注入，没有模块级的值
+ * 可以替换，有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getExecutionPort(): ExecutionPort {
   return getCurrentAgentRunContext().executionPort;

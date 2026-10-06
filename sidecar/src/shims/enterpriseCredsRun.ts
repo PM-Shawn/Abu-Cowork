@@ -39,6 +39,14 @@
  */
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getCurrentSubagentRunContext } from '../subagentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `resolveEffectiveLlmCreds()`：两种运行上下文都取不到凭据，
+ * 说明调用来自一次运行的作用域之外。凭据在运行开始前由 shell 算好并随运行参数传入，
+ * 作用域之内每次调用都能取到。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function resolveEffectiveLlmCreds(
   _personalApiKey: string,

@@ -51,18 +51,24 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   const confirm = useCallback<Confirm>((options) => new Promise<boolean>((resolve) => {
     const earlier = pendingRef.current;
     earlier?.resolve(false);
-    if (!earlier) watchFocusUntilTheQuestionHasIt();
+    // A question asked right after an answer, before the window of that answer has handed the
+    // focus back, keeps that question's place: the focus is on the page body for that moment.
+    if (!earlier && !returnTo.current?.isConnected) watchFocusUntilTheQuestionHasIt();
     count.current += 1;
     const next = { id: count.current, options, resolve, replaced: earlier !== null };
     pendingRef.current = next;
     setPending(next);
   }), [watchFocusUntilTheQuestionHasIt]);
 
-  const settle = (confirmed: boolean) => {
+  // An answer belongs to the question whose window was pressed. A window can still be on the page
+  // when its question is no longer the current one (a question asked from code is registered
+  // before it is drawn; a second press arrives in the step that answered): its question has its
+  // answer already, and the press answers nothing.
+  const settle = (id: number, confirmed: boolean) => {
     const current = pendingRef.current;
+    if (current?.id !== id) return;
     pendingRef.current = null;
     setPending(null);
-    if (!current) throw new Error('No confirmation is pending');
     current.resolve(confirmed);
   };
 
@@ -78,6 +84,12 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     const target = returnTo.current;
     returnTo.current = null;
     if (event.defaultPrevented || !target?.isConnected) return;
+    // A window or an approval that is on the page owns the focus: the place is used only when it
+    // is inside the top one. Otherwise the question's own window returns the focus to where it was
+    // when it opened, inside that layer, and never onto the page under it.
+    const layers = document.querySelectorAll<HTMLElement>('[data-ds-layer][data-state="open"]:is([role="dialog"], [role="alertdialog"]):not([hidden])');
+    const top = layers.length > 0 ? layers[layers.length - 1] : null;
+    if (top && !top.contains(target)) return;
     event.preventDefault();
     target.focus();
   };
@@ -95,7 +107,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           tone={pending.options.tone}
           settles={pending.replaced}
           onCloseAutoFocus={giveFocusBack}
-          onResult={settle}
+          onResult={(confirmed) => settle(pending.id, confirmed)}
         />
       )}
     </ConfirmContext.Provider>

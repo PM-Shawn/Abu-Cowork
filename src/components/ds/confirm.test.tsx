@@ -5,6 +5,7 @@ import { act, fireEvent, render as renderTree, screen, waitFor } from '@testing-
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOAST_SETTLE_MS } from './styles';
+import { APPROVAL_TITLE, approvalProbe, windowBox } from '@/test/dsWindows';
 import { Button } from './button';
 import { useConfirm, type Confirm } from './confirm-context';
 import { ConfirmDialog } from './confirm-dialog';
@@ -442,6 +443,119 @@ describe('useConfirm', () => {
       pointerPress('Clear all');
       await flush();
       expect(answers).toEqual(['A:true', 'B:true']);
+    });
+
+    it('answers nothing from a window whose question is no longer the current one', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      // B is asked from code: it is registered, and the page still shows A until the next draw.
+      if (!captured) throw new Error('Capture did not render');
+      void captured({ title: 'Clear every memory?', confirmLabel: 'Clear all', tone: 'danger' }).then((confirmed) => answers.push(`B:${confirmed}`));
+      expect(screen.getByRole('alertdialog', { name: 'Delete one memory?' })).toBeInTheDocument();
+
+      pointerPress('Delete');
+      await flush();
+
+      expect(answers).toEqual(['A:false']);
+      expect(screen.getByRole('alertdialog', { name: 'Clear every memory?' })).toBeInTheDocument();
+    });
+
+    it('takes a second press on the confirming button in one step as nothing', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      const confirmButton = screen.getByRole('button', { name: 'Delete' });
+      // React reports an error thrown in a handler to the window.
+      const errors: string[] = [];
+      const onError = (event: ErrorEvent) => { errors.push(event.message); event.preventDefault(); };
+      window.addEventListener('error', onError);
+
+      act(() => {
+        fireEvent.click(confirmButton, { detail: 1 });
+        fireEvent.click(confirmButton, { detail: 1 });
+      });
+      await flush();
+      window.removeEventListener('error', onError);
+      expect(errors).toEqual([]);
+      expect(answers).toEqual(['A:true']);
+    });
+
+    it('drops a press that began before it had settled, wherever the press ends', async () => {
+      setUp();
+      askFor('A', 'Delete one memory?', 'Delete');
+      askFor('B', 'Clear every memory?', 'Clear all');
+      await flush();
+      const clearAll = screen.getByRole('button', { name: 'Clear all' });
+
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS - 20); });
+      fireEvent.pointerDown(clearAll);
+      act(() => { vi.advanceTimersByTime(70); });
+      fireEvent.click(clearAll, { detail: 1 });
+      await flush();
+      expect(answers).toEqual(['A:false']);
+
+      // A press that begins once it has settled acts.
+      fireEvent.pointerDown(clearAll);
+      fireEvent.click(clearAll, { detail: 1 });
+      await flush();
+      expect(answers).toEqual(['A:false', 'B:true']);
+    });
+
+    it('leaves the focus to an approval that is showing when the last question is answered over it', async () => {
+      function WithApproval() {
+        const [shown, setShown] = useState(false);
+        return (
+          <>
+            <Button>Opener</Button>
+            <Button onClick={() => setShown(true)}>an approval arrives</Button>
+            <Capture onReady={keep} />
+            {approvalProbe(shown, () => undefined)}
+          </>
+        );
+      }
+      answers.length = 0;
+      captured = null;
+      renderTree(<WithApproval />, { wrapper: DesignSystemProvider });
+      const opener = screen.getByRole('button', { name: 'Opener' });
+      opener.focus();
+      askFor('A', 'Delete one memory?', 'Delete');
+      await flush();
+      // The approval arrives: the question steps aside.
+      act(() => { fireEvent.click(screen.getByRole('button', { name: 'an approval arrives', hidden: true })); });
+      await flush();
+      tick();
+      const approval = windowBox(APPROVAL_TITLE)!;
+      expect(approval).not.toBeNull();
+
+      // A second question, asked from code, stacks over the approval and is answered there.
+      askFor('B', 'Clear every memory?', 'Clear all');
+      await flush();
+      tick();
+      expect(answers).toEqual(['A:false']);
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }), { detail: 0 });
+      await flush();
+      tick();
+
+      expect(answers).toEqual(['A:false', 'B:false']);
+      expect(windowBox(APPROVAL_TITLE)).not.toBeNull();
+      expect(opener).not.toHaveFocus();
+      expect(approval.contains(document.activeElement)).toBe(true);
+    });
+
+    it('keeps the place for a question that is asked right after an answer', async () => {
+      setUp();
+      askFor('C', 'Delete one memory?', 'Delete');
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }), { detail: 0 });
+      await flush();
+      // Asked before the first window has handed the focus back.
+      askFor('D', 'Clear every memory?', 'Clear all');
+      await flush();
+      tick();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }), { detail: 0 });
+      await flush();
+      tick();
+
+      expect(answers).toEqual(['C:false', 'D:false']);
+      expect(screen.getByRole('button', { name: 'Opener' })).toHaveFocus();
     });
 
     it('returns the focus to the control that had it before the first question, after the last answer', async () => {

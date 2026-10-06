@@ -1,4 +1,4 @@
-import { useState, type MouseEvent, type ReactNode } from 'react';
+import { useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { Button } from './button';
 import { Dialog } from './dialog';
@@ -23,9 +23,15 @@ export function ConfirmDialog({ open, title, message, confirmLabel, tone = 'defa
   const { t } = useI18n();
   // Time that only moves forward. Read once, when this question is first drawn.
   const [heldUntil] = useState(() => (settles ? performance.now() + TOAST_SETTLE_MS : 0));
+  // The start of a press counts: one that began before the question had settled was aimed at
+  // what was there before, wherever and whenever it ends.
+  const pressBeganEarly = useRef(false);
+  const pressBegins = () => { pressBeganEarly.current = performance.now() < heldUntil; };
   // A click raised by Enter or Space reports detail 0.
   const answer = (confirmed: boolean) => (event: MouseEvent) => {
-    if (event.detail !== 0 && performance.now() < heldUntil) return;
+    const early = pressBeganEarly.current;
+    pressBeganEarly.current = false;
+    if (event.detail !== 0 && (early || performance.now() < heldUntil)) return;
     onResult(confirmed);
   };
   return (
@@ -39,8 +45,8 @@ export function ConfirmDialog({ open, title, message, confirmLabel, tone = 'defa
       role="alertdialog"
       footer={(
         <>
-          <Button variant="secondary" onClick={answer(false)}>{t.common.cancel}</Button>
-          <Button variant={tone === 'danger' ? 'danger' : 'primary'} onClick={answer(true)}>{confirmLabel}</Button>
+          <Button variant="secondary" onPointerDown={pressBegins} onClick={answer(false)}>{t.common.cancel}</Button>
+          <Button variant={tone === 'danger' ? 'danger' : 'primary'} onPointerDown={pressBegins} onClick={answer(true)}>{confirmLabel}</Button>
         </>
       )}
     />

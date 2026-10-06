@@ -1,38 +1,30 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
+  type KeyboardEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, Download, ImageOff, Loader2, X } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { useImageLightboxStore } from '@/stores/imageLightboxStore';
+import { IconButton } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
+import { useImageLightboxStore, type ImageLightboxItem, type ImageLightboxMediaType } from '@/stores/imageLightboxStore';
 import { base64ToUint8Array } from '@/utils/base64';
 import {
   hasElectronImageSaveHost,
   MAX_ELECTRON_IMAGE_SAVE_BYTES,
   saveElectronImageAttachment,
 } from '@/utils/electronHost';
-import {
-  getPendingCapabilitySetup,
-  subscribeCapabilitySetup,
-} from '@/core/capabilityPlugins/setupBridge';
-import {
-  getPendingCommandConfirmation,
-  getPendingFilePermission,
-  getPendingUserQuestions,
-  getPendingWorkspaceRequest,
-  subscribeToCommandConfirmation,
-  subscribeToFilePermission,
-  subscribeToWorkspaceRequest,
-  subscribeUserQuestion,
-} from '@/core/agent/permissionBridge';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { usePreviewStore } from '@/stores/previewStore';
+import { focusComposer } from './composerFocus';
 
 type DiskImageState =
   | { status: 'idle'; itemId: null; src: null; blob: null }
@@ -49,53 +41,49 @@ function decodedBase64Length(value: string): number {
 
 class ImageSaveTooLargeError extends Error {}
 
-function subscribeBlockingApproval(onStoreChange: () => void): () => void {
-  const unsubscribers = [
-    subscribeToCommandConfirmation(onStoreChange),
-    subscribeToFilePermission(onStoreChange),
-    subscribeToWorkspaceRequest(onStoreChange),
-    subscribeUserQuestion(onStoreChange),
-  ];
-  return () => {
-    for (const unsubscribe of unsubscribers) unsubscribe();
-  };
+// The image types the save bridge takes. An image of another type (a tool can return one) is
+// shown and cannot be downloaded.
+const SAVABLE_MEDIA_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] satisfies ImageLightboxMediaType[];
+function isSavableMediaType(mediaType: string): mediaType is ImageLightboxMediaType {
+  return SAVABLE_MEDIA_TYPES.includes(mediaType);
 }
 
-function getBlockingApprovalSnapshot(): boolean {
-  return getPendingCommandConfirmation() !== null
-    || getPendingFilePermission() !== null
-    || getPendingWorkspaceRequest() !== null
-    || getPendingUserQuestions().length > 0;
+// What the viewer shows. The store empties itself the moment the viewer closes; the window is
+// still on the page then, fading out, and keeps showing this.
+interface Shown {
+  items: ImageLightboxItem[];
+  activeIndex: number;
 }
 
-function hasBlockingOverlay(): boolean {
-  return getPendingCapabilitySetup() !== null
-    || getBlockingApprovalSnapshot()
-    || usePreviewStore.getState().appModalOpen;
-}
+// The viewer opens on its close button: Escape and Enter both close it from there, and the
+// first Tab goes to the download button.
+const CLOSE_BUTTON = { 'data-lightbox-close': '' } as const;
+const closeButtonOf = (content: HTMLElement) => content.querySelector<HTMLElement>('[data-lightbox-close]');
 
-export default function ImageLightbox() {
+// The one image viewer of the app: a design-system window, so the layer registry closes it for
+// an approval, keeps the keyboard inside it and hides what the page cannot paint over.
+function ImageLightbox() {
   const { t } = useI18n();
   const isOpen = useImageLightboxStore((state) => state.isOpen);
   const items = useImageLightboxStore((state) => state.items);
   const activeIndex = useImageLightboxStore((state) => state.activeIndex);
   const returnFocus = useImageLightboxStore((state) => state.returnFocus);
   const close = useImageLightboxStore((state) => state.close);
-  const previous = useImageLightboxStore((state) => state.previous);
-  const next = useImageLightboxStore((state) => state.next);
-  const capabilitySetup = useSyncExternalStore(
-    subscribeCapabilitySetup,
-    getPendingCapabilitySetup,
-  );
-  const blockingApproval = useSyncExternalStore(
-    subscribeBlockingApproval,
-    getBlockingApprovalSnapshot,
-  );
-  const appModalOpen = usePreviewStore((state) => state.appModalOpen);
-  const blockingOverlay = capabilitySetup !== null || blockingApproval || appModalOpen;
-  const dialogRef = useRef<HTMLDivElement>(null);
+
+  const [held, setHeld] = useState<Shown | null>(null);
+  if (isOpen && (held === null || held.items !== items || held.activeIndex !== activeIndex)) {
+    setHeld({ items, activeIndex });
+  }
+  const shown: Shown | null = isOpen ? { items, activeIndex } : held;
+
+  const bodyRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousButtonRef = useRef<HTMLButtonElement>(null);
+  const nextButtonRef = useRef<HTMLButtonElement>(null);
+  // Where the focus goes once the window has gone: the thumbnail that opened it.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  // The arrow that takes the focus after the pressed one reached the end of the gallery.
+  const arrowHandOff = useRef<'previous' | 'next' | null>(null);
   const [diskImage, setDiskImage] = useState<DiskImageState>(DISK_IDLE);
   const [failedItemId, setFailedItemId] = useState<string | null>(null);
   const [longImageItemId, setLongImageItemId] = useState<string | null>(null);
@@ -106,7 +94,9 @@ export default function ImageLightbox() {
     message: string;
   } | null>(null);
 
-  const item = items[activeIndex];
+  const shownIndex = shown?.activeIndex ?? 0;
+  const shownCount = shown?.items.length ?? 0;
+  const item = shown?.items[shownIndex];
   const currentDiskImage = diskImage.itemId === item?.id ? diskImage : DISK_IDLE;
   const inlineSrc = item?.data
     ? `data:${item.mediaType};base64,${item.data}`
@@ -116,8 +106,10 @@ export default function ImageLightbox() {
   const isLongImage = longImageItemId === item?.id;
   const saving = savingItemId === item?.id;
   const downloadable = hasElectronImageSaveHost()
-    && Boolean(item?.data || currentDiskImage.blob);
-  const hasGallery = items.length > 1;
+    && item !== undefined
+    && isSavableMediaType(item.mediaType)
+    && Boolean(item.data || currentDiskImage.blob);
+  const hasGallery = shownCount > 1;
 
   useEffect(() => {
     setDiskImage(DISK_IDLE);
@@ -167,59 +159,39 @@ export default function ImageLightbox() {
   }, [item]);
 
   useLayoutEffect(() => {
-    if (!isOpen || blockingOverlay) return;
-    const dialog = dialogRef.current;
-    const previousOverflow = document.body.style.overflow;
-    const siblings = Array.from(document.body.children)
-      .filter((element) => element !== dialog && !element.contains(dialog))
-      .map((element) => ({
-        element: element as HTMLElement,
-        inert: (element as HTMLElement).inert,
-        ariaHidden: element.getAttribute('aria-hidden'),
-      }));
+    if (isOpen) returnFocusRef.current = returnFocus;
+  }, [isOpen, returnFocus]);
 
-    document.body.style.overflow = 'hidden';
-    for (const sibling of siblings) {
-      sibling.element.inert = true;
-      sibling.element.setAttribute('aria-hidden', 'true');
+  // Closed with no window on the page (it has gone, or the layer registry turned it away before
+  // it was drawn): the images are let go. A window that is still fading lets them go when it
+  // leaves (`windowLeft`).
+  useEffect(() => {
+    if (isOpen || bodyRef.current?.isConnected) return;
+    setHeld(null);
+  }, [isOpen]);
+
+  // Runs once the window has left the page. The focus returns to the thumbnail, or to the
+  // message field when the thumbnail is gone.
+  const windowLeft = (event: Event) => {
+    const opener = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (!useImageLightboxStore.getState().isOpen) setHeld(null);
+    // Another layer took this window's place and holds the focus: leave it there.
+    if (event.defaultPrevented) return;
+    if (opener?.isConnected) {
+      event.preventDefault();
+      opener.focus();
+      return;
     }
-    closeButtonRef.current?.focus();
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      for (const sibling of siblings) {
-        sibling.element.inert = sibling.inert;
-        if (sibling.ariaHidden === null) sibling.element.removeAttribute('aria-hidden');
-        else sibling.element.setAttribute('aria-hidden', sibling.ariaHidden);
-      }
-      queueMicrotask(() => {
-        // Capability setup may be published and committed by its own
-        // subscriber before this component renders the same external-store
-        // update. Consult the source of truth as well as the render ref so the
-        // outgoing lightbox can never steal focus back from the incoming
-        // permission dialog.
-        if (hasBlockingOverlay()) return;
-        if (returnFocus?.isConnected) {
-          returnFocus.focus();
-          return;
-        }
-        document.querySelector<HTMLTextAreaElement>(
-          'textarea[data-chat-composer]:not(:disabled)',
-        )?.focus();
-      });
-    };
-  }, [blockingOverlay, isOpen, returnFocus]);
-
-  useLayoutEffect(() => {
-    if (isOpen && blockingOverlay) close();
-  }, [blockingOverlay, close, isOpen]);
-
-  const handleClose = useCallback(() => {
-    close();
-  }, [close]);
+    if (focusComposer()) event.preventDefault();
+  };
 
   const handleDownload = useCallback(async () => {
+    // The window is fading out: its controls do nothing.
+    if (!useImageLightboxStore.getState().isOpen) return;
     if (!item || !downloadable || saving) return;
+    const mediaType = item.mediaType;
+    if (!isSavableMediaType(mediaType)) return;
     const savingId = item.id;
     setSavingItemId(savingId);
     setSaveFeedback(null);
@@ -239,8 +211,8 @@ export default function ImageLightbox() {
         data = new Uint8Array(await blob.arrayBuffer());
       }
       const result = await saveElectronImageAttachment({
-        mediaType: item.mediaType,
-        suggestedName: `Abu-image-${activeIndex + 1}`,
+        mediaType,
+        suggestedName: `Abu-image-${shownIndex + 1}`,
         data,
       });
       if (!result) throw new Error('Electron image save bridge is unavailable');
@@ -266,7 +238,7 @@ export default function ImageLightbox() {
       setSavingItemId((current) => current === savingId ? null : current);
     }
   }, [
-    activeIndex,
+    shownIndex,
     currentDiskImage.blob,
     downloadable,
     item,
@@ -276,207 +248,157 @@ export default function ImageLightbox() {
     t.chat.imageSaveTooLarge,
   ]);
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      handleClose();
-      return;
+  // One step through the gallery. The arrow that reaches an end becomes unavailable; when it
+  // has the focus, the other arrow takes it, so the keyboard stays in the window.
+  const step = (direction: -1 | 1) => {
+    const state = useImageLightboxStore.getState();
+    if (!state.isOpen) return;
+    const target = state.activeIndex + direction;
+    if (target < 0 || target > state.items.length - 1) return;
+    const pressed = direction === 1 ? nextButtonRef.current : previousButtonRef.current;
+    const reachesEnd = target === 0 || target === state.items.length - 1;
+    if (reachesEnd && pressed !== null && document.activeElement === pressed) {
+      arrowHandOff.current = direction === 1 ? 'previous' : 'next';
     }
-    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault();
-        previous();
-        return;
-      }
-      if (event.key === 'ArrowRight') {
-        event.preventDefault();
-        next();
-        return;
-      }
-      if (
-        event.key === 'ArrowUp'
-        || event.key === 'ArrowDown'
-        || event.key === 'PageUp'
-        || event.key === 'PageDown'
-      ) {
-        const scrollContainer = scrollContainerRef.current;
-        if (!scrollContainer) return;
-        event.preventDefault();
-        const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1;
-        const distance = event.key === 'PageUp' || event.key === 'PageDown'
-          ? scrollContainer.clientHeight
-          : 80;
-        scrollContainer.scrollBy({ behavior: 'smooth', top: direction * distance });
-        return;
-      }
-    }
-    if (event.key !== 'Tab') return;
+    if (direction === 1) state.next();
+    else state.previous();
+  };
+  useLayoutEffect(() => {
+    const to = arrowHandOff.current;
+    arrowHandOff.current = null;
+    if (to === null) return;
+    const arrow = to === 'previous' ? previousButtonRef.current : nextButtonRef.current;
+    arrow?.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+  }, [activeIndex]);
 
-    const focusable = Array.from(
-      dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [],
-    );
-    if (focusable.length === 0) {
+  // Keys pressed anywhere in the window reach this handler through the component tree.
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (event.key === 'ArrowLeft') {
       event.preventDefault();
+      step(-1);
       return;
     }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
+    if (event.key === 'ArrowRight') {
       event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
+      step(1);
+      return;
+    }
+    if (
+      event.key === 'ArrowUp'
+      || event.key === 'ArrowDown'
+      || event.key === 'PageUp'
+      || event.key === 'PageDown'
+    ) {
+      const scrollContainer = scrollContainerRef.current;
+      if (!scrollContainer) return;
       event.preventDefault();
-      first.focus();
+      const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1;
+      const distance = event.key === 'PageUp' || event.key === 'PageDown'
+        ? scrollContainer.clientHeight
+        : 80;
+      scrollContainer.scrollBy({ behavior: 'smooth', top: direction * distance });
     }
   };
 
-  if (!isOpen || blockingOverlay || !item || typeof document === 'undefined') return null;
+  const counter = format(t.chat.imageCounter, { current: shownIndex + 1, total: shownCount });
+  const feedback = item && saveFeedback?.itemId === item.id ? saveFeedback : null;
 
-  return createPortal(
-    <div
-      ref={dialogRef}
-      data-electron-no-drag
-      role="dialog"
-      aria-modal="true"
-      aria-label={t.chat.imagePreviewTitle}
-      tabIndex={-1}
-      className="fixed inset-0 z-[10000] bg-black/85 animate-in fade-in duration-150 motion-reduce:animate-none"
-      onKeyDown={handleKeyDown}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) handleClose();
-      }}
-    >
-      <div
-        className="absolute right-4 z-20 flex flex-col items-end gap-2"
-        style={{ top: 'calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px) + 16px)' }}
-      >
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon-lg"
-            className="size-11 rounded-full bg-white/95 text-black shadow-lg hover:bg-white"
-            disabled={!downloadable || saving}
-            onClick={() => void handleDownload()}
-            title={t.chat.downloadImage}
-            aria-label={t.chat.downloadImage}
-          >
-            {saving
-              ? <Loader2 className="size-5 animate-spin" />
-              : <Download className="size-5" />}
-          </Button>
-          <Button
-            ref={closeButtonRef}
-            type="button"
-            variant="secondary"
-            size="icon-lg"
-            className="size-11 rounded-full bg-white/95 text-black shadow-lg hover:bg-white"
-            onClick={handleClose}
-            title={t.common.close}
-            aria-label={t.common.close}
-          >
-            <X className="size-5" />
-          </Button>
-        </div>
-        {saveFeedback?.itemId === item.id ? (
-          <div
-            role="status"
-            className={cn(
-              'max-w-72 rounded-lg bg-white/95 px-3 py-2 text-minor shadow-lg',
-              saveFeedback.type === 'error' ? 'text-[var(--abu-danger)]' : 'text-black',
+  return (
+    <div className="contents" onKeyDown={handleKeyDown}>
+      <Dialog
+        open={isOpen && item !== undefined}
+        onOpenChange={(next) => { if (!next) close(); }}
+        size="viewer"
+        title={t.chat.imagePreviewTitle}
+        titleHidden
+        closeButton={CLOSE_BUTTON}
+        initialFocus={closeButtonOf}
+        onCloseAutoFocus={windowLeft}
+        header={(
+          // As tall as the save message, so the image does not move when the message appears.
+          <div className="flex min-h-13 items-center justify-end gap-2 px-3">
+            {feedback && (
+              <InlineMessage tone={feedback.type === 'error' ? 'danger' : 'success'}>
+                {feedback.message}
+              </InlineMessage>
             )}
-          >
-            {saveFeedback.message}
-          </div>
-        ) : null}
-      </div>
-
-      <div
-        ref={scrollContainerRef}
-        className="absolute inset-0 flex items-center justify-center overflow-auto px-20 py-20"
-        onClick={(event) => {
-          if (event.target === event.currentTarget) handleClose();
-        }}
-      >
-        {imageSrc && !imageFailed ? (
-          <img
-            key={item.id}
-            src={imageSrc}
-            alt={format(t.chat.imageCounter, { current: activeIndex + 1, total: items.length })}
-            draggable={false}
-            className={cn(
-              'select-none rounded-lg shadow-2xl',
-              isLongImage
-                ? 'h-auto max-w-full self-start'
-                : 'max-h-full max-w-full object-contain',
-            )}
-            onLoad={(event) => {
-              const image = event.currentTarget;
-              setLongImageItemId(
-                image.naturalHeight > image.naturalWidth * 2.5 ? item.id : null,
-              );
-            }}
-            onError={() => setFailedItemId(item.id)}
-          />
-        ) : currentDiskImage.status === 'loading' ? (
-          <div role="status" className="flex items-center gap-2 text-body text-white/80">
-            <Loader2 className="size-5 animate-spin" />
-            {t.chat.imageLoading}
-          </div>
-        ) : (
-          <div role="status" className="flex flex-col items-center gap-2 text-body text-white/80">
-            <ImageOff className="size-7" />
-            {t.chat.imageUnavailable}
+            <IconButton
+              icon={AppIcons.download}
+              label={t.chat.downloadImage}
+              busy={saving}
+              disabled={!downloadable}
+              onClick={() => void handleDownload()}
+            />
           </div>
         )}
-      </div>
-
-      {hasGallery ? (
-        <>
-          <div
-            className="absolute left-5 top-1/2 z-20 -translate-y-1/2"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon-lg"
-              className="size-12 rounded-full bg-white/90 text-black shadow-lg hover:bg-white"
-              disabled={activeIndex === 0}
-              onClick={previous}
-              title={t.chat.previousImage}
-              aria-label={t.chat.previousImage}
-            >
-              <ChevronLeft className="size-6" />
-            </Button>
+        footer={hasGallery ? (
+          <div aria-live="polite" className="flex w-full justify-center pb-3">
+            <Tag>{counter}</Tag>
           </div>
+        ) : undefined}
+      >
+        <div ref={bodyRef} className="flex min-h-0 flex-1 items-center">
+          {hasGallery && (
+            <div className="flex shrink-0 pl-3">
+              <IconButton
+                ref={previousButtonRef}
+                icon={AppIcons.previous}
+                label={t.chat.previousImage}
+                disabled={shownIndex === 0}
+                onClick={() => step(-1)}
+              />
+            </div>
+          )}
           <div
-            className="absolute right-5 top-1/2 z-20 -translate-y-1/2"
-            onClick={(event) => event.stopPropagation()}
+            ref={scrollContainerRef}
+            className="flex min-h-0 min-w-0 flex-1 items-center justify-center self-stretch overflow-auto p-6"
+            // A press on the room beside the image closes the viewer, as a press outside it does.
+            onClick={(event) => {
+              if (event.target === event.currentTarget) close();
+            }}
           >
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon-lg"
-              className="size-12 rounded-full bg-white/90 text-black shadow-lg hover:bg-white"
-              disabled={activeIndex === items.length - 1}
-              onClick={next}
-              title={t.chat.nextImage}
-              aria-label={t.chat.nextImage}
-            >
-              <ChevronRight className="size-6" />
-            </Button>
+            {item && imageSrc && !imageFailed ? (
+              <img
+                key={item.id}
+                src={imageSrc}
+                alt={counter}
+                draggable={false}
+                className={cn(
+                  'select-none rounded-control shadow-dialog',
+                  isLongImage
+                    ? 'h-auto max-w-full self-start'
+                    : 'max-h-full max-w-full object-contain',
+                )}
+                onLoad={(event) => {
+                  const image = event.currentTarget;
+                  setLongImageItemId(
+                    image.naturalHeight > image.naturalWidth * 2.5 ? item.id : null,
+                  );
+                }}
+                onError={() => setFailedItemId(item.id)}
+              />
+            ) : currentDiskImage.status === 'loading' ? (
+              <Spinner label={t.chat.imageLoading} />
+            ) : (
+              <EmptyState icon={AppIcons.imageMissing} title={t.chat.imageUnavailable} />
+            )}
           </div>
-          <div
-            aria-live="polite"
-            className="absolute bottom-5 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1.5 text-minor tabular-nums text-white/90"
-          >
-            {format(t.chat.imageCounter, { current: activeIndex + 1, total: items.length })}
-          </div>
-        </>
-      ) : null}
-    </div>,
-    document.body,
+          {hasGallery && (
+            <div className="flex shrink-0 pr-3">
+              <IconButton
+                ref={nextButtonRef}
+                icon={AppIcons.next}
+                label={t.chat.nextImage}
+                disabled={shownIndex === shownCount - 1}
+                onClick={() => step(1)}
+              />
+            </div>
+          )}
+        </div>
+      </Dialog>
+    </div>
   );
 }
+
+export default memo(ImageLightbox);

@@ -9,10 +9,12 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import ProjectItem from './ProjectItem';
-import CreateProjectDialog from '@/components/common/CreateProjectDialog';
+import { archivedRowProps, archivedToggleProps, projectCreateProps, useArchivedRowFocus, useProjectRowFocus } from './projectRowFocus';
 import ProjectSettingsDialog from '@/components/common/ProjectSettingsDialog';
 
-export default function ProjectsSection() {
+// The create project window belongs to the sidebar: a created project turns the sidebar to
+// the file tree, which takes this section off the page.
+export default function ProjectsSection({ onCreateProject }: { onCreateProject: () => void }) {
   const { t } = useI18n();
   const projectsMap = useProjectStore((s) => s.projects);
   const restoreProject = useProjectStore((s) => s.restoreProject);
@@ -40,7 +42,10 @@ export default function ProjectsSection() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
 
   // Dialog state
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  // A row whose project is archived or deleted from its own menu hands the focus to a neighbour.
+  const noteRowLeaving = useProjectRowFocus();
+  // A row of the archived list whose project is restored or deleted does the same.
+  const noteArchivedRowLeaving = useArchivedRowFocus();
   const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [sectionCollapsed, setSectionCollapsed] = useState(false);
@@ -110,8 +115,9 @@ export default function ProjectsSection() {
             icon={AppIcons.add}
             label={t.project.createProject}
             size="sm"
-            onClick={() => setShowCreateDialog(true)}
+            onClick={onCreateProject}
             className="opacity-0 group-hover/header:opacity-100 focus-visible:opacity-100"
+            {...projectCreateProps}
           />
         </div>
 
@@ -126,6 +132,7 @@ export default function ProjectsSection() {
                 expanded={expandedIds.includes(project.id)}
                 onNewTask={handleNewTask}
                 onOpenSettings={(id) => setSettingsProjectId(id)}
+                onLeaving={noteRowLeaving}
               />
             ))}
           </div>
@@ -133,7 +140,7 @@ export default function ProjectsSection() {
           <Button
             variant="plain"
             size="sm"
-            onClick={() => setShowCreateDialog(true)}
+            onClick={onCreateProject}
             className="w-full justify-start font-normal text-label-tertiary hover:text-label"
           >
             + {t.project.emptyState}
@@ -148,24 +155,34 @@ export default function ProjectsSection() {
               size="sm"
               onClick={() => setShowArchived(!showArchived)}
               className="font-normal text-label-tertiary hover:text-label-secondary"
+              {...archivedToggleProps}
             >
               {format(t.project.archivedCount, { count: String(archivedProjects.length) })}
             </Button>
             {showArchived && (
               <div className="mt-1 space-y-1">
                 {archivedProjects.map((p) => (
-                  <div key={p.id} className="flex h-6 items-center gap-2 px-2 text-ui-sm text-label-tertiary">
+                  <div key={p.id} className="flex h-6 items-center gap-2 px-2 text-ui-sm text-label-tertiary" {...archivedRowProps(p.id)}>
                     <span className="flex min-w-0 flex-1 items-center gap-2">
                       <Icon icon={AppIcons.folder} size="sm" />
                       <span className="truncate">{p.name}</span>
                     </span>
-                    <Button variant="plain" size="sm" onClick={() => restoreProject(p.id)} className="text-link">
+                    <Button
+                      variant="plain"
+                      size="sm"
+                      onClick={() => {
+                        noteArchivedRowLeaving(p.id);
+                        restoreProject(p.id);
+                      }}
+                      className="text-link"
+                    >
                       {t.project.restore}
                     </Button>
                     <Button
                       variant="danger"
                       size="sm"
                       onClick={() => {
+                        noteArchivedRowLeaving(p.id);
                         // Unlink conversations then delete
                         const convs = Object.values(conversationIndex).filter(c => c.projectId === p.id);
                         const setProj = useChatStore.getState().setConversationProject;
@@ -182,12 +199,6 @@ export default function ProjectsSection() {
           </div>
         )}
       </div>
-
-      {/* Create Project Dialog */}
-      <CreateProjectDialog
-        open={showCreateDialog}
-        onClose={() => setShowCreateDialog(false)}
-      />
 
       {/* Project Settings Dialog */}
       <ProjectSettingsDialog

@@ -18,6 +18,7 @@ import { FOCUS_RING } from '@/components/ds/styles';
 import { TextField } from '@/components/ds/text-field';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
+import { projectRowProps } from './projectRowFocus';
 import { cn } from '@/lib/utils';
 import { format } from '@/i18n';
 import type { Project } from '@/types/project';
@@ -33,9 +34,11 @@ interface ProjectItemProps {
   expanded: boolean;
   onNewTask: (projectId: string) => void;
   onOpenSettings: (projectId: string) => void;
+  /** Called right before the project is archived or deleted here: its row is about to leave the list. */
+  onLeaving?: (projectId: string) => void;
 }
 
-export default function ProjectItem({ project, conversations, expanded, onNewTask, onOpenSettings }: ProjectItemProps) {
+export default function ProjectItem({ project, conversations, expanded, onNewTask, onOpenSettings, onLeaving }: ProjectItemProps) {
   const { t } = useI18n();
   const confirm = useConfirm();
   const toggleExpanded = useProjectStore((s) => s.toggleExpanded);
@@ -64,11 +67,10 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   // MAX_VISIBLE_CONVERSATIONS. Toggled by the "+N more" / "show less" button.
   const [showAll, setShowAll] = useState(false);
   // What a menu item starts once its menu has gone: a rename field, a confirmation or
-  // a legacy dialog must not open while the closing menu still holds focus.
-  // `holdFocus`: the rename field and the legacy dialogs (项目设置, 导出会话) must not
-  // have the menu hand focus back to its trigger or the row — the field needs it, and
-  // behind a legacy dialog Enter would reopen the menu. The confirmations are ds
-  // dialogs that take focus and give it back themselves.
+  // a window must not open while the closing menu still holds focus.
+  // `holdFocus`: the rename field must not have the menu hand focus back to its trigger or
+  // the row, because the field needs it. The confirmations, 项目设置 and 导出会话 are
+  // ds dialogs that take focus and give it back themselves.
   const afterMenuClose = useRef<{ run: () => void; holdFocus: boolean } | null>(null);
 
   // Reopening a menu during its exit animation gives it new content, and the close hook
@@ -99,7 +101,9 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       confirmLabel: t.project.archive,
       tone: 'danger',
     });
-    if (confirmed) archiveProject(project.id);
+    if (!confirmed) return;
+    onLeaving?.(project.id);
+    archiveProject(project.id);
   };
 
   const confirmDelete = async () => {
@@ -114,6 +118,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
     for (const conv of conversations) {
       setConversationProject(conv.id, undefined);
     }
+    onLeaving?.(project.id);
     deleteProject(project.id);
   };
 
@@ -122,7 +127,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       <MenuItem icon={project.pinned ? AppIcons.unpin : AppIcons.pin} onSelect={() => togglePin(project.id)}>
         {project.pinned ? t.project.unpin : t.project.pin}
       </MenuItem>
-      <MenuItem icon={AppIcons.settings} onSelect={() => { afterMenuClose.current = { run: () => onOpenSettings(project.id), holdFocus: true }; }}>
+      <MenuItem icon={AppIcons.settings} onSelect={() => { afterMenuClose.current = { run: () => onOpenSettings(project.id), holdFocus: false }; }}>
         {t.project.editSettings}
       </MenuItem>
       <MenuItem
@@ -161,7 +166,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           // matching Sidebar.handleExport's behavior.
           afterMenuClose.current = {
             run: () => { void loadConversation(convId).then(() => setShareConvId(convId)); },
-            holdFocus: true,
+            holdFocus: false,
           };
         }}
       >
@@ -191,6 +196,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
             trailing={project.pinned ? <span className="flex"><Icon icon={AppIcons.pin} size="sm" /></span> : undefined}
             onClick={() => toggleExpanded(project.id)}
             className="min-w-0 flex-1"
+            {...projectRowProps(project.id)}
           />
           <IconButton
             icon={AppIcons.fileTree}
@@ -324,6 +330,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       {/* Share export preview — mirrors the one Sidebar renders for Recents */}
       {shareConvId && (
         <ShareExportDialog
+          key={shareConvId}
           convId={shareConvId}
           defaultFilename={`abu-conversation-${conversationIndex[shareConvId]?.title || shareConvId}.abu.json`}
           onClose={() => setShareConvId(null)}

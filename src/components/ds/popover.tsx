@@ -60,6 +60,8 @@ export function Popover({
           aria-label={label}
           {...contentProps}
           data-ds-layer
+          // Its role is dialog, as a window's is: this tells it from one (read by ConfirmProvider).
+          data-ds-popover
           data-ds-motion
           data-electron-no-drag
           className={cn(level, 'max-h-(--radix-popover-content-available-height) w-72 origin-(--radix-popover-content-transform-origin) overflow-y-auto p-3 text-ui', FLOAT_SURFACE, FOCUS_RING, FLOAT_MOTION, className)}

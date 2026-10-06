@@ -4,7 +4,9 @@ export type ImageLightboxMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 
 
 export interface ImageLightboxItem {
   id: string;
-  mediaType: ImageLightboxMediaType;
+  // A tool result names its own image type. The viewer shows any type the page can draw and
+  // saves the four of `ImageLightboxMediaType`.
+  mediaType: string;
   data: string;
   filePath?: string;
   conversationId?: string;

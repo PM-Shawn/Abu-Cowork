@@ -59,8 +59,16 @@ export interface LayerRegistry {
   // When no such report comes, the registry looks one fade after the layer closed, and again
   // one fade later for as long as LayerEntry.isPainted() holds.
   left: (id: string) => void;
+  // A dialog's own question about unsaved input came on the page or left it. It is no layer of
+  // its own, and it is a decision the user is asked for (see LayerProvider `onDecisionChange`).
+  discardQuestion: (id: string, shown: boolean) => void;
   // Escape reached a layer that is fading out: the key acts on the top open layer instead.
   escapeTop: () => void;
+  // Read only. True while the user has something open or due: a window, a question or an approval
+  // is shown, an approval waits its turn, or something stepped aside or waits behind a question
+  // about unsaved input. Menus and popovers do not count, nor does a layer that is fading out.
+  // For content that is not the user's (a connector's interface) before it asks for the window.
+  isOccupied: () => boolean;
 }
 
 export const LayerContext = createContext<LayerRegistry | null>(null);

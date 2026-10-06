@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import type { Conversation } from '@/types';
 import type { DetailBlock } from '@/types/execution';
 import DetailBlockView from './DetailBlockView';
@@ -70,6 +71,7 @@ describe('DetailBlockView outputRef image loading', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    useImageLightboxStore.getState().close();
   });
 
   it('loads an outputRef image into the fixed image frame', async () => {
@@ -112,7 +114,7 @@ describe('DetailBlockView outputRef image loading', () => {
     expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
   });
 
-  it('opens the enlarged view from the image button', async () => {
+  it('opens the image viewer from the image button, with the saved file it shows', async () => {
     mockResolveOutputRefSource.mockResolvedValue({ status: 'available', path: '/snapshot/result.png', isFromSnapshot: true });
     mockLoadLocalImage.mockResolvedValue('blob:result');
 
@@ -122,7 +124,39 @@ describe('DetailBlockView outputRef image loading', () => {
     const button = image.closest('button')!;
     expect(button).not.toBeNull();
     fireEvent.click(button);
-    expect(screen.getAllByRole('img', { name: /line_chart/ })).toHaveLength(2);
+
+    const viewer = useImageLightboxStore.getState();
+    expect(viewer.isOpen).toBe(true);
+    expect(viewer.activeIndex).toBe(0);
+    expect(viewer.items).toEqual([{
+      id: 'files/hash/result.png',
+      mediaType: 'image/png',
+      data: '',
+      // The very file the block read, not a path the viewer would have to look up by name.
+      filePath: '/snapshot/result.png',
+      conversationId: 'conv-1',
+    }]);
+    expect(viewer.returnFocus).toBe(button);
+    // The enlarged image is the viewer's to draw: the block draws no layer of its own.
+    expect(screen.getAllByRole('img', { name: /line_chart/ })).toHaveLength(1);
+    expect(document.querySelector('.fixed')).toBeNull();
+  });
+
+  it('opens the image viewer with the bytes of an inline image', () => {
+    const block = outputRefImageBlock({ imageData: { mediaType: 'image/png', base64: 'iVBORw0KGgo=' } });
+    render(<DetailBlockView block={block} onToggle={() => {}} />);
+
+    fireEvent.click(screen.getByRole('img', { name: /line_chart/ }).closest('button')!);
+
+    const viewer = useImageLightboxStore.getState();
+    expect(viewer.isOpen).toBe(true);
+    expect(viewer.items).toEqual([{
+      id: 'block-image',
+      mediaType: 'image/png',
+      data: 'iVBORw0KGgo=',
+      filePath: undefined,
+      conversationId: undefined,
+    }]);
   });
 });
 

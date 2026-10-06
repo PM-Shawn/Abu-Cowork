@@ -24,6 +24,7 @@ import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import { resolveText } from '@/core/app/appBinding';
 import type { AppNavItem } from '@/types/app';
+import CreateProjectDialog from '@/components/common/CreateProjectDialog';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -38,6 +39,9 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
+import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
+import { UNDO_OFFER_MS } from './undoOffer';
+import { useToastStore } from '@/stores/toastStore';
 import { isMacOS, isWindows } from '@/utils/platform';
 
 /** A nav item's label: the package's own title when it gives one, else Abu's name for that entry. */
@@ -131,13 +135,13 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const showFileTree = usePreviewStore((s) => s.fileTreeMode);
   const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
 
-  // Undo delete state
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; data: string } | null>(null);
-  const undoTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
   const renameAfterClose = useRef<string | null>(null);
+  // The conversation whose export window opens once the row menu has gone.
+  const exportAfterClose = useRef<string | null>(null);
+  // After a conversation is deleted the focus goes on to a row, never to the window.
+  const rowFocus = useConversationRowFocus();
 
   // Guide modal state lives in the store so it can be reopened from Settings ›
   // About. Auto-opens on first launch only (below).
@@ -167,6 +171,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   // Profile edit modal state
   const [profileOpen, setProfileOpen] = useState(false);
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
 
   // Sort by createdAt to keep positions stable during status updates
   // Filter out conversations belonging to projects, scheduled tasks, or triggers — they appear in their own sections
@@ -193,20 +198,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     await loadConversation(convId);
     // Save conversation data for undo before deleting
     const json = exportConversation(convId);
+    rowFocus.note(convId);
     deleteConversation(convId);
     if (json) {
-      // Cancel any previous undo timer
-      clearTimeout(undoTimerRef.current);
-      setPendingDelete({ id: convId, data: json });
-      undoTimerRef.current = setTimeout(() => setPendingDelete(null), 5000);
-    }
-  };
-
-  const handleUndoDelete = () => {
-    if (pendingDelete) {
-      importConversation(pendingDelete.data, { keepPermissionMode: true });
-      clearTimeout(undoTimerRef.current);
-      setPendingDelete(null);
+      // One offer at a time: the notification list shows equal notifications as one, the newest,
+      // with its time started again. So only the last delete can be undone.
+      useToastStore.getState().addToast({
+        type: 'info',
+        title: t.sidebar.conversationDeleted,
+        duration: UNDO_OFFER_MS,
+        actions: [{ label: t.sidebar.undo, onClick: () => { importConversation(json, { keepPermissionMode: true }); } }],
+      });
     }
   };
 
@@ -225,20 +227,33 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
 
   const activeProjects = Object.values(projectsMap).filter((p) => !p.archived);
 
-  // 重命名 only marks the row; the rename field opens once the menu has gone, from its
-  // close-focus hook, and preventDefault stops the menu handing focus back to the
-  // trigger or the row so the field keeps it.
-  const startRenameAfterClose = (event: Event) => {
-    const convId = renameAfterClose.current;
-    if (!convId) return;
+  // 重命名 and 导出会话 only mark the row; what they open comes once the menu has gone, from
+  // its close-focus hook. For the rename field preventDefault stops the menu handing focus
+  // back to the trigger or the row, so the field keeps it. The export window is a dialog
+  // that gives the focus back to where it was when it opened: the menu returns it to the
+  // row's button or the row first, and the window opens after that.
+  const runAfterMenuClose = (event: Event) => {
+    const renameId = renameAfterClose.current;
+    const exportId = exportAfterClose.current;
     renameAfterClose.current = null;
-    event.preventDefault();
-    setEditingId(convId);
+    exportAfterClose.current = null;
+    if (renameId) {
+      event.preventDefault();
+      setEditingId(renameId);
+    } else if (exportId) {
+      void handleExport(exportId);
+    } else {
+      // 删除会话 took the row away while the menu was closing: the focus goes on to a row.
+      rowFocus.afterMenuClose(event);
+    }
   };
   // Reopening a row menu during its exit animation keeps it mounted, so the close hook
-  // never runs for the earlier 重命名. Drop it on open, or the next Escape would start it.
-  const dropRenameOnOpen = (open: boolean) => {
-    if (open) renameAfterClose.current = null;
+  // never runs for the earlier choice. Drop it on open, or the next Escape would start it.
+  const dropActionOnOpen = (open: boolean) => {
+    if (!open) return;
+    renameAfterClose.current = null;
+    exportAfterClose.current = null;
+    rowFocus.forget();
   };
 
   // One menu for a row, shown both by right-click and by the "⋯" button.
@@ -246,11 +261,11 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     const convMeta = conversationIndex[convId];
     return (
       <>
-        {/* Rename starts from the menu's close-focus hook; see startRenameAfterClose. */}
+        {/* Rename and export start from the menu's close-focus hook; see runAfterMenuClose. */}
         <MenuItem icon={AppIcons.rename} onSelect={() => { renameAfterClose.current = convId; }}>
           {t.sidebar.renameConversation}
         </MenuItem>
-        <MenuItem icon={AppIcons.download} onSelect={() => { void handleExport(convId); }}>
+        <MenuItem icon={AppIcons.download} onSelect={() => { exportAfterClose.current = convId; }}>
           {t.sidebar.exportConversation}
         </MenuItem>
         {activeProjects.length > 0 && (
@@ -448,7 +463,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       /* Scrollable middle section: projects + scheduled + triggers + recents */
       <ScrollArea className="flex-1 min-h-0">
         {/* Projects Section */}
-        <ProjectsSection />
+        <ProjectsSection onCreateProject={() => setCreateProjectOpen(true)} />
 
         {/* Recents Section */}
         <div className="px-4 pt-2">
@@ -486,8 +501,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           <RowMenus
             items={conversationMenuItems}
             moreLabel={t.sidebar.moreActions}
-            onOpenChange={dropRenameOnOpen}
-            onCloseAutoFocus={startRenameAfterClose}
+            onOpenChange={dropActionOnOpen}
+            onCloseAutoFocus={runAfterMenuClose}
             className="space-y-1"
           >
             {(menus) => sortedConvs.map((conv) => {
@@ -499,6 +514,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               return (
               <div
                 key={conv.id}
+                {...conversationRowProps(conv.id)}
                 role="button"
                 tabIndex={0}
                 onClick={() => {
@@ -602,32 +618,20 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       {/* Profile edit modal */}
       <ProfileEditModal open={profileOpen} onClose={() => setProfileOpen(false)} />
 
-      {/* Share export preview */}
+      {/* Opened from the projects section; kept here so it outlives that section when a new
+          project turns the sidebar to its file tree. */}
+      <CreateProjectDialog open={createProjectOpen} onClose={() => setCreateProjectOpen(false)} />
+
+      {/* Share export preview: a window per conversation, taken off the page once it says it has closed. */}
       {shareConvId && (
         <ShareExportDialog
+          key={shareConvId}
           convId={shareConvId}
           defaultFilename={`abu-conversation-${conversationIndex[shareConvId]?.title || shareConvId}.abu.json`}
           onClose={() => setShareConvId(null)}
         />
       )}
 
-
-      {/* Undo delete toast */}
-      {pendingDelete && (
-        <div
-          role="alert"
-          aria-live="assertive"
-          data-electron-no-drag
-          data-ds-motion
-          data-state="open"
-          className="fixed bottom-6 left-1/2 z-toast flex -translate-x-1/2 items-center gap-3 rounded-panel bg-raised px-4 py-2 text-label shadow-float data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[state=open]:duration-base data-[state=open]:ease-enter"
-        >
-          <span className="text-ui">{t.sidebar.conversationDeleted}</span>
-          <Button size="sm" icon={AppIcons.undo} onClick={handleUndoDelete}>
-            {t.sidebar.undo}
-          </Button>
-        </div>
-      )}
     </div>
   );
 }

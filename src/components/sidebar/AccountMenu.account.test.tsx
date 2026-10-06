@@ -213,7 +213,7 @@ describe('AccountMenu identity', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it('keeps focus off the account button when the item opens a legacy dialog', async () => {
+  it('opens the profile window with focus back on the account button, which the window returns to', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const editProfile = vi.fn();
     renderMenu(editProfile);
@@ -223,8 +223,20 @@ describe('AccountMenu identity', () => {
     await flushMenuClose();
 
     expect(editProfile).toHaveBeenCalledOnce();
-    // The profile dialog takes no focus; Enter on the trigger behind it would reopen
-    // this menu underneath, so focus stays on the page body.
+    expect(trigger).toHaveFocus();
+  });
+
+  it('keeps focus off the account button when the item opens a window that takes no focus', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.settings = { ...mocks.settings, userNickname: '' };
+    mocks.account = { ...mocks.account, status: 'signed_out', account: null, profileStatus: 'idle' };
+    renderMenu();
+    const trigger = screen.getByRole('button', { name: '我' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: '登录' }));
+    await flushMenuClose();
+
+    // Enter on the trigger behind such a window would reopen this menu underneath it.
     expect(trigger).not.toHaveFocus();
     expect(document.activeElement).toBe(document.body);
   });

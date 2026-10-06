@@ -198,7 +198,7 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/toolbox/extensionSource.ts')).not.toEqual([]);
     // common/ and team/ have no directory entry: files that have not migrated stay on the old rules.
-    expect(await messages(code, 'src/components/common/ConfirmDialog.tsx')).toEqual([]);
+    expect(await messages(code, 'src/components/common/InlinePermissionRequest.tsx')).toEqual([]);
     expect(await messages(code, 'src/components/team/useConversationTeam.test.tsx')).toEqual([]);
   });
 
@@ -379,5 +379,18 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
     expect(await messages(icon, 'src/components/common/approvalQueueView.ts')).not.toEqual([]);
     expect(await messages(icon, 'src/components/common/approvalQueueView.test.ts')).not.toEqual([]);
+  });
+
+  it('checks the windows, the viewers and the notice list', async () => {
+    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+    for (const file of [
+      'src/components/chat/ImageLightbox.tsx',
+      'src/components/panel/PreviewPanel.tsx',
+      'src/components/common/ProjectSettingsDialog.tsx',
+      'src/components/share/ShareExportDialog.tsx',
+      'src/components/common/ToasterMount.tsx',
+    ]) {
+      expect(await messages(code, file), file).not.toEqual([]);
+    }
   });
 });

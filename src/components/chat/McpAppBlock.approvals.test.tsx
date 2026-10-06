@@ -13,6 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useMCPStore } from '@/stores/mcpStore';
 import * as approvalBridge from '@/core/agent/ports/approvalBridge';
@@ -81,7 +82,8 @@ function renderBlock(over: Partial<McpAppBlockProps>, sink: { handlers?: Partial
       ...over.deps,
     },
   };
-  return render(<McpAppBlock {...props} />);
+  // The block's fullscreen surface is a design-system layer, which needs the provider the app mounts at its root.
+  return render(<McpAppBlock {...props} />, { wrapper: DesignSystemProvider });
 }
 
 async function settle() {

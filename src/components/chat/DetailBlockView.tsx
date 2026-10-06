@@ -11,6 +11,7 @@ import { useI18n, format } from '@/i18n';
 import { getDetailBlockLabel } from '@/utils/toolLabels';
 import type { DetailBlock } from '@/types/execution';
 import { useChatStore } from '@/stores/chatStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { resolveOutputRefSource } from '@/core/session/outputSnapshots';
 import { loadLocalImage } from '@/utils/pathUtils';
 
@@ -44,8 +45,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   ));
   // Local expanded state — syncs with block.isExpanded from store when available
   const [localExpanded, setLocalExpanded] = useState(block.isExpanded);
-  const [imageFullscreen, setImageFullscreen] = useState(false);
   const [outputRefSrc, setOutputRefSrc] = useState<string | null>(null);
+  // The file `outputRefSrc` was read from.
+  const outputRefPathRef = useRef<string | null>(null);
   const [outputRefState, setOutputRefState] = useState<OutputRefImageState>(() => (
     outputRef?.relPath ? 'loading' : 'idle'
   ));
@@ -74,6 +76,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   const imageSrc = inlineImageSrc ?? outputRefSrc;
 
   useEffect(() => {
+    outputRefPathRef.current = null;
     if (block.type !== 'image' || inlineImageSrc || !outputRef?.relPath) {
       setOutputRefState('idle');
       if (outputRefObjectUrlRef.current) {
@@ -106,6 +109,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           return;
         }
         outputRefObjectUrlRef.current = blobUrl;
+        outputRefPathRef.current = resolved.path;
         setOutputRefSrc(blobUrl);
         setOutputRefState('ready');
       })
@@ -177,11 +181,24 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     const size = formatImageSize(outputRef?.sizeBytes);
     const metadata = size ? `${filename} · ${size}` : filename;
 
+    // The app's image viewer shows it enlarged. A saved image goes there as the very file this
+    // block read: the viewer finds files by name, and two tool images can share one name.
+    const openInViewer = (thumbnail: HTMLElement) => {
+      if (!block.imageData) return;
+      useImageLightboxStore.getState().open([{
+        id: outputRef?.relPath ?? block.id,
+        mediaType: block.imageData.mediaType,
+        data: block.imageData.base64 ?? '',
+        filePath: outputRefPathRef.current ?? undefined,
+        conversationId: activeConversationId ?? undefined,
+      }], 0, thumbnail);
+    };
+
     const frameClass = 'relative group flex h-[200px] w-[320px] items-center justify-center overflow-hidden rounded-control border border-separator bg-fill';
     const renderImageFrame = (children: ReactNode, interactive: boolean) => (
       <div className="p-2">
         {interactive ? (
-          <Pressable className={cn(frameClass, 'cursor-pointer')} onClick={() => setImageFullscreen(true)}>
+          <Pressable className={cn(frameClass, 'cursor-pointer')} onClick={(event) => openInViewer(event.currentTarget)}>
             {children}
             <span className="absolute inset-0 flex items-center justify-center transition-colors group-hover:bg-scrim group-focus-visible:bg-scrim">
               <span className="rounded-control bg-raised p-1 text-label opacity-0 shadow-float transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
@@ -225,30 +242,13 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
       );
     }
 
-    return (
-      <>
-        {renderImageFrame(
-            <img
-              src={imageSrc}
-              alt={block.content || 'Image'}
-              className="max-w-full max-h-full object-contain"
-            />,
-            true,
-        )}
-        {imageFullscreen && (
-          <div
-            data-electron-no-drag
-            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
-            onClick={() => setImageFullscreen(false)}
-          >
-            <img
-              src={imageSrc}
-              alt={block.content || 'Image (full)'}
-              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            />
-          </div>
-        )}
-      </>
+    return renderImageFrame(
+      <img
+        src={imageSrc}
+        alt={block.content || 'Image'}
+        className="max-w-full max-h-full object-contain"
+      />,
+      true,
     );
   };
 

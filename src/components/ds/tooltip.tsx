@@ -1,5 +1,5 @@
 import { Tooltip as TooltipPrimitive } from 'radix-ui';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { cn } from '@/lib/utils';
 import { lastInputWasPointer } from './input-modality';
@@ -17,19 +17,24 @@ export function Tooltip({ content, children, side = 'top' }: {
   const [open, setOpen] = useState(false);
   // Escape took the tooltip off the page at once, without its fade.
   const [dropped, setDropped] = useState(false);
+  // The tooltip's box is on the page: from the moment it opens until its fade-out has ended.
+  const [onPage, setOnPage] = useState(false);
+  const contentRef = useCallback((node: HTMLDivElement | null) => setOnPage(node !== null), []);
   // A tooltip is not a layer the user opened. Radix treats its content as the top dismissable
-  // layer, which would use up the Escape. Window listeners run before Radix's document ones, so
+  // layer, which would use up the Escape, and it does so for as long as the content is mounted:
+  // also while a closed tooltip fades out. Window listeners run before Radix's document ones, so
   // the tooltip is gone by the time Radix asks which layer is on top: the press hides the
   // tooltip and still acts on the dialog, menu or popover underneath.
+  const listening = open || onPage;
   useEffect(() => {
-    if (!open) return undefined;
+    if (!listening) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       flushSync(() => { setDropped(true); setOpen(false); });
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [open]);
+  }, [listening]);
   return (
     // Set on the root: the app's legacy TooltipProvider (200 ms) is the nearest provider.
     <TooltipPrimitive.Root delayDuration={500} open={open} onOpenChange={(next) => { if (next) setDropped(false); setOpen(next); }}>
@@ -41,6 +46,7 @@ export function Tooltip({ content, children, side = 'top' }: {
       {!dropped && (
         <TooltipPrimitive.Portal container={container}>
           <TooltipPrimitive.Content
+            ref={contentRef}
             side={side}
             sideOffset={6}
             collisionPadding={EDGE_GAP}

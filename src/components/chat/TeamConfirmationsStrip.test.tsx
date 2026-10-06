@@ -417,6 +417,51 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     expect(useTeamConfirmationStore.getState().taskRules).toEqual({});
     setSite.mockRestore();
   });
+
+  it('keeps the focus on the site grant while it is saved, saves once, and holds the other answers', async () => {
+    let finish!: (saved: boolean) => void;
+    const saving = new Promise<boolean>((resolve) => { finish = resolve; });
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets').mockReturnValue(saving);
+    renderWith(browserRequest());
+    const grant = allowSiteButton()!;
+    grant.focus();
+
+    fireEvent.click(grant);
+    // Its own save is running: marked busy, not switched off under the keyboard.
+    expect(grant).toHaveAttribute('aria-disabled', 'true');
+    expect(grant).not.toBeDisabled();
+    expect(grant).toHaveFocus();
+    fireEvent.click(grant);
+    expect(setSite).toHaveBeenCalledTimes(1);
+    // The other approvals wait for that save: they are unavailable for another reason.
+    expect(screen.getByRole('button', { name: '只允许这一次: 操作网页' })).toBeDisabled();
+
+    await act(async () => { finish(false); await saving; });
+    expect(grant).not.toHaveAttribute('aria-disabled');
+    expect(grant).toHaveFocus();
+    expect(screen.getByRole('button', { name: '只允许这一次: 操作网页' })).toBeEnabled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    setSite.mockRestore();
+  });
+
+  it('switches a site grant off while the grant of another request is saved', async () => {
+    let finish!: (saved: boolean) => void;
+    const saving = new Promise<boolean>((resolve) => { finish = resolve; });
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets').mockReturnValue(saving);
+    useTeamConfirmationStore.getState().add(browserRequest({ identity: { ...identity, toolName: 'fill', callId: 'other' }, detail: 'fill #other' }));
+    renderWith(browserRequest());
+    const [first, second] = screen.getAllByTestId('team-confirmation-allow-site');
+
+    fireEvent.click(first);
+    expect(first).toHaveAttribute('aria-disabled', 'true');
+    expect(second).toBeDisabled();
+    expect(second).not.toHaveAttribute('aria-disabled');
+    fireEvent.click(second);
+    expect(setSite).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finish(false); await saving; });
+    setSite.mockRestore();
+  });
 });
 
 import {createBrowserPermissionConfig as auditTeamConfig} from '@/core/permissions/browserPermissionConfig';

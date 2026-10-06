@@ -29,7 +29,8 @@ import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync
 import RightPanel from '@/components/panel/RightPanel';
 import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
-import ToastContainer from '@/components/common/ToastContainer';
+import ToasterMount from '@/components/common/ToasterMount';
+import { setToastPlacesForDecision } from '@/stores/toastStore';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { initPlatform } from '@/utils/platform';
@@ -882,7 +883,7 @@ function App() {
   return (
     <ErrorBoundary onError={traceAppRootRenderError}>
     {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
-    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen}>
+    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen} onDecisionChange={setToastPlacesForDecision}>
     <TooltipProvider delayDuration={200}>
       <div
         data-abu-app-shell
@@ -947,7 +948,7 @@ function App() {
 
         {mac && <WindowTitleBar {...windowTitleBarProps} />}
 
-        <ToastContainer />
+        <ToasterMount />
 
         <ImageLightbox />
 

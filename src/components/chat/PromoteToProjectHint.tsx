@@ -38,32 +38,34 @@ export default function PromoteToProjectHint({ workspacePath }: PromoteToProject
     workspacePath ? s.dismissedWorkspaces.includes(workspacePath) : false,
   );
   const dismiss = useProjectHintStore((s) => s.dismiss);
+  // The folder the window was opened for. The hint goes the moment that folder is a project;
+  // the window is closed then, never taken off the page, and keeps showing this folder while
+  // it fades out.
+  const [windowFolder, setWindowFolder] = useState<string | null>(null);
 
-  if (!workspacePath) return null;
-  if (existingProject) return null;
-  if (isDismissed) return null;
-
-  const folderName = getBaseName(workspacePath);
+  const shown = !!workspacePath && !existingProject && !isDismissed;
 
   return (
     <>
-      <div className="mx-1 mt-2 flex items-center gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui">
-        <Icon icon={AppIcons.hint} size="sm" className="text-label-secondary" />
-        <span className="flex-1 truncate text-label-secondary">
-          {format(t.project.hintPromote, { name: folderName })}
-        </span>
-        <Button variant="secondary" size="sm" onClick={() => setDialogOpen(true)}>
-          {t.project.hintPromoteAction}
-        </Button>
-        <IconButton size="sm" icon={AppIcons.close} label={t.project.hintPromoteDismiss} onClick={() => dismiss(workspacePath)} />
-      </div>
+      {shown && (
+        <div className="mx-1 mt-2 flex items-center gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui">
+          <Icon icon={AppIcons.hint} size="sm" className="text-label-secondary" />
+          <span className="flex-1 truncate text-label-secondary">
+            {format(t.project.hintPromote, { name: getBaseName(workspacePath) })}
+          </span>
+          <Button variant="secondary" size="sm" onClick={() => { setWindowFolder(workspacePath); setDialogOpen(true); }}>
+            {t.project.hintPromoteAction}
+          </Button>
+          <IconButton size="sm" icon={AppIcons.close} label={t.project.hintPromoteDismiss} onClick={() => dismiss(workspacePath)} />
+        </div>
+      )}
 
       <CreateProjectDialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         presetMode="existing-folder"
-        presetFolder={workspacePath}
-        presetName={folderName}
+        presetFolder={windowFolder ?? undefined}
+        presetName={windowFolder === null ? undefined : getBaseName(windowFolder)}
       />
     </>
   );

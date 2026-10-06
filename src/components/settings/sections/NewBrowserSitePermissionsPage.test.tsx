@@ -336,7 +336,7 @@ describe('removing a website', () => {
     page(browsing);
     const dialog = await askToRemove();
     fireEvent.click(within(dialog).getByRole('button', { name: t().browserSiteDeleteButton }));
-    expect(within(dialog).getByRole('button', { name: t().browserSiteDeleteButton })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: t().browserSiteDeleteButton })).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
     expect(remove.mock.calls[0][2]?.()).toBe(false);
     await act(async () => { finish(false); await removing; });
@@ -355,6 +355,81 @@ describe('removing a website', () => {
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: t().browserSiteDeleteButton })); });
     expect(saveEmbedded).toHaveBeenCalledWith('https://host.example', origin, null, { browse: 'ask', upload: 'inherit', script: 'inherit' }, expect.any(Function));
     expect(remove).not.toHaveBeenCalled();
+  });
+});
+
+// The button that started a save or a removal keeps the focus while it runs: it is marked
+// busy, takes no second press, and is not switched off under the keyboard.
+describe('a button whose own action is running', () => {
+  function pending<T>() {
+    let finish!: (value: T) => void;
+    const promise = new Promise<T>((resolve) => { finish = resolve; });
+    return { promise, finish };
+  }
+  function expectBusyWithFocus(button: HTMLElement) {
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveFocus();
+  }
+
+  it('keeps the focus on 添加 while the website is saved, and saves once', async () => {
+    const saving = pending<'saved'>();
+    const save = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteRule').mockReturnValue(saving.promise);
+    page();
+    const dialog = await openAdd(origin);
+    const add = addButton(dialog);
+    add.focus();
+
+    fireEvent.click(add);
+    expectBusyWithFocus(add);
+    fireEvent.click(add);
+    expect(save).toHaveBeenCalledOnce();
+
+    await act(async () => { saving.finish('saved'); await saving.promise; });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('keeps the focus on 保存 while a custom rule is saved, and saves once', async () => {
+    const saving = pending<'saved'>();
+    const save = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteRule').mockReturnValue(saving.promise);
+    page(browsing);
+    const dialog = await openCustom();
+    const saveButton = within(dialog).getByRole('button', { name: t().browserSitePermsSave });
+    saveButton.focus();
+
+    fireEvent.click(saveButton);
+    expectBusyWithFocus(saveButton);
+    fireEvent.click(saveButton);
+    expect(save).toHaveBeenCalledOnce();
+
+    await act(async () => { saving.finish('saved'); await saving.promise; });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('keeps the focus on 删除例外 while the website is removed, and removes once', async () => {
+    const removing = pending<boolean>();
+    const remove = vi.spyOn(useSettingsStore.getState(), 'removeBrowserSiteRule').mockReturnValue(removing.promise);
+    page(browsing);
+    const dialog = await askToRemove();
+    const removeNow = within(dialog).getByRole('button', { name: t().browserSiteDeleteButton });
+    removeNow.focus();
+
+    fireEvent.click(removeNow);
+    expectBusyWithFocus(removeNow);
+    fireEvent.click(removeNow);
+    expect(remove).toHaveBeenCalledOnce();
+
+    await act(async () => { removing.finish(false); await removing.promise; });
+    // A failed removal leaves the question open, and the button takes a press again.
+    expect(removeNow).not.toHaveAttribute('aria-disabled');
+    expect(removeNow).toHaveFocus();
+  });
+
+  it('still switches 添加 off while the address is empty', async () => {
+    page();
+    const dialog = await openAdd('');
+    expect(addButton(dialog)).toBeDisabled();
+    expect(addButton(dialog)).not.toHaveAttribute('aria-disabled');
   });
 });
 

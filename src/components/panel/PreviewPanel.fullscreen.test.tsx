@@ -3,6 +3,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, readTextFile } from '@tauri-apps/plugin-fs';
+import { useState } from 'react';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import PreviewPanel from './PreviewPanel';
 
@@ -74,6 +77,71 @@ describe('PreviewPanel fullscreen layout', () => {
     fireEvent.click(screen.getByRole('button', { name: EXIT_FULLSCREEN }));
     expect(screen.getByRole('button', { name: FULLSCREEN })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^(关闭预览|Close preview)$/ })).toBeNull();
+  });
+
+  it('is a layout state of the panel on the fullscreen level: no dialog, no scrim, and Escape leaves it', () => {
+    const { container } = renderImagePreview();
+    const surface = container.firstElementChild!;
+    expect(surface).toHaveClass('contents');
+    expect(surface).not.toHaveAttribute('role');
+
+    fireEvent.click(screen.getByRole('button', { name: FULLSCREEN }));
+
+    // The level is the surface's own: above the window's title-bar controls, under every
+    // floating level. The panel passes no stacking class.
+    expect(surface).toHaveClass('z-fullscreen');
+    expect(surface).not.toHaveClass('z-sticky');
+    expect(surface).not.toHaveClass('z-popover');
+    expect(surface).not.toHaveClass('z-dialog');
+    expect(surface).toHaveClass('bg-surface');
+    expect(surface).toHaveAttribute('data-electron-no-drag');
+    // Named after the file it shows; a group, never a dialog.
+    expect(surface).toHaveAttribute('role', 'group');
+    expect(surface).not.toHaveAttribute('aria-modal');
+    expect(surface).not.toHaveAttribute('data-ds-layer');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.querySelector('.bg-scrim')).toBeNull();
+    // The panel's own column fills the surface, between the surface's two Tab stops.
+    const [before, column, after] = Array.from(surface.children);
+    expect(before).toHaveAttribute('data-ds-focus-guard');
+    expect(column).toHaveClass('h-full');
+    expect(after).toHaveAttribute('data-ds-focus-guard');
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    expect(surface).not.toHaveClass('fixed');
+    expect(surface).toHaveClass('contents');
+    expect(screen.getByRole('button', { name: FULLSCREEN })).toBeInTheDocument();
+  });
+
+  it('leaves an Escape pressed inside a window to that window', async () => {
+    function Stage() {
+      const [open, setOpen] = useState(false);
+      return (
+        <DesignSystemProvider>
+          <PreviewPanel filePath="data:image/png;base64,iVBORw0KGgo=" tabId="preview-test" embedded />
+          <Button onClick={() => setOpen(true)}>open a window</Button>
+          <Dialog open={open} onOpenChange={setOpen} title="A window"><Button>Inside</Button></Dialog>
+        </DesignSystemProvider>
+      );
+    }
+    const { container } = render(<Stage />);
+    fireEvent.click(screen.getByRole('button', { name: FULLSCREEN }));
+    const surface = container.firstElementChild!;
+    expect(surface).toHaveClass('fixed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'open a window' }));
+    const inside = screen.getByRole('button', { name: 'Inside' });
+    expect(inside.closest('[data-ds-layer]')).not.toBeNull();
+    // A window over the panel does not end the panel's fullscreen.
+    expect(surface).toHaveClass('fixed');
+
+    fireEvent.keyDown(inside, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(surface).toHaveClass('fixed');
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(surface).not.toHaveClass('fixed');
   });
 
   describe('Escape with a toolbar menu open', () => {

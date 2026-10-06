@@ -28,3 +28,8 @@ export const DIALOG_PAGE = `${DIALOG_SURFACE} inset-x-0 bottom-6 m-auto max-h-[8
 export const DIALOG_VIEWER = `${DIALOG_SURFACE} inset-6 p-0`;
 // The longest fade of a design-system layer: `duration-base` in src/styles/tokens.css.
 export const LAYER_FADE_MS = 200;
+// How long a notification that has just appeared or moved takes no pointer press: its entrance
+// (`duration-base`, 200 ms) plus 300 ms, about the time a person needs to see that the target has
+// changed and hold back a press that is already on its way. A press that started before the move
+// lands inside this window and is dropped; one made after it was aimed at what is there.
+export const TOAST_SETTLE_MS = LAYER_FADE_MS + 300;

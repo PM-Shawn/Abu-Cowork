@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TextArea } from '@/components/ds/text-area';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -128,6 +129,42 @@ describe('TriggerRunHistory', () => {
     expect(switchConversation).toHaveBeenCalledTimes(1);
     expect(switchConversation).toHaveBeenCalledWith('conv-4');
     expect(useSettingsStore.getState().viewMode).toBe('chat');
+  });
+
+  it('puts the focus in the message field once 查看会话 has changed the page', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (frame: FrameRequestCallback) => frames.push(frame));
+    // Stands in for the app: the automation page and the chat page replace each other.
+    function Page() {
+      const viewMode = useSettingsStore((s) => s.viewMode);
+      return viewMode === 'automation' ? <TriggerRunHistory runs={RUNS} /> : <TextArea data-chat-composer aria-label="message" />;
+    }
+    render(<DesignSystemProvider><Page /></DesignSystemProvider>);
+    const view = within(rows()[1]).getByRole('button', { name: '查看会话' });
+    view.focus();
+
+    fireEvent.click(view);
+    const field = screen.getByRole('textbox', { name: 'message' });
+    expect(field).not.toHaveFocus();
+    act(() => { frames.splice(0).forEach((frame) => frame(0)); });
+
+    expect(field).toHaveFocus();
+    vi.unstubAllGlobals();
+  });
+
+  it('asks for no focus when the conversation of the run is gone and the page stays', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (frame: FrameRequestCallback) => frames.push(frame));
+    renderHistory(RUNS);
+    const view = within(rows()[1]).getByRole('button', { name: '查看会话' });
+    // Deleted between the render and the press.
+    useChatStore.setState({ conversationIndex: {} as never });
+
+    fireEvent.click(view);
+
+    expect(useSettingsStore.getState().viewMode).toBe('automation');
+    expect(frames).toEqual([]);
+    vi.unstubAllGlobals();
   });
 
   it('says that the conversation of a run was deleted, and nothing for a run that never had one', () => {

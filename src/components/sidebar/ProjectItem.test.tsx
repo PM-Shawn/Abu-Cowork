@@ -66,7 +66,10 @@ vi.mock('@/components/ds/menu', async (importOriginal) => {
 });
 
 vi.mock('./ImportedBadge', () => ({ default: () => null }));
-vi.mock('@/components/share/ShareExportDialog', () => ({ default: () => null }));
+// Stands in for the export window: it shows which conversation it was opened for.
+vi.mock('@/components/share/ShareExportDialog', () => ({
+  default: ({ convId }: { convId: string }) => <div data-testid="share-export-window" data-conversation={convId} />,
+}));
 
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.chat),
@@ -214,7 +217,60 @@ describe('ProjectItem — project row', () => {
     }
   });
 
-  it('opens project settings only after the menu has gone, with focus off the row behind it', async () => {
+  // The row leaves the page with its project: its owner is told first, so it can move the focus
+  // to the row that takes its place.
+  it.each([
+    ['归档', '归档项目', '归档', 'archiveProject'],
+    ['删除', '删除项目', '删除', 'deleteProject'],
+  ] as const)('tells its owner the row is about to leave before 「%s」 takes the project away', async (item, question, answer, action) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const onLeaving = vi.fn();
+      renderItem([], { onLeaving });
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+      await user.click(await screen.findByRole('menuitem', { name: item }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const asked = await screen.findByRole('alertdialog', { name: question });
+      expect(onLeaving).not.toHaveBeenCalled();
+
+      await user.click(within(asked).getByRole('button', { name: answer }));
+
+      expect(onLeaving).toHaveBeenCalledTimes(1);
+      expect(onLeaving).toHaveBeenCalledWith('p1');
+      const storeCall = mocks.project[action] as ReturnType<typeof vi.fn>;
+      expect(storeCall).toHaveBeenCalledWith('p1');
+      expect(onLeaving.mock.invocationCallOrder[0]).toBeLessThan(storeCall.mock.invocationCallOrder[0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says nothing to its owner when the question is cancelled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const onLeaving = vi.fn();
+      renderItem([], { onLeaving });
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+      await user.click(await screen.findByRole('menuitem', { name: '归档' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const asked = await screen.findByRole('alertdialog', { name: '归档项目' });
+
+      await user.click(within(asked).getByRole('button', { name: '取消' }));
+
+      expect(onLeaving).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks its name as the project row, so the focus can find it', () => {
+    renderItem([]);
+    expect(screen.getByRole('button', { name: 'fastapi-bridge-dev' })).toHaveAttribute('data-project-row', 'p1');
+  });
+
+  it('opens project settings only after the menu has gone, with focus back on the row, which the window returns to', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -227,9 +283,7 @@ describe('ProjectItem — project row', () => {
       await act(() => vi.runOnlyPendingTimersAsync());
       expect(screen.queryByRole('menu')).toBeNull();
       expect(onOpenSettings).toHaveBeenCalledWith('p1');
-      // The settings dialog is a legacy one that takes no focus: Enter on the row
-      // behind it must not act, so focus stays on the page body.
-      expect(document.activeElement).toBe(document.body);
+      expect(header).toHaveFocus();
     } finally {
       vi.useRealTimers();
     }
@@ -359,6 +413,25 @@ describe('ProjectItem — task rows', () => {
     await user.click(await screen.findByRole('menuitem', { name: '删除会话' }));
     expect(mocks.chat.deleteConversation).toHaveBeenCalledWith('c1');
     expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+  });
+
+  // The export window is a dialog that gives the focus back to where it was when it opened.
+  it('opens the export window after the menu has gone, with the focus back on the button that opened the menu', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderItem([makeConv(0)]);
+      const more = screen.getByRole('button', { name: '更多操作' });
+      await user.click(more);
+      await user.click(await screen.findByRole('menuitem', { name: '导出会话' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(mocks.chat.loadConversation).toHaveBeenCalledWith('c0');
+      expect(screen.getByTestId('share-export-window')).toHaveAttribute('data-conversation', 'c0');
+      expect(more).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('opens the task when the row itself is clicked', async () => {

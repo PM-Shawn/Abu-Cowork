@@ -20,6 +20,7 @@ import { remove } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { getParentDir } from '@/utils/pathUtils';
 import type { SubagentDefinition } from '@/types';
+import { focusComposerAfterPageChange } from '@/components/chat/composerFocus';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import { getAgentToolSummary } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
@@ -444,6 +445,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     if (selectedRef.current !== agent.name) return;
     prepareExpertEntry({ identity: expertIdentity(agent, locale), introduction: localizedIntro(agent, locale) }, promptText);
     closeExtensions();
+    // The window and its page leave for the chat page: the focus goes to the message field.
+    focusComposerAfterPageChange();
   };
 
   const notFound = <div className="py-8"><EmptyState icon={AppIcons.agent} title={t.toolbox.noAgentsFound} /></div>;

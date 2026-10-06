@@ -261,7 +261,7 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
       footer={<>
         {/* Cancel closes the way Escape does: a typed address is asked about first. */}
         <DialogClose asChild><Button variant="secondary">{t.common.cancel}</Button></DialogClose>
-        <Button variant="primary" disabled={busy || !draft.trim()} onClick={addSite}>{t.settings.browserSitePermsAddButton}</Button>
+        <Button variant="primary" busy={busy} disabled={!draft.trim()} onClick={addSite}>{t.settings.browserSitePermsAddButton}</Button>
       </>}>
       <div className="space-y-3">
         <label className="block text-ui text-label" htmlFor="browser-site-rule-url">{t.settings.browserSitePermsAddLabel}</label>
@@ -273,7 +273,7 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
     {editing && <Dialog open onOpenChange={closeWhenDismissed} title={t.settings.browserSiteCustomTitle} size="md"
       footer={<>
         <Button variant="secondary" onClick={closeDialog}>{t.common.cancel}</Button>
-        <Button variant="primary" disabled={busy} onClick={() => void saveRule(editing.origin, editing.rule, editing.expected, editing.embeddedIn)}>{t.settings.browserSitePermsSave}</Button>
+        <Button variant="primary" busy={busy} onClick={() => void saveRule(editing.origin, editing.rule, editing.expected, editing.embeddedIn)}>{t.settings.browserSitePermsSave}</Button>
       </>}>
       <div className="space-y-3">
         <p className="break-all text-ui text-label">{editing.origin}{editing.embeddedIn && <span className="block">{format(t.settings.browserEmbeddedScope, { origin: editing.embeddedIn })}</span>}</p>
@@ -291,7 +291,7 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
     {pendingRemoval && <Dialog open role="alertdialog" size="sm" onOpenChange={closeWhenDismissed} onCloseAutoFocus={focusAfterRemoval} title={t.settings.browserSiteDeleteTitle} description={format(t.settings.browserSiteDeleteMessage, { origin: pendingRemoval.origin })}
       footer={<>
         <Button variant="secondary" onClick={closeDialog}>{t.common.cancel}</Button>
-        <Button variant="danger" disabled={busy} onClick={() => void removeSite()}>{t.settings.browserSiteDeleteButton}</Button>
+        <Button variant="danger" busy={busy} onClick={() => void removeSite()}>{t.settings.browserSiteDeleteButton}</Button>
       </>}>
       {errorMessage}
     </Dialog>}

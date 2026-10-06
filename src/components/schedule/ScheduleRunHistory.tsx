@@ -1,4 +1,5 @@
 import { memo, useCallback } from 'react';
+import { focusComposerAfterPageChange } from '@/components/chat/composerFocus';
 import { IconButton } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
 import { Spinner } from '@/components/ds/spinner';
@@ -78,6 +79,8 @@ export default function ScheduleRunHistory({ runs }: Props) {
     if (!chat.conversationIndex[conversationId]) return;
     chat.switchConversation(conversationId);
     useSettingsStore.getState().setViewMode('chat');
+    // The button leaves with the automation page: the focus goes to the message field.
+    focusComposerAfterPageChange();
   }, []);
 
   if (runs.length === 0) {

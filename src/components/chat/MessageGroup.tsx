@@ -24,8 +24,8 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { computeRewindImpact } from '@/utils/rewindImpact';
+import { useRewindQuestion } from './rewindQuestion';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
@@ -817,11 +817,11 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
   }, [isAgentDone, fileOutputs, openPreview, activeConv?.id, conversationId]);
 
-  // Rewind confirm state: handleRetry's deleteMessagesFrom truncates from
-  // this loop's first assistant message onward, discarding anything after —
-  // silently, if this isn't the conversation's last loop. See
-  // computeRewindImpact for the "later turns exist" check.
-  const [pendingRewind, setPendingRewind] = useState<{ laterTurnsCount: number; run: () => void } | null>(null);
+  // handleRetry's deleteMessagesFrom truncates from this loop's first assistant
+  // message onward, discarding anything after — so when this isn't the
+  // conversation's last loop it asks first. See computeRewindImpact for the
+  // "later turns exist" check.
+  const askBeforeRewind = useRewindQuestion();
 
   // Handle retry
   const handleRetry = async () => {
@@ -851,10 +851,13 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     };
 
     const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);
-    if (impact.hasLaterTurns) {
-      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-      return;
-    }
+    if (impact.hasLaterTurns && !(await askBeforeRewind({
+      conversationId: convId,
+      laterTurnsCount: impact.laterTurnsCount,
+      loopId,
+      fallbackMessageId: userMsg.id,
+      messageIds: firstAssistantInLoop ? [userMsg.id, firstAssistantInLoop.id] : [userMsg.id],
+    }))) return;
     await proceed();
   };
 
@@ -1169,21 +1172,6 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           'bg-fill-selected',
       )}
     >
-      <ConfirmDialog
-        open={!!pendingRewind}
-        title={t.chat.rewindConfirmTitle}
-        message={pendingRewind ? format(t.chat.rewindConfirmMessage, { count: String(pendingRewind.laterTurnsCount) }) : ''}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        onConfirm={() => {
-          const run = pendingRewind?.run;
-          setPendingRewind(null);
-          run?.();
-        }}
-        onCancel={() => setPendingRewind(null)}
-        variant="danger"
-      />
-
       {/* User message renders standalone */}
       {userMsg && <MessageErrorBoundary><MessageBubble message={userMsg} /></MessageErrorBoundary>}
 

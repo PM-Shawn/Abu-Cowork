@@ -38,7 +38,7 @@ const twMerge = extendTailwindMerge({
       "ring-color": [{ ring: ["focus"] }],
       rounded: [{ rounded: ["window", "panel", "control"] }],
       shadow: [{ shadow: ["panel", "float", "dialog", "composer"] }],
-      z: [{ z: ["sticky", "popover", "dialog", "toast", "tooltip"] }],
+      z: [{ z: ["sticky", "fullscreen", "popover", "dialog", "toast", "tooltip"] }],
       duration: [{ duration: ["fast", "base", "slow"] }],
       ease: [{ ease: ["enter", "exit"] }],
       "font-family": [{ font: ["code"] }],

@@ -163,9 +163,11 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
     await expect(failedRow).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(failedRow.getByRole('button', { name: '新建对话' })).toBeVisible();
     await expect(failedRow.getByRole('button', { name: '重试' })).toHaveCount(0);
-    // ToastContainer renders nothing while the toast store is empty; the only
-    // other live-region status in the app is screen-reader-only.
-    await expect(page.locator('[role="status"][aria-live="polite"]:not(.sr-only)')).toHaveCount(0);
+    // The notification region is always on the page and holds one list item
+    // per toast: no item, no toast.
+    const notifications = page.getByRole('region', { name: /^(通知|Notifications)$/ });
+    await expect(notifications).toHaveCount(1);
+    await expect(notifications.getByRole('listitem')).toHaveCount(0);
     // The oversize turn never reached the model: only the ordinary turn did.
     expect(taskRequests(mock)).toHaveLength(1);
 
@@ -213,7 +215,8 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
       matchesFailedTurn: true,
     });
     // Carrying the turn into a new conversation raises no toast either.
-    await expect(page.locator('[role="status"][aria-live="polite"]:not(.sr-only)')).toHaveCount(0);
+    await expect(notifications).toHaveCount(1);
+    await expect(notifications.getByRole('listitem')).toHaveCount(0);
   });
 
   test('a turn carrying U+2028 and U+2029 is answered', async () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useId } from 'react';
 import type { ToolCall, ToolResultContent, Message } from '@/types';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
@@ -9,6 +9,7 @@ import { StatusIcon } from '@/components/ds/status-icon';
 import { Tag } from '@/components/ds/tag';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useChatStore } from '@/stores/chatStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { resolveOutputRefSource } from '@/core/session/outputSnapshots';
@@ -324,7 +325,7 @@ function ToolCallItem({
 
 /**
  * Renders a clickable screenshot thumbnail from tool result image content.
- * Click to expand to full size in a modal overlay.
+ * Click to open it in the app's image viewer.
  */
 export function ToolResultImagePreview({
   block,
@@ -340,8 +341,10 @@ export function ToolResultImagePreview({
   frameClassName: string;
 }) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
+  const thumbnailId = useId();
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  // The file `resolvedSrc` was read from.
+  const resolvedPathRef = useRef<string | null>(null);
   const [state, setState] = useState<OutputRefImageState>(() => (
     block.outputRef?.relPath && !block.source.data ? 'loading' : 'idle'
   ));
@@ -354,6 +357,7 @@ export function ToolResultImagePreview({
   const src = inlineSrc ?? resolvedSrc;
 
   useEffect(() => {
+    resolvedPathRef.current = null;
     if (inlineSrc || !block.outputRef?.relPath) {
       setState('idle');
       if (objectUrlRef.current) {
@@ -386,6 +390,7 @@ export function ToolResultImagePreview({
           return;
         }
         objectUrlRef.current = createdUrl;
+        resolvedPathRef.current = resolved.path;
         setResolvedSrc(createdUrl);
         setState('ready');
       })
@@ -435,36 +440,31 @@ export function ToolResultImagePreview({
   }
 
   return (
-    <>
-      <Pressable
-        className={cn('relative group inline-block cursor-pointer', frameClassName)}
-        onClick={() => setExpanded(true)}
-      >
-        <img
-          src={src}
-          alt={alt}
-          className={thumbnailClassName}
-        />
-        <span className="absolute inset-0 flex items-center justify-center transition-colors group-hover:bg-scrim group-focus-visible:bg-scrim">
-          <span className="rounded-control bg-raised p-1 text-label opacity-0 shadow-float transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-            <Icon icon={AppIcons.enlarge} size="md" />
-          </span>
+    <Pressable
+      className={cn('relative group inline-block cursor-pointer', frameClassName)}
+      // The app's image viewer shows it enlarged. A saved image goes there as the very file this
+      // thumbnail read: the viewer finds files by name, and two tool images can share one name.
+      onClick={(event) => useImageLightboxStore.getState().open([{
+        // An inline image is named after this thumbnail, never after its bytes.
+        id: block.outputRef?.relPath ?? `${alt}:${thumbnailId}`,
+        mediaType: block.source.media_type,
+        data: block.source.data,
+        filePath: resolvedPathRef.current ?? undefined,
+        conversationId,
+        workspacePath: undefined,
+      }], 0, event.currentTarget)}
+    >
+      <img
+        src={src}
+        alt={alt}
+        className={thumbnailClassName}
+      />
+      <span className="absolute inset-0 flex items-center justify-center transition-colors group-hover:bg-scrim group-focus-visible:bg-scrim">
+        <span className="rounded-control bg-raised p-1 text-label opacity-0 shadow-float transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          <Icon icon={AppIcons.enlarge} size="md" />
         </span>
-      </Pressable>
-      {expanded && (
-        <div
-          data-electron-no-drag
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
-          onClick={() => setExpanded(false)}
-        >
-          <img
-            src={src}
-            alt={`${alt} (full)`}
-            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-          />
-        </div>
-      )}
-    </>
+      </span>
+    </Pressable>
   );
 }
 

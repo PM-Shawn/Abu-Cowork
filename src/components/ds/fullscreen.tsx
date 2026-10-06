@@ -59,13 +59,58 @@ function firstControl(surface: HTMLElement): HTMLElement | null {
   return null;
 }
 
+// The plain surface's two Tab stops, before and after its content, never seen and never pressed.
+const GUARD = 'pointer-events-none fixed opacity-0 outline-none';
+const isGuard = (element: Element | null) => element?.hasAttribute('data-ds-focus-guard') === true;
+// A modal layer that is shown: a window, a question or an approval. A popover's box has the same
+// role and is told apart by `data-ds-popover`.
+const WINDOW_ON_THE_PAGE = '[data-ds-layer][data-state="open"]:is([role="dialog"], [role="alertdialog"]):not([data-ds-popover]):not([hidden])';
+
+// The first and the last control Tab reaches in the plain surface, its own two stops aside.
+function tabEnds(surface: HTMLElement): { first: HTMLElement; last: HTMLElement } | null {
+  const all = surface.querySelectorAll<HTMLElement>('*');
+  let first: HTMLElement | null = null;
+  let last: HTMLElement | null = null;
+  for (let index = 0; index < all.length && !first; index += 1) {
+    if (!isGuard(all[index]) && isTabbable(all[index], surface)) first = all[index];
+  }
+  for (let index = all.length - 1; index >= 0 && !last; index -= 1) {
+    if (!isGuard(all[index]) && isTabbable(all[index], surface)) last = all[index];
+  }
+  return first && last ? { first, last } : null;
+}
+
+// False while the surface or an element around it is taken off the page (a panel's tab that is
+// not the one in view keeps its fullscreen state under `hidden`).
+function isDisplayed(surface: HTMLElement): boolean {
+  for (let node: HTMLElement | null = surface; node; node = node.parentElement) {
+    if (node.hidden || getComputedStyle(node).display === 'none') return false;
+  }
+  return true;
+}
+
+// Tab pressed inside a frame never reaches the page. When the focus comes out of a frame at
+// either end of the surface it arrives on one of the two stops, which turns it round.
+function turnRound(stop: HTMLElement, to: 'first' | 'last') {
+  const surface = stop.parentElement;
+  const ends = surface ? tabEnds(surface) : null;
+  ends?.[to].focus();
+}
+
 // Shows its content over the whole window without moving it in the page: the content's elements
 // stay the very same ones when it opens and closes, so a live iframe inside it is not reloaded
 // (a Dialog portals its content, which rebuilds it). Closed, its element makes no box
 // (`display: contents`) and `className` / `style` do not apply.
 //
-// Plain form: a layout state of a panel. It sits on the sticky level, under menus and dialogs,
-// moves no focus, and Escape leaves it unless the key was pressed inside a design-system layer.
+// Plain form: a layout state of a panel. It sits on a level of its own (`z-fullscreen`): above
+// what the page pins, the window's title-bar controls included, and under menus, dialogs, toasts
+// and tooltips. The caller passes no stacking class. It moves no focus when it opens or closes,
+// and Escape leaves it unless the key was pressed inside a design-system layer or something else
+// has used the key (a window over the panel that closed on it, an approval that it refused).
+// The page it covers cannot be seen, so Tab stays among the surface's own controls and goes
+// round from the last to the first and back; pressed on the covered page, it comes in. A
+// design-system layer opened over the surface (a menu, a window, an approval) keeps its own
+// keyboard handling, and the rest of the page is not made inert: layers are portaled there.
 //
 // `layer`: a dialog as far as the layer manager and the user can tell. One at a time (a dialog
 // or an approval that opens replaces it, and it is turned away while an approval is on the page),
@@ -131,18 +176,52 @@ export function FullscreenSurface({
       // An Escape pressed inside a menu, a popover or a question belongs to that layer.
       const within = event.target instanceof Element ? event.target.closest('[data-ds-layer]') : null;
       if (within && within !== rootRef.current) return;
+      // A layer above has used the key (it closed on it, or refused an approval), wherever the
+      // focus was: one press, one thing closed.
+      if (event.defaultPrevented) return;
       if (!layer) {
         exitRef.current();
         return;
       }
-      // A layer above has used the key.
-      if (event.defaultPrevented) return;
       event.preventDefault();
       registry.escapeTop();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [shown, layer, registry]);
+
+  // The plain surface keeps Tab among its own controls. The `layer` form has a focus scope.
+  const guarded = shown && !layer;
+  useEffect(() => {
+    if (!guarded) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      const element = rootRef.current;
+      // A surface that is open and not displayed covers nothing: Tab is the page's.
+      if (!element || !isDisplayed(element)) return;
+      // Inside a menu, a popover, a window or an approval that is open over the surface, Tab is
+      // that layer's.
+      if (event.target instanceof Element && event.target.closest('[data-ds-layer]')) return;
+      // A window, a question or an approval over the surface holds the keyboard wherever the
+      // focus is (on the window itself after a press on its scrim): the surface takes no Tab
+      // for a control under it.
+      if (document.querySelector(WINDOW_ON_THE_PAGE)) return;
+      const ends = tabEnds(element);
+      if (!ends) {
+        event.preventDefault();
+        return;
+      }
+      const active = document.activeElement;
+      const inside = active !== null && element.contains(active) && !isGuard(active);
+      const leavesAtTheEnd = active === (event.shiftKey ? ends.first : ends.last);
+      // Between two of its own controls the browser moves the focus.
+      if (inside && !leavesAtTheEnd) return;
+      event.preventDefault();
+      (event.shiftKey ? ends.last : ends.first).focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [guarded]);
 
   // The focus scope's Tab handler, called from the surface's element.
   const scopeKeyDown = useRef<KeyboardEventHandler<HTMLDivElement> | null>(null);
@@ -187,11 +266,14 @@ export function FullscreenSurface({
       <div
         ref={attach}
         {...surfaceProps}
-        className={shown ? cn(COVER, layer ? 'z-dialog' : 'z-sticky', 'outline-none', className, trapped && scrim && SEE_THROUGH) : 'contents'}
+        className={shown ? cn(COVER, layer ? 'z-dialog' : 'z-fullscreen', 'outline-none', className, trapped && scrim && SEE_THROUGH) : 'contents'}
         style={shown ? style : undefined}
         onKeyDown={(event) => scopeKeyDown.current?.(event)}
       >
+        {/* Each of the three keeps its place among the children, so the content is never rebuilt. */}
+        {guarded && <span tabIndex={0} data-ds-focus-guard="" className={GUARD} onFocus={(event) => turnRound(event.currentTarget, 'last')} />}
         {content}
+        {guarded && <span tabIndex={0} data-ds-focus-guard="" className={GUARD} onFocus={(event) => turnRound(event.currentTarget, 'first')} />}
         {trapped && surface && (
           <FocusScope.FocusScope
             asChild

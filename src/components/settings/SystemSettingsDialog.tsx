@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { focusComposerAfterPageChange } from '@/components/chat/composerFocus';
 import { Dialog } from '@/components/ds/dialog';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import { useI18n } from '@/i18n';
@@ -33,6 +34,10 @@ export default memo(function SystemSettingsDialog() {
       contentProps={{ 'data-abu-settings-dialog': '' }}
       // The window opens on the navigation row of the page in view.
       initialFocus={(content) => content.querySelector<HTMLElement>('nav [aria-current="page"]')}
+      // The control that opened the window may have left the page meanwhile (the first-run
+      // guide's link leaves with the guide): the message field takes the focus then, from no
+      // control and from no layer. A window that took this one's place keeps the focus.
+      onCloseAutoFocus={(event) => { if (!event.defaultPrevented) focusComposerAfterPageChange(); }}
     >
       <SystemSettingsView />
     </Dialog>

@@ -12,6 +12,7 @@ import { act, render as renderBare, screen, fireEvent, waitFor, within } from '@
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TextArea } from '@/components/ds/text-area';
 
 // The detail window is a design-system dialog, so the section renders inside the provider like the app does.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
@@ -502,6 +503,32 @@ describe('AgentsSection — the detail window', () => {
     expect(closeExtensions).not.toHaveBeenCalled();
     endFade(closingWindow());
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('puts the focus in the message field once 开始对话 has changed the page', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (frame: FrameRequestCallback) => frames.push(frame));
+    // Stands in for the app: the experts page and the chat page replace each other.
+    function Page() {
+      const viewMode = useSettingsStore((s) => s.viewMode);
+      return viewMode === 'extensions'
+        ? <AgentsSection source="mine" />
+        : <TextArea data-chat-composer aria-label="message" />;
+    }
+    useSettingsStore.setState({ viewMode: 'extensions' });
+    useDiscoveryStore.setState({ agents: [userMeta], skills: [], isLoading: false });
+    render(<Page />);
+    openDetail('我的助手');
+
+    fireEvent.click(screen.getByTestId('agent-detail-start-chat'));
+    expect(useSettingsStore.getState().viewMode).toBe('chat');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    const field = screen.getByRole('textbox', { name: 'message' });
+    expect(field).not.toHaveFocus();
+
+    act(() => { frames.splice(0).forEach((frame) => frame(0)); });
+    expect(field).toHaveFocus();
+    vi.unstubAllGlobals();
   });
 
   it('shows the empty shelf with a title and the button that creates an expert', () => {

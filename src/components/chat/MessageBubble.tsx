@@ -22,12 +22,12 @@ import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
 import { computeRewindImpact } from '@/utils/rewindImpact';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { useRewindQuestion } from './rewindQuestion';
 import abuAvatar from '@/assets/abu-avatar.png';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
@@ -455,26 +455,9 @@ export default function MessageBubble({
   // Rewind (edit-resend / regenerate / run-retry) truncates the conversation
   // from the redone turn onward via deleteMessagesFrom, durably discarding
   // anything after it. When that redone turn isn't the conversation's last,
-  // later turns would be silently lost — gate those cases behind a confirm.
-  // `run` holds the exact same delete+resend steps the unconfirmed path would
-  // have executed immediately.
-  const [pendingRewind, setPendingRewind] = useState<{ laterTurnsCount: number; run: () => void } | null>(null);
-  const rewindConfirmDialog = (
-    <ConfirmDialog
-      open={!!pendingRewind}
-      title={t.chat.rewindConfirmTitle}
-      message={pendingRewind ? format(t.chat.rewindConfirmMessage, { count: String(pendingRewind.laterTurnsCount) }) : ''}
-      confirmText={t.common.confirm}
-      cancelText={t.common.cancel}
-      onConfirm={() => {
-        const run = pendingRewind?.run;
-        setPendingRewind(null);
-        run?.();
-      }}
-      onCancel={() => setPendingRewind(null)}
-      variant="danger"
-    />
-  );
+  // later turns would be silently lost — those cases ask first. After a yes,
+  // `proceed` runs the exact same delete+resend steps the unasked path runs.
+  const askBeforeRewind = useRewindQuestion();
 
   const textContent = getTextContent(message.content);
   const imageBlocks = getImageBlocks(message.content);
@@ -489,11 +472,13 @@ export default function MessageBubble({
     // Refuse before anything is deleted; the editor stays open so the edit survives.
     if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
-    setIsEditing(false);
 
     const proceed = async () => {
       // Re-check: the provider may have been removed while the confirm was open.
       if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
+      // The editor closes only now that the edited message is sent. Until then it stays, with
+      // what was typed: a no to the question, or a resend refused at the answer, loses nothing.
+      setIsEditing(false);
       // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
       useChatStore.getState().deleteMessagesFrom(convId, message.id);
       // Re-attach the original routing prefix (@expert or /skill) so the
@@ -513,10 +498,13 @@ export default function MessageBubble({
     const impact = activeConv
       ? computeRewindImpact(activeConv.messages, message.loopId, message.id)
       : { hasLaterTurns: false, laterTurnsCount: 0 };
-    if (impact.hasLaterTurns) {
-      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-      return;
-    }
+    if (impact.hasLaterTurns && !(await askBeforeRewind({
+      conversationId: convId,
+      laterTurnsCount: impact.laterTurnsCount,
+      loopId: message.loopId,
+      fallbackMessageId: message.id,
+      messageIds: [message.id],
+    }))) return;
     await proceed();
   };
 
@@ -549,10 +537,13 @@ export default function MessageBubble({
     };
 
     const impact = computeRewindImpact(activeConv.messages, message.loopId, message.id);
-    if (impact.hasLaterTurns) {
-      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-      return;
-    }
+    if (impact.hasLaterTurns && !(await askBeforeRewind({
+      conversationId: convId,
+      laterTurnsCount: impact.laterTurnsCount,
+      loopId: message.loopId,
+      fallbackMessageId: message.id,
+      messageIds: [message.id, truncateFromId],
+    }))) return;
     await proceed();
   };
 
@@ -609,10 +600,13 @@ export default function MessageBubble({
       };
 
       const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);
-      if (impact.hasLaterTurns) {
-        setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-        return;
-      }
+      if (impact.hasLaterTurns && !(await askBeforeRewind({
+        conversationId: convId,
+        laterTurnsCount: impact.laterTurnsCount,
+        loopId: targetUserMsg.loopId,
+        fallbackMessageId: targetUserMsg.id,
+        messageIds: [message.id, targetUserMsg.id],
+      }))) return;
       await proceed();
     }
   };
@@ -638,19 +632,16 @@ export default function MessageBubble({
   // Actions only mode - just render the action buttons
   if (actionsOnly && !isUser) {
     return (
-      <>
-        {rewindConfirmDialog}
-        <div className="flex items-center gap-2">
-          <MessageActions
-            message={message}
-            onEdit={() => {}}
-            onRegenerate={handleRegenerate}
-            isUser={false}
-            conversationId={convId}
-          />
-          {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
-        </div>
-      </>
+      <div className="flex items-center gap-2">
+        <MessageActions
+          message={message}
+          onEdit={() => {}}
+          onRegenerate={handleRegenerate}
+          isUser={false}
+          conversationId={convId}
+        />
+        {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
+      </div>
     );
   }
 
@@ -659,7 +650,6 @@ export default function MessageBubble({
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
       <div className="flex justify-end w-full group" data-message-id={message.id}>
-        {rewindConfirmDialog}
         <div className="flex max-w-[85%] flex-col items-end gap-2">
           {/* Image thumbnails — above the text bubble */}
           {imageBlocks.length > 0 && !isEditing && (
@@ -816,7 +806,6 @@ export default function MessageBubble({
   if (hideAvatar) {
     return (
       <div className="assistant-turn">
-        {rewindConfirmDialog}
         {/* Thinking block if present */}
         {message.thinking && <ThinkingBlock thinking={message.thinking} />}
 
@@ -862,7 +851,6 @@ export default function MessageBubble({
 
   return (
     <div className="flex gap-3 w-full overflow-hidden group">
-      {rewindConfirmDialog}
       {/* ABU Avatar - 小布丁人 */}
       <div className="shrink-0 mt-0.5">
         <div className="w-7 h-7 rounded-full overflow-hidden">

@@ -369,7 +369,9 @@ export function ComputerUseSetupView({
           ) : enabled && ready && requestedByTask ? (
             <Button variant="secondary" onClick={onDone}>{t.settings.capabilityReturnToTask}</Button>
           ) : enabled && !ready && !restartRequired ? (
-            <Button variant="secondary" icon={AppIcons.retry} onClick={onRefresh} disabled={checking || requesting !== undefined}>
+            // Its own check is running: busy, so the focus stays on it. A permission request is
+            // another action: the button is unavailable then.
+            <Button variant="secondary" icon={AppIcons.retry} onClick={onRefresh} busy={checking} disabled={requesting !== undefined}>
               {t.settings.capabilityCheckAgain}
             </Button>
           ) : null}

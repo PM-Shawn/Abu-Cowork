@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -27,7 +25,9 @@ import {
   type AppApprovalDecision,
   type McpAppAuditEntry,
 } from '@/core/mcp/appBridgeHandlers';
+import { IconButton } from '@/components/ds/button';
 import { ConfirmDialog } from '@/components/ds/confirm-dialog';
+import { FullscreenSurface } from '@/components/ds/fullscreen';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
@@ -48,6 +48,13 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_LISTED_DOMAINS = 3;
 
 type BlockStatus = 'loading' | 'ready' | 'failed' | 'disconnected';
+
+/** The scrim behind the fullscreen app, and the control the fullscreen surface
+ *  opens on: the exit button, never the app's frame. */
+const FULLSCREEN_SCRIM = { 'data-testid': 'mcp-app-fullscreen-backdrop' } as const;
+const fullscreenExitOf = (surface: HTMLElement) => (
+  surface.querySelector<HTMLElement>('[data-testid="mcp-app-fullscreen-exit"]')
+);
 
 // ---------------------------------------------------------------------------
 // Concurrency cap (spec §4.5) — at most MAX_ACTIVE_MCP_APPS live bridges per
@@ -718,29 +725,27 @@ export default function McpAppBlock({
     void sessionRef.current?.sendHostContextChange({ displayMode });
   }, [displayMode]);
 
-  /** Every USER-initiated way out of fullscreen. Recording the moment is what
-   *  stops the app from dragging the user straight back in. */
+  /** Every way out of fullscreen that the HOST takes: the user's (the exit
+   *  button, the backdrop, Escape) and the layer manager's (another window or
+   *  an approval takes the app's place, or an approval on the page turns the
+   *  app away). Recording the moment is what stops the app from dragging the
+   *  user straight back in — or straight back over the window that replaced it. */
   const exitFullscreen = useCallback(() => {
     lastUserExitAtRef.current = Date.now();
     setDisplayMode('inline');
   }, []);
 
   // Esc leaves fullscreen: the iframe is sandboxed and cannot offer a host
-  // control of its own, so the host must always provide a way out.
+  // control of its own, so the host must always provide a way out. The
+  // fullscreen surface is a layer of the design system, so the key reaches it
+  // through the layer manager (one press, one layer) and the surface opens with
+  // the focus on the exit button.
   //
-  // ⚠️ SPEC LIMITATION: this listener is on the HOST window, and a keydown that
-  // happens while focus is inside the sandboxed iframe never crosses the
-  // document boundary — so Escape does nothing once the user has clicked into
-  // the app. The visible close button (and the backdrop) are the guaranteed
-  // exits; Escape is a convenience for when focus is still on the host side.
-  useEffect(() => {
-    if (displayMode !== 'fullscreen') return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') exitFullscreen();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [displayMode, exitFullscreen]);
+  // ⚠️ SPEC LIMITATION: a keydown that happens while focus is inside the
+  // sandboxed iframe never crosses the document boundary — so Escape does
+  // nothing once the user has clicked into the app. The visible exit button
+  // (and the backdrop) are the guaranteed exits; Escape is a convenience for
+  // when focus is still on the host side.
 
   // ---- 4. Theme + container size -------------------------------------------
   useEffect(() => {
@@ -839,36 +844,31 @@ export default function McpAppBlock({
     }
   };
 
-  // Fullscreen is a CSS promotion of the very same element tree — the iframe
-  // keeps its position in the JSX children array, so React never unmounts it
-  // and the bridge (and the app's own state) survive. Reparenting the iframe
-  // into a portal container would look tidier but discards the nested browsing
-  // context, i.e. reloads the app; see the spec's "不重建，保状态".
+  // Fullscreen is a promotion of the very same element tree — the iframe keeps
+  // its position in the JSX children array, so React never unmounts it and the
+  // bridge (and the app's own state) survive. Reparenting the iframe into a
+  // portal container would look tidier but discards the nested browsing
+  // context, i.e. reloads the app; see the spec's "不重建，保状态". That is why
+  // this is a `FullscreenSurface` and no `Dialog`: the surface shows its content
+  // over the window without moving it in the page. To the layer manager it is a
+  // dialog — one at a time, an approval takes its place and none is covered by
+  // it, the keyboard stays inside — and it brings the scrim. The surface's
+  // padding is where the scrim can be pressed to leave.
   return (
     <>
-      {fullscreen && createPortal(
-        <div
-          data-testid="mcp-app-fullscreen-backdrop"
-          // Fullscreen paints over the window chrome; without this the top 72px
-          // band is an OS drag lane on Windows and swallows the click that is
-          // supposed to close the overlay.
-          data-electron-no-drag
-          className="fixed inset-0 z-40 bg-black/60"
-          onClick={exitFullscreen}
-        />,
-        document.body,
-      )}
-      {/* In fullscreen the frame container covers the viewport, so it would sit
-          ON TOP of the backdrop and swallow every click meant for it. It is
-          therefore click-through (`pointer-events-none`) and each real control
-          — the close button and the iframe itself — opts back in. That leaves
-          the padding around the app as backdrop, which is what makes
-          click-outside-to-close work at all. */}
+      <FullscreenSurface
+        open={fullscreen}
+        onExit={exitFullscreen}
+        layer
+        scrim
+        // The connector's name, as the frame's own title starts with it.
+        label={server}
+        scrimProps={FULLSCREEN_SCRIM}
+        initialFocus={fullscreenExitOf}
+        className="flex flex-col p-6"
+      >
       <div
-        className={cn(
-          'my-2',
-          fullscreen && 'pointer-events-none fixed inset-0 z-50 my-0 flex flex-col gap-2 p-6 [&>*]:pointer-events-auto',
-        )}
+        className={cn('my-2', fullscreen && 'my-0 flex min-h-0 flex-1 flex-col gap-2')}
         data-electron-no-drag
         data-testid="mcp-app-block"
         data-display-mode={displayMode}
@@ -880,16 +880,12 @@ export default function McpAppBlock({
       >
         {fullscreen && (
           <div className="flex justify-end" data-testid="mcp-app-fullscreen">
-            <button
-              type="button"
+            <IconButton
+              icon={AppIcons.exitFullscreen}
+              label={t.chat.mcpAppExitFullscreen}
               onClick={exitFullscreen}
               data-testid="mcp-app-fullscreen-exit"
-              aria-label={t.chat.mcpAppExitFullscreen}
-              title={t.chat.mcpAppExitFullscreen}
-              className="btn-ghost rounded-full p-1.5"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            />
           </div>
         )}
         {disclosure && (
@@ -912,7 +908,7 @@ export default function McpAppBlock({
             referrerPolicy="no-referrer"
             className={cn(
               'block w-full rounded-panel',
-              fullscreen && 'min-h-0 flex-1 bg-[var(--abu-bg-primary)]',
+              fullscreen && 'min-h-0 flex-1 bg-surface',
               meta?.prefersBorder && 'border border-separator',
             )}
             style={{
@@ -960,6 +956,7 @@ export default function McpAppBlock({
           </div>
         )}
       </div>
+      </FullscreenSurface>
       {/* Consent for an app-initiated `ui/open-link`. The URL is shown verbatim
           and whole (code font, wrapped; a long one scrolls) because it is the
           thing being consented to — a prettified or shortened URL would hide

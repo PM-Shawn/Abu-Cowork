@@ -9,11 +9,10 @@
  * - cleanup(container): optional cleanup on unmount
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X } from 'lucide-react';
-import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { Button, IconButton } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Spinner } from '@/components/ds/spinner';
@@ -83,6 +82,9 @@ export interface CodeBlockRendererConfig {
   };
 }
 
+const WIDGET_CLOSE_BUTTON = { 'data-widget-close': '' } as const;
+const widgetCloseButtonOf = (content: HTMLElement) => content.querySelector<HTMLElement>('[data-widget-close]');
+
 // Per-label caches (shared across component instances)
 const cacheMap = new Map<string, Map<string, string>>();
 const CACHE_MAX = 50;
@@ -117,6 +119,7 @@ export default function RenderableCodeBlock({
   const [copied, setCopied] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenAsked, setFullscreenAsked] = useState(false);
   const [scale, setScale] = useState(1);
 
 
@@ -332,6 +335,10 @@ export default function RenderableCodeBlock({
   const handleZoomIn = useCallback(() => setScale(s => zoomInFn(s)), []);
   const handleZoomOut = useCallback(() => setScale(s => zoomOutFn(s)), []);
   const handleZoomReset = useCallback(() => setScale(1), []);
+  const openFullscreen = useCallback(() => {
+    setFullscreenAsked(true);
+    setFullscreen(true);
+  }, []);
 
   if (!code.trim()) return null;
 
@@ -423,7 +430,7 @@ export default function RenderableCodeBlock({
         />
         <IconButton size="sm" icon={AppIcons.download} label="Download" onClick={handleDownload} />
         {config.buildFullscreenHtml && (
-          <IconButton size="sm" icon={AppIcons.enlarge} label={t.chat.htmlWidgetFullscreen} onClick={() => setFullscreen(true)} />
+          <IconButton size="sm" icon={AppIcons.enlarge} label={t.chat.htmlWidgetFullscreen} onClick={openFullscreen} />
         )}
         <IconButton size="sm" icon={AppIcons.viewSource} label="View source" onClick={() => setShowSource(true)} />
       </div>
@@ -439,32 +446,29 @@ export default function RenderableCodeBlock({
     </div>
   );
 
-  const fullscreenOverlay = fullscreen && config.buildFullscreenHtml && createPortal(
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6"
-      onClick={() => setFullscreen(false)}
+  // The enlarged widget is a new frame in a viewer window. The window opens on its close
+  // button: a sandboxed frame that has the focus keeps every key, Escape included.
+  // A conversation can hold many widgets: a block has no window until its first enlargement,
+  // and from then on the window is closed, not removed, so it fades out.
+  const fullscreenOverlay = config.buildFullscreenHtml && fullscreenAsked && (
+    <Dialog
+      open={fullscreen}
+      onOpenChange={(next) => { if (!next) setFullscreen(false); }}
+      size="viewer"
+      title={t.chat.htmlWidgetFullscreen}
+      titleHidden
+      closeButton={WIDGET_CLOSE_BUTTON}
+      initialFocus={widgetCloseButtonOf}
     >
-      <div
-        className="relative bg-white rounded-xl shadow-2xl w-full max-w-5xl"
-        style={{ height: '85vh' }}
-        onClick={e => e.stopPropagation()}
-      >
-        <button
-          onClick={() => setFullscreen(false)}
-          className="absolute -top-3 -right-3 z-10 p-1.5 rounded-full bg-white shadow-md
-            hover:bg-[var(--abu-bg-muted)] transition-colors"
-        >
-          <X className="h-4 w-4 text-[var(--abu-text-muted)]" />
-        </button>
+      {/* The frame starts below the close button, so the button covers none of the widget. */}
+      <div className="flex min-h-0 flex-1 flex-col pt-13">
         <iframe
           srcDoc={config.buildFullscreenHtml(code)}
           sandbox="allow-scripts"
-          className="w-full h-full rounded-xl border-none"
+          className="min-h-0 w-full flex-1 rounded-b-window border-none bg-page-canvas"
         />
       </div>
-    </div>,
-    document.body,
+    </Dialog>
   );
 
   // --- Seamless mode (Claude-like) ---

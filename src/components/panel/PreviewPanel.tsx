@@ -15,6 +15,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useI18n, getI18n } from '@/i18n';
 import { Button, IconButton } from '@/components/ds/button';
 import { EmptyState } from '@/components/ds/empty-state';
+import { FullscreenSurface } from '@/components/ds/fullscreen';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
@@ -54,6 +55,14 @@ const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
  * no rendered form at all, so they're always shown editable.
  */
 const EDITABLE_TYPES = new Set<RendererType>(['code', 'text', 'html', 'markdown']);
+
+// Window Controls Overlay stays native and always paints above the renderer. Keep "fullscreen"
+// as a content-area maximize on Windows, matching the shell layout and leaving caption controls
+// unobstructed. The 36px fallback matches WindowTitleBar's legacy Windows toolbar; WCO-capable
+// builds resolve the real 30px height from the env value.
+const WINDOWS_FULLSCREEN_STYLE = {
+  top: 'calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px))',
+} as const;
 
 function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
@@ -526,19 +535,6 @@ export default function PreviewPanel({
   // whatever file was previously open, not the newly selected one.
   useEffect(() => { setShowVersionHistory(false); }, [previewFilePath]);
 
-  // Esc exits app-fullscreen — only listen while fullscreen is active.
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      // An Escape that closes an open menu belongs to that menu.
-      if (e.target instanceof Element && e.target.closest('[role="menu"]')) return;
-      setIsFullscreen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isFullscreen]);
-
   // Disarm inspect mode: tell the page-side picker to go idle and clear the
   // nonce. Safe to call when already disarmed (no-op postMessage) — every
   // call site below (toggle-off, resets, successful pick) just calls this
@@ -826,6 +822,7 @@ export default function PreviewPanel({
 
   const handleReload = useCallback(() => setReloadNonce((n) => n + 1), []);
   const handleToggleFullscreen = useCallback(() => setIsFullscreen((v) => !v), []);
+  const exitFullscreen = useCallback(() => setIsFullscreen(false), []);
   const handleClose = useCallback(() => {
     if (tabId) closeTab(tabId);
     else closePreview();
@@ -834,21 +831,20 @@ export default function PreviewPanel({
   if (!previewFilePath) return null;
 
   return (
-    <div
-      data-electron-no-drag
-      style={isFullscreen && isWindows() ? {
-        // Window Controls Overlay stays native and always paints above the
-        // renderer. Keep "fullscreen" as a content-area maximize on Windows,
-        // matching the shell layout and leaving caption controls unobstructed.
-        // The 36px fallback matches WindowTitleBar's legacy Windows toolbar;
-        // WCO-capable builds resolve the real 30px height from the env value.
-        top: 'calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px))',
-      } : undefined}
-      className={cn(
-        'flex flex-col',
-        isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
-      )}
+    // Fullscreen is a layout state of the panel, no dialog: the surface covers the window on the
+    // sticky level, under the panel's own menus, and Escape leaves it unless the key was pressed
+    // inside a menu or a window. Out of fullscreen the surface makes no box.
+    <FullscreenSurface
+      open={isFullscreen}
+      onExit={exitFullscreen}
+      label={fileName}
+      // The macOS title-bar controls are fixed on the sticky level and come later in the page,
+      // so a surface on that level is painted under them. The panel takes the popover level:
+      // above the window chrome, and still under its own menus, which are drawn after it.
+      className="z-popover bg-surface"
+      style={isWindows() ? WINDOWS_FULLSCREEN_STYLE : undefined}
     >
+    <div data-electron-no-drag className="flex h-full flex-col">
       {/* Content-first preview toolbar: identity stays anchored on the left,
           common reading/AI actions on the right, filesystem actions in More. */}
       <PreviewToolbar
@@ -973,5 +969,6 @@ export default function PreviewPanel({
         )}
       </div>
     </div>
+    </FullscreenSurface>
   );
 }

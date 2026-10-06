@@ -35,11 +35,14 @@ vi.mock('@/components/ds/menu', async (importOriginal) => {
 });
 
 // The real editor needs layout; a text box drives the same value/onChange pair.
-vi.mock('./CodeMirrorEditor', () => ({
-  default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
-    <textarea aria-label="source" value={value} onChange={(event) => onChange(event.target.value)} />
-  ),
-}));
+vi.mock('./CodeMirrorEditor', async () => {
+  const { TextArea } = await import('@/components/ds/text-area');
+  return {
+    default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
+      <TextArea aria-label="source" value={value} onChange={(event) => onChange(event.target.value)} />
+    ),
+  };
+});
 
 vi.mock('@/hooks/usePreviewFileWatch', () => ({ usePreviewFileWatch: () => {} }));
 vi.mock('@/utils/atomicFs', () => ({ atomicWrite: vi.fn().mockResolvedValue(undefined) }));

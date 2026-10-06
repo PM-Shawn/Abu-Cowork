@@ -137,6 +137,16 @@ async function settle() {
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 }
 
+/** The app asks for fullscreen, as it does after a press inside its frame. */
+async function goFullscreen(sink: SessionSink) {
+  await act(async () => {
+    await sink.handlers?.onrequestdisplaymode?.({ mode: 'fullscreen' } as never);
+  });
+}
+
+/** The element that covers the window while the app is fullscreen: the block's parent. */
+const fullscreenSurface = () => screen.getByTestId('mcp-app-block').parentElement as HTMLElement;
+
 /** Put one server into the MCP store with the given status. */
 function setServerStatus(name: string, status: 'connected' | 'disconnected' | 'error') {
   useMCPStore.setState({
@@ -411,6 +421,7 @@ describe('McpAppBlock', () => {
             />
           ))}
         </>,
+        { wrapper: DesignSystemProvider },
       );
       await settle();
 
@@ -701,14 +712,200 @@ describe('McpAppBlock', () => {
         await sink.handlers?.onrequestdisplaymode?.({ mode: 'fullscreen' } as never);
       });
 
-      // The frame container covers the viewport in fullscreen; it must be
-      // click-through so the backdrop under it can receive the click.
-      expect(screen.getByTestId('mcp-app-block').className).toContain('pointer-events-none');
+      // The surface covers the window and lies over its scrim: its own box lets a press through
+      // to the scrim, and the block, which fills the surface inside its padding, takes its own.
+      const surface = fullscreenSurface();
+      expect(surface).toHaveClass('pointer-events-none');
+      expect(surface).toHaveClass('p-6');
+      expect(screen.getByTestId('mcp-app-block').parentElement).toBe(surface);
+      expect(screen.getByTestId('mcp-app-block')).not.toHaveClass('pointer-events-none');
+      expect(screen.getByTestId('mcp-app-fullscreen-backdrop')).toHaveClass('bg-scrim');
 
       await act(async () => { fireEvent.click(screen.getByTestId('mcp-app-fullscreen-backdrop')); });
       expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
       expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
       expect(sink.sessions).toHaveLength(1);
+    });
+
+    it('is a dialog to the keyboard and to screen readers while fullscreen, and no dialog inline', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      const frame = screen.getByTestId('mcp-app-frame');
+
+      await goFullscreen(sink);
+
+      const surface = screen.getByRole('dialog', { name: 'weather' });
+      expect(surface).toBe(fullscreenSurface());
+      expect(surface).toHaveAttribute('aria-modal', 'true');
+      expect(surface).toHaveAttribute('data-ds-layer');
+      expect(surface).toHaveAttribute('data-electron-no-drag');
+      expect(surface).toHaveClass('z-dialog');
+      // It opens on its way out, never in the app's frame: a frame that has the focus keeps every key.
+      const exit = screen.getByRole('button', { name: '退出全屏' });
+      expect(exit).toBe(screen.getByTestId('mcp-app-fullscreen-exit'));
+      expect(exit).toHaveClass('rounded-control');
+      expect(exit).toHaveFocus();
+      expect(frame).not.toHaveFocus();
+      expect(screen.getByTestId('mcp-app-frame')).toBe(frame);
+
+      await act(async () => { fireEvent.click(exit); });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.getByTestId('mcp-app-block').parentElement).toHaveClass('contents');
+      expect(screen.getByTestId('mcp-app-frame')).toBe(frame);
+    });
+
+    it('keeps Tab inside the fullscreen surface', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink, { beside: <Button>Outside the app</Button> });
+      await settle();
+      await goFullscreen(sink);
+      const surface = fullscreenSurface();
+      const exit = screen.getByTestId('mcp-app-fullscreen-exit');
+      expect(exit).toHaveFocus();
+
+      // Backwards from the first control: the last one inside, not the page behind.
+      fireEvent.keyDown(exit, { key: 'Tab', shiftKey: true });
+      expect(surface.contains(document.activeElement)).toBe(true);
+      // Forwards from the last control: the first one again.
+      fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+      expect(exit).toHaveFocus();
+    });
+
+    it('leaves fullscreen on Escape, with the same iframe and the cool-down of a user exit', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+      await goFullscreen(sink);
+      const frame = screen.getByTestId('mcp-app-frame');
+
+      await act(async () => { fireEvent.keyDown(document.activeElement!, { key: 'Escape' }); });
+
+      expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.getByTestId('mcp-app-frame')).toBe(frame);
+      expect(sink.sessions).toHaveLength(1);
+      expect(sink.session!.hostContextPatches.at(-1)).toEqual({ displayMode: 'inline' });
+      await expect(
+        sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never),
+      ).rejects.toThrow(/user gesture/);
+    });
+
+    it('leaves fullscreen when another window opens, keeping the iframe', async () => {
+      function Other() {
+        const [open, setOpen] = useState(false);
+        return (
+          <>
+            <Button onClick={() => setOpen(true)}>open settings</Button>
+            <Dialog open={open} onOpenChange={setOpen} title="Settings" closeButton />
+          </>
+        );
+      }
+      const sink: SessionSink = {};
+      renderBlock({}, sink, { beside: <Other /> });
+      await settle();
+      await goFullscreen(sink);
+      const frame = screen.getByTestId('mcp-app-frame');
+
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'open settings', hidden: true })); });
+
+      expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
+      expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
+      expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+      expect(screen.getByTestId('mcp-app-frame')).toBe(frame);
+      expect(sink.sessions).toHaveLength(1);
+    });
+
+    describe('with an approval', () => {
+      const approvalAnswers: boolean[] = [];
+      function Approval() {
+        const [shown, setShown] = useState(false);
+        return (
+          <>
+            <Button onClick={() => setShown(true)}>an approval arrives</Button>
+            <Button onClick={() => setShown(false)}>the approval is answered</Button>
+            {approvalProbe(shown, (open) => approvalAnswers.push(open))}
+          </>
+        );
+      }
+      beforeEach(() => { approvalAnswers.length = 0; });
+
+      it('leaves fullscreen for an approval that arrives; the approval is not answered and has the focus', async () => {
+        const sink: SessionSink = {};
+        renderBlock({}, sink, { beside: <Approval /> });
+        await settle();
+        await goFullscreen(sink);
+        const frame = screen.getByTestId('mcp-app-frame');
+
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'an approval arrives', hidden: true })); });
+
+        expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
+        expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
+        const approval = windowBox(APPROVAL_TITLE)!;
+        expect(approval).not.toHaveAttribute('hidden');
+        await act(async () => {});
+        expect(approval.contains(document.activeElement)).toBe(true);
+        expect(approvalAnswers).toEqual([]);
+        expect(screen.getByTestId('mcp-app-frame')).toBe(frame);
+        expect(sink.sessions).toHaveLength(1);
+      });
+
+      it('does not go fullscreen over an approval: the app is told it is inline, the approval stays unanswered', async () => {
+        const sink: SessionSink = {};
+        renderBlock({}, sink, { beside: <Approval /> });
+        await settle();
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'an approval arrives' })); });
+        const approval = windowBox(APPROVAL_TITLE)!;
+        const focused = document.activeElement;
+        expect(approval.contains(focused)).toBe(true);
+
+        await goFullscreen(sink);
+        await act(async () => {});
+
+        expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
+        expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
+        expect(screen.queryByTestId('mcp-app-fullscreen-exit')).toBeNull();
+        expect(sink.session!.hostContextPatches.at(-1)).toEqual({ displayMode: 'inline' });
+        expect(windowBox(APPROVAL_TITLE)).not.toHaveAttribute('hidden');
+        expect(document.activeElement).toBe(focused);
+        expect(approvalAnswers).toEqual([]);
+
+        // Enter and Space pressed where the app was answer nothing. Escape refuses, as it does
+        // anywhere while an approval shows; nothing allows.
+        const block = screen.getByTestId('mcp-app-block');
+        for (const key of ['Enter', ' ']) fireEvent.keyDown(block, { key });
+        expect(approvalAnswers).toEqual([]);
+        fireEvent.keyDown(block, { key: 'Escape' });
+        expect(approvalAnswers).toEqual([false]);
+      });
+    });
+
+    it('asks about a link over the fullscreen app; Escape refuses the link and leaves the app fullscreen', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+      await goFullscreen(sink);
+      const frame = screen.getByTestId('mcp-app-frame');
+
+      let settled: 'opened' | 'refused' | undefined;
+      await act(async () => {
+        void Promise.resolve(sink.handlers!.onopenlink!({ url: 'https://example.com/fixture' } as never))
+          .then(() => { settled = 'opened'; }, () => { settled = 'refused'; });
+        await Promise.resolve();
+      });
+      const question = screen.getByRole('alertdialog');
+      expect(question).toHaveTextContent('https://example.com/fixture');
+      expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'fullscreen');
+
+      await act(async () => { fireEvent.keyDown(document.activeElement!, { key: 'Escape' }); });
+      await act(async () => {});
+
+      expect(settled).toBe('refused');
+      expect(openLink).not.toHaveBeenCalled();
+      expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'fullscreen');
+      expect(screen.getByTestId('mcp-app-frame')).toBe(frame);
     });
 
     it('refuses to be re-opened right after the user closed it', async () => {

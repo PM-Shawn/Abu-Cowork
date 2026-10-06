@@ -17,6 +17,7 @@ import {
 import { routedComputerUseTaskSummary } from '@/core/capabilityPlugins/computerUseResume';
 import { useChatStore } from '@/stores/chatStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { focusComposer } from '@/components/chat/composerFocus';
 import { ensureConversationModelUsable } from '@/components/chat/sendModelGuard';
 import { rehydrateImageData } from '@/core/llm/imageRehydration';
 
@@ -61,9 +62,7 @@ export default function CapabilitySetupDialog() {
       previous.focus();
       if (document.activeElement === previous) return;
     }
-    document.querySelector<HTMLTextAreaElement>(
-      'textarea[data-chat-composer]:not(:disabled)',
-    )?.focus();
+    focusComposer();
   };
 
   const cancel = () => resolveCapabilitySetup(request.id, false);

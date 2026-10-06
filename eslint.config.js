@@ -272,6 +272,12 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/share/**/*.{ts,tsx}',
   'src/components/chat/composerFocus*.ts',
   'src/components/chat/rewindQuestion*.ts',
+  'src/components/chat/McpAppBlock*.{ts,tsx}',
+  'src/components/chat/ImageLightbox*.{ts,tsx}',
+  'src/components/chat/ToolCallsGroup*.{ts,tsx}',
+  'src/components/chat/DetailBlockView*.{ts,tsx}',
+  'src/components/chat/RenderableCodeBlock*.{ts,tsx}',
+  'src/components/panel/PreviewPanel*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

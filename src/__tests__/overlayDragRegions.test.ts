@@ -138,7 +138,7 @@ describe('overlay layers opt out of the OS drag lanes', () => {
       (sum, file) => sum + findOverlayRoots(fs.readFileSync(file, 'utf8')).length,
       0,
     );
-    expect(total).toBeGreaterThan(6);
+    expect(total).toBeGreaterThan(3);
   });
 
   it('marks every fixed overlay root with data-electron-no-drag', () => {

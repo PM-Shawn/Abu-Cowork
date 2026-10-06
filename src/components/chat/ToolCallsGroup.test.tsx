@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { initLanguage } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import type { ToolCall, ToolResultContent } from '@/types';
 import ToolCallsGroup, { ToolResultImagePreview } from './ToolCallsGroup';
 
@@ -221,10 +222,12 @@ describe('ToolResultImagePreview', () => {
     mockResolveOutputRefSource.mockReset();
     mockLoadLocalImage.mockReset();
     Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), configurable: true });
+    useImageLightboxStore.getState().close();
   });
 
   afterEach(() => {
     cleanup();
+    useImageLightboxStore.getState().close();
   });
 
   const refBlock: ImageBlock = {
@@ -259,12 +262,49 @@ describe('ToolResultImagePreview', () => {
     await waitFor(() => expect(mockResolveOutputRefSource).toHaveBeenCalledTimes(2));
   });
 
-  it('opens the enlarged view from a thumbnail button', () => {
+  it('opens the image viewer from a thumbnail button, with the thumbnail as the place the focus returns to', () => {
     renderPreview(inlineBlock);
 
     const thumbnail = screen.getByRole('button', { name: 'Screenshot' });
     expect(thumbnail.querySelector('svg.lucide-maximize2, svg.lucide-maximize-2')).not.toBeNull();
     fireEvent.click(thumbnail);
-    expect(screen.getByRole('img', { name: 'Screenshot (full)' })).toBeInTheDocument();
+
+    const viewer = useImageLightboxStore.getState();
+    expect(viewer.isOpen).toBe(true);
+    expect(viewer.activeIndex).toBe(0);
+    expect(viewer.items).toEqual([{
+      id: 'Screenshot:data:image/png;base64,iVBORw0KGgo=',
+      mediaType: 'image/png',
+      data: 'iVBORw0KGgo=',
+      filePath: undefined,
+      conversationId: 'conv-1',
+      workspacePath: undefined,
+    }]);
+    expect(viewer.returnFocus).toBe(thumbnail);
+    // The enlarged image is the viewer's to draw: the thumbnail draws no layer of its own.
+    expect(screen.getAllByRole('img')).toHaveLength(1);
+    expect(document.querySelector('.fixed')).toBeNull();
+  });
+
+  it('hands the viewer the saved file its thumbnail shows', async () => {
+    mockResolveOutputRefSource.mockResolvedValue({ status: 'available', path: '/fake/outputs/files/hash/shot.png', isFromSnapshot: true });
+    mockLoadLocalImage.mockResolvedValue('blob:shot');
+    renderPreview(refBlock);
+
+    const thumbnail = await screen.findByRole('button', { name: 'Screenshot' });
+    fireEvent.click(thumbnail);
+
+    const viewer = useImageLightboxStore.getState();
+    expect(viewer.isOpen).toBe(true);
+    expect(viewer.items).toEqual([{
+      id: 'files/hash/shot.png',
+      mediaType: 'image/png',
+      data: '',
+      // The very file the thumbnail read, not a path the viewer would have to look up by name.
+      filePath: '/fake/outputs/files/hash/shot.png',
+      conversationId: 'conv-1',
+      workspacePath: undefined,
+    }]);
+    expect(viewer.returnFocus).toBe(thumbnail);
   });
 });

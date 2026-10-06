@@ -294,7 +294,7 @@ const LEGACY_CLASS_PATTERNS = [
   [`${CLASS_START}-?(bg|text|border|ring|outline|fill|stroke|divide|from|via|to)-(background|foreground|card|card-foreground|popover|popover-foreground|primary|primary-foreground|secondary|secondary-foreground|muted|muted-foreground|accent|accent-foreground|destructive|input|border|ring|sidebar[a-z-]*|chart-[1-5])${CLASS_END}`, 'Design system: shadcn color names are legacy. Use a semantic token (bg-surface, text-label-secondary, bg-emphasis…).'],
   [`${CLASS_START}text-(minor|h-xs|h-sm|h-md|h-lg|h-xl)${CLASS_END}`, 'Design system: legacy font-size token. Use text-title-lg / text-title / text-ui / text-ui-sm / text-caption, or text-body / text-h1..h3 / text-mono for content.'],
   [`${CLASS_START}rounded(-(t|r|b|l|s|e|tl|tr|br|bl|ss|se|es|ee))?(-(xs|sm|md|lg|xl|2xl|3xl|4xl))?${CLASS_END}`, 'Design system: use rounded-window / rounded-panel / rounded-control (or rounded-full).'],
-  [`${CLASS_START}-?z-([0-9]+|auto)${CLASS_END}`, 'Design system: use z-sticky / z-popover / z-dialog / z-toast / z-tooltip.'],
+  [`${CLASS_START}-?z-([0-9]+|auto)${CLASS_END}`, 'Design system: use z-sticky / z-fullscreen / z-popover / z-dialog / z-toast / z-tooltip.'],
   [`${CLASS_START}duration-([0-9]+|initial)${CLASS_END}`, 'Design system: use duration-fast / duration-base / duration-slow.'],
   [`${CLASS_START}shadow(-(2xs|xs|sm|md|lg|xl|2xl|inner))?${CLASS_END}`, 'Design system: use shadow-panel / shadow-float / shadow-dialog.'],
   [`${CLASS_START}ease-(linear|in|out|in-out)${CLASS_END}`, 'Design system: use ease-enter / ease-exit.'],

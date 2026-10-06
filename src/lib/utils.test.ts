@@ -75,6 +75,7 @@ describe('cn() — design-system tokens', () => {
     expect(cn('rounded-panel', 'rounded-control')).toBe('rounded-control');
     expect(cn('shadow-panel', 'shadow-float')).toBe('shadow-float');
     expect(cn('z-popover', 'z-dialog')).toBe('z-dialog');
+    expect(cn('z-sticky', 'z-fullscreen')).toBe('z-fullscreen');
     expect(cn('duration-fast', 'duration-slow')).toBe('duration-slow');
     expect(cn('ease-enter', 'ease-exit')).toBe('ease-exit');
   });

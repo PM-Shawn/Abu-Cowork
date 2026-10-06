@@ -410,7 +410,7 @@ radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `durat
 | Lines / focus | `border-separator` `border-control-border` `ring-focus` |
 | Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono` `text-code-inline` (inline code inside message text); code font: `font-code` |
 | Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` `shadow-composer` (the composer card only) |
-| Layers / motion | `z-sticky` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
+| Layers / motion | `z-sticky` `z-fullscreen` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
 | Identity (avatar, app icon only) | `bg-brand` `text-brand-ink` |
 
 **Chat area (batch 4)**: message text uses the content scale (`text-body`, `text-h1`..`text-h3`,
@@ -418,9 +418,9 @@ radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `durat
 Code highlighting takes its colors from `--ds-syntax-*` through `src/components/chat/syntaxTheme.ts`,
 so no component checks the appearance. `Pressable` (`@/components/ds/pressable`) is the button
 for targets whose look is their content; `IconButton variant="primary"` is the filled icon-only
-action (Send). Chat files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; the five files that
-still draw their own full-window overlay (`ImageLightbox`, `McpAppBlock`, `RenderableCodeBlock`,
-`ToolCallsGroup`, `DetailBlockView`) and the directory glob join in batch 8.
+action (Send). Chat files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; the five files with a
+full-window view (`ImageLightbox`, `McpAppBlock`, `RenderableCodeBlock`, `ToolCallsGroup`,
+`DetailBlockView`) joined in batch 8 file by file; the directory glob follows in batch 10.
 
 **Right panel (batch 5)**: the panel is UI text throughout; the source editor and the terminal use
 the code scale (`--text-mono`, `--ds-font-mono`). `--ds-selection` is the neutral selected-text color
@@ -430,7 +430,7 @@ of web pages and Word pages. Third-party widgets read `--ds-*` variables: CodeMi
 re-reading them when the appearance changes. `MenuItem description` adds a second line. `RightPanel`
 and `WorkspacePanel` are `memo` and read primitive selectors, so the panel does not re-render per
 streamed token. Panel files join `DESIGN_SYSTEM_MIGRATED_FILES` one by one; `PreviewPanel` (in-place
-fullscreen) and the panel directory glob join in batch 8.
+fullscreen) joined in batch 8 file by file; the directory glob follows in batch 10.
 
 **Settings (batch 6)**: the settings window is a `Dialog size="page"`; every page is UI text. A group
 of settings is a `SettingGroup` of `SettingRow`s (title, one-line description, control); dropdowns
@@ -616,21 +616,107 @@ its fade (`registry.left`), else until a look one fade later, repeated while `is
 ds additions: `Dialog` `layer`, `urgent`, `busy`, `outsidePress`, `size="viewer"`; descriptions
 break long words and scroll. `ConfirmOptions.message` is a node. `FullscreenSurface` covers the
 window without moving its content in the page and is the one other place in `src/components/ds/`
-that writes `fixed inset-0`: plain, a layout state on `z-sticky`; with `layer`, a dialog to the registry whose first
+that writes `fixed inset-0`: plain, a layout state on `z-fullscreen`; with `layer`, a dialog to the registry whose first
 focus skips frames; with `scrim`, its box passes presses to the scrim and its direct children take
 them, so pass-through parts sit one level down. `IconButton busy` follows `Button busy`. A `Spinner
 size="sm"` label is `text-ui-sm`, or `labelSize="ui"` where it trades places with 13px words.
 `Popover` takes `contentProps`, `label`, `onOpenAutoFocus` and scrolls inside the room beside its
 trigger. `Menu` content stops clicks, also for `click` listeners on `document`: outside-press code
-listens for `pointerdown` / `mousedown`. The `Toaster` list takes pointer input over a modal layer,
-and a press on it is no press outside a dialog. A `SegmentedControl` (`fullWidth`: equal shares)
+listens for `pointerdown` / `mousedown`. A `Toaster` notice takes pointer input over a modal layer
+(the list's own box takes none), and a press on it is no press outside a dialog. A `SegmentedControl` (`fullWidth`: equal shares)
 that is a dialog's first control does not let Shift+Tab out.
 
 `useBlockingApprovalVisible` is gone: no ds window watches an approval queue or another window.
-Until batch 8b, hand-drawn windows listen for Escape on `document`, so one Escape can close such a
-window with the ds layer over it (it cancels or refuses, never grants), and the legacy image viewer
-closes itself while an approval is pending. Migration list: `common/CommandConfirmDialog`,
-`PermissionDialog`, `CloseDialog`, `approvalQueueView`.
+Migration list: `common/CommandConfirmDialog`, `PermissionDialog`, `CloseDialog`,
+`approvalQueueView`.
+
+**Windows, viewers and notices (batch 8b)**: `common/ToasterMount` renders the ds `Toaster` from
+`toastStore`. The list sits at the top centre of the window, newest on top, in a `region` named
+「通知」 (`t.designSystem.notifications`); nothing in it is `role="status"`, and E2E reads notices
+through that region. The store keeps every notice and the newest three show; one shows while the
+user is asked to decide (`onDecisionChange`: an approval, an alert question or a window's discard
+question is on the page), so no notice lies over the buttons that answer. A notice pushed out by
+newer ones keeps its remaining time and returns when a place frees, last out first, for at least
+`MIN_RETURN_MS`. Adding a notice equal to one in the list (type, title, message, action labels)
+shows that one again as the newest, with its full time. A notice that has just appeared or moved
+takes no pointer press for `TOAST_SETTLE_MS` (500 ms); the keyboard is not held, and a test that
+presses a notice's button with the pointer advances the clock first. A title shows three lines and
+a message eight; more scrolls, and long words break. A notice takes no focus when it arrives. When
+the one that holds the focus leaves, the focus goes back to where it was before after a pointer
+press, else to the close button now at its place, and back once the list is empty. The sidebar's undo offer after a deleted conversation is a
+notice (`sidebar/undoOffer.ts`, `UNDO_OFFER_MS`); equal notices merge, so it undoes the last delete
+only. The sandbox notice's 「前往安全设置」 opens the settings window on the sandbox page
+(`openSystemSettings('sandbox')`).
+
+Windows: `CreateProjectDialog` (rendered by `Sidebar`), `ProjectSettingsDialog`,
+`ProfileEditModal`, `GuideModal`, `InstructionsEditModal`, `MemoryViewModal` and
+`ShareExportDialog` are `Dialog`s. `dirty`: create project, project settings, edit profile,
+instructions. `busy`: create project while it creates, edit profile while a picture is read,
+instructions while saving, export while the save dialog is open or the file is written. Project
+settings and edit profile fill their form when they open (project settings also when it moves to
+another project) and leave it alone when the stored values change. After a project is created the composer takes the focus. The instructions window
+offers no field and no save for a file it cannot read; a missing file opens empty. The memory window's 「清空」
+scans the folder first, so its question states the count of that scan. The export window holds its
+own open state: its owner mounts it keyed by conversation and removes it on `onClose`, which the
+window calls once it has left the page; a window its owner has already removed tells nobody. Its
+export button is `busy` after a failure: a control that cannot act and may hold the focus stays
+focusable. The first-run guide is a modal `Dialog` that opens on its dismissing button; the page
+behind it is out of the accessibility tree, so a spec calls `dismissFirstRunOverlays` before it
+reads anything by role. A `Dialog` description taller than its box scrolls and is then a Tab stop
+(`role="group"`, named by the title); the opening focus passes over it.
+
+Questions: `common/ConfirmDialog` is gone. `ConfirmProvider` gives every `useConfirm` question a
+window of its own (keyed), so no box and no focus carries over from the question it replaces,
+which is answered `false`. A replacing question takes no pointer press that began within
+`TOAST_SETTLE_MS` of its appearing; the keyboard is not held. An answer belongs to the question
+whose window was pressed. The provider returns the focus of a question to where it was before the
+first of the questions that followed each other, and only when no window or approval is open or
+that place is inside the top one: never onto the page under an open layer. An owner whose own
+questions can overlap excludes them (`MemoryViewModal`, `asking`). The redo actions (regenerate,
+retry, edit and resend) ask through `chat/rewindQuestion.ts`, which re-reads at the answer: its row
+still mounted, no run started on the conversation meanwhile, the same messages and the same count
+of later turns. The message editor closes only when the edited message is sent. The IM end-session
+question goes through `useConfirm` and re-reads its session at the answer. The MCP app link consent
+is a ds `ConfirmDialog` held by `McpAppBlock` and keyed per request, because the block takes it off
+the page when its bridge goes, which a `useConfirm` question does not allow. It shows the whole
+address and takes one request at a time; Escape, a press outside and a window that takes its place
+refuse.
+
+Viewers: the one image viewer is `ImageLightbox`, a `Dialog size="viewer"` opened only through
+`useImageLightboxStore.open(items, index, returnFocus)`. A saved tool image is handed over as the
+file its thumbnail read (`filePath`). The viewer keeps what it showed while it fades, returns the
+focus to the thumbnail, else to the composer, and offers download only for the four types of
+`ImageLightboxMediaType`. A viewer opens on its close or exit control, never in a frame: a frame
+that has the focus keeps every key. `Dialog closeButton` takes data attributes for that button, and
+a key handler for a `Dialog`'s whole content sits on an element around the `Dialog`. The HTML widget fullscreen is a `Dialog size="viewer"` with a
+frame of its own. The MCP app fullscreen is a `FullscreenSurface layer scrim` around the block, so
+the iframe node stays the same and the app is not reloaded. An app's own fullscreen request is
+refused while a window, a question or an approval is on the page, waits or has stepped aside
+(`mayGoFullscreen`, with `pageOccupied` read from `LayerRegistry.isOccupied()`; menus and popovers
+do not count), and the refusal spends no grace and starts no cool-down. The preview panel
+fullscreen is the plain `FullscreenSurface`: on `z-fullscreen`, with no stacking class from page
+code, `role="group"`, no focus moved. Escape leaves it unless the key was pressed inside a ds layer
+or something else has used it (`defaultPrevented`). Closed, a `FullscreenSurface` is
+`display: contents`, so its content brings its own layout box.
+
+Focus: `chat/composerFocus.ts` has `focusComposer()` and `focusComposerAfterPageChange()`, for an
+action that replaces the page with the chat page (start a conversation with an expert, 「查看会话」
+of a run); it takes the focus from no control and from no layer. `sidebar/projectRowFocus.ts`:
+after a project row is archived or deleted, from its menu or from its settings window, the focus
+goes to the row now at its place, else the last row, else the create button; `useArchivedRowFocus`
+serves the archived list. In the image viewer a gallery arrow that reaches an end hands the focus
+to the other arrow. A ds `Tooltip` listens for Escape for as long as
+its box is on the page, so an Escape pressed while it fades still acts on the layer underneath.
+
+Tests: a component that renders `FullscreenSurface` or calls `useConfirm` needs
+`DesignSystemProvider`. `src/test/dsWindows.ts` holds the helpers for a window's fade and for an
+approval that arrives over a window.
+
+Migration list: `common/ToasterMount`, the six windows in `common/`, `src/components/share/**`,
+`chat/composerFocus`, `chat/rewindQuestion`, `McpAppBlock`, `ImageLightbox`, `ToolCallsGroup`,
+`DetailBlockView`, `RenderableCodeBlock` and `panel/PreviewPanel` are on it. The directory globs
+for `chat/`, `panel/` and `common/` wait for batch 10: those directories still hold unused legacy
+files.
 
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one
@@ -660,7 +746,7 @@ and both pass one pick callback for the life of the list, because the rows are `
 `Switch busy` is to a switch what `Button busy` is to a button: `aria-disabled`, focusable,
 no press taken. `Toaster` renders its own
 notification list (a labelled region whose `aria-live="polite"` area holds the list, newest
-last) and
+first) and
 does not use Radix Toast, so a toast never takes Escape from an open dialog. Every floating
 root — portaled overlay content, scrims, and the toast list — carries
 `data-electron-no-drag`; `src/__tests__/overlayDragRegions.test.ts` guards this. ds code

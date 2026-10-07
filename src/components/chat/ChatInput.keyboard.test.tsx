@@ -20,8 +20,10 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { useChatStore } from '@/stores/chatStore';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useTeamStore } from '@/stores/teamStore';
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
@@ -139,6 +141,128 @@ describe('ChatInput keyboard contract', () => {
       fireEvent.compositionStart(textarea);
       fireEvent.keyDown(textarea, { key: 'Enter', altKey: true });
       expect(textarea.value).toBe('hello');
+    });
+  });
+
+  // A held Enter repeats. The field takes the focus by itself after some actions (start a
+  // conversation with an expert, create a project), with the key that started them still down.
+  describe('a held Enter sends once per press', () => {
+    const repeatEnter = (textarea: HTMLTextAreaElement, more: Record<string, unknown> = {}) =>
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', repeat: true, ...more });
+
+    it('sends nothing on the repeat of a held Enter, and adds no line', () => {
+      const { onSend, textarea } = setup();
+      // false: the default was prevented, so the field inserts nothing either.
+      expect(repeatEnter(textarea)).toBe(false);
+      expect(repeatEnter(textarea)).toBe(false);
+      expect(onSend).not.toHaveBeenCalled();
+      expect(textarea.value).toBe('hello');
+    });
+
+    it('sends on the first press and on nothing after it while the key stays down', () => {
+      const { onSend, textarea } = setup();
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+      typeInto(textarea, 'hello again');
+      for (let i = 0; i < 10; i += 1) repeatEnter(textarea);
+      expect(onSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends again once the key was released and pressed anew', () => {
+      const { onSend, textarea } = setup();
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+      repeatEnter(textarea);
+      fireEvent.keyUp(textarea, { key: 'Enter', code: 'Enter' });
+      typeInto(textarea, 'hello again');
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+      expect(onSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends nothing on the repeat of the send modifier with Enter', () => {
+      useSettingsStore.setState({ composerEnterBehavior: 'newline' });
+      const { onSend, textarea } = setup();
+      expect(repeatEnter(textarea, { ctrlKey: true })).toBe(false);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps adding lines while Shift+Enter is held: the repeat is left to the field', () => {
+      const { onSend, textarea } = setup();
+      expect(repeatEnter(textarea, { shiftKey: true })).toBe(true);
+      expect(repeatEnter(textarea, { shiftKey: true })).toBe(true);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps adding lines while Alt+Enter is held', () => {
+      const { onSend, textarea } = setup();
+      textarea.setSelectionRange(5, 5);
+      repeatEnter(textarea, { altKey: true });
+      repeatEnter(textarea, { altKey: true });
+      expect(textarea.value).toBe('hello\n\n');
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("keeps adding lines while a bare Enter is held under behavior 'newline'", () => {
+      useSettingsStore.setState({ composerEnterBehavior: 'newline' });
+      const { onSend, textarea } = setup();
+      expect(repeatEnter(textarea)).toBe(true);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('leaves a repeating Enter to an input method that is composing', () => {
+      const { onSend, textarea } = setup();
+      expect(repeatEnter(textarea, { isComposing: true })).toBe(true);
+      expect(repeatEnter(textarea, { keyCode: 229 })).toBe(true);
+      fireEvent.compositionStart(textarea);
+      expect(repeatEnter(textarea)).toBe(true);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    describe('with the suggestion list open', () => {
+      beforeEach(() => {
+        useDiscoveryStore.setState({ skills: [], agents: [{ name: 'publisher', description: 'Draft and edit public posts' }], isLoading: false });
+        useTeamStore.setState({ teams: [] });
+        useSettingsStore.setState({ disabledAgents: [], disabledSkills: [] });
+      });
+      afterEach(() => { useDiscoveryStore.setState({ skills: [], agents: [], isLoading: false }); });
+
+      const openList = () => {
+        const onSend = vi.fn();
+        render(<ChatInput variant="chat" onSend={onSend} />);
+        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+        fireEvent.change(textarea, { target: { value: '@pub' } });
+        textarea.setSelectionRange(4, 4);
+        fireEvent.select(textarea);
+        expect(screen.getByRole('option', { name: /publisher/ })).toBeTruthy();
+        return { onSend, textarea };
+      };
+
+      it('picks the suggestion on the first press of Enter', () => {
+        const { onSend, textarea } = openList();
+        fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+        expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+        expect(onSend).not.toHaveBeenCalled();
+      });
+
+      it('picks nothing on the repeat of an Enter that was already down', () => {
+        const { onSend, textarea } = openList();
+        expect(repeatEnter(textarea)).toBe(false);
+        expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull();
+        expect(screen.getByRole('option', { name: /publisher/ })).toBeTruthy();
+        expect(onSend).not.toHaveBeenCalled();
+      });
+
+      it('sends nothing with the Enter that picked the suggestion while it stays down', () => {
+        const { onSend, textarea } = openList();
+        fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+        for (let i = 0; i < 10; i += 1) repeatEnter(textarea);
+        expect(onSend).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+      });
+
+      it('still walks the list while an arrow is held', () => {
+        const { textarea } = openList();
+        expect(fireEvent.keyDown(textarea, { key: 'ArrowDown', code: 'ArrowDown', repeat: true })).toBe(false);
+        expect(screen.getByRole('option', { name: /publisher/ })).toBeTruthy();
+      });
     });
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent, { PointerEventsCheckLevel } from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
@@ -11,6 +11,7 @@ import { AppIcons } from './icons';
 import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from './menu';
 import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
+import { keepClosingLayersOnScreen } from '@/test/dsWindows';
 
 function TaskMenu({ onRename }: { onRename: () => void }) {
   return (
@@ -717,6 +718,206 @@ describe('MenuSub', () => {
     await user.keyboard('{Enter}');
     expect(onMove).toHaveBeenCalledOnce();
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+});
+
+// A menu chooses an item on the key-down of Enter or Space. The key that opened the menu is
+// still down when the menu shows with the focus on its first item.
+describe('keys held in a menu', () => {
+  const down = (target: Element, key: string, code = key) => fireEvent.keyDown(target, { key, code });
+  const repeat = (target: Element, key: string, code = key) => fireEvent.keyDown(target, { key, code, repeat: true });
+  const up = (target: Element, key: string, code = key) => fireEvent.keyUp(target, { key, code });
+  const focused = () => document.activeElement as HTMLElement;
+  // keepClosingLayersOnScreen() replaces getComputedStyle for the case that calls it.
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function FileMenu({ onPick }: { onPick: (name: string) => void }) {
+    return (
+      <Menu trigger={<Button>Actions</Button>}>
+        <MenuItem onSelect={() => onPick('Rename')}>Rename</MenuItem>
+        <MenuItem onSelect={() => onPick('Export')}>Export</MenuItem>
+        <MenuItem onSelect={() => onPick('Archive')}>Archive</MenuItem>
+        <MenuSub label="Move to">
+          <MenuItem onSelect={() => onPick('Launch plan')}>Launch plan</MenuItem>
+          <MenuItem onSelect={() => onPick('Inbox')}>Inbox</MenuItem>
+          <MenuItem onSelect={() => onPick('Someday')}>Someday</MenuItem>
+        </MenuSub>
+      </Menu>
+    );
+  }
+
+  it('does not choose the first item with the Enter that opened the menu; released and pressed again, Enter chooses', async () => {
+    const onPick = vi.fn();
+    render(<FileMenu onPick={onPick} />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('button', { name: 'Actions' });
+    trigger.focus();
+    down(trigger, 'Enter');
+    const first = await screen.findByRole('menuitem', { name: 'Rename' });
+    first.focus();
+    for (let i = 0; i < 5; i += 1) expect(repeat(focused(), 'Enter')).toBe(false);
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    up(focused(), 'Enter');
+    down(focused(), 'Enter');
+    expect(onPick.mock.calls).toEqual([['Rename']]);
+  });
+
+  it('does not choose with a Space that opened the menu either', async () => {
+    const onPick = vi.fn();
+    render(<FileMenu onPick={onPick} />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('button', { name: 'Actions' });
+    trigger.focus();
+    down(trigger, ' ', 'Space');
+    (await screen.findByRole('menuitem', { name: 'Rename' })).focus();
+    expect(repeat(focused(), ' ', 'Space')).toBe(false);
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it('does not walk the list with the ArrowDown that opened the menu until it is pressed again', async () => {
+    render(<FileMenu onPick={() => undefined} />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('button', { name: 'Actions' });
+    trigger.focus();
+    down(trigger, 'ArrowDown');
+    const first = await screen.findByRole('menuitem', { name: 'Rename' });
+    first.focus();
+    expect(repeat(focused(), 'ArrowDown')).toBe(false);
+    // Radix moves the focus one timer tick after an arrow it took.
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(first).toHaveFocus();
+    up(focused(), 'ArrowDown');
+    down(focused(), 'ArrowDown');
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Export' })).toHaveFocus());
+    expect(repeat(focused(), 'ArrowDown')).toBe(false);
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Archive' })).toHaveFocus());
+  });
+
+  it('walks the list with an ArrowDown pressed inside the menu and held', async () => {
+    const user = userEvent.setup();
+    render(<FileMenu onPick={() => undefined} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const menu = screen.getByRole('menu');
+    down(focused(), 'ArrowDown');
+    await waitFor(() => expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toHaveFocus());
+    repeat(focused(), 'ArrowDown');
+    await waitFor(() => expect(within(menu).getByRole('menuitem', { name: 'Export' })).toHaveFocus());
+    repeat(focused(), 'ArrowDown');
+    await waitFor(() => expect(within(menu).getByRole('menuitem', { name: 'Archive' })).toHaveFocus());
+    repeat(focused(), 'ArrowDown');
+    await waitFor(() => expect(within(menu).getByRole('menuitem', { name: 'Move to' })).toHaveFocus());
+  });
+
+  it('does not choose the first item of a nested list with the Enter that opened that list', async () => {
+    const user = userEvent.setup();
+    const onPick = vi.fn();
+    render(<FileMenu onPick={onPick} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const sub = screen.getByRole('menuitem', { name: 'Move to' });
+    sub.focus();
+    down(sub, 'Enter');
+    const nested = await screen.findByRole('menuitem', { name: 'Launch plan' });
+    nested.focus();
+    for (let i = 0; i < 5; i += 1) expect(repeat(focused(), 'Enter')).toBe(false);
+    expect(onPick).not.toHaveBeenCalled();
+    up(focused(), 'Enter');
+    down(focused(), 'Enter');
+    expect(onPick.mock.calls).toEqual([['Launch plan']]);
+  });
+
+  it('walks a nested list with an ArrowDown pressed inside it and held', async () => {
+    const user = userEvent.setup();
+    render(<FileMenu onPick={() => undefined} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const sub = screen.getByRole('menuitem', { name: 'Move to' });
+    sub.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await screen.findByRole('menuitem', { name: 'Launch plan' })).toHaveFocus();
+    down(focused(), 'ArrowDown');
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Inbox' })).toHaveFocus());
+    repeat(focused(), 'ArrowDown');
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Someday' })).toHaveFocus());
+  });
+
+  it('does not choose in a context menu with a key that was down when it opened', async () => {
+    const onPick = vi.fn();
+    render(
+      <ContextMenu content={<><MenuItem onSelect={() => onPick('Copy')}>Copy</MenuItem><MenuItem onSelect={() => onPick('Quote')}>Quote</MenuItem></>}>
+        <div>Message body</div>
+      </ContextMenu>,
+      { wrapper: DesignSystemProvider },
+    );
+    down(document.body, 'Enter');
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    const copy = await screen.findByRole('menuitem', { name: 'Copy' });
+    copy.focus();
+    for (let i = 0; i < 5; i += 1) expect(repeat(focused(), 'Enter')).toBe(false);
+    expect(onPick).not.toHaveBeenCalled();
+    up(focused(), 'Enter');
+    down(focused(), 'Enter');
+    expect(onPick.mock.calls).toEqual([['Copy']]);
+  });
+
+  it('chooses once with an Enter pressed inside the menu and held: the item is not chosen again while the menu fades out', async () => {
+    const user = userEvent.setup();
+    const onPick = vi.fn();
+    keepClosingLayersOnScreen();
+    render(<FileMenu onPick={onPick} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const item = screen.getByRole('menuitem', { name: 'Export' });
+    item.focus();
+    down(item, 'Enter');
+    expect(onPick.mock.calls).toEqual([['Export']]);
+    // The menu is closing and still on the page; the key repeats on the item.
+    expect(item).toBeInTheDocument();
+    for (let i = 0; i < 4; i += 1) expect(repeat(item, 'Enter')).toBe(false);
+    expect(onPick).toHaveBeenCalledTimes(1);
+  });
+
+  it('chooses once with a Space pressed inside the menu and held', async () => {
+    const user = userEvent.setup();
+    const onPick = vi.fn();
+    keepClosingLayersOnScreen();
+    render(<FileMenu onPick={onPick} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    const item = screen.getByRole('menuitem', { name: 'Archive' });
+    item.focus();
+    down(item, ' ', 'Space');
+    for (let i = 0; i < 4; i += 1) expect(repeat(item, ' ', 'Space')).toBe(false);
+    expect(onPick.mock.calls).toEqual([['Archive']]);
+  });
+
+  it('leaves Escape to the menu: a held Escape closes it', async () => {
+    const user = userEvent.setup();
+    render(<FileMenu onPick={() => undefined} />, { wrapper: DesignSystemProvider });
+    down(document.body, 'Escape');
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    repeat(focused(), 'Escape');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+});
+
+describe('keys held when a popover opens', () => {
+  it('drops the repeats of the key that opened it, before a control inside hears them', async () => {
+    const heard: string[] = [];
+    render(
+      <Popover trigger={<Button>Details</Button>}>
+        <input aria-label="Filter" onKeyDown={(event) => heard.push(event.key)} />
+      </Popover>,
+      { wrapper: DesignSystemProvider },
+    );
+    const trigger = screen.getByRole('button', { name: 'Details' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'Enter', code: 'Enter' });
+    // The browser makes the click that opens a popover from that key-down.
+    fireEvent.click(trigger, { detail: 0 });
+    const field = await screen.findByRole('textbox', { name: 'Filter' });
+    field.focus();
+    expect(fireEvent.keyDown(field, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    expect(heard).toEqual([]);
+    fireEvent.keyUp(field, { key: 'Enter', code: 'Enter' });
+    expect(fireEvent.keyDown(field, { key: 'a', code: 'KeyA' })).toBe(true);
+    expect(fireEvent.keyDown(field, { key: 'a', code: 'KeyA', repeat: true })).toBe(true);
+    expect(heard).toEqual(['a', 'a']);
   });
 });
 

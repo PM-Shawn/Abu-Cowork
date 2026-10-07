@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-react';
 import { useId, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type { DataAttributes } from './dialog';
+import { useHeldKeys } from './heldKey';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
@@ -31,11 +32,17 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
   const { id, onCloseAutoFocus: layerCloseAutoFocus, onEscapeKeyDown } = useLayer('popover', isOpen, setOpen);
   const level = useFloatingLevel();
+  // A menu chooses on the key-down of Enter or Space, and the key that opened it is still down
+  // when it shows with the focus on its first item: that key chooses nothing, and moves nothing,
+  // until it is pressed again. Keys pressed inside the menu repeat (arrows walk the list), except
+  // Enter and Space: one press chooses once, also while the menu fades out.
+  const heldKeys = useHeldKeys(isOpen, 'enter-space');
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
       <DropdownMenuPrimitive.Trigger asChild>{trigger}</DropdownMenuPrimitive.Trigger>
       <DropdownMenuPrimitive.Portal container={container}>
         <DropdownMenuPrimitive.Content
+          {...heldKeys.handlers}
           align={align}
           side={side}
           sideOffset={4}
@@ -108,6 +115,9 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
   const kind = useMenuKind();
   const container = useLayerContainer();
   const level = useFloatingLevel();
+  // The key that opened the nested list chooses nothing in it while it stays down (see Menu).
+  const heldKeys = useHeldKeys(false, 'enter-space');
+  const markShown = (open: boolean) => { if (open) heldKeys.mark(); };
   const triggerBody = (
     <>
       {icon && <Icon icon={icon} size="sm" className="text-label-secondary" />}
@@ -119,10 +129,11 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
   const contentClass = cn(level, 'min-w-40 p-1', FLOAT_SURFACE, FLOAT_MOTION);
   if (kind === 'dropdown') {
     return (
-      <DropdownMenuPrimitive.Sub>
+      <DropdownMenuPrimitive.Sub onOpenChange={markShown}>
         <DropdownMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</DropdownMenuPrimitive.SubTrigger>
         <DropdownMenuPrimitive.Portal container={container}>
           <DropdownMenuPrimitive.SubContent
+            {...heldKeys.handlers}
             sideOffset={4}
             collisionPadding={EDGE_GAP}
             data-ds-motion
@@ -136,10 +147,11 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
     );
   }
   return (
-    <ContextMenuPrimitive.Sub>
+    <ContextMenuPrimitive.Sub onOpenChange={markShown}>
       <ContextMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</ContextMenuPrimitive.SubTrigger>
       <ContextMenuPrimitive.Portal container={container}>
         <ContextMenuPrimitive.SubContent
+          {...heldKeys.handlers}
           sideOffset={4}
           collisionPadding={EDGE_GAP}
           data-ds-motion

@@ -15,6 +15,10 @@ import { getI18n } from '@/i18n';
 // (`performance.now()`) past the interval: the fake clock when the test runs on fake timers,
 // otherwise the page clock itself, which then stays ahead for the rest of the file (time only
 // moves forward).
+//
+// `data-ds-settling` is asserted only under fake timers. On real timers this shifts the clock the
+// press is judged by, while the timer that takes the mark off still runs TOAST_SETTLE_MS of real
+// time later: for that long the mark is on a box that already takes presses.
 const pageClock = performance.now.bind(performance);
 let ahead = 0;
 const shiftedClock = () => pageClock() + ahead;

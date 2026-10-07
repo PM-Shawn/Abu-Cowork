@@ -4,6 +4,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { Button, IconButton } from './button';
+import { useHeldKeys } from './heldKey';
 import { AppIcons } from './icons';
 import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
@@ -297,6 +298,13 @@ export function Dialog({
   // question about unsaved input always does.
   const settling = useSettling(kind !== 'dialog');
   const questionSettling = useSettling(true);
+  // A key that was down before the window could be used does nothing in it until it is pressed
+  // again: the Enter that opened it, a key held while an approval arrives (the focus is on its
+  // cancelling button, which the browser would press for every repeat), the key that answered the
+  // layer before. Every kind of window, and its question about unsaved input, which share one
+  // mark. Marked wherever the settle interval starts, and when the question is answered: the
+  // window is in use again. Keys pressed inside repeat as their controls define (heldKey.ts).
+  const heldKeys = useHeldKeys();
   const {
     id, onCloseAutoFocus, held, aside, admitted, returnFocus: returnTo, onEscapeKeyDown: passEscapeWhileClosing,
   } = useLayer(kind, isOpen, setOpen, {
@@ -309,7 +317,10 @@ export function Dialog({
     // The layer registry says when a question or a window is over an approval, and when the last
     // of them has left the page.
     onCovered: () => settling.hold('covered'),
-    onUncovered: () => settling.free('covered'),
+    onUncovered: () => {
+      settling.free('covered');
+      heldKeys.mark();
+    },
   }, urgent);
   const holdContent = useCallback((node: HTMLDivElement | null) => {
     contentRef.current = node;
@@ -318,8 +329,10 @@ export function Dialog({
   // On the page again in the box it had: closed and opened again inside its own fade.
   const onPage = isOpen && admitted && (!held || aside);
   useLayoutEffect(() => {
-    if (onPage) settling.restart();
-  }, [onPage, settling]);
+    if (!onPage) return;
+    settling.restart();
+    heldKeys.mark();
+  }, [onPage, settling, heldKeys]);
   // Off the page for an approval, hidden; back when no approval is left, at the spot where the
   // approval's buttons were.
   useLayoutEffect(() => {
@@ -330,9 +343,11 @@ export function Dialog({
     }
     settling.free('aside');
     questionSettling.free('aside');
-  }, [aside, settling, questionSettling]);
+    heldKeys.mark();
+  }, [aside, settling, questionSettling, heldKeys]);
   // Under its own question about unsaved input, and when that question has been answered.
   useLayoutEffect(() => {
+    heldKeys.mark();
     if (discardAsked) {
       settling.hold('question');
       // Asked again while the question before still fades: the same box.
@@ -340,13 +355,14 @@ export function Dialog({
       return;
     }
     settling.free('question');
-  }, [discardAsked, settling, questionSettling]);
+  }, [discardAsked, settling, questionSettling, heldKeys]);
   const lastSettleKey = useRef(settleKey);
   useLayoutEffect(() => {
     if (Object.is(lastSettleKey.current, settleKey)) return;
     lastSettleKey.current = settleKey;
     settling.restart();
-  }, [settleKey, settling]);
+    heldKeys.mark();
+  }, [settleKey, settling, heldKeys]);
 
   // A dialog that steps aside for an approval stays mounted and hidden: Radix still has it open,
   // under the approval, which is the top layer for Escape, presses and the focus trap. When it
@@ -456,6 +472,7 @@ export function Dialog({
           <DialogPrimitive.Content
             {...contentProps}
             {...settling.handlers}
+            {...heldKeys.handlers}
             ref={holdContent}
             hidden={aside}
             data-ds-layer
@@ -562,6 +579,7 @@ export function Dialog({
         <AlertDialogPrimitive.Portal container={container}>
           <AlertDialogPrimitive.Content
             {...questionSettling.handlers}
+            {...heldKeys.handlers}
             ref={holdQuestion}
             hidden={aside}
             data-ds-layer

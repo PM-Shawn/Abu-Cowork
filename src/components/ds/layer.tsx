@@ -1,4 +1,5 @@
 import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import { trackKeysDown } from './heldKey';
 import { LayerContext, LayerScopeContext, type LayerEntry, type LayerRegistry } from './layer-context';
 import { LAYER_FADE_MS } from './styles';
 
@@ -103,6 +104,8 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
   // no pointer press in between, nor for a moment after (LayerEntry.covered).
   const coveredBy = useRef(new Map<string, string>());
   const waiting = useRef<Waiting | null>(null);
+  // Layers read which keys were pressed since they were shown (heldKey.ts).
+  useLayoutEffect(() => trackKeysDown(), []);
   // The provider is leaving, and every layer in it with it: nothing is closed, released or
   // reported from here on. This cleanup runs before the cleanups of the layers below.
   useLayoutEffect(() => {

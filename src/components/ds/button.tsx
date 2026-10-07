@@ -2,10 +2,13 @@ import type { ComponentProps } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { buttonVariants, iconButtonVariants, type ButtonVariant, type ControlSize } from './button-variants';
+import { oncePerPress } from './heldKey';
 import { Icon } from './icon';
 import { Tooltip } from './tooltip';
 
-export function Button({ variant, size, icon, busy = false, className, children, type = 'button', onClick, ...props }: ComponentProps<'button'> & {
+// Button and IconButton act once per press: the repeats of a held Enter or Space are dropped
+// before the browser makes a click from them, and before the caller's key handler (heldKey.ts).
+export function Button({ variant, size, icon, busy = false, className, children, type = 'button', onClick, onKeyDown, ...props }: ComponentProps<'button'> & {
   variant?: ButtonVariant;
   size?: ControlSize;
   icon?: LucideIcon;
@@ -20,6 +23,7 @@ export function Button({ variant, size, icon, busy = false, className, children,
       className={cn(buttonVariants({ variant, size }), className)}
       {...props}
       onClick={busy ? (event) => event.preventDefault() : onClick}
+      onKeyDown={oncePerPress(onKeyDown)}
     >
       {icon && <Icon icon={icon} size="sm" />}
       {children}
@@ -28,7 +32,7 @@ export function Button({ variant, size, icon, busy = false, className, children,
 }
 
 // Icon-only buttons must be named; the same words show as the hover tooltip.
-export function IconButton({ icon, label, variant, size = 'md', busy = false, pressedFill = true, tooltipSide = 'top', className, type = 'button', onClick, ...props }:
+export function IconButton({ icon, label, variant, size = 'md', busy = false, pressedFill = true, tooltipSide = 'top', className, type = 'button', onClick, onKeyDown, ...props }:
   Omit<ComponentProps<'button'>, 'children' | 'aria-label'> & {
     icon: LucideIcon;
     label: string;
@@ -50,6 +54,7 @@ export function IconButton({ icon, label, variant, size = 'md', busy = false, pr
         className={cn(iconButtonVariants({ variant, size, pressedFill }), className)}
         {...props}
         onClick={busy ? (event) => event.preventDefault() : onClick}
+        onKeyDown={oncePerPress(onKeyDown)}
       >
         <Icon icon={icon} size={size === 'sm' ? 'sm' : 'md'} />
       </button>

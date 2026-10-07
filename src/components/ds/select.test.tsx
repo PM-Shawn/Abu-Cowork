@@ -496,3 +496,64 @@ describe('Combobox', () => {
     expect(screen.getByText('No matching model')).toBeInTheDocument();
   });
 });
+
+// A list picks on the key-down of Enter. The key that opened it is still down when it shows.
+describe('keys held when a list opens', () => {
+  const down = (target: Element, key: string, code = key) => fireEvent.keyDown(target, { key, code });
+  const repeat = (target: Element, key: string, code = key) => fireEvent.keyDown(target, { key, code, repeat: true });
+  const up = (target: Element, key: string, code = key) => fireEvent.keyUp(target, { key, code });
+  const focused = () => document.activeElement as HTMLElement;
+
+  it('Select: the Enter that opened the list picks nothing and leaves it open; pressed again, it picks', async () => {
+    const onValueChange = vi.fn();
+    render(<Select label="Model" value="" onValueChange={onValueChange} options={MODELS} placeholder="Choose" />, { wrapper: DesignSystemProvider });
+    const trigger = screen.getByRole('combobox', { name: 'Model' });
+    trigger.focus();
+    down(trigger, 'Enter');
+    const first = await screen.findByRole('option', { name: 'Claude Sonnet 5' });
+    first.focus();
+    for (let i = 0; i < 5; i += 1) expect(repeat(focused(), 'Enter')).toBe(false);
+    expect(onValueChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    up(focused(), 'Enter');
+    down(focused(), 'Enter');
+    expect(onValueChange.mock.calls).toEqual([['sonnet']]);
+  });
+
+  it('Select: an ArrowDown pressed inside the open list and held walks through it', async () => {
+    const user = userEvent.setup();
+    render(<SelectHarness />, { wrapper: DesignSystemProvider });
+    screen.getByRole('combobox', { name: 'Model' }).focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Claude Sonnet 5' })).toHaveFocus());
+    down(focused(), 'ArrowDown');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Claude Opus 5' })).toHaveFocus());
+    expect(repeat(focused(), 'ArrowDown')).toBe(false);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'DeepSeek V4 Pro' })).toHaveFocus());
+  });
+
+  it('Combobox: the Enter that opened the list picks nothing; pressed again, it picks the highlighted option', async () => {
+    const onValueChange = vi.fn();
+    render(
+      <Combobox label="Model" value="" onValueChange={onValueChange} options={MODELS} placeholder="Choose a model" searchPlaceholder="Search models" emptyText="No matching model" />,
+      { wrapper: DesignSystemProvider },
+    );
+    const trigger = screen.getByRole('combobox', { name: 'Model' });
+    trigger.focus();
+    down(trigger, 'Enter');
+    // The browser makes the click that opens the list from that key-down.
+    fireEvent.click(trigger, { detail: 0 });
+    const search = await screen.findByRole('combobox', { name: 'Search models' });
+    search.focus();
+    for (let i = 0; i < 5; i += 1) expect(repeat(search, 'Enter')).toBe(false);
+    expect(onValueChange).not.toHaveBeenCalled();
+    expect(search).toBeInTheDocument();
+    up(search, 'Enter');
+    // Arrows pressed in the list repeat.
+    down(search, 'ArrowDown');
+    repeat(search, 'ArrowDown');
+    expect(screen.getByRole('option', { name: 'DeepSeek V4 Pro' })).toHaveAttribute('aria-selected', 'true');
+    down(search, 'Enter');
+    expect(onValueChange.mock.calls).toEqual([['deepseek']]);
+  });
+});

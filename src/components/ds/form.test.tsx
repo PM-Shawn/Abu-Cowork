@@ -364,6 +364,27 @@ describe('MultiCombobox', () => {
     expect(screen.getByRole('listbox', { name: 'Members' })).toBeInTheDocument();
   });
 
+  it('turns the highlighted option on once for a held Enter, and lets a held arrow walk the list', async () => {
+    const user = userEvent.setup();
+    const onValuesChange = vi.fn();
+    render(
+      <MultiCombobox label="Members" values={[]} onValuesChange={onValuesChange} options={EXPERTS} {...COMBOBOX_TEXT} />,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Members' }));
+    const search = screen.getByRole('combobox', { name: 'Search experts' });
+    fireEvent.keyDown(search, { key: 'ArrowDown', code: 'ArrowDown' });
+    fireEvent.keyDown(search, { key: 'ArrowDown', code: 'ArrowDown', repeat: true });
+    expect(screen.getByRole('option', { name: 'Sol' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(search, { key: 'Enter', code: 'Enter' });
+    // The list stays open, so every repeat would turn the option off and on again.
+    for (let i = 0; i < 5; i += 1) expect(fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    expect(onValuesChange.mock.calls).toEqual([[['sol']]]);
+    // Space typed into the search box repeats.
+    fireEvent.keyDown(search, { key: ' ', code: 'Space' });
+    expect(fireEvent.keyDown(search, { key: ' ', code: 'Space', repeat: true })).toBe(true);
+  });
+
   it('takes a chosen option out on Enter and keeps the list open', async () => {
     const user = userEvent.setup();
     const onValuesChange = vi.fn();

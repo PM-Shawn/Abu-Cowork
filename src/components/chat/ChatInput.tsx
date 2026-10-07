@@ -1918,6 +1918,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       }
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey)) {
         e.preventDefault();
+        // One pick per press of Enter: the repeat of a held Enter picks nothing.
+        if (e.key === 'Enter' && e.repeat) return;
         applySuggestion(suggestions[selectedIndex]);
         return;
       }
@@ -1947,6 +1949,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // stack, so it is deliberately the do-nothing branch.
       if (action === 'send') {
         e.preventDefault();
+        // One message per press: a held Enter repeats, and this field takes the focus by itself
+        // after actions whose key may still be down (start a conversation with an expert, pick a
+        // suggestion). The repeat sends nothing and, its default prevented, adds no line.
+        // Shift+Enter and Alt+Enter keep repeating: holding them adds lines.
+        if (e.repeat) return;
         handleSend();
       } else if (action === 'insert') {
         e.preventDefault();

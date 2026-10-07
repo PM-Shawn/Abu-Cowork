@@ -1,11 +1,13 @@
 import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { oncePerPress } from './heldKey';
 import { Icon } from './icon';
 import { DISABLED, FOCUS_RING } from './styles';
 
 // A sidebar row. The selected row gets the 7% gray fill and nothing else.
-export function NavItem({ label, icon, selected = false, trailing, className, type = 'button', ...props }:
+// It acts once per press of Enter or Space (heldKey.ts).
+export function NavItem({ label, icon, selected = false, trailing, className, type = 'button', onKeyDown, ...props }:
   Omit<ComponentProps<'button'>, 'children'> & {
     label: ReactNode;
     icon?: LucideIcon;
@@ -24,6 +26,7 @@ export function NavItem({ label, icon, selected = false, trailing, className, ty
         className,
       )}
       {...props}
+      onKeyDown={oncePerPress(onKeyDown)}
     >
       {icon && <Icon icon={icon} className={selected ? 'text-label' : 'text-label-secondary'} />}
       <span className="min-w-0 flex-1 truncate">{label}</span>

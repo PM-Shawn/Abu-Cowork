@@ -1,6 +1,7 @@
 import { Switch as SwitchPrimitive } from 'radix-ui';
 import { useId, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { dropsHeldRepeat } from './heldKey';
 import { BUSY, DISABLED, FOCUS_RING } from './styles';
 
 export function Switch({ checked, onCheckedChange, label, disabled, busy = false, id, 'aria-label': ariaLabel }: {
@@ -25,6 +26,8 @@ export function Switch({ checked, onCheckedChange, label, disabled, busy = false
         disabled={disabled}
         aria-disabled={busy || undefined}
         onCheckedChange={busy ? () => undefined : onCheckedChange}
+        // One change per press: the repeats of a held Enter or Space are dropped (heldKey.ts).
+        onKeyDown={dropsHeldRepeat}
         className={cn('inline-flex h-5 w-8 shrink-0 items-center rounded-full bg-fill-pressed transition-colors duration-fast data-[state=checked]:bg-emphasis', FOCUS_RING, DISABLED, BUSY)}
       >
         <SwitchPrimitive.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-on-emphasis shadow-panel transition-transform duration-fast data-[state=checked]:translate-x-3.5" />

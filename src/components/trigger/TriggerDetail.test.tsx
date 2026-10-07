@@ -10,6 +10,7 @@ import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useTriggerStore } from '@/stores/triggerStore';
 import type { Trigger, TriggerCapability } from '@/types/trigger';
+import { passSettleInterval } from '@/test/dsWindows';
 import TriggerDetail from './TriggerDetail';
 
 vi.mock('@/core/trigger/triggerEngine', () => ({
@@ -308,6 +309,7 @@ describe('TriggerDetail', () => {
       await user.click(screen.getByRole('button', { name: '删除' }));
       act(() => useTriggerStore.setState({ triggers: { other: makeTrigger('other', { prompt: 'p' }) } }));
 
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: '确认' }));
 
       expect(deleteTrigger).not.toHaveBeenCalled();
@@ -324,6 +326,7 @@ describe('TriggerDetail', () => {
     try {
       show(makeTrigger('asked', { prompt: 'p' }));
       await user.click(screen.getByRole('button', { name: '删除' }));
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: '确认' }));
 
       expect(deleteTrigger).toHaveBeenCalledTimes(1);
@@ -373,6 +376,8 @@ describe('TriggerDetail', () => {
     expect(screen.getByText('确定删除此触发器？', { exact: false })).toBeVisible();
     expect(useTriggerStore.getState().triggers.kept).toBeDefined();
 
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: '取消' }));
     expect(useTriggerStore.getState().triggers.kept).toBeDefined();
     expect(screen.queryByText('确定删除此触发器？', { exact: false })).toBeNull();
@@ -383,6 +388,7 @@ describe('TriggerDetail', () => {
     show(makeTrigger('removed', { prompt: 'p' }));
 
     await user.click(screen.getByRole('button', { name: '删除' }));
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: '确认' }));
 
     expect(useTriggerStore.getState().triggers.removed).toBeUndefined();

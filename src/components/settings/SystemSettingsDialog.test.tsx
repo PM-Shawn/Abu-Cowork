@@ -17,6 +17,7 @@ import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import SystemSettingsDialog from './SystemSettingsDialog';
 
 const platformMock = vi.hoisted(() => ({ mac: false }));
@@ -497,7 +498,10 @@ describe('SystemSettingsDialog', () => {
         act(() => formInside.set({ open: true, dirty: true }));
         act(() => useApproval.setState({ open: true }));
 
-        await user.click(await screen.findByRole('button', { name: '继续填写' }));
+        const keepEditing = await screen.findByRole('button', { name: '继续填写' });
+        // The question takes no pointer press for a moment after it appears: it has been read.
+        passSettleInterval();
+        await user.click(keepEditing);
         expect(isOpen()).toBe(true);
         expect(screen.getByRole('dialog', { name: 'Add a service' })).toBeInTheDocument();
         expect(approval()).toBeNull();
@@ -517,7 +521,9 @@ describe('SystemSettingsDialog', () => {
         act(() => formInside.set({ open: true, dirty: true }));
         act(() => useApproval.setState({ open: true }));
 
-        await user.click(await screen.findByRole('button', { name: '放弃' }));
+        const discard = await screen.findByRole('button', { name: '放弃' });
+        passSettleInterval();
+        await user.click(discard);
         expect(isOpen()).toBe(false);
         expect(approval()).toBeInTheDocument();
         expect(onApprovalAnswer).not.toHaveBeenCalled();

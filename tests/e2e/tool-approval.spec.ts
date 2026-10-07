@@ -14,6 +14,7 @@ import {
   configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -339,7 +340,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     expect(fs.existsSync(sentinel)).toBe(true);
     await page.waitForTimeout(300);
     expect(fs.existsSync(sentinel)).toBe(true);
-    await confirmButton(page).click();
+    await pressWhenSettled(confirmButton(page));
 
     await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
     expectToolExchange(mock.requests[1].body, command, 'exit code: 0');
@@ -347,6 +348,72 @@ test.describe.serial('Electron run_command approval E2E', () => {
     await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(dialogTitle(page)).toBeHidden();
     expect(mock.requests).toHaveLength(2);
+  });
+
+  // The approval opens by itself, where something else may just have been pressed. A pointer press
+  // that lands on it before it could be read must start nothing; one made after that acts.
+  test('takes no pointer press on a command approval that has just appeared, and runs the command on a press made after it settled', async () => {
+    const response = `abu-e2e-early-press-complete-${randomUUID()}`;
+    const toolCallId = `call-early-press-${randomUUID()}`;
+    dataRoot = createElectronDataRoot();
+    const sentinel = path.join(dataRoot.rootDir, `early-press-sentinel-${randomUUID()}.txt`);
+    fs.writeFileSync(sentinel, 'delete only after a press the approval could take');
+    const command = `rm -- ${quoteShellArgument(sentinel)}`;
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: { command },
+        toolCallId,
+        toolName: 'run_command',
+      },
+      { kind: 'complete', responseText: response },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    // The approval counts its half second on `performance.now()`. That clock runs twenty times
+    // slower from here, so the press below is an early one on a machine of any speed.
+    await page.evaluate(() => {
+      const real = performance.now.bind(performance);
+      const from = real();
+      (window as unknown as { __e2eRealNow: () => number }).__e2eRealNow = real;
+      performance.now = () => from + (real() - from) / 20;
+    });
+
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(`abu-e2e-early-press-${randomUUID()}`);
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+    await expect(dialogTitle(page)).toBeVisible({ timeout: READY_TIMEOUT });
+
+    const approval = page.getByRole('alertdialog');
+    await expect(approval).toHaveAttribute('data-ds-settling', '');
+    const box = await confirmButton(page).boundingBox();
+    expect(box).not.toBeNull();
+    // A real pointer press on the centre of the confirming button, with no waiting of Playwright's own.
+    await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+
+    // The press was an early one: the approval still holds presses back after it.
+    await expect(approval).toHaveAttribute('data-ds-settling', '');
+    await expect(dialogTitle(page)).toBeVisible();
+    await expect(cancelButton(page)).toBeFocused();
+    expect(fs.existsSync(sentinel)).toBe(true);
+    expect(mock.requests).toHaveLength(1);
+
+    // The clock runs at its own speed again; the approval settles and takes the press.
+    await page.evaluate(() => {
+      performance.now = (window as unknown as { __e2eRealNow: () => number }).__e2eRealNow;
+    });
+    await pressWhenSettled(confirmButton(page));
+
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+    expectToolExchange(mock.requests[1].body, command, 'exit code: 0');
+    await expect.poll(() => fs.existsSync(sentinel), { timeout: READY_TIMEOUT }).toBe(false);
+    await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(dialogTitle(page)).toBeHidden();
   });
 
   test('cancels an approval-required command, returns the cancellation result, and does not execute or re-prompt', async () => {
@@ -381,7 +448,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     expect(fs.existsSync(sentinel)).toBe(true);
     await page.waitForTimeout(300);
     expect(fs.existsSync(sentinel)).toBe(true);
-    await cancelButton(page).click();
+    await pressWhenSettled(cancelButton(page));
 
     await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
     expectToolExchange(mock.requests[1].body, command, '[用户取消了此操作]');
@@ -443,7 +510,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     }, { timeout: READY_TIMEOUT }).toBe(true);
     expect(fs.existsSync(sentinel)).toBe(true);
 
-    await cancelButton(page).click();
+    await pressWhenSettled(cancelButton(page));
 
     await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(3);
     expectToolExchange(mock.requests[2].body, command, '[用户取消了此操作]');
@@ -491,9 +558,9 @@ test.describe.serial('Electron run_command approval E2E', () => {
       setupDialog.getByRole('heading', { name: MY_CHROME_HEADING }),
     ).toBeVisible();
 
-    await setupDialog.getByRole('button', {
+    await pressWhenSettled(setupDialog.getByRole('button', {
       name: /^(取消|Cancel)$/,
-    }).click();
+    }));
 
     await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
     expectNamedToolResult(

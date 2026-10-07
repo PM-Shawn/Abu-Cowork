@@ -10,6 +10,7 @@ import { initLanguage } from '@/i18n';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import type { Conversation } from '@/types';
 import type { IMSession } from '@/types/imChannel';
+import { passSettleInterval } from '@/test/dsWindows';
 import IMInfoBar from './IMInfoBar';
 
 const iconButtonRenders = vi.hoisted(() => vi.fn());
@@ -122,8 +123,11 @@ describe('IMInfoBar', () => {
     await user.click(screen.getByRole('menuitem', { name: '结束会话' }));
     return screen.findByRole('alertdialog', { name: '结束会话' });
   }
-  const answer = (user: ReturnType<typeof userEvent.setup>, box: HTMLElement, name: string) =>
-    user.click(within(box).getByRole('button', { name }));
+  // A question takes no pointer press for a moment after it appears: it has been read.
+  const answer = (user: ReturnType<typeof userEvent.setup>, box: HTMLElement, name: string) => {
+    passSettleInterval();
+    return user.click(within(box).getByRole('button', { name }));
+  };
 
   it('ends the session only after the user confirms', async () => {
     const nativeConfirm = vi.fn(() => true);

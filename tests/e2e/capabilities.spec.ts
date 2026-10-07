@@ -6,6 +6,7 @@ import {
   closeAbuElectron,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   REPO_ROOT,
   type ElectronDataRoot,
@@ -338,7 +339,7 @@ test.describe('Electron capability overview', () => {
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.sites['https://added.example.com']?.upload)).toBe('deny');
     await page.screenshot({ path: iaScreenshot('03-site-permissions-list-zh') });
     await site.getByRole('button', { name: '删除 https://added.example.com 的设置' }).click();
-    await page.getByRole('alertdialog').getByRole('button', { name: '删除例外' }).click();
+    await pressWhenSettled(page.getByRole('alertdialog').getByRole('button', { name: '删除例外' }));
     await expect(page.getByTitle('https://added.example.com')).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.sites['https://added.example.com'])).toBeUndefined();
 

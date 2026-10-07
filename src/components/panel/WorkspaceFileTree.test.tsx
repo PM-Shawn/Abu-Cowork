@@ -15,6 +15,7 @@ import enUS from '@/i18n/locales/en-US';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import WorkspaceFileTree from './WorkspaceFileTree';
 
 // The tree state the mocked hook hands to the component; tests change it to play the
@@ -256,6 +257,9 @@ describe('WorkspaceFileTree file operations', () => {
       expect(await screen.findByText(copy.confirmDelete)).toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalled();
 
+      // The question takes no pointer press for a moment after it appears: it has been read. The
+      // same goes for every press on its buttons in this file.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
       await waitFor(() => expect(screen.queryByText(copy.confirmDelete)).not.toBeInTheDocument());
@@ -282,6 +286,7 @@ describe('WorkspaceFileTree file operations', () => {
 
       await chooseFromRowMenu(user, NOTES, copy.delete);
       await screen.findByText(copy.confirmDelete);
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
@@ -297,6 +302,7 @@ describe('WorkspaceFileTree file operations', () => {
 
       await chooseFromRowMenu(user, DOCS, copy.delete);
       await screen.findByText(copy.confirmDelete);
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
@@ -316,6 +322,7 @@ describe('WorkspaceFileTree file operations', () => {
 
       await chooseFromRowMenu(user, stray, copy.delete);
       await screen.findByText(copy.confirmDelete);
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.deleteFailed, message: copy.invalidName }]));
@@ -331,6 +338,7 @@ describe('WorkspaceFileTree file operations', () => {
       await chooseFromRowMenu(user, NOTES, copy.delete);
       await screen.findByText(copy.confirmDelete);
       patchTree({ rootPath: '/work/other' });
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.deleteFailed, message: copy.invalidName }]));
@@ -347,6 +355,7 @@ describe('WorkspaceFileTree file operations', () => {
       await user.click(screen.getByRole('menuitem', { name: copy.delete }));
       await screen.findByRole('alertdialog');
       view.rerender(<DesignSystemProvider>{null}</DesignSystemProvider>);
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.deleteFailed, message: copy.invalidName }]));
@@ -361,6 +370,7 @@ describe('WorkspaceFileTree file operations', () => {
 
       await chooseFromRowMenu(user, file, copy.delete);
       await screen.findByText(copy.confirmDelete);
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: 'C:\\work\\site\\a.txt' }));
@@ -373,6 +383,7 @@ describe('WorkspaceFileTree file operations', () => {
 
       await chooseFromRowMenu(user, NOTES, copy.delete);
       await screen.findByText(copy.confirmDelete);
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(toasts()).toEqual([{ type: 'error', title: copy.deleteFailed, message: 'trash is unavailable' }]));
@@ -876,6 +887,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
       expect(within(dialog).getByRole('button', { name: copy.moveToTrash })).toHaveClass('text-danger');
 
+      passSettleInterval();
       await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
 
       await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
@@ -884,7 +896,9 @@ describe('WorkspaceFileTree menus and rows', () => {
 
       fireEvent.contextMenu(row(NOTES));
       await user.click(screen.getByRole('menuitem', { name: copy.delete }));
-      await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: copy.moveToTrash }));
+      const asked = await screen.findByRole('alertdialog');
+      passSettleInterval();
+      await user.click(within(asked).getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
       expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: NOTES.path });
@@ -1002,6 +1016,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       const dialog = await screen.findByRole('alertdialog', { name: copy.confirmDelete });
       expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
       expect(dialog).toHaveTextContent('docs');
+      passSettleInterval();
       await user.click(within(dialog).getByRole('button', { name: copy.moveToTrash }));
       await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
       expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: DOCS.path });
@@ -1101,6 +1116,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect(row(NOTES)).toHaveClass('bg-fill-hover');
       expect(row(PLAN)).not.toHaveClass('bg-fill-hover');
 
+      passSettleInterval();
       await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
 
       await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
@@ -1121,6 +1137,7 @@ describe('WorkspaceFileTree menus and rows', () => {
       expect(dialog).not.toHaveTextContent('plan.md');
       expect(row(NOTES)).toHaveClass('bg-fill-hover');
 
+      passSettleInterval();
       await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: copy.moveToTrash }));
 
       await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));

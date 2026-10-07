@@ -229,7 +229,9 @@ describe('ToasterMount while the user is asked to decide', () => {
     await user.keyboard('{Escape}');
     const question = screen.getByRole('alertdialog');
     expect(shownTitles()).toEqual(['Notice 3']);
-    // Keep editing: the question leaves, the window stays, the notifications return.
+    // Keep editing: the question leaves, the window stays, the notifications return. The question
+    // takes no pointer press for the same moment a notification does after it appears.
+    settle();
     await user.click(within(question).getAllByRole('button')[0]);
     expect(screen.getByRole('dialog', { name: 'Rename task' })).toBeInTheDocument();
     expect(shownTitles()).toEqual(['Notice 3', 'Notice 2', 'Notice 1']);

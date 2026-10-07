@@ -18,6 +18,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
 } from './electronHelpers';
 
@@ -160,7 +161,7 @@ test.describe('team management surface', () => {
       await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-delete').click();
       // The "…" menu closes on click, so the confirmation's is the only 删除 button left.
-      await page.getByRole('button', { name: '删除', exact: true }).last().click();
+      await pressWhenSettled(page.getByRole('button', { name: '删除', exact: true }).last());
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toHaveCount(0);
       await expect(page.getByText('还没有专家团')).toBeVisible();
 

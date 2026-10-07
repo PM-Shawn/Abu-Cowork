@@ -34,6 +34,7 @@ import { __resetAccountStoreForTest, useAccountStore } from '@/core/account/acco
 import { initLanguage } from '@/i18n';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import AccountLoginDialog from './AccountLoginDialog';
 
 // The sign-in window with the real settings store and the real settings window around it.
@@ -541,6 +542,9 @@ describe('AccountLoginDialog opened from the settings window', () => {
           'conversation-in-view',
         ).then((answer) => { answers.push(answer); });
       });
+      // The approval takes no pointer press for a moment after it appears; the keyboard is never
+      // held. It has been read by the time a case presses one of its buttons.
+      passSettleInterval();
       return answers;
     }
 

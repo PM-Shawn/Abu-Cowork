@@ -635,6 +635,8 @@ interface Spy {
   // The discard question the registry asked on this layer, when one is pending.
   asked: () => PendingDiscard | null;
   confirmDiscard: ReturnType<typeof vi.fn>;
+  // What the registry told this layer about being under another layer, in order.
+  told: string[];
 }
 
 function spy(log: string[], name: string, kind: LayerKind, options: {
@@ -646,6 +648,7 @@ function spy(log: string[], name: string, kind: LayerKind, options: {
   // `painted`: the layer's content is still on the page after it closed (it fades out).
   const state = { dirty: options.dirty ?? false, busy: options.busy ?? false, painted: false };
   let pending: PendingDiscard | null = null;
+  const told: string[] = [];
   const confirmDiscard = vi.fn((onDiscard: () => void, onKeep?: () => void) => {
     log.push(`${name}.confirmDiscard`);
     const mine = { onDiscard, onKeep };
@@ -670,8 +673,10 @@ function spy(log: string[], name: string, kind: LayerKind, options: {
     isBusy: () => state.busy,
     isPainted: () => state.painted,
     confirmDiscard,
+    covered: () => { told.push('covered'); },
+    uncovered: () => { told.push('uncovered'); },
   };
-  return { entry, state, asked: () => pending, confirmDiscard };
+  return { entry, state, asked: () => pending, confirmDiscard, told };
 }
 
 function Grab({ onReady }: { onReady: (registry: LayerRegistry) => void }) {
@@ -1913,6 +1918,170 @@ describe('telling whether the user has something open or due', () => {
     registry.isOccupied();
     expect(log).toEqual([]);
     expect(onModalChange).not.toHaveBeenCalled();
+  });
+});
+
+// An approval takes no pointer press while another layer is over it, nor for a moment after that
+// layer has left. The registry is the one that knows both moments.
+describe('telling an approval that another layer is over it', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('says so when a question is asked over it, and says it is uncovered once that question has left the page', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(approval.entry);
+    expect(approval.told).toEqual([]);
+
+    registry.register(spy(log, 'question', 'alert').entry);
+    expect(approval.told).toEqual(['covered']);
+    // Answered: the question is no longer shown, and still on the page while it fades out.
+    registry.unregister('question');
+    expect(approval.told).toEqual(['covered']);
+    registry.left('question');
+    expect(approval.told).toEqual(['covered', 'uncovered']);
+  });
+
+  it('says it is uncovered one fade after the question closed when nothing reports that it left', () => {
+    vi.useFakeTimers();
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(approval.entry);
+    registry.register(spy(log, 'question', 'alert').entry);
+    registry.unregister('question');
+    vi.advanceTimersByTime(LAYER_FADE_MS - 1);
+    expect(approval.told).toEqual(['covered']);
+    vi.advanceTimersByTime(1);
+    expect(approval.told).toEqual(['covered', 'uncovered']);
+  });
+
+  it('says the same for a window opened inside the approval', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(approval.entry);
+    registry.register(spy(log, 'sites', 'dialog', { ancestors: ['approval'] }).entry);
+    expect(approval.told).toEqual(['covered']);
+    registry.unregister('sites');
+    registry.left('sites');
+    expect(approval.told).toEqual(['covered', 'uncovered']);
+    expect(log).toEqual([]);
+  });
+
+  it('counts a window that registered before the approval it is inside: effects run child-first', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(spy(log, 'sites', 'dialog', { ancestors: ['approval'] }).entry);
+    registry.register(approval.entry);
+    expect(approval.told).toEqual(['covered']);
+    registry.unregister('sites');
+    registry.left('sites');
+    expect(approval.told).toEqual(['covered', 'uncovered']);
+  });
+
+  it('says it is uncovered only when the last layer over it has left: a question over a window inside it', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(approval.entry);
+    registry.register(spy(log, 'sites', 'dialog', { ancestors: ['approval'] }).entry);
+    registry.register(spy(log, 'question', 'alert').entry);
+    expect(approval.told).not.toContain('uncovered');
+
+    // The window closes, and the question asked over it with it; the window reports first.
+    registry.unregister('sites');
+    expect(log).toEqual(['question.close']);
+    registry.left('sites');
+    expect(approval.told).not.toContain('uncovered');
+    registry.left('question');
+    expect(approval.told.filter((word) => word === 'uncovered')).toHaveLength(1);
+    expect(approval.told[approval.told.length - 1]).toBe('uncovered');
+  });
+
+  it('keeps it covered while a newer question takes the place of the one over it, and says uncovered once', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(approval.entry);
+    registry.register(spy(log, 'first', 'alert').entry);
+    registry.register(spy(log, 'second', 'alert').entry);
+    expect(log).toContain('first.close');
+    registry.left('first');
+    expect(approval.told).not.toContain('uncovered');
+    registry.unregister('second');
+    registry.left('second');
+    expect(approval.told.filter((word) => word === 'uncovered')).toHaveLength(1);
+  });
+
+  it('does not say uncovered for a question that is shown again before it reported that it left', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    const question = spy(log, 'question', 'alert');
+    registry.register(approval.entry);
+    registry.register(question.entry);
+    registry.unregister('question');
+    registry.register(question.entry);
+    registry.left('question');
+    expect(approval.told).not.toContain('uncovered');
+    registry.unregister('question');
+    registry.left('question');
+    expect(approval.told.filter((word) => word === 'uncovered')).toHaveLength(1);
+  });
+
+  it('says nothing to a window: a question over a window that is no approval', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const settings = spy(log, 'settings', 'dialog');
+    registry.register(settings.entry);
+    registry.register(spy(log, 'question', 'alert').entry);
+    registry.unregister('question');
+    registry.left('question');
+    expect(settings.told).toEqual([]);
+  });
+
+  it('says nothing to an approval that waits its turn: the question is over the one on the page', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const shown = spy(log, 'shown', 'approval');
+    const waiting = spy(log, 'waiting', 'approval');
+    registry.register(shown.entry);
+    registry.register(waiting.entry);
+    registry.register(spy(log, 'question', 'alert').entry);
+    expect(shown.told).toEqual(['covered']);
+    expect(waiting.told).toEqual([]);
+  });
+
+  it('says nothing more when the question leaves the page after the approval it was asked over', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    const next = spy(log, 'next', 'approval');
+    registry.register(approval.entry);
+    registry.register(next.entry);
+    registry.register(spy(log, 'question', 'alert').entry);
+    // The approval is answered: the question is cancelled with it, and the next approval is shown.
+    registry.unregister('approval');
+    const toldAsItLeft = [...approval.told];
+    registry.left('question');
+    expect(approval.told).toEqual(toldAsItLeft);
+    // The approval that follows was never under that question.
+    expect(next.told).toEqual([]);
+  });
+
+  it('tells an approval that leaves the page while covered that nothing is over it: one that registers again starts clean', () => {
+    const log: string[] = [];
+    const { registry } = mountRegistry();
+    const approval = spy(log, 'approval', 'approval');
+    registry.register(approval.entry);
+    registry.register(spy(log, 'question', 'alert').entry);
+    registry.unregister('approval');
+    expect(approval.told).toEqual(['covered', 'uncovered']);
+    registry.register(approval.entry);
+    registry.left('question');
+    expect(approval.told).toEqual(['covered', 'uncovered']);
   });
 });
 

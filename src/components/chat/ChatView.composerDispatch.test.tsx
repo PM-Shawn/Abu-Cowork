@@ -17,6 +17,7 @@ import { agentRegistry } from '@/core/agent/registry';
 import { getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 import type { SubagentDefinition } from '@/types';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
+import { passSettleInterval } from '@/test/dsWindows';
 import { teamIdentity, expertIdentity } from '@/core/team/expertContact';
 import {
   clearAllComposerDrafts,
@@ -178,13 +179,17 @@ describe('ChatView welcome composer dispatch ownership', () => {
     const textarea = await submitWelcome('/goal second objective');
     expect(await screen.findByText(goalText.replaceConfirmTitle)).toBeInTheDocument();
     expect(screen.getByText(/first objective.*is not finished/)).toBeInTheDocument();
+    // A question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await userEvent.click(screen.getByRole('button', { name: getI18n().common.cancel }));
     await waitFor(() => expect(textarea).toHaveValue('/goal second objective'));
     expect(dispatchMock).not.toHaveBeenCalled();
     expect(useChatStore.getState().conversations[convId].goal).toMatchObject({ id: firstGoalId, objective: 'first objective' });
 
     await userEvent.type(textarea, '{Enter}');
-    await userEvent.click(await screen.findByRole('button', { name: goalText.actionReplace }));
+    const replace = await screen.findByRole('button', { name: goalText.actionReplace });
+    passSettleInterval();
+    await userEvent.click(replace);
     await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
     expect((dispatchMock.mock.calls[0] as [string, string])[1]).toBe('second objective');
     const goal = useChatStore.getState().conversations[convId].goal;
@@ -245,6 +250,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
 
       // The question is modal, so only code can change the conversation in view while it is open.
       act(() => useChatStore.setState({ activeConversationId: b }));
+      passSettleInterval();
       await userEvent.click(within(question).getByRole('button', { name: goalText.actionClear }));
       await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
 

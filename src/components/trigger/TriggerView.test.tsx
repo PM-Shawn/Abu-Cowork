@@ -11,6 +11,7 @@ import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useTriggerStore } from '@/stores/triggerStore';
 import type { Trigger } from '@/types/trigger';
+import { passSettleInterval } from '@/test/dsWindows';
 import TriggerView from './TriggerView';
 
 vi.mock('@/core/trigger/triggerEngine', () => ({
@@ -314,6 +315,8 @@ describe('TriggerView', () => {
       // The middle card: its place is taken by the card after it.
       await user.click(card('b'));
       await user.click(button(copy().delete));
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(button(getI18n().common.confirm));
       expect(Object.keys(useTriggerStore.getState().triggers)).toEqual(['a', 'c']);
       expect(card('a')).toHaveFocus();
@@ -321,6 +324,8 @@ describe('TriggerView', () => {
       // The last card: the one before it.
       await user.click(card('a'));
       await user.click(button(copy().delete));
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(button(getI18n().common.confirm));
       expect(Object.keys(useTriggerStore.getState().triggers)).toEqual(['c']);
       expect(card('c')).toHaveFocus();
@@ -333,6 +338,8 @@ describe('TriggerView', () => {
 
       await user.click(card('a'));
       await user.click(button(copy().delete));
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(button(getI18n().common.confirm));
 
       expect(useTriggerStore.getState().triggers).toEqual({});
@@ -361,6 +368,7 @@ describe('TriggerView', () => {
         await user.click(button(copy().delete));
 
         act(() => useTriggerStore.getState().deleteTrigger('a'));
+        passSettleInterval();
         await user.click(button(getI18n().common.cancel));
 
         await waitFor(() => expect(card('b')).toHaveFocus());
@@ -374,6 +382,7 @@ describe('TriggerView', () => {
         await user.click(button(copy().delete));
 
         act(() => useTriggerStore.getState().deleteTrigger('a'));
+        passSettleInterval();
         await user.click(button(getI18n().common.confirm));
 
         await waitFor(() => expect(card('b')).toHaveFocus());

@@ -15,6 +15,7 @@ import { usePermissionStore } from '@/stores/permissionStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { Conversation } from '@/types';
+import { passSettleInterval } from '@/test/dsWindows';
 import WorkspaceSection from './WorkspaceSection';
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
@@ -202,6 +203,9 @@ describe('WorkspaceSection', () => {
       await user.click(folderCard());
       await user.click(screen.getByRole('menuitemradio', { name: 'gamma' }));
       expect(await screen.findByRole('heading', { name: PERMISSION_TITLE })).toBeInTheDocument();
+      // The grant window takes no pointer press for a moment after it appears; the keyboard is
+      // never held. It has been read by the time a case presses it.
+      passSettleInterval();
     }
 
     it('names the folder and grants nothing by opening', async () => {
@@ -238,6 +242,8 @@ describe('WorkspaceSection', () => {
       expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
       expect(screen.getByRole('heading', { name: PERMISSION_TITLE })).toBeInTheDocument();
 
+      // Confirm is where the allowing button was: the window holds pointer presses again for a moment.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: 'Confirm' }));
       expect(grants().persisted[GAMMA]).toEqual(expect.objectContaining({
         capabilities: ['read', 'write', 'execute'], duration: 'always', expiresAt: null,
@@ -285,6 +291,7 @@ describe('WorkspaceSection', () => {
       expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
       expect(sessionPaths()).toEqual([BETA]);
 
+      passSettleInterval();
       await user.click(allow('Allow for Session'));
       expect(useWorkspaceStore.getState().currentPath).toBe(GAMMA);
       expect(sessionPaths()).toEqual([BETA, GAMMA]);

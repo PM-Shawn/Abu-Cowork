@@ -8,6 +8,7 @@ import { getI18n, initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ProviderInstance } from '@/types/provider';
 import { SECRET_KEYS } from '@/utils/secretStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import ProviderCard from './ProviderCard';
 
 // Every store action and the health check write into one log, so a test can read their order.
@@ -187,6 +188,8 @@ describe('ProviderCard for a provider the user added', () => {
     renderCard([provider(), provider({ id: 'own-b', name: 'Service B', sortOrder: 1 })]);
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     expect(log).toEqual([]);
 
     await userEvent.click(screen.getByRole('button', { name: t().common.cancel }));
@@ -194,6 +197,8 @@ describe('ProviderCard for a provider the user added', () => {
     expect(screen.queryByRole('button', { name: t().common.confirm })).not.toBeInTheDocument();
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await userEvent.click(screen.getByRole('button', { name: t().common.confirm }));
 
     expect(log).toEqual([['removeProvider', 'own-a']]);
@@ -204,6 +209,8 @@ describe('ProviderCard for a provider the user added', () => {
     renderCard([provider({ id: 'builtin-a', source: 'builtin' })]);
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await userEvent.click(screen.getByRole('button', { name: t().common.confirm }));
 
     expect(log).toEqual([
@@ -219,6 +226,8 @@ describe('ProviderCard for a provider the user added', () => {
     ], 'own-a');
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await userEvent.click(screen.getByRole('button', { name: t().common.confirm }));
 
     expect(log).toEqual([['removeProvider', 'own-a'], ['selectModel', 'own-b', 'model-b']]);
@@ -229,6 +238,8 @@ describe('ProviderCard for a provider the user added', () => {
     renderCard([provider(), provider({ id: 'own-b', name: 'Service B', models: [{ id: 'model-b', label: 'Model B' }] })], 'own-b');
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await userEvent.click(screen.getByRole('button', { name: t().common.confirm }));
 
     expect(log).toEqual([['removeProvider', 'own-a']]);
@@ -239,6 +250,8 @@ describe('ProviderCard for a provider the user added', () => {
     renderCard([provider()]);
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
 
     const question = screen.getByRole('alertdialog', { name: t().settings.deleteProviderConfirm });
     expect(within(question).getByText('Service A')).toBeInTheDocument();
@@ -249,6 +262,8 @@ describe('ProviderCard for a provider the user added', () => {
     renderCard([provider(), provider({ id: 'own-b', name: 'Service B', models: [{ id: 'model-b', label: 'Model B' }] })], 'own-a');
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     act(() => { useSettingsStore.setState((s) => ({ providers: s.providers.filter((p) => p.id !== 'own-a') })); });
     await userEvent.click(screen.getByRole('button', { name: t().common.confirm }));
 
@@ -261,6 +276,8 @@ describe('ProviderCard for a provider the user added', () => {
     renderCard([provider(), provider({ id: 'own-b', name: 'Service B', models: [{ id: 'model-b', label: 'Model B' }] })], 'own-b');
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     act(() => { useSettingsStore.setState({ activeModel: { providerId: 'own-a', modelId: 'model-a' } }); });
     await userEvent.click(screen.getByRole('button', { name: t().common.confirm }));
 
@@ -357,6 +374,8 @@ describe('ProviderCard for a provider the user added', () => {
     expect(document.body.innerHTML).not.toContain('models.example.test');
 
     await userEvent.click(action(t().settings.deleteProvider));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
 
     expect(screen.getByRole('button', { name: t().common.confirm })).toBeInTheDocument();
     expect(document.body.innerHTML).not.toContain(FAKE_KEY);

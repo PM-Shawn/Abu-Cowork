@@ -24,6 +24,7 @@ import {
   configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -343,7 +344,7 @@ test.describe.serial('#549 P2b per-conversation permission mode — real Electro
     await send(page, fresh);
     await expect(page.getByRole('heading', { name: CONFIRM_DIALOG })).toBeVisible({ timeout: READY_TIMEOUT });
     expect(fs.existsSync(sentinelDefault), 'the default mode holds the command at the dialog').toBe(true);
-    await page.getByRole('button', { name: CANCEL_BUTTON }).click();
+    await pressWhenSettled(page.getByRole('button', { name: CANCEL_BUTTON }));
     await expect(page.getByText(replyDefault, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     expect(fs.existsSync(sentinelDefault), 'cancelling leaves the file where it was').toBe(true);
     expectCommandResult(taskRequests(mock).at(-1)!.body, commandDefault, '[用户取消了此操作]');

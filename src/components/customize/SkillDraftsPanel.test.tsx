@@ -31,6 +31,7 @@ import type { DraftRecord } from '@/core/skill/drafts';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
 import { useToastStore } from '@/stores/toastStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import SkillDraftsPanel from './SkillDraftsPanel';
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
@@ -76,10 +77,13 @@ const rowButton = (skillName: string, label: string) => {
   return button;
 };
 
-// The question's own button: it is the last one on the page with that name.
+// The question's own button: it is the last one on the page with that name. A question takes no
+// pointer press for a moment after it appears; by the time a case reaches for its button, it has
+// been read.
 const lastButton = (label: string) => {
   const button = screen.getAllByRole('button', { name: label }).at(-1);
   if (!button) throw new Error(`No "${label}" button`);
+  passSettleInterval();
   return button;
 };
 
@@ -339,6 +343,7 @@ describe('SkillDraftsPanel · a question outlives the panel', () => {
 
     view.rerender(<span>another shelf</span>);
     expect(screen.queryByText(tb().draftsTitle)).toBeNull();
+    passSettleInterval();
     await user.click(within(question).getByRole('button', { name: label() }));
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());

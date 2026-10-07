@@ -5,7 +5,7 @@ import { act, fireEvent, render as renderTree, screen, waitFor } from '@testing-
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOAST_SETTLE_MS } from './styles';
-import { APPROVAL_TITLE, approvalProbe, windowBox } from '@/test/dsWindows';
+import { APPROVAL_TITLE, approvalProbe, passSettleInterval, windowBox } from '@/test/dsWindows';
 import { Button } from './button';
 import { useConfirm, type Confirm } from './confirm-context';
 import { ConfirmDialog } from './confirm-dialog';
@@ -46,10 +46,15 @@ function EditChannelDialog() {
   );
 }
 
+// A question takes no pointer press for a moment after it appears; the keyboard is never held.
+// The cases that use this are about what an answer means, so the question has been read when
+// they press it. What that moment holds back is pinned under "a question that takes the place of
+// another" and in dialog.test.tsx.
 function ask(): Promise<boolean> {
   if (!captured) throw new Error('Capture did not render');
   let result!: Promise<boolean>;
   act(() => { result = captured!(DELETE); });
+  passSettleInterval();
   return result;
 }
 
@@ -103,6 +108,7 @@ describe('useConfirm', () => {
     // Radix hides the dialog underneath from screen readers while the alert is up.
     expect(screen.getByRole('dialog', { hidden: true })).toHaveAttribute('data-state', 'open');
     expect(screen.getByText('answer none')).toBeInTheDocument();
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText('answer true')).toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).toBeNull();
@@ -220,6 +226,7 @@ describe('useConfirm', () => {
       expect(screen.queryByText('Approval')).toBeNull();
       expect(onApprovalChange).not.toHaveBeenCalled();
       // Keep editing: the form and what was typed stay, and only now is the newcomer refused.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: 'Keep editing' }));
       expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('draft');
       expect(onApprovalChange).toHaveBeenCalledOnce();
@@ -432,15 +439,23 @@ describe('useConfirm', () => {
       expect(answers).toEqual(['A:false', 'B:true']);
     });
 
-    it('acts at once on a pointer press when no question was there before it', async () => {
+    it('holds back a question that follows nothing the same way: its confirming button is where the button that asked was', async () => {
       setUp();
       askFor('A', 'Delete one memory?', 'Delete');
       pointerPress('Delete');
       await flush();
+      expect(answers).toEqual([]);
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
+      pointerPress('Delete');
+      await flush();
       expect(answers).toEqual(['A:true']);
 
-      // The next question follows an answered one, not a question on screen: not held back either.
+      // The next question follows an answered one: held back as well.
       askFor('B', 'Clear every memory?', 'Clear all');
+      pointerPress('Clear all');
+      await flush();
+      expect(answers).toEqual(['A:true']);
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
       pointerPress('Clear all');
       await flush();
       expect(answers).toEqual(['A:true', 'B:true']);
@@ -449,6 +464,8 @@ describe('useConfirm', () => {
     it('answers nothing from a window whose question is no longer the current one', async () => {
       setUp();
       askFor('A', 'Delete one memory?', 'Delete');
+      // A has been on the page long enough to take a pointer press.
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
       // B is asked from code: it is registered, and the page still shows A until the next draw.
       if (!captured) throw new Error('Capture did not render');
       void captured({ title: 'Clear every memory?', confirmLabel: 'Clear all', tone: 'danger' }).then((confirmed) => answers.push(`B:${confirmed}`));
@@ -464,6 +481,7 @@ describe('useConfirm', () => {
     it('takes a second press on the confirming button in one step as nothing', async () => {
       setUp();
       askFor('A', 'Delete one memory?', 'Delete');
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
       const confirmButton = screen.getByRole('button', { name: 'Delete' });
       // React reports an error thrown in a handler to the window.
       const errors: string[] = [];

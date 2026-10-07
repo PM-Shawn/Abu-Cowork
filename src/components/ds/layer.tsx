@@ -45,6 +45,10 @@ interface Fading {
 // - An alert that is open when an approval arrives steps aside and comes back, unanswered. An
 //   alert asked while an approval is on the page stacks over it and is answered with cancel when
 //   the approval leaves, like one asked over a dialog.
+// - An approval is told when a question is asked over it or a window opens inside it, and when
+//   the last such layer has left the page (its fade has ended): it takes no pointer press in
+//   between, and holds presses back for a moment afterwards, as it did when it appeared. A press
+//   aimed at the layer that was over it must not land on it.
 // - What comes back takes nobody's place. Several windows can be off the page for one approval
 //   (the one that stepped aside, busy ones that opened under it): they return one at a time, each
 //   when the page holds no other window and no question, and none is closed for another.
@@ -93,6 +97,11 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
   // is a question about that layer, so it is answered with cancel when the layer goes away for
   // any reason.
   const askedOver = useRef(new Map<string, string>());
+  // Layer id → the approval that layer is over: a question asked over the approval or over a
+  // window inside it, or a window opened inside it. The entry stays until that layer has left the
+  // page. The approval is told when a layer comes over it and when the last one has left: it takes
+  // no pointer press in between, nor for a moment after (LayerEntry.covered).
+  const coveredBy = useRef(new Map<string, string>());
   const waiting = useRef<Waiting | null>(null);
   // The provider is leaving, and every layer in it with it: nothing is closed, released or
   // reported from here on. This cleanup runs before the cleanups of the layers below.
@@ -128,12 +137,34 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
       clearTimeout(timer);
       fadeTimers.current.delete(id);
     };
+    const shownApproval = (ids: readonly string[]) => (
+      layers.current.find((layer) => layer.kind === 'approval' && ids.includes(layer.id))
+    );
+    // The approval on the page that a window or a question is over: the one it was opened inside,
+    // or the one its question is about, directly or through a window inside that approval.
+    const approvalUnder = (entry: LayerEntry) => {
+      const inside = shownApproval(entry.ancestors);
+      if (inside || entry.kind !== 'alert') return inside;
+      const owner = layers.current.find((layer) => layer.id === askedOver.current.get(entry.id));
+      if (!owner) return undefined;
+      return owner.kind === 'approval' ? owner : shownApproval(owner.ancestors);
+    };
+    const cover = (layer: LayerEntry, approval: LayerEntry) => {
+      coveredBy.current.set(layer.id, approval.id);
+      approval.covered();
+    };
     const left = (id: string) => {
       stopFadeTimer(id);
       fadingLayers.current.delete(id);
       // Shown again since it began to fade: it is on the page.
       if (isShown(id)) return;
       painted.current.delete(id);
+      // It was over an approval: that approval hears it once nothing else is over it.
+      const approvalId = coveredBy.current.get(id);
+      if (approvalId === undefined) return;
+      coveredBy.current.delete(id);
+      if ([...coveredBy.current.values()].includes(approvalId)) return;
+      layers.current.find((layer) => layer.id === approvalId)?.uncovered();
     };
     // The layer is no longer shown and fades out. Its own report that the fade has ended is what
     // counts. One fade later the registry looks for itself: a layer whose content is still painted
@@ -273,6 +304,11 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
       steppedAside.current = steppedAside.current.filter((layer) => !gone.has(layer.id));
       waitingApprovals.current = waitingApprovals.current.filter((layer) => !gone.has(layer.id));
       for (const key of gone) askedOver.current.delete(key);
+      // What was over an approval that leaves is no longer over anything. The approval is told so
+      // as it goes: its owner may register it again, and it must not stay held then.
+      const overIt = [...coveredBy.current].filter(([, approvalId]) => approvalId === id);
+      for (const [key] of overIt) coveredBy.current.delete(key);
+      if (overIt.length > 0) removed?.uncovered();
       for (const layer of fading) startFade(layer);
       for (const layer of leaving) fadingLayers.current.set(layer.id, { entry: layer, taken: false });
       // Never shown: what the registry prepared for its turn is dropped with it.
@@ -420,6 +456,16 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
         if (owner) askedOver.current.set(entry.id, owner.id);
       }
       show(entry);
+      if (entry.kind === 'approval') {
+        // Layout effects run child-first: a window or a question inside the approval can be on
+        // the page before the approval is.
+        for (const layer of layers.current) {
+          if ((layer.kind === 'dialog' || layer.kind === 'alert') && layer.ancestors.includes(entry.id)) cover(layer, entry);
+        }
+      } else if (entry.kind === 'dialog' || entry.kind === 'alert') {
+        const approval = approvalUnder(entry);
+        if (approval) cover(entry, approval);
+      }
       // The control the approval finds focused is in the question that stepped aside. Should the
       // question be gone when the approval leaves, focus returns to where the question would have sent it.
       if (questionAside) entry.returnFocus.current ??= questionAside.returnFocus.current;

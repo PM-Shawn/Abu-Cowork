@@ -30,6 +30,7 @@ import CapabilitySetupDialog from './CapabilitySetupDialog';
 import SystemSettingsDialog from './SystemSettingsDialog';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import ImageLightbox from '@/components/chat/ImageLightbox';
+import { passSettleInterval } from '@/test/dsWindows';
 
 const restartAppMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('@/core/updates/checker', () => ({
@@ -210,6 +211,8 @@ describe('CapabilitySetupDialog', () => {
       const { promise } = requestFromTask();
       renderWindow();
 
+      // The window takes no pointer press inside its box for a moment after it appears.
+      passSettleInterval();
       await userEvent.setup().click(screen.getByRole('button', { name: 'Close' }));
 
       await expect(promise).resolves.toBe(false);
@@ -547,6 +550,8 @@ describe('CapabilitySetupDialog', () => {
       await screen.findByRole('dialog', { name: 'Connect My Chrome' });
 
       act(() => usePreviewStore.setState({ appModalOpen: true }));
+      // The question has been on the page long enough to be read.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: 'Minimize to Tray' }));
       await user.click(screen.getByRole('button', { name: 'Quit' }));
 

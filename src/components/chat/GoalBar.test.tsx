@@ -29,6 +29,7 @@ import type { Conversation, Message } from '@/types';
 import { disarmGoal, isGoalArmed, resetGoalActivationsForTest, setGoalRetry } from '@/core/goal/goalActivation';
 import { createConversationGoal, getGoal } from '@/core/goal/goalService';
 import type { GoalState } from '@/core/goal/goalTypes';
+import { passSettleInterval } from '@/test/dsWindows';
 import GoalBar from './GoalBar';
 import GoalRoundMarker from './GoalRoundMarker';
 
@@ -197,6 +198,8 @@ describe('GoalBar', () => {
       expect(getGoal('c1')).toBeDefined();
       expect(screen.getByText('Clear this goal?')).toBeInTheDocument();
       const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       // The question says which goal it is about.
       expect(question).toHaveTextContent('Extract every contract into summary.xlsx');
       await userEvent.click(within(question).getByRole('button', { name: 'Clear goal' }));
@@ -208,6 +211,8 @@ describe('GoalBar', () => {
       render(<GoalBar conversationId="c1" />);
       await userEvent.click(screen.getByRole('button', { name: 'Clear goal' }));
       const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await userEvent.click(within(question).getByRole('button', { name: 'Cancel' }));
       await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
       expect(getGoal('c1')?.id).toBe(goal.id);
@@ -218,6 +223,8 @@ describe('GoalBar', () => {
       render(<GoalBar conversationId="c1" />);
       await userEvent.click(screen.getByRole('button', { name: 'Clear goal' }));
       const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       setGoal({ id: 'goal-set-later', objective: 'Another objective' });
 
       await userEvent.click(within(question).getByRole('button', { name: 'Clear goal' }));
@@ -231,6 +238,8 @@ describe('GoalBar', () => {
       const { rerender } = renderBare(<Host tick={0}><GoalBar conversationId="c1" /></Host>);
       await userEvent.click(screen.getByRole('button', { name: 'Clear goal' }));
       const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       rerender(<Host tick={1}>{null}</Host>);
 
       await userEvent.click(within(question).getByRole('button', { name: 'Clear goal' }));

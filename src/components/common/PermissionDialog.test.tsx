@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
-import { cleanup, render as renderBare, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import PermissionDialog, { type PermissionRequest } from './PermissionDialog';
 import { Button } from '@/components/ds/button';
@@ -10,11 +10,20 @@ import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { TextField } from '@/components/ds/text-field';
 import { getI18n, initLanguage } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
 
 // The grant window for a path or a folder: a grant lets Abu read or write there for a session,
 // for a day or for good. These cases pin what each control answers; the stores that record a
 // grant are exercised where the window is mounted (ChatView, ChatInput, WorkspaceSection).
-const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+//
+// The window takes no pointer press for a moment after it appears; the keyboard is never held.
+// These cases are about what each control answers, so the window has been read when they begin:
+// the clock it reads is past that moment once it is on the page.
+const render = (ui: ReactElement) => {
+  const view = renderBare(ui, { wrapper: DesignSystemProvider });
+  passSettleInterval();
+  return view;
+};
 
 const FILE = '/fake/project/notes.txt';
 const FOLDER = '/fake/project';
@@ -95,6 +104,8 @@ describe('path and folder grants: what each control answers', () => {
       expect(buttonNames()).toContain('取消');
       expect(buttonNames()).not.toContain('拒绝');
 
+      // 「确认」 is where the allowing button was: the window holds pointer presses again for a moment.
+      passSettleInterval();
       await user.click(button('确认'));
       expect(calls.onAllow.mock.calls).toEqual([['always']]);
       expect(calls.onDeny).not.toHaveBeenCalled();
@@ -105,6 +116,7 @@ describe('path and folder grants: what each control answers', () => {
       const calls = open(request);
       await user.click(duration('始终允许'));
       await user.click(allow('始终允许'));
+      passSettleInterval();
       await user.click(button('取消'));
 
       expect(screen.queryByText('确定始终允许？这将永久记住此授权。')).toBeNull();
@@ -113,6 +125,7 @@ describe('path and folder grants: what each control answers', () => {
       expect(buttonNames()).toContain('拒绝');
 
       // The question is asked again the next time.
+      passSettleInterval();
       await user.click(allow('始终允许'));
       expect(calls.onAllow).not.toHaveBeenCalled();
       expect(screen.getByText('确定始终允许？这将永久记住此授权。')).toBeInTheDocument();
@@ -123,6 +136,7 @@ describe('path and folder grants: what each control answers', () => {
       const calls = open(request);
       await user.click(duration('始终允许'));
       await user.click(allow('始终允许'));
+      passSettleInterval();
       await user.click(duration('本次会话'));
       await user.click(button('确认'));
       expect(calls.onAllow.mock.calls).toEqual([['session']]);
@@ -545,6 +559,29 @@ describe('path and folder grants as an approval layer', () => {
       expect(calls.onDeny).not.toHaveBeenCalled();
     });
 
+    // The allowing button turns into 「确认」 at the same spot. The second press of a double
+    // press on it arrives before anyone could read what the button now says.
+    it('grants nothing for good with the second press of a double press on the allowing button, and takes a press on 「确认」 made after it could be read', async () => {
+      const user = userEvent.setup();
+      const calls = open(fileWrite);
+      await user.click(radio('始终允许'));
+      fireEvent.pointerDown(allow('始终允许'));
+      fireEvent.click(allow('始终允许'), { detail: 1 });
+      expect(screen.getByText(CONFIRM_WORDS)).toBeInTheDocument();
+      expect(screen.getByRole('alertdialog')).toHaveAttribute('data-ds-settling', '');
+      fireEvent.pointerDown(button('确认'));
+      fireEvent.click(button('确认'), { detail: 2 });
+      expect(calls.onAllow).not.toHaveBeenCalled();
+      expect(screen.getByText(CONFIRM_WORDS)).toBeInTheDocument();
+      expect(button('取消')).toHaveFocus();
+
+      passSettleInterval();
+      fireEvent.pointerDown(button('确认'));
+      fireEvent.click(button('确认'), { detail: 1 });
+      expect(calls.onAllow.mock.calls).toEqual([['always']]);
+      expect(calls.onDeny).not.toHaveBeenCalled();
+    });
+
     it('asks in an alert, and keeps one filled button', async () => {
       await askForGood(userEvent.setup());
       expect(screen.getByRole('alert')).toHaveTextContent(CONFIRM_WORDS);
@@ -790,6 +827,8 @@ describe('path and folder grants as an approval layer', () => {
       unanswered(calls);
       expect(calls.onForm).not.toHaveBeenCalled();
 
+      // The question about the unsaved input has been read.
+      passSettleInterval();
       await user.click(button('放弃'));
       expect(calls.onForm.mock.calls).toEqual([[false]]);
       expect(approval('文件写入权限')).toBeInTheDocument();
@@ -801,6 +840,7 @@ describe('path and folder grants as an approval layer', () => {
       const { calls, Page } = harness();
       const view = render(<Page form dirty />);
       view.rerender(<Page form dirty first />);
+      passSettleInterval();
       await user.click(button('继续填写'));
 
       expect(box('文件写入权限')).toBeNull();

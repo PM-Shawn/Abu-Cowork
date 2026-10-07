@@ -239,6 +239,9 @@ function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthoriz
       // A workspace request answers itself 60 seconds after it was asked: among the approvals
       // that wait their turn it goes first.
       urgent={isFolderSelect}
+      // The question about a grant for good turns the allowing button into the one that grants
+      // for good, at the same spot: the window holds pointer presses back again, as when it appeared.
+      settleKey={showAlwaysConfirm}
       // Escape and the corner button. The layer registry never closes an approval.
       onOpenChange={(next) => { if (!next) onDeny(); }}
       title={title}

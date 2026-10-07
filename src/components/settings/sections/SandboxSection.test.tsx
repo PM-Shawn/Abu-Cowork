@@ -10,6 +10,9 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { authorizeWorkspace, getAuthorizedWritablePaths } from '@/core/tools/pathSafety';
 import { initLanguage, getI18n } from '@/i18n';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
+// A question takes no pointer press for a moment after it appears. Where a case below presses a
+// question's button with the pointer, the question has been read first.
+import { passSettleInterval } from '@/test/dsWindows';
 
 // Platform is the axis under test: the OS-level sandbox UI must render on
 // BOTH macOS and Windows (electron/commandHost.cjs sandboxes on both), and
@@ -310,6 +313,7 @@ describe('SandboxSection protection behaviour', () => {
       expect(screen.getByText(t().settings.sandboxDisableWarning)).toBeInTheDocument();
       expect(actions.setSandboxEnabled).not.toHaveBeenCalled();
 
+      passSettleInterval();
       await user.click(button(t().common.cancel));
       expect(screen.queryByText(t().settings.sandboxDisableWarning)).not.toBeInTheDocument();
       expect(actions.setSandboxEnabled).not.toHaveBeenCalled();
@@ -334,6 +338,7 @@ describe('SandboxSection protection behaviour', () => {
       renderSection();
 
       await user.click(screen.getByText(t().settings.sandboxProtection));
+      passSettleInterval();
       await user.click(button(t().common.confirm));
 
       expect(actions.setSandboxEnabled).toHaveBeenCalledOnce();
@@ -364,6 +369,7 @@ describe('SandboxSection protection behaviour', () => {
       expect(screen.getByText(t().settings.contentGuardDisableMessage)).toBeInTheDocument();
       expect(actions.setContentGuardEnabled).not.toHaveBeenCalled();
 
+      passSettleInterval();
       await user.click(button(t().common.cancel));
       expect(screen.queryByText(t().settings.contentGuardDisableTitle)).not.toBeInTheDocument();
       expect(actions.setContentGuardEnabled).not.toHaveBeenCalled();
@@ -388,6 +394,7 @@ describe('SandboxSection protection behaviour', () => {
       renderSection();
 
       await user.click(screen.getByText(t().settings.contentGuardTitle));
+      passSettleInterval();
       await user.click(button(t().common.confirm));
 
       expect(actions.setContentGuardEnabled).toHaveBeenCalledOnce();
@@ -587,6 +594,7 @@ describe('SandboxSection protection behaviour', () => {
 
       await user.click(screen.getByText(t().settings.sandboxProtection));
       act(() => useSettingsStore.setState({ sandboxEnabled: false }));
+      passSettleInterval();
       await user.click(button(t().common.confirm));
 
       expect(actions.setSandboxEnabled).not.toHaveBeenCalled();
@@ -622,6 +630,7 @@ describe('SandboxSection protection behaviour', () => {
 
       await user.click(screen.getByText(t().settings.contentGuardTitle));
       act(() => useSettingsStore.setState({ safety: { ...useSettingsStore.getState().safety, enableContentGuard: false } }));
+      passSettleInterval();
       await user.click(button(t().common.confirm));
 
       expect(actions.setContentGuardEnabled).not.toHaveBeenCalled();

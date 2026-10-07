@@ -9,6 +9,7 @@ import { VOLCENGINE_IMAGE_BASE_URL } from '@/core/llm/imageGen';
 import { format, getI18n, initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ImageGenBackend } from '@/types/provider';
+import { passSettleInterval } from '@/test/dsWindows';
 import { ImageGenBackendModal, ImageGenBackendsPanel } from './ImageGenSection';
 
 const FAKE_KEY = 'sk-test-not-a-secret';
@@ -256,6 +257,8 @@ describe('ImageGenBackendModal', () => {
     expect(discardQuestion()).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
 
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: t().designSystem.keepEditing }));
 
     expect(discardQuestion()).not.toBeInTheDocument();
@@ -263,6 +266,7 @@ describe('ImageGenBackendModal', () => {
     expect(nameField().value).toBe('Seedream');
 
     await user.keyboard('{Escape}');
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: t().designSystem.discard }));
 
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -276,6 +280,8 @@ describe('ImageGenBackendModal', () => {
 
     await user.click(screen.getByRole('button', { name: t().common.cancel }));
     expect(discardQuestion()).toBeInTheDocument();
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: t().designSystem.keepEditing }));
 
     await user.click(screen.getByRole('button', { name: t().common.close }));
@@ -448,6 +454,7 @@ describe('ImageGenBackendsPanel', () => {
     renderPanel([SEEDREAM, DALLE], 'backend-a');
 
     await userEvent.click(rowAction(t().common.delete, 1));
+    passSettleInterval();
 
     expect(screen.getByText(t().settings.imageGenDeleteConfirmTitle)).toBeInTheDocument();
     expect(screen.getByText(format(t().settings.imageGenDeleteConfirmMessage, { name: 'Dall-E' }))).toBeInTheDocument();
@@ -458,6 +465,7 @@ describe('ImageGenBackendsPanel', () => {
     expect(screen.queryByText(t().settings.imageGenDeleteConfirmTitle)).not.toBeInTheDocument();
 
     await userEvent.click(rowAction(t().common.delete, 1));
+    passSettleInterval();
     await userEvent.click(screen.getAllByRole('button', { name: t().common.delete }).at(-1)!);
 
     expect(log).toEqual([['removeImageGenBackend', 'backend-b']]);
@@ -468,6 +476,7 @@ describe('ImageGenBackendsPanel', () => {
     renderPanel([SEEDREAM, DALLE], 'backend-a');
 
     await userEvent.click(rowAction(t().common.delete, 1));
+    passSettleInterval();
     act(() => { useSettingsStore.setState({ imageGeneration: { backends: [SEEDREAM], defaultId: 'backend-a' } }); });
     await userEvent.click(screen.getByRole('alertdialog').querySelector<HTMLElement>('button:last-of-type')!);
 

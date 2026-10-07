@@ -6,6 +6,7 @@ import type { ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import ChatView from './ChatView';
 import WorkspaceSection from '@/components/panel/WorkspaceSection';
 import * as approvalBridge from '@/core/agent/ports/approvalBridge';
@@ -101,6 +102,9 @@ function askWorkspace(conversationId: string, suggestedPath: string | null = FOL
 }
 
 const settle = () => act(async () => { await Promise.resolve(); });
+// An approval takes no pointer press for a moment after it appears; the keyboard is never held.
+// After this the window on the page has been there long enough to be read.
+const readable = () => act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
 const view = (id: string) => act(() => { useChatStore.setState({ activeConversationId: id }); });
 const heading = (name: string) => screen.queryByRole('heading', { name });
 const headings = () => screen.queryAllByRole('heading').map((element) => element.textContent);
@@ -261,6 +265,7 @@ describe('ChatView approvals', () => {
     expect(screen.getByRole('button', { name: t().commandConfirm.cancel })).toHaveFocus();
 
     // The press leaves the focus on the confirming button of the first approval.
+    readable();
     await user.click(screen.getByRole('button', { name: t().commandConfirm.confirm }));
     await settle();
     expect(first).toEqual([true]);
@@ -270,6 +275,69 @@ describe('ChatView approvals', () => {
     await user.keyboard('{Enter}');
     await settle();
     expect(second).toEqual([false]);
+  });
+
+  // The window of the next request appears where the one just answered was, its buttons at the
+  // same spots. The second press of a double press lands there before anyone could read it.
+  describe('a double press with two approvals due', () => {
+    // A pointer press as the browser reports it: it begins on the button and its click says detail 1.
+    const pointerPress = (name: string) => {
+      const button = screen.getByRole('button', { name });
+      fireEvent.pointerDown(button);
+      fireEvent.click(button, { detail: 1 });
+    };
+
+    it('confirms one command with a double press on Confirm: the second stays on the page, waiting, with the focus on Cancel', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const first = askCommand(id);
+      const second = askCommand(id, SECOND_COMMAND);
+      readable();
+      pointerPress(t().commandConfirm.confirm);
+      await settle();
+      pointerPress(t().commandConfirm.confirm);
+      await settle();
+      expect(first).toEqual([true]);
+      expect(second).toEqual([]);
+      expect(screen.getByText(SECOND_COMMAND)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: t().commandConfirm.cancel })).toHaveFocus();
+
+      readable();
+      pointerPress(t().commandConfirm.confirm);
+      await settle();
+      expect(second).toEqual([true]);
+    });
+
+    it('cancels one command with a double press on Cancel: the second is not refused by it', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const first = askCommand(id);
+      const second = askCommand(id, SECOND_COMMAND);
+      readable();
+      pointerPress(t().commandConfirm.cancel);
+      await settle();
+      pointerPress(t().commandConfirm.cancel);
+      await settle();
+      expect(first).toEqual([false]);
+      expect(second).toEqual([]);
+      expect(screen.getByText(SECOND_COMMAND)).toBeInTheDocument();
+    });
+
+    it('grants nothing for the next file with the second press of a double press on the allowing button', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const first = askFile(id);
+      const second = askFile(id, SECOND_FILE);
+      readable();
+      pointerPress(t().permission.allowSessionButton);
+      await settle();
+      pointerPress(t().permission.allowSessionButton);
+      await settle();
+      expect(first).toEqual([true]);
+      expect(second).toEqual([]);
+      expect(screen.getByText(SECOND_FILE)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: t().permission.deny })).toHaveFocus();
+    });
   });
 
   // A file grant lets Abu read or write under a path. What each answer records is pinned here
@@ -726,6 +794,7 @@ describe('ChatView approvals', () => {
       await settle();
 
       // The press leaves the focus on the allowing button of the first grant.
+      readable();
       await user.click(allowSession());
       await settle();
       expect(first).toEqual([true]);
@@ -747,8 +816,11 @@ describe('ChatView approvals', () => {
       const second = askFile(id, SECOND_FILE);
       await settle();
 
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
+      // The allowing button now reads Confirm: the window holds pointer presses again for a moment.
+      readable();
       await user.click(screen.getByRole('button', { name: t().common.confirm }));
       await settle();
       expect(first).toEqual([true]);
@@ -771,6 +843,7 @@ describe('ChatView approvals', () => {
       const second = askFile(id);
       await settle();
 
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
       expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
@@ -800,6 +873,7 @@ describe('ChatView approvals', () => {
       const command = askCommand(id);
       await settle();
 
+      readable();
       await user.click(screen.getByRole('button', { name: t().commandConfirm.confirm }));
       await settle();
       expect(command).toEqual([true]);
@@ -841,6 +915,7 @@ describe('ChatView approvals', () => {
       render(<ChatView />);
       const file = askFile(id);
       await settle();
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
       expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
@@ -888,6 +963,7 @@ describe('ChatView approvals', () => {
       render(<ChatView />);
       const answers = askFile(id);
       await settle();
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
       expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
@@ -1036,6 +1112,7 @@ describe('ChatView approvals', () => {
       expect(windows()).toEqual([fileTitle()]);
       expect(screen.queryByText(PICKED)).toBeNull();
 
+      readable();
       await user.click(screen.getByRole('button', { name: t().permission.allowSessionButton }));
       await settle();
       expect(answers).toEqual([true]);

@@ -7,8 +7,6 @@ interface Pending {
   id: number;
   options: ConfirmOptions;
   resolve: (confirmed: boolean) => void;
-  // It took the place of a question that was on screen.
-  replaced: boolean;
 }
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
@@ -55,7 +53,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     // focus back, keeps that question's place: the focus is on the page body for that moment.
     if (!earlier && !returnTo.current?.isConnected) watchFocusUntilTheQuestionHasIt();
     count.current += 1;
-    const next = { id: count.current, options, resolve, replaced: earlier !== null };
+    const next = { id: count.current, options, resolve };
     pendingRef.current = next;
     setPending(next);
   }), [watchFocusUntilTheQuestionHasIt]);
@@ -107,7 +105,6 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           message={pending.options.message}
           confirmLabel={pending.options.confirmLabel}
           tone={pending.options.tone}
-          settles={pending.replaced}
           onCloseAutoFocus={giveFocusBack}
           onResult={(confirmed) => settle(pending.id, confirmed)}
         />

@@ -18,6 +18,10 @@ export interface DialogGuard {
   // What Escape does to the dialog: it asks before discarding input, and does nothing to a
   // dialog only its own buttons may close.
   escape: () => void;
+  // For an approval: another layer came over it, and the last such layer has left the page
+  // (see LayerEntry.covered).
+  onCovered?: () => void;
+  onUncovered?: () => void;
 }
 
 export interface LayerEntry {
@@ -49,6 +53,13 @@ export interface LayerEntry {
   // unless the registry already has: an approval that follows another one, or that takes the
   // place of a window, returns focus to where it was before the first of them.
   returnFocus: { current: HTMLElement | null };
+  // Told to an approval only. `covered`: a question was asked over it, or a window opened inside
+  // it, and is on the page (once per such layer). `uncovered`: the last of them has left the page
+  // (its fade has ended), or the approval itself is leaving. Between the two the approval takes
+  // no pointer press, and it counts its settle interval again from `uncovered`: a press aimed at
+  // the layer that was over it must not land on it.
+  covered: () => void;
+  uncovered: () => void;
 }
 
 export interface LayerRegistry {
@@ -208,6 +219,8 @@ export function useLayer(
         if (!current) throw new Error('Only a dialog can ask to discard its content');
         return current.confirmDiscard(onDiscard, onKeep);
       },
+      covered: () => latest.current.guard?.onCovered?.(),
+      uncovered: () => latest.current.guard?.onUncovered?.(),
     });
     setAdmitted(true);
     return () => {

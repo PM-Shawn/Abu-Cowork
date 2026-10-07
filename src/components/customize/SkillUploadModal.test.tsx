@@ -96,6 +96,20 @@ beforeEach(() => {
   refresh.mockResolvedValue(undefined);
 });
 
+// The drop zone and the archive link carry the busy look themselves: like a ds button they keep
+// their resting look under the pointer while an import runs.
+describe('SkillUploadModal controls that carry the busy look', () => {
+  it('answer the pointer only while they are not busy', () => {
+    render(<SkillUploadModal onClose={vi.fn()} onInstalled={vi.fn()} />);
+    const zone = screen.getByText('Drop a folder').closest('button')!;
+    const link = screen.getByText('Pick file').closest('button')!;
+    expect(zone.className.split(/\s+/)).toContain('not-aria-disabled:hover:bg-fill-hover');
+    expect(zone.className.split(/\s+/)).not.toContain('hover:bg-fill-hover');
+    expect(link.className.split(/\s+/)).toContain('not-aria-disabled:hover:underline');
+    expect(link.className.split(/\s+/)).not.toContain('hover:underline');
+  });
+});
+
 describe('SkillUploadModal folder install disclosure', () => {
   it('names the refused links in the success toast', async () => {
     // The whole point of the `skippedSymlinks` channel: the skill that landed

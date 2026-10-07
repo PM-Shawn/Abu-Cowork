@@ -22,7 +22,19 @@ const DS_BG_COLORS = [
   "heat-1", "heat-2", "heat-3", "heat-4",
 ]
 
+// A ds button writes the classes that answer the pointer as `not-aria-disabled:hover:…` /
+// `not-aria-disabled:active:…`, so they are off while it is busy (ds/button-variants.ts). For
+// merging, that variant is left out of the count: a caller's `hover:text-success` then replaces
+// the button's `not-aria-disabled:hover:text-label` as it replaced `hover:text-label`. Kept side
+// by side, the button's class would win under the pointer (one more selector part).
+const BUSY_GATE = "not-aria-disabled"
+
 const twMerge = extendTailwindMerge({
+  experimentalParseClassName({ className, parseClassName }) {
+    const parsed = parseClassName(className)
+    if (!parsed.modifiers.includes(BUSY_GATE)) return parsed
+    return { ...parsed, modifiers: parsed.modifiers.filter((modifier) => modifier !== BUSY_GATE) }
+  },
   extend: {
     classGroups: {
       // Legacy 8-token scale + design-system scale (index.css / tokens.css --text-*)

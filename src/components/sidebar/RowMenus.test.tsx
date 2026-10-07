@@ -317,6 +317,7 @@ describe('RowMenus', () => {
         act(() => moreButton('b').focus());
         act(() => moreButton('b').click());
         await act(() => vi.runOnlyPendingTimersAsync());
+        expect(menuItemNames()).toEqual(['Rename b', 'Delete b']);
 
         await user.keyboard('{Escape}');
         await act(() => vi.runOnlyPendingTimersAsync());
@@ -326,10 +327,16 @@ describe('RowMenus', () => {
       });
 
       // A list marks the button of a row whose own action is running (`aria-disabled`).
-      it('opens nothing on a button that is marked as working', () => {
+      it('opens nothing on a button that is marked as working: not on a click, a pointer press or an opening key', () => {
         renderList(['a', 'b', 'c'], 'working');
 
         act(() => moreButton('b').click());
+        fireEvent.pointerDown(moreButton('b'), { button: 0, pointerType: 'mouse' });
+        fireEvent.click(moreButton('b'), { detail: 1 });
+        for (const [key, code] of [['Enter', 'Enter'], [' ', 'Space'], ['ArrowDown', 'ArrowDown']]) {
+          // Prevented, so the browser makes no click from the key either.
+          expect(fireEvent.keyDown(moreButton('b'), { key, code })).toBe(false);
+        }
 
         expect(screen.queryByRole('menu')).toBeNull();
         expect(onOpenChange).not.toHaveBeenCalled();

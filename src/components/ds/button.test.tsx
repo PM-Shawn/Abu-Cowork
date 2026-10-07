@@ -164,6 +164,19 @@ describe('IconButton', () => {
     expect(answersAlways).toEqual([]);
   });
 
+  // A caller's class for the look under the pointer replaces the button's own, as a plain
+  // `hover:` class and written with the button's variant (lib/utils.ts).
+  it.each([
+    ['text-success hover:text-success', 'hover:text-success', 'not-aria-disabled:hover:text-label'],
+    ['text-success not-aria-disabled:hover:text-success', 'not-aria-disabled:hover:text-success', 'not-aria-disabled:hover:text-label'],
+    ['bg-raised hover:bg-raised', 'hover:bg-raised', 'not-aria-disabled:hover:bg-fill-hover'],
+  ])('lets the caller\'s %j replace its own hover class', (className, kept, replaced) => {
+    render(<IconButton icon={AppIcons.copy} label="Copy code" className={className} />, { wrapper: DesignSystemProvider });
+    const button = screen.getByRole('button', { name: 'Copy code' });
+    expect(button).toHaveClass(kept);
+    expect(button).not.toHaveClass(replaced);
+  });
+
   // An icon button whose own action is running keeps the keyboard where it is, like Button busy.
   it('keeps focus and its name and takes no press while busy', async () => {
     const user = userEvent.setup();

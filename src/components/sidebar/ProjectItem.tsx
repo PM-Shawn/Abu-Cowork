@@ -19,6 +19,7 @@ import { TextField } from '@/components/ds/text-field';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
 import { projectRowProps } from './projectRowFocus';
+import { opensOnKey } from './rowKeys';
 import { cn } from '@/lib/utils';
 import { format } from '@/i18n';
 import type { Project } from '@/types/project';
@@ -243,6 +244,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   role="button"
                   tabIndex={0}
                   onClick={() => handleConvClick(conv.id)}
+                  onKeyDown={opensOnKey(() => handleConvClick(conv.id))}
                   onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
                   aria-current={selected ? 'true' : undefined}
                   className={cn(

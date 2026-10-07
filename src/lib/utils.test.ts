@@ -97,6 +97,30 @@ describe('cn() — design-system tokens', () => {
   });
 });
 
+// A ds button writes its hover and pressed classes `not-aria-disabled:hover:` / `:active:` (off
+// while it is busy). A caller's class for the same property replaces them, with or without that
+// variant, as it did when the button wrote plain `hover:`.
+describe('cn() — a caller\'s hover class against a ds button\'s own', () => {
+  it('lets a plain hover class replace the button\'s gated one', () => {
+    expect(cn('not-aria-disabled:hover:text-label', 'text-success hover:text-success')).toBe('text-success hover:text-success');
+    expect(cn('not-aria-disabled:hover:bg-fill-hover not-aria-disabled:active:bg-fill-pressed', 'hover:bg-raised')).toBe('not-aria-disabled:active:bg-fill-pressed hover:bg-raised');
+    expect(cn('not-aria-disabled:active:opacity-80', 'active:opacity-100')).toBe('active:opacity-100');
+  });
+
+  it('lets a gated hover class replace the button\'s gated one, and the later of two wins either way', () => {
+    expect(cn('not-aria-disabled:hover:text-label', 'not-aria-disabled:hover:text-on-emphasis')).toBe('not-aria-disabled:hover:text-on-emphasis');
+    expect(cn('hover:bg-raised', 'not-aria-disabled:hover:bg-fill-hover')).toBe('not-aria-disabled:hover:bg-fill-hover');
+  });
+
+  it('keeps classes that answer something else', () => {
+    // Another property, another state, or the busy look itself.
+    expect(cn('not-aria-disabled:hover:bg-fill-hover', 'hover:text-success')).toBe('not-aria-disabled:hover:bg-fill-hover hover:text-success');
+    expect(cn('not-aria-disabled:hover:bg-fill-hover', 'bg-raised')).toBe('not-aria-disabled:hover:bg-fill-hover bg-raised');
+    expect(cn('aria-pressed:not-aria-disabled:hover:bg-fill-selected', 'hover:bg-raised')).toBe('aria-pressed:not-aria-disabled:hover:bg-fill-selected hover:bg-raised');
+    expect(cn('aria-disabled:opacity-40', 'not-aria-disabled:hover:opacity-90')).toBe('aria-disabled:opacity-40 not-aria-disabled:hover:opacity-90');
+  });
+});
+
 describe('cn() — design-system font family', () => {
   it('treats font-code as a font family, not a weight', () => {
     expect(cn('font-code', 'font-medium')).toBe('font-code font-medium');

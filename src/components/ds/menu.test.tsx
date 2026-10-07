@@ -907,6 +907,11 @@ describe('a menu trigger under a click that no pointer and no key made', () => {
   ];
   const trigger = () => screen.getByRole('button', { name: 'Actions', hidden: true });
   const opened = (onOpenChange: ReturnType<typeof vi.fn>) => onOpenChange.mock.calls.filter(([open]) => open === true).length;
+  // Radix restores focus from a timer once the closed menu has unmounted.
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+  const menuGone = () => act(() => vi.runOnlyPendingTimersAsync());
+  const keyboardUser = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
   function ActionsMenu({ children, onOpenChange, onPick = () => undefined }: { children: ReactElement; onOpenChange: (open: boolean) => void; onPick?: () => void }) {
     return (
@@ -935,7 +940,7 @@ describe('a menu trigger under a click that no pointer and no key made', () => {
     });
 
     it('opens once for a pointer press and once for each opening key', async () => {
-      const user = userEvent.setup();
+      const user = keyboardUser();
       const onOpenChange = vi.fn();
       render(<ActionsMenu onOpenChange={onOpenChange}>{ui()}</ActionsMenu>, { wrapper: DesignSystemProvider });
 
@@ -945,7 +950,7 @@ describe('a menu trigger under a click that no pointer and no key made', () => {
 
       for (const key of ['{Enter}', ' ', '{ArrowDown}']) {
         await user.keyboard('{Escape}');
-        await flushTimers();
+        await menuGone();
         expect(screen.queryByRole('menu')).toBeNull();
         onOpenChange.mockClear();
         act(() => { trigger().focus(); });
@@ -956,13 +961,13 @@ describe('a menu trigger under a click that no pointer and no key made', () => {
     });
 
     it('opens again after it was closed, and after a pointer press whose click went elsewhere', async () => {
-      const user = userEvent.setup();
+      const user = keyboardUser();
       const onOpenChange = vi.fn();
       render(<ActionsMenu onOpenChange={onOpenChange}>{ui()}</ActionsMenu>, { wrapper: DesignSystemProvider });
 
       act(() => { trigger().click(); });
       await user.keyboard('{Escape}');
-      await flushTimers();
+      await menuGone();
       expect(screen.queryByRole('menu')).toBeNull();
 
       // The pointer goes down on the trigger and the menu opens; with the menu open the click
@@ -970,7 +975,7 @@ describe('a menu trigger under a click that no pointer and no key made', () => {
       fireEvent.pointerDown(trigger(), { button: 0, pointerType: 'mouse' });
       expect(screen.getAllByRole('menu')).toHaveLength(1);
       await user.keyboard('{Escape}');
-      await flushTimers();
+      await menuGone();
       expect(screen.queryByRole('menu')).toBeNull();
 
       act(() => { trigger().click(); });
@@ -990,14 +995,38 @@ describe('a menu trigger under a click that no pointer and no key made', () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
-  it('opens nothing on a busy trigger', () => {
+  // A trigger that is busy, or that its owner marks `aria-disabled`, is no menu button for now.
+  it.each([
+    ['a busy IconButton', () => <IconButton busy icon={AppIcons.more} label="Actions" />],
+    ['a busy Button', () => <Button busy>Actions</Button>],
+    ['a button its owner marks aria-disabled', () => <Button aria-disabled>Actions</Button>],
+    ['a plain element marked aria-disabled', () => <span role="button" tabIndex={0} aria-disabled="true">Actions</span>],
+  ] as [string, () => ReactElement][])('opens nothing from %s: not on a click, a pointer press or an opening key', (_name, ui) => {
     const onOpenChange = vi.fn();
-    render(<ActionsMenu onOpenChange={onOpenChange}><IconButton busy icon={AppIcons.more} label="Actions" /></ActionsMenu>, { wrapper: DesignSystemProvider });
+    render(<ActionsMenu onOpenChange={onOpenChange}>{ui()}</ActionsMenu>, { wrapper: DesignSystemProvider });
 
     act(() => { trigger().click(); });
+    fireEvent.pointerDown(trigger(), { button: 0, pointerType: 'mouse' });
+    fireEvent.click(trigger(), { detail: 1 });
+    for (const [key, code] of [['Enter', 'Enter'], [' ', 'Space'], ['ArrowDown', 'ArrowDown']]) {
+      // Prevented, so the browser makes no click from the key either.
+      expect(fireEvent.keyDown(trigger(), { key, code })).toBe(false);
+    }
 
     expect(screen.queryByRole('menu')).toBeNull();
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('opens again once the trigger is no longer busy', async () => {
+    const onOpenChange = vi.fn();
+    const view = render(<ActionsMenu onOpenChange={onOpenChange}><IconButton busy icon={AppIcons.more} label="Actions" /></ActionsMenu>, { wrapper: DesignSystemProvider });
+    fireEvent.pointerDown(trigger(), { button: 0, pointerType: 'mouse' });
+    view.rerender(<ActionsMenu onOpenChange={onOpenChange}><IconButton icon={AppIcons.more} label="Actions" /></ActionsMenu>);
+
+    fireEvent.pointerDown(trigger(), { button: 0, pointerType: 'mouse' });
+
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+    expect(onOpenChange.mock.calls).toEqual([[true]]);
   });
 
   it('opens nothing when the trigger\'s own handler refuses the click', () => {
@@ -1032,7 +1061,7 @@ describe('a menu trigger under a click that no pointer and no key made', () => {
 
     act(() => { trigger().click(); });
     await screen.findByRole('menu');
-    await flushTimers();
+    await menuGone();
 
     expect(onPick).not.toHaveBeenCalled();
     expect(screen.getByRole('menu')).toBeInTheDocument();

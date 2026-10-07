@@ -1,6 +1,6 @@
 import { ContextMenu as ContextMenuPrimitive, DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import { useId, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { useId, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type { DataAttributes } from './dialog';
 import { dropsHeldRepeat, useHeldKeys } from './heldKey';
@@ -13,6 +13,8 @@ import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED }
 
 // The panel never grows past the room Radix measures between the trigger and the window edge; a longer list scrolls.
 const MENU_PANEL = 'max-h-(--radix-dropdown-menu-content-available-height) min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto p-1';
+
+const isWorking = (element: Element) => element.getAttribute('aria-disabled') === 'true';
 
 // onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
 // event.preventDefault() there to keep focus off the trigger (e.g. to focus a field).
@@ -45,18 +47,25 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   // their repeats), so one press of either kind opens the menu once. A trigger that refuses its
   // click (a busy button) opens nothing.
   const openOnBareClick = (event: MouseEvent<HTMLElement>) => {
-    if (event.detail === 0 && !event.defaultPrevented && !isOpen) setOpen(true);
+    if (event.detail === 0 && !event.defaultPrevented && !isOpen && !isWorking(event.currentTarget)) setOpen(true);
+  };
+  // A trigger that is busy, or that its owner marks `aria-disabled`, is no menu button for now:
+  // the pointer-down is prevented, and Radix leaves a prevented event alone.
+  const refuseWhileWorking = (event: PointerEvent<HTMLElement>) => {
+    if (isWorking(event.currentTarget)) event.preventDefault();
   };
   // The repeat of a held key opens nothing, whatever the trigger is made of (Enter, Space, and
   // the arrow that opens the menu): a prevented key-down is one Radix leaves alone, and the
-  // browser makes no click from it. A new press opens.
-  const dropOpeningRepeat = (event: KeyboardEvent<HTMLElement>) => {
+  // browser makes no click from it. A new press opens. A working trigger takes none of the three.
+  const dropOpeningKey = (event: KeyboardEvent<HTMLElement>) => {
     if (dropsHeldRepeat(event)) return;
-    if (event.repeat && event.key === 'ArrowDown') event.preventDefault();
+    const opens = event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown';
+    if (opens && isWorking(event.currentTarget)) event.preventDefault();
+    else if (event.repeat && event.key === 'ArrowDown') event.preventDefault();
   };
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
-      <DropdownMenuPrimitive.Trigger asChild onClick={openOnBareClick} onKeyDown={dropOpeningRepeat}>{trigger}</DropdownMenuPrimitive.Trigger>
+      <DropdownMenuPrimitive.Trigger asChild onClick={openOnBareClick} onPointerDown={refuseWhileWorking} onKeyDown={dropOpeningKey}>{trigger}</DropdownMenuPrimitive.Trigger>
       <DropdownMenuPrimitive.Portal container={container}>
         <DropdownMenuPrimitive.Content
           {...heldKeys.handlers}

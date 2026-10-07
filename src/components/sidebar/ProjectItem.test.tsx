@@ -440,6 +440,39 @@ describe('ProjectItem — task rows', () => {
     expect(mocks.chat.switchConversation).toHaveBeenCalledWith('c0');
   });
 
+  // Tab reaches a row; Enter and Space on the row open the task as a click does.
+  describe('from the keyboard', () => {
+    const row = () => screen.getByText('对话0').closest<HTMLElement>('[role="button"]')!;
+
+    it.each([['Enter', 'Enter'], [' ', 'Space']])('opens the task with %j pressed on the row, and the page does not scroll', (key, code) => {
+      renderItem([makeConv(0)]);
+      expect(row().tabIndex).toBe(0);
+
+      // fireEvent returns false once the default was prevented.
+      expect(fireEvent.keyDown(row(), { key, code })).toBe(false);
+
+      expect(mocks.chat.switchConversation).toHaveBeenCalledExactlyOnceWith('c0');
+    });
+
+    it('opens nothing on the repeats of a held Enter or Space', () => {
+      renderItem([makeConv(0)]);
+
+      expect(fireEvent.keyDown(row(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      expect(fireEvent.keyDown(row(), { key: ' ', code: 'Space', repeat: true })).toBe(false);
+
+      expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+    });
+
+    it('leaves keys pressed on the row\'s 更多操作 to that button, and other keys alone', () => {
+      renderItem([makeConv(0)]);
+
+      fireEvent.keyDown(within(row()).getByRole('button', { name: '更多操作' }), { key: 'Enter', code: 'Enter' });
+      expect(fireEvent.keyDown(row(), { key: 'Tab', code: 'Tab' })).toBe(true);
+
+      expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+    });
+  });
+
   describe('rename', () => {
     // The rename field mounts from Radix's focus-scope timer once the menu has gone.
     beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });

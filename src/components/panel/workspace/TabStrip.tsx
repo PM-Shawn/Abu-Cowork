@@ -237,6 +237,9 @@ export default function TabStrip() {
         break;
       case 'Delete':
         e.preventDefault();
+        // One press closes one tab: the focus moves to the next tab, and the repeats of a held
+        // Delete would close that one too.
+        if (e.repeat) break;
         closeTab(id, { focusAfterClose: true });
         break;
     }

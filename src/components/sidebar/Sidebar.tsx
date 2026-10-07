@@ -40,6 +40,7 @@ import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
 import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
+import { opensOnKey } from './rowKeys';
 import { UNDO_OFFER_MS } from './undoOffer';
 import { useToastStore } from '@/stores/toastStore';
 import { isMacOS, isWindows } from '@/utils/platform';
@@ -511,15 +512,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               const selected = conv.id === activeConversationId && viewMode === 'chat';
               const editing = editingId === conv.id;
               const menuOpen = menus.isMoreOpen(conv.id);
+              const open = () => {
+                switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id);
+              };
               return (
               <div
                 key={conv.id}
                 {...conversationRowProps(conv.id)}
                 role="button"
                 tabIndex={0}
-                onClick={() => {
-                  switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id);
-                }}
+                onClick={open}
+                onKeyDown={opensOnKey(open)}
                 onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
                 aria-current={selected ? 'true' : undefined}
                 className={cn(

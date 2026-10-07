@@ -36,6 +36,8 @@ const rowRightClicks = new WeakSet<Event>();
 
 const NO_ANCHOR: AnchorBox = { top: 0, left: 0, width: 0, height: 0 };
 
+const isWorking = (element: Element) => element.getAttribute('aria-disabled') === 'true';
+
 // Every mounted menu listens for each key press on the document, so a list of rows
 // shares two menus: one right-click menu around the list, and one "more actions" menu
 // that opens at the button of the row it is asked for. Both show the items of that row.
@@ -87,6 +89,8 @@ export function RowMenus({ items, moreLabel, onOpenChange, onCloseAutoFocus, cla
       // Like a menu button: the press opens the menu, and the row behind does not act on it.
       onPointerDown: (event) => {
         if (event.button !== 0 || event.ctrlKey) return;
+        // A button its list marks as working (`aria-disabled`) is no menu button for now.
+        if (isWorking(event.currentTarget)) return;
         event.preventDefault();
         openMoreAt(rowId, event.currentTarget);
       },
@@ -96,17 +100,16 @@ export function RowMenus({ items, moreLabel, onOpenChange, onCloseAutoFocus, cla
         event.preventDefault();
         // One press opens once. The focus is handed to this button after a row's action, and a
         // key that is still down then must open nothing.
-        if (event.repeat) return;
+        if (event.repeat || isWorking(event.currentTarget)) return;
         openMoreAt(rowId, event.currentTarget);
       },
       onClick: (event) => {
         event.stopPropagation();
         // A screen reader activates the button with a click alone (`detail` 0: no pointer went
         // down for it, and the opening keys make no click): that click opens the menu. The click
-        // of a pointer press counts its presses and is left to the pointer-down above. A button
-        // its list marks as working (`aria-disabled`) opens nothing.
+        // of a pointer press counts its presses and is left to the pointer-down above.
         if (event.detail !== 0 || event.defaultPrevented) return;
-        if (event.currentTarget.getAttribute('aria-disabled') === 'true') return;
+        if (isWorking(event.currentTarget)) return;
         if (moreOpen && more?.rowId === rowId) return;
         openMoreAt(rowId, event.currentTarget);
       },

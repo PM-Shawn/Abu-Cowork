@@ -1255,8 +1255,8 @@ const zhCN: TranslationDict = {
     petEnable: '桌宠',
     petEnableDesc: '在桌面显示一个可以随时对话的悬浮小阿布，单击唤起输入框，双击打开主窗口，右键查看更多操作',
     appearance: '外观',
-    appearanceLight: '亮色',
-    appearanceDark: '暗色',
+    appearanceLight: '浅色',
+    appearanceDark: '深色',
     appearanceSystem: '跟随系统',
     // Permission mode
     permissionMode: '默认权限模式',

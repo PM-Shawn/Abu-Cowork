@@ -63,8 +63,8 @@
 <td align="center"><b>桌宠 · 活动通知条</b><br/>桌面浮窗常驻，活动条实时显示阿布状态<br/><br/><img src="website/assets/screenshot-pet.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>主题切换 · 暗色</b><br/>精心打磨的暗色主题<br/><br/><img src="website/assets/screenshot-theme.png" width="100%" /></td>
-<td align="center"><b>主题切换 · 亮色</b><br/>亮色 / 暗色 / 跟随系统一键切换<br/><br/><img src="website/assets/screenshot-theme-light.png" width="100%" /></td>
+<td align="center"><b>主题切换 · 深色</b><br/>精心打磨的深色主题<br/><br/><img src="website/assets/screenshot-theme.png" width="100%" /></td>
+<td align="center"><b>主题切换 · 浅色</b><br/>浅色 / 深色 / 跟随系统一键切换<br/><br/><img src="website/assets/screenshot-theme-light.png" width="100%" /></td>
 </tr>
 <tr>
 <td align="center" colspan="2"><b>实验室（Labs）</b><br/>打磨中的新功能，默认关闭、按需开启（当前收录：桌宠）<br/><br/><img src="website/assets/screenshot-labs.png" width="60%" /></td>
@@ -112,7 +112,7 @@
 - **Projects 管理** — 工作区可升级成 Project，同一方向的对话自动聚合，每个项目独立配置图标、默认模型、技能集、MCP
 - **多 Agent 后台并行** — 支持同时运行多个后台 Agent（最多 5 个），各自独立执行任务，进度实时可见
 - **桌宠模式**（实验室）— 透明浮窗常驻桌面，跨 Spaces 跟随；左键唤起主窗口、右键菜单、可拖拽吸边隐藏；**活动通知条** 实时显示阿布状态（处理中 / 等待授权 / 完成），等待输入时可就地回复
-- **主题切换** — 亮色 / 暗色 / 跟随系统，设置 → 外观一键切换
+- **主题切换** — 浅色 / 深色 / 跟随系统，设置 → 外观一键切换
 - **实验室（Labs）** — 打磨中的新功能默认关闭、按需开启，可能随时调整或移除（当前收录：桌宠）
 - **对话分享 / 导出** — 一键把对话导出成 JSON 分享给同事；自动脱敏 API Key 与本地路径
 - **29 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、阿布内置浏览器、可选 Chrome 桥接、深度研究、Agent 自我反思（reflect）、工作流自动化等，一键安装，支持自定义

@@ -97,11 +97,11 @@ describe('AccountMenu 里的下拉选项', () => {
 
     await user.click(screen.getByRole('button', { name: '我' }));
     const appearance = screen.getByRole('menuitem', { name: /^外观/ });
-    expect(appearance).toHaveTextContent('亮色');
+    expect(appearance).toHaveTextContent('浅色');
     await user.click(appearance);
-    expect(await screen.findByRole('menuitemradio', { name: '亮色' })).toHaveAttribute('aria-checked', 'true');
+    expect(await screen.findByRole('menuitemradio', { name: '浅色' })).toHaveAttribute('aria-checked', 'true');
     // happy-dom has no layout for Radix's pointer path into a submenu; choose from the keyboard.
-    act(() => screen.getByRole('menuitemradio', { name: '暗色' }).focus());
+    act(() => screen.getByRole('menuitemradio', { name: '深色' }).focus());
     await user.keyboard('{Enter}');
 
     expect(useSettingsStore.getState().theme).toBe('dark');

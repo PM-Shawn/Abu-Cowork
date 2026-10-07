@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { loadLocalImage } from '@/utils/pathUtils';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 import abuAvatar from '@/assets/abu-avatar.png';
 
 const SIZE = { sm: 'h-5 w-5 text-caption', md: 'h-7 w-7 text-ui-sm', lg: 'h-10 w-10 text-title', xl: 'h-20 w-20 text-title-lg' } as const;
@@ -20,8 +20,7 @@ export default function AppLogo({ name, logo, logoDark, general = false, size = 
   size?: keyof typeof SIZE;
   className?: string;
 }) {
-  const theme = useSettingsStore((s) => s.theme);
-  const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const dark = useEffectiveThemeIsDark();
   const path = (dark ? logoDark : undefined) ?? logo ?? logoDark;
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {

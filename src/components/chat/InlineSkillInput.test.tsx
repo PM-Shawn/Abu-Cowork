@@ -2,10 +2,11 @@
 import { useState, createRef } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { InlineSkillInput, type InlineSkill, type InlineSkillInputHandle } from './inline-skill-input';
+import { Button } from '@/components/ds/button';
+import { InlineSkillInput, type InlineSkill, type InlineSkillInputHandle } from './InlineSkillInput';
 
 afterEach(cleanup);
-function setup(initial = '前文后文', initialSkill: InlineSkill | null = null) {
+function setup(initial = '前文后文', initialSkill: InlineSkill | null = null, more: { className?: string; disabled?: boolean } = {}) {
   const ref = createRef<InlineSkillInputHandle>();
   const output = vi.fn();
   function Harness() {
@@ -14,8 +15,8 @@ function setup(initial = '前文后文', initialSkill: InlineSkill | null = null
     return <><InlineSkillInput ref={ref} value={value} skill={skill} historyKey="one"
       onChange={(text, next) => { setValue(text); setSkill(next); output(text, next); }}
       onSelect={() => {}} onKeyDown={() => {}} onPaste={() => {}} onCompositionStart={() => {}} onCompositionEnd={() => {}}
-      placeholder="message" removeLabel="remove" rows={2} className="" aria-autocomplete="list" aria-expanded={false} />
-      <button onClick={() => setSkill({ name: 'brief', description: 'brief', offset: ref.current!.selectionStart })}>pick</button></>;
+      placeholder="message" removeLabel="remove" rows={2} className={more.className ?? ''} disabled={more.disabled} aria-autocomplete="list" aria-expanded={false} />
+      <Button onClick={() => setSkill({ name: 'brief', description: 'brief', offset: ref.current!.selectionStart })}>pick</Button></>;
   }
   render(<Harness />);
   return { ref, output };
@@ -154,4 +155,47 @@ describe('inline skill editor', () => {
     expect(ref.current!.value).toBe(kind === 'cut' ? '' : 'AB');
   });
 
+});
+
+// The plain field is the design-system text area without a box of its own: the composer card
+// around it draws the border, the fill and the focus mark.
+describe('inline skill editor: the plain field', () => {
+  it('renders a text area without a border class', () => {
+    setup('', null, { className: 'flex-1 text-body' });
+    const names = [...box().classList];
+    expect(box()).toBeInstanceOf(HTMLTextAreaElement);
+    expect(box()).not.toHaveClass('border');
+    expect(names.filter((name) => /^(focus:|focus-visible:)?border/.test(name))).toEqual([]);
+  });
+  it('carries no class of the old component library and no slot mark', () => {
+    setup('', null, { className: 'flex-1 text-body' });
+    const names = [...box().classList];
+    expect(names.filter((name) => name.includes('--abu-'))).toEqual([]);
+    expect(names.filter((name) => /^(focus:|focus-visible:)?(ring|rounded)/.test(name))).toEqual([]);
+    expect(box()).not.toHaveClass('transition-all');
+    expect(box()).not.toHaveClass('bg-field');
+    expect(box()).not.toHaveAttribute('data-slot');
+  });
+  it('is the bare text area plus the classes its caller gives', () => {
+    setup('', null, { className: 'flex-1 text-body' });
+    expect(box().className).toBe('w-full resize-none bg-transparent outline-none flex-1 text-body');
+  });
+  it('hands the composer mark, the placeholder, the rows and the list attributes to the text area', () => {
+    setup('');
+    expect(box()).toHaveAttribute('data-chat-composer', 'true');
+    expect(box()).toHaveAttribute('placeholder', 'message');
+    expect(box()).toHaveAttribute('rows', '2');
+    expect(box()).toHaveAttribute('aria-autocomplete', 'list');
+    expect(box()).toHaveAttribute('aria-expanded', 'false');
+    expect(box()).not.toHaveAttribute('aria-invalid');
+    expect(box()).not.toBeDisabled();
+  });
+  it('is disabled when its caller says so, and the editable box then takes no input either', () => {
+    setup('', null, { disabled: true });
+    expect(box()).toBeDisabled();
+    cleanup();
+    setup('正文', { name: 'brief', description: '', offset: 0 }, { disabled: true });
+    expect(box()).toHaveAttribute('aria-disabled', 'true');
+    expect(box()).toHaveAttribute('contenteditable', 'false');
+  });
 });

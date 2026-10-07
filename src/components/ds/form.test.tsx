@@ -55,6 +55,37 @@ describe('form controls', () => {
     expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveAttribute('rows', '3');
   });
 
+  it('TextArea draws its own box: border, fill, focus ring', () => {
+    render(<TextArea aria-label="Notes" />);
+    const area = screen.getByRole('textbox', { name: 'Notes' });
+    expect(area).toHaveClass('border');
+    expect(area).toHaveClass('bg-field');
+    expect(area).toHaveClass('focus-visible:ring-2');
+    expect(area).toHaveClass('disabled:opacity-40');
+    expect(area).toHaveClass('min-h-16');
+    expect(area).toHaveClass('py-2');
+  });
+
+  // The editing area of a card that draws the box itself (the composer).
+  it('TextArea bare has no box of its own: no border, no fill, no ring, no padding', () => {
+    render(<TextArea bare aria-label="Message" className="flex-1" />);
+    const area = screen.getByRole('textbox', { name: 'Message' });
+    expect(area).not.toHaveClass('border');
+    expect(area).not.toHaveClass('bg-field');
+    expect(area).toHaveClass('bg-transparent');
+    expect(area.className).toBe('w-full resize-none bg-transparent outline-none flex-1');
+    expect(area).not.toHaveAttribute('bare');
+    expect(area).toHaveAttribute('rows', '3');
+  });
+
+  it('TextArea bare takes the rows and the state its caller gives', () => {
+    render(<TextArea bare aria-label="Message" rows={1} disabled invalid />);
+    const area = screen.getByRole('textbox', { name: 'Message' });
+    expect(area).toHaveAttribute('rows', '1');
+    expect(area).toBeDisabled();
+    expect(area).toHaveAttribute('aria-invalid', 'true');
+  });
+
   it('Checkbox toggles from its label and shows the mixed state', async () => {
     const user = userEvent.setup();
     const onCheckedChange = vi.fn();

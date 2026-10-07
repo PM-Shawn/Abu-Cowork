@@ -1,5 +1,5 @@
 import { useImperativeHandle, useLayoutEffect, useRef, useState, type Ref, type KeyboardEvent, type ClipboardEvent, type CompositionEvent } from 'react';
-import { Textarea } from './textarea';
+import { TextArea } from '@/components/ds/text-area';
 
 export interface InlineSkill {
   name: string;
@@ -330,8 +330,8 @@ export function InlineSkillInput({ ref, historyKey, imeActive, value, skill, onC
     onKeyUp: syncSelection,
     onBlur: syncSelection,
   };
-  if (!skill && !richComposing) return <Textarea {...attributes} {...shared} ref={plain} data-chat-composer value={value} rows={rows}
-    className={`border-0 rounded-none p-0 focus:ring-0 ${className}`}
+  if (!skill && !richComposing) return <TextArea bare {...attributes} {...shared} ref={plain} data-chat-composer value={value} rows={rows}
+    className={className}
     onClick={syncSelection}
     onChange={(event) => { caret.current = selection(); onChange(event.currentTarget.value, null); onSelect(); }} />;
   return <div {...shared} ref={rich} role="textbox" aria-multiline="true" aria-label={attributes.placeholder}

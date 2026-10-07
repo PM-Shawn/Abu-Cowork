@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
-import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
+import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/chat/InlineSkillInput';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
 import VoiceInputControl from '@/components/chat/VoiceInputControl';

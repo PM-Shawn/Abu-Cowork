@@ -287,6 +287,8 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/pet/**/*.{ts,tsx}',
   'src/core/team/avatarPresets*.ts',
   'src/lib/utils*.ts',
+  // The composer's skill editor, moved from the old component library (batch 10).
+  'src/components/chat/InlineSkillInput*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

@@ -2,14 +2,12 @@ import { clsx, type ClassValue } from "clsx"
 import { extendTailwindMerge } from "tailwind-merge"
 
 /**
- * tailwind-merge configured for Abu's design tokens.
+ * tailwind-merge configured for the design tokens of tokens.css.
  *
- * Without this, twMerge misclassifies `text-[var(--abu-*)]` COLOR classes as
- * font-sizes and silently drops our custom size tokens from the same cn()
- * call (e.g. cn('text-caption', 'text-[var(--abu-info)]') → text-caption
- * eaten → element falls back to the 14px body default). Empirically verified;
- * regression-tested in utils.test.ts.
- * Design-system token names (tokens.css) are registered below for the same reason.
+ * tailwind-merge knows Tailwind's own names only. A `text-<word>` it does not know is read as a
+ * text color, so a size token (`text-caption`) would be dropped by the color that follows it in
+ * the same cn() call, and the element would fall back to the inherited size. Every token name is
+ * therefore registered below under the property it sets; utils.test.ts holds a case per name.
  */
 const DS_TEXT_COLORS = [
   "label", "label-secondary", "label-tertiary", "label-placeholder", "on-emphasis", "link",
@@ -37,13 +35,11 @@ const twMerge = extendTailwindMerge({
   },
   extend: {
     classGroups: {
-      // Legacy 8-token scale + design-system scale (index.css / tokens.css --text-*)
+      // The type scale (--text-*): interface sizes, then content sizes.
       "font-size": [{ text: [
-        "caption", "minor", "body", "h-xs", "h-sm", "h-md", "h-lg", "h-xl",
-        "title-lg", "title", "ui", "ui-sm", "h1", "h2", "h3", "mono", "code-inline",
+        "caption", "title-lg", "title", "ui", "ui-sm",
+        "body", "h1", "h2", "h3", "mono", "code-inline",
       ] }],
-      // `text-[var(--…)]` needs no validator here: tailwind-merge's default text-color group
-      // already claims every arbitrary value before any extension is consulted
       "text-color": [{ text: DS_TEXT_COLORS }],
       "bg-color": [{ bg: DS_BG_COLORS }],
       "border-color": [{ border: ["separator", "control-border"] }],

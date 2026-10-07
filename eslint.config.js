@@ -283,6 +283,10 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/common/AnnouncementBanner*.{ts,tsx}',
   'src/components/common/DisclaimerBanner*.{ts,tsx}',
   'src/components/common/ErrorBoundary*.{ts,tsx}',
+  // The pet window, the avatar glyph table and the class merge (batch 10).
+  'src/pet/**/*.{ts,tsx}',
+  'src/core/team/avatarPresets*.ts',
+  'src/lib/utils*.ts',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

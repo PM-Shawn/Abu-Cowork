@@ -1,9 +1,14 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, screen } from '@testing-library/react'
+import { render as renderBare, fireEvent, screen } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import { DesignSystemProvider } from '@/components/ds/provider'
 import { PetNotificationBubble } from './PetNotificationBubble'
 import { STATUS_COLOR } from './petStatusMeta'
 import { setLanguage } from '@/i18n'
+
+// As the pet window's root renders it (pet/main.tsx).
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider })
 
 const baseProps = {
   title: '整理桌面文件',
@@ -177,5 +182,119 @@ describe('PetNotificationBubble', () => {
     expect(baseProps.onHoverChange).toHaveBeenLastCalledWith(true)
     fireEvent.mouseLeave(root)
     expect(baseProps.onHoverChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('puts the focus in the reply field when it shows', () => {
+    const { rerender } = render(<PetNotificationBubble status="waiting" {...baseProps} />)
+    expect(screen.getByPlaceholderText('回复…')).toHaveFocus()
+    rerender(<PetNotificationBubble status="running" {...baseProps} />)
+    rerender(<PetNotificationBubble status="running" {...baseProps} mode="replying" />)
+    expect(screen.getByPlaceholderText('回复…')).toHaveFocus()
+  })
+
+  it('sends once for an Enter that is held down', () => {
+    render(<PetNotificationBubble status="waiting" {...baseProps} />)
+    const input = screen.getByPlaceholderText('回复…') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '确认' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+    for (let i = 0; i < 5; i += 1) fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', repeat: true })
+    expect(baseProps.onReply).toHaveBeenCalledTimes(1)
+    expect(baseProps.onReply).toHaveBeenCalledWith('确认')
+  })
+
+  it('sends on Enter only: no other key, and no Enter that belongs to an input method', () => {
+    render(<PetNotificationBubble status="waiting" {...baseProps} />)
+    const input = screen.getByPlaceholderText('回复…') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '确认' } })
+    fireEvent.keyDown(input, { key: ' ', code: 'Space' })
+    fireEvent.keyDown(input, { key: 'Tab', code: 'Tab' })
+    fireEvent.keyDown(input, { key: 'Process', code: 'Enter', keyCode: 229 })
+    expect(baseProps.onReply).not.toHaveBeenCalled()
+    expect(input.value).toBe('确认')
+  })
+
+  describe('on the design system', () => {
+    // The class list is exact: the window is as wide as the card, so nothing may be drawn
+    // outside its box (the border delimits it).
+    it('is a raised card with a separator line and the panel radius, and nothing drawn outside its box', () => {
+      const { container } = render(<PetNotificationBubble status="running" {...baseProps} />)
+      const card = container.querySelector('[data-testid="pet-notification"] > div') as HTMLElement
+      expect([...card.classList].sort()).toEqual(['bg-raised', 'border', 'border-separator', 'group', 'px-3', 'py-2', 'rounded-panel'])
+      expect(container.querySelector('[data-testid="pet-notification"]')).toHaveClass('w-50')
+    })
+
+    // The curve is the one the fade had before, when it was written by its CSS keyword.
+    it('keeps the length and the curve of the fade', () => {
+      const { container } = render(<PetNotificationBubble status="done" {...baseProps} />)
+      const card = container.querySelector('[data-testid="pet-notification"] > div') as HTMLElement
+      expect(card.style.animation).toBe('petNotifFade 6s cubic-bezier(0, 0, 0.58, 1) forwards')
+    })
+
+    it('writes no legacy variable anywhere, in any state', () => {
+      const states = [
+        <PetNotificationBubble key="a" status="running" {...baseProps} />,
+        <PetNotificationBubble key="b" status="running" {...baseProps} mode="expanded" />,
+        <PetNotificationBubble key="c" status="running" {...baseProps} mode="replying" />,
+        <PetNotificationBubble key="d" status="waiting" {...baseProps} waitingKind="approval" />,
+        <PetNotificationBubble key="e" status="done" {...baseProps} />,
+      ]
+      for (const state of states) {
+        const { container, unmount } = render(state)
+        expect(container.innerHTML).not.toContain('--abu-')
+        unmount()
+      }
+    })
+
+    it('finds its three buttons by name, each a button that is not a submit button', () => {
+      render(<PetNotificationBubble status="running" {...baseProps} />)
+      for (const name of ['打开主窗口', '回复', '展开']) {
+        expect(screen.getByRole('button', { name })).toHaveAttribute('type', 'button')
+      }
+    })
+
+    it('draws the expand control as a glyph', () => {
+      const { rerender } = render(<PetNotificationBubble status="running" {...baseProps} />)
+      expect(screen.getByRole('button', { name: '展开' }).querySelector('svg')).toHaveAttribute('stroke-width', '1.5')
+      rerender(<PetNotificationBubble status="running" {...baseProps} mode="expanded" />)
+      expect(screen.getByRole('button', { name: '收起' }).querySelector('svg')).toHaveAttribute('stroke-width', '1.5')
+    })
+
+    it('mounts no tooltip: the window is as large as the bubble, a floating layer has no room in it', () => {
+      render(<PetNotificationBubble status="running" {...baseProps} />)
+      const expand = screen.getByRole('button', { name: '展开' })
+      fireEvent.focus(expand)
+      fireEvent.pointerMove(expand)
+      expect(expand).not.toHaveAttribute('data-state')
+      expect(document.querySelector('[role="tooltip"]')).toBeNull()
+    })
+
+    it('uses the design-system text field for the reply, with the placeholder unchanged', () => {
+      render(<PetNotificationBubble status="waiting" {...baseProps} />)
+      const input = screen.getByPlaceholderText('回复…')
+      expect(input).toHaveClass('bg-field')
+      expect(input).toHaveClass('border-control-border')
+      expect(input).toHaveAttribute('type', 'text')
+    })
+
+    it('a repeating Enter sends nothing, also with text in the field', () => {
+      render(<PetNotificationBubble status="waiting" {...baseProps} />)
+      const input = screen.getByPlaceholderText('回复…') as HTMLInputElement
+      fireEvent.change(input, { target: { value: '第一条' } })
+      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+      fireEvent.change(input, { target: { value: '第二条' } })
+      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', repeat: true })
+      expect(baseProps.onReply).toHaveBeenCalledTimes(1)
+      expect(input.value).toBe('第二条')
+    })
+
+    it('marks the approval with the warning color on a glyph and on its words', () => {
+      render(<PetNotificationBubble status="waiting" {...baseProps} waitingKind="approval" />)
+      const words = screen.getByText('需要授权')
+      expect(words).toHaveClass('text-warning')
+      expect(words.getAttribute('style')).toBeNull()
+      const glyph = screen.getByRole('button', { name: '打开主窗口' }).querySelector('svg') as SVGElement
+      expect(glyph).toHaveClass('text-warning')
+      expect(glyph).toHaveAttribute('stroke-width', '1.5')
+    })
   })
 })

@@ -4,7 +4,7 @@ import { render as renderBare, fireEvent, screen } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { DesignSystemProvider } from '@/components/ds/provider'
 import { PetNotificationBubble } from './PetNotificationBubble'
-import { STATUS_COLOR } from './petStatusMeta'
+import { STATUS_TONE } from './petStatusMeta'
 import { setLanguage } from '@/i18n'
 
 // As the pet window's root renders it (pet/main.tsx).
@@ -43,12 +43,24 @@ describe('PetNotificationBubble', () => {
     expect(screen.getByText('先看一下现有的分类结构')).toBeTruthy()
   })
 
-  it('uses the status color for the dot', () => {
-    const { container } = render(<PetNotificationBubble status="error" {...baseProps} />)
-    const dot = container.querySelector('span[style]') as HTMLElement
-    expect(dot.style.backgroundColor).toBeTruthy()
-    // error dot color (#ef4444) — assert via the shared map, not a literal
-    expect(STATUS_COLOR.error).toBe('#ef4444')
+  // The dot is filled with the text color of its status token, so it has the contrast that
+  // token is checked for on the raised surface, in both appearances.
+  it.each([
+    ['running', 'text-info'],
+    ['waiting', 'text-warning'],
+    ['error', 'text-danger'],
+    ['done', 'text-success'],
+  ] as const)('fills the dot of a %s bubble with the status token %s', (status, tone) => {
+    const { container } = render(<PetNotificationBubble status={status} {...baseProps} />)
+    const dot = container.querySelector('[data-pet-status-dot]') as HTMLElement
+    expect(dot).toHaveClass('bg-current')
+    expect(dot).toHaveClass(tone)
+    expect(dot.getAttribute('style')).toBeNull()
+    expect(STATUS_TONE[status]).toBe(tone)
+  })
+
+  it('names one token per status, the idle one a label color', () => {
+    expect(STATUS_TONE).toEqual({ idle: 'text-label-tertiary', running: 'text-info', waiting: 'text-warning', error: 'text-danger', done: 'text-success' })
   })
 
   it('opens main window on bubble click', () => {
@@ -202,7 +214,7 @@ describe('PetNotificationBubble', () => {
     expect(baseProps.onReply).toHaveBeenCalledWith('确认')
   })
 
-  it('sends on Enter only: no other key, and no Enter that belongs to an input method', () => {
+  it('sends on Enter only: no other key sends', () => {
     render(<PetNotificationBubble status="waiting" {...baseProps} />)
     const input = screen.getByPlaceholderText('回复…') as HTMLInputElement
     fireEvent.change(input, { target: { value: '确认' } })
@@ -211,6 +223,25 @@ describe('PetNotificationBubble', () => {
     fireEvent.keyDown(input, { key: 'Process', code: 'Enter', keyCode: 229 })
     expect(baseProps.onReply).not.toHaveBeenCalled()
     expect(input.value).toBe('确认')
+  })
+
+  // The Enter that confirms a composition arrives as `Enter` with the composing marks: Chromium
+  // sets `isComposing`, Windows input methods report key code 229, some with no flag at all.
+  it.each([
+    ['the composing flag and key code 229', { isComposing: true, keyCode: 229 }],
+    ['the composing flag alone', { isComposing: true, keyCode: 13 }],
+    ['key code 229 alone', { isComposing: false, keyCode: 229 }],
+  ])('does not send on the Enter that confirms an input-method composition (%s)', (_marks, marks) => {
+    render(<PetNotificationBubble status="waiting" {...baseProps} />)
+    const input = screen.getByPlaceholderText('回复…') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'nihao' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', ...marks })
+    expect(baseProps.onReply).not.toHaveBeenCalled()
+    expect(input.value).toBe('nihao')
+    // The Enter after the composition sends.
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 13 })
+    expect(baseProps.onReply).toHaveBeenCalledTimes(1)
+    expect(baseProps.onReply).toHaveBeenCalledWith('nihao')
   })
 
   describe('on the design system', () => {

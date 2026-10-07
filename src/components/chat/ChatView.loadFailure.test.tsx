@@ -55,6 +55,13 @@ async function givenUnreadableConversationInView(): Promise<void> {
   await useChatStore.getState().switchConversation('c1');
 }
 
+/** Animation frames that wait until the test runs them: no real clock decides what was drawn. */
+function fakeFrames() {
+  const waiting: FrameRequestCallback[] = [];
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { waiting.push(callback); return waiting.length; });
+  return { run: () => { for (const callback of waiting.splice(0)) callback(0); } };
+}
+
 /** Every attribute value and every piece of text under the page. */
 function everythingOnThePage(): string {
   const attributes = [...document.querySelectorAll('*')]
@@ -80,6 +87,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -174,6 +182,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
   });
 
   it('a read from elsewhere that succeeds takes the focus from no control that has it', async () => {
+    const frames = fakeFrames();
     await givenUnreadableConversationInView();
     render(
       <>
@@ -187,11 +196,12 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     loadMessages.mockResolvedValueOnce([message('m1', 'user', 'hello'), message('m2', 'assistant', 'answer')]);
     await act(async () => { await useChatStore.getState().loadConversation('c1'); });
     expect(screen.queryByRole('alert')).toBeNull();
-    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
+    act(() => frames.run());
     expect(elsewhere).toHaveFocus();
   });
 
   it('leaving for another conversation while 重试 has the focus moves no focus to the message field', async () => {
+    const frames = fakeFrames();
     await givenUnreadableConversationInView();
     render(<ChatView />);
     screen.getByRole('button', { name: getI18n().common.retry }).focus();
@@ -199,7 +209,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     loadMessages.mockResolvedValueOnce([message('n1', 'user', 'other'), message('n2', 'assistant', 'other answer')]);
     await act(async () => { await useChatStore.getState().switchConversation('c2'); });
     expect(screen.queryByRole('alert')).toBeNull();
-    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
+    act(() => frames.run());
     expect(screen.getByLabelText('message field')).not.toHaveFocus();
   });
 

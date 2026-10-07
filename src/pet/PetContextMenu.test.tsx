@@ -177,6 +177,21 @@ describe('PetContextMenu', () => {
       expect(close).not.toHaveAttribute('data-state')
     })
 
+    it.each([
+      ['idle', 'text-label-tertiary'],
+      ['running', 'text-info'],
+      ['waiting', 'text-warning'],
+      ['error', 'text-danger'],
+      ['done', 'text-success'],
+    ] as const)('fills the %s dot with the token %s, beside the status words', (status, tone) => {
+      const { container } = render(<PetContextMenu {...props({ status })} />)
+      const dot = container.querySelector('[data-pet-status-dot]') as HTMLElement
+      expect(dot).toHaveClass('bg-current')
+      expect(dot).toHaveClass(tone)
+      expect(dot.getAttribute('style')).toBeNull()
+      expect(dot.nextElementSibling?.textContent).not.toBe('')
+    })
+
     it('shows the status words in the small interface size', () => {
       render(<PetContextMenu {...props()} />)
       expect(screen.getByText('空闲')).toHaveClass('text-ui-sm')

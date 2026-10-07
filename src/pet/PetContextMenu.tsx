@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { PetStatus } from '@/core/pet/petStatusBridge'
-import { STATUS_COLOR } from './petStatusMeta'
+import { STATUS_TONE } from './petStatusMeta'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ds/button'
 import { Icon } from '@/components/ds/icon'
 import { AppIcons } from '@/components/ds/icons'
@@ -44,10 +45,7 @@ export function PetContextMenu({
       className="w-44 rounded-panel border border-separator bg-raised pb-1"
     >
       <div className="flex items-center gap-2 border-b border-separator px-3 py-2">
-        <div
-          className="h-2 w-2 shrink-0 rounded-full"
-          style={{ backgroundColor: STATUS_COLOR[status] }}
-        />
+        <div data-pet-status-dot="" className={cn('h-2 w-2 shrink-0 rounded-full bg-current', STATUS_TONE[status])} />
         <span className="flex-1 text-ui-sm text-label-secondary">{t.pet.status[status]}</span>
         <Pressable
           className="flex h-4 w-4 shrink-0 items-center justify-center rounded-control text-label-tertiary hover:text-label"

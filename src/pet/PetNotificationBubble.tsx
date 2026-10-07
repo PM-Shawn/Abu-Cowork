@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { PetStatus, WaitingKind } from '@/core/pet/petStatusBridge'
-import { STATUS_COLOR } from './petStatusMeta'
+import { STATUS_TONE } from './petStatusMeta'
+import { isImeComposing } from '@/components/chat/composerKeys'
 import { Icon } from '@/components/ds/icon'
 import { AppIcons } from '@/components/ds/icons'
 import { Pressable } from '@/components/ds/pressable'
@@ -72,7 +73,10 @@ export function PetNotificationBubble({
   if (status === 'idle') return null
 
   // The field drops the repeats of a held Enter before this runs (ds TextField).
+  // An Enter that belongs to an input method confirms the composition and sends nothing: the
+  // same test the composer uses (chat/composerKeys.ts).
   function handleReplyKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (isImeComposing(e, false)) return
     if (e.key === 'Enter') {
       const val = e.currentTarget.value.trim()
       if (val) {
@@ -111,10 +115,7 @@ export function PetNotificationBubble({
             {isApproval ? (
               <Icon icon={AppIcons.clock} size="sm" className="mt-0.5 text-warning" />
             ) : (
-              <span
-                className="mt-1 h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: STATUS_COLOR[status] }}
-              />
+              <span data-pet-status-dot="" className={cn('mt-1 h-2 w-2 shrink-0 rounded-full bg-current', STATUS_TONE[status])} />
             )}
             {isApproval ? (
               // The 需要授权 hint is the whole point — pin it (shrink-0)

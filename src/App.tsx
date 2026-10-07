@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
+import { followSystemColorScheme } from '@/styles/colorScheme';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
@@ -259,12 +260,10 @@ function App() {
       root.classList.toggle('dark', dark);
     };
     if (theme === 'system') {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      apply(mq.matches);
+      // The same rule the pet window follows (styles/colorScheme.ts).
+      const stopFollowing = followSystemColorScheme(root);
       syncNativeTheme(null);
-      const handler = (e: MediaQueryListEvent) => apply(e.matches);
-      mq.addEventListener('change', handler);
-      return () => mq.removeEventListener('change', handler);
+      return stopFollowing;
     } else {
       apply(theme === 'dark');
       syncNativeTheme(theme === 'dark' ? 'dark' : 'light');

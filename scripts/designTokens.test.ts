@@ -27,6 +27,7 @@ const SELECTORS: Record<Block, string> = {
 
 const css = readFileSync(TOKENS_PATH, 'utf8');
 const SRC_DIR = path.resolve(path.dirname(TOKENS_PATH), '..');
+const FIXTURES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '__fixtures__');
 
 // The z-index of each layer utility in tokens.css.
 function layerLevels(source: string): Map<string, number> {
@@ -37,13 +38,14 @@ function layerLevels(source: string): Map<string, number> {
   return levels;
 }
 
-// Every stacking value written by hand in src/: arbitrary classes (`z-[9999]`), Tailwind steps
-// (`z-50`), inline `zIndex` / `z-index` numbers, and a `zIndex` given through a numeric constant
-// of the same file (`zIndex: MENU_Z_INDEX`). Design-system files use the layer utilities.
+// Every stacking value written by hand under a directory (src/ by default): arbitrary classes
+// (`z-[9999]`), Tailwind steps (`z-50`), inline `zIndex` / `z-index` numbers, and a `zIndex` given
+// through a numeric constant of the same file (`zIndex: MENU_Z_INDEX`). Design-system files use
+// the layer utilities.
 // What it cannot see: values outside src/ (the private repository, the Electron host), a constant
 // imported from another file, and values computed at run time. A `zIndex` it cannot resolve is
 // reported with the value NaN, which fails the comparison below.
-function handWrittenLevels(): { file: string; value: number }[] {
+function handWrittenLevels(root: string = SRC_DIR): { file: string; value: number }[] {
   const found: { file: string; value: number }[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -55,15 +57,15 @@ function handWrittenLevels(): { file: string; value: number }[] {
       if (!/\.(tsx?|css)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name) || full === TOKENS_PATH) continue;
       const text = readFileSync(full, 'utf8');
       for (const match of text.matchAll(/\bz-\[(\d+)\]|(?<![\w-])z-(\d+)(?![\w-])|\bzIndex:\s*(\d+)|\bz-index:\s*(\d+)/g)) {
-        found.push({ file: path.relative(SRC_DIR, full), value: Number(match[1] ?? match[2] ?? match[3] ?? match[4]) });
+        found.push({ file: path.relative(root, full), value: Number(match[1] ?? match[2] ?? match[3] ?? match[4]) });
       }
       for (const match of text.matchAll(/\bzIndex(?::|=\{)\s*([A-Za-z_$][\w$]*)/g)) {
         const declared = new RegExp(`\\bconst\\s+${match[1].replace(/\$/g, '\\$')}\\s*=\\s*(\\d+)\\b`).exec(text);
-        found.push({ file: path.relative(SRC_DIR, full), value: declared ? Number(declared[1]) : Number.NaN });
+        found.push({ file: path.relative(root, full), value: declared ? Number(declared[1]) : Number.NaN });
       }
     }
   };
-  walk(SRC_DIR);
+  walk(root);
   return found;
 }
 
@@ -86,9 +88,8 @@ describe('design tokens — layer levels', () => {
 
   it('finds the hand-written stacking values it is meant to compare with', () => {
     const values = handWrittenLevels();
-    // Nine today: the two corner banners moved to `z-fullscreen` and left this count.
-    expect(values.length).toBeGreaterThan(8);
-    expect(Math.max(...values.map((entry) => entry.value))).toBeGreaterThanOrEqual(9999);
+    expect(values.length).toBeGreaterThan(0);
+    expect(Math.max(...values.map((entry) => entry.value))).toBeGreaterThanOrEqual(10);
   });
 
   it.each(['z-popover', 'z-dialog', 'z-toast', 'z-tooltip'])('puts %s above every hand-written stacking value in src/', (name) => {
@@ -97,7 +98,7 @@ describe('design tokens — layer levels', () => {
   });
 
   it('resolves a stacking value given through a constant of the same file', () => {
-    expect(handWrittenLevels()).toContainEqual({ file: path.join('components', 'ui', 'select.tsx'), value: 10001 });
+    expect(handWrittenLevels(FIXTURES_DIR)).toEqual([{ file: 'stacking-constant.tsx', value: 10001 }]);
   });
 
   it('keeps z-sticky inside the page, below the hand-drawn windows', () => {

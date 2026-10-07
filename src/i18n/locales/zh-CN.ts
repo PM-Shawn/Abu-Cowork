@@ -2026,22 +2026,6 @@ const zhCN: TranslationDict = {
     systemSkills: '系统 Skills',
     customSkills: '自定义 Skills',
     noCustomSkills: '暂无自定义 Skills',
-    // ModelsSection
-    currentConfig: '当前配置',
-    quickSwitch: '快速切换',
-    current: '当前',
-    configured: '已配置',
-    notConfigured: '未配置',
-    localModels: '本地模型',
-    openaiCompatible: 'OpenAI / 兼容',
-    qiniuCloud: '七牛云',
-    openrouter: 'OpenRouter',
-    deepseek: 'DeepSeek',
-    anthropic: 'Anthropic',
-    volcengine: '火山引擎',
-    bailian: '阿里百炼',
-    advancedSettings: '高级设置',
-    advancedSettingsDesc: 'API Key、Temperature、Extended Thinking 等',
     // Sub-tab labels
     tabSystem: '系统',
     tabCustom: '自定义',
@@ -2387,10 +2371,6 @@ const zhCN: TranslationDict = {
     allowSessionButton: '允许本次会话',
     allow24hButton: '允许24小时',
     allowAlwaysButton: '始终允许',
-    // Compact inline permission labels (InlinePermissionRequest)
-    compactAccessLabel: '访问',
-    compactShellLabel: '执行',
-    compactWriteLabel: '写入',
   },
 
   panel: {

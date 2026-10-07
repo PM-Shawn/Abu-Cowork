@@ -2025,22 +2025,6 @@ const enUS: TranslationDict = {
     systemSkills: 'System Skills',
     customSkills: 'Custom Skills',
     noCustomSkills: 'No custom skills yet',
-    // ModelsSection
-    currentConfig: 'Current Config',
-    quickSwitch: 'Quick Switch',
-    current: 'Current',
-    configured: 'Configured',
-    notConfigured: 'Not Configured',
-    localModels: 'Local Models',
-    openaiCompatible: 'OpenAI / Compatible',
-    qiniuCloud: 'Qiniu Cloud',
-    openrouter: 'OpenRouter',
-    deepseek: 'DeepSeek',
-    anthropic: 'Anthropic',
-    volcengine: 'Volcengine',
-    bailian: 'Alibaba Bailian',
-    advancedSettings: 'Advanced Settings',
-    advancedSettingsDesc: 'API Key, Temperature, Extended Thinking, etc.',
     // Sub-tab labels
     tabSystem: 'System',
     tabCustom: 'Custom',
@@ -2385,10 +2369,6 @@ const enUS: TranslationDict = {
     allowSessionButton: 'Allow for Session',
     allow24hButton: 'Allow for 24h',
     allowAlwaysButton: 'Always Allow',
-    // Compact inline permission labels (InlinePermissionRequest)
-    compactAccessLabel: 'Access',
-    compactShellLabel: 'Execute',
-    compactWriteLabel: 'Write',
   },
 
   panel: {

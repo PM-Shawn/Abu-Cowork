@@ -2549,22 +2549,6 @@ export interface TranslationDict {
     systemSkills: string;
     customSkills: string;
     noCustomSkills: string;
-    // ModelsSection
-    currentConfig: string;
-    quickSwitch: string;
-    current: string;
-    configured: string;
-    notConfigured: string;
-    localModels: string;
-    openaiCompatible: string;
-    qiniuCloud: string;
-    openrouter: string;
-    deepseek: string;
-    anthropic: string;
-    volcengine: string;
-    bailian: string;
-    advancedSettings: string;
-    advancedSettingsDesc: string;
     // Sub-tab labels
     tabSystem: string;
     tabCustom: string;
@@ -2924,10 +2908,6 @@ export interface TranslationDict {
     allowSessionButton: string;
     allow24hButton: string;
     allowAlwaysButton: string;
-    // Compact inline permission labels (InlinePermissionRequest)
-    compactAccessLabel: string;
-    compactShellLabel: string;
-    compactWriteLabel: string;
   };
 
   // Panels

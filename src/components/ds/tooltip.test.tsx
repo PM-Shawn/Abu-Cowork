@@ -18,8 +18,8 @@ describe('Tooltip', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it('keeps the design-system delay when a faster legacy provider is nearer', () => {
-    // App.tsx mounts the legacy TooltipProvider (200 ms) inside DesignSystemProvider.
+  it('keeps the design-system delay when a faster provider is nearer', () => {
+    // A Radix provider of a caller's own (200 ms) inside DesignSystemProvider.
     render(
       <DesignSystemProvider>
         <TooltipPrimitive.Provider delayDuration={200}>

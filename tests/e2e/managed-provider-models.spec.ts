@@ -202,7 +202,10 @@ async function send(page: Page, marker: string, reply: string): Promise<void> {
   const input = composerInput(page);
   await input.fill(marker);
   await input.press('Enter');
-  await expect(page.getByText(reply, { exact: true }).last()).toBeVisible({ timeout: READY_TIMEOUT });
+  // Every turn on one side gets the same reply text, so the reply that counts
+  // is the one rendered after this turn's own message.
+  const sent = page.getByText(marker, { exact: true }).last();
+  await expect(sent.locator('xpath=following::*').getByText(reply, { exact: true }).first()).toBeVisible({ timeout: READY_TIMEOUT });
   await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: READY_TIMEOUT });
 }
 

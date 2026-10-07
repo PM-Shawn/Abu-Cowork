@@ -279,6 +279,10 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   'src/components/chat/DetailBlockView*.{ts,tsx}',
   'src/components/chat/RenderableCodeBlock*.{ts,tsx}',
   'src/components/panel/PreviewPanel*.{ts,tsx}',
+  // The banners and the error boundary (batch 10).
+  'src/components/common/AnnouncementBanner*.{ts,tsx}',
+  'src/components/common/DisclaimerBanner*.{ts,tsx}',
+  'src/components/common/ErrorBoundary*.{ts,tsx}',
 ]
 export const DESIGN_SYSTEM_UI_FILES = [
   'src/components/ds/**/*.{ts,tsx}',

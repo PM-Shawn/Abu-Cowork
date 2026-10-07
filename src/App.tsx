@@ -59,7 +59,6 @@ const platformInitialization = initPlatform().then((detectedPlatform) => {
   return 'unknown';
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
-import { TooltipProvider } from '@/components/ui/tooltip';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS, isWindows } from '@/utils/platform';
@@ -884,7 +883,6 @@ function App() {
     <ErrorBoundary onError={traceAppRootRenderError}>
     {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
     <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen} onDecisionChange={setToastPlacesForDecision}>
-    <TooltipProvider delayDuration={200}>
       <div
         data-abu-app-shell
         className="relative flex h-full w-full flex-col overflow-hidden bg-desk"
@@ -1000,7 +998,6 @@ function App() {
         )}
 
       </div>
-    </TooltipProvider>
     </DesignSystemProvider>
     </ErrorBoundary>
   );

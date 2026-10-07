@@ -1,33 +1,20 @@
-import { X, ExternalLink } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useI18n } from '@/i18n'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button, IconButton } from '@/components/ds/button'
+import { Icon } from '@/components/ds/icon'
+import { AppIcons } from '@/components/ds/icons'
+import type { StatusTone } from '@/components/ds/status-icon'
+import { Tag } from '@/components/ds/tag'
 import type { AnnouncementItem } from '@/utils/consoleAnnouncement'
 
-const TYPE_STYLE: Record<string, { label: (t: ReturnType<typeof useI18n>['t']) => string; accent: string; border: string }> = {
-  version_update: {
-    label: (t) => t.announcement.typeVersionUpdate,
-    accent: 'text-[var(--abu-info)]',
-    border: 'border-[var(--abu-info)]',
-  },
-  feature: {
-    label: (t) => t.announcement.typeFeature,
-    accent: 'text-[var(--abu-success)]',
-    border: 'border-[var(--abu-success)]',
-  },
-  breaking: {
-    label: (t) => t.announcement.typeBreaking,
-    accent: 'text-[var(--abu-danger)]',
-    border: 'border-[var(--abu-danger)]',
-  },
-  general: {
-    label: (t) => t.announcement.typeGeneral,
-    accent: 'text-[var(--abu-text-tertiary)]',
-    border: 'border-[var(--abu-border)]',
-  },
+// The type of an announcement is a status: its color comes with a shape (Tag).
+const TYPE_STYLE: Record<string, { label: (t: ReturnType<typeof useI18n>['t']) => string; tone: 'neutral' | StatusTone }> = {
+  version_update: { label: (t) => t.announcement.typeVersionUpdate, tone: 'info' },
+  feature: { label: (t) => t.announcement.typeFeature, tone: 'success' },
+  breaking: { label: (t) => t.announcement.typeBreaking, tone: 'danger' },
+  general: { label: (t) => t.announcement.typeGeneral, tone: 'neutral' },
 }
 
 export default function AnnouncementBanner({
@@ -47,64 +34,40 @@ export default function AnnouncementBanner({
   }
 
   return (
+    // On the fullscreen level and after the page in the document: over a preview that covers the
+    // window, under every floating layer.
     <div
-      className={cn(
-        'fixed bottom-6 right-6 z-50 w-80 rounded-xl border bg-[var(--abu-bg-muted)] shadow-xl',
-        style.border,
-      )}
+      data-electron-no-drag
+      className="fixed bottom-6 right-6 z-fullscreen w-80 space-y-2 rounded-panel border border-separator bg-raised p-4 shadow-float"
     >
-      <div className="p-4 space-y-2">
-        <div className="flex items-start justify-between gap-2">
-          <span className={cn('text-minor font-semibold', style.accent)}>
-            {style.label(t)}
-          </span>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={onDismiss}
-            className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0 -mt-0.5 -mr-1"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
+      <div className="flex items-start justify-between gap-2">
+        <Tag tone={style.tone}>{style.label(t)}</Tag>
+        <IconButton icon={AppIcons.close} label={t.common.close} size="sm" onClick={onDismiss} className="-mr-1 -mt-1" />
+      </div>
+
+      <p className="text-ui font-medium text-label">
+        {item.title}
+      </p>
+
+      {item.body && (
+        <div className="line-clamp-4 text-ui-sm text-label-secondary [&_ol]:list-decimal [&_ol]:pl-4 [&_strong]:font-semibold [&_strong]:text-label [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-4">
+          <ReactMarkdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]}>
+            {item.body}
+          </ReactMarkdown>
         </div>
+      )}
 
-        <p className="text-body font-medium text-[var(--abu-text-primary)] leading-snug">
-          {item.title}
-        </p>
-
-        {item.body && (
-          <div className="text-minor text-[var(--abu-text-secondary)] leading-relaxed line-clamp-4
-            [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:space-y-0.5
-            [&_ol]:list-decimal [&_ol]:pl-4
-            [&_strong]:font-semibold [&_strong]:text-[var(--abu-text-primary)]
-            [&_p]:leading-relaxed">
-            <ReactMarkdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]}>
-              {item.body}
-            </ReactMarkdown>
-          </div>
+      {/* The negative margin puts the words of the two buttons on the edges of the text above. */}
+      <div className="-mx-2 flex items-center justify-between pt-1">
+        <Button variant="plain" size="sm" onClick={onDismiss}>
+          {t.announcement.dismiss}
+        </Button>
+        {item.ctaUrl && (
+          <Button variant="plain" size="sm" onClick={() => { void handleCta() }}>
+            {item.ctaLabel ?? t.announcement.ctaDefault}
+            <Icon icon={AppIcons.openExternal} size="sm" />
+          </Button>
         )}
-
-        <div className="flex items-center justify-between pt-1">
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={onDismiss}
-            className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] px-0"
-          >
-            {t.announcement.dismiss}
-          </Button>
-          {item.ctaUrl && (
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => { void handleCta() }}
-              className="text-[var(--abu-clay)] hover:underline px-0"
-            >
-              {item.ctaLabel ?? t.announcement.ctaDefault}
-              <ExternalLink className="h-3 w-3" />
-            </Button>
-          )}
-        </div>
       </div>
     </div>
   )

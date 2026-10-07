@@ -86,7 +86,8 @@ describe('design tokens — layer levels', () => {
 
   it('finds the hand-written stacking values it is meant to compare with', () => {
     const values = handWrittenLevels();
-    expect(values.length).toBeGreaterThan(10);
+    // Nine today: the two corner banners moved to `z-fullscreen` and left this count.
+    expect(values.length).toBeGreaterThan(8);
     expect(Math.max(...values.map((entry) => entry.value))).toBeGreaterThanOrEqual(9999);
   });
 

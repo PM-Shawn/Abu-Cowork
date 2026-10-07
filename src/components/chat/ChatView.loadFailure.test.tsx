@@ -4,6 +4,7 @@ import { act, cleanup, render as renderBare, screen, waitFor } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatView from './ChatView';
 import { useChatStore } from '@/stores/chatStore';
@@ -28,7 +29,10 @@ vi.mock('react-virtuoso', async () => {
     }),
   };
 });
-vi.mock('./ChatInput', () => ({ default: () => null }));
+vi.mock('./ChatInput', async () => {
+  const React = await import('react');
+  return { default: () => React.createElement('textarea', { 'data-chat-composer': '', 'aria-label': 'message field' }) };
+});
 vi.mock('./AgentStatusStrip', () => ({ default: () => null }));
 vi.mock('./QueuedMessagesStrip', () => ({ default: () => null }));
 
@@ -155,6 +159,48 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     expect(loadMessages).toHaveBeenCalledTimes(4);
     expect(screen.getByRole('alert')).toHaveTextContent(getI18n().panel.failedToReadFile);
     expect(screen.getByRole('button', { name: getI18n().common.retry })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('a read from elsewhere that succeeds while 重试 has the focus hands the focus to the message field', async () => {
+    await givenUnreadableConversationInView();
+    render(<ChatView />);
+    screen.getByRole('button', { name: getI18n().common.retry }).focus();
+
+    // Not the retry: another caller (crash recovery, an inbound channel message) reads the record.
+    loadMessages.mockResolvedValueOnce([message('m1', 'user', 'hello'), message('m2', 'assistant', 'answer')]);
+    await act(async () => { await useChatStore.getState().loadConversation('c1'); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText('message field')).toHaveFocus());
+  });
+
+  it('a read from elsewhere that succeeds takes the focus from no control that has it', async () => {
+    await givenUnreadableConversationInView();
+    render(
+      <>
+        <Button>elsewhere</Button>
+        <ChatView />
+      </>,
+    );
+    const elsewhere = screen.getByRole('button', { name: 'elsewhere' });
+    elsewhere.focus();
+
+    loadMessages.mockResolvedValueOnce([message('m1', 'user', 'hello'), message('m2', 'assistant', 'answer')]);
+    await act(async () => { await useChatStore.getState().loadConversation('c1'); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
+    expect(elsewhere).toHaveFocus();
+  });
+
+  it('leaving for another conversation while 重试 has the focus moves no focus to the message field', async () => {
+    await givenUnreadableConversationInView();
+    render(<ChatView />);
+    screen.getByRole('button', { name: getI18n().common.retry }).focus();
+
+    loadMessages.mockResolvedValueOnce([message('n1', 'user', 'other'), message('n2', 'assistant', 'other answer')]);
+    await act(async () => { await useChatStore.getState().switchConversation('c2'); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
+    expect(screen.getByLabelText('message field')).not.toHaveFocus();
   });
 
   it('leaves with the conversation when it is deleted', async () => {

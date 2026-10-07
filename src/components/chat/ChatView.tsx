@@ -217,10 +217,22 @@ const virtuosoComponents: Components<Message[], MessageListContext> = {
 // and offers a retry. The host's own error text is never shown, in no attribute either: it can
 // carry a path with the account name. The explanation stays while a retry reads, so the button
 // that was pressed stays under the focus; when the read succeeds this page leaves with that
-// button and the message field takes the focus.
+// button and the message field takes the focus. The same holds when another caller's read
+// succeeds while a control of this page has the focus: the page leaves under it, so the message
+// field takes it, and only when it would otherwise be on the window.
 function ConversationLoadError({ convId }: { convId: string }) {
   const { t } = useI18n();
   const [retrying, setRetrying] = useState(false);
+  const pageRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    // Runs before the page's nodes are taken out, so the focus can still be read.
+    return () => {
+      if (!page?.contains(document.activeElement)) return;
+      const state = useChatStore.getState();
+      if (state.activeConversationId === convId && state.conversations[convId]) focusComposerAfterPageChange();
+    };
+  }, [convId]);
   const retry = useCallback(() => {
     setRetrying(true);
     void useChatStore.getState().retryLoadConversation(convId).finally(() => {
@@ -229,7 +241,7 @@ function ConversationLoadError({ convId }: { convId: string }) {
     });
   }, [convId]);
   return (
-    <div className="flex h-full flex-col">
+    <div ref={pageRef} className="flex h-full flex-col">
       {/* No header row here either: the same 44px drag band as the welcome page. */}
       <div {...windowDragRowProps()} className="h-11 shrink-0" />
       <div className="flex flex-1 items-center justify-center">

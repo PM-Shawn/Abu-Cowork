@@ -1630,7 +1630,10 @@ export function createConversationWriter(deps: {
         // Counting the conversation as forgotten makes every write entry take
         // its own strict read first (`ensureDerived`), so nothing is written to
         // a record this process has not read; the block lifts with the first
-        // read that succeeds.
+        // read that succeeds. The mark is set here only: when the host's read of
+        // the record itself fails. A strict read that rejects earlier (the
+        // existence probe, the containment check) sets none, and a record whose
+        // folder cannot be probed reads as missing above.
         forgotten.add(convId);
         throw err;
       }

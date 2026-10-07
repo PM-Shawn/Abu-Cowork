@@ -4,7 +4,8 @@
  *
  * "Cannot be read" is a record that exists and whose read fails as a whole. It is produced the
  * same way on every platform: a directory stands where `messages.jsonl` was. A damaged line is
- * skipped and a missing record is an empty conversation, as before.
+ * skipped and a missing record is an empty conversation, as before. On POSIX a second case keeps
+ * the record a file and takes its read permission away, which is the case that can show a write.
  *
  * Deterministic: a loopback mock provider answers each prompt with a fixed reply.
  */
@@ -275,6 +276,72 @@ test('a record that cannot be read says so with 重试, keeps the rest of the ap
     // The record is byte for byte what it was before it could not be read.
     expect(fs.readFileSync(ledger).equals(whole)).toBe(true);
   } finally {
+    if (launched) await closeAbuElectron(launched.app);
+    await mock.close();
+    removeElectronDataRoot(dataRoot);
+  }
+});
+
+// The directory above cannot show a write that slips through: a write onto a directory fails at
+// the system and leaves no trace. Here the record stays a file that refuses to be read (mode 000),
+// in a folder that takes writes, so a replaced or appended record would differ in bytes, in size
+// or in its file identity.
+test('a record that refuses to be read (a permission error, POSIX file modes) stays byte for byte the same through the error, a retry and the reopening', async () => {
+  test.skip(process.platform === 'win32', 'Windows has no POSIX file modes: chmod 000 does not make a file unreadable there');
+  test.skip(process.getuid?.() === 0, 'the superuser reads a file of mode 000');
+  test.setTimeout(240_000);
+  const dataRoot = createElectronDataRoot();
+  const mock = await startMock();
+  let launched: LaunchedApp | undefined;
+  let ledger: string | undefined;
+  let mode = 0o644;
+  try {
+    ledger = await seedTwoConversations(dataRoot, mock.baseUrl);
+    const whole = fs.readFileSync(ledger);
+    const before = fs.statSync(ledger);
+    mode = before.mode & 0o777;
+    fs.chmodSync(ledger, 0o000);
+    expect(() => fs.readFileSync(ledger!)).toThrow(/EACCES/);
+
+    const opened = await reopen(dataRoot);
+    launched = opened.launched;
+    const page = opened.page;
+
+    await row(page, PROMPT).click();
+    const alert = page.getByRole('alert');
+    const retry = alert.getByRole('button', { name: '重试', exact: true });
+    await expect(alert).toBeVisible();
+    expect(await alert.textContent()).toBe(`${UNREADABLE}重试`);
+    const markup = await page.evaluate(() => document.documentElement.outerHTML);
+    expect(markup).not.toContain(dataRoot.rootDir);
+    expect(markup).not.toContain('messages.jsonl');
+    expect(markup).not.toContain('EACCES');
+    // A message cannot be added: the page of this conversation offers no message field.
+    await expect(page.locator('[data-chat-composer]')).toHaveCount(0);
+
+    // 重试 while the record still refuses: the explanation stays, and the file is the same file.
+    await retry.click();
+    await expect(retry).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(alert).toContainText(UNREADABLE);
+    const during = fs.statSync(ledger);
+    expect(during.ino).toBe(before.ino);
+    expect(during.size).toBe(before.size);
+    expect(during.mtimeMs).toBe(before.mtimeMs);
+
+    // Readable again: the bytes are what they were, and 重试 shows the conversation.
+    fs.chmodSync(ledger, mode);
+    expect(fs.readFileSync(ledger).equals(whole)).toBe(true);
+    await retry.click();
+    await expect(page.getByText(REPLY)).toBeVisible();
+    await expect(alert).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.hasAttribute('data-chat-composer') ?? false)).toBe(true);
+
+    await closeAbuElectron(launched.app);
+    launched = undefined;
+    expect(fs.readFileSync(ledger).equals(whole)).toBe(true);
+  } finally {
+    // A failed run leaves nothing unreadable behind.
+    if (ledger && fs.existsSync(ledger)) fs.chmodSync(ledger, mode);
     if (launched) await closeAbuElectron(launched.app);
     await mock.close();
     removeElectronDataRoot(dataRoot);

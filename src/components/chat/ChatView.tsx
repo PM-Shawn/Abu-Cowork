@@ -38,6 +38,7 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { useToastStore } from '@/stores/toastStore';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
+import { focusComposerAfterPageChange } from './composerFocus';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
@@ -65,6 +66,7 @@ import { isMacOS } from '@/utils/platform';
 import { windowDragRowProps } from '@/utils/windowDrag';
 import { Button } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
+import { LoadError } from '@/components/ds/load-error';
 import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon } from '@/components/ds/status-icon';
@@ -211,6 +213,32 @@ const virtuosoComponents: Components<Message[], MessageListContext> = {
   Footer: VirtuosoTypingFooter,
 };
 
+// F13: the record of the conversation in view is on disk and could not be read. The page says so
+// and offers a retry. The host's own error text is never shown, in no attribute either: it can
+// carry a path with the account name. The explanation stays while a retry reads, so the button
+// that was pressed stays under the focus; when the read succeeds this page leaves with that
+// button and the message field takes the focus.
+function ConversationLoadError({ convId }: { convId: string }) {
+  const { t } = useI18n();
+  const [retrying, setRetrying] = useState(false);
+  const retry = useCallback(() => {
+    setRetrying(true);
+    void useChatStore.getState().retryLoadConversation(convId).finally(() => {
+      setRetrying(false);
+      if (useChatStore.getState().conversations[convId]) focusComposerAfterPageChange();
+    });
+  }, [convId]);
+  return (
+    <div className="flex h-full flex-col">
+      {/* No header row here either: the same 44px drag band as the welcome page. */}
+      <div {...windowDragRowProps()} className="h-11 shrink-0" />
+      <div className="flex flex-1 items-center justify-center">
+        <LoadError reason={t.panel.failedToReadFile} onRetry={retry} busy={retrying} />
+      </div>
+    </div>
+  );
+}
+
 interface ChatViewProps {
   windowsWorkspaceHeader?: boolean;
   rightPanelToggleVisible?: boolean;
@@ -222,6 +250,7 @@ export default function ChatView({
 }: ChatViewProps) {
   const activeConvId = useChatStore((s) => s.activeConversationId);
   const activeConv = useActiveConversation();
+  const loadFailed = useChatStore((s) => (s.activeConversationId ? s.loadFailures[s.activeConversationId] === true : false));
   const pendingSearchJump = useChatStore((s) => s.pendingSearchJump);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const renameConversation = useChatStore((s) => s.renameConversation);
@@ -1394,6 +1423,12 @@ export default function ChatView({
     shouldSuppressLegacyFollow,
     stickToBottom,
   ]);
+
+  // The record could not be read: say so, with a retry. Keyed, so a retry in flight for one
+  // conversation shows no busy button on another.
+  if (activeConvId && !activeConv && loadFailed) {
+    return <ConversationLoadError key={activeConvId} convId={activeConvId} />;
+  }
 
   // Conversation loading from disk (LRU cache miss) — show a loading line instead of the welcome page
   if (activeConvId && !activeConv) {

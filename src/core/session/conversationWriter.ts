@@ -1625,7 +1625,15 @@ export function createConversationWriter(deps: {
     try {
       raw = await fs.readTextFile(path);
     } catch (err) {
-      if (options?.strictRead) throw err;
+      if (options?.strictRead) {
+        // A ledger that is on disk and could not be read is unknown, not empty.
+        // Counting the conversation as forgotten makes every write entry take
+        // its own strict read first (`ensureDerived`), so nothing is written to
+        // a record this process has not read; the block lifts with the first
+        // read that succeeds.
+        forgotten.add(convId);
+        throw err;
+      }
       console.warn(
         `[conversationStorage] loadMessages(${convId}) readTextFile failed:`,
         err,

@@ -91,6 +91,21 @@ describe('feedback components', () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
+  it('LoadError busy keeps the retry button focusable and takes no press, by pointer or by key', async () => {
+    const user = setupUser();
+    const onRetry = vi.fn();
+    render(<LoadError reason="This task could not be read." onRetry={onRetry} busy />);
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    expect(retry).not.toBeDisabled();
+    await user.click(retry);
+    retry.focus();
+    expect(retry).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
   // The newest ones are on screen; the store keeps the time of the ones pushed out.
   it('Toaster shows at most three notifications, the newest three, newest first', () => {
     render(<ToasterHarness initial={[1, 2, 3, 4, 5].map((n) => toast(n))} />, { wrapper: DesignSystemProvider });

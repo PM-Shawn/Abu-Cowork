@@ -225,19 +225,27 @@ describe('permission mode is restored when a conversation is loaded', () => {
     }
   });
 
-  it('a conversation whose messages cannot be read still carries and keeps its mode', async () => {
-    // The load's failure branch builds the conversation from the index entry
-    // alone; the next index write must still hold the mode.
+  it('a conversation whose messages cannot be read keeps its mode in the index, and carries it once it can be read', async () => {
+    // A failed load holds no conversation, so nothing can run under any mode;
+    // the mode stays in the index entry and is restored by the load that succeeds.
     seedIndex({ 'unreadable-conv': { permissionMode: 'autonomous' } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.mocked(exists).mockImplementation(async (path: string) => {
       if (String(path).includes('unreadable-conv')) throw new Error('unreadable');
       return false;
     });
 
     await useChatStore.getState().loadConversation('unreadable-conv');
-    expect(useChatStore.getState().conversations['unreadable-conv']?.permissionMode).toBe('autonomous');
+    warn.mockRestore();
+    expect(useChatStore.getState().conversations['unreadable-conv']).toBeUndefined();
+    expect(useChatStore.getState().loadFailures).toEqual({ 'unreadable-conv': true });
+    expect(useChatStore.getState().conversationIndex['unreadable-conv']?.permissionMode).toBe('autonomous');
 
     vi.mocked(exists).mockResolvedValue(false);
+    await useChatStore.getState().loadConversation('unreadable-conv');
+    expect(useChatStore.getState().loadFailures).toEqual({});
+    expect(useChatStore.getState().conversations['unreadable-conv']?.permissionMode).toBe('autonomous');
+
     useChatStore.getState().addMessage('unreadable-conv', {
       id: 'm1', role: 'user', content: 'hi', timestamp: 1,
     });

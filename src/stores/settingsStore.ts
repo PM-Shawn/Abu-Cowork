@@ -978,12 +978,13 @@ const settingsStateStorage: StateStorage = {
           if (pending.length) repairBrowserConfig(pending, diskBeforeWrite);
           return;
         }
-        // A blob stored at V53 or at the current version already has the shape
-        // restore expects (V54 changed only `theme`). Older blobs must fall back
-        // to the migrated baseline recorded at hydration; restoring their raw
-        // pre-migration fields would reintroduce invalid or absent values after
-        // a failed save.
-        confirmedBeforeWrite = diskBeforeWrite?.version === 53 || diskBeforeWrite?.version === 54 ? diskBeforeWrite : null;
+        // A blob stored at V53 or later already has the shape restore expects.
+        // Older blobs must fall back to the migrated baseline recorded at
+        // hydration; restoring their raw pre-migration fields would reintroduce
+        // invalid or absent values after a failed save.
+        confirmedBeforeWrite = diskBeforeWrite !== null && typeof diskBeforeWrite.version === 'number' && diskBeforeWrite.version >= 53
+          ? diskBeforeWrite
+          : null;
         if (intended !== null) {
           // A counter orders cooperative writers, not authority. An ordinary
           // blob save must keep the valid permissions read under this lock,

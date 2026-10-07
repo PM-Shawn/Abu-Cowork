@@ -66,6 +66,38 @@ describe('new browser permission saving', () => {
     expect(shown?.sites[SITE]).toEqual({ ...emptyBrowserSiteRule(), blocked: true });
     expect(shown?.sites[OTHER]).toBeUndefined();
   });
+  it.each([53, 55])('rolls a failed write back to a stored blob at version %i: the V53 shape decides, the exact version does not', async (version) => {
+    const OTHER = 'https://other.example';
+    expect(await useSettingsStore.getState().setBrowserPermissionDefault('browse', 'allow')).toBe(true);
+    const disk = JSON.parse(localStorage.getItem('abu-settings')!);
+    disk.version = version;
+    disk.state.browserPermissionConfigV2.sites[SITE] = { ...emptyBrowserSiteRule(), blocked: true };
+    disk.state.browserConfigRevisions.browserPermissionConfigV2 = 9;
+    localStorage.setItem('abu-settings', JSON.stringify(disk));
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('storage unavailable'); });
+    expect(await useSettingsStore.getState().setBrowserSiteResourcePermission(OTHER, 'upload', 'allow')).toBe(false);
+    write.mockRestore();
+    const shown = useSettingsStore.getState().browserPermissionConfigV2;
+    expect(shown?.sites[SITE]).toEqual({ ...emptyBrowserSiteRule(), blocked: true });
+    expect(shown?.sites[OTHER]).toBeUndefined();
+    // Only memory is put back: storage still holds the block, and the run-time gate reads storage.
+    expect(readConfirmedBrowserPermissionConfig(useSettingsStore.getState()).sites[SITE]).toEqual({ ...emptyBrowserSiteRule(), blocked: true });
+    expect(JSON.parse(localStorage.getItem('abu-settings')!).state.browserPermissionConfigV2.sites[OTHER]).toBeUndefined();
+  });
+  it('rolls a failed write back to this window’s last save when the stored blob is older than the V53 shape', async () => {
+    const OTHER = 'https://other.example';
+    expect(await useSettingsStore.getState().setBrowserPermissionDefault('browse', 'allow')).toBe(true);
+    const disk = JSON.parse(localStorage.getItem('abu-settings')!);
+    disk.version = 52;
+    disk.state.browserPermissionConfigV2.sites[SITE] = { ...emptyBrowserSiteRule(), blocked: true };
+    localStorage.setItem('abu-settings', JSON.stringify(disk));
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('storage unavailable'); });
+    expect(await useSettingsStore.getState().setBrowserSiteResourcePermission(OTHER, 'upload', 'allow')).toBe(false);
+    write.mockRestore();
+    const shown = useSettingsStore.getState().browserPermissionConfigV2;
+    expect(shown?.sites[SITE]).toBeUndefined();
+    expect(shown?.sites[OTHER]).toBeUndefined();
+  });
   it('serializes a permission edit and an ordinary blob save behind the same lock', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });

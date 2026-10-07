@@ -90,7 +90,7 @@ test.afterEach(async () => {
   }
 });
 
-test('a new profile follows the system from the first paint, and a chosen appearance stays', async () => {
+test('a new profile stores 跟随系统 and follows the system while it runs, a reload with it stored paints a dark system dark first, and a chosen appearance stays', async () => {
   const launched = await launchAbuElectron();
   app = launched.app;
   dataRoot = launched;

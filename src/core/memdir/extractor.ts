@@ -15,7 +15,13 @@
 // rather than the Zustand store module directly. `stores/**` is forbidden from
 // the sidecar bundle graph (`bundleGraphGuardPlugin` in build-sidecar.mjs), and
 // this is the same substitution `agentLoop.ts` already made for the same reason.
-import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../utils/settingsSelectors';
+import {
+  getActiveApiKey,
+  getActiveProvider,
+  getEffectiveModel,
+  getModelUnavailableReason,
+  providerRequiresApiKey,
+} from '../../utils/settingsSelectors';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { settingsForConversation } from '../agent/conversationSettings';
 // P1-3d-2: route the LLM call through `selectChatAdapter` (already sidecar-ized,
@@ -23,6 +29,8 @@ import { settingsForConversation } from '../agent/conversationSettings';
 // constructing `ClaudeAdapter`/`OpenAICompatibleAdapter` directly. Matches the
 // call convention `agentLoop.ts`/`subagentLoop.ts` already use.
 import { selectChatAdapter } from '../llm/selectChatAdapter';
+import { adapterKindFor } from '../llm/adapterKind';
+import { providerChatOptions } from '../llm/providerChatOptions';
 import type { LLMAdapter } from '../llm/adapter';
 import type { StreamEvent } from '../../types';
 import type { Message } from '../../types';
@@ -192,15 +200,26 @@ export async function extractMemoriesFromConversation(
 
     // Create adapter on the conversation's own model and provider.
     const settings = settingsForConversation(conversationId, getSettingsReader().getSnapshot());
+    // An unusable model (provider removed/turned off, model no longer listed)
+    // is never called. Enterprise-gateway pins have no personal provider entry.
+    const modelIssue = settings.activeModel.providerId === 'enterprise-gateway'
+      ? null
+      : getModelUnavailableReason(settings, settings.activeModel);
+    if (modelIssue) {
+      console.warn('[Memory] Auto-extraction skipped: model unavailable', {
+        reason: modelIssue,
+        providerId: settings.activeModel.providerId,
+        modelId: settings.activeModel.modelId,
+      });
+      return;
+    }
     const activeApiKey = getActiveApiKey(settings);
-    if (!activeApiKey) {
+    if (providerRequiresApiKey(settings) && !activeApiKey) {
       console.warn('[Memory] Auto-extraction skipped: no API key configured');
       return;
     }
 
-    const adapter: LLMAdapter = selectChatAdapter(
-      getActiveProvider(settings)?.apiFormat === 'openai-compatible' ? 'openai-compatible' : 'claude',
-    );
+    const adapter: LLMAdapter = selectChatAdapter(adapterKindFor(getActiveProvider(settings), false));
 
     // Inject existing memory manifest so the extractor can deduplicate against
     // what's already stored. Best-effort: failures fall through to extraction
@@ -244,6 +263,7 @@ export async function extractMemoriesFromConversation(
         baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         maxTokens: 1024,
+        ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
         accounting: {
           source: 'memory' as const,
           conversationId,

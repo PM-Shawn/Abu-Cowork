@@ -387,6 +387,28 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(result).toContain('approved');
     });
 
+    it('after one timeout in a team task, a resubmitted plan waits for the user instead of asking again', async () => {
+      const t = getI18n().toolResult.memory;
+      mockGetPlanMode.mockReturnValue('off');
+      mockRequestUserQuestion.mockResolvedValueOnce(null);
+      const teamCtx = { ...ctx, teamRequirePlanApproval: true, teamTaskId: 'timeout-task-1' };
+      expect(await reportPlanTool.execute(input, teamCtx)).toBe(t.planTimeout);
+      expect(await reportPlanTool.execute(input, { ...teamCtx, toolCallId: 't2', loopId: 'loop-2' })).toBe(t.planAwaitingUser);
+      expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
+    });
+
+    it('a new team task asks again after the previous task timed out', async () => {
+      const t = getI18n().toolResult.memory;
+      mockGetPlanMode.mockReturnValue('off');
+      mockRequestUserQuestion.mockResolvedValueOnce(null);
+      const teamCtx = { ...ctx, teamRequirePlanApproval: true, teamTaskId: 'timeout-task-2' };
+      expect(await reportPlanTool.execute(input, teamCtx)).toBe(t.planTimeout);
+      mockRequestUserQuestion.mockResolvedValueOnce({ answers: [{ header: t.planApprovalHeaderTeam, question: 'q', selected: [t.planApproveLabelTeam] }] });
+      const result = await reportPlanTool.execute(input, { ...teamCtx, toolCallId: 't3', teamTaskId: 'timeout-task-3' });
+      expect(result).toContain('approved');
+      expect(mockRequestUserQuestion).toHaveBeenCalledTimes(2);
+    });
+
     it('strict team in an unattended (background) run lands the plan without a card', async () => {
       mockGetPlanMode.mockReturnValue('off');
       seedExecution();

@@ -3,6 +3,8 @@ import { TOOL_NAMES } from '../toolNames';
 import { resolveDeferredToolSearch } from '../toolSearch';
 import { getAllTools } from '../registry';
 import { getI18n, format } from '../../../i18n';
+import { isWindows } from '../../../utils/platform';
+import { adaptComputerToolForTier } from './computerToolText';
 
 /**
  * tool_search — lets the LLM discover and load deferred tools on demand.
@@ -51,7 +53,9 @@ export const toolSearchTool: ToolDefinition = {
     }
 
     // Return full schema for each matched tool
-    const results = matched.map(tool => {
+    // 电脑操控工具按本轮模型的档位给对应版本，与直接发送的工具一致
+    const shownTools = matched.map((tool) => adaptComputerToolForTier(tool, context?.computerUseTier, isWindows()));
+    const results = shownTools.map(tool => {
       const schema = JSON.stringify(tool.inputSchema, null, 2);
       return `### ${tool.name}\n${tool.description}\n\n${ts.schemaLabel}\n\`\`\`json\n${schema}\n\`\`\``;
     });

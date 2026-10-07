@@ -27,6 +27,23 @@ import type { ProviderInstance } from '@/types/provider';
 // GET /models — no other test in this file clicks Fetch, so a file-wide mock is safe.
 vi.mock('@/core/llm/modelFetcher', () => ({ fetchProviderModels: vi.fn() }));
 import { fetchProviderModels } from '@/core/llm/modelFetcher';
+// LM Studio / Ollama 获取模型后会询问窗口；测试里不发真实请求
+vi.mock('@/core/llm/contextWindowProbe', () => ({
+  fetchLmStudioContextWindows: vi.fn(async () => new Map<string, number>()),
+  fetchOllamaLoadedContextWindows: vi.fn(async () => new Map<string, number>()),
+}));
+// 验证连接的测试只替换发出网络请求的 adapter；checkProviderHealth 运行真实实现
+const { mockAdapterChat } = vi.hoisted(() => ({ mockAdapterChat: vi.fn() }));
+vi.mock('@/core/llm/openai-compatible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/llm/openai-compatible')>()),
+  OpenAICompatibleAdapter: class {
+    chat = mockAdapterChat;
+  },
+}));
+import { classifyError } from '@/core/llm/adapter';
+// 失败文字的测试运行真实的 fetchProviderModels 与 checkOllamaHealth，只替换发出网络请求的 fetch
+const { mockTransportFetch } = vi.hoisted(() => ({ mockTransportFetch: vi.fn() }));
+vi.mock('@/core/llm/tauriFetch', () => ({ getTauriFetch: async () => mockTransportFetch }));
 
 // ── Tests ──────────────────────────────────────────────────────────
 
@@ -481,6 +498,29 @@ describe('AddProviderModal — Validate Connection gating', () => {
 
     expect(validateButton).not.toBeDisabled();
   });
+
+  it('shows a failed validation without the key the endpoint echoed back', async () => {
+    const fakeKey = 'sk-test-not-a-secret';
+    mockAdapterChat.mockRejectedValue(
+      classifyError(401, JSON.stringify({ error: { message: `Incorrect API key provided: ${fakeKey}` } })),
+    );
+    render(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek' }));
+    const apiKeyInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(apiKeyInput, { target: { value: fakeKey } });
+    fireEvent.click(screen.getByRole('button', { name: /select model/i }));
+    fireEvent.click(screen.getByText('DeepSeek V4 Pro'));
+    fireEvent.click(screen.getByRole('button', { name: /validate connection/i }));
+
+    expect(await screen.findByText('Incorrect API key provided: [REDACTED]')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(fakeKey);
+    for (const attribute of ['title', 'aria-label']) {
+      const values = Array.from(document.querySelectorAll(`[${attribute}]`), (el) => el.getAttribute(attribute));
+      expect(values.join('\n')).not.toContain(fakeKey);
+    }
+  });
 });
 
 describe('AddProviderModal — Bailian pay-as-you-go', () => {
@@ -830,5 +870,143 @@ describe('AddProviderModal — curated provider fetch', () => {
     // expected count is derived, not restated, so it tracks the shipped list.
     const matching = [...CURATED, ...FETCHED_ONLY].filter((id) => id.includes(query));
     await screen.findByText(`${matching.length} of ${TOTAL_ROWS} selected`);
+  });
+});
+
+describe('AddProviderModal — failure text of model fetch and Ollama check', () => {
+  const FAKE_KEY = 'sk-test-not-a-secret';
+  const FAKE_URL_PASSWORD = 'test-password-not-a-secret';
+  const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug'] as const;
+  let consoleSpies: Array<ReturnType<typeof vi.spyOn>>;
+
+  beforeEach(async () => {
+    setLanguage('en-US');
+    localStorage.clear();
+    useSettingsStore.setState({
+      providers: [],
+      activeModel: { providerId: '', modelId: '' },
+      failedSecretKeys: [],
+    });
+    const actual = await vi.importActual<typeof import('@/core/llm/modelFetcher')>('@/core/llm/modelFetcher');
+    vi.mocked(fetchProviderModels).mockImplementation(actual.fetchProviderModels);
+    mockTransportFetch.mockReset();
+    consoleSpies = CONSOLE_METHODS.map((method) => vi.spyOn(console, method).mockImplementation(() => {}));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchProviderModels).mockReset();
+    consoleSpies.forEach((spy) => spy.mockRestore());
+  });
+
+  /** 界面文字、title、aria-label、store、localStorage、控制台里都不出现给定的值 */
+  function expectAbsentEverywhere(secrets: string[]) {
+    const attributes = ['title', 'aria-label'].flatMap((attribute) =>
+      Array.from(document.querySelectorAll(`[${attribute}]`), (el) => el.getAttribute(attribute)),
+    );
+    const logged = consoleSpies
+      .flatMap((spy) => spy.mock.calls)
+      .map((args) => args.map((arg: unknown) => (arg instanceof Error ? `${arg.message}\n${arg.stack}` : JSON.stringify(arg))).join(' '));
+    const stored = Array.from({ length: localStorage.length }, (_, i) => localStorage.getItem(localStorage.key(i) as string));
+    const haystack = [
+      document.body.textContent,
+      ...attributes,
+      JSON.stringify(useSettingsStore.getState()),
+      ...stored,
+      ...logged,
+    ].join('\n');
+    for (const secret of secrets) expect(haystack).not.toContain(secret);
+  }
+
+  it('shows a failed model fetch without the key or the URL password the exception carried', async () => {
+    mockTransportFetch.mockRejectedValue(
+      new TypeError(
+        `Request cannot be constructed from a URL that includes credentials: https://user:${FAKE_URL_PASSWORD}@api.deepseek.com/models, header x-api-key ${FAKE_KEY}`,
+      ),
+    );
+    render(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek' }));
+    const apiKeyInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(apiKeyInput, { target: { value: FAKE_KEY } });
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+
+    expect(
+      await screen.findByText(
+        'TypeError: Request cannot be constructed from a URL that includes credentials: https://[REDACTED]@api.deepseek.com/models, header x-api-key [REDACTED]',
+      ),
+    ).toBeInTheDocument();
+    expectAbsentEverywhere([FAKE_KEY, FAKE_URL_PASSWORD]);
+  });
+
+  it('shows a failed Ollama check without the URL password the exception carried', async () => {
+    const baseUrl = `http://user:${FAKE_URL_PASSWORD}@ollama.example.test:11434`;
+    mockTransportFetch.mockRejectedValue(
+      new TypeError(`Request cannot be constructed from a URL that includes credentials: ${baseUrl}/`),
+    );
+    render(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ollama/i }));
+    const baseUrlInput = screen.getByPlaceholderText('http://127.0.0.1:11434');
+    fireEvent.change(baseUrlInput, { target: { value: baseUrl } });
+    fireEvent.blur(baseUrlInput);
+
+    expect(
+      await screen.findByText(
+        'Request cannot be constructed from a URL that includes credentials: [REDACTED]/',
+      ),
+    ).toBeInTheDocument();
+    expectAbsentEverywhere([FAKE_URL_PASSWORD]);
+  });
+});
+
+describe('AddProviderModal — 上下文长度 placeholder', () => {
+  beforeEach(() => {
+    setLanguage('en-US');
+    useSettingsStore.setState({
+      providers: [],
+      activeModel: { providerId: '', modelId: '' },
+      failedSecretKeys: [],
+      contextWindowSize: 200000,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  /** 选自定义 API、填地址、手动加一个模型并展开它的高级配置 */
+  function openAdvancedFor(baseUrl: string, modelId: string): HTMLInputElement {
+    render(<AddProviderModal open={true} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Custom API' }));
+    fireEvent.change(screen.getByPlaceholderText('https://...'), { target: { value: baseUrl } });
+    fireEvent.click(screen.getByRole('button', { name: /add model/i }));
+    const modelInput = screen.getByPlaceholderText('Enter model ID');
+    fireEvent.change(modelInput, { target: { value: modelId } });
+    fireEvent.keyDown(modelInput, { key: 'Enter' });
+    // 模型卡片左侧的下拉箭头是卡片里的第一个按钮
+    const card = screen.getByText(modelId).closest('div.rounded-lg') as HTMLElement;
+    fireEvent.click(card.querySelector('button') as HTMLButtonElement);
+    return contextLengthInput();
+  }
+
+  function contextLengthInput(): HTMLInputElement {
+    return (screen.getByText('Context length').parentElement as HTMLElement).querySelector('input') as HTMLInputElement;
+  }
+
+  it('caps the estimate at the global context-window limit the runtime uses', () => {
+    // qwen3-max 按名字估计 262144，高于全局上限 200000
+    const input = openAdvancedFor('https://api.example.com/v1', 'qwen3-max');
+    expect(input).toHaveAttribute('placeholder', 'Not detected; blank means 200K is assumed');
+  });
+
+  it('follows the address: a local server gets the local estimate, a cloud one the name-based one', () => {
+    const input = openAdvancedFor('http://127.0.0.1:8080/v1', 'qwen3-vl-8b');
+    expect(input).toHaveAttribute('placeholder', 'Not detected; blank means 32K is assumed');
+    fireEvent.change(screen.getByPlaceholderText('https://...'), { target: { value: 'https://api.example.com/v1' } });
+    expect(contextLengthInput()).toHaveAttribute('placeholder', 'Not detected; blank means 128K is assumed');
   });
 });

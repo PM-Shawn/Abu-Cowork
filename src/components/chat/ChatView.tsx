@@ -8,8 +8,9 @@ import {
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
-import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
+import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -22,6 +23,8 @@ import type { ExpertContact } from '@/types/expertContact';
 import CompactDivider from './CompactDivider';
 import BrowserRunReportCard from './BrowserRunReportCard';
 import MaxTurnsNoticeCard from './MaxTurnsNoticeCard';
+import GoalRoundMarker from './GoalRoundMarker';
+import GoalBar from './GoalBar';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
@@ -30,6 +33,8 @@ import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport
 import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
+import { applyGoalCommand, checkGoalCreatable, clearGoalForReplacement, createGoalFromCommand, parseGoalCommand } from '@/core/goal/goalCommand';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
@@ -214,6 +219,8 @@ export default function ChatView({
   const pendingSearchJump = useChatStore((s) => s.pendingSearchJump);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const renameConversation = useChatStore((s) => s.renameConversation);
+  // Goal mode: `/goal <new>` while another goal is unfinished waits here for the user's answer.
+  const [goalReplacePrompt, setGoalReplacePrompt] = useState<{ objective: string; resolve: (replace: boolean) => void } | null>(null);
   const [isRenamingTitle, setIsRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const titleTeamLeader = useConversationTeamLeader(activeConv?.id);
@@ -323,23 +330,30 @@ export default function ChatView({
   };
 
   const handleWorkspaceSelect = async () => {
+    const request = workspaceRequest;
+    if (!request) return;
     try {
       const selected = await openDialog({
         directory: true,
         multiple: false,
-        defaultPath: workspaceRequest?.suggestedPath || undefined,
+        defaultPath: request.suggestedPath || undefined,
       });
       if (selected && typeof selected === 'string') {
-        useWorkspaceStore.getState().setWorkspace(selected);
-        if (activeConv?.id) {
-          useChatStore.getState().setConversationWorkspace(activeConv.id, selected);
+        // The system picker can stay open past the request it was opened for
+        // (60s timeout, abort, or a newer request taking its place). A folder
+        // picked for a request that is gone answers nothing and grants nothing.
+        if (getPendingWorkspaceRequest()?.id !== request.id) {
+          useToastStore.getState().addToast({ type: 'info', title: t.permission.folderRequestEnded });
+          return;
         }
-        resolveWorkspaceRequest(selected);
+        useWorkspaceStore.getState().setWorkspace(selected);
+        useChatStore.getState().setConversationWorkspace(request.conversationId, selected);
+        resolveWorkspaceRequestById(request.id, selected);
       } else {
-        resolveWorkspaceRequest(null);
+        resolveWorkspaceRequestById(request.id, null);
       }
     } catch {
-      resolveWorkspaceRequest(null);
+      resolveWorkspaceRequestById(request.id, null);
     }
   };
 
@@ -839,6 +853,17 @@ export default function ChatView({
     workspacePath?: string | null,
     onAccepted?: () => void,
   ) => {
+    // Goal mode: /goal is handled here, before any dispatch — never sent to the
+    // model. Every form but `/goal <objective>` ends here and needs no model;
+    // that one creates the goal below and sends the objective as the first
+    // message.
+    const goalCommand = parseGoalCommand(text);
+    if (goalCommand && goalCommand.kind !== 'create') {
+      const outcome = applyGoalCommand(activeConv?.id, goalCommand);
+      useToastStore.getState().addToast({ type: outcome.ok ? 'success' : 'error', title: outcome.message });
+      return outcome.ok ? undefined : false;
+    }
+
     // Check the model THIS conversation will run on (its pin, else the global
     // default). Returning false hands the text back to the composer — opening
     // settings used to swallow whatever the user had typed.
@@ -857,6 +882,26 @@ export default function ChatView({
       return;
     }
 
+    if (goalCommand) {
+      const precheck = checkGoalCreatable(activeConv?.id, goalCommand.objective);
+      if (!precheck.ok && precheck.replaces && activeConv) {
+        // An unfinished goal is in the way: the user decides whether the new
+        // one takes its place. Declining hands the text back to the composer.
+        const unfinished = precheck.replaces;
+        const replace = await new Promise<boolean>((resolve) => {
+          setGoalReplacePrompt({ objective: unfinished.objective, resolve });
+        });
+        if (!replace) return false;
+        if (!clearGoalForReplacement(activeConv.id, unfinished)) {
+          useToastStore.getState().addToast({ type: 'error', title: t.chat.goal.staleRevision });
+          return false;
+        }
+      } else if (!precheck.ok) {
+        useToastStore.getState().addToast({ type: 'error', title: precheck.message });
+        return false;
+      }
+    }
+
     // A typed `@<team> …` that the composer did not turn into the team chip
     // (sent before the exact-name detection, pasted, …) still pins the
     // conversation to that team; the mention itself is not sent to the model.
@@ -872,7 +917,9 @@ export default function ChatView({
       useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamMention.teamName }) });
       return false; // hand the text back to the composer
     }
-    const sendText = teamMention ? teamMention.rest : text;
+    const sendText = goalCommand?.kind === 'create'
+      ? goalCommand.objective.trim()
+      : teamMention ? teamMention.rest : text;
 
     // Capture the selected identity before any asynchronous identity setup.
     const pendingBeforeSend = useChatStore.getState();
@@ -913,6 +960,11 @@ export default function ChatView({
       setConversationTeamId(convId, teamMention.teamId);
     }
     if (contact) useChatStore.getState().stageExpertContact(convId, contact);
+    if (goalCommand?.kind === 'create') {
+      const created = createGoalFromCommand(convId, goalCommand.objective);
+      useToastStore.getState().addToast({ type: created.ok ? 'success' : 'error', title: created.message });
+      if (!created.ok) return false;
+    }
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
     }
@@ -980,11 +1032,9 @@ export default function ChatView({
 
 
   // First-run banner: show when no provider has been configured yet.
-  // "Configured" = has an API key OR is a keyless provider (ollama/lmstudio).
+  // "Configured" = has an API key OR needs none (providerNeedsApiKey).
   const needsPersonalModelSetup = useSettingsStore((s) => {
-    return !s.providers.some(
-      p => p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio'
-    );
+    return !s.providers.some(providerHasCredentials);
   });
   const needsSetup = !isEnterprise && needsPersonalModelSetup;
 
@@ -1021,7 +1071,8 @@ export default function ChatView({
   // so the hooks that depend on it stay unconditional (rules-of-hooks).
   // Filter out internal system prompts while retaining explicit crash
   // recovery notices that explain an interrupted task to the user.
-  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice);
+  // Goal-round openers are internal rows too, but render as a round marker.
+  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice || m.goalRound);
   const messageGroups = groupMessagesByLoop(visibleMessages);
   useLayoutEffect(() => {
     if (!scrollParentEl || !activeConvId) return;
@@ -1353,6 +1404,25 @@ export default function ChatView({
     );
   }
 
+  // Goal mode: asked by handleSend, from either view below.
+  const goalReplaceDialog = (
+    <ConfirmDialog
+      open={goalReplacePrompt !== null}
+      title={t.chat.goal.replaceConfirmTitle}
+      message={format(t.chat.goal.replaceConfirmBody, { objective: goalReplacePrompt?.objective ?? '' })}
+      confirmText={t.chat.goal.actionReplace}
+      cancelText={t.chat.goal.actionCancel}
+      onConfirm={() => {
+        goalReplacePrompt?.resolve(true);
+        setGoalReplacePrompt(null);
+      }}
+      onCancel={() => {
+        goalReplacePrompt?.resolve(false);
+        setGoalReplacePrompt(null);
+      }}
+    />
+  );
+
   // Welcome UI renders whenever there's no active conv OR the active conv
   // is still empty (zero messages). Task #38: project "+" button creates
   // a conv immediately (to inherit defaultSkills/defaultMCPServers) — we
@@ -1458,6 +1528,7 @@ export default function ChatView({
                 scenarioPlaceholder={scenarioPlaceholder}
                 onInputChange={handleWelcomeInputChange}
               />
+              {goalReplaceDialog}
             </div>
 
             {/* Scenario Guide — the app's scenes inside an app, Abu's own otherwise */}
@@ -1672,6 +1743,20 @@ export default function ChatView({
                 // The configured first-contact greeting: a plain bubble with
                 // the expert's identity, never a model turn with run actions.
                 <MessageBubble message={group[0]} />
+              ) : group[0].goalRound ? (
+                // Goal mode: the round's opening row is the driver's prompt,
+                // not user input — a marker, then the run as usual.
+                <>
+                  <GoalRoundMarker message={group[0]} />
+                  {group.length > 1 && (
+                    <MessageGroup
+                      conversationId={activeConv.id}
+                      messages={group.slice(1)}
+                      isLastGroup={index === messageGroups.length - 1}
+                      highlightMessageId={highlightedMessageId}
+                    />
+                  )}
+                </>
               ) : group.length === 1 && isBrowserRunReportMessage(group[0]) ? (
                 // U7 — the unattended run's report card. Its own group by
                 // construction: the marker carries no loopId, and
@@ -1747,6 +1832,9 @@ export default function ChatView({
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
+          {/* Goal mode: objective, round usage and controls */}
+          {activeConv.goal && <GoalBar conversationId={activeConv.id} />}
+          {goalReplaceDialog}
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}
           <QueuedMessagesStrip conversationId={activeConv.id} />

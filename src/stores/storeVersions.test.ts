@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // When adding a new persist store, add it to this list — otherwise this test fails.
 const PERSISTED_STORES = [
   { key: 'abu-settings', minVersion: 52 },
-  { key: 'abu-chat', minVersion: 15 },
+  { key: 'abu-chat', minVersion: 16 },
   { key: 'abu-app', minVersion: 1 },
   { key: 'abu-app-drafts', minVersion: 1 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
@@ -16,9 +16,9 @@ const PERSISTED_STORES = [
   { key: 'abu-im-channel', minVersion: 2 },
   { key: 'abu-projects', minVersion: 1 },
   { key: 'abu-project-hint', minVersion: 1 },
-  { key: 'abu-diagnostic-store', minVersion: 2 },
+  { key: 'abu-diagnostic-store', minVersion: 3 },
   { key: 'abu-usage-stats', minVersion: 2 },
-  { key: 'abu-discovered-caps', minVersion: 1 },
+  { key: 'abu-discovered-caps', minVersion: 2 },
   { key: 'abu-todos', minVersion: 1 },
   { key: 'abu-inbox', minVersion: 2 },
   { key: 'abu-composer-drafts', minVersion: 2 },
@@ -26,6 +26,7 @@ const PERSISTED_STORES = [
   { key: 'abu-team-confirmations', minVersion: 1 },
   { key: 'abu-plugins', minVersion: 2 },
   { key: 'abu-extension-source', minVersion: 1 },
+  { key: 'abu-voice-input', minVersion: 1 },
 ] as const;
 
 // Import all stores to trigger persist initialization
@@ -51,6 +52,7 @@ beforeAll(async () => {
   await import('./composerDraftStore');
   await import('./pluginStore');
   await import('./extensionSourceStore');
+  await import('./voiceInputStore');
   await import('./appStore');
   await import('./appDraftStore');
 }, 120_000); // Store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)

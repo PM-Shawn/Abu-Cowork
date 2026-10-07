@@ -7,14 +7,12 @@
  * INSIDE the sidecar process itself (there's no second hop to take; we
  * already ARE the sidecar, and `sidecarManager.ts` isn't even part of this
  * bundle). This shim just constructs the real local adapter directly —
- * mirrors `llmHost.ts`'s own `createAdapter()` exactly (same two classes,
- * same kind switch), since that's the sidecar's existing, already-proven
- * pattern for the same decision.
+ * the same `createAdapterForKind` entry `llmHost.ts` uses, so both sides
+ * of the sidecar agree on which class serves each `AdapterKind`.
  */
 import type { LLMAdapter, AdapterKind } from '@/core/llm/adapter';
-import { ClaudeAdapter } from '@/core/llm/claude';
-import { OpenAICompatibleAdapter } from '@/core/llm/openai-compatible';
+import { createAdapterForKind } from '@/core/llm/createAdapter';
 
 export function selectChatAdapter(kind: AdapterKind): LLMAdapter {
-  return kind === 'claude' ? new ClaudeAdapter() : new OpenAICompatibleAdapter();
+  return createAdapterForKind(kind);
 }

@@ -478,6 +478,22 @@ describe('conversationRunMirror', () => {
       expect(mirror.reader.getConversation('conv-1')?.workspacePath).toBeNull();
       expect(mirror.getWorkspacePathSnapshot()).toBeNull();
     });
+
+    it('patches the goal, clears it on null, and drops a malformed one', () => {
+      const goal = {
+        id: 'g1', revision: 2, objective: 'o', phase: 'active' as const, maxRounds: 10, roundsStarted: 1,
+        consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1,
+      };
+      const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
+      mirror.applyConvPatch({ goal });
+      expect(mirror.reader.getConversation('conv-1')?.goal).toEqual(goal);
+      mirror.applyConvPatch({ title: 'x' });
+      expect(mirror.reader.getConversation('conv-1')?.goal).toEqual(goal); // untouched
+      mirror.applyConvPatch({ goal: null });
+      expect(mirror.reader.getConversation('conv-1')?.goal).toBeUndefined();
+      mirror.applyConvPatch({ goal: { ...goal, phase: 'bogus' } as never });
+      expect(mirror.reader.getConversation('conv-1')?.goal).toBeUndefined();
+    });
   });
 
   describe('getWorkspacePathSnapshot', () => {

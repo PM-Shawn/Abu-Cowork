@@ -122,6 +122,14 @@ export function planHasRiskySteps(steps: string[]): boolean {
   });
 }
 
+/**
+ * A plan approval that already timed out in this team task (or this run,
+ * outside a task) is not asked again: nobody answered the first one, and each
+ * resubmission used to cost another ten-minute wait. The key is dropped when
+ * a plan is approved; a new task starts with a new key.
+ */
+const planApprovalTimedOut = new Set<string>();
+
 export const reportPlanTool: ToolDefinition = {
   name: TOOL_NAMES.REPORT_PLAN,
   description: 'Report and maintain the task execution plan. Call this BEFORE starting a multi-step task, and update it frequently: mark a step in_progress right before you work on it, and completed immediately after you finish it (do not batch completions). Always send the COMPLETE list of steps every call (full replacement — partial updates are not supported). Skip this for single-step or purely conversational tasks. Describe steps in plain business language — do not mention tool names.',
@@ -236,6 +244,8 @@ export const reportPlanTool: ToolDefinition = {
     }
     if (convId && context?.toolCallId && needsApproval) {
       setPlanMode(convId, 'planning');
+      const timeoutKey = context.teamTaskId ?? context.loopId;
+      if (timeoutKey && planApprovalTimedOut.has(timeoutKey)) return t.planAwaitingUser;
       const payload = buildPlanApprovalPayload(stepTexts, { team: strictTeam });
       // Read the approve label off the payload we just built so the match is
       // immune to a UI-locale switch during the await below (the dock echoes
@@ -243,12 +253,14 @@ export const reportPlanTool: ToolDefinition = {
       const approveLabel = payload.questions[0].options[0].label;
       const result = await requestUserQuestion(context.toolCallId, convId, payload);
       if (interpretPlanApproval(result, approveLabel)) {
+        if (timeoutKey) planApprovalTimedOut.delete(timeoutKey);
         setPlanMode(convId, 'approved');
         const warnings = buildWarnings();
         landPlannedSteps();
         return (strictTeam ? t.planApprovedTeam : t.planApproved) + warnings;
       }
       if (result === null) {
+        if (timeoutKey) planApprovalTimedOut.add(timeoutKey);
         return t.planTimeout;
       }
       // A bare rejection carries no feedback — instructing the model to

@@ -84,6 +84,12 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // text / fence output.
   TOOL_NAMES.SHOW_WIDGET,
   TOOL_NAMES.READ_ME,
+  // report_plan is both how a plan is declared and the only way its steps are
+  // marked in_progress / completed, and the current plan is injected into
+  // every turn. Offered only in early turns, a long task reaches a point where
+  // the model keeps being told "step N is in progress" with no tool to move it
+  // on, and works on step N again.
+  TOOL_NAMES.REPORT_PLAN,
 ]);
 
 /** Keyword → tool mapping for demand-based loading */
@@ -94,6 +100,11 @@ const PREFETCH_RULES: ReadonlyArray<{
   {
     keywords: ['定时', '计划', '每天', '每周', '自动执行', 'schedule', 'cron'],
     tools: [TOOL_NAMES.MANAGE_SCHEDULED_TASK],
+  },
+  {
+    // Goal mode: "keep going until it is done" requests.
+    keywords: ['设个目标', '设定目标', '目标模式', '做完', '全部完成', '直到', '为止', '不要停', '/goal', 'until done', 'until it', 'keep going', 'finish all'],
+    tools: [TOOL_NAMES.MANAGE_GOAL],
   },
   {
     keywords: ['触发', '监听', '事件', '自动响应', 'trigger', 'webhook'],
@@ -187,6 +198,8 @@ export interface PrefetchContext {
   computerUseEnabled: boolean;
   activeSkills: Skill[];
   turnCount: number;
+  /** The conversation carries a goal (any phase) — keep manage_goal loaded. */
+  hasGoal?: boolean;
 }
 
 /**
@@ -237,10 +250,14 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.APP_PREPARE);
   }
 
-  // Early turns: load planning + system info tools (LLM may plan after initial research)
-  if (ctx.turnCount <= 3) {
-    additionalTools.push(TOOL_NAMES.REPORT_PLAN);
+  // Goal mode: once a conversation has a goal the model must always be able
+  // to complete / block it, so the tool stays loaded (a stable roster also
+  // keeps the prompt cache warm across rounds).
+  if (ctx.hasGoal) {
+    additionalTools.push(TOOL_NAMES.MANAGE_GOAL);
   }
+
+  // First turn: load system info
   if (ctx.turnCount === 0) {
     additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
   }

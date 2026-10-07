@@ -35,6 +35,7 @@
  */
 import type { SettingsState } from '../stores/settingsStore';
 import type { ProviderInstance } from '../types/provider';
+import { localServerKind } from '../core/llm/localProvider';
 
 /** Get the active provider instance */
 export function getActiveProvider(state: SettingsState): ProviderInstance | undefined {
@@ -125,10 +126,30 @@ export function resolveAgentModel(agentModel: string | undefined, state: Setting
   return globalModel;
 }
 
+/**
+ * 调用这个服务商是否必须有 API key。本地服务商（localServerKind）里，Ollama、LM Studio
+ * 不需要；地址在本机的自定义服务商只有 OpenAI 兼容格式不需要——Anthropic SDK 在 key
+ * 为空时直接拒绝发请求，所以 Anthropic 格式的自定义服务始终需要 key。
+ */
+export function providerNeedsApiKey(
+  provider: Pick<ProviderInstance, 'id' | 'source' | 'apiFormat' | 'baseUrl'>,
+): boolean {
+  const kind = localServerKind(provider);
+  if (kind === 'ollama' || kind === 'lmstudio') return false;
+  return !(kind === 'custom-local' && provider.apiFormat === 'openai-compatible');
+}
+
+/** 服务商已经具备调用所需的凭据：有 key，或本来就不需要 key。 */
+export function providerHasCredentials(
+  provider: Pick<ProviderInstance, 'id' | 'source' | 'apiFormat' | 'baseUrl' | 'apiKey'>,
+): boolean {
+  return provider.apiKey.trim().length > 0 || !providerNeedsApiKey(provider);
+}
+
 /** Whether the current provider requires an API key (backward-compatible) */
 export function providerRequiresApiKey(state: SettingsState): boolean {
-  const id = state.activeModel.providerId;
-  return id !== 'ollama' && id !== 'lmstudio';
+  const provider = getActiveProvider(state);
+  return provider ? providerNeedsApiKey(provider) : true;
 }
 
 /** Returns the effective model ID (backward-compatible) */

@@ -69,6 +69,7 @@ vi.mock('../observability/runtimeTrace', async (importOriginal) => {
 });
 
 const runSubagentLoopMock = vi.fn();
+const modelPreflightMock = vi.fn();
 vi.mock('./subagentLoop', () => {
   class SubagentResult {
     readonly text: string;
@@ -138,6 +139,10 @@ vi.mock('./subagentLoop', () => {
 
   return {
     runSubagentLoop: (...a: unknown[]) => runSubagentLoopMock(...a),
+    buildSubagentModelUnavailableFailure: (...a: unknown[]) => {
+      const text = modelPreflightMock(...a) as string | null;
+      return text === null ? null : failure(text);
+    },
     SubagentResult,
     resolveSubagentInteractionMode: (options: Record<string, unknown>) => [
       'authorizationScopeId',
@@ -218,10 +223,12 @@ vi.mock('./ports/workspaceReader', () => ({
 }));
 
 const getActiveApiKeyMock = vi.fn().mockReturnValue('sk-test');
-const getActiveProviderMock = vi.fn().mockReturnValue({ id: 'p1', baseUrl: undefined, apiFormat: 'anthropic' });
+const getActiveProviderMock = vi.fn().mockReturnValue({ id: 'p1', baseUrl: undefined, apiFormat: 'anthropic', models: [] });
+const resolveAgentModelMock = vi.fn().mockReturnValue('claude-sonnet-4');
 vi.mock('../../utils/settingsSelectors', () => ({
   getActiveApiKey: (...a: unknown[]) => getActiveApiKeyMock(...a),
   getActiveProvider: (...a: unknown[]) => getActiveProviderMock(...a),
+  resolveAgentModel: (...a: unknown[]) => resolveAgentModelMock(...a),
 }));
 
 const resolveEffectiveLlmCredsMock = vi.fn().mockReturnValue({ apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false });
@@ -342,6 +349,8 @@ describe('subagentRunner', () => {
     onSidecarNotification.mockReset();
     runSubagentLoopMock.mockReset();
     runSubagentLoopMock.mockResolvedValue({ text: 'in-process result', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+    modelPreflightMock.mockReset();
+    modelPreflightMock.mockReturnValue(null);
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     checkToolApprovalMock.mockReset();
@@ -358,7 +367,8 @@ describe('subagentRunner', () => {
     getSettingsSnapshotMock.mockReturnValue({ agentMaxTurns: 200 });
     getCurrentPathMock.mockReturnValue('/tmp/workspace');
     getActiveApiKeyMock.mockReturnValue('sk-test');
-    getActiveProviderMock.mockReturnValue({ id: 'p1', baseUrl: undefined, apiFormat: 'anthropic' });
+    getActiveProviderMock.mockReturnValue({ id: 'p1', baseUrl: undefined, apiFormat: 'anthropic', models: [] });
+    resolveAgentModelMock.mockReturnValue('claude-sonnet-4');
     resolveEffectiveLlmCredsMock.mockReset();
     resolveEffectiveLlmCredsMock.mockReturnValue({ apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false });
     emitHookMock.mockClear();
@@ -438,6 +448,7 @@ describe('subagentRunner', () => {
         'filePermissionCallback',
         'onProgress',
         'settingsReader',
+        'liveSettingsReader',
         'toolInvoker',
         'capsPort',
         'workspaceReader',
@@ -583,6 +594,41 @@ describe('subagentRunner', () => {
   });
 
   describe('routing', () => {
+    it.each(['stopped', 'running'])('fails before %s runtime dispatch when the run model is no longer usable', async (sidecarStatus) => {
+      getSidecarStatus.mockReturnValue(sidecarStatus);
+      modelPreflightMock.mockReturnValue('model unavailable');
+      const runSnapshot = { agentMaxTurns: 200, activeModel: { providerId: 'p-conv', modelId: 'conv-model' } };
+      const liveSnapshot = { agentMaxTurns: 200, activeModel: { providerId: 'p-global', modelId: 'global-model' } };
+      getSettingsSnapshotMock.mockReturnValue(liveSnapshot);
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent,
+        task: 'do the thing',
+        settingsReader: { getSnapshot: () => runSnapshot as never },
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toBe('model unavailable');
+      expect(modelPreflightMock).toHaveBeenCalledWith(agent, runSnapshot, liveSnapshot);
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(onSidecarRequest).not.toHaveBeenCalled();
+    });
+
+    it('checks the live settings as the run settings when the caller passes no reader', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const liveSnapshot = { agentMaxTurns: 200, activeModel: { providerId: 'p-global', modelId: 'global-model' } };
+      getSettingsSnapshotMock.mockReturnValue(liveSnapshot);
+      sidecarRequestMock.mockResolvedValue({ text: 'ok', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'do the thing' });
+
+      expect(modelPreflightMock).toHaveBeenCalledWith(agent, liveSnapshot, liveSnapshot);
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+    });
+
     it.each(['stopped', 'running'])('fails before %s runtime dispatch when a required MCP tool is unavailable', async (sidecarStatus) => {
       getSidecarStatus.mockReturnValue(sidecarStatus);
       getAllToolsMock.mockReturnValue([
@@ -1036,7 +1082,7 @@ describe('subagentRunner', () => {
       });
       getActiveProviderMock.mockImplementation((settings: unknown) => {
         expect(settings).toBe(parentSettings);
-        return { id: 'parent-provider', baseUrl: 'https://parent.test', apiFormat: 'openai-compatible' };
+        return { id: 'parent-provider', baseUrl: 'https://parent.test', apiFormat: 'openai-compatible', models: [] };
       });
       resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({
         apiKey,
@@ -1229,6 +1275,62 @@ describe('subagentRunner', () => {
 
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
         expect.objectContaining({ runPermissionCeiling: ceiling }),
+      );
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('answers with the session\'s own offered tool names, whatever the sidecar sent', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'read' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'read_file',
+        input: { path: 'x.txt' },
+        context: { offeredToolNames: ['forged_tool'] },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
+        expect.objectContaining({ offeredToolNames: ['read_file'] }),
+      );
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    // 子代理模型能不能看图由外壳按同一份设置快照自己算，不用 sidecar 发来的副本
+    it('answers with the session\'s own model, computer-use tier and vision, whatever the sidecar sent', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      resolveAgentModelMock.mockReturnValue('deepseek-chat');
+      getActiveProviderMock.mockReturnValue({ id: 'deepseek', source: 'builtin', baseUrl: undefined, apiFormat: 'openai-compatible', models: [] });
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'read' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'read_file',
+        input: { path: 'x.txt' },
+        context: { computerUseTier: 'full', supportsVision: true, modelId: 'forged-model', modelCapabilitySource: 'user-declared' },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
+        expect.objectContaining({
+          computerUseTier: 'structured',
+          supportsVision: false,
+          modelId: 'deepseek-chat',
+          modelCapabilitySource: 'builtin',
+        }),
       );
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;

@@ -29,8 +29,8 @@ models.dev's `limit.output` is the model's **maximum output capability**. Abu ne
 - `outputCeiling` = the true model max. Used by agentLoop's max_tokens-recovery escalation
   to climb toward the real limit only when a turn actually needs it.
 
-`contextWindow` is the upstream value; `resolveEffectiveContextWindow()` clamps it to the
-user's setting, so a large upstream window (e.g. Claude 4.x at 1M) never over-claims.
+`contextWindow` is the upstream value; `resolveContextWindow()` in `contextWindow.ts` uses it only as the
+last-resort estimate (capped at 32768 for local servers) after the user's value and what the service reported.
 
 ## What models.dev cannot give us (lives in overlays / a classifier)
 

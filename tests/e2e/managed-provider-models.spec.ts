@@ -153,7 +153,7 @@ function composerModelButton(page: Page, label: string): Locator {
 }
 
 function pickerRow(page: Page, label: string): Locator {
-  return page.locator('div[role="button"]').filter({ hasText: new RegExp(`^${label}$`) }).last();
+  return page.locator('div[role="button"]').filter({ has: page.getByText(label, { exact: true }) }).last();
 }
 
 async function launch(dataRoot: ElectronDataRoot): Promise<{ app: ElectronApplication; page: Page }> {

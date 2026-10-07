@@ -72,7 +72,7 @@ const mockGetActiveProvider = vi.fn(
 const mockResolveAgentModel = vi.hoisted(() => vi.fn(() => 'claude-opus-4-8'));
 vi.mock('../../stores/settingsStore', () => ({
   readConfirmedBrowserPermissionConfig: vi.fn(() => null),
-  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
+  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined, activeModel: { providerId: 'p1', modelId: 'test-model' }, providers: [] }) },
 }));
 
 // subagentLoop.ts imports getActiveProvider/getActiveApiKey/resolveAgentModel
@@ -84,6 +84,9 @@ vi.mock('../../utils/settingsSelectors', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   getActiveApiKey: () => 'sk-test',
   resolveAgentModel: (...args: unknown[]) => mockResolveAgentModel(...args),
+  // The run model stays usable here; refusing an unusable one has its own tests.
+  getModelUnavailableReason: () => null,
+  getModelDisplayLabel: (_settings: unknown, ref: { modelId: string }) => ref.modelId,
 }));
 
 vi.mock('../../stores/discoveredCapabilitiesStore', () => ({
@@ -107,6 +110,7 @@ vi.mock('../session/outputSnapshots', () => ({
 import { runSubagentLoop, SubagentResult } from './subagentLoop';
 import { clearLogs, getRecentLogs } from '../logging/logger';
 import { agentRegistry } from './registry';
+import { getI18n } from '@/i18n';
 
 /** Build a fake adapter.chat that synchronously emits the given stream events. */
 function emits(events: StreamEvent[]) {
@@ -1024,6 +1028,162 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(result.text).toContain('the final answer');
     expect(result.stopReason).toBe('completed');
     expect(result.turnCount).toBe(2);
+  });
+
+  it('lets a delegated model rewrite a malformed operation once, then reports it', async () => {
+    mockClaudeChat.mockImplementation(async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+      onEvent({ type: 'malformed_tool_call', raw: '<invoke name="noop">' });
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+
+    const result = await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], maxTurns: 5 } as never,
+      task: 'task',
+    });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(mockClaudeChat.mock.calls[1][0])).toContain('could not be parsed');
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain(getI18n().chat.malformedToolCall);
+    expect(result.text).not.toContain('could not be parsed');
+    expect(result.text).not.toContain('<invoke');
+  });
+
+  it('carries on after one quiet rewrite of a malformed delegated operation', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'malformed_tool_call', raw: '<tool_call>{"name":' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'rewritten properly' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]));
+
+    const result = await runSubagentLoop({ agent, task: 'task' });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect(result.stopReason).toBe('completed');
+    expect(result.text).toBe('rewritten properly');
+  });
+
+  it('ends after giving up even when an instruction for the member is waiting', async () => {
+    const { enqueueDispatchInput, clearDispatchInputs } = await import('./dispatchInput');
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'malformed_tool_call', raw: '<invoke name="noop">' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]))
+      .mockImplementationOnce(async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+        onEvent({ type: 'malformed_tool_call', raw: '<invoke name="noop">' });
+        enqueueDispatchInput('malformed-input:0', 'Try harder');
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      });
+    try {
+      const result = await runSubagentLoop({ agent, task: 'task', dispatchKey: 'malformed-input:0' });
+
+      // 放弃之后直接结束，等待中的指令按已有路径交回给派活的一方
+      expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+      expect(result.stopReason).toBe('error');
+      expect(result.text.split(getI18n().chat.malformedToolCall).length - 1).toBe(1);
+    } finally { clearDispatchInputs('malformed-input:0'); }
+  });
+
+  it('does not let an unparseable native call restore the delegated rewrite chance', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'malformed_tool_call', raw: '<invoke name="noop">' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'bad-native', name: 'noop', input: { _parse_error: 'bad json' } },
+        { type: 'done', stopReason: 'tool_use' },
+      ]))
+      .mockImplementation(emits([
+        { type: 'malformed_tool_call', raw: '<invoke name="noop">' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]));
+
+    const result = await runSubagentLoop({ agent, task: 'task' });
+
+    // 写坏 → 无法解析的原生调用 → 再写坏：第二次写坏直接放弃
+    expect(mockClaudeChat).toHaveBeenCalledTimes(3);
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain(getI18n().chat.malformedToolCall);
+  });
+
+  it('rewrites a delegated operation quietly again after a proper operation came in between', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'malformed_tool_call', raw: '<invoke name="noop">' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'good-native', name: 'noop', input: {} },
+        { type: 'done', stopReason: 'tool_use' },
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'malformed_tool_call', raw: '<invoke name="noop">' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'all done' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]));
+
+    const result = await runSubagentLoop({ agent, task: 'task' });
+
+    // 写坏 → 正常操作 → 再写坏：第二次写坏仍然悄悄重写一次
+    expect(mockClaudeChat).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(mockClaudeChat.mock.calls[3][0]).split('could not be parsed').length - 1).toBe(2);
+    expect(result.stopReason).toBe('completed');
+    expect(result.text).toContain('all done');
+    expect(result.text).not.toContain(getI18n().chat.malformedToolCall);
+  });
+
+  it('treats a delegated operation cut off by the output limit as a truncation and keeps the rewrite for later', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'malformed_tool_call', raw: '<tool_call>{"name":"noop","arguments":{"x"' },
+        { type: 'done', stopReason: 'max_tokens' },
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'malformed_tool_call', raw: '<invoke name="noop">' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done at last' },
+        { type: 'done', stopReason: 'end_turn' },
+      ]));
+
+    const result = await runSubagentLoop({ agent, task: 'task' });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(3);
+    // 被截断的那一次只走截断续写，不消耗写坏重写的机会
+    const second = JSON.stringify(mockClaudeChat.mock.calls[1][0]);
+    expect(second).toContain('Output token limit reached');
+    expect(second).not.toContain('could not be parsed');
+    expect(JSON.stringify(mockClaudeChat.mock.calls[2][0])).toContain('could not be parsed');
+    expect(result.stopReason).toBe('completed');
+    expect(result.text).toContain('done at last');
+    expect(result.text).not.toContain(getI18n().chat.malformedToolCall);
+  });
+
+  it('stops at the truncation limit when every delegated reply is an operation cut off by the output limit', async () => {
+    mockClaudeChat.mockImplementation(emits([
+      { type: 'malformed_tool_call', raw: '<tool_call>{"name":"noop","arguments":{"x"' },
+      { type: 'done', stopReason: 'max_tokens' },
+    ]));
+
+    const result = await runSubagentLoop({ agent, task: 'task' });
+
+    // 第一次加三次截断续写，写坏重写一次也没有发生
+    expect(mockClaudeChat).toHaveBeenCalledTimes(4);
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain(getI18n().chat.subagent.outputLimitIncomplete);
+    expect(result.text).not.toContain(getI18n().chat.malformedToolCall);
+    expect(mockClaudeChat.mock.calls.map((call) => JSON.stringify(call[0])).join(''))
+      .not.toContain('could not be parsed');
   });
 
   // Contract that agentLoop's @agent delegate branch depends on: when the user

@@ -36,6 +36,8 @@ export const TOOL_NAMES = {
   SKILL_MANAGE: 'skill_manage',
   DELEGATE_TO_AGENT: 'delegate_to_agent',
   REPORT_PLAN: 'report_plan',
+  /** Goal mode: the conversation's persistent objective (goalTools.ts). */
+  MANAGE_GOAL: 'manage_goal',
   /** @deprecated save_skill was removed in favor of skill_manage. The constant
    *  is kept solely because the shared factory in agentTools.ts still references
    *  it in an unreachable branch; delete both once save_agent gets its own

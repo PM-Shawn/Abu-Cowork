@@ -12,6 +12,7 @@ import { useTaskExecutionStore } from './taskExecutionStore';
 import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
 import { clearPlanMode } from '../core/agent/planMode';
+import { clearGoalActivation } from '../core/goal/goalActivation';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
@@ -74,6 +75,7 @@ import {
   type LoadedMessageSanitizerText,
 } from '../core/session/loadedMessageSanitizer';
 import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
+import { sanitizeGoalState, type GoalState } from '../core/goal/goalTypes';
 
 enableMapSet();
 
@@ -339,6 +341,12 @@ function persistConversationIndexEntry(convId: string): void {
       await flushIndex();
     }),
   );
+}
+
+/** The goal `loadConversation` takes from an index entry — validated, since index.json is untrusted input. */
+function restoredGoal(meta: ConversationMeta): Pick<Conversation, 'goal'> {
+  const goal = sanitizeGoalState(meta.goal);
+  return goal ? { goal } : {};
 }
 
 /** The permission mode `loadConversation` takes from an index entry: the one the setter would accept now, or none. */
@@ -643,6 +651,8 @@ interface ChatActions {
   setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
   /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
   setConversationTeamId: (convId: string, teamId: string | undefined) => void;
+  /** Goal mode: write the conversation's goal (undefined clears it). Callers go through goalService. */
+  setConversationGoal: (convId: string, goal: GoalState | undefined) => void;
   setPendingTeamId: (teamId: string | undefined) => void;
   setPendingAppBinding: (binding: ConversationAppBinding | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
@@ -1070,6 +1080,26 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      setConversationGoal: (convId, goal) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            if (goal) conv.goal = goal;
+            else delete conv.goal;
+          }
+          const meta = state.conversationIndex[convId];
+          if (meta) {
+            if (goal) meta.goal = goal;
+            else delete meta.goal;
+          }
+        });
+        // Persist to disk index (same path as the per-conversation team pin)
+        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
       setConversationTeamId: (convId, teamId) => {
         set((state) => {
           const conv = state.conversations[convId];
@@ -1213,6 +1243,8 @@ export const useChatStore = create<ChatStore>()(
         // Clear plan mode state to prevent the module-level Map from leaking
         // an entry for a conversation that no longer exists.
         clearPlanMode(id);
+        // Same for the goal-mode armed flag (process-local, never persisted).
+        clearGoalActivation(id);
         const wasActive = get().activeConversationId === id;
         // Compute the successor BEFORE the deletion mutates state, so the
         // helper can see the deleted entry's scope (projectId / scheduledTaskId
@@ -2765,6 +2797,7 @@ export const useChatStore = create<ChatStore>()(
               scheduledTaskId: meta.scheduledTaskId,
               triggerId: meta.triggerId,
               teamId: meta.teamId,
+              ...restoredGoal(meta),
               appBinding: meta.appBinding,
               projectId: meta.projectId,
               readOnly: meta.readOnly,
@@ -2801,6 +2834,7 @@ export const useChatStore = create<ChatStore>()(
                 scheduledTaskId: meta.scheduledTaskId,
                 triggerId: meta.triggerId,
                 teamId: meta.teamId,
+                ...restoredGoal(meta),
                 appBinding: meta.appBinding,
                 projectId: meta.projectId,
                 readOnly: meta.readOnly,
@@ -2851,7 +2885,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 15,
+      version: 16,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2898,6 +2932,9 @@ export const useChatStore = create<ChatStore>()(
         // field; absent = general shell, present = the app the conversation was
         // started in. Nothing to transform for pre-app conversations).
         if (version < 15) { /* no transform needed */ }
+        // v15 → v16: added goal (goal mode) on Conversation/ConversationMeta
+        // (optional field; absent = no goal. Activation is never persisted).
+        if (version < 16) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

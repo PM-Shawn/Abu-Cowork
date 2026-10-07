@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { assertPluginEnabled, assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
 import { agentToolPolicyForRoute, checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { clearRunBounds } from '../team/teamRunBounds';
-import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
+import { taskIdFor, useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Shell-side channel handler module for the main agent loop's sidecar run —
  * the main-loop twin of `subagentRunner.ts` (P1-3a). Built up in two
@@ -37,6 +37,8 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
 import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { GoalState } from '../goal/goalTypes';
+import type { ComputerUseModelTier } from '../llm/modelCapabilities';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -146,8 +148,10 @@ import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
 import {
   BROWSER_DENIAL_ABORT_CAUSE,
+  createBrowserDenialStreak,
   createBrowserDenialTracker,
   type BrowserDenialAbortCause,
+  type BrowserDenialStreak,
   type BrowserDenialTracker,
 } from './browserDenialTracker';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
@@ -1282,22 +1286,23 @@ function handlePlanClear(rawParams: unknown): void {
 }
 
 /** The three CapsPort record* methods, addressable by `caps.record`'s `field`. */
-const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown) => void> = {
+const CAPS_RECORD_BY_FIELD: Record<string, (providerId: string, modelId: string, value: unknown, probe: unknown) => void> = {
   maxOutputTokens: (providerId, modelId, value) => getCapsPort().recordMaxOutputTokens(providerId, modelId, value as number),
-  contextWindow: (providerId, modelId, value) => getCapsPort().recordContextWindow(providerId, modelId, value as number),
+  contextWindow: (providerId, modelId, value, probe) =>
+    getCapsPort().recordContextWindow(providerId, modelId, value as number, probe as number | undefined),
   reasoningObserved: (providerId, modelId) => getCapsPort().recordReasoningObserved(providerId, modelId),
 };
 
-/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value} → getCapsPort().record*. Unknown field → warn + drop. */
+/** `caps.record` (NOTIFICATION) → {providerId, modelId, field, value, probe?} → getCapsPort().record*. Unknown field → warn + drop. */
 function handleCapsRecord(rawParams: unknown): void {
-  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown } | null;
+  const params = rawParams as { providerId?: unknown; modelId?: unknown; field?: unknown; value?: unknown; probe?: unknown } | null;
   if (!params || typeof params.providerId !== 'string' || typeof params.modelId !== 'string' || typeof params.field !== 'string') return;
   const record = CAPS_RECORD_BY_FIELD[params.field];
   if (!record) {
     logger.warn('caps.record: unknown field, dropping', { field: params.field });
     return;
   }
-  record(params.providerId, params.modelId, params.value);
+  record(params.providerId, params.modelId, params.value, params.probe);
 }
 
 /** `shell.notifyTask` (NOTIFICATION) → {kind, title, conversationId} → notifyTaskCompleted/notifyTaskError. Unknown kind → warn + drop. */
@@ -1470,6 +1475,37 @@ function trustedTeamContext(conversationId: string): Pick<ToolExecutionContext, 
  * uses, so every downstream fence (sidecar abort, frame drop, dialog drain,
  * `assertRunNotStopping` on the next tool.invoke) fires exactly as for Stop.
  */
+/**
+ * Refusal streaks of team tasks. Every run the confirmation strip starts
+ * continues its task, so the runs share one streak; a new task retires the
+ * previous one's entry (see where `beginTask` is called).
+ */
+const browserDenialStreaksByTask = new Map<string, BrowserDenialStreak>();
+
+function browserDenialStreakFor(session: RunSession): BrowserDenialStreak | undefined {
+  const taskId = session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined;
+  if (!taskId) return undefined;
+  let streak = browserDenialStreaksByTask.get(taskId);
+  if (!streak) {
+    streak = createBrowserDenialStreak();
+    browserDenialStreaksByTask.set(taskId, streak);
+  }
+  return streak;
+}
+
+/**
+ * The user allowed a request on the confirmation strip. In a team task every
+ * request still waiting there already counted as a refusal, so an allowance
+ * is the same answer a dialog "allow" gives: the streak starts over.
+ */
+export function forgiveTeamBrowserDenials(conversationId: string): void {
+  const taskId = taskIdFor(conversationId);
+  const streak = taskId ? browserDenialStreaksByTask.get(taskId) : undefined;
+  if (!streak) return;
+  streak.consecutiveDenials = 0;
+  streak.streakHasScripting = false;
+}
+
 function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
   session.browserDenials ??= createBrowserDenialTracker(() => {
     session.abortCause = BROWSER_DENIAL_ABORT_CAUSE;
@@ -1487,7 +1523,7 @@ function browserDenialsForSession(session: RunSession): BrowserDenialTracker {
       conversationId: session.conversationId,
     });
     session.shellAbortController.abort(new Error('Run stopped after consecutive browser denials'));
-  });
+  }, undefined, browserDenialStreakFor(session));
   return session.browserDenials;
 }
 
@@ -1499,10 +1535,41 @@ function abortedResultForSession(session: RunSession): AgentLoopDispatchResult {
   };
 }
 
+/**
+ * 本轮给模型的工具名只由 sidecar 里的运行时写入，线路上是字符串数组。
+ * 类型不对说明两端不一致，就地报错。
+ */
+function assertWireOfferedToolNames(incoming: ToolExecutionContext | undefined): void {
+  const names: unknown = incoming?.offeredToolNames;
+  if (names === undefined) return;
+  if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: offeredToolNames must be an array of strings');
+  }
+}
+
+const COMPUTER_USE_TIERS: ReadonlySet<unknown> = new Set<ComputerUseModelTier>(['full', 'structured', 'unsupported', 'unknown']);
+
+/**
+ * 电脑操控档位与能否看图同样只由 sidecar 里的运行时写入（agentLoop 按入口模型算出）。
+ * 工具说明、截图与坐标动作都按它们取舍，值不在约定范围内说明两端不一致，就地报错。
+ */
+function assertWireModelCapabilities(incoming: ToolExecutionContext | undefined): void {
+  const tier: unknown = incoming?.computerUseTier;
+  if (tier !== undefined && !COMPUTER_USE_TIERS.has(tier)) {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: computerUseTier must be one of full, structured, unsupported, unknown');
+  }
+  const vision: unknown = incoming?.supportsVision;
+  if (vision !== undefined && typeof vision !== 'boolean') {
+    throw new SidecarRequestError(-32602, 'Invalid tool context: supportsVision must be a boolean');
+  }
+}
+
 function contextForSession(
   session: RunSession,
   incoming: ToolExecutionContext | undefined,
 ): ToolExecutionContext {
+  assertWireOfferedToolNames(incoming);
+  assertWireModelCapabilities(incoming);
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,
@@ -1519,6 +1586,9 @@ function contextForSession(
     // Security boundary: the shell session owns the ceiling. Never trust a
     // sidecar-provided context to omit or widen it.
     runPermissionCeiling: session.options.runPermissionCeiling,
+    // Security boundary: the team task keys the hand-off bounds and the
+    // refusal streak, so it is shell-owned like the run identity above.
+    teamTaskId: session.teamSnapshot?.teamRoster ? taskIdFor(session.conversationId) : undefined,
     // Security boundary: outbound identity is authority-bearing. A sidecar may
     // describe a tool call, but it may not choose a different IM recipient or
     // manufacture one for a non-IM run.
@@ -2129,12 +2199,14 @@ function pushSettingsNow(): void {
   });
 }
 
-/** The 4 scalar fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
+/** The fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
 interface ConvPatchSnapshot {
   workspacePath?: string | null;
   title?: string;
   activeSkills?: string[];
   model?: { providerId: string; modelId: string };
+  /** Goal mode: written shell-side by the goal tool / UI mid-run; `null` on the wire = cleared. */
+  goal?: GoalState | null;
 }
 
 let chatUnsub: (() => void) | undefined;
@@ -2150,6 +2222,7 @@ function snapshotConv(conversationId: string): ConvPatchSnapshot | undefined {
     title: conv.title,
     activeSkills: conv.activeSkills,
     model: state.conversationIndex[conversationId]?.model,
+    goal: conv.goal ?? null,
   };
 }
 
@@ -2177,6 +2250,11 @@ function diffConvSnapshot(prev: ConvPatchSnapshot | undefined, next: ConvPatchSn
   }
   if (!prev || prev.model?.providerId !== next.model?.providerId || prev.model?.modelId !== next.model?.modelId) {
     patch.model = next.model;
+    changed = true;
+  }
+  // Every goal write bumps `revision`, so id + revision identify its content.
+  if (!prev || prev.goal?.id !== next.goal?.id || prev.goal?.revision !== next.goal?.revision) {
+    patch.goal = next.goal ?? null;
     changed = true;
   }
   return changed ? patch : undefined;
@@ -2511,7 +2589,7 @@ interface AgentRunParams {
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
   settingsSnapshot: SettingsState;
-  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; isReasoningModel?: boolean };
+  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; contextWindowProbe?: number; isReasoningModel?: boolean };
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
   toolList: ReturnType<typeof toSerializableTool>[];
   planMode?: 'off' | 'planning' | 'approved';
@@ -2963,6 +3041,7 @@ async function buildAgentRunParams(
         modelId: effectiveModelId,
         maxOutputTokens: discovered.maxOutputTokens,
         contextWindow: discovered.contextWindow,
+        contextWindowProbe: discovered.contextWindowProbe,
         isReasoningModel: discovered.isReasoningModel,
       };
     }
@@ -3139,8 +3218,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             messageTaken: false,
           };
         }
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -3160,8 +3240,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
         // calls (userInputQueue.ts, unchanged).
-        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
-        else enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -3187,6 +3268,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       });
     }
   }
+  // A team conversation's task spans every run the confirmation strip starts;
+  // any other run (a request the user typed, a schedule, an IM message)
+  // starts a new task and retires the previous one's rules and bounds.
+  const teamTask = entryConversation?.teamId
+    ? useTeamConfirmationStore.getState().beginTask(conversationId,
+      Boolean(options.teamConfirmationRetryId || options.continuesTeamTask))
+    : undefined;
+  if (teamTask?.retiredTaskId) {
+    clearRunBounds(teamTask.retiredTaskId);
+    browserDenialStreaksByTask.delete(teamTask.retiredTaskId);
+  }
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
   if (inProcessEnvironment) {
@@ -3199,7 +3291,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       const result = await runAgentLoop(
         conversationId,
         userMessage,
-        rendererRuntimeOptions(options, (messageId) => {
+        rendererRuntimeOptions({ ...options, ...(teamTask ? { teamTaskId: teamTask.taskId } : {}) }, (messageId) => {
           ownership.messageTaken = true;
           localUserMessageId = messageId;
           if (messageId) {
@@ -3285,6 +3377,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     content: userMessage,
     timestamp: runtimeStartedAt,
     loopId: runId,
+    // Goal mode: an automatic round opens with an internal row, rendered as a
+    // round marker rather than a user bubble (see AgentLoopOptions.goalRound).
+    ...(options?.goalRound ? { isSystem: true, goalRound: options.goalRound } : {}),
   });
   ownership.messageTaken = true;
   // The documented onMessageTaken contract ("invoked once the initial user
@@ -3998,7 +4093,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   }
   } finally {
     useTeamConfirmationStore.getState().clearRun(conversationId, ownedLoopId);
-    clearRunBounds(ownedLoopId);
+    // A team task's bounds outlive this run and are retired when the next
+    // task starts; only a run outside a task owns its own entry.
+    if (!teamTask) clearRunBounds(ownedLoopId);
   }
 }
 
@@ -4072,6 +4169,35 @@ export async function runAgentLoopDispatched(
   }
 }
 
+/**
+ * Called once per dispatch, after the initial run AND every queued user
+ * follow-up it handed off to have finished — i.e. when the conversation has
+ * nothing left to run. `result` is the LAST run's result (what the
+ * conversation is left with). Goal mode's round driver hangs off this seam;
+ * registration keeps this module free of a static dependency on it.
+ */
+export type DispatchSettledListener = (conversationId: string, result: AgentLoopDispatchResult) => void;
+
+const dispatchSettledListeners = new Set<DispatchSettledListener>();
+
+export function onDispatchSettled(listener: DispatchSettledListener): () => void {
+  dispatchSettledListeners.add(listener);
+  return () => { dispatchSettledListeners.delete(listener); };
+}
+
+function notifyDispatchSettled(conversationId: string, result: AgentLoopDispatchResult): void {
+  for (const listener of dispatchSettledListeners) {
+    try {
+      listener(conversationId, result);
+    } catch (error) {
+      logger.warn('dispatch-settled listener failed', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 async function runDispatchedTurns(
   conversationId: string,
   userMessage: string,
@@ -4102,7 +4228,8 @@ async function runDispatchedTurns(
         // or incorrectly retain a lower ceiling. System-authored wake-ups never
         // reach this dequeue path (`dequeueNextUserInput` skips them). What
         // they ARE is human-typed, so the handoff run is user-initiated.
-        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId },
+        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
+          continuesTeamTask: queuedInput.continuesTeamTask },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);
@@ -4123,6 +4250,11 @@ async function runDispatchedTurns(
       pauseUserInputQueue(conversationId);
     }
   } catch (error) {
+    notifyDispatchSettled(conversationId, {
+      reason: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      messageTaken: error instanceof AgentLoopDispatchError ? error.messageTaken : initialMessageTaken,
+    });
     if (queuedInputInFlight) {
       if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInputInFlight);
@@ -4139,5 +4271,6 @@ async function runDispatchedTurns(
     throw wrapAgentLoopDispatchError(error, true);
   }
 
+  notifyDispatchSettled(conversationId, previousResult);
   return initialResult;
 }

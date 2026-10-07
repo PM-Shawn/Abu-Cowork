@@ -9,7 +9,13 @@ import {
   collectBundleFiles,
   resolveConversationIds,
 } from './collect';
+import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '@/stores/chatStore';
+import {
+  emptyUsageAggregate,
+  emptyUsageHealth,
+  emptyUsageRangeResult,
+} from '@/core/usage/usageLedgerClient';
 import type { Conversation, Message } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import { clearLogs, createLogger } from '@/core/logging/logger';
@@ -163,6 +169,50 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     );
   });
 
+  it('writes the usage ledger summary as diagnostic metadata', async () => {
+    const totals = { ...emptyUsageAggregate(), attempts: 7, inputKnownSum: 70 };
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'usage_query_range') return undefined;
+      return {
+        ...emptyUsageRangeResult(),
+        available: true,
+        totals,
+        bySource: [{ source: 'main', ...totals }],
+        statsOriginLocalDate: '2026-09-19',
+        health: { ...emptyUsageHealth(), writeFailures: 2, lastErrorCode: 'SQLITE_CANTOPEN' },
+      };
+    });
+
+    try {
+      const { files } = await collectBundleFiles({ includeRawText: false, conversationIds: [] });
+      const summary = JSON.parse(String(files['usage/summary.json']));
+      const manifest = JSON.parse(String(files['manifest.json']));
+
+      expect(summary).toMatchObject({
+        schemaVersion: 1,
+        available: true,
+        statsOriginLocalDate: '2026-09-19',
+        allTime: { totals: { attempts: 7, inputKnownSum: 70 }, bySource: [{ source: 'main', attempts: 7 }] },
+        health: { writeFailures: 2, lastErrorCode: 'SQLITE_CANTOPEN' },
+      });
+      expect(manifest.files).toContainEqual(
+        expect.objectContaining({ path: 'usage/summary.json', privacy: 'diagnostic-metadata' }),
+      );
+    } finally {
+      vi.mocked(invoke).mockReset();
+    }
+  });
+
+  it('still writes a usage summary when the ledger cannot be read', async () => {
+    const { files } = await collectBundleFiles({ includeRawText: false, conversationIds: [] });
+
+    expect(JSON.parse(String(files['usage/summary.json']))).toMatchObject({
+      schemaVersion: 1,
+      available: false,
+      allTime: { totals: { attempts: 0 } },
+    });
+  });
+
   it('marks cached fallback results stale instead of presenting them as live', async () => {
     diagnosticRunnerMock.mockRejectedValue(new Error('runner unavailable'));
     useDiagnosticStore.setState({
@@ -185,6 +235,65 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     expect(snapshot.freshness).toBe('stale');
     expect(snapshot.staleAgeMs).toBeGreaterThanOrEqual(0);
     expect(snapshot.results[0]).toMatchObject({ freshness: 'stale' });
+  });
+
+  it('redacts secrets carried in live check rows before writing diagnostic-snapshot.json', async () => {
+    const secret = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+    diagnosticRunnerMock.mockResolvedValue([{
+      id: 'mcp:tracker',
+      category: 'mcp',
+      name: 'tracker',
+      status: 'failed',
+      metric: 'error',
+      errorMessage: `connect failed: Authorization: Bearer ${secret}`,
+      errorDetail: `connect failed: Authorization: Bearer ${secret}`,
+      suggestedAction: { type: 'open-toolbox', target: 'mcp', label: 'Open toolbox' },
+      checkedAt: 100,
+      durationMs: 2,
+    }]);
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const raw = String(files['diagnostic-snapshot.json']);
+
+    expect(raw).not.toContain(secret);
+    expect(raw).toContain('[REDACTED]');
+    // 字段名脱敏不能清掉 CheckResult 的正常字段
+    expect(JSON.parse(raw).results[0]).toMatchObject({
+      id: 'mcp:tracker',
+      category: 'mcp',
+      name: 'tracker',
+      status: 'failed',
+      metric: 'error',
+      suggestedAction: { type: 'open-toolbox', target: 'mcp', label: 'Open toolbox' },
+      checkedAt: 100,
+      durationMs: 2,
+      freshness: 'fresh',
+    });
+  });
+
+  it('redacts secrets carried in cached fallback rows before writing diagnostic-snapshot.json', async () => {
+    const secret = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+    diagnosticRunnerMock.mockRejectedValue(new Error('runner unavailable'));
+    useDiagnosticStore.setState({
+      lastCheckedAt: 100,
+      results: {
+        'skills:loader': {
+          id: 'skills:loader',
+          category: 'skills',
+          name: 'skills',
+          status: 'failed',
+          errorDetail: `load failed, api_key=${secret}`,
+          checkedAt: 100,
+          durationMs: 1,
+        },
+      },
+    });
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const raw = String(files['diagnostic-snapshot.json']);
+
+    expect(raw).not.toContain(secret);
+    expect(JSON.parse(raw).results[0]).toMatchObject({ id: 'skills:loader', freshness: 'stale' });
   });
 
   it('produces no conversations/<id>/ content when conversationIds is empty and there is no active conversation, but still writes environment files', async () => {

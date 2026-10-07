@@ -60,6 +60,42 @@ describe('diagnostic runner deadlines', () => {
     expect(results.filter((row) => row.status === 'passed')).toHaveLength(5);
   });
 
+  it('redacts secrets in the failure text of every row it returns', async () => {
+    const shaped = `sk-test-not-a-secret-${'0'.repeat(12)}`;
+    mocks.mcp.mockResolvedValue([{
+      id: 'mcp:tracker',
+      category: 'mcp',
+      name: 'tracker',
+      status: 'failed',
+      errorMessage: `connect failed: Authorization: Bearer ${shaped}`,
+      errorDetail: `connect failed: Authorization: Bearer ${shaped}`,
+      checkedAt: 1,
+      durationMs: 1,
+    }]);
+    mocks.network.mockResolvedValue([{
+      id: 'network:reachability',
+      category: 'network',
+      name: 'network',
+      status: 'failed',
+      errorMessage: 'unreachable',
+      errorDetail: 'https://gateway.example.test/v1/models?key=not-a-secret-value → TypeError: fetch failed',
+      checkedAt: 1,
+      durationMs: 1,
+    }]);
+    mocks.skills.mockRejectedValue(new Error(`loader crashed, api_key=${shaped}`));
+
+    const all = await runAllChecks();
+    const single = await runCategoryChecks('network');
+
+    expect(JSON.stringify(all)).not.toContain(shaped);
+    expect(JSON.stringify(all)).not.toContain('not-a-secret-value');
+    expect(JSON.stringify(single)).not.toContain('not-a-secret-value');
+    expect(all.find((row) => row.id === 'network:reachability')?.errorDetail)
+      .toBe('https://gateway.example.test/v1/models?key=[REDACTED] → TypeError: fetch failed');
+    expect(all.find((row) => row.id === 'network:reachability')?.errorMessage).toBe('unreachable');
+    expect(all.find((row) => row.id === 'skills:runner-error')?.errorMessage).toContain('[REDACTED]');
+  });
+
   it('applies the same deadline to a single-category rerun', async () => {
     mocks.ai.mockReturnValue(new Promise(() => {}));
 

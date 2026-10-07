@@ -1412,7 +1412,15 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarNotification, 'caps.record');
       handler({ providerId: 'p1', modelId: 'm1', field: 'contextWindow', value: 128000 });
-      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 128000);
+      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 128000, undefined);
+    });
+
+    it('contextWindow field with probe → recordContextWindow carries the service value', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'caps.record');
+      handler({ providerId: 'p1', modelId: 'm1', field: 'contextWindow', value: 6000, probe: 8192 });
+      expect(recordContextWindowMock).toHaveBeenCalledWith('p1', 'm1', 6000, 8192);
     });
 
     it('reasoningObserved field → recordReasoningObserved', async () => {
@@ -1664,6 +1672,30 @@ describe('agentLoopRunner', () => {
       }));
     });
 
+    it('stamps the shell team task onto a team run tool context, ignoring a forged wire value', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      const { taskId } = useTeamConfirmationStore.getState().beginTask('conv-1', false);
+      registerRunSession('run-1', { ...makeSession(), teamSnapshot: { teamRoster: ['A'] } });
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-1', toolName: 'read_file', input: { path: '/tmp/x' }, context: { teamTaskId: 'forged' } });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({ teamTaskId: taskId }));
+    });
+
+    it('gives a run outside a team no team task, even when the wire names one', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-1', toolName: 'read_file', input: { path: '/tmp/x' }, context: { teamTaskId: 'forged' } });
+
+      expect((executeAnyToolMock.mock.calls.at(-1)?.[4] as { teamTaskId?: string }).teamTaskId).toBeUndefined();
+    });
+
     it('exposes only the two report functions — never the abort controller', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1675,6 +1707,51 @@ describe('agentLoopRunner', () => {
       expect(typeof context.reportBrowserAllow).toBe('function');
       expect(context).not.toHaveProperty('shellAbortController');
       expect(context).not.toHaveProperty('browserDenials');
+    });
+
+    it('the runs of one team task share the refusal streak; a new task starts it over', async () => {
+      const { ensureHandlersRegistered, registerRunSession, unregisterRunSession } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+
+      const first = { ...makeSession({ loopId: 'loop-a' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-a', first);
+      (await invokeOnce('run-a')).reportBrowserDenial!();
+      unregisterRunSession('run-a');
+
+      // The strip's retry continues the task: one more refusal reaches the threshold.
+      const second = { ...makeSession({ loopId: 'loop-b' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-b', second);
+      (await invokeOnce('run-b')).reportBrowserDenial!();
+      expect(second.shellAbortController.signal.aborted).toBe(true);
+      unregisterRunSession('run-b');
+
+      // A request the user types starts a new task, and a fresh streak.
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+      const third = { ...makeSession({ loopId: 'loop-c' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-c', third);
+      (await invokeOnce('run-c')).reportBrowserDenial!();
+      expect(third.shellAbortController.signal.aborted).toBe(false);
+    });
+
+    it('an allowance on the confirmation strip starts the task streak over; the next run is not stopped by its first new request', async () => {
+      const { ensureHandlersRegistered, registerRunSession, unregisterRunSession, forgiveTeamBrowserDenials } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      ensureHandlersRegistered();
+      useTeamConfirmationStore.getState().beginTask('conv-1', false);
+
+      const first = { ...makeSession({ loopId: 'loop-a' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-a', first);
+      (await invokeOnce('run-a')).reportBrowserDenial!();
+      unregisterRunSession('run-a');
+
+      forgiveTeamBrowserDenials('conv-1');
+
+      const second = { ...makeSession({ loopId: 'loop-b' }), teamSnapshot: { teamRoster: ['A'] } };
+      registerRunSession('run-b', second);
+      (await invokeOnce('run-b')).reportBrowserDenial!();
+      expect(second.shellAbortController.signal.aborted).toBe(false);
     });
 
     it('two denials in a row abort the run, append the closing message and record the cause', async () => {
@@ -1945,6 +2022,79 @@ describe('agentLoopRunner', () => {
       }));
     });
 
+    // 本轮给模型的工具名由 sidecar 里的运行时写入，以字符串数组跨过线路
+    it('tool.invoke carries the offered tool names from the sidecar run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'reed_file',
+        input: {},
+        context: { offeredToolNames: ['read_file', 'write_file'] },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        offeredToolNames: ['read_file', 'write_file'],
+      }));
+    });
+
+    it.each([
+      ['a string', 'read_file'],
+      ['a non-string entry', ['read_file', 7]],
+      ['an object', { read_file: true }],
+    ])('tool.invoke and approval.check refuse offered tool names given as %s', async (_label, offeredToolNames) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const params = { runId: 'run-1', toolName: 'read_file', input: {}, context: { offeredToolNames } };
+
+      await expect(handlerFor(onSidecarRequest, 'tool.invoke')(params))
+        .rejects.toThrow(/offeredToolNames must be an array of strings/);
+      await expect(handlerFor(onSidecarRequest, 'approval.check')(params))
+        .rejects.toThrow(/offeredToolNames must be an array of strings/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
+    // 模型能不能看图、电脑操控档位由 sidecar 里的运行时写入，工具说明与电脑操控都按它们取舍
+    it('tool.invoke carries the model tier and vision from the sidecar run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'tool_search',
+        input: { query: 'computer' },
+        context: { computerUseTier: 'structured', supportsVision: false },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        computerUseTier: 'structured',
+        supportsVision: false,
+      }));
+    });
+
+    it.each([
+      ['an unknown tier', { computerUseTier: 'vision' }, /computerUseTier must be one of/],
+      ['a non-string tier', { computerUseTier: 1 }, /computerUseTier must be one of/],
+      ['a non-boolean vision flag', { supportsVision: 'no' }, /supportsVision must be a boolean/],
+    ])('tool.invoke and approval.check refuse %s', async (_label, context, message) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const params = { runId: 'run-1', toolName: 'read_file', input: {}, context };
+
+      await expect(handlerFor(onSidecarRequest, 'tool.invoke')(params)).rejects.toThrow(message);
+      await expect(handlerFor(onSidecarRequest, 'approval.check')(params)).rejects.toThrow(message);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
     it('tool.invoke overwrites a forged IM reply target with the shell session target', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -2182,7 +2332,7 @@ describe('agentLoopRunner', () => {
   });
 
   describe('convPatch push emitter (diffing)', () => {
-    it('pushes all 4 scalar fields the first time a conversation is observed', async () => {
+    it('pushes every diffed field the first time a conversation is observed (goal as null when absent)', async () => {
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
 
@@ -2194,7 +2344,7 @@ describe('agentLoopRunner', () => {
 
       expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', {
         runId: 'run-1',
-        patch: { workspacePath: '/a', title: 'T1', activeSkills: ['s1'], model: { providerId: 'p', modelId: 'm' } },
+        patch: { workspacePath: '/a', title: 'T1', activeSkills: ['s1'], model: { providerId: 'p', modelId: 'm' }, goal: null },
       });
     });
 
@@ -2220,6 +2370,33 @@ describe('agentLoopRunner', () => {
         runId: 'run-1',
         patch: { title: 'T2' },
       });
+    });
+
+    it('pushes the goal when its revision changes and null when it is cleared', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const goal = { id: 'g1', revision: 1, objective: 'o', phase: 'active', maxRounds: 10, roundsStarted: 0, consecutiveIdleRounds: 0, elapsedMs: 0, createdAt: 1, updatedAt: 1 };
+      const base = { workspacePath: '/a', title: 'T1', activeSkills: ['s1'] };
+      const index = { 'conv-1': { model: { providerId: 'p', modelId: 'm' } } };
+
+      chatState = { conversations: { 'conv-1': { ...base, goal } }, conversationIndex: index };
+      capturedChatCb?.();
+      notifySidecar.mockClear();
+
+      // Same revision → nothing to push.
+      chatState = { conversations: { 'conv-1': { ...base, goal: { ...goal } } }, conversationIndex: index };
+      capturedChatCb?.();
+      expect(notifySidecar).not.toHaveBeenCalled();
+
+      const completed = { ...goal, revision: 2, phase: 'complete' };
+      chatState = { conversations: { 'conv-1': { ...base, goal: completed } }, conversationIndex: index };
+      capturedChatCb?.();
+      expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', { runId: 'run-1', patch: { goal: completed } });
+      notifySidecar.mockClear();
+
+      chatState = { conversations: { 'conv-1': { ...base } }, conversationIndex: index };
+      capturedChatCb?.();
+      expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', { runId: 'run-1', patch: { goal: null } });
     });
 
     it('pushes nothing when nothing changed', async () => {
@@ -4390,6 +4567,32 @@ describe('agentLoopRunner', () => {
         .toBeLessThan(agentStartRequestMock.mock.invocationCallOrder[0]);
     });
 
+    it('writes a goal round\'s opening message as an internal row carrying the round', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      const goalRound = { goalId: 'g1', revision: 3, round: 2 };
+
+      await runAgentLoopDispatched('conv-1', '<goal_round/>', { requireNewRun: true, initiatedBy: 'user', goalRound });
+
+      expect(chatStoreAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({
+        role: 'user',
+        content: '<goal_round/>',
+        isSystem: true,
+        goalRound,
+      }));
+    });
+
+    it('keeps an ordinary user message visible (no goal-round metadata)', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const row = chatStoreAddMessageMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(row.isSystem).toBeUndefined();
+      expect(row.goalRound).toBeUndefined();
+    });
+
     it('persists the user message before the bounded start handshake', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
@@ -4956,7 +5159,7 @@ describe('agentLoopRunner', () => {
       const running = runAgentLoopDispatched('conv-1', 'read only');
       await waitForCall(sidecarRequestMock);
       const params = sidecarRequestMock.mock.calls[0][1] as { runId: string; options: Record<string, unknown> };
-      expect(getRunSession(params.runId)?.agentToolPolicy).toEqual({ tools: ['read_file'], disallowedTools: undefined, protocolTools: ['report_plan', 'delegate_to_agent', 'run_agent_batch'] });
+      expect(getRunSession(params.runId)?.agentToolPolicy).toEqual({ tools: ['read_file'], disallowedTools: undefined, protocolTools: ['report_plan', 'delegate_to_agent', 'run_agent_batch', 'manage_goal'] });
       expect(params.options).not.toHaveProperty('agentToolPolicy');
       await expect(handlerFor(onSidecarRequest, 'approval.check')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);
       await expect(handlerFor(onSidecarRequest, 'tool.invoke')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);
@@ -5035,6 +5238,32 @@ describe('agentLoopRunner', () => {
         settingsReader?: { getSnapshot: () => { activeModel: unknown } };
       };
       expect(installedContext.settingsReader?.getSnapshot().activeModel).toEqual(p1Model);
+    });
+
+    it('hands the sidecar the learned window together with the service value it was learned against', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      getSettingsSnapshotMock.mockReturnValue({
+        agentMaxTurns: 200,
+        activeModel: { providerId: 'p1', modelId: 'model-a' },
+        providers: [
+          { id: 'p1', name: 'P1', apiFormat: 'openai-compatible', enabled: true, apiKey: 'p1-key', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'model-a', name: 'Model A' }] },
+        ],
+      });
+      getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'idle' });
+      capsGetMock.mockReturnValue({ contextWindow: 6000, contextWindowProbe: 8192, source: 'error-derived', updatedAt: 0 });
+      resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({
+        apiKey,
+        baseUrl,
+        forceOpenAiCompatible: false,
+      }));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const params = sidecarRequestMock.mock.calls[0][1] as { capsSnapshot?: unknown };
+      expect(params.capsSnapshot).toMatchObject({
+        providerId: 'p1', modelId: 'model-a', contextWindow: 6000, contextWindowProbe: 8192,
+      });
     });
 
     it('creates the task controller before prompt preprocessing and stops without dispatching when it is aborted there', async () => {

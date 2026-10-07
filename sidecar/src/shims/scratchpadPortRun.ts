@@ -12,6 +12,14 @@
  */
 import type { ScratchpadPort } from '@/core/agent/ports/scratchpadPort';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 唯一一处抛出错误在 `setScratchpadPort()`。sidecar 里 scratchpadPort 把条目编成帧
+ * 发给 shell，每次运行各有一个，由 `agentRunContext.run()` 注入，没有模块级的值
+ * 可以替换，有人调用这个设值函数就说明接线接错了。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'wiring-guard';
 
 export function getScratchpadPort(): ScratchpadPort {
   return getCurrentAgentRunContext().scratchpadPort;

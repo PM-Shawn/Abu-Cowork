@@ -140,6 +140,8 @@ const {
   computerUsePermissionHostDispatch,
   COMPUTER_USE_PERMISSION_HOST_MISS,
 } = require('./computerUsePermissionHost.cjs');
+const { MICROPHONE_CHANNEL, createMicrophoneHost } = require('./microphonePermissions.cjs');
+const { SPEECH_CHANNEL, SPEECH_EVENT_CHANNEL, createSpeechHost } = require('./speechHost.cjs');
 // guiHost.cjs (GUI-families slice) — same lazy-back-require pattern as
 // browserHost.cjs: it needs emitEvent/getMainWindow/requestAppExit from this
 // module, required lazily inside its own function bodies.
@@ -1706,6 +1708,53 @@ function registerTauriHost(app, options = {}) {
     return payload.action === 'delete'
       ? pluginOperations.external('delete', () => pluginAuthors.dispatch(e.sender, payload.action, payload.request))
       : pluginAuthors.dispatch(e.sender, payload.action, payload.request);
+  });
+
+  const dispatchMicrophone = createMicrophoneHost({
+    platform: process.platform,
+    systemPreferences: require('electron').systemPreferences,
+    openExternal: (url) => require('electron').shell.openExternal(url),
+  });
+  ipcMain.handle(MICROPHONE_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid microphone request');
+    return dispatchMicrophone(payload.action);
+  });
+
+  // Voice input: local model download + recognizer process (speechHost.cjs).
+  // The native runtime is an extraResource when packaged, electron/speech-runtime in dev.
+  const speechHost = createSpeechHost({
+    dataDir: path.join(abuAppDataDir(app), 'speech', 'sensevoice'),
+    runtimeDir: app.isPackaged
+      ? path.join(resourceRoot(app), 'speech-runtime')
+      : path.join(REPO_ROOT, 'electron', 'speech-runtime'),
+    workerPath: path.join(__dirname, 'speechWorker.cjs'),
+    fetch: (url, init) => require('electron').net.fetch(url, init),
+    fork: (modulePath) => require('electron').utilityProcess.fork(modulePath, [], {
+      serviceName: 'Abu Speech Recognizer',
+      stdio: 'ignore',
+    }),
+    emit: (event) => {
+      const win = getMainWindow();
+      if (win && !win.webContents.isDestroyed()) win.webContents.send(SPEECH_EVENT_CHANNEL, event);
+    },
+  });
+  app.on('will-quit', () => speechHost.dispose());
+  ipcMain.handle(SPEECH_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid speech request');
+    // Errors cross IPC as data: Electron drops custom fields (the code) from rejections.
+    try {
+      return { ok: true, value: await speechHost.dispatch(payload.action, payload.request || {}) };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          code: error && typeof error.code === 'string' ? error.code : 'unknown',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
   });
 
   ipcMain.handle(APP_PAGE_CHANNEL, async (e, payload) => {

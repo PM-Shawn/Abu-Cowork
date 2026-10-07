@@ -35,6 +35,7 @@ import { platform } from '@tauri-apps/plugin-os';
 import { scrubSecrets, scrubMessage } from './scrub';
 import { runAllChecks } from './runner';
 import { buildDiagnosticRunTimeline } from './runTimeline';
+import { collectUsageDiagnosticSummary } from './usageSummary';
 import type {
   CheckResult,
   DiagnosticFreshness,
@@ -374,7 +375,7 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   // Every upload/export performs a bounded fresh run; fallback rows carry
   // explicit stale/unknown freshness metadata.
   const snapshot = await collectLiveDiagnosticSnapshot({ bundleId: meta.bundleId, os: meta.os });
-  files['diagnostic-snapshot.json'] = JSON.stringify(snapshot, null, 2);
+  files['diagnostic-snapshot.json'] = JSON.stringify(scrubSecrets(snapshot), null, 2);
 
   // ── conversations/<shortId>/* ────────────────────────────────────────
   // Multi-select: opts.conversationIds takes priority over the legacy
@@ -759,6 +760,15 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
     }
   }
   files['stores/versions.json'] = JSON.stringify(storeVersions, null, 2);
+
+  // ── usage/summary.json ───────────────────────────────────────────────
+  // 用量账本在主进程的 usage.sqlite 里，上面的 store 清单管不到它。这里只带范围
+  // 汇总、覆盖、失败计数与错误码，没有会话 id、模型名和任何请求内容。
+  try {
+    files['usage/summary.json'] = JSON.stringify(await collectUsageDiagnosticSummary(), null, 2);
+  } catch (e) {
+    files['usage/summary.json'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) }, null, 2);
+  }
 
   // ── conversations/index.json ─────────────────────────────────────────
   // Metadata for ALL conversations (titles, counts, timestamps). No

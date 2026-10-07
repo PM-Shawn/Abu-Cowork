@@ -164,6 +164,21 @@ describe('reconcileActiveProvider', () => {
       expect(state.providers[0].enabled).toBe(true);
     });
 
+    it('silently re-enables a keyless custom OpenAI-compatible provider on this machine', () => {
+      const p = makeProvider({
+        id: 'local-vllm',
+        source: 'custom',
+        enabled: false,
+        apiKey: '',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+      });
+      const state = makeState([p], { providerId: 'local-vllm', modelId: 'm1' });
+
+      reconcileActiveProvider(state);
+
+      expect(state.providers[0].enabled).toBe(true);
+    });
+
     it('treats whitespace-only apiKey as empty (not usable)', () => {
       const whitespaceKey = makeProvider({
         id: 'p1',

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveModelDeclared } from './resolveModelDeclared';
+import { resolveModelDeclared, resolveModelVision } from './resolveModelDeclared';
 import type { ProviderInstance } from '@/types/provider';
 
 function makeProvider(over: Partial<ProviderInstance>): ProviderInstance {
@@ -47,5 +47,17 @@ describe('resolveModelDeclared', () => {
     const r = resolveModelDeclared(p, 'does-not-exist');
     expect(r?.supportsReasoning).toBe(false);
     expect(r?.maxInputTokens).toBe(32768);
+  });
+});
+
+describe('resolveModelVision', () => {
+  it('follows the user\'s 能看图 choice first', () => {
+    const provider = makeProvider({ models: [{ id: 'qwen3-vl-8b', label: 'q', declaredCapabilities: { supportsImages: false } }] });
+    expect(resolveModelVision(provider, 'qwen3-vl-8b')).toBe(false);
+  });
+
+  it('falls back to the model name', () => {
+    expect(resolveModelVision(makeProvider({ models: [{ id: 'qwen3-vl-8b', label: 'q' }] }), 'qwen3-vl-8b')).toBe(true);
+    expect(resolveModelVision(undefined, 'deepseek-chat')).toBe(false);
   });
 });

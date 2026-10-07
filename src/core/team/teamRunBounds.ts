@@ -1,13 +1,16 @@
 /**
- * Hard bounds for one team run (in-conversation team, "全程自主" batch).
+ * Hard bounds for one team task (in-conversation team, "全程自主" batch).
  *
  * Aligned with DSH's goal layer (packages/goal/tool-goal: maxGoalRounds 256,
  * blockedAfterConsecutiveRounds default 3, both enforced in code) and Codex's
  * "3 exec failures → Blocked": the loop stays simple, the bound lives in the
  * dispatch tools and refuses loudly so the leader must stop and report.
  *
- * Pure module (no stores): the dispatch tools run inside the sidecar.
- * Keyed by the leader loop id; only the owning run can retire its entry.
+ * Pure module (no stores). The dispatch tools execute in the shell, which
+ * keys them by the team task (teamConfirmationStore's beginTask), falling
+ * back to the leader loop id outside one. A task spans every run the
+ * confirmation strip starts, so approving a retry does not reset the count;
+ * the next task retires the previous task's entry.
  */
 
 /** Hand-offs (delegate calls + batch tasks) one leader run may make. */
@@ -35,15 +38,17 @@ export const TEAM_LEADER_MAX_TURNS = 120;
 interface RunBounds {
   dispatches: number;
   consecutiveFailures: Map<string, number>;
+  /** Short reason of each member's latest failure, shown when the task stops it. */
+  lastFailure: Map<string, string>;
 }
 
 const runs = new Map<string, RunBounds>();
 
-function boundsFor(loopId: string): RunBounds {
-  let entry = runs.get(loopId);
+function boundsFor(key: string): RunBounds {
+  let entry = runs.get(key);
   if (!entry) {
-    entry = { dispatches: 0, consecutiveFailures: new Map() };
-    runs.set(loopId, entry);
+    entry = { dispatches: 0, consecutiveFailures: new Map(), lastFailure: new Map() };
+    runs.set(key, entry);
   }
   return entry;
 }
@@ -74,18 +79,38 @@ export function admitDispatches(loopId: string, members: readonly string[]): Dis
 }
 
 /** A hand-off settled: success resets the member's streak, failure extends it. */
-export function recordDispatchOutcome(loopId: string, member: string, succeeded: boolean): void {
-  const entry = boundsFor(loopId);
-  if (succeeded) entry.consecutiveFailures.delete(member);
-  else entry.consecutiveFailures.set(member, (entry.consecutiveFailures.get(member) ?? 0) + 1);
+export function recordDispatchOutcome(key: string, member: string, succeeded: boolean, failure?: string): void {
+  const entry = boundsFor(key);
+  if (succeeded) {
+    entry.consecutiveFailures.delete(member);
+    entry.lastFailure.delete(member);
+    return;
+  }
+  entry.consecutiveFailures.set(member, (entry.consecutiveFailures.get(member) ?? 0) + 1);
+  if (failure) entry.lastFailure.set(member, failure.slice(0, 200));
 }
 
-/** Snapshot for tests / diagnostics. */
-export function getRunBounds(loopId: string): { dispatches: number; consecutiveFailures: Record<string, number> } {
-  const entry = runs.get(loopId);
+/** The user chose "try another way": this member may take work again. */
+export function forgiveMember(key: string, member: string): void {
+  boundsFor(key).consecutiveFailures.delete(member);
+}
+
+/** The user chose "try another way" after the task used its hand-off allowance. */
+export function resetDispatchCount(key: string): void {
+  boundsFor(key).dispatches = 0;
+}
+
+/** Snapshot for tests / diagnostics, and for the reason shown when a task stops a member. */
+export function getRunBounds(key: string): {
+  dispatches: number;
+  consecutiveFailures: Record<string, number>;
+  lastFailure: Record<string, string>;
+} {
+  const entry = runs.get(key);
   return {
     dispatches: entry?.dispatches ?? 0,
     consecutiveFailures: Object.fromEntries(entry?.consecutiveFailures ?? []),
+    lastFailure: Object.fromEntries(entry?.lastFailure ?? []),
   };
 }
 

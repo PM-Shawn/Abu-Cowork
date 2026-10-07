@@ -229,7 +229,7 @@ test.describe('background calls follow the conversation', () => {
 
     await test.step('the conversation is moved to provider B while A stays the default', async () => {
       await composerModelButton(page, PROVIDER_A.modelLabel).click();
-      const row = page.locator('div[role="button"]').filter({ hasText: /^Model B$/ }).last();
+      const row = page.locator('div[role="button"]').filter({ has: page.getByText('Model B', { exact: true }) }).last();
       await expect(row).toBeVisible();
       await row.click();
       await expect(composerModelButton(page, PROVIDER_B.modelLabel)).toBeVisible();

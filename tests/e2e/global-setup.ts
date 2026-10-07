@@ -91,6 +91,8 @@ export default async function globalSetup(): Promise<void> {
       // The production default remains intentionally empty until its origin is
       // approved. Electron E2E uses an isolated loopback account service.
       VITE_PERSONAL_ACCOUNT_SERVER_URL: ACCOUNT_E2E_SERVER_URL,
+      // The design preview's visual regression spec opens it with the shortcut.
+      VITE_ABU_DESIGN_PREVIEW: '1',
     },
   });
 }

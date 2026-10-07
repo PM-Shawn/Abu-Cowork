@@ -16,7 +16,7 @@ export function agentToolPolicyForRoute(route: RouteResult): AgentToolPolicy | u
     tools: route.definition.tools,
     disallowedTools: route.definition.disallowedTools,
     protocolTools: route.team
-      ? [TOOL_NAMES.REPORT_PLAN, TOOL_NAMES.DELEGATE_TO_AGENT, TOOL_NAMES.RUN_AGENT_BATCH]
+      ? [TOOL_NAMES.REPORT_PLAN, TOOL_NAMES.DELEGATE_TO_AGENT, TOOL_NAMES.RUN_AGENT_BATCH, TOOL_NAMES.MANAGE_GOAL]
       : [],
   };
 }

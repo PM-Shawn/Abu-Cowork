@@ -269,7 +269,12 @@ export async function dismissFirstRunOverlays(page: Page): Promise<void> {
 
 export interface LocalMockProviderOptions {
   apiKey?: string;
-  contextWindowSize?: number;
+  /**
+   * The model's 上下文长度 (per-model maxInputTokens). Defaults to 128000 so
+   * a loopback provider keeps the window specs were written against; `null`
+   * leaves it blank so the app has to find the window itself.
+   */
+  contextWindowSize?: number | null;
   /** Additional models offered by the same provider, after the default one. */
   extraModels?: ReadonlyArray<{ id: string; label: string }>;
   maxOutputTokens?: number;
@@ -280,6 +285,17 @@ export interface LocalMockProviderOptions {
   providerName?: string;
   supportsReasoning?: boolean | null;
   supportsTools?: boolean;
+  /** The model's 能看图 checkbox; omitted leaves it undeclared. */
+  supportsImages?: boolean;
+  /** Turn computer use on before the reload. */
+  computerUseEnabled?: boolean;
+  /**
+   * 'builtin' configures one of the app's own provider entries (pass its id,
+   * e.g. 'lmstudio' or 'ollama', as providerId). Defaults to 'custom'.
+   */
+  providerSource?: 'custom' | 'builtin';
+  /** Keep the other provider entries (disabled built-ins included) instead of replacing them all. */
+  keepOtherProviders?: boolean;
 }
 
 /** Configure an isolated loopback provider while preserving each spec's metadata. */
@@ -290,7 +306,7 @@ export async function configureLocalMockProvider(
 ): Promise<void> {
   const {
     apiKey = 'abu-e2e-test-key-not-a-real-secret',
-    contextWindowSize,
+    contextWindowSize = 128_000,
     extraModels = [],
     maxOutputTokens,
     modelId = 'abu-e2e-local-model',
@@ -300,6 +316,10 @@ export async function configureLocalMockProvider(
     providerName = 'Abu E2E loopback mock',
     supportsReasoning = false,
     supportsTools = false,
+    supportsImages,
+    computerUseEnabled = false,
+    providerSource = 'custom',
+    keepOtherProviders = false,
   } = options;
 
   await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
@@ -308,16 +328,19 @@ export async function configureLocalMockProvider(
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
     const state = persisted.state;
-    const declaredCapabilities = configuration.supportsReasoning === null
-      ? { supportsTools: configuration.supportsTools }
-      : {
-          supportsReasoning: configuration.supportsReasoning,
-          supportsTools: configuration.supportsTools,
-        };
+    const declaredCapabilities = {
+      supportsTools: configuration.supportsTools,
+      ...(configuration.supportsReasoning === null ? {} : { supportsReasoning: configuration.supportsReasoning }),
+      ...(configuration.contextWindowSize === null ? {} : { maxInputTokens: configuration.contextWindowSize }),
+      ...(configuration.supportsImages === undefined ? {} : { supportsImages: configuration.supportsImages }),
+    };
 
-    state.providers = [{
+    const otherProviders = configuration.keepOtherProviders && Array.isArray(state.providers)
+      ? (state.providers as Array<{ id?: unknown }>).filter((provider) => provider.id !== configuration.providerId)
+      : [];
+    state.providers = [...otherProviders, {
       id: configuration.providerId,
-      source: 'custom',
+      source: configuration.providerSource,
       name: configuration.providerName,
       enabled: true,
       apiFormat: 'openai-compatible',
@@ -341,8 +364,8 @@ export async function configureLocalMockProvider(
     state.hasAcknowledgedDisclaimer = true;
     state.hasRunSensitiveAudit_v015 = true;
     if (configuration.permissionMode !== null) state.permissionMode = configuration.permissionMode;
-    if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
     if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
+    if (configuration.computerUseEnabled) state.computerUseEnabled = true;
 
     // Write `persisted` back whole, version untouched. Stamping a literal here
     // (this line carried a stale `version: 42` through four store bumps) makes
@@ -365,6 +388,10 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
+    supportsImages,
+    computerUseEnabled,
+    providerSource,
+    keepOtherProviders,
   })]);
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }

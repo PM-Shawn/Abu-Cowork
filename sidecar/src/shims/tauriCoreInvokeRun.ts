@@ -41,6 +41,19 @@
 import { sendRequest } from '../rpcClient';
 import { agentRunContext } from '../agentRunContext';
 import { subagentRunContext } from '../subagentRunContext';
+import type { ShimThrowKind } from './shimThrowKind';
+
+/**
+ * 本文件把 `invoke()` 完整转发成 `native.invoke` 请求。四处抛出错误：
+ *   - `invokeCleanupForCapturedRun()` 只接受清理类命令，其他命令一律拒绝。
+ *   - `invoke()` 收到 `InvokeOptions`：`native.invoke` 没有传递它的位置，拒绝后调用方
+ *     能立刻知道，避免选项被悄悄忽略。
+ *   - `invoke()` 收到二进制参数：JSON 线路只能传普通对象，拒绝后避免它被序列化成
+ *     以数字为键的对象。
+ *   - 两种运行上下文都没有 runId：调用来自一次运行的作用域之外，shell 无法判定这次
+ *     原生调用归属于哪次运行。
+ */
+export const SHIM_THROW_KIND: ShimThrowKind = 'input-check';
 
 const CLEANUP_COMMANDS: ReadonlySet<string> = new Set([
   'abort_command',

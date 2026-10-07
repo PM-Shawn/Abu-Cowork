@@ -33,6 +33,14 @@ export interface TranslationDict {
     retry: string;
   };
 
+  designSystem: {
+    discardTitle: string;
+    discardMessage: string;
+    discard: string;
+    keepEditing: string;
+    notifications: string;
+  };
+
   // Error Boundary
   errorBoundary: {
     renderError: string;
@@ -409,6 +417,10 @@ export interface TranslationDict {
     // Model selector — managed provider group
     /** Header above the user's own providers, shown when a managed provider is listed. */
     myModels: string;
+    /** Tag next to a model that can see images. */
+    modelCanSeeImages: string;
+    /** Accessible name of a picker row that carries the tag. {model} */
+    modelRowCanSeeImages: string;
     managedModelsSyncing: string;
     /** `{org}` = the managed provider's name. */
     managedProviderUnreachable: string;
@@ -571,12 +583,18 @@ export interface TranslationDict {
     ollamaForbidden: string;
     /** Provider account balance/resource-package exhausted. */
     insufficientBalance: string;
-    /** Streamed-inline notice while compacting an oversized context (includes markdown). */
+    /** Streamed-inline notice while compacting an oversized context (includes markdown; ends with a paragraph break so the retried reply starts its own paragraph). */
     compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;
-    /** System prompt and tool definitions leave no safe room for user input. */
+    /** System prompt and tool definitions leave no safe room for user input; also used when the request is still too long after the conversation was condensed. */
     contextFixedTooLarge: string;
+    /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
+    contextFixedTooLargeLocal: string;
+    /** The model failed to send an operation even after one quiet rewrite. */
+    malformedToolCall: string;
+    /** A local model server gave no first output within its 10-minute wait; nothing retries it. */
+    localServerNoFirstResponse: string;
     /** Conversation-title fallback used in task notifications. */
     notificationTaskFallback: string;
     /** Error after repeated output-token-limit hits (multi-line). {limit} */
@@ -679,6 +697,73 @@ export interface TranslationDict {
       done: string;
       tooFew: string;
       failed: string;
+    };
+    /** Goal mode: /goal command feedback, goal bar, round marker, event cards. */
+    goal: {
+      /** Usage hint for /goal. */
+      commandUsage: string;
+      noGoal: string;
+      notAvailable: string;
+      emptyObjective: string;
+      /** {objective} */
+      alreadyExists: string;
+      /** {objective} */
+      created: string;
+      edited: string;
+      paused: string;
+      resumed: string;
+      cleared: string;
+      /** {phase} */
+      cannotChange: string;
+      /** Resume was refused because the goal reached the hard cap on automatic rounds. */
+      roundsExhausted: string;
+      staleRevision: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+      /** Goal bar: status word while the app keeps working on the goal. */
+      barActive: string;
+      /** Status word whenever the app is not working on an unfinished goal by itself. */
+      barPaused: string;
+      /** Status word for a goal that stopped and needs the user. */
+      barBlocked: string;
+      /** After the objective: a run failed and another starts by itself. {minutes} */
+      barRetry: string;
+      /** Hover detail on a goal that paused because a run failed. */
+      stoppedRunError: string;
+      blockedNoProgress: string;
+      blockedRoundLimit: string;
+      blockedTeamLimit: string;
+      blockedDispatchFailed: string;
+      /** {reason} */
+      blockedModel: string;
+      actionPause: string;
+      actionResume: string;
+      actionEdit: string;
+      actionClear: string;
+      actionSave: string;
+      actionCancel: string;
+      editPlaceholder: string;
+      clearConfirmTitle: string;
+      clearConfirmBody: string;
+      /** Asked when /goal names a new objective while another goal is unfinished. */
+      replaceConfirmTitle: string;
+      /** {objective} = the unfinished goal */
+      replaceConfirmBody: string;
+      actionReplace: string;
+      /** Marker in the transcript where the app continued the goal by itself. */
+      roundMarker: string;
+      /** Suffix on a round marker whose run was stopped before it finished. */
+      roundInterrupted: string;
+      /** Suffix on a round marker whose run failed. */
+      roundFailed: string;
+      /** OS notification when the round driver stops a goal. {objective} */
+      notifyBlockedTitle: string;
+      /** Shown on the max-turns card instead of Continue while goal mode drives the rounds. */
+      maxTurnsAutoContinue: string;
     };
     /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
      * when the redone turn is not the conversation's last, so later turns
@@ -1043,6 +1128,7 @@ export interface TranslationDict {
   settings: {
     browserResourceGrantBrowse: string;
     browserResourceGrantUpload: string;
+    browserResourceGrantScript: string;
     browserRequestOnce: string;
     browserDownloadsCompleted: string;
     browserDownloadsUnavailable: string;
@@ -1733,6 +1819,7 @@ export interface TranslationDict {
     advancedConfig: string;
     capTools: string;
     capImages: string;
+    capImagesHint: string;
     capReasoning: string;
     capRawUrl: string;
     capRawUrlHint: string;
@@ -1740,7 +1827,12 @@ export interface TranslationDict {
     effortLow: string;
     effortMedium: string;
     effortHigh: string;
-    capMaxInput: string;
+    capContextLength: string;
+    capContextLengthHint: string;
+    /** Placeholder when the service reported the length. {size} */
+    capContextLengthDetected: string;
+    /** Placeholder when nothing was reported. {size} */
+    capContextLengthEstimated: string;
     capMaxOutput: string;
     capTokenDefault: string;
     capPerModelHint: string;
@@ -2083,23 +2175,53 @@ export interface TranslationDict {
     confirmationStripTitle: string;
     confirmationSeparator: string;
     confirmationLeader: string;
-    confirmationApproveRun: string;
-    confirmationAllowSite: string;
     confirmationWriteRead: string;
     confirmationWrite: string;
     confirmationRead: string;
     confirmationCwd: string;
     confirmationOrigin: string;
-    confirmationRequestOrdinal: string;
     confirmationDefaultCwd: string;
-    confirmationLegacy: string;
-    confirmationRunRule: string;
-    confirmationRevoke: string;
+    /** Shown instead of any allow button on a record that can no longer be allowed. */
+    confirmationExpired: string;
+    /** Allow this one call. */
     confirmationApprove: string;
+    /** Allow this kind of request for the rest of the team task. */
+    confirmationApproveTask: string;
+    /** Allow every pending request that can be allowed for the task. */
+    confirmationApproveAll: string;
+    /** Heading of the list of "this task" allowances. */
+    confirmationTaskRules: string;
+    confirmationRevoke: string;
     confirmationReject: string;
+    /** What a "this task" allowance covers, one line each. */
+    confirmationScopeCommand: string;
+    confirmationScopeExactCommand: string;
+    confirmationScopeFileRead: string;
+    confirmationScopeFileWrite: string;
+    confirmationScopeBrowse: string;
+    confirmationScopeUpload: string;
+    confirmationScopeScript: string;
+    /** The {site} of a region embedded in a page. */
+    confirmationScopeEmbeddedSite: string;
+    /** What a browser request does, shown in place of the tool name. */
+    confirmationBrowserScript: string;
+    confirmationBrowserUpload: string;
+    confirmationBrowserBrowse: string;
     confirmationNotice: string;
     confirmationApprovedFollowUp: string;
+    confirmationApprovedTaskFollowUp: string;
     confirmationRejectedFollowUp: string;
+    /** A member the task stopped after repeated failures. */
+    stoppedMemberBlocked: string;
+    /** The task used its hand-off allowance. */
+    stoppedRunCap: string;
+    stoppedLastFailure: string;
+    /** The last failure was a hand-off that did not produce its required files. */
+    stoppedMissingFiles: string;
+    stoppedTryAnotherWay: string;
+    stoppedSkip: string;
+    stoppedTryAnotherWayFollowUp: string;
+    stoppedSkipFollowUp: string;
     stallStoppedNotice: string;
     resumeAfterRestart: string;
     resumeAfterRestartFailed: string;
@@ -2820,6 +2942,8 @@ export interface TranslationDict {
       authorizeCapabilities: string[];
       authorizeWarning: string;
     };
+    /** Toast: a folder was picked after the request it was picked for had ended. */
+    folderRequestEnded: string;
     abuCanDo: string;
     allowOnce: string;
     allowAlways: string;
@@ -4221,6 +4345,71 @@ export interface TranslationDict {
   // These are UI-facing: rendered in ToolCallsGroup and also fed back to the
   // LLM, so they go through i18n (resolved at execution time by the current
   // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
+  voiceInput: {
+    title: string;
+    description: string;
+    enable: string;
+    enableDesc: string;
+    language: string;
+    languageDesc: string;
+    langAuto: string;
+    langZh: string;
+    langEn: string;
+    langYue: string;
+    langJa: string;
+    langKo: string;
+    modelTitle: string;
+    modelDesc: string;
+    modelChecking: string;
+    modelMissing: string;
+    modelReady: string;
+    modelDownloading: string;
+    modelProgress: string;
+    modelError: string;
+    download: string;
+    retry: string;
+    cancel: string;
+    deleteModel: string;
+    deleted: string;
+    source: string;
+    sourceAuto: string;
+    sourceMirror: string;
+    sourceHuggingface: string;
+    runtimeMissing: string;
+    unavailable: string;
+    errNetwork: string;
+    errHttp: string;
+    errIntegrity: string;
+    errStorage: string;
+    errUnknown: string;
+    micTitle: string;
+    micDesc: string;
+    micGranted: string;
+    micDenied: string;
+    micNotDetermined: string;
+    micUnknown: string;
+    openSystemSettings: string;
+    start: string;
+    stop: string;
+    cancelRecording: string;
+    recording: string;
+    transcribing: string;
+    setupTitle: string;
+    setupBody: string;
+    setupGoto: string;
+    setupDownloading: string;
+    later: string;
+    pendingHint: string;
+    insert: string;
+    discard: string;
+    errPermission: string;
+    errNoDevice: string;
+    errInterrupted: string;
+    errEmpty: string;
+    errNoSpeech: string;
+    errTranscribe: string;
+    errBusy: string;
+  };
   toolResult: {
     team: {
       invalidInput: string;
@@ -4239,6 +4428,45 @@ export interface TranslationDict {
     statusPaused: string;
     /** Locale-appropriate separator for joining inline lists of items. */
     listSeparator: string;
+    // manage_goal (goal mode)
+    goal: {
+      noConversation: string;
+      invalidAction: string;
+      /** Only the main conversation (not a delegated expert) may manage the goal. */
+      deniedSubagent: string;
+      /** Scheduled / trigger / IM / read-only conversations. */
+      deniedAutomated: string;
+      /** create / edit / pause / resume need a run started by the user's own message. */
+      deniedNeedsHuman: string;
+      /** {min} {rounds} */
+      deniedBlockTooEarly: string;
+      noGoal: string;
+      missingObjective: string;
+      missingEvidence: string;
+      missingReason: string;
+      /** A live goal already exists. {objective} */
+      alreadyExists: string;
+      /** {phase} */
+      invalidTransition: string;
+      staleRevision: string;
+      /** {objective} */
+      created: string;
+      /** {objective} */
+      edited: string;
+      paused: string;
+      resumed: string;
+      /** Resume was asked for a goal that is already working. */
+      alreadyRunning: string;
+      completed: string;
+      /** {reason} */
+      blocked: string;
+      /** {objective} {phase} {rounds} {maxRounds} */
+      status: string;
+      phaseActive: string;
+      phasePaused: string;
+      phaseBlocked: string;
+      phaseComplete: string;
+    };
     // report_plan / update_memory / todo_write / log_task_completion
     memory: {
       // reportPlanTool
@@ -4246,6 +4474,8 @@ export interface TranslationDict {
       planApproved: string;
       /** Plan approval timed out or was cancelled. */
       planTimeout: string;
+      /** A plan approval already timed out in this task; the plan is not asked again. */
+      planAwaitingUser: string;
       /** User rejected the plan. */
       planRejected: string;
       /** Plan recorded (no steps). */
@@ -4645,6 +4875,8 @@ export interface TranslationDict {
     };
     // manage_mcp_server
     system: {
+      /** Appended to an unknown-tool error. {names} */
+      unknownToolAvailable: string;
       /** Error: action=search requires query. */
       errSearchNeedsQuery: string;
       /** No MCP server matched the query. {query} */
@@ -5204,6 +5436,8 @@ export interface TranslationDict {
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */
       errNoVision: string;
+      /** scroll on Windows: needs a screenshot the model cannot use; scroll through focus + PageDown instead. */
+      errNoVisionScrollWindows: string;
       /** activate_app: missing app parameter. */
       errActivateNeedsApp: string;
       /** activate_app success. {name} */

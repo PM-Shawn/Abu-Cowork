@@ -17,6 +17,12 @@ import {
   handoffText,
   parseDragPath,
 } from './computerTools';
+import {
+  adaptComputerToolForTier,
+  COMPUTER_EVIDENCE_RULE,
+  COMPUTER_SAFETY_RULES,
+  COMPUTER_TARGETING_RULES,
+} from './computerToolText';
 import enUS from '../../../i18n/locales/en-US';
 import zhCN from '../../../i18n/locales/zh-CN';
 import { useChatStore } from '../../../stores/chatStore';
@@ -51,6 +57,33 @@ describe('computerTool WindowRef-first contract', () => {
   it('describes AX bounds as screen coordinates and action coordinates as screenshot-relative', () => {
     expect(computerTool.description).toContain('AX element bounds are screen coordinates');
     expect(computerTool.description).toContain('x/y action coordinates are relative to the referenced screenshot');
+  });
+
+  it('keeps the shared rules and the screenshot fallback in the full description', () => {
+    expect(computerTool.description).toContain(COMPUTER_EVIDENCE_RULE);
+    expect(computerTool.description).toContain(COMPUTER_TARGETING_RULES);
+    expect(computerTool.description).toContain(COMPUTER_SAFETY_RULES);
+    expect(computerTool.description).toContain('Only fall back to screenshot + click(x,y)');
+  });
+
+  it.each([true, false])('offers a model that cannot see images no screenshot or coordinate entry in the real tool (windows=%s)', (windows) => {
+    const adapted = adaptComputerToolForTier(computerTool, 'structured', windows);
+    expect(JSON.stringify(adapted).toLowerCase()).not.toContain('screenshot');
+    for (const key of ['x', 'y', 'startX', 'startY', 'endX', 'endY', 'path', 'width', 'height', 'screenshot_id', 'show_user']) {
+      expect(adapted.inputSchema.properties).not.toHaveProperty(key);
+    }
+    expect(adapted.inputSchema.properties.expected_state_id.description).not.toContain('drag');
+    expect(adapted.inputSchema.required).toEqual(computerTool.inputSchema.required);
+    expect(adapted.execute).toBe(computerTool.execute);
+  });
+
+  it('offers no scroll to a model that cannot see images on Windows', () => {
+    const adapted = adaptComputerToolForTier(computerTool, 'structured', true);
+    expect(adapted.inputSchema.properties.action.description).not.toContain('scroll');
+    expect(adapted.inputSchema.properties.expected_state_id.description).not.toContain('scroll');
+    expect(adapted.inputSchema.properties.element_id.description).not.toContain('scroll');
+    expect(adapted.inputSchema.properties).not.toHaveProperty('direction');
+    expect(adapted.inputSchema.properties).not.toHaveProperty('amount');
   });
 
   // JSON Schema cannot express a discriminated union here, so the fields are
@@ -250,6 +283,91 @@ describe('computerTool — accessibility permission branch', () => {
     // unconsumed observation, through the same token-bound native boundary.
     expect(vi.mocked(invoke).mock.calls).toContainEqual([`mouse_${action}`,
       expect.objectContaining({ screenshotId: 'shot-coordinate', __abuComputerUseToken: 'coordinate-token' })]);
+  });
+
+  // 看不了图的模型发来只能靠截图或坐标完成的动作：开会话、弹确认之前就拒绝
+  const noVisionOnlyActions: Array<[string, Record<string, unknown>]> = [
+    ['screenshot', { action: 'screenshot' }],
+    ['get_screen_state', { action: 'get_screen_state' }],
+    ['move', { action: 'move', x: 10, y: 20 }],
+    ['drag', { action: 'drag', startX: 10, startY: 20, endX: 30, endY: 40 }],
+    ['click without element_id', { action: 'click', x: 10, y: 20 }],
+    ['scroll without element_id', { action: 'scroll', x: 10, y: 20, direction: 'down' }],
+  ];
+
+  it.each(noVisionOnlyActions)('refuses %s from a model that cannot see images before any session or prompt (macOS)', async (_label, input) => {
+    const result = await computerTool.execute(
+      { ...input, window_ref: 'wr-1', expected_state_id: 'state-1', consequence: 'none' },
+      {
+        conversationId: 'active-conversation', loopId: 'loop-no-vision', toolCallId: 'tool-no-vision',
+        interactionMode: 'foreground', computerUseTier: 'structured', supportsVision: false,
+      },
+    );
+    expect(result).toBe(getI18n().toolResult.computer.errNoVision);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  async function executeOnWindowsHost(input: Record<string, unknown>) {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    const key = { conversationId: 'no-vision-windows', loopId: `no-vision-${String(input.action)}-${String(input.element_id)}` };
+    computerUseController.recordObservation(key, {
+      stateId: 'state-1', target: { windowRef: 'wr-1', appName: 'Editor', bundleId: 'editor.exe', processId: 42 },
+      axSessionId: 'ax-1', elements: [], capabilityTier: 'structured',
+    });
+    return computerTool.execute(
+      { ...input, window_ref: 'wr-1', expected_state_id: 'state-1', consequence: 'none' },
+      { ...key, toolCallId: 'tool-no-vision', interactionMode: 'foreground', computerUseTier: 'structured', supportsVision: false },
+    );
+  }
+
+  it.each(noVisionOnlyActions.filter(([, input]) => input.action !== 'scroll'))(
+    'refuses %s from a model that cannot see images before any session or prompt (Windows host)',
+    async (_label, input) => {
+      const result = await executeOnWindowsHost(input);
+      expect(result).toBe(getI18n().toolResult.computer.errNoVision);
+      expect(invoke).not.toHaveBeenCalled();
+    },
+  );
+
+  // Windows 上滚动一律要截图编号，看不了图时改用「点击取得焦点 + key 翻页」
+  it.each([
+    ['with element_id', { action: 'scroll', element_id: 3, direction: 'down' }],
+    ['without element_id', { action: 'scroll', x: 10, y: 20, direction: 'down' }],
+  ])('refuses scroll %s on the Windows host and points to focus + PageDown', async (_label, input) => {
+    const result = await executeOnWindowsHost(input);
+    expect(result).toBe(getI18n().toolResult.computer.errNoVisionScrollWindows);
+    expect(String(result)).toContain('PageDown');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps element scroll going on macOS for a model that cannot see images', async () => {
+    const result = await computerTool.execute(
+      { action: 'scroll', element_id: 3, direction: 'down', window_ref: 'wr-1', expected_state_id: 'state-1', consequence: 'none' },
+      {
+        conversationId: 'active-conversation', loopId: 'loop-mac-scroll', toolCallId: 'tool-mac-scroll',
+        interactionMode: 'foreground', computerUseTier: 'structured', supportsVision: false,
+      },
+    );
+    expect(result).not.toBe(getI18n().toolResult.computer.errNoVision);
+    expect(result).not.toBe(getI18n().toolResult.computer.errNoVisionScrollWindows);
+    // 没有被提前拒绝：继续走到了宿主（权限检查与会话建立）
+    expect(invoke).toHaveBeenCalled();
+  });
+
+  it('does not open the computer-use setup for a screenshot a model cannot see', async () => {
+    useSettingsStore.setState({ computerUseEnabled: false });
+    const result = await computerTool.execute(
+      { action: 'screenshot', consequence: 'none' },
+      {
+        conversationId: 'active-conversation', loopId: 'loop-no-vision-setup', toolCallId: 'tool-no-vision-setup',
+        interactionMode: 'foreground', computerUseTier: 'structured', supportsVision: false,
+      },
+    );
+    expect(result).toBe(getI18n().toolResult.computer.errNoVision);
+    expect(getPendingCapabilitySetup()).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('lists visible windows as opaque candidates without opening an action session', async () => {

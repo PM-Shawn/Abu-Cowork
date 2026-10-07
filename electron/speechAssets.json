@@ -1,0 +1,27 @@
+{
+  "comment": "Voice-input model files, pinned by repository revision, size and SHA-256 (values verified against DeepSeek Harness runtime/assets.json and the sherpa-onnx int8 release). Paths are relative to a Hugging Face-compatible origin.",
+  "origins": {
+    "hf-mirror": "https://hf-mirror.com",
+    "huggingface": "https://huggingface.co"
+  },
+  "files": [
+    {
+      "name": "model.int8.onnx",
+      "path": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/model.int8.onnx",
+      "bytes": 239233841,
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+    },
+    {
+      "name": "tokens.txt",
+      "path": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/tokens.txt",
+      "bytes": 315894,
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+    },
+    {
+      "name": "silero_vad.onnx",
+      "path": "csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad.onnx",
+      "bytes": 1807522,
+      "sha256": "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28"
+    }
+  ]
+}

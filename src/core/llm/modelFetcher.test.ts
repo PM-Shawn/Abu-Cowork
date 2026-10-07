@@ -135,6 +135,73 @@ describe('modelFetcher', () => {
       expect(result.errorCode).toBe('transport');
     });
 
+    describe('failure text', () => {
+      const FAKE_KEY = 'sk-test-not-a-secret';
+      const FAKE_URL_PASSWORD = 'test-password-not-a-secret';
+
+      function throwing(error: Error) {
+        vi.mocked(getTauriFetch).mockResolvedValue((async () => {
+          throw error;
+        }) as unknown as typeof globalThis.fetch);
+      }
+
+      it('removes the account and password of a base URL echoed by the exception', async () => {
+        const baseUrl = `https://user:${FAKE_URL_PASSWORD}@gateway.example.test/v1`;
+        throwing(new TypeError(`Request cannot be constructed from a URL that includes credentials: ${baseUrl}/models`));
+
+        const result = await fetchProviderModels(baseUrl, FAKE_KEY, 'openai-compatible');
+
+        expect(result.error).toBe(
+          'TypeError: Request cannot be constructed from a URL that includes credentials: [REDACTED]/models',
+        );
+        expect(result.errorCode).toBe('transport');
+      });
+
+      it.each([
+        ['a slash', 'https://user:test-pass/word-not-a-secret@gateway.example.test/v1'],
+        ['a question mark', 'https://user:test-pass?word-not-a-secret@gateway.example.test/v1'],
+        ['a hash', 'https://user:test-pass#word-not-a-secret@gateway.example.test/v1'],
+        ['an at sign', 'https://user:test-pass@word-not-a-secret@gateway.example.test/v1'],
+        ['a space', 'https://user:test-pass word-not-a-secret@gateway.example.test/v1'],
+        ['a quote', 'https://user:test-pass"word-not-a-secret@gateway.example.test/v1'],
+        ['no scheme in front', '//user:test-pass-word-not-a-secret@gateway.example.test/v1'],
+      ])('removes a URL password with %s', async (_label, baseUrl) => {
+        throwing(new TypeError(`Failed to parse URL from ${baseUrl}/models`));
+
+        const result = await fetchProviderModels(`  ${baseUrl}/ `, FAKE_KEY, 'openai-compatible');
+
+        expect(result.error).toBe('TypeError: Failed to parse URL from [REDACTED]/models');
+      });
+
+      it('removes a key carried in the query string of an unparseable base URL', async () => {
+        const baseUrl = `https://gateway.example.test:99999/v1?api_key=${FAKE_URL_PASSWORD}`;
+        throwing(new TypeError(`Failed to parse URL from ${baseUrl}/models`));
+
+        const result = await fetchProviderModels(baseUrl, FAKE_KEY, 'openai-compatible');
+
+        expect(result.error).not.toContain(FAKE_URL_PASSWORD);
+        expect(result.error).toContain('Failed to parse URL from https://gateway.example.test:99999/v1?api_key=[REDACTED]');
+      });
+
+      it('removes the provider key echoed by the exception', async () => {
+        throwing(new Error(`proxy rejected header x-api-key ${FAKE_KEY}`));
+
+        const result = await fetchProviderModels('https://gateway.example.test', FAKE_KEY, 'anthropic');
+
+        expect(result.error).toBe('Error: proxy rejected header x-api-key [REDACTED]');
+      });
+
+      it('reports a non-JSON body without quoting any of it', async () => {
+        const body = `key=${FAKE_KEY.slice(0, 14)}`;
+        stubFetch(() => new Response(body, { status: 200 }));
+
+        const result = await fetchProviderModels('https://gateway.example.test/v1', FAKE_KEY, 'openai-compatible');
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('SyntaxError: response is not valid JSON');
+      });
+    });
+
     it('treats a missing data array as an empty catalog, not a crash', async () => {
       stubFetch(() => jsonResponse({}));
 
@@ -204,5 +271,18 @@ describe('modelFetcher', () => {
 
       expect(spy.mock.calls[0][0]).toBe('https://proxy.example.com/v1/models?limit=1000');
     });
+  });
+});
+
+describe('fetchProviderModels — context window reported by llama.cpp', () => {
+  beforeEach(() => {
+    vi.mocked(getTauriFetch).mockReset();
+  });
+
+  it('keeps data[].meta.n_ctx as ModelInfo.contextWindow', async () => {
+    stubFetch(() => jsonResponse({ data: [{ id: 'qwen3-8b-q4', meta: { n_ctx: 8192 } }, { id: 'plain-model' }] }));
+    const result = await fetchProviderModels('http://127.0.0.1:8080/v1', '', 'openai-compatible');
+    expect(result.models.find((m) => m.id === 'qwen3-8b-q4')?.contextWindow).toBe(8192);
+    expect(result.models.find((m) => m.id === 'plain-model')?.contextWindow).toBeUndefined();
   });
 });

@@ -74,6 +74,7 @@ import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { startTeamStallWatchdog } from '@/core/team/stallWatchdog';
+import { installGoalDriver } from '@/core/goal/goalDriver';
 import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
@@ -600,6 +601,7 @@ function App() {
       triggerEngine.start();
       imChannelRouter.start();
       startTeamStallWatchdog();
+      installGoalDriver();
       reconcileIMSessions();
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files),
       // then run the one-shot secret sweep over existing memories — global dir,

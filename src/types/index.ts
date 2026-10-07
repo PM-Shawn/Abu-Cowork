@@ -474,6 +474,10 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // Goal mode: set on the (isSystem) user message that opens an automatic goal
+  // round, so the UI can render a round marker and the goal tool can tell an
+  // automatic round from a human-initiated run.
+  goalRound?: { goalId: string; revision: number; round: number };
   // Crash-recovery notices remain internal for context/export purposes, but
   // must be visible so the user understands why an earlier task stopped.
   isRecoveryNotice?: boolean;
@@ -566,6 +570,7 @@ export interface Conversation {
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
   teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
+  goal?: import('../core/goal/goalTypes').GoalState;  // Goal mode: the conversation's persistent objective (absent = no goal)
   appBinding?: import('./app').ConversationAppBinding;  // The app (and mode / scene) this conversation was started in; absent = general shell
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
@@ -749,6 +754,12 @@ export interface ToolExecutionContext {
    */
   deferredToolNames?: string[];
   /**
+   * Names of every tool this turn offered the model (active + deferred). Set by
+   * the trusted agent runtime only; wire-safe. Used to answer a hallucinated
+   * tool name with the real choices.
+   */
+  offeredToolNames?: string[];
+  /**
    * In-conversation team mode: exact agent names the leader may delegate to.
    * Set by the trusted runtime from the pinned team's roster (never from model
    * input); delegate_to_agent / run_agent_batch refuse any other agent or
@@ -757,6 +768,12 @@ export interface ToolExecutionContext {
   teamRoster?: string[];
   /** Strict team (先确认分工): report_plan must get the user's approval before anything is dispatched. */
   teamRequirePlanApproval?: boolean;
+  /**
+   * Shell-owned team task this call belongs to (teamConfirmationStore's
+   * beginTask). Keys the task's hand-off bounds and refusal streak, so a
+   * sidecar-supplied value is always overwritten.
+   */
+  teamTaskId?: string;
   /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would
@@ -883,6 +900,8 @@ export type StreamEvent =
   | { type: 'tool_result'; toolUseId: string; result: string }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; stopReason: string; usage?: TokenUsage }
+  /** 正文里出现了操作的开头却识别不出（没闭合、JSON 写坏）。原文不显示给用户。 */
+  | { type: 'malformed_tool_call'; raw: string }
   | { type: 'error'; error: string };
 
 // --- Skill ---

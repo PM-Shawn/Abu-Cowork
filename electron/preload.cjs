@@ -570,6 +570,39 @@ ipcRenderer.on(SIDECAR_EVENT_CHANNEL, (_e, event) => {
   for (const callback of sidecarEventCallbacks) deliverSidecarEvent(callback, event);
 });
 
+const SPEECH_CHANNEL = 'abu:speech';
+const SPEECH_EVENT_CHANNEL = 'abu:speech-event';
+const SPEECH_ACTIONS = new Set(['status', 'prepare', 'cancel', 'delete', 'transcribe']);
+// 150 s of 16 kHz mono PCM16 + header; the host re-validates the WAV itself.
+const MAX_SPEECH_AUDIO_BYTES = 44 + 150 * 16000 * 2;
+const speechEventCallbacks = new Set();
+
+function invokeSpeech(action, request = {}) {
+  if (!SPEECH_ACTIONS.has(action)) return Promise.reject(new Error('Speech: unsupported action'));
+  if (action !== 'transcribe') {
+    const source = request && typeof request.source === 'string' ? request.source : undefined;
+    return ipcRenderer.invoke(SPEECH_CHANNEL, { action, request: source ? { source } : {} });
+  }
+  const audio = request && request.audio;
+  if (!(audio instanceof Uint8Array) || audio.byteLength > MAX_SPEECH_AUDIO_BYTES) {
+    return Promise.reject(new Error('Speech: audio must be a WAV byte array within the recording limit'));
+  }
+  const language = typeof request.language === 'string' ? request.language : 'auto';
+  return ipcRenderer.invoke(SPEECH_CHANNEL, { action, request: { audio, language } });
+}
+
+function subscribeSpeechEvents(callback) {
+  if (typeof callback !== 'function') throw new TypeError('Speech event callback must be a function');
+  speechEventCallbacks.add(callback);
+  return () => speechEventCallbacks.delete(callback);
+}
+
+ipcRenderer.on(SPEECH_EVENT_CHANNEL, (_event, payload) => {
+  for (const callback of speechEventCallbacks) {
+    try { callback(payload); } catch { /* a renderer listener must not break the others */ }
+  }
+});
+
 contextBridge.exposeInMainWorld('__TAURI_INTERNALS__', {
   invoke,
   transformCallback: (cb, once = false) => {
@@ -624,6 +657,11 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   appPage: (action, request) => ipcRenderer.invoke('abu:app-page', { action, request }),
   pluginSnapshot: (action, request) => ipcRenderer.invoke('abu:plugin-snapshot', { action, request }),
   pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
+  // Voice input: OS microphone consent status + opening its privacy page (microphonePermissions.cjs).
+  microphone: (action) => ipcRenderer.invoke('abu:microphone', { action }),
+  // Voice input: model status/download and transcription (speechHost.cjs).
+  speech: invokeSpeech,
+  subscribeSpeechEvents,
   pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,

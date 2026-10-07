@@ -5,6 +5,10 @@ import { Input } from '@/components/ui/input';
 import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
+import VoiceInputControl from '@/components/chat/VoiceInputControl';
+import { spaceForInsertion, type VoiceDraftSnapshot } from '@/core/speech/voiceInputText';
+import { useVoiceInputStore } from '@/stores/voiceInputStore';
+import { isSpeechAvailable } from '@/core/speech/speechBridge';
 import { ManagedProviderOfflineBar } from '@/components/chat/ManagedProviderOfflineBar';
 import { useManagedProviderLiveness } from '@/components/chat/useManagedProviderLiveness';
 import { subscribeModelPickerRequest } from '@/components/chat/modelPickerRequest';
@@ -30,6 +34,7 @@ import { isImageFile } from '@/components/chat/FileAttachment';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { parseGoalCommand } from '@/core/goal/goalCommand';
 import { requestDispatchInput } from '@/core/agent/dispatchCancel';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { collectMemberDispatches, findRunningDispatch, parseMemberAddress } from '@/components/team/teamDispatches';
@@ -565,6 +570,48 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<InlineSkillInputHandle>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
+  const voiceInputEnabled = useVoiceInputStore((s) => s.enabled);
+  const [voiceInputAvailable] = useState(isSpeechAvailable);
+
+  // Voice input (VoiceInputControl): the transcript lands where the caret was
+  // when recording started, and only if the draft has not changed since —
+  // otherwise the control holds it for an explicit insert.
+  const getVoiceDraftSnapshot = useCallback((): VoiceDraftSnapshot => {
+    const textarea = textareaRef.current;
+    const value = textarea?.value ?? '';
+    return {
+      text: value,
+      start: textarea?.selectionStart ?? value.length,
+      end: textarea?.selectionEnd ?? value.length,
+    };
+  }, []);
+  const insertVoiceText = useCallback((transcript: string, at?: VoiceDraftSnapshot) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return false;
+    if (at && textarea.value !== at.text) return false;
+    textarea.focus();
+    if (at) textarea.setSelectionRange(at.start, at.end);
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const insertion = spaceForInsertion(textarea.value.slice(0, start), transcript);
+    textarea.insertText(insertion);
+    setSelection({ start: start + insertion.length, end: start + insertion.length });
+    return true;
+  }, [setSelection]);
+  const insertVoiceTextIfUnchanged = useCallback(
+    (transcript: string, snapshot: VoiceDraftSnapshot) => insertVoiceText(transcript, snapshot),
+    [insertVoiceText],
+  );
+  const insertVoiceTextAtCursor = useCallback((transcript: string) => {
+    insertVoiceText(transcript);
+  }, [insertVoiceText]);
+  const voiceControl = voiceInputEnabled && voiceInputAvailable ? (
+    <VoiceInputControl
+      resetKey={draftKey}
+      getDraftSnapshot={getVoiceDraftSnapshot}
+      insertIfUnchanged={insertVoiceTextIfUnchanged}
+      insertAtCursor={insertVoiceTextAtCursor}
+    />
+  ) : null;
   const composingRef = useRef(false);
   const isMountedRef = useRef(false);
   const compositionResetTimerRef = useRef<number | null>(null);
@@ -1547,6 +1594,26 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       message = bodyParts;
     }
 
+    // Goal mode: `/goal …` is an instruction to the app, never a message for
+    // the model, so it must not wait in the queue behind the running task (a
+    // goal keeps the conversation running, which is exactly when the user
+    // types `/goal pause`). It goes to the send handler at once; the text
+    // stays in the composer when the handler refuses it.
+    const sendGoalCommandNow = () => {
+      void Promise.resolve(onSend(message)).then(
+        (accepted) => {
+          if (accepted !== false) resetInput();
+        },
+        // A send that fails did not take the command: it is still in the composer.
+        () => {},
+      );
+    };
+    const isGoalCommand = images.length === 0 && parseGoalCommand(message) !== null;
+    if (isGoalCommand && isRunning) {
+      sendGoalCommandNow();
+      return;
+    }
+
     // Mid-task input: if agent is running, stage the message in the queue
     // strip above the composer (cancellable) instead of starting a new loop.
     // It becomes a transcript bubble only when the loop drains it.
@@ -1589,6 +1656,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // chain is still live, and that chain's final queue drain runs in the
       // same microtask turn as the guard release — a keydown can never land
       // between them, so a message staged now is always picked up.
+      if (isGoalCommand) {
+        sendGoalCommandNow();
+        return;
+      }
       if (activeConv?.id && message && !hasRuntimeAttachments) {
         enqueueUserInput(activeConv.id, message);
         resetInput();
@@ -2120,6 +2191,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   />
                 </div>
 
+                {voiceControl}
+
                 <Button
                   size="icon"
                   onClick={handleSend}
@@ -2202,6 +2275,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     <ContextIndicator conversationId={activeConvIdForIndicator} />
                   </div>
                 )}
+
+                {voiceControl}
 
                 {isStreaming ? (
                   <Button

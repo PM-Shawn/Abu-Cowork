@@ -16,10 +16,12 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { isKnownModel } from '@/core/llm/modelCapabilities';
+import { resolveContextWindow } from '@/core/llm/contextWindow';
+import { localServerKind } from '@/core/llm/localProvider';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities } from './providerCapabilities';
-import { toModelInfo } from './modelInfoUtil';
+import { toModelInfo, withContextWindows } from './modelInfoUtil';
 import { sortKnownFirst, unionSelectAll, filterModels, MODEL_FILTER_MIN_ITEMS } from './fetchModelUtils';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 import type { LLMProvider, ApiFormat } from '@/types';
@@ -30,6 +32,7 @@ import {
   formatOllamaModelLabel,
 } from '@/core/llm/ollama';
 import { fetchProviderModels, type FetchModelsResult } from '@/core/llm/modelFetcher';
+import { fetchLmStudioContextWindows, fetchOllamaLoadedContextWindows } from '@/core/llm/contextWindowProbe';
 import { SECRET_KEYS } from '@/utils/secretStore';
 
 /**
@@ -176,6 +179,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   const updateProvider = useSettingsStore((s) => s.updateProvider);
   const removeProvider = useSettingsStore((s) => s.removeProvider);
   const selectModel = useSettingsStore((s) => s.selectModel);
+  const contextWindowCeiling = useSettingsStore((s) => s.contextWindowSize);
   // True when bootstrapSecrets detected a prior ciphertext for the provider
   // being edited but couldn't decrypt it (typical cause: hardware/UUID
   // change). Mirrors the same check ProviderCard's retired inline edit form
@@ -683,6 +687,8 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     return (
       <button
         type="button"
+        aria-label={t.settings.advancedConfig}
+        aria-expanded={isExpanded}
         onClick={(e) => { e.stopPropagation(); toggleModelExpand(modelId); }}
         className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
       >
@@ -704,6 +710,13 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           // (design doc §7b), and `selectedOption.format` never changes for
           // it — only `effectiveFormat` (which follows `activePlan`) does.
           apiFormat={effectiveFormat}
+          detectedContextWindow={detectedContextWindowFor(modelId)}
+          // 与运行时同一算法：只有名字估计这一级，再按全局上限封顶
+          estimatedContextWindow={resolveContextWindow({
+            modelId,
+            isLocal: localServerKind({ id: selectedOption?.provider ?? '', source: isCustom ? 'custom' : 'builtin', baseUrl }) !== null,
+            ceiling: contextWindowCeiling,
+          }).size}
         />
       </div>
     );
@@ -732,7 +745,9 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       // recognizable ids sit at the top; the search box narrows the rest.
       // LM Studio is the exception, for the same reason as Ollama: it lists
       // the models already loaded on this machine, so check them all.
-      const sorted = sortKnownFirst(result.models, isKnownModel);
+      const listed = sortKnownFirst(result.models, isKnownModel);
+      // LM Studio 在自己的接口里报告已加载长度，一并记下
+      const sorted = isLMStudio ? withContextWindows(listed, await fetchLmStudioContextWindows(baseUrl)) : listed;
       setFetchedModels(sorted);
       if (isLMStudio) {
         setSelectedModels((prev) => unionSelectAll(sorted, prev));
@@ -779,7 +794,9 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
         label: formatOllamaModelLabel(m),
         isCustom: false,
       }));
-      setOllamaModels(modelInfos);
+      // Ollama 只报告已加载模型实际使用的长度；没加载的不写，高级配置显示「未识别」
+      const withWindows = withContextWindows(modelInfos, await fetchOllamaLoadedContextWindows(url, modelInfos.map((m) => m.id)));
+      setOllamaModels(withWindows);
 
       // Auto-select every detected model — unlike a cloud catalog, these are
       // models the user already deliberately pulled onto this machine, and
@@ -832,6 +849,13 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     }
   }, [baseUrl, apiKey, selectedModels, effectiveFormat, t]);
 
+  /** 获取模型时记下的窗口：本次获取的列表优先，其次是编辑前已保存的值。 */
+  const detectedContextWindowFor = useCallback((id: string): number | undefined =>
+    ollamaModels.find((m) => m.id === id)?.contextWindow
+      ?? fetchedModels.find((m) => m.id === id)?.contextWindow
+      ?? editProvider?.models.find((m) => m.id === id)?.contextWindow,
+  [ollamaModels, fetchedModels, editProvider]);
+
   // ── Save ──
 
   const handleSave = useCallback(() => {
@@ -843,6 +867,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       return toModelInfo(id, {
         label: ollamaModel?.label,
         declaredCapabilities: showAdvanced ? perModelDeclared[id] : undefined,
+        contextWindow: detectedContextWindowFor(id),
       });
     });
 
@@ -946,7 +971,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   }, [
     serviceName, selectedModels, ollamaModels, selectedOption,
     isCustom, showAdvanced, perModelDeclared, useRawUrl, baseUrl, apiKey, providers,
-    effectiveFormat, activePlan, editProvider,
+    effectiveFormat, activePlan, editProvider, detectedContextWindowFor,
     addProvider, updateProvider, selectModel, onClose,
   ]);
 

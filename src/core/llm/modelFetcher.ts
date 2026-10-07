@@ -3,6 +3,8 @@ import type { ApiFormat } from '@/types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeBaseUrl, resolveOpenAIBaseUrl } from './urlUtils';
 import { deriveUiCaps } from './modelCapabilities';
+import { positiveInteger } from './contextWindow';
+import { safeFailureText } from './healthCheck';
 
 /**
  * Why a fetch failed, in terms the UI can translate. Kept as a code rather
@@ -22,7 +24,7 @@ export type FetchModelsErrorCode =
 export interface FetchModelsResult {
   success: boolean;
   models: ModelInfo[];
-  /** Diagnostic detail (status line or raw error). Not user-facing prose. */
+  /** Diagnostic detail (status line or redacted error text). Not user-facing prose. */
   error?: string;
   errorCode?: FetchModelsErrorCode;
   status?: number;
@@ -82,10 +84,15 @@ function failureForStatus(status: number): FetchModelsResult {
   return { success: false, models: [], error: `HTTP ${status}`, errorCode, status };
 }
 
-function toModelInfos(ids: { id: string; label?: string }[]): ModelInfo[] {
+function toModelInfos(ids: { id: string; label?: string; contextWindow?: number }[]): ModelInfo[] {
   return ids
     .filter((m) => isChatModelId(m.id))
-    .map((m) => ({ id: m.id, label: m.label || m.id, capabilities: deriveUiCaps(m.id) }));
+    .map((m) => ({
+      id: m.id,
+      label: m.label || m.id,
+      capabilities: deriveUiCaps(m.id),
+      ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+    }));
 }
 
 /**
@@ -136,8 +143,9 @@ const openAICompatibleFetcher: ModelFetcher = {
     const resp = await fetchFn(`${resolvedBase}/models`, { method: 'GET', headers });
     if (!resp.ok) return failureForStatus(resp.status);
 
-    const data = await resp.json() as { data?: { id: string }[] };
-    const models = toModelInfos(data.data ?? []);
+    const data = await resp.json() as { data?: { id: string; meta?: { n_ctx?: unknown } }[] };
+    // llama.cpp 在 meta.n_ctx 里报告当前加载的窗口
+    const models = toModelInfos((data.data ?? []).map((m) => ({ id: m.id, contextWindow: positiveInteger(m.meta?.n_ctx) })));
     return { success: true, models };
   },
 };
@@ -160,7 +168,10 @@ export async function fetchProviderModels(
     const fetchFn = await getTauriFetch();
     return await fetcher.fetch(ctx, fetchFn);
   } catch (e) {
-    const raw = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    return { success: false, models: [], error: raw, errorCode: 'transport' };
+    // JSON 解析异常的 message 会引用一段响应正文，这里换成固定文字
+    const raw = e instanceof SyntaxError
+      ? 'SyntaxError: response is not valid JSON'
+      : e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    return { success: false, models: [], error: safeFailureText(raw, { apiKey, baseUrl }), errorCode: 'transport' };
   }
 }

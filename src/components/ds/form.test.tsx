@@ -4,6 +4,7 @@ import { createRef, useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pointerTargetOf } from '@/test/pointerTarget';
 import { Button } from './button';
 import { Checkbox } from './checkbox';
 import { Combobox, MultiCombobox, type ComboboxOption } from './combobox';
@@ -136,6 +137,68 @@ describe('form controls', () => {
     expect(onCheckedChange).not.toHaveBeenCalled();
     expect(control).toHaveAttribute('aria-checked', 'false');
     expect(control).toHaveFocus();
+  });
+
+  // A busy switch takes the press itself: the card it sits on does not open, and the focus stays.
+  it('a busy Switch keeps a pointer press, Enter, Space and a click made by code from the card behind it', async () => {
+    const user = userEvent.setup();
+    const onCheckedChange = vi.fn();
+    const onCardClick = vi.fn();
+    render(
+      <div role="button" tabIndex={0} aria-label="Card" onClick={onCardClick}>
+        <Switch aria-label="Connect" busy checked={false} onCheckedChange={onCheckedChange} />
+      </div>,
+    );
+    const control = screen.getByRole('switch', { name: 'Connect' });
+    expect(control).not.toHaveClass('aria-disabled:pointer-events-none');
+    expect(control).toHaveClass('aria-disabled:cursor-default');
+    expect(control).toHaveClass('aria-disabled:opacity-40');
+    control.focus();
+
+    await user.click(pointerTargetOf(control));
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    const notPrevented = fireEvent.click(control);
+
+    expect(onCardClick).not.toHaveBeenCalled();
+    expect(onCheckedChange).not.toHaveBeenCalled();
+    expect(notPrevented).toBe(false);
+    expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    expect(control).toHaveFocus();
+  });
+
+  it('a busy Switch takes a press made while the focus was on the card, and the card keeps closed', async () => {
+    const user = userEvent.setup();
+    const onCardClick = vi.fn();
+    render(
+      <div role="button" tabIndex={0} aria-label="Card" onClick={onCardClick}>
+        <Switch aria-label="Connect" busy checked={false} onCheckedChange={() => undefined} />
+      </div>,
+    );
+    const card = screen.getByRole('button', { name: 'Card' });
+    card.focus();
+
+    await user.click(pointerTargetOf(screen.getByRole('switch', { name: 'Connect' })));
+
+    expect(onCardClick).not.toHaveBeenCalled();
+    expect(card).not.toHaveFocus();
+  });
+
+  it('a Switch that is not busy changes on a press and lets the click go on', async () => {
+    const user = userEvent.setup();
+    const onCheckedChange = vi.fn();
+    const onCardClick = vi.fn();
+    render(
+      <div role="button" tabIndex={0} aria-label="Card" onClick={onCardClick}>
+        <Switch aria-label="Connect" checked={false} onCheckedChange={onCheckedChange} />
+      </div>,
+    );
+
+    await user.click(screen.getByRole('switch', { name: 'Connect' }));
+
+    expect(onCheckedChange).toHaveBeenCalledExactlyOnceWith(true);
+    expect(onCardClick).toHaveBeenCalledOnce();
   });
 
   it('a Switch that stops being busy takes the next press, with the focus still on it', async () => {

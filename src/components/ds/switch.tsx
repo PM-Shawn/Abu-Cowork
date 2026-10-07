@@ -9,7 +9,7 @@ export function Switch({ checked, onCheckedChange, label, disabled, busy = false
   onCheckedChange: (checked: boolean) => void;
   label?: ReactNode;
   disabled?: boolean;
-  // Its own action is running: it keeps the keyboard focus and takes no press until that ends.
+  // Its own action is running: it keeps the keyboard focus and acts on no press until that ends.
   busy?: boolean;
   id?: string;
   // The name of a switch that has no visible label and no SettingRow title pointing at it.
@@ -26,6 +26,9 @@ export function Switch({ checked, onCheckedChange, label, disabled, busy = false
         disabled={disabled}
         aria-disabled={busy || undefined}
         onCheckedChange={busy ? () => undefined : onCheckedChange}
+        // The click of a busy switch ends on the switch: nothing changes, and a card or a row it
+        // sits on does not act on a press that was meant for the switch (see Button busy).
+        onClick={busy ? (event) => { event.preventDefault(); event.stopPropagation(); } : undefined}
         // One change per press: the repeats of a held Enter or Space are dropped (heldKey.ts).
         onKeyDown={dropsHeldRepeat}
         className={cn('inline-flex h-5 w-8 shrink-0 items-center rounded-full bg-fill-pressed transition-colors duration-fast data-[state=checked]:bg-emphasis', FOCUS_RING, DISABLED, BUSY)}

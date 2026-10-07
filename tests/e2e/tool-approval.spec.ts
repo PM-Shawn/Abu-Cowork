@@ -472,23 +472,22 @@ test.describe.serial('Electron run_command approval E2E', () => {
       .filter((entry) => entry.repeat && entry.onCancel).length);
 
     await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(`abu-e2e-held-enter-${randomUUID()}`);
-    // One more repeat of the held key; a second request means the approval has been answered.
+    // One more repeat of the held key. A second request means a repeat has answered the approval:
+    // the polls below stop at once then (a throw inside `expect.poll` is only retried), and the
+    // check after each poll says what happened.
     const repeatEnter = async () => {
       await page.keyboard.down('Enter');
-      if (mock!.requests.length > 1) throw new Error('a repeat of the held Enter answered the approval');
+      return mock!.requests.length > 1;
     };
+    const answeredByRepeat = 'a repeat of the held Enter answered the approval';
     // The key goes down once (the message is sent) and then repeats, as a held key does.
     await page.keyboard.down('Enter');
     try {
-      await expect.poll(async () => {
-        await repeatEnter();
-        return dialogTitle(page).isVisible();
-      }, { timeout: READY_TIMEOUT, intervals: [30] }).toBe(true);
+      await expect.poll(async () => (await repeatEnter()) || dialogTitle(page).isVisible(), { timeout: READY_TIMEOUT, intervals: [30] }).toBe(true);
+      expect(mock.requests.length, answeredByRepeat).toBe(1);
       // Held on: the repeats arrive on the focused cancelling button.
-      await expect.poll(async () => {
-        await repeatEnter();
-        return repeatsOnCancel();
-      }, { timeout: READY_TIMEOUT, intervals: [30] }).toBeGreaterThanOrEqual(15);
+      await expect.poll(async () => ((await repeatEnter()) ? Number.POSITIVE_INFINITY : repeatsOnCancel()), { timeout: READY_TIMEOUT, intervals: [30] }).toBeGreaterThanOrEqual(15);
+      expect(mock.requests.length, answeredByRepeat).toBe(1);
 
       await expect(dialogTitle(page)).toBeVisible();
       await expect(cancelButton(page)).toBeFocused();

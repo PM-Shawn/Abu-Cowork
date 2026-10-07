@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -341,5 +341,129 @@ describe('UserQuestionDock', () => {
       }),
     );
     resolveSpy.mockRestore();
+  });
+
+  // The dock takes the focus by itself when a question arrives, and Enter answers with the
+  // highlighted option. The Enter that sent the message may still be down at that moment: its
+  // repeats answer nothing. A held key is the first key-down followed by repeats.
+  describe('a key that is still down when the question appears', () => {
+    const dock = () => document.querySelector('[tabindex="-1"]') as HTMLElement;
+    const pressed = (key: string) => fireEvent.keyDown(dock(), { key, code: key });
+    const repeated = (key: string) => fireEvent.keyDown(dock(), { key, code: key, repeat: true });
+    const released = (key: string) => fireEvent.keyUp(dock(), { key, code: key });
+    const answered = (...selected: string[][]) => expect.objectContaining({
+      answers: selected.map((choice) => expect.objectContaining({ selected: choice })),
+    });
+
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('takes the focus when it appears, and the first press of Enter answers a single-choice question', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-first-press');
+      expect(dock()).toHaveFocus();
+
+      pressed('Enter');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-first-press', answered(['详细']));
+    });
+
+    it('leaves a single-choice question unanswered under the repeats of a held Enter; released and pressed again, Enter answers', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-held');
+
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(mockSetAnswers).not.toHaveBeenCalled();
+      expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+
+      released('Enter');
+      pressed('Enter');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held', answered(['详细']));
+    });
+
+    it('answers one question per press: the repeats of the Enter that answered the first do not answer the next', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(TWO_Q_PAYLOAD, 'tc-held-two');
+
+      pressed('Enter');
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('第二题？')).toBeInTheDocument();
+
+      released('Enter');
+      pressed('Enter');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-two', answered(['A'], ['C']));
+    });
+
+    it('confirm mode: the repeats of a held Enter neither choose an option nor confirm it', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(CONFIRM_PAYLOAD, 'tc-held-confirm');
+      const confirmButton = screen.getByText('确认执行').closest('button')!;
+
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+
+      expect(confirmButton).toBeDisabled();
+      expect(resolveSpy).not.toHaveBeenCalled();
+
+      // One press chooses; held on, it does not go on to confirm.
+      released('Enter');
+      pressed('Enter');
+      expect(confirmButton).not.toBeDisabled();
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+      expect(resolveSpy).not.toHaveBeenCalled();
+
+      released('Enter');
+      pressed('Enter');
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-confirm', answered(['批准执行']));
+    });
+
+    it('multiple choice: a held Enter ticks the option once', () => {
+      renderDock(MULTI_PAYLOAD, 'tc-held-multi');
+      const submit = screen.getByText('提交').closest('button')!;
+
+      pressed('Enter');
+      expect(submit).not.toBeDisabled();
+      for (let i = 0; i < 3; i += 1) repeated('Enter');
+
+      expect(submit).not.toBeDisabled();
+    });
+
+    it('prevents the default of a repeated Enter, and leaves a repeat inside the text field and on a button alone', async () => {
+      const user = userEvent.setup();
+      renderDock(MULTI_PAYLOAD, 'tc-held-inner');
+      // fireEvent returns false once the default was prevented.
+      expect(repeated('Enter')).toBe(false);
+
+      await user.click(screen.getByText('其他…').closest('button')!);
+      const field = screen.getByPlaceholderText('请输入自定义内容');
+      expect(fireEvent.keyDown(field, { key: 'a', code: 'KeyA', repeat: true })).toBe(true);
+      expect(fireEvent.keyDown(field, { key: 'Backspace', code: 'Backspace', repeat: true })).toBe(true);
+    });
+
+    it('keeps walking the options with a held arrow, and a held Escape still cancels', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-held-arrow');
+
+      pressed('ArrowDown');
+      repeated('ArrowDown');
+      repeated('ArrowDown');
+      released('ArrowDown');
+      // Three steps down from the first option end on 跳过; two steps up end on the second option.
+      pressed('ArrowUp');
+      pressed('ArrowUp');
+      pressed('Enter');
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-arrow', answered(['简洁']));
+
+      cleanup();
+      resolveSpy.mockClear();
+      renderDock(SINGLE_PAYLOAD, 'tc-held-escape');
+      repeated('Escape');
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-escape', null);
+    });
   });
 });

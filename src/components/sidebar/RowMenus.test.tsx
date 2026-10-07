@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ComponentProps } from 'react';
+import type { ComponentProps, HTMLAttributes } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IconButton } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
@@ -42,7 +42,8 @@ const onRename = vi.fn();
 const onOpenChange = vi.fn();
 const onCloseAutoFocus = vi.fn();
 
-function List({ rows }: { rows: string[] }) {
+// `more`: the row's button as a ds IconButton, as a plain element, or as one marked working.
+function List({ rows, more = 'ds' }: { rows: string[]; more?: 'ds' | 'native' | 'working' }) {
   return (
     <RowMenus
       className="space-y-1"
@@ -66,15 +67,18 @@ function List({ rows }: { rows: string[] }) {
           onContextMenu={(event) => menus.onRowContextMenu(event, rowId)}
         >
           {rowId}
-          <IconButton icon={AppIcons.more} label={`More for ${rowId}`} size="sm" {...menus.moreButtonProps(rowId)} />
+          {more === 'native'
+            // No ds control: nothing but the list's own handlers stands between a key and the menu.
+            ? <span role="button" tabIndex={0} aria-label={`More for ${rowId}`} {...(menus.moreButtonProps(rowId) as HTMLAttributes<HTMLSpanElement>)} />
+            : <IconButton icon={AppIcons.more} label={`More for ${rowId}`} size="sm" {...menus.moreButtonProps(rowId)} aria-disabled={more === 'working' || undefined} />}
         </div>
       ))}
     </RowMenus>
   );
 }
 
-function renderList(rows = ['a', 'b', 'c']) {
-  return render(<List rows={rows} />, { wrapper: DesignSystemProvider });
+function renderList(rows = ['a', 'b', 'c'], more: 'ds' | 'native' | 'working' = 'ds') {
+  return render(<List rows={rows} more={more} />, { wrapper: DesignSystemProvider });
 }
 
 function menuItemNames() {
@@ -247,6 +251,130 @@ describe('RowMenus', () => {
       await act(() => vi.runOnlyPendingTimersAsync());
 
       expect(screen.getByTestId('c')).toHaveFocus();
+    });
+
+    // A screen reader activates the button with a click alone; `element.click()` makes the same
+    // event (`detail` 0, no pointer down before it, no key).
+    describe('under a click that no pointer and no key made', () => {
+      it.each(['ds', 'native'] as const)('opens the items of its own row once, without acting as the row (%s button)', (more) => {
+        renderList(['a', 'b', 'c'], more);
+
+        act(() => moreButton('b').click());
+
+        expect(menuItemNames()).toEqual(['Rename b', 'Delete b']);
+        expect(moreButton('b')).toHaveAttribute('aria-expanded', 'true');
+        expect(onRowClick).not.toHaveBeenCalled();
+        expect(onOpenChange.mock.calls).toEqual([[true]]);
+
+        act(() => moreButton('b').click());
+
+        expect(screen.getAllByRole('menu')).toHaveLength(1);
+        expect(onOpenChange.mock.calls).toEqual([[true]]);
+        expect(onRowClick).not.toHaveBeenCalled();
+      });
+
+      it('opens once for a pointer press, whose own click opens nothing more', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        renderList();
+
+        await user.click(moreButton('b'));
+
+        expect(screen.getAllByRole('menu')).toHaveLength(1);
+        expect(onOpenChange.mock.calls).toEqual([[true]]);
+      });
+
+      it('leaves the click of a pointer to the pointer-down: a click that counts presses opens nothing by itself', () => {
+        renderList();
+
+        fireEvent.click(moreButton('b'), { detail: 1 });
+
+        expect(screen.queryByRole('menu')).toBeNull();
+        expect(onOpenChange).not.toHaveBeenCalled();
+        expect(onRowClick).not.toHaveBeenCalled();
+      });
+
+      it('opens again after the menu was closed, also when the pointer press before it ended elsewhere', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        renderList();
+        // The pointer goes down on the button and the menu opens; the click that ends the press
+        // lands on the page, because the open menu takes the pointer from everything else.
+        fireEvent.pointerDown(moreButton('a'), { button: 0, pointerType: 'mouse' });
+        expect(menuItemNames()).toEqual(['Rename a', 'Delete a']);
+        await user.keyboard('{Escape}');
+        await act(() => vi.runOnlyPendingTimersAsync());
+        expect(screen.queryByRole('menu')).toBeNull();
+
+        act(() => moreButton('c').click());
+
+        expect(menuItemNames()).toEqual(['Rename c', 'Delete c']);
+        expect(moreButton('c')).toHaveAttribute('aria-expanded', 'true');
+        expect(moreButton('a')).toHaveAttribute('aria-expanded', 'false');
+      });
+
+      it('gives the focus back to the button when that menu is closed with Escape', async () => {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        renderList();
+        act(() => moreButton('b').focus());
+        act(() => moreButton('b').click());
+        await act(() => vi.runOnlyPendingTimersAsync());
+
+        await user.keyboard('{Escape}');
+        await act(() => vi.runOnlyPendingTimersAsync());
+
+        expect(screen.queryByRole('menu')).toBeNull();
+        expect(moreButton('b')).toHaveFocus();
+      });
+
+      // A list marks the button of a row whose own action is running (`aria-disabled`).
+      it('opens nothing on a button that is marked as working', () => {
+        renderList(['a', 'b', 'c'], 'working');
+
+        act(() => moreButton('b').click());
+
+        expect(screen.queryByRole('menu')).toBeNull();
+        expect(onOpenChange).not.toHaveBeenCalled();
+        expect(onRowClick).not.toHaveBeenCalled();
+      });
+    });
+
+    // The focus is handed to this button after a row's action; a key that is still down then
+    // repeats on it.
+    describe('a key that is held', () => {
+      const KEYS = [['Enter', 'Enter'], [' ', 'Space'], ['ArrowDown', 'ArrowDown']] as const;
+
+      it.each(['ds', 'native'] as const)('opens nothing on its repeats, and lets no click follow them (%s button)', (more) => {
+        renderList(['a', 'b', 'c'], more);
+        act(() => moreButton('b').focus());
+
+        for (const [key, code] of KEYS) {
+          // fireEvent returns false once the default was prevented: the browser then makes no click.
+          expect(fireEvent.keyDown(moreButton('b'), { key, code, repeat: true })).toBe(false);
+        }
+
+        expect(screen.queryByRole('menu')).toBeNull();
+        expect(onOpenChange).not.toHaveBeenCalled();
+        expect(onRowClick).not.toHaveBeenCalled();
+      });
+
+      it.each(KEYS)('opens on the next press of %j once the key was released', async (key, code) => {
+        renderList(['a', 'b', 'c'], 'native');
+        act(() => moreButton('b').focus());
+        fireEvent.keyDown(moreButton('b'), { key, code, repeat: true });
+        fireEvent.keyUp(moreButton('b'), { key, code });
+
+        expect(fireEvent.keyDown(moreButton('b'), { key, code })).toBe(false);
+        await act(() => vi.runOnlyPendingTimersAsync());
+
+        expect(menuItemNames()).toEqual(['Rename b', 'Delete b']);
+        expect(onOpenChange.mock.calls).toEqual([[true]]);
+      });
+
+      it('leaves every other key alone', () => {
+        renderList(['a', 'b', 'c'], 'native');
+        expect(fireEvent.keyDown(moreButton('b'), { key: 'Tab', code: 'Tab', repeat: true })).toBe(true);
+        expect(fireEvent.keyDown(moreButton('b'), { key: 'ArrowUp', code: 'ArrowUp', repeat: true })).toBe(true);
+        expect(screen.queryByRole('menu')).toBeNull();
+      });
     });
   });
 

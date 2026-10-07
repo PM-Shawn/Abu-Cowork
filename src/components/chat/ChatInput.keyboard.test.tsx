@@ -258,10 +258,29 @@ describe('ChatInput keyboard contract', () => {
         expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
       });
 
-      it('still walks the list while an arrow is held', () => {
+      it('still walks the list while an arrow is held: every repeat moves the highlight one option on', () => {
+        useDiscoveryStore.setState({
+          skills: [],
+          agents: [
+            { name: 'publisher', description: 'Draft and edit public posts' },
+            { name: 'publicist', description: 'Plan a launch' },
+            { name: 'pubwatch', description: 'Watch what was published' },
+          ],
+          isLoading: false,
+        });
         const { textarea } = openList();
+        const highlighted = () => screen.getAllByRole('option').findIndex((option) => option.getAttribute('aria-selected') === 'true');
+        expect(screen.getAllByRole('option')).toHaveLength(3);
+        expect(highlighted()).toBe(0);
+
+        expect(fireEvent.keyDown(textarea, { key: 'ArrowDown', code: 'ArrowDown' })).toBe(false);
+        expect(highlighted()).toBe(1);
         expect(fireEvent.keyDown(textarea, { key: 'ArrowDown', code: 'ArrowDown', repeat: true })).toBe(false);
-        expect(screen.getByRole('option', { name: /publisher/ })).toBeTruthy();
+        expect(highlighted()).toBe(2);
+        expect(fireEvent.keyDown(textarea, { key: 'ArrowUp', code: 'ArrowUp', repeat: true })).toBe(false);
+        expect(highlighted()).toBe(1);
+        expect(fireEvent.keyDown(textarea, { key: 'ArrowUp', code: 'ArrowUp', repeat: true })).toBe(false);
+        expect(highlighted()).toBe(0);
       });
     });
   });

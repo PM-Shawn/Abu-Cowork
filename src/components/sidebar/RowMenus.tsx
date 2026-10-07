@@ -92,10 +92,24 @@ export function RowMenus({ items, moreLabel, onOpenChange, onCloseAutoFocus, cla
       },
       onKeyDown: (event) => {
         if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'ArrowDown') return;
+        // Prevented also for a repeat, so the browser makes no click from a held Enter or Space.
         event.preventDefault();
+        // One press opens once. The focus is handed to this button after a row's action, and a
+        // key that is still down then must open nothing.
+        if (event.repeat) return;
         openMoreAt(rowId, event.currentTarget);
       },
-      onClick: (event) => event.stopPropagation(),
+      onClick: (event) => {
+        event.stopPropagation();
+        // A screen reader activates the button with a click alone (`detail` 0: no pointer went
+        // down for it, and the opening keys make no click): that click opens the menu. The click
+        // of a pointer press counts its presses and is left to the pointer-down above. A button
+        // its list marks as working (`aria-disabled`) opens nothing.
+        if (event.detail !== 0 || event.defaultPrevented) return;
+        if (event.currentTarget.getAttribute('aria-disabled') === 'true') return;
+        if (moreOpen && more?.rowId === rowId) return;
+        openMoreAt(rowId, event.currentTarget);
+      },
     }),
   };
 

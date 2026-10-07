@@ -1,9 +1,9 @@
 import { ContextMenu as ContextMenuPrimitive, DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import { useId, type ReactNode } from 'react';
+import { useId, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type { DataAttributes } from './dialog';
-import { useHeldKeys } from './heldKey';
+import { dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
@@ -37,9 +37,26 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   // until it is pressed again. Keys pressed inside the menu repeat (arrows walk the list), except
   // Enter and Space: one press chooses once, also while the menu fades out.
   const heldKeys = useHeldKeys(isOpen, 'enter-space');
+  // Radix opens the menu when the pointer goes down on the trigger and on the key-down of Enter,
+  // Space or ArrowDown, and never on a click. A screen reader activates a button with a click
+  // alone (`detail` 0: no pointer went down for it); that click opens the menu here. The click of
+  // a pointer press counts its presses (`detail` 1 and up) and is left to the pointer-down, and
+  // the opening keys make no click (Radix prevents their default; the trigger's own control drops
+  // their repeats), so one press of either kind opens the menu once. A trigger that refuses its
+  // click (a busy button) opens nothing.
+  const openOnBareClick = (event: MouseEvent<HTMLElement>) => {
+    if (event.detail === 0 && !event.defaultPrevented && !isOpen) setOpen(true);
+  };
+  // The repeat of a held key opens nothing, whatever the trigger is made of (Enter, Space, and
+  // the arrow that opens the menu): a prevented key-down is one Radix leaves alone, and the
+  // browser makes no click from it. A new press opens.
+  const dropOpeningRepeat = (event: KeyboardEvent<HTMLElement>) => {
+    if (dropsHeldRepeat(event)) return;
+    if (event.repeat && event.key === 'ArrowDown') event.preventDefault();
+  };
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
-      <DropdownMenuPrimitive.Trigger asChild>{trigger}</DropdownMenuPrimitive.Trigger>
+      <DropdownMenuPrimitive.Trigger asChild onClick={openOnBareClick} onKeyDown={dropOpeningRepeat}>{trigger}</DropdownMenuPrimitive.Trigger>
       <DropdownMenuPrimitive.Portal container={container}>
         <DropdownMenuPrimitive.Content
           {...heldKeys.handlers}

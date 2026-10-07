@@ -562,7 +562,7 @@ describe('MessageBubble on the design system', () => {
     expect(helpful).toHaveAttribute('aria-pressed', 'true');
     // The pressed look comes from IconButton itself (it keys off aria-pressed), so it also holds under the pointer.
     expect(helpful).toHaveClass('aria-pressed:bg-fill-selected');
-    expect(helpful).toHaveClass('aria-pressed:hover:bg-fill-selected');
+    expect(helpful).toHaveClass('aria-pressed:not-aria-disabled:hover:bg-fill-selected');
     expect(helpful).not.toHaveClass('bg-fill-selected');
     expect(helpful).not.toHaveClass('text-success');
   });

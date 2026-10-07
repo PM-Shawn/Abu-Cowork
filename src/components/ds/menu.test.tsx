@@ -1,15 +1,16 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent, { PointerEventsCheckLevel } from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Button } from './button';
+import { Button, IconButton } from './button';
 import { ContextMenu } from './context-menu';
 import { Dialog } from './dialog';
 import { AppIcons } from './icons';
 import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from './menu';
 import { Popover } from './popover';
+import { Pressable } from './pressable';
 import { DesignSystemProvider } from './provider';
 import { keepClosingLayersOnScreen } from '@/test/dsWindows';
 
@@ -893,6 +894,212 @@ describe('keys held in a menu', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument();
     repeat(focused(), 'Escape');
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+});
+
+// A screen reader activates a button with a click alone: no pointer goes down before it and no
+// key. `element.click()` makes the same event (`detail` 0).
+describe('a menu trigger under a click that no pointer and no key made', () => {
+  const TRIGGERS: [string, () => ReactElement][] = [
+    ['a Button', () => <Button>Actions</Button>],
+    ['an IconButton', () => <IconButton icon={AppIcons.more} label="Actions" />],
+    ['a Pressable', () => <Pressable>Actions</Pressable>],
+  ];
+  const trigger = () => screen.getByRole('button', { name: 'Actions', hidden: true });
+  const opened = (onOpenChange: ReturnType<typeof vi.fn>) => onOpenChange.mock.calls.filter(([open]) => open === true).length;
+
+  function ActionsMenu({ children, onOpenChange, onPick = () => undefined }: { children: ReactElement; onOpenChange: (open: boolean) => void; onPick?: () => void }) {
+    return (
+      <Menu trigger={children} onOpenChange={onOpenChange}>
+        <MenuItem onSelect={onPick}>Rename</MenuItem>
+        <MenuItem>Delete</MenuItem>
+      </Menu>
+    );
+  }
+
+  describe.each(TRIGGERS)('%s', (_name, ui) => {
+    it('opens the menu once, and a second such click leaves it open', async () => {
+      const onOpenChange = vi.fn();
+      render(<ActionsMenu onOpenChange={onOpenChange}>{ui()}</ActionsMenu>, { wrapper: DesignSystemProvider });
+
+      act(() => { trigger().click(); });
+
+      expect(await screen.findByRole('menu')).toBeInTheDocument();
+      expect(trigger()).toHaveAttribute('aria-expanded', 'true');
+      expect(opened(onOpenChange)).toBe(1);
+
+      act(() => { trigger().click(); });
+
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(onOpenChange.mock.calls).toEqual([[true]]);
+    });
+
+    it('opens once for a pointer press and once for each opening key', async () => {
+      const user = userEvent.setup();
+      const onOpenChange = vi.fn();
+      render(<ActionsMenu onOpenChange={onOpenChange}>{ui()}</ActionsMenu>, { wrapper: DesignSystemProvider });
+
+      await user.click(trigger());
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(onOpenChange.mock.calls).toEqual([[true]]);
+
+      for (const key of ['{Enter}', ' ', '{ArrowDown}']) {
+        await user.keyboard('{Escape}');
+        await flushTimers();
+        expect(screen.queryByRole('menu')).toBeNull();
+        onOpenChange.mockClear();
+        act(() => { trigger().focus(); });
+        await user.keyboard(key);
+        expect(screen.getAllByRole('menu')).toHaveLength(1);
+        expect(onOpenChange.mock.calls).toEqual([[true]]);
+      }
+    });
+
+    it('opens again after it was closed, and after a pointer press whose click went elsewhere', async () => {
+      const user = userEvent.setup();
+      const onOpenChange = vi.fn();
+      render(<ActionsMenu onOpenChange={onOpenChange}>{ui()}</ActionsMenu>, { wrapper: DesignSystemProvider });
+
+      act(() => { trigger().click(); });
+      await user.keyboard('{Escape}');
+      await flushTimers();
+      expect(screen.queryByRole('menu')).toBeNull();
+
+      // The pointer goes down on the trigger and the menu opens; with the menu open the click
+      // that ends the press lands on the page, not on the trigger.
+      fireEvent.pointerDown(trigger(), { button: 0, pointerType: 'mouse' });
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      await user.keyboard('{Escape}');
+      await flushTimers();
+      expect(screen.queryByRole('menu')).toBeNull();
+
+      act(() => { trigger().click(); });
+
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(opened(onOpenChange)).toBe(3);
+    });
+  });
+
+  it('leaves the click of a pointer to the pointer-down: a click that counts presses opens nothing by itself', () => {
+    const onOpenChange = vi.fn();
+    render(<ActionsMenu onOpenChange={onOpenChange}><Button>Actions</Button></ActionsMenu>, { wrapper: DesignSystemProvider });
+
+    fireEvent.click(trigger(), { detail: 1 });
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('opens nothing on a busy trigger', () => {
+    const onOpenChange = vi.fn();
+    render(<ActionsMenu onOpenChange={onOpenChange}><IconButton busy icon={AppIcons.more} label="Actions" /></ActionsMenu>, { wrapper: DesignSystemProvider });
+
+    act(() => { trigger().click(); });
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('opens nothing when the trigger\'s own handler refuses the click', () => {
+    const onOpenChange = vi.fn();
+    render(
+      <ActionsMenu onOpenChange={onOpenChange}><Button onClick={(event) => event.preventDefault()}>Actions</Button></ActionsMenu>,
+      { wrapper: DesignSystemProvider },
+    );
+
+    act(() => { trigger().click(); });
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('asks the owner of a controlled menu once, and shows nothing the owner does not open', () => {
+    const onOpenChange = vi.fn();
+    render(
+      <Menu open={false} onOpenChange={onOpenChange} trigger={<Button>Actions</Button>}><MenuItem>Rename</MenuItem></Menu>,
+      { wrapper: DesignSystemProvider },
+    );
+
+    act(() => { trigger().click(); });
+
+    expect(onOpenChange.mock.calls).toEqual([[true]]);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('chooses nothing: the menu opens and waits for a choice', async () => {
+    const onPick = vi.fn();
+    render(<ActionsMenu onOpenChange={() => undefined} onPick={onPick}><Button>Actions</Button></ActionsMenu>, { wrapper: DesignSystemProvider });
+
+    act(() => { trigger().click(); });
+    await screen.findByRole('menu');
+    await flushTimers();
+
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
+  it('still keeps the trigger\'s click from a card it sits on when the trigger says so', async () => {
+    const onCardClick = vi.fn();
+    render(
+      <div role="button" tabIndex={0} aria-label="Card" onClick={onCardClick}>
+        <ActionsMenu onOpenChange={() => undefined}><IconButton icon={AppIcons.more} label="Actions" onClick={(event) => event.stopPropagation()} /></ActionsMenu>
+      </div>,
+      { wrapper: DesignSystemProvider },
+    );
+
+    act(() => { trigger().click(); });
+
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+    expect(onCardClick).not.toHaveBeenCalled();
+  });
+});
+
+// The focus is handed to a menu button by code (after a row's action, when a window closes); a
+// key that is still down then repeats on it.
+describe('a held key arriving on a closed menu trigger', () => {
+  const TRIGGERS: [string, () => ReactElement][] = [
+    ['a Button', () => <Button>Actions</Button>],
+    ['an IconButton', () => <IconButton icon={AppIcons.more} label="Actions" />],
+    ['a Pressable', () => <Pressable>Actions</Pressable>],
+    // No ds control of its own drops anything here: the menu does.
+    ['a plain element', () => <span role="button" tabIndex={0}>Actions</span>],
+  ];
+  const KEYS = [['Enter', 'Enter'], [' ', 'Space'], ['ArrowDown', 'ArrowDown']] as const;
+
+  describe.each(TRIGGERS)('%s', (_name, ui) => {
+    it('opens nothing on the repeats of Enter, Space and ArrowDown, and lets no click follow them', () => {
+      const onOpenChange = vi.fn();
+      render(<Menu trigger={ui()} onOpenChange={onOpenChange}><MenuItem>Rename</MenuItem></Menu>, { wrapper: DesignSystemProvider });
+      const trigger = screen.getByRole('button', { name: 'Actions' });
+      trigger.focus();
+
+      for (const [key, code] of KEYS) {
+        // fireEvent returns false once the default was prevented.
+        for (let i = 0; i < 3; i += 1) expect(fireEvent.keyDown(trigger, { key, code, repeat: true })).toBe(false);
+      }
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    });
+
+    it.each(KEYS)('opens on a new press of %j after the key was released', async (key, code) => {
+      const onOpenChange = vi.fn();
+      render(<Menu trigger={ui()} onOpenChange={onOpenChange}><MenuItem>Rename</MenuItem></Menu>, { wrapper: DesignSystemProvider });
+      const trigger = screen.getByRole('button', { name: 'Actions' });
+      trigger.focus();
+      fireEvent.keyDown(trigger, { key, code, repeat: true });
+      fireEvent.keyUp(trigger, { key, code });
+
+      expect(fireEvent.keyDown(trigger, { key, code })).toBe(false);
+
+      expect(await screen.findByRole('menu')).toBeInTheDocument();
+      expect(onOpenChange.mock.calls).toEqual([[true]]);
+    });
+
+    it('lets Tab repeat past it', () => {
+      render(<Menu trigger={ui()}><MenuItem>Rename</MenuItem></Menu>, { wrapper: DesignSystemProvider });
+      expect(fireEvent.keyDown(screen.getByRole('button', { name: 'Actions' }), { key: 'Tab', code: 'Tab', repeat: true })).toBe(true);
+    });
   });
 });
 

@@ -379,6 +379,23 @@ export function promptTokensOf(
 }
 
 /**
+ * 没有命中缓存的那部分输入，给按输入单价估算费用用。
+ *
+ * Anthropic 的 `inputTokens` 本身就是这一部分。OpenAI 兼容协议的 `inputTokens` 是整段输入，
+ * 要减去缓存读。缓存读大于整段输入时数字互相矛盾，返回 `null`，与
+ * `normalizeOpenAICompatibleUsage` 的处理一致。
+ */
+export function uncachedInputTokensOf(
+  protocol: UsageProtocol,
+  usage: { inputTokens: number; cacheReadInputTokens?: number },
+): number | null {
+  if (protocol === 'anthropic') return usage.inputTokens;
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  if (cacheRead > usage.inputTokens) return null;
+  return usage.inputTokens - cacheRead;
+}
+
+/**
  * 总量是否完整。**只有拿到最终结算证据才算完整**——流内累计值即便输入输出都有数，
  * 也不能冒充最终值（`start-only` 之后连接被切就是这种情况）。
  */

@@ -13,9 +13,9 @@ const SKILL = skillFile('SKILL.md');
 // instruction has to read the same with or without them.
 const PROSE = SKILL.replace(/`/g, '');
 
-/** The first ```json block after `heading`. */
+/** The first ```json block after `heading`; a Windows checkout ends its lines with CRLF. */
 function example(file: string, heading: string): unknown {
-  const block = /```json\n([\s\S]*?)\n```/.exec(skillFile(file).split(heading)[1]!)![1]!;
+  const block = /```json\r?\n([\s\S]*?)\r?\n```/.exec(skillFile(file).split(heading)[1]!)![1]!;
   return JSON.parse(block);
 }
 

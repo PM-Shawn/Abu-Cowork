@@ -176,13 +176,11 @@ interface PreviewState {
   // native browser webview paints OVER React, so it must hide while a menu is
   // up or the menu is occluded. Ephemeral UI signal.
   menuOpen: boolean;
-  // True while an app-global modal (e.g. the close-window dialog) is open.
-  // Same z-order problem as menuOpen: the native browser webview would paint
-  // over the modal, leaving the user unable to see or click it. Ephemeral.
+  // The open state of the close-window question. Ephemeral.
   appModalOpen: boolean;
-  // True while a design-system dialog or question is open anywhere in the app (reported by
-  // the layer registry). The native browser webview hides for it like for the two above.
-  // Ephemeral.
+  // True while a design-system dialog, question, approval or viewer is on the page anywhere
+  // in the app, until its fade has ended (reported by the layer registry). The native browser
+  // webview hides for it like for a workspace menu. Ephemeral.
   dsModalOpen: boolean;
   // Resizable chat-column width (px) while the workspace is open; null = use default.
   // The workspace column flex-fills whatever the chat leaves.

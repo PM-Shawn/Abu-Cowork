@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -15,19 +15,6 @@ import { Spinner } from '@/components/ds/spinner';
 import { TextField } from '@/components/ds/text-field';
 import { createLogger } from '@/core/logging/logger';
 import { normalizeBrowserUrl } from '@/utils/browserUrl';
-import { hasVisibleBlockingApproval } from '@/core/browser/nativeBrowserVisibility';
-import {
-  getPendingCommandConfirmation,
-  getPendingFilePermission,
-  getPendingWorkspaceRequest,
-  subscribeToCommandConfirmation,
-  subscribeToFilePermission,
-  subscribeToWorkspaceRequest,
-} from '@/core/agent/permissionBridge';
-import {
-  getPendingCapabilitySetup,
-  subscribeCapabilitySetup,
-} from '@/core/capabilityPlugins/setupBridge';
 import { isMacOS } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
 import { isTauriEnv } from '@/utils/tauriEnv';
@@ -101,35 +88,12 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // A workspace popover (tab-strip menu) is also a React overlay the native
   // webview would paint over — hide while one is up.
   const menuOpen = usePreviewStore((s) => s.menuOpen);
-  // App-global modals (close-window dialog) sit above the chat column but the
-  // native webview would still paint over them — treat like a blocking approval.
-  const appModalOpen = usePreviewStore((s) => s.appModalOpen);
-  // A design-system dialog or question (search, sign-in, a delete question) is centred in
-  // the window, so part of it lies over this panel: the same treatment as an app modal.
+  // Every dialog, question, approval and viewer is centred in the window, so part of it lies
+  // over this panel. The layer registry reports each one from the moment it is shown until its
+  // fade has ended (`LayerProvider.onModalChange`).
   const dsModalOpen = usePreviewStore((s) => s.dsModalOpen);
+  // Read only to skip the freeze frame for the image viewer; what hides is `dsModalOpen`.
   const lightboxOpen = useImageLightboxStore((s) => s.isOpen);
-  const activeConversationId = useChatStore((s) => s.activeConversationId);
-  const commandApproval = useSyncExternalStore(
-    subscribeToCommandConfirmation,
-    getPendingCommandConfirmation,
-  );
-  const fileApproval = useSyncExternalStore(
-    subscribeToFilePermission,
-    getPendingFilePermission,
-  );
-  const workspaceApproval = useSyncExternalStore(
-    subscribeToWorkspaceRequest,
-    getPendingWorkspaceRequest,
-  );
-  const capabilitySetup = useSyncExternalStore(
-    subscribeCapabilitySetup,
-    getPendingCapabilitySetup,
-  );
-  const blockingApprovalOpen = hasVisibleBlockingApproval(
-    activeConversationId,
-    [commandApproval, fileApproval, workspaceApproval],
-    capabilitySetup !== null || appModalOpen || dsModalOpen,
-  );
 
   const [addressInput, setAddressInput] = useState(url);
   const [committedUrl, setCommittedUrl] = useState(url);
@@ -282,7 +246,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     const r = el.getBoundingClientRect();
     // A CSS-hidden ancestor (inactive keep-alive tab) yields a zero rect; a
     // full-window modal should also force-hide even though the rect is valid.
-    const overlayActive = systemSettingsOpen || menuOpen || blockingApprovalOpen || lightboxOpen;
+    const overlayActive = systemSettingsOpen || menuOpen || dsModalOpen;
     const onScreen = r.width >= 1 && r.height >= 1 && el.offsetParent !== null;
     const visible = onScreen && !overlayActive;
 
@@ -307,7 +271,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     tabId,
     systemSettingsOpen,
     menuOpen,
-    blockingApprovalOpen,
+    dsModalOpen,
     lightboxOpen,
     reconcileNativeVisibility,
   ]);
@@ -328,8 +292,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
             && el.offsetParent !== null
             && !systemSettingsOpen
             && !menuOpen
-            && !blockingApprovalOpen
-            && !lightboxOpen;
+            && !dsModalOpen;
           const electronHost = hasElectronCommandHost();
           desiredVisibleRef.current = initiallyVisible;
           // Electron can create the native child view hidden, preventing even a
@@ -383,8 +346,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       reconcileNativeVisibility,
       systemSettingsOpen,
       menuOpen,
-      blockingApprovalOpen,
-      lightboxOpen,
+      dsModalOpen,
     ],
   );
 
@@ -519,7 +481,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       window.removeEventListener('resize', syncBounds);
       window.clearInterval(interval);
     };
-  }, [syncBounds, systemSettingsOpen, blockingApprovalOpen]);
+  }, [syncBounds, systemSettingsOpen, dsModalOpen]);
 
   // A menu/settings overlay may already be waiting on a slow capture when the
   // opaque image lightbox takes over. Do not let that older freeze-frame
@@ -551,10 +513,10 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   }, [lightboxOpen, reconcileNativeVisibility, tabId]);
 
   useEffect(() => {
-    if (!inspecting || !(systemSettingsOpen || menuOpen || blockingApprovalOpen || lightboxOpen)) return;
+    if (!inspecting || !(systemSettingsOpen || menuOpen || dsModalOpen)) return;
     setInspecting(false);
     void invoke('browser_inspect_set', { id: tabId, enabled: false, labels: inspectLabelsRef.current }).catch(() => {});
-  }, [blockingApprovalOpen, inspecting, lightboxOpen, menuOpen, systemSettingsOpen, tabId]);
+  }, [dsModalOpen, inspecting, menuOpen, systemSettingsOpen, tabId]);
 
   // N3: the guest webContents only tells the main process the user is here
   // via `before-input-event`/`focus` — the toolbar's own React controls

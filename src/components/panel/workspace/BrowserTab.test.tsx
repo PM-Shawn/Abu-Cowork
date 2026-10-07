@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import { Profiler } from 'react';
+import { Profiler, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowserTab from './BrowserTab';
+import ImageLightbox from '@/components/chat/ImageLightbox';
+import { approvalProbe } from '@/test/dsWindows';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
@@ -12,14 +14,12 @@ import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import * as approvalBridge from '@/core/agent/ports/approvalBridge';
 import {
   drainCapabilitySetupRequests,
-  getPendingCapabilitySetup,
   requestCapabilitySetup,
-  resolveCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
 import { DesignSystemProvider } from '@/components/ds/provider';
 
-const invoke = vi.fn();
-const listen = vi.fn();
+// Hoisted: the image viewer's imports reach the host bridge while this file's imports load.
+const { invoke, listen } = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
@@ -32,6 +32,21 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
 vi.mock('@/utils/platform', () => ({
   isMacOS: () => true,
 }));
+
+// As the app root wires it: the layer registry reports what is painted, and that alone tells
+// the tab that a window lies over its native view.
+function withLayers(tabId: string, beside?: ReactNode) {
+  return (
+    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen}>
+      <BrowserTab tabId={tabId} url="https://example.com" />
+      {beside}
+    </DesignSystemProvider>
+  );
+}
+
+function renderWithLayers(tabId: string, beside?: ReactNode) {
+  return render(withLayers(tabId, beside));
+}
 
 function renderTab(tabId: string, url: string) {
   return render(
@@ -62,7 +77,7 @@ describe('BrowserTab native overlay visibility', () => {
     drainCapabilitySetupRequests();
     useChatStore.setState({ activeConversationId: 'active-conversation' });
     useSettingsStore.setState({ systemSettingsOpen: false });
-    usePreviewStore.setState({ menuOpen: false, dsModalOpen: false });
+    usePreviewStore.setState({ menuOpen: false, appModalOpen: false, dsModalOpen: false });
     useImageLightboxStore.getState().close();
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -130,15 +145,8 @@ describe('BrowserTab native overlay visibility', () => {
     expect(invoke.mock.calls.filter(([command]) => command === 'browser_navigate')).toHaveLength(priorNavigations);
   });
 
-  it('hides the native view for an active-conversation approval and restores it afterwards', async () => {
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-approval-regression"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
-    );
+  it('hides the native view while an approval is on the page and restores it once it has left', async () => {
+    const view = renderWithLayers('browser-approval-regression');
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
@@ -147,19 +155,7 @@ describe('BrowserTab native overlay visibility', () => {
     });
     invoke.mockClear();
 
-    let approvalPromise: Promise<boolean>;
-    act(() => {
-      approvalPromise = approvalBridge.request('command', {
-        conversationId: 'active-conversation',
-        payload: {
-          info: {
-            command: 'rm -- test-file',
-            level: 'warn',
-            reason: 'Regression test',
-          },
-        },
-      });
-    });
+    view.rerender(withLayers('browser-approval-regression', approvalProbe(true, () => undefined)));
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_hide', {
@@ -168,11 +164,8 @@ describe('BrowserTab native overlay visibility', () => {
     });
 
     invoke.mockClear();
-    act(() => {
-      approvalBridge.resolveActive('command', false);
-    });
+    view.rerender(withLayers('browser-approval-regression', approvalProbe(false, () => undefined)));
 
-    await expect(approvalPromise!).resolves.toBe(false);
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_show', {
         id: 'browser-approval-regression',
@@ -180,15 +173,55 @@ describe('BrowserTab native overlay visibility', () => {
     });
   });
 
+  // A request with no window on the page covers nothing: the conversation's approvals are
+  // rendered by the chat page, and the registry reports each one when it is painted.
+  it.each([
+    ['a command approval', () => {
+      void approvalBridge.request('command', {
+        conversationId: 'active-conversation',
+        payload: { info: { command: 'rm -- test-file', level: 'warn', reason: 'Regression test' } },
+      });
+    }],
+    ['a path grant', () => {
+      void approvalBridge.request('file-permission', {
+        conversationId: 'active-conversation',
+        payload: { path: '/abu-e2e/no-such-file.txt', capability: 'write', toolName: 'write_file' },
+      });
+    }],
+    ['a workspace request', () => {
+      void approvalBridge.request('workspace', { conversationId: 'active-conversation', payload: { reason: 'Regression test' } });
+    }],
+    ['a task grant', () => {
+      void requestCapabilitySetup('computer', {
+        conversationId: 'active-conversation',
+        toolCallId: 'computer-tool',
+        interactionMode: 'foreground',
+      });
+    }],
+    ['the image viewer store', () => {
+      useImageLightboxStore.getState().open([{ id: 'image-1', data: 'cG5n', mediaType: 'image/png' }], 0);
+    }],
+    ['the close question\'s open state', () => {
+      usePreviewStore.setState({ appModalOpen: true });
+    }],
+  ])('leaves the native view alone for %s with no window on the page', async (_name, ask) => {
+    renderWithLayers('browser-request-without-window');
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-request-without-window',
+      }));
+    });
+    invoke.mockClear();
+
+    // A hide begins in the effect of the render that follows the change, with the frame capture.
+    await act(async () => { ask(); await Promise.resolve(); });
+
+    expect(invoke).not.toHaveBeenCalledWith('browser_hide', expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith('browser_capture', expect.anything());
+  });
+
   it('hides the native view while the image lightbox is open and restores it on close', async () => {
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-image-lightbox"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
-    );
+    renderWithLayers('browser-image-lightbox', <ImageLightbox />);
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
@@ -227,14 +260,7 @@ describe('BrowserTab native overlay visibility', () => {
       command === 'browser_capture' ? capturePending : Promise.resolve(undefined)
     ));
 
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-lightbox-capture-handoff"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
-    );
+    renderWithLayers('browser-lightbox-capture-handoff', <ImageLightbox />);
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
         id: 'browser-lightbox-capture-handoff',
@@ -289,20 +315,20 @@ describe('BrowserTab native overlay visibility', () => {
       __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
     };
     runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    const tree = (withTab: boolean) => (
+      <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen}>
+        <ImageLightbox />
+        {withTab && <BrowserTab tabId="browser-created-under-lightbox" url="https://example.com" />}
+      </DesignSystemProvider>
+    );
+    const view = render(tree(false));
     act(() => {
       useImageLightboxStore.getState().open([
         { id: 'image-before-browser', data: 'cG5n', mediaType: 'image/png' },
       ], 0);
     });
 
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-created-under-lightbox"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
-    );
+    view.rerender(tree(true));
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
@@ -352,51 +378,6 @@ describe('BrowserTab native overlay visibility', () => {
     expect(invoke).not.toHaveBeenCalledWith('browser_show', expect.anything());
   });
 
-  it('hides the native view for task-local capability setup and restores it afterwards', async () => {
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-capability-setup"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
-    );
-
-    await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
-        id: 'browser-capability-setup',
-      }));
-    });
-    invoke.mockClear();
-
-    let setupPromise: Promise<boolean>;
-    act(() => {
-      setupPromise = requestCapabilitySetup('computer', {
-        conversationId: 'background-conversation',
-        toolCallId: 'computer-tool',
-        interactionMode: 'foreground',
-      });
-    });
-
-    await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('browser_hide', {
-        id: 'browser-capability-setup',
-      });
-    });
-
-    invoke.mockClear();
-    act(() => {
-      resolveCapabilitySetup(getPendingCapabilitySetup()!.id, false);
-    });
-
-    await expect(setupPromise!).resolves.toBe(false);
-    await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('browser_show', {
-        id: 'browser-capability-setup',
-      });
-    });
-  });
-
   it('hides again after browser creation completes during an approval', async () => {
     let resolveCreate!: () => void;
     const createPending = new Promise<void>((resolve) => {
@@ -406,31 +387,12 @@ describe('BrowserTab native overlay visibility', () => {
       command === 'browser_create' ? createPending : Promise.resolve(undefined)
     ));
 
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-create-approval-race"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
-    );
+    const view = renderWithLayers('browser-create-approval-race');
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.anything());
     });
 
-    let approvalPromise: Promise<boolean>;
-    act(() => {
-      approvalPromise = approvalBridge.request('command', {
-        conversationId: 'active-conversation',
-        payload: {
-          info: {
-            command: 'rm -- race-test',
-            level: 'warn',
-            reason: 'Race regression test',
-          },
-        },
-      });
-    });
+    view.rerender(withLayers('browser-create-approval-race', approvalProbe(true, () => undefined)));
 
     await waitFor(() => {
       expect(invoke.mock.calls.filter(([command]) => command === 'browser_hide').length)
@@ -446,11 +408,6 @@ describe('BrowserTab native overlay visibility', () => {
     });
     expect(invoke.mock.calls.filter(([command]) => command === 'browser_hide').length)
       .toBeGreaterThanOrEqual(hidesBeforeCreate);
-
-    act(() => {
-      approvalBridge.resolveActive('command', false);
-    });
-    await expect(approvalPromise!).resolves.toBe(false);
   });
 
   it('hides the native view while a design-system dialog is open and restores it afterwards', async () => {
@@ -499,50 +456,34 @@ describe('BrowserTab native overlay visibility', () => {
     delete runtime.__ABU_SHELL__;
   });
 
-  it('creates an Electron native view hidden when setup is already open', async () => {
+  it('creates an Electron native view hidden when an approval is already on the page', async () => {
     const runtime = globalThis as typeof globalThis & {
       __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
     };
     runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
-    const setupPromise = requestCapabilitySetup('computer', {
-      conversationId: 'active-conversation',
-      toolCallId: 'setup-before-browser',
-      interactionMode: 'foreground',
-    });
-
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-created-under-setup"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
+    const tree = (withTab: boolean) => (
+      <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen}>
+        {approvalProbe(true, () => undefined)}
+        {withTab && <BrowserTab tabId="browser-created-under-approval" url="https://example.com" />}
+      </DesignSystemProvider>
     );
+    const view = render(tree(false));
+    expect(usePreviewStore.getState().dsModalOpen).toBe(true);
+
+    view.rerender(tree(true));
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
-        id: 'browser-created-under-setup',
+        id: 'browser-created-under-approval',
         visible: false,
       }));
     });
     expect(invoke.mock.calls.some(([command]) => command === 'browser_hide')).toBe(false);
-
-    act(() => {
-      resolveCapabilitySetup(getPendingCapabilitySetup()!.id, false);
-    });
-    await expect(setupPromise).resolves.toBe(false);
     delete runtime.__ABU_SHELL__;
   });
 
   it('retries a failed native hide instead of treating the view as hidden', async () => {
-    render(
-      <DesignSystemProvider>
-        <BrowserTab
-          tabId="browser-hide-retry"
-          url="https://example.com"
-        />
-      </DesignSystemProvider>,
-    );
+    const view = renderWithLayers('browser-hide-retry');
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('browser_create', expect.anything());
     });
@@ -555,28 +496,11 @@ describe('BrowserTab native overlay visibility', () => {
       return Promise.resolve(undefined);
     });
 
-    let approvalPromise: Promise<boolean>;
-    act(() => {
-      approvalPromise = approvalBridge.request('command', {
-        conversationId: 'active-conversation',
-        payload: {
-          info: {
-            command: 'rm -- retry-test',
-            level: 'warn',
-            reason: 'Retry regression test',
-          },
-        },
-      });
-    });
+    view.rerender(withLayers('browser-hide-retry', approvalProbe(true, () => undefined)));
 
     await waitFor(() => {
       expect(hideAttempts).toBeGreaterThanOrEqual(2);
     });
-
-    act(() => {
-      approvalBridge.resolveActive('command', false);
-    });
-    await expect(approvalPromise!).resolves.toBe(false);
   });
 
   it('retries browser creation after a transient IPC failure', async () => {

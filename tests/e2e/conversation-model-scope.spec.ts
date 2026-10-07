@@ -232,6 +232,27 @@ function diskContains(rootDir: string, text: string): boolean {
   return visit(rootDir);
 }
 
+/** The model id index.json holds for the conversation titled `title`, once it holds one. */
+function indexedModel(rootDir: string, title: string): string | undefined {
+  const visit = (dir: string): string | undefined => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = visit(entryPath);
+        if (found) return found;
+      } else if (entry.name === 'index.json') {
+        const index = JSON.parse(fs.readFileSync(entryPath, 'utf8')) as {
+          entries?: Record<string, { title?: string; model?: { modelId?: string } }>;
+        };
+        const row = Object.values(index.entries ?? {}).find((meta) => meta.title === title);
+        if (row?.model?.modelId) return row.model.modelId;
+      }
+    }
+    return undefined;
+  };
+  return visit(rootDir);
+}
+
 async function shot(page: Page, name: string): Promise<void> {
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
   await page.screenshot({ path: path.join(SCREENSHOT_DIR, `${name}.png`) });
@@ -391,11 +412,7 @@ test.describe('per-conversation model scope (#545)', () => {
 
     // 5. Restart with the same data root: each conversation keeps its model.
     // UI visibility can precede the ledger write; quit only once both last
-    // replies are on disk so the relaunch proves a fresh load. The model pins
-    // are persisted by a separate fire-and-forget index write
-    // (chatStore setConversationModel); this wait covers them only because
-    // every final pick above is followed by a full send/reply round-trip in
-    // that conversation. Keep that ordering if these steps change.
+    // replies are on disk so the relaunch proves a fresh load.
     for (const reply of [replyFor('cms-a4', MODEL_Z.id), replyFor('cms-b3', MODEL_Y.id)]) {
       await expect.poll(() => diskContains(dataRoot!.appDataDir, reply), { timeout: READY_TIMEOUT }).toBe(true);
     }
@@ -423,6 +440,33 @@ test.describe('per-conversation model scope (#545)', () => {
     await openNewTask(page);
     await expectComposerModel(page, MODEL_X.label);
     expectOnlyAgentRequestsCounted(mock);
+  });
+
+  test('a pick with no turn after it is still the conversation\'s model after a restart', async () => {
+    test.setTimeout(240_000);
+    mock = await startModelMock();
+    dataRoot = createElectronDataRoot();
+    const first = await launchConfigured(dataRoot, mock);
+    app = first.app;
+    let page = first.page;
+
+    await sendAndAwait(page, 'cms-q1', MODEL_X.id, mock);
+    await expect.poll(() => indexedModel(dataRoot!.appDataDir, 'cms-q1'), { timeout: READY_TIMEOUT }).toBe(MODEL_X.id);
+
+    // No turn follows the pick: its own index write is all that carries it over.
+    await pickModel(page, MODEL_Y.label);
+    await expect.poll(() => indexedModel(dataRoot!.appDataDir, 'cms-q1'), { timeout: READY_TIMEOUT }).toBe(MODEL_Y.id);
+    await closeAbuElectron(app);
+    app = undefined;
+
+    const second = await launchAbuElectron(dataRoot);
+    app = second.app;
+    page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await page.waitForLoadState('domcontentloaded');
+    await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+    await openConversation(page, 'cms-q1');
+    await expectComposerModel(page, MODEL_Y.label);
+    await sendAndAwait(page, 'cms-q2', MODEL_Y.id, mock);
   });
 
   test('a delegate launched from a Y conversation runs on Y while the default is X', async () => {

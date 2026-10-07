@@ -325,9 +325,9 @@ function persistMessageReplacement(convId: string, message: Message): void {
  * Write a conversation's index entry to `index.json` through that
  * conversation's serial persistence queue. `updateIndexEntry` alone only
  * updates the in-memory index and arms a two-second debounce, so the flush is
- * explicit: a permission mode the user just lowered has to be on disk before
- * the write reports done, or a quit inside that window leaves the higher mode
- * for the next start. A rejection is kept by the queue and ends the
+ * explicit: a permission mode the user just lowered, or a model the user just
+ * picked, has to be on disk before the write reports done, or a quit inside
+ * that window leaves the earlier value for the next start. A rejection is kept by the queue and ends the
  * conversation's next dispatch at its durability barrier
  * (`waitForConversationPersistence`) like any other failed write.
  */
@@ -1055,9 +1055,9 @@ export const useChatStore = create<ChatStore>()(
       },
 
       // Pin a model to a conversation (undefined = clear → inherit global).
-      // Mirrors setConversationProject: updates both the loaded conversation and
-      // the index entry, then persists to disk. agentLoop reads conv.model first
-      // and pins on first run; the ModelSelector writes it on explicit pick.
+      // Updates both the loaded conversation and the index entry, then persists
+      // the entry. agentLoop reads conv.model first and pins on first run; the
+      // ModelSelector writes it on explicit pick.
       setConversationModel: (convId, model) => {
         set((state) => {
           const conv = state.conversations[convId];
@@ -1068,11 +1068,7 @@ export const useChatStore = create<ChatStore>()(
             state.conversationIndex[convId].model = model;
           }
         });
-        // Persist to disk index
-        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
-          const meta = get().conversationIndex[convId];
-          if (meta) updateIndexEntry(meta).catch(() => {});
-        });
+        persistConversationIndexEntry(convId);
       },
 
       setConversationGoal: (convId, goal) => {

@@ -104,6 +104,14 @@ export function LayerProvider({ children, container, onModalChange, onDecisionCh
   // no pointer press in between, nor for a moment after (LayerEntry.covered).
   const coveredBy = useRef(new Map<string, string>());
   const waiting = useRef<Waiting | null>(null);
+  // A provider that leaves reports nothing (below), so a listener can still hold the yes of the
+  // provider before this one. On mount each listener hears where this provider starts. A layer
+  // that is open in the first commit has registered by now (its effect runs before this one) and
+  // has said yes itself.
+  useLayoutEffect(() => {
+    if (!modalOpen.current) modalListener.current?.(false);
+    if (!decisionAsked.current) decisionListener.current?.(false);
+  }, []);
   // Layers read which keys were pressed since they were shown (heldKey.ts).
   useLayoutEffect(() => trackKeysDown(), []);
   // The provider is leaving, and every layer in it with it: nothing is closed, released or

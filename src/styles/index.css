@@ -1,6 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "./tokens.css";
+/* Tailwind generates a class only for the files it scans, and by itself it scans this checkout.
+   The enterprise overlay names its interface files in this file (`@source`), reached through the
+   build alias; the personal build reads the stub's file, which names none. */
+@import "@enterprise-modules/interface-classes.css";
 
 /* Test fixtures and docs are not UI: keep their class-name examples out of the build. */
 @source not "../../**/*.test.{ts,tsx,mjs,cjs}";

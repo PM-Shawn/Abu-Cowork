@@ -1,6 +1,7 @@
 import { useCallback, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Menu } from '@/components/ds/menu';
+import { isWorking } from '@/components/ds/styles';
 
 interface AnchorBox {
   top: number;
@@ -35,8 +36,6 @@ export interface RowMenuControls {
 const rowRightClicks = new WeakSet<Event>();
 
 const NO_ANCHOR: AnchorBox = { top: 0, left: 0, width: 0, height: 0 };
-
-const isWorking = (element: Element) => element.getAttribute('aria-disabled') === 'true';
 
 // Every mounted menu listens for each key press on the document, so a list of rows
 // shares two menus: one right-click menu around the list, and one "more actions" menu

@@ -2,11 +2,13 @@
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import type { AnnouncementItem } from '@/utils/consoleAnnouncement';
 import CornerBanners from './CornerBanners';
 
@@ -140,6 +142,73 @@ describe('CornerBanners', () => {
       fireEvent.click(screen.getByRole('button', { name: t().disclaimerBanner.dismiss }));
       fireEvent.click(screen.getByRole('button', { name: t().announcement.dismiss }));
       expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The announcement appears where the disclaimer was, its dismiss button under the pointer that
+  // just dismissed the disclaimer.
+  describe('a pointer press on the announcement that began before it could be read', () => {
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+    const pointer = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const dismissButton = () => screen.getByRole('button', { name: t().announcement.dismiss });
+
+    it('dismisses nothing with the second press of a double press on the disclaimer; a press after the interval dismisses', async () => {
+      const user = pointer();
+      const { onDismiss } = show();
+      await user.click(screen.getByRole('button', { name: t().disclaimerBanner.dismiss }));
+      expect(announcement()).toBeInTheDocument();
+
+      await user.click(dismissButton());
+      await user.click(screen.getByRole('button', { name: t().common.close }));
+      await user.click(screen.getByRole('button', { name: ITEM.ctaLabel! }));
+      expect(onDismiss).not.toHaveBeenCalled();
+      expect(openUrl).not.toHaveBeenCalled();
+      expect(announcement()).toBeInTheDocument();
+
+      passSettleInterval();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a press that began inside the interval and ends after it', async () => {
+      const user = pointer();
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const { onDismiss } = show();
+      await user.pointer({ keys: '[MouseLeft>]', target: dismissButton() });
+      passSettleInterval();
+      await user.pointer({ keys: '[/MouseLeft]', target: dismissButton() });
+      expect(onDismiss).not.toHaveBeenCalled();
+
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('never holds the keyboard: Enter on its dismiss button dismisses at the first moment', () => {
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const { onDismiss } = show();
+      // A click raised by a key reports detail 0.
+      fireEvent.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds presses back again for the announcement that takes the place of the one dismissed', async () => {
+      const user = pointer();
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const onDismiss = vi.fn();
+      const view = render(<CornerBanners announcement={ITEM} onDismissAnnouncement={onDismiss} />);
+      passSettleInterval();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+
+      view.rerender(<CornerBanners announcement={{ ...ITEM, id: 8, title: 'Next announcement title' }} onDismissAnnouncement={onDismiss} />);
+      expect(screen.getByText('Next announcement title')).toBeInTheDocument();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+
+      passSettleInterval();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(2);
     });
   });
 });

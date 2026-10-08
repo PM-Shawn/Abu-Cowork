@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, type MouseEvent } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -6,6 +7,7 @@ import { Button, IconButton } from '@/components/ds/button'
 import { Icon } from '@/components/ds/icon'
 import { AppIcons } from '@/components/ds/icons'
 import type { StatusTone } from '@/components/ds/status-icon'
+import { TOAST_SETTLE_MS } from '@/components/ds/styles'
 import { Tag } from '@/components/ds/tag'
 import type { AnnouncementItem } from '@/utils/consoleAnnouncement'
 
@@ -27,6 +29,29 @@ export default function AnnouncementBanner({
   const { t } = useI18n()
   const style = TYPE_STYLE[item.type] ?? TYPE_STYLE.general
 
+  // The banner appears by itself at the corner where the disclaimer, or the announcement before
+  // it, was a moment ago, with its dismiss button at the same spot. A pointer press that began
+  // within TOAST_SETTLE_MS of this announcement's appearing was aimed at what was there before:
+  // it reaches no button of the banner. The keyboard is not held (a click raised by a key reports
+  // detail 0). The interval is read from the clock the notices and the questions read.
+  const heldUntil = useRef(Number.POSITIVE_INFINITY)
+  const pressBeganEarly = useRef(false)
+  useLayoutEffect(() => {
+    heldUntil.current = performance.now() + TOAST_SETTLE_MS
+    pressBeganEarly.current = false
+  }, [item.id])
+  const tooEarly = () => performance.now() < heldUntil.current
+  const settle = {
+    onPointerDownCapture: () => { pressBeganEarly.current = tooEarly() },
+    onClickCapture: (event: MouseEvent<HTMLElement>) => {
+      const early = pressBeganEarly.current
+      pressBeganEarly.current = false
+      if (event.detail === 0 || !(early || tooEarly())) return
+      event.preventDefault()
+      event.stopPropagation()
+    },
+  }
+
   async function handleCta() {
     if (item.ctaUrl) {
       try { await openUrl(item.ctaUrl) } catch { /* ignore */ }
@@ -37,6 +62,7 @@ export default function AnnouncementBanner({
     // On the fullscreen level and after the page in the document: over a preview that covers the
     // window, under every floating layer.
     <div
+      {...settle}
       data-electron-no-drag
       className="fixed bottom-6 right-6 z-fullscreen w-80 space-y-2 rounded-panel border border-separator bg-raised p-4 shadow-float"
     >

@@ -177,3 +177,95 @@ describe('useConversationRowFocus, a row that leaves while its menu is still clo
     expect(closed.defaultPrevented).toBe(false);
   });
 });
+
+// The sidebar holds several lists of conversation rows: one per expanded project, under the
+// project's own row, and the recent tasks. Each list is the frame of a `RowMenus`.
+describe('useConversationRowFocus, several lists on the page', () => {
+  const lists: Record<string, { leave: (id: string) => void; focus: ConversationRowFocus }> = {};
+
+  function List({ name, start, home }: { name: string; start: string[]; home?: () => HTMLElement | null }) {
+    const [ids, setIds] = useState(start);
+    const rowFocus = useConversationRowFocus(home);
+    useEffect(() => {
+      lists[name] = {
+        focus: rowFocus,
+        leave: (id) => {
+          rowFocus.note(id);
+          setIds((current) => current.filter((candidate) => candidate !== id));
+        },
+      };
+    }, [name, rowFocus]);
+    return <div data-row-menus="">{ids.map((id) => <Button key={id} {...conversationRowProps(id)}>{id}</Button>)}</div>;
+  }
+
+  function Sidebar({ project, next = [], recent, menu = false }: { project: string[]; next?: string[]; recent: string[]; menu?: boolean }) {
+    return (
+      <>
+        <Button data-sidebar-action="new-task">New task</Button>
+        <Button>Project</Button>
+        <List name="project" start={project} home={() => screen.queryByRole('button', { name: 'Project' })} />
+        <Button>Next project</Button>
+        <List name="next" start={next} home={() => screen.queryByRole('button', { name: 'Next project' })} />
+        <List name="recent" start={recent} />
+        {menu && <div role="menu"><Button>Delete</Button></div>}
+      </>
+    );
+  }
+
+  it('keeps the focus in the project when its last row is deleted: the row before it takes it, with rows shown in the lists after it', () => {
+    render(<Sidebar project={['p1', 'p2']} next={['n1']} recent={['r1', 'r2']} />);
+    row('p2').focus();
+
+    act(() => lists.project.leave('p2'));
+
+    expect(row('p1')).toHaveFocus();
+  });
+
+  it('moves the focus to the row now at its place in the same list', () => {
+    render(<Sidebar project={['p1', 'p2', 'p3']} recent={['r1']} />);
+    row('p2').focus();
+
+    act(() => lists.project.leave('p2'));
+
+    expect(row('p3')).toHaveFocus();
+  });
+
+  it('moves the focus to the project\'s own row when the project has no task left', () => {
+    render(<Sidebar project={['p1']} next={['n1']} recent={['r1']} />);
+    row('p1').focus();
+
+    act(() => lists.project.leave('p1'));
+
+    expect(row('Project')).toHaveFocus();
+  });
+
+  it('moves the focus to the entry that starts a conversation when the last recent task is deleted, with tasks shown in a project', () => {
+    render(<Sidebar project={['p1', 'p2']} recent={['r1']} />);
+    row('r1').focus();
+
+    act(() => lists.recent.leave('r1'));
+
+    expect(row('New task')).toHaveFocus();
+  });
+
+  it('counts the place of a recent task among the recent tasks alone', () => {
+    render(<Sidebar project={['p1', 'p2']} recent={['r1', 'r2', 'r3']} />);
+    row('r1').focus();
+
+    act(() => lists.recent.leave('r1'));
+
+    expect(row('r2')).toHaveFocus();
+  });
+
+  it('stays in the same list when the row leaves while its menu is still closing', () => {
+    render(<Sidebar project={['p1', 'p2']} next={['n1']} recent={['r1']} menu />);
+    row('Delete').focus();
+    act(() => lists.project.leave('p2'));
+    const closed = menuClosed();
+
+    act(() => { lists.project.focus.afterMenuClose(closed); });
+
+    expect(closed.defaultPrevented).toBe(true);
+    expect(row('p1')).toHaveFocus();
+  });
+});

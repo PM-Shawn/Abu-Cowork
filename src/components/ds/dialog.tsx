@@ -192,7 +192,7 @@ export function Dialog({
   title, description, header, children, footer, trigger, open, defaultOpen = false, onOpenChange,
   dirty = false, busy = false, size = 'md', placement = 'center', role = 'dialog', titleHidden = false,
   closeButton: closeButtonAsked = false, dismissible = true, outsidePress = 'close', contentProps,
-  onCloseAutoFocus: callerCloseAutoFocus, initialFocus, layer = 'dialog', urgent = false, settleKey,
+  onCloseAutoFocus: callerCloseAutoFocus, onFocusUnplaced, initialFocus, layer = 'dialog', urgent = false, settleKey,
 }: DialogLayer & {
   title: ReactNode;
   // Keeps the title as the accessible name without showing it.
@@ -229,6 +229,12 @@ export function Dialog({
   // there to put focus somewhere other than where it was before the dialog opened. When
   // event.defaultPrevented is already true, another dialog has taken the focus: leave it alone.
   onCloseAutoFocus?: (event: Event) => void;
+  // Runs once the dialog has gone and the focus is its to give back, but the place it would
+  // return to is no control on the page: nothing had the focus when the dialog appeared, or that
+  // control has left since. The owner names where the focus goes; without it the focus stays on
+  // the window. Not called when the registry, the caller's `onCloseAutoFocus` or a trigger has
+  // placed the focus.
+  onFocusUnplaced?: () => void;
   // The control the dialog opens on, when that is not its first one (the current page of a
   // window with navigation). Returning null leaves the first control.
   initialFocus?: (content: HTMLElement) => HTMLElement | null;
@@ -443,13 +449,15 @@ export function Dialog({
     if (target.current !== null) return;
     target.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   };
-  const giveFocusBack = (target: { current: HTMLElement | null }, event: Event, hasTrigger: boolean) => {
+  const giveFocusBack = (target: { current: HTMLElement | null }, event: Event, hasTrigger: boolean, unplaced?: () => void) => {
     const element = target.current;
     target.current = null;
     // A caller or the layer registry that already chose where focus goes keeps its choice.
     if (event.defaultPrevented || hasTrigger) return;
     event.preventDefault();
-    if (element?.isConnected) element.focus();
+    // The page body is what the browser reports when no control has the focus.
+    if (element?.isConnected && element !== element.ownerDocument.body) element.focus();
+    else unplaced?.();
   };
 
   const closeButton = dismissible && closeButtonAsked;
@@ -523,7 +531,7 @@ export function Dialog({
               // closed this dialog to make room for another. Then the caller's choice.
               onCloseAutoFocus(event);
               callerCloseAutoFocus?.(event);
-              giveFocusBack(returnTo, event, trigger !== undefined);
+              giveFocusBack(returnTo, event, trigger !== undefined, onFocusUnplaced);
             }}
             {...(description ? {} : { 'aria-describedby': undefined })}
             className={cn(box, DIALOG_MOTION, DIALOG_CLOSING, SETTLING_BOX)}

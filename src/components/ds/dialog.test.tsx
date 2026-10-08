@@ -810,19 +810,19 @@ describe('telling the app that a dialog is on screen', () => {
 
     await user.click(screen.getByRole('button', { name: 'Actions' }));
     await user.keyboard('{Escape}');
-    expect(onModalChange).not.toHaveBeenCalled();
+    expect(onModalChange.mock.calls).toEqual([[false]]);
 
     await user.click(screen.getByRole('button', { name: 'Search' }));
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     await user.keyboard('{Escape}');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(screen.getByRole('alertdialog', { name: 'Delete this file?' })).toBeInTheDocument();
-    expect(onModalChange.mock.calls).toEqual([[true], [false], [true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false], [true]]);
     passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(onModalChange.mock.calls).toEqual([[true], [false], [true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false], [true], [false]]);
   });
 });
 
@@ -1856,6 +1856,96 @@ describe('approvals and the windows around them', () => {
     view.rerender(<Desk />);
     expect(endFade('Run this command?')).toEqual(['Send']);
     expect(send).toHaveFocus();
+  });
+
+  describe('when the place the focus returns to is no control on the page', () => {
+    function Composer({ command = false, folder = false, send = true, onFocusUnplaced }: {
+      command?: boolean;
+      folder?: boolean;
+      send?: boolean;
+      onFocusUnplaced: () => void;
+    }) {
+      return (
+        <DesignSystemProvider>
+          <input aria-label="Message" />
+          {send && <Button>Send</Button>}
+          <Dialog
+            open={command}
+            layer="approval"
+            role="alertdialog"
+            outsidePress="ignore"
+            title="Run this command?"
+            initialFocus={cancelOf}
+            onFocusUnplaced={onFocusUnplaced}
+            footer={<><Button data-approval-cancel="">Cancel</Button><Button variant="primary">Run</Button></>}
+          />
+          <Dialog
+            open={folder}
+            layer="approval"
+            role="alertdialog"
+            outsidePress="ignore"
+            title="Allow this folder?"
+            initialFocus={cancelOf}
+            onFocusUnplaced={onFocusUnplaced}
+            footer={<><Button data-approval-cancel="">Deny</Button><Button variant="primary">Allow</Button></>}
+          />
+        </DesignSystemProvider>
+      );
+    }
+    const toMessage = () => vi.fn(() => { screen.getByRole('textbox', { name: 'Message' }).focus(); });
+
+    it('asks its owner once the window has left, when the control that had the focus is gone', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      screen.getByRole('button', { name: 'Send' }).focus();
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      expect(cancel()).toHaveFocus();
+      view.rerender(<Composer command send={false} onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer send={false} onFocusUnplaced={onFocusUnplaced} />);
+      expect(onFocusUnplaced).not.toHaveBeenCalled();
+
+      expect(endFade('Run this command?')).toEqual(['Message']);
+      expect(onFocusUnplaced).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus();
+    });
+
+    it('asks its owner when no control had the focus as the window appeared', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      expect(document.body).toHaveFocus();
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer onFocusUnplaced={onFocusUnplaced} />);
+
+      expect(endFade('Run this command?')).toEqual(['Message']);
+      expect(onFocusUnplaced).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not ask while the control that had the focus is on the page: the focus returns there', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      const send = screen.getByRole('button', { name: 'Send' });
+      send.focus();
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer onFocusUnplaced={onFocusUnplaced} />);
+
+      expect(endFade('Run this command?')).toEqual(['Send']);
+      expect(onFocusUnplaced).not.toHaveBeenCalled();
+      expect(send).toHaveFocus();
+    });
+
+    it('does not ask for an approval the next one takes the place of; the last of the run asks', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer folder onFocusUnplaced={onFocusUnplaced} />);
+      expect(endFade('Run this command?')).toEqual([]);
+      expect(onFocusUnplaced).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+
+      view.rerender(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      expect(endFade('Allow this folder?')).toEqual(['Message']);
+      expect(onFocusUnplaced).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('gives focus back to where it was before the first approval after two approvals in a row', () => {

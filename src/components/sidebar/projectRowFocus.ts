@@ -33,6 +33,11 @@ export const projectCreateProps: Record<string, string> = { [CREATE]: '' };
 
 const rows = () => Array.from(document.querySelectorAll<HTMLElement>(`[${ROW}]`));
 
+/** The project's row on the page, or null. */
+export function projectRowElement(id: string): HTMLElement | null {
+  return rows().find((row) => row.getAttribute(ROW) === id) ?? null;
+}
+
 /** The row as it is now, with its place among the project rows. */
 export function projectRowPlace(id: string): ProjectRowPlace {
   return { id, index: rows().findIndex((row) => row.getAttribute(ROW) === id) };

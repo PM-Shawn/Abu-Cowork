@@ -6,6 +6,8 @@
  * after Option+Enter" — can be unit-tested without mounting the composer.
  */
 
+import { belongsToInputMethod } from '@/components/ds/heldKey';
+
 /**
  * True while an IME composition owns this key event, i.e. the keystroke is
  * the user talking to their input method, not to us.
@@ -23,14 +25,15 @@
  *    so ChatInput resets the flag one macrotask late and this keeps that
  *    keydown guarded.
  *
- * Matches what ChatGPT's desktop composer does (`isComposing || keyCode === 229`),
- * plus our WebKit-ordering fallback.
+ * The first two are the design system's test (`belongsToInputMethod`), which
+ * its own controls and layers use; this adds the WebKit-ordering fallback.
+ * Matches what ChatGPT's desktop composer does (`isComposing || keyCode === 229`).
  */
 export function isImeComposing(
   e: Pick<React.KeyboardEvent, 'keyCode'> & { nativeEvent: Pick<KeyboardEvent, 'isComposing'> },
   composing: boolean,
 ): boolean {
-  return composing || e.nativeEvent.isComposing || e.keyCode === 229;
+  return composing || belongsToInputMethod(e);
 }
 
 /**

@@ -163,7 +163,7 @@ describe('FullscreenSurface, open in place (not a layer)', () => {
     expect(surface).toHaveAttribute('role', 'group');
     expect(surface).toHaveAttribute('aria-label', 'Weather app');
     expect(screen.queryByTestId('backdrop')).toBeNull();
-    expect(onModalChange).not.toHaveBeenCalled();
+    expect(onModalChange.mock.calls).toEqual([[false]]);
   });
 
   it('never has a backdrop, also when asked for one', () => {
@@ -582,6 +582,37 @@ describe('FullscreenSurface, open in place, and the notice list', () => {
     expect(button('First')).toHaveFocus();
   });
 
+  // A title that scrolls is a Tab stop, so the keyboard can scroll it: the first stop of its notice.
+  it('walks a notice title that scrolls in the round, before the buttons of its notice', () => {
+    const LONG: Toast = { id: 'n3', type: 'error', title: 'The goal was not updated because '.repeat(12).trim() };
+    const scrolls = (element: Element) => element.textContent === LONG.title;
+    const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) { return scrolls(this) ? 234 : 18; });
+    const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return scrolls(this) ? 54 : 18; });
+    try {
+      render(<Page toasts={[LONG]} />);
+      const title = screen.getByText(LONG.title);
+      focus(button('Exit'));
+      expect(fireEvent.keyDown(button('Exit'), { key: 'Tab' })).toBe(false);
+      expect(title).toHaveFocus();
+      // From the title to the close button of its notice the browser moves the focus.
+      expect(fireEvent.keyDown(title, { key: 'Tab' })).toBe(true);
+      expect(fireEvent.keyDown(title, { key: 'Tab', shiftKey: true })).toBe(false);
+      expect(button('Exit')).toHaveFocus();
+
+      focus(closeOf(LONG.title));
+      expect(fireEvent.keyDown(closeOf(LONG.title), { key: 'Tab', shiftKey: true })).toBe(true);
+      expect(fireEvent.keyDown(closeOf(LONG.title), { key: 'Tab' })).toBe(false);
+      expect(button('First')).toHaveFocus();
+      // The arrow keys are the scrolling text's own: the surface does nothing with them.
+      focus(title);
+      expect(fireEvent.keyDown(title, { key: 'ArrowDown' })).toBe(true);
+      expect(title).toHaveFocus();
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
+  });
+
   it('still brings the focus in from the covered page, never to the list', () => {
     render(<Page toasts={[NOTICE]} />);
     focus(button('Outside'));
@@ -789,7 +820,7 @@ describe('FullscreenSurface as a layer', () => {
     expect(screen.queryByTestId('backdrop')).toBeNull();
     expect(classes(surfaceOf(screen.getByTestId('content')))).toEqual(['contents']);
     // It has no fade: the app hears that it has left as soon as it has, not one fade later.
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

@@ -15,7 +15,7 @@
  * Settled (read-only) rendering lives in UserQuestionCard — not here.
  */
 
-import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { memo, useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { resolveUserQuestion } from '@/core/agent/permissionBridge';
@@ -38,6 +38,15 @@ interface Props {
   /** Fired the moment an answer is submitted — the dock unmounts synchronously
    *  on resolve, so the parent uses this for optimistic "正在继续…" feedback. */
   onSubmitted?: () => void;
+  /** A screen reader hears a dock that takes the focus. One that leaves the focus with a user
+   *  who is writing hands the words of its question to the owner, which holds the page's live
+   *  element, and `null` when it leaves. */
+  onArrivedWithoutFocus?: (question: ArrivedQuestion | null) => void;
+}
+
+export interface ArrivedQuestion {
+  header: string;
+  question: string;
 }
 
 /** Per-question local selection state */
@@ -57,8 +66,9 @@ function initQuestionStates(count: number): QuestionState[] {
   }));
 }
 
-function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted }: Props) {
+function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted, onArrivedWithoutFocus }: Props) {
   const { t, format } = useI18n();
+  const questionId = useId();
   const setAnswers = useChatStore((s) => s.setToolCallUserQuestionAnswers);
 
   const questions = useMemo(() => payload?.questions ?? [], [payload]);
@@ -85,15 +95,27 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
   // The user turned a page of this dock: from then on it is the dock they are working in.
   const pageTurned = useRef(false);
 
+  // What the effects below read of the latest render.
+  const latest = useRef({ q, onArrivedWithoutFocus });
+  useEffect(() => { latest.current = { q, onArrivedWithoutFocus }; });
+  const tellOwner = useCallback((question: ArrivedQuestion | null) => { latest.current.onArrivedWithoutFocus?.(question); }, []);
+
   // Focus the dock so keyboard nav works as soon as it appears / pages. A question that arrives
   // while the user is writing a message leaves the focus in the message field: an Enter meant
   // for the message must not answer the question. The dock shows all the same, before the field
-  // in the page, so Shift+Tab and the pointer reach it.
+  // in the page, so Shift+Tab and the pointer reach it, and its owner is told the words of the
+  // question for the page's live element.
   useEffect(() => {
     setHighlight(0);
-    if (!pageTurned.current && userIsWritingAMessage()) return;
+    if (!pageTurned.current && userIsWritingAMessage()) {
+      const arrived = latest.current.q;
+      if (arrived) tellOwner({ header: arrived.header, question: arrived.question });
+      return;
+    }
     containerRef.current?.focus();
-  }, [page]);
+  }, [page, tellOwner]);
+  // The dock leaves: nothing of it is left to announce.
+  useEffect(() => () => tellOwner(null), [tellOwner]);
 
   // ── Selection mutators ──────────────────────────────────────────────────
 
@@ -309,6 +331,8 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
     <div
       ref={containerRef}
       tabIndex={-1}
+      role="group"
+      aria-labelledby={questionId}
       onKeyDown={handleKeyDown}
       className="overflow-hidden rounded-panel border border-separator bg-surface outline-none"
     >
@@ -324,7 +348,7 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
             <Tag>{q.header}</Tag>
             <span className="text-caption text-label-tertiary">{hint}</span>
           </div>
-          <p className="mt-1 text-ui text-label">{q.question}</p>
+          <p id={questionId} className="mt-1 text-ui text-label">{q.question}</p>
         </div>
         {/* Pager controls */}
         <div className="flex shrink-0 items-center gap-1">

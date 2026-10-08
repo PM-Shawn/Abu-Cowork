@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type FocusEvent, type MouseEvent } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type FocusEvent, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -7,7 +7,7 @@ import { Button, IconButton } from './button';
 import { AppIcons } from './icons';
 import { useLayerContainer } from './layer-context';
 import { StatusIcon } from './status-icon';
-import { FLOAT_SURFACE, TOAST_SETTLE_MS } from './styles';
+import { FLOAT_SURFACE, FOCUS_RING, TOAST_SETTLE_MS } from './styles';
 
 const TONE = { success: 'success', warning: 'warning', error: 'danger', info: 'info' } as const;
 
@@ -15,6 +15,29 @@ const TOAST_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 d
 
 // The newest notifications, newest first: the order they are drawn in, from the top.
 const newestFirst = (toasts: Toast[]) => toasts.slice(-MAX_VISIBLE_TOASTS).reverse();
+
+// The title or the message of a notification. Text taller than its box scrolls, and the keyboard
+// has to reach it to scroll it: it is then a Tab stop, a group named by the notification's title,
+// as a Dialog's scrolling description is. Text that fits adds no stop. Measured when the words
+// join the page and whenever they change (the box has one width). Nothing gives it the focus but Tab.
+function NoticeText({ id, labelledBy, className, children }: { id?: string; labelledBy: string; className: string; children: string }) {
+  const box = useRef<HTMLParagraphElement>(null);
+  const [scrolls, setScrolls] = useState(false);
+  useLayoutEffect(() => {
+    const element = box.current;
+    setScrolls(element !== null && element.scrollHeight > element.clientHeight);
+  }, [children]);
+  return (
+    <p
+      ref={box}
+      id={id}
+      {...(scrolls ? { tabIndex: 0, role: 'group', 'aria-labelledby': labelledBy } : {})}
+      className={cn(className, scrolls && cn('rounded-control', FOCUS_RING))}
+    >
+      {children}
+    </p>
+  );
+}
 
 // Shows the notifications it is given: the newest three, the newest on top. (The app's store keeps
 // the ones pushed out, with their time, and hands them back when a place frees.) The list sits at
@@ -31,6 +54,8 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   const { t } = useI18n();
   const container = useLayerContainer();
   const listRef = useRef<HTMLOListElement>(null);
+  // Each title has an id of its own: a text of the notification that scrolls is named by it.
+  const listId = useId();
   // The last notification the user dismissed, and how: a click raised by Enter or Space reports detail 0.
   const dismissed = useRef<{ id: string; index: number; keyboard: boolean } | null>(null);
   // The notification that holds the focus, and what had the focus before it entered the list.
@@ -154,8 +179,8 @@ export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
                 {/* Three lines of a title show (18px each) and eight of a message; more scrolls, so a notification
                     has a greatest height: with two buttons 242px, which ends above the answer buttons of the
                     close question in a 900×500 window. */}
-                <p className="max-h-13.5 overflow-y-auto break-words text-ui font-medium text-label">{toast.title}</p>
-                {toast.message && <p className="mt-1 max-h-32 overflow-y-auto break-words text-ui-sm text-label-secondary">{toast.message}</p>}
+                <NoticeText id={`${listId}-${toast.id}`} labelledBy={`${listId}-${toast.id}`} className="max-h-13.5 overflow-y-auto break-words text-ui font-medium text-label">{toast.title}</NoticeText>
+                {toast.message && <NoticeText labelledBy={`${listId}-${toast.id}`} className="mt-1 max-h-32 overflow-y-auto break-words text-ui-sm text-label-secondary">{toast.message}</NoticeText>}
                 {toast.actions && toast.actions.length > 0 && (
                   <div className="mt-2 flex gap-2">
                     {toast.actions.map((action) => (

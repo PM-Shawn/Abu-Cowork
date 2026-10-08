@@ -62,19 +62,25 @@ describe('RenderableCodeBlock fullscreen', () => {
   it('rebuilds the enlarged widget when the appearance changes while it is open', async () => {
     await renderWidget();
     fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-    expect(fullscreenFrame()).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, false));
+    const frame = fullscreenFrame();
+    expect(frame).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, false));
 
     await act(async () => {
       document.documentElement.classList.add('dark');
       await Promise.resolve();
     });
     expect(fullscreenFrame()).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, true));
+    // The same frame, still allowed scripts and nothing else.
+    expect(fullscreenFrame()).toBe(frame);
+    expect(fullscreenFrame()).toHaveAttribute('sandbox', 'allow-scripts');
 
     await act(async () => {
       document.documentElement.classList.remove('dark');
       await Promise.resolve();
     });
     expect(fullscreenFrame()).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, false));
+    expect(fullscreenFrame()).toBe(frame);
+    expect(fullscreenFrame()).toHaveAttribute('sandbox', 'allow-scripts');
   });
 
   it('opens the enlarged widget as a viewer window, on its close button and not in the frame', async () => {

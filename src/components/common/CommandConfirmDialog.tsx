@@ -53,6 +53,8 @@ interface CommandConfirmDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
   isRequestActive?: () => boolean;
+  // Where the focus goes once the approval has left, when the control that had it is gone.
+  onFocusUnplaced?: () => void;
 }
 
 // The level shows as a status icon (color with its shape) and in the title's words.
@@ -76,6 +78,7 @@ export default function CommandConfirmDialog({
   onConfirm: confirm,
   onCancel: cancel,
   isRequestActive,
+  onFocusUnplaced,
 }: CommandConfirmDialogProps) {
   const { t } = useI18n();
   const active = useRef<CommandConfirmRequest | null>(request);
@@ -217,6 +220,7 @@ export default function CommandConfirmDialog({
       title={title}
       description={description}
       initialFocus={(content) => content.querySelector<HTMLElement>('[data-approval-cancel]')}
+      onFocusUnplaced={onFocusUnplaced}
       header={(
         <div className="flex items-start gap-3">
           <StatusIcon tone={config.tone} size="lg" />

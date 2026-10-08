@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -20,7 +20,7 @@ import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
 import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
 import { useDeleteConversation } from './useDeleteConversation';
-import { projectRowProps } from './projectRowFocus';
+import { projectRowElement, projectRowProps } from './projectRowFocus';
 import { opensOnKey } from './rowKeys';
 import { cn } from '@/lib/utils';
 import { format } from '@/i18n';
@@ -70,16 +70,17 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const [showAll, setShowAll] = useState(false);
   // Whether the project row's 「更多操作」 menu is open: its button stays visible meanwhile.
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
-  // After a task is deleted from its row menu the focus goes on to a row, never to the window.
-  const rowFocus = useConversationRowFocus();
+  // After a task is deleted from its row menu the focus goes on to a row of this project, else to
+  // the project's own row, never to the window.
+  const rowFocus = useConversationRowFocus(() => projectRowElement(project.id));
+  // The project's name names the group of its row's buttons.
+  const nameId = useId();
   // 删除会话 for a task of this project: a task whose record cannot be read is deleted only after
   // a question. No undo is offered here.
   const deletion = useDeleteConversation(rowFocus, false);
   // The project's tasks as of the last render: the delete question unlinks those it has at the answer.
   const latestConversations = useRef(conversations);
   useLayoutEffect(() => { latestConversations.current = conversations; });
-  // One archive or delete at a time for this project.
-  const leaving = useRef(false);
   // What a menu item starts once its menu has gone: a rename field, a confirmation or
   // a window must not open while the closing menu still holds focus.
   // `holdFocus`: the rename field must not have the menu hand focus back to its trigger or
@@ -124,24 +125,23 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
     return current !== undefined && !current.archived;
   };
 
+  // Both questions are asked from a menu's close hook, later than the choice: a project that
+  // has gone meanwhile is asked nothing about. The answer reads the store once more.
   const confirmArchive = async () => {
+    if (!stillListed()) return;
     const confirmed = await confirm({
       title: t.project.archiveProject,
       message: format(t.project.archiveConfirm, { name: project.name }),
       confirmLabel: t.project.archive,
       tone: 'danger',
     });
-    if (!confirmed || leaving.current || !stillListed()) return;
-    leaving.current = true;
-    try {
-      onLeaving?.(project.id);
-      archiveProject(project.id);
-    } finally {
-      leaving.current = false;
-    }
+    if (!confirmed || !stillListed()) return;
+    onLeaving?.(project.id);
+    archiveProject(project.id);
   };
 
   const confirmDelete = async () => {
+    if (!stillListed()) return;
     const confirmed = await confirm({
       title: t.project.deleteProject,
       // The second line names the project.
@@ -149,18 +149,13 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       confirmLabel: t.project.delete,
       tone: 'danger',
     });
-    if (!confirmed || leaving.current || !stillListed()) return;
-    leaving.current = true;
-    try {
-      // Unlink conversations → they go back to Recents
-      for (const conv of latestConversations.current) {
-        setConversationProject(conv.id, undefined);
-      }
-      onLeaving?.(project.id);
-      deleteProject(project.id);
-    } finally {
-      leaving.current = false;
+    if (!confirmed || !stillListed()) return;
+    // Unlink conversations → they go back to Recents
+    for (const conv of latestConversations.current) {
+      setConversationProject(conv.id, undefined);
     }
+    onLeaving?.(project.id);
+    deleteProject(project.id);
   };
 
   const projectMenuItems = (
@@ -230,8 +225,10 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
     <div>
       {/* Project header row */}
       <ContextMenu content={projectMenuItems} onOpenChange={dropActionOnOpen} onCloseAutoFocus={runAfterMenuClose}>
-        <div className="group flex items-center gap-1">
+        {/* A group named by the project: 项目文件, 新任务 and 更多操作 read the same on every row. */}
+        <div role="group" aria-labelledby={nameId} className="group flex items-center gap-1">
           <NavItem
+            id={nameId}
             icon={expanded ? AppIcons.folderOpen : AppIcons.folder}
             label={project.name}
             trailing={project.pinned ? <span className="flex"><Icon icon={AppIcons.pin} size="sm" /></span> : undefined}

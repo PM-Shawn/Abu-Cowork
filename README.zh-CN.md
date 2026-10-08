@@ -332,7 +332,7 @@ src/
 │   ├── chat/         # 对话界面、消息气泡、模型选择器
 │   ├── sidebar/      # 侧边栏导航（含 Recents 折叠搜索）
 │   ├── panel/        # 右侧详情面板（工作区、项目记忆/指令）
-│   ├── customize/    # 自定义（技能、Agent、模型）
+│   ├── customize/    # 自定义（技能、Agent、MCP 连接器）
 │   ├── schedule/     # 定时任务视图
 │   ├── trigger/      # 触发器（值班）管理视图
 │   ├── settings/     # 系统设置（16 个面板，详见 settings/sections/）

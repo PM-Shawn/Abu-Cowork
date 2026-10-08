@@ -200,6 +200,18 @@ describe('index.css', () => {
     expect(excluded).toContain(`not "../../${directory}"`);
   });
 
+  // The overlay's interface files are outside this checkout: its build names them in the file this
+  // import reaches through the `@enterprise-modules` alias. The personal build reads the stub's
+  // twin, which adds nothing to the scan.
+  it('imports the overlay\'s list of interface files, and the stub\'s list names no source', () => {
+    const imports: string[] = [];
+    postcss.parse(INDEX_CSS).walkAtRules('import', (rule) => { imports.push(rule.params); });
+    expect(imports).toContain('"@enterprise-modules/interface-classes.css"');
+
+    const stub = postcss.parse(readFileSync(path.resolve(path.dirname(TOKENS_PATH), '../enterprise-modules-stub/interface-classes.css'), 'utf8'));
+    expect(stub.nodes.filter((node) => node.type !== 'comment')).toEqual([]);
+  });
+
   it('defines no theme of its own', () => {
     const themes: string[] = [];
     postcss.parse(INDEX_CSS).walkAtRules('theme', (rule) => { themes.push(rule.params); });

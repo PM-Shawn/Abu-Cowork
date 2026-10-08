@@ -344,7 +344,7 @@ src/
 │   ├── chat/         # Chat interface, messages, model selector
 │   ├── sidebar/      # Sidebar navigation (with collapsed Recents search)
 │   ├── panel/        # Right-side detail panel (workspace, project memory/instructions)
-│   ├── customize/    # Customization (skills, agents, models)
+│   ├── customize/    # Customization (skills, agents, MCP connectors)
 │   ├── schedule/     # Scheduled task views
 │   ├── trigger/      # Trigger ("on-call") management views
 │   ├── settings/     # System settings (16 panels, see settings/sections/)

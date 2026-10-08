@@ -547,6 +547,51 @@ describe('UserQuestionDock', () => {
         expect(dock()).toHaveFocus();
       });
 
+      // A screen reader hears a focus move. A question that leaves the focus in the message field
+      // is told to its owner instead, which holds the page's live element.
+      describe('telling a screen reader that the question arrived', () => {
+        function Announced({ asked, onArrival, payload = SINGLE_PAYLOAD }: { asked: boolean; onArrival: (question: { header: string; question: string } | null) => void; payload?: UserQuestionPayload }) {
+          return (
+            <DesignSystemProvider>
+              {asked && <UserQuestionDock conversationId="conv-a" messageId="msg-1" toolCallId="tc-announced" payload={payload} onArrivedWithoutFocus={onArrival} />}
+              <TextArea bare data-chat-composer="" aria-label="Message" />
+            </DesignSystemProvider>
+          );
+        }
+
+        it('hands its header and its question to the owner when it leaves the focus in the message field, and takes them back when it leaves', () => {
+          const onArrival = vi.fn();
+          const view = render(<Announced asked={false} onArrival={onArrival} />);
+          noteComposerDraft(owner, true);
+          act(() => field().focus());
+          view.rerender(<Announced asked onArrival={onArrival} />);
+
+          expect(field()).toHaveFocus();
+          expect(onArrival.mock.calls).toEqual([[{ header: '格式', question: '你希望输出什么格式？' }]]);
+          view.rerender(<Announced asked={false} onArrival={onArrival} />);
+          expect(onArrival.mock.lastCall).toEqual([null]);
+        });
+
+        it('hands nothing over when it takes the focus: the focus move is what is heard', () => {
+          const onArrival = vi.fn();
+          const view = render(<Announced asked={false} onArrival={onArrival} />);
+          act(() => field().focus());
+          view.rerender(<Announced asked onArrival={onArrival} />);
+
+          expect(dock()).toHaveFocus();
+          expect(onArrival).not.toHaveBeenCalled();
+        });
+
+        it('is a group named by the question on the page it shows', async () => {
+          vi.useRealTimers();
+          const user = userEvent.setup();
+          render(<Announced asked onArrival={() => undefined} payload={TWO_Q_PAYLOAD} />);
+          expect(screen.getByRole('group', { name: '第一题？' })).toBe(dock());
+          await user.click(screen.getByText('A').closest('button')!);
+          expect(screen.getByRole('group', { name: '第二题？' })).toBe(dock());
+        });
+      });
+
       it('decides the same when React runs its effects twice (StrictMode)', () => {
         const view = render(<StrictMode><Page asked={false} /></StrictMode>);
         noteComposerDraft(owner, true);

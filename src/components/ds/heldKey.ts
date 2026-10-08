@@ -34,8 +34,13 @@ interface TextKeyEvent extends HeldKeyEvent {
 // place (assistive technology) is known by what it types.
 const codeOf = (event: { key: string; code: string }) => event.code || event.key;
 
-// The key press is the user talking to an input method (see chat/composerKeys.ts).
-const composing = (event: TextKeyEvent) => event.nativeEvent.isComposing || event.keyCode === 229;
+// The key press belongs to an input method: the user is composing text with it. Two signals,
+// because neither covers every platform: `isComposing` is the standard flag, which Chromium sets on a
+// key-down inside a composition; `keyCode` 229 is what Windows input methods report for every
+// such key-down, and some of them never set the flag.
+export function belongsToInputMethod(event: { keyCode: number; nativeEvent: { isComposing: boolean } }): boolean {
+  return event.nativeEvent.isComposing || event.keyCode === 229;
+}
 
 const activates = (event: HeldKeyEvent) => event.key === 'Enter' || event.key === ' '
   || event.code === 'Enter' || event.code === 'NumpadEnter' || event.code === 'Space';
@@ -52,7 +57,7 @@ export function dropsHeldRepeat(event: HeldKeyEvent): boolean {
 // Every other key repeats (Space types spaces, Backspace deletes), and a key that belongs to an
 // input method is left alone.
 export function dropsHeldEnter(event: TextKeyEvent): boolean {
-  if (!event.repeat || event.key !== 'Enter' || composing(event)) return false;
+  if (!event.repeat || event.key !== 'Enter' || belongsToInputMethod(event)) return false;
   event.preventDefault();
   return true;
 }
@@ -156,7 +161,7 @@ export function useHeldKeys(shown = false, chooses: 'nothing' | 'enter' | 'enter
     mark: () => { shownAt.current = presses; },
     handlers: {
       onKeyDownCapture: (event: ReactKeyboardEvent<HTMLElement>) => {
-        if (!event.repeat || event.key === 'Escape' || composing(event)) return;
+        if (!event.repeat || event.key === 'Escape' || belongsToInputMethod(event)) return;
         const choosing = chooses !== 'nothing' && activates(event) && (chooses === 'enter-space' || event.key === 'Enter');
         const pressed = keysDown.get(codeOf(event));
         // Not known to be down, or pressed since the mark: the layer's own key.

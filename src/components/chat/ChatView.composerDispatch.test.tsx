@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatView from './ChatView';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
@@ -256,6 +257,76 @@ describe('ChatView welcome composer dispatch ownership', () => {
 
       expect(goalOf(a)).toMatchObject({ objective: 'Objective of A' });
       expect(goalOf(b)).toMatchObject({ objective: 'Objective of B' });
+    });
+  });
+
+  describe('focus when the first message replaces the new-task page with the chat page', () => {
+    // The runner appends the user row while the dispatch is still running; the page changes then.
+    function takeFirstMessage(): { finish: () => void } {
+      const run: { finish: () => void } = { finish: () => undefined };
+      dispatchMock.mockImplementationOnce((conversationId: string, text: string) => {
+        useChatStore.getState().addMessage(conversationId, { id: 'first-message', role: 'user', content: text, timestamp: 1, loopId: 'first-run' });
+        return new Promise((resolve) => { run.finish = () => resolve({ reason: 'completed' }); });
+      });
+      return run;
+    }
+
+    it('keeps the focus in the message field after Enter sent the message', async () => {
+      configureApiKey();
+      const run = takeFirstMessage();
+      render(<ChatView />);
+      const welcomeField = await submitWelcome('hello');
+      await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('hello'));
+
+      expect(welcomeField.isConnected).toBe(false);
+      const field = screen.getByRole('textbox');
+      expect(field).toHaveAttribute('data-chat-composer');
+      await waitFor(() => expect(field).toHaveFocus());
+      await act(async () => { run.finish(); });
+      expect(field).toHaveFocus();
+    });
+
+    it('takes the focus from no control: one that got it while the message was on its way keeps it', async () => {
+      configureApiKey();
+      const run = takeFirstMessage();
+      render(
+        <>
+          <Button>Elsewhere</Button>
+          <ChatView />
+        </>,
+      );
+      const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+      const focused = vi.spyOn(HTMLTextAreaElement.prototype, 'focus');
+      try {
+        const user = userEvent.setup();
+        await user.type(screen.getByRole('textbox'), 'hello');
+        // The key goes down in the field; another control has the focus before the chat page is drawn.
+        fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
+        act(() => { elsewhere.focus(); });
+        focused.mockClear();
+        await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('hello'));
+        await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+
+        expect(elsewhere).toHaveFocus();
+        expect(focused).not.toHaveBeenCalled();
+      } finally {
+        focused.mockRestore();
+        await act(async () => { run.finish(); });
+      }
+    });
+
+    it('moves no focus when a message arrives in the conversation in view by another way', async () => {
+      configureApiKey();
+      const id = useChatStore.getState().createConversation();
+      render(<ChatView />);
+      expect(document.body).toHaveFocus();
+      act(() => {
+        useChatStore.getState().addMessage(id, { id: 'arrived', role: 'user', content: 'from elsewhere', timestamp: 1, loopId: 'other-run' });
+      });
+      await waitFor(() => expect(screen.getByTestId('mock-virtuoso')).toHaveTextContent('from elsewhere'));
+      await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+
+      expect(document.body).toHaveFocus();
     });
   });
 

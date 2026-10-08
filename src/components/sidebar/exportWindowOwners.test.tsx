@@ -79,8 +79,9 @@ const tick = async () => {
 
 // Chooses 导出会话 in the menu of the row at this place.
 async function chooseExport(row: number) {
-  // The task rows' buttons: a project's own 更多操作 sits beside its name, in no row of this kind.
-  const rowButtons = screen.getAllByRole('button', { name: '更多操作', hidden: true }).filter((button) => button.parentElement?.closest('[role="button"]'));
+  // The task rows' buttons: a project's own 更多操作 sits in the group named after the project.
+  const projectGroup = screen.queryByRole('group', { name: PROJECT.name, hidden: true });
+  const rowButtons = screen.getAllByRole('button', { name: '更多操作', hidden: true }).filter((button) => !projectGroup?.contains(button));
   fireEvent.pointerDown(rowButtons[row], { button: 0 });
   fireEvent.click(screen.getByRole('menuitem', { name: '导出会话' }));
   await tick();

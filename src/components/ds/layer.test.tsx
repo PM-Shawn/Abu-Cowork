@@ -1,11 +1,15 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { StrictMode, useLayoutEffect, useState, type ReactNode } from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ErrorBoundary } from '@/components/common/ErrorBoundary';
+import { getI18n } from '@/i18n';
+import { Dialog } from './dialog';
 import { LayerProvider, LayerScope } from './layer';
 import { useLayer, useLayerContainer, useLayerRegistry, useOpenState, type LayerEntry, type LayerKind, type LayerRegistry } from './layer-context';
+import { DesignSystemProvider } from './provider';
 import { LAYER_FADE_MS } from './styles';
 
 interface PendingDiscard { onDiscard: () => void; onKeep?: () => void }
@@ -451,14 +455,14 @@ describe('LayerProvider', () => {
           <FakeLayer name="alert" kind="alert" />
         </LayerProvider>,
       );
-      expect(onModalChange).not.toHaveBeenCalled();
+      expect(onModalChange.mock.calls).toEqual([[false]]);
       await user.click(screen.getByText('open dialog'));
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('open alert'));
       await user.click(screen.getByText('close alert'));
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('close dialog'));
-      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     });
 
     // The app shows one notification while the user is asked to decide; this is how it learns of it.
@@ -475,19 +479,19 @@ describe('LayerProvider', () => {
       );
       await user.click(screen.getByText('open dialog'));
       await user.click(screen.getByText('close dialog'));
-      expect(onDecisionChange).not.toHaveBeenCalled();
+      expect(onDecisionChange.mock.calls).toEqual([[false]]);
       await user.click(screen.getByText('open alert'));
-      expect(onDecisionChange.mock.calls).toEqual([[true]]);
+      expect(onDecisionChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('close alert'));
-      expect(onDecisionChange.mock.calls).toEqual([[true], [false]]);
+      expect(onDecisionChange.mock.calls).toEqual([[false], [true], [false]]);
       await user.click(screen.getByText('open approval'));
-      expect(onDecisionChange.mock.calls).toEqual([[true], [false], [true]]);
+      expect(onDecisionChange.mock.calls).toEqual([[false], [true], [false], [true]]);
       // A second approval waits its turn and is shown when the first one leaves: still one report.
       await user.click(screen.getByText('open second'));
       await user.click(screen.getByText('close approval'));
-      expect(onDecisionChange.mock.calls).toEqual([[true], [false], [true]]);
+      expect(onDecisionChange.mock.calls).toEqual([[false], [true], [false], [true]]);
       await user.click(screen.getByText('close second'));
-      expect(onDecisionChange.mock.calls).toEqual([[true], [false], [true], [false]]);
+      expect(onDecisionChange.mock.calls).toEqual([[false], [true], [false], [true], [false]]);
     });
 
     it('counts an alert that is open by itself', async () => {
@@ -495,9 +499,9 @@ describe('LayerProvider', () => {
       const onModalChange = vi.fn();
       render(<LayerProvider onModalChange={onModalChange}><FakeLayer name="alert" kind="alert" /></LayerProvider>);
       await user.click(screen.getByText('open alert'));
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('close alert'));
-      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     });
 
     it('never counts a menu or a popover', async () => {
@@ -511,13 +515,13 @@ describe('LayerProvider', () => {
       );
       await user.click(screen.getByText('open menu'));
       await user.click(screen.getByText('close menu'));
-      expect(onModalChange).not.toHaveBeenCalled();
+      expect(onModalChange.mock.calls).toEqual([[false]]);
 
       // A menu inside a dialog comes and goes without a second report.
       await user.click(screen.getByText('open dialog'));
       await user.click(screen.getByText('open inner menu'));
       await user.click(screen.getByText('close inner menu'));
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     });
 
     it('stays yes while one dialog replaces another', async () => {
@@ -532,9 +536,9 @@ describe('LayerProvider', () => {
       await user.click(screen.getByText('open first'));
       await user.click(screen.getByText('open second'));
       expect(screen.queryByTestId('first')).toBeNull();
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('close second'));
-      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     });
 
     it('says no when a dialog goes and takes the dialog opened inside it along', async () => {
@@ -547,9 +551,9 @@ describe('LayerProvider', () => {
       );
       await user.click(screen.getByText('open outer'));
       await user.click(screen.getByText('open inner'));
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('close outer'));
-      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     });
 
     it('stays yes for a held newcomer: while it waits, when it is shown, until it closes', async () => {
@@ -566,9 +570,9 @@ describe('LayerProvider', () => {
       expect(screen.queryByTestId('other')).toBeNull();
       await user.click(screen.getByText('discard draft'));
       expect(screen.getByTestId('other')).toBeInTheDocument();
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('close other'));
-      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     });
 
     it('says no when the held newcomer is turned away and the first dialog then closes', async () => {
@@ -583,9 +587,96 @@ describe('LayerProvider', () => {
       await user.click(screen.getByText('open draft'));
       await user.click(screen.getByText('open other'));
       await user.click(screen.getByText('keep draft'));
-      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
       await user.click(screen.getByText('close draft'));
-      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
+    });
+
+    // A provider that leaves reports nothing, so its listeners can be left on yes.
+    it('tells both listeners on mount that nothing is open, then yes with the first layer', async () => {
+      const user = userEvent.setup();
+      const onModalChange = vi.fn();
+      const onDecisionChange = vi.fn();
+      const first = render(
+        <LayerProvider onModalChange={onModalChange} onDecisionChange={onDecisionChange}>
+          <FakeLayer name="approval" kind="approval" />
+        </LayerProvider>,
+      );
+      await user.click(screen.getByText('open approval'));
+      first.unmount();
+      expect(onModalChange.mock.lastCall).toEqual([true]);
+      expect(onDecisionChange.mock.lastCall).toEqual([true]);
+      onModalChange.mockClear();
+      onDecisionChange.mockClear();
+
+      render(
+        <LayerProvider onModalChange={onModalChange} onDecisionChange={onDecisionChange}>
+          <FakeLayer name="alert" kind="alert" />
+        </LayerProvider>,
+      );
+      expect(onModalChange.mock.calls).toEqual([[false]]);
+      expect(onDecisionChange.mock.calls).toEqual([[false]]);
+      await user.click(screen.getByText('open alert'));
+      expect(onModalChange.mock.calls).toEqual([[false], [true]]);
+      expect(onDecisionChange.mock.calls).toEqual([[false], [true]]);
+    });
+
+    it('reports a layer that is open when the provider mounts as open, and nothing before it', () => {
+      const onModalChange = vi.fn();
+      const onDecisionChange = vi.fn();
+      render(
+        <LayerProvider onModalChange={onModalChange} onDecisionChange={onDecisionChange}>
+          <FakeLayer name="alert" kind="alert" defaultOpen />
+        </LayerProvider>,
+      );
+      expect(onModalChange.mock.calls).toEqual([[true]]);
+      expect(onDecisionChange.mock.calls).toEqual([[true]]);
+    });
+
+    it('leaves no listener on yes after a render error took the page away with a window open and the page was retried', async () => {
+      const user = userEvent.setup();
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const heard = { modal: false, decision: false };
+      const page: { fails: boolean; render: () => void } = { fails: false, render: () => undefined };
+      function Page() {
+        const [open, setOpen] = useState(false);
+        const [, setRevision] = useState(0);
+        useLayoutEffect(() => { page.render = () => setRevision((revision) => revision + 1); }, []);
+        if (page.fails) throw new Error('render failed');
+        return (
+          <>
+            <button type="button" onClick={() => setOpen(true)}>open question</button>
+            <Dialog open={open} onOpenChange={setOpen} role="alertdialog" title="Question" />
+          </>
+        );
+      }
+      try {
+        render(
+          <ErrorBoundary>
+            <DesignSystemProvider
+              onModalChange={(open) => { heard.modal = open; }}
+              onDecisionChange={(asked) => { heard.decision = asked; }}
+            >
+              <Page />
+            </DesignSystemProvider>
+          </ErrorBoundary>,
+        );
+        await user.click(screen.getByText('open question'));
+        expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+        expect(heard).toEqual({ modal: true, decision: true });
+
+        page.fails = true;
+        act(() => { page.render(); });
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+        page.fails = false;
+        fireEvent.click(screen.getByRole('button', { name: getI18n().common.retry }));
+
+        expect(screen.getByText('open question')).toBeInTheDocument();
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+        expect(heard).toEqual({ modal: false, decision: false });
+      } finally {
+        errors.mockRestore();
+      }
     });
   });
 
@@ -779,7 +870,7 @@ describe('approval layers', () => {
       registry.unregister('login');
       registry.unregister('approval');
       registry.left('approval');
-      expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+      expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     });
 
     it('takes the return target of the approval on screen when it has none of its own', () => {
@@ -1299,7 +1390,7 @@ describe('approval layers', () => {
     expect(calls(log, 'second')).toEqual(['second.hold']);
     expect(log).not.toContain('first.focusTaken');
     // Nothing is left on the page, and nothing takes Escape.
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     registry.escapeTop();
     expect(log).toEqual(['second.hold']);
   });
@@ -1444,7 +1535,7 @@ describe('approval layers', () => {
     registry.unregister('login');
     registry.left('approval');
     registry.left('login');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     registry.escapeTop();
     expect(log.filter((line) => line.endsWith('.escape'))).toEqual(['approval.escape']);
   });
@@ -1690,12 +1781,12 @@ describe('telling when the last dialog has left the page', () => {
     const onModalChange = vi.fn();
     const { registry } = mountRegistry(onModalChange);
     registry.register(spy(log, 'dialog', 'dialog').entry);
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
 
     registry.unregister('dialog');
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     registry.left('dialog');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
   });
 
   it('says no one fade after a dialog unregistered when nothing reports that it left', () => {
@@ -1707,9 +1798,9 @@ describe('telling when the last dialog has left the page', () => {
     registry.unregister('dialog');
 
     vi.advanceTimersByTime(LAYER_FADE_MS - 1);
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     vi.advanceTimersByTime(1);
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
   });
 
   it('says no once, after the second of two dialogs has left the page', () => {
@@ -1721,9 +1812,9 @@ describe('telling when the last dialog has left the page', () => {
     registry.unregister('inner');
     registry.unregister('outer');
     registry.left('outer');
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     registry.left('inner');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
   });
 
   it('stays yes when a dialog opens again before its fade has ended, and the old timer is dropped', () => {
@@ -1738,7 +1829,7 @@ describe('telling when the last dialog has left the page', () => {
     registry.register(dialog.entry);
     vi.advanceTimersByTime(LAYER_FADE_MS);
     registry.left('dialog');
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
   });
 
   it('counts an approval, and a window that steps aside until it has left the page', () => {
@@ -1748,15 +1839,15 @@ describe('telling when the last dialog has left the page', () => {
     registry.register(spy(log, 'login', 'dialog', { busy: true }).entry);
     registry.register(spy(log, 'approval', 'approval').entry);
     registry.left('login');
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
 
     registry.unregister('approval');
     registry.left('approval');
     // The window is back.
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     registry.unregister('login');
     registry.left('login');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
   });
 
   it('never counts an approval that waits in line', () => {
@@ -1769,9 +1860,9 @@ describe('telling when the last dialog has left the page', () => {
     registry.unregister('second');
     registry.unregister('first');
     registry.left('first');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     vi.advanceTimersByTime(LAYER_FADE_MS * 2);
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
   });
 
   // On a busy main thread a fade ends later than its nominal length. The timer never says a
@@ -1787,14 +1878,14 @@ describe('telling when the last dialog has left the page', () => {
     registry.unregister('dialog');
 
     vi.advanceTimersByTime(LAYER_FADE_MS);
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     vi.advanceTimersByTime(LAYER_FADE_MS * 2);
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
 
     // The content has gone and nothing reported it (its owner left the page).
     dialog.state.painted = false;
     vi.advanceTimersByTime(LAYER_FADE_MS);
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -1809,10 +1900,10 @@ describe('telling when the last dialog has left the page', () => {
     registry.unregister('dialog');
 
     vi.advanceTimersByTime(LAYER_FADE_MS * 2 + 113);
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     dialog.state.painted = false;
     registry.left('dialog');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

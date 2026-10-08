@@ -11,20 +11,29 @@ export class MarketCheckFailure {
   toString(): string;
 }
 
+type EntrySource = { kind: 'relative'; path: string } | { kind: 'url'; url: string; sha?: string } | { kind: 'git-subdir'; url: string; path: string; ref?: string; sha?: string };
+
 export interface MarketCheckEntry {
   name: string;
   version?: string;
-  providesApp?: unknown;
   minAbuVersion?: unknown;
-  source: { kind: 'relative'; path: string } | { kind: 'url'; url: string; sha?: string } | { kind: 'git-subdir'; url: string; path: string; ref?: string; sha?: string };
+  source: EntrySource;
+}
+
+export interface PluginShips {
+  teamIds: Set<string>;
+  agentNames: Set<string>;
+  skillNames: Set<string>;
+  mcpServerNames: Set<string>;
 }
 
 export interface MarketCheckResult {
   marketplace: string;
   file: string;
-  checked: { name: string; packageDir: string; providesApp: boolean }[];
+  checked: { kind: 'plugin' | 'app'; name: string; dir: string }[];
   failures: MarketCheckFailure[];
 }
 
-export function checkPackage(packageDir: string, entry: MarketCheckEntry, options: { hostVersion: string }): MarketCheckFailure[];
+export function checkPackage(packageDir: string, entry: MarketCheckEntry, options: { hostVersion: string }): { failures: MarketCheckFailure[]; ships?: PluginShips };
+export function checkApp(appDir: string, entry: { name: string; version?: string; minAbuVersion?: string }, options: { hostVersion: string; pluginsByName: Map<string, PluginShips> }): MarketCheckFailure[];
 export function checkMarket(marketDir: string, options: { hostVersion: string; stagingRoot?: string }): Promise<MarketCheckResult>;

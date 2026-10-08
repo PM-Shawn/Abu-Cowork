@@ -12,7 +12,6 @@ import { Select } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
-import { useAppStore } from '@/stores/appStore';
 import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
 import { orphanedInstalls } from '@/core/plugin/authored';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -27,6 +26,7 @@ import {
   type PluginSource,
 } from '@/core/plugin/marketplace';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
+import { refreshFetchedMarkets, removeMarket } from '@/core/plugin/marketSource';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
@@ -57,13 +57,6 @@ interface MarketplaceBrowserProps {
   searchQuery: string;
   requestedMarket?: { name: string };
   onAddMarketplace: () => void;
-  /**
-   * Which half of a marketplace this render is for. `plugins` (the 扩展 page)
-   * lists everything except apps; `apps` (the app market dialog) lists only
-   * apps. A package never shows up on both, so a user browsing plugins is
-   * never handed an app and the other way round.
-   */
-  mode?: 'plugins' | 'apps';
 }
 
 type EntriesState =
@@ -77,7 +70,7 @@ function authorName(author: MarketplaceEntry['author']): string | undefined {
   return typeof author === 'string' ? author : author.name;
 }
 
-/** What a card calls this package: an app is known by its own name, not its package id. */
+/** What a card calls this package: its display name when the market gives one, not its package id. */
 function entryLabel(entry: MarketplaceEntry): string {
   return entry.displayName ?? entry.name;
 }
@@ -104,15 +97,10 @@ export default function MarketplaceBrowser({
   requestedMarket,
   onAddMarketplace,
   scrollParent,
-  mode = 'plugins',
 }: MarketplaceBrowserProps) {
   const { t } = useI18n();
   const tb = t.toolbox;
-  const enterApp = useAppStore((s) => s.enterApp);
-  const enterInstalledApp = useAppStore((s) => s.enterAppWhenAvailable);
-  const appsOnly = mode === 'apps';
   const marketplaces = usePluginStore((s) => s.marketplaces);
-  const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
   const update = usePluginStore((s) => s.update);
@@ -233,6 +221,14 @@ export default function MarketplaceBrowser({
     void recomputeUpdates(home);
   }, [recomputeUpdates, home, marketplaces, installed, reload]);
 
+  // Markets added by address are fetched again when this panel opens (at most
+  // hourly, decided by the main process); the listing is then read anew.
+  useEffect(() => {
+    let cancelled = false;
+    void refreshFetchedMarkets(home).then(() => { if (!cancelled) setReload((value) => value + 1); });
+    return () => { cancelled = true; };
+  }, [home]);
+
   /** Store keys are `pluginKey(entryName, marketName)` — see `updateCheck`. */
   const updateKeySet = useMemo(() => new Set(updateAvailableKeys), [updateAvailableKeys]);
 
@@ -254,8 +250,8 @@ export default function MarketplaceBrowser({
 
   const visibleEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return (marketplace?.plugins ?? []).filter((entry) => (entry.providesApp === true) === appsOnly && matchesQuery(entry, query));
-  }, [marketplace, searchQuery, appsOnly]);
+    return (marketplace?.plugins ?? []).filter((entry) => matchesQuery(entry, query));
+  }, [marketplace, searchQuery]);
 
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
@@ -349,11 +345,6 @@ export default function MarketplaceBrowser({
         message: tb.pluginsUpdateReloadHint,
       });
       closeFlow();
-      // 「使用」 is install-and-enter: a fresh app install lands the user on its
-      // home. The app list refreshes from the records the install just wrote,
-      // so the switcher may still be catching up — the store checks the record
-      // directly, and an update to an app the user is already in stays put.
-      if (flow.disclosure.app && !existing) enterInstalledApp(flow.disclosure.key);
     } catch (err) {
       releasePreparation();
       setFlow({ kind: 'error', entry, message: err instanceof Error ? err.message : String(err) });
@@ -368,7 +359,7 @@ export default function MarketplaceBrowser({
       installingRef.current = false;
       setInstalling(false);
     }
-  }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow, releasePreparation, enterInstalledApp]);
+  }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow, releasePreparation]);
 
   const dialogState: InstallPlanState =
     flow.kind === 'ready'
@@ -408,24 +399,17 @@ export default function MarketplaceBrowser({
     // Read from the store rather than scored here: one source of truth for the
     // badge count and this button (see the recompute effect above).
     const hasUpdate = !!selected && updateKeySet.has(pluginKey(entry.name, selected.name));
-    // An installed app keeps its market card (marked installed by the switch)
-    // and offers 进入; an app not yet installed offers 使用, which installs and
-    // enters in one step.
-    const isApp = entry.providesApp === true;
     if (installedRecord) return <InstalledPluginCard
       plugin={installedRecord}
       home={home}
-      control={appsOnly ? 'none' : 'installed'}
+      control="installed"
       name={entryLabel(entry)}
       description={entry.description}
       testId="plugin-marketplace-entry"
       onClick={() => setManaging(installedRecord)}
-      actions={<>
-        {hasUpdate && <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button>}
-        {isApp && <Button variant="tint" size="xs" className="h-7 px-2.5" data-testid="plugin-enter-app" aria-label={`${tb.pluginsEnter}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); enterApp(installedRecord.key); }}>{tb.pluginsEnter}</Button>}
-      </>}
+      actions={hasUpdate ? <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
     />;
-    const installLabel = isApp ? tb.pluginsUse : tb.pluginsInstall;
+    const installLabel = tb.pluginsInstall;
     return (
       <div className="h-full">
         <MarketplaceEntryRow
@@ -440,21 +424,17 @@ export default function MarketplaceBrowser({
   };
 
   if (marketplaces.length === 0) {
-    // Adding a market is a plugin-page job, so the app market says where to go
-    // rather than offering a button that belongs to another page.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
         <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />
-        <p className="text-h-sm text-[var(--abu-text-primary)]">{appsOnly ? t.appMarket.emptyTitle : tb.pluginsNoMarketplaces}</p>
+        <p className="text-h-sm text-[var(--abu-text-primary)]">{tb.pluginsNoMarketplaces}</p>
         <p className="max-w-md text-body text-[var(--abu-text-tertiary)]">
-          {appsOnly ? t.appMarket.emptyHint : tb.pluginsNoMarketplacesHint}
+          {tb.pluginsNoMarketplacesHint}
         </p>
-        {!appsOnly && (
-          <Button className="mt-1" onClick={onAddMarketplace} data-testid="plugin-add-marketplace-cta">
-            <Plus className="h-3.5 w-3.5" />
-            {tb.pluginsAddMarketplace}
-          </Button>
-        )}
+        <Button className="mt-1" onClick={onAddMarketplace} data-testid="plugin-add-marketplace-cta">
+          <Plus className="h-3.5 w-3.5" />
+          {tb.pluginsAddMarketplace}
+        </Button>
       </div>
     );
   }
@@ -477,17 +457,15 @@ export default function MarketplaceBrowser({
 
         {marketplace && (
           <span className="text-minor text-[var(--abu-text-muted)]">
-            {format(appsOnly ? t.appMarket.entryCount : tb.pluginsEntryCount, { count: visibleEntries.length })}
+            {format(tb.pluginsEntryCount, { count: visibleEntries.length })}
           </span>
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
           {selectedName && <Button size="icon-sm" variant="ghost" aria-label={tb.pluginsRefreshMarketplace} disabled={entriesState.kind === 'loading'} onClick={() => setReload(value => value + 1)}><RefreshCw className="h-3.5 w-3.5" /></Button>}
           {/* The built-in market cannot be removed (the store short-circuits it),
-              so it gets no Remove control rather than one that silently no-ops.
-              Managing which markets exist belongs to 扩展 → 插件, so the app
-              market dialog shows no Remove either. */}
-          {selectedName && !selected?.builtin && !appsOnly && (
+              so it gets no Remove control rather than one that silently no-ops. */}
+          {selectedName && !selected?.builtin && (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -549,7 +527,7 @@ export default function MarketplaceBrowser({
         </div>
       )}
 
-      {orphans.length > 0 && !appsOnly && (
+      {orphans.length > 0 && (
         <section
           data-testid="plugin-orphan-group"
           className="shrink-0 border-t border-[var(--abu-border)] py-3"
@@ -608,7 +586,7 @@ export default function MarketplaceBrowser({
         cancelText={t.common.cancel}
         variant="danger"
         onConfirm={() => {
-          if (removeTarget) removeMarketplace(removeTarget);
+          if (removeTarget) void removeMarket(removeTarget, home);
           setRemoveTarget(null);
         }}
         onCancel={() => setRemoveTarget(null)}

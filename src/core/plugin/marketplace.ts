@@ -11,6 +11,8 @@
  * round-trip through this parser untouched.
  */
 
+import { validateMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
+
 export type PluginSource =
   | { kind: 'relative'; path: string }
   | { kind: 'url'; url: string; sha?: string }
@@ -27,11 +29,24 @@ export interface MarketplaceEntry {
   homepage?: string;
   keywords?: string[];
   tags?: string[];
-  /** Listed under "apps" in discovery; the manifest must then carry `app`. */
-  providesApp?: boolean;
-  /** Mirror of the manifest's `minAbuVersion`, so a listing can hide packages this Abu cannot use. */
+  /** Mirror of the manifest's `minAbuVersion`, so a listing can mark packages this Abu cannot use. */
   minAbuVersion?: string;
   source: PluginSource;
+}
+
+/**
+ * One app a market lists (docs/app-spec.md). A relative source needs only
+ * `name` and `source`: the listing reads the rest from the app's own
+ * `app.json`. A remote source also states `version`, `description` and
+ * `minAbuVersion`, so the listing can show it without downloading it first;
+ * the add step checks them against the downloaded file.
+ */
+export interface AppMarketEntry {
+  name: string;
+  source: PluginSource;
+  version?: string;
+  description?: string;
+  minAbuVersion?: string;
 }
 
 export interface Marketplace {
@@ -40,6 +55,7 @@ export interface Marketplace {
   description?: string;
   renames?: Record<string, string>;
   plugins: MarketplaceEntry[];
+  apps: AppMarketEntry[];
 }
 
 export class MarketplaceParseError extends Error {
@@ -170,10 +186,45 @@ function parseEntry(raw: unknown, label: string): MarketplaceEntry {
     homepage: typeof raw.homepage === 'string' ? raw.homepage : undefined,
     keywords: Array.isArray(raw.keywords) ? (raw.keywords as string[]) : undefined,
     tags: Array.isArray(raw.tags) ? (raw.tags as string[]) : undefined,
-    providesApp: raw.providesApp === true ? true : undefined,
     minAbuVersion: typeof raw.minAbuVersion === 'string' ? raw.minAbuVersion : undefined,
     source,
   };
+}
+
+function parseAppEntry(raw: unknown, index: number): AppMarketEntry {
+  const field = `apps[${index}]`;
+  if (!isPlainObject(raw)) throw new MarketplaceParseError(`${field} must be an object`, field);
+  if (typeof raw.name !== 'string' || raw.name.length === 0) {
+    throw new MarketplaceParseError(`${field} is missing required field "name"`, `${field}.name`);
+  }
+  let source: PluginSource;
+  try {
+    source = parseSource(raw.source);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new MarketplaceParseError(`app entry "${raw.name}" has an invalid source: ${reason}`, `${field}.source`);
+  }
+  const optional = (key: 'version' | 'description' | 'minAbuVersion') => {
+    const value = raw[key];
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || value.length === 0) throw new MarketplaceParseError(`${field}.${key} must be a non-empty string`, `${field}.${key}`);
+    return value;
+  };
+  const entry: AppMarketEntry = {
+    name: raw.name,
+    source,
+    version: optional('version'),
+    description: optional('description'),
+    minAbuVersion: optional('minAbuVersion'),
+  };
+  if (source.kind !== 'relative') {
+    for (const key of ['version', 'description', 'minAbuVersion'] as const) {
+      if (entry[key] === undefined) throw new MarketplaceParseError(`app entry "${raw.name}" comes from a remote source, so "${key}" is required`, `${field}.${key}`);
+    }
+  }
+  // A listing compares it with this Abu's version, so it has to be one.
+  validateMinAbuVersion(entry.minAbuVersion);
+  return entry;
 }
 
 export function parseMarketplace(raw: unknown): Marketplace {
@@ -183,17 +234,26 @@ export function parseMarketplace(raw: unknown): Marketplace {
   if (typeof raw.name !== 'string' || raw.name.length === 0) {
     throw new MarketplaceParseError('marketplace manifest is missing required field "name"', 'name');
   }
-  if (!Array.isArray(raw.plugins)) {
-    throw new MarketplaceParseError(
-      'marketplace manifest is missing required field "plugins" (must be an array)',
-      'plugins',
-    );
+  if (raw.plugins !== undefined && !Array.isArray(raw.plugins)) {
+    throw new MarketplaceParseError('"plugins" must be an array', 'plugins');
+  }
+  if (raw.apps !== undefined && !Array.isArray(raw.apps)) {
+    throw new MarketplaceParseError('"apps" must be an array', 'apps');
+  }
+  if (raw.plugins === undefined && raw.apps === undefined) {
+    throw new MarketplaceParseError('marketplace manifest lists neither "plugins" nor "apps"', 'plugins');
   }
 
-  const plugins = raw.plugins.map((entry, index) => {
+  const plugins = ((raw.plugins as unknown[] | undefined) ?? []).map((entry, index) => {
     const entryName = isPlainObject(entry) && typeof entry.name === 'string' ? entry.name : undefined;
     const label = entryName ? `"${entryName}"` : `at index ${index}`;
     return parseEntry(entry, label);
+  });
+  const apps = ((raw.apps as unknown[] | undefined) ?? []).map(parseAppEntry);
+  const appNames = new Set<string>();
+  apps.forEach((entry, index) => {
+    if (appNames.has(entry.name)) throw new MarketplaceParseError(`app "${entry.name}" is listed twice`, `apps[${index}].name`);
+    appNames.add(entry.name);
   });
 
   return {
@@ -208,6 +268,7 @@ export function parseMarketplace(raw: unknown): Marketplace {
     description: typeof raw.description === 'string' ? raw.description : undefined,
     renames: isPlainObject(raw.renames) ? (raw.renames as Record<string, string>) : undefined,
     plugins,
+    apps,
   };
 }
 

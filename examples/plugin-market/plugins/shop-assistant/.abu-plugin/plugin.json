@@ -1,0 +1,28 @@
+{
+  "name": "shop-assistant",
+  "version": "1.0.0",
+  "description": "店铺助手：店铺运营顾问、客服顾问、详情页技能和店铺连接器",
+  "author": { "name": "Abu" },
+  "license": "Apache-2.0",
+  "keywords": ["ecommerce", "shop", "listing"],
+  "minAbuVersion": "0.51.0",
+  "skills": ["./skills/product-listing"],
+  "mcpServers": {
+    "shop-api": {
+      "url": "https://shop.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${config.SHOP_TOKEN}" }
+    }
+  },
+  "interface": {
+    "displayName": "店铺助手",
+    "shortDescription": "店铺运营的专家、专家团、详情页技能和店铺连接器",
+    "longDescription": "给电商运营准备的一组能力：店铺运营顾问和客服顾问两位专家、由他们组成的店铺运营专家团、写详情页的技能，以及读取订单和评价的店铺连接器。",
+    "developerName": "Abu",
+    "category": "ecommerce",
+    "capabilities": ["读取你上传的销售数据和商品资料", "通过店铺连接器读取订单和评价", "生成商品文案、详情页和回复话术"],
+    "brandColor": "#C4633A",
+    "logo": "assets/logo.png",
+    "logoDark": "assets/logo-dark.png",
+    "websiteURL": "https://example.com"
+  }
+}

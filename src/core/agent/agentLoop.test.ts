@@ -8,6 +8,7 @@ import {
   isVisionUnsupportedError,
   getCapabilityPrompt,
   resolveTools,
+  prefetchSkills,
   skillBlockedTools,
   buildVolatileContextTail,
   buildDirectDelegateSubagentOptions,
@@ -266,6 +267,14 @@ describe('resolveTools · per-run restrictions', () => {
     expect(skillBlockedTools({ blockedTools: ['a', 'b'] }, [{ blockedTools: ['b', 'computer'] }]))
       .toEqual(['a', 'b', 'computer']);
     expect(skillBlockedTools(undefined, undefined)).toEqual([]);
+  });
+
+  it('loads the tools of a skill reached by /name on that same turn', () => {
+    const builder = { name: 'abu-app-builder', description: '', content: '' } as import('../../types').Skill;
+    const other = { name: 'other', description: '', content: '' } as import('../../types').Skill;
+    expect(prefetchSkills(builder, [other]).map((skill) => skill.name)).toEqual(['abu-app-builder', 'other']);
+    expect(prefetchSkills(builder, [builder, other])).toHaveLength(2);
+    expect(prefetchSkills(undefined, [other])).toEqual([other]);
   });
 
   it('applies an exact empty run snapshot even to the team protocols', () => {

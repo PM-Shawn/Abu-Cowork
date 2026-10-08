@@ -1199,61 +1199,44 @@ describe('agents payload discovery', () => {
 });
 
 /**
- * `teams/*.json` and the manifest's `app` are validated against what the
- * package itself ships, and both go into the disclosure the user approves.
+ * `teams/*.json` are validated against what the package itself ships, and go
+ * into the disclosure the user approves.
  */
-describe('teams and app disclosure', () => {
+describe('teams disclosure', () => {
   const entry = { name: 'shop', source: { kind: 'relative', path: './plugins/shop' } as PluginSource };
   const pkg = '/mkt/plugins/shop';
-  const scene = (run: unknown) => ({
-    id: 'scene', title: 'Scene', run,
-    templates: [{ id: 'a', title: 'A', prompt: 'A' }, { id: 'b', title: 'B', prompt: 'B' }, { id: 'c', title: 'C', prompt: 'C' }],
-  });
-  const appWith = (run: unknown, extra: Record<string, unknown> = {}) => ({
-    version: 1, home: { modes: { items: [{ modeId: 'm', title: 'M', scenes: [scene(run)] }] } }, ...extra,
-  });
   const manifest = (fields: Record<string, unknown>) => JSON.stringify({ name: 'shop', version: '1.0.0', minAbuVersion: '0.51.0', ...fields });
   const team = JSON.stringify({ name: 'Ops', description: 'ops', leader: 'advisor', members: ['advisor', 'builtin:数据分析师'] });
   const advisor = '---\nname: advisor\n---\n\nBody.\n';
 
-  it('discloses teams with resolved role ids and the parsed app', async () => {
+  it('discloses teams with resolved role ids', async () => {
     mountFiles({
-      [`${pkg}/.abu-plugin/plugin.json`]: manifest({ app: appWith({ team: 'ops' }, { requiredConnectors: ['api'] }), mcpServers: { api: { url: 'https://x.example.com/mcp' } } }),
+      [`${pkg}/.abu-plugin/plugin.json`]: manifest({}),
       [`${pkg}/teams/ops.json`]: team,
       [`${pkg}/agents/advisor.md`]: advisor,
     });
     vi.mocked(exists).mockResolvedValue(false);
     const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
     expect(d.teams).toEqual([expect.objectContaining({ id: 'ops', leaderRoleId: 'plugin:advisor', memberRoleIds: ['plugin:advisor', 'builtin:数据分析师'] })]);
-    expect(d.app?.home.modes.items[0].scenes[0].run).toEqual({ team: 'ops' });
-    expect(d.app?.requiredConnectors).toEqual(['api']);
-    expect(d.manifest.app).toBe(d.app);
   });
 
-  it('discloses an empty team list and no app for a plain plugin', async () => {
+  it('discloses an empty team list for a plain plugin', async () => {
     mountFiles({ [`${pkg}/.abu-plugin/plugin.json`]: JSON.stringify({ name: 'shop' }) });
     const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
     expect(d.teams).toEqual([]);
-    expect(d.app).toBeUndefined();
   });
 
-  it('names the field when a team or a scene references something the package does not ship', async () => {
+  it('names the field when a team references something the package does not ship', async () => {
     mountFiles({
       [`${pkg}/.abu-plugin/plugin.json`]: manifest({}),
       [`${pkg}/teams/ops.json`]: JSON.stringify({ name: 'Ops', description: 'ops', leader: 'ghost', members: ['ghost', 'builtin:数据分析师'] }),
     });
     await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'teams.ops.members[0]' });
-
-    mountFiles({ [`${pkg}/.abu-plugin/plugin.json`]: manifest({ app: appWith({ skill: 'ghost' }) }) });
-    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'app.home.modes.items[0].scenes[0].run.skill' });
   });
 
-  it('refuses a package that needs a newer Abu, and an app entry whose manifest has no app', async () => {
-    mountFiles({ [`${pkg}/.abu-plugin/plugin.json`]: manifest({ minAbuVersion: '99.0.0', app: appWith({ team: 'builtin-team:recruiting' }) }) });
+  it('refuses a package that needs a newer Abu', async () => {
+    mountFiles({ [`${pkg}/.abu-plugin/plugin.json`]: manifest({ minAbuVersion: '99.0.0' }) });
     await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'minAbuVersion', message: expect.stringContaining('99.0.0') });
-
-    mountFiles({ [`${pkg}/.abu-plugin/plugin.json`]: JSON.stringify({ name: 'shop' }) });
-    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry: { ...entry, providesApp: true } })).rejects.toMatchObject({ field: 'app' });
   });
 
   it('requires minAbuVersion once the package ships teams/', async () => {
@@ -1265,9 +1248,9 @@ describe('teams and app disclosure', () => {
     await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toMatchObject({ field: 'minAbuVersion' });
   });
 
-  it('refuses a team leader or scene expert that will not be installed because its name is taken', async () => {
+  it('refuses a team leader that will not be installed because its name is taken', async () => {
     mountFiles({
-      [`${pkg}/.abu-plugin/plugin.json`]: manifest({ app: appWith({ expert: 'advisor' }) }),
+      [`${pkg}/.abu-plugin/plugin.json`]: manifest({}),
       [`${pkg}/teams/ops.json`]: team,
       [`${pkg}/agents/advisor.md`]: advisor,
     });

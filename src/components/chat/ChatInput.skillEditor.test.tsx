@@ -155,6 +155,18 @@ describe('ChatInput with a skill tag', () => {
       expect(input.value).toBe('abc');
     });
 
+    // The two cases are a pair: the composer's paste handler reaches the text area (it takes a
+    // paste that carries a file), and that same handler lets plain text through.
+    it('takes a paste that carries a file for itself', async () => {
+      render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+      let notPrevented = true;
+      await act(async () => {
+        notPrevented = fireEvent.paste(field(), { clipboardData: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => null }] } });
+      });
+      expect(notPrevented).toBe(false);
+      expect((field() as HTMLTextAreaElement).value).toBe('');
+    });
+
     it('leaves a paste of plain text to the text area', () => {
       render(<ChatInput variant="welcome" onSend={vi.fn()} />);
       const notPrevented = fireEvent.paste(field(), { clipboardData: { items: [{ kind: 'string', type: 'text/plain' }], getData: () => 'pasted' } });

@@ -110,7 +110,7 @@ import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningPar
 import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
-import { adapterKindFor } from '../llm/adapterKind';
+import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { contextTooSmallMessage } from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
@@ -2796,7 +2796,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             toolCalls: collectedToolCalls.map(tc => ({ name: tc.name, input: tc.input })),
           },
           usage: finalUsage,
-          costUsd: finalUsage ? calculateTurnCost(effectiveModelId, finalUsage) : undefined,
+          costUsd: finalUsage
+            ? calculateTurnCost(effectiveModelId, finalUsage, usageProtocolFor(adapterKind))
+            : undefined,
         });
       }
 
@@ -2809,7 +2811,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // 开了提示缓存之后它可以只有几百，直接拿去校准会把估算比例拉到接近零。
         calibrateFromUsage(
           estimatedInput,
-          promptTokensOf(adapterKind === 'claude' ? 'anthropic' : 'openai-compatible', finalUsage),
+          promptTokensOf(usageProtocolFor(adapterKind), finalUsage),
         );
       }
 

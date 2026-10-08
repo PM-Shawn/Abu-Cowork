@@ -380,9 +380,6 @@ const zhCN: TranslationDict = {
     outputTokens: '输出',
     addAttachment: '添加图片或文件',
     composerMenu: { open: '更多', addFile: '添加文件', teamOrMember: '专家 · 专家团', skill: '技能' },
-    pickAgent: '选专家',
-    pickAgentEmpty: '没有可用的专家',
-    pickAgentClear: '不指定专家',
     pickAgentPluginTag: '插件',
     copyConvIdTooltip: '点击复制对话 ID（反馈问题时附带）',
     copyConvIdCopied: '已复制对话 ID',
@@ -660,10 +657,7 @@ const zhCN: TranslationDict = {
   },
 
   status: {
-    ready: '就绪',
     thinking: '思考中',
-    responding: '回复中',
-    usingTool: '正在使用',
   },
 
   task: {
@@ -892,7 +886,6 @@ const zhCN: TranslationDict = {
     advanced: '高级参数',
     pressEscToClose: '按 ESC 关闭',
     // API Section
-    provider: '提供商',
     providerAnthropic: 'Anthropic (Claude)',
     providerOpenAI: 'OpenAI',
     providerLocal: '本地模型 / 第三方代理',
@@ -915,17 +908,14 @@ const zhCN: TranslationDict = {
     secretShow: '显示密钥',
     secretHide: '隐藏密钥',
     // Model Section
-    model: '模型',
     customModelOption: '自定义模型...',
     customModelName: '自定义模型名称',
     customModelPlaceholder: '例如: claude-sonnet-4-6',
     customModelDesc: '输入 API 支持的任意模型 ID',
     currentModel: '当前模型',
-    notSet: '未设置',
     // Advanced Section
     baseUrl: 'Base URL',
     baseUrlPlaceholder: '可选，自定义 API 端点',
-    apiFormat: 'API 格式',
     billingPaygo: '按量计费',
     billingPaygoBeijing: '按量计费（北京）',
     billingCoding: 'Coding Plan',
@@ -949,7 +939,6 @@ const zhCN: TranslationDict = {
     deleteServiceConfirm: '确认删除此自定义服务？',
     serviceNameRequired: '请输入服务名称',
     language: '语言',
-    languageDescription: '选择界面显示语言',
     followSystem: '跟随系统',
     // Image Generation — independent backend list (design doc §3.1, "C-a")
     imageGenVendor: '供应商',
@@ -2076,7 +2065,6 @@ const zhCN: TranslationDict = {
     skillContextFork: '独立（替代基础提示）',
     skillMaxTurns: '最大轮次',
     maxTurnsInheritGlobalHint: '留空跟随全局设置',
-    skillContent: '技能内容',
     skillEnabled: '已启用',
     skillDisabled: '已停用',
     skillEdit: '编辑',
@@ -2135,8 +2123,6 @@ const zhCN: TranslationDict = {
     installAgentSkillsHint: '等同于运行 npx skills add <仓库名> -g',
     installAgentSkillsButton: '安装',
     recommendedSkills: '推荐',
-    activeSkills: '激活的技能',
-    activeSkillsRemove: '移除',
     // Category filter
     categoryAll: '全部',
     categoryDocument: '文档',
@@ -2159,7 +2145,6 @@ const zhCN: TranslationDict = {
     agentMemoryUser: '用户级',
     agentMaxTurns: '最大轮次',
     agentBackground: '后台运行',
-    agentSystemPrompt: '系统提示词',
     agentEdit: '编辑',
     agentFromPluginRemoveHint: '来自插件 {plugin} · 卸载插件即可移除',
     itemFromPluginRemoveHint: '来自插件 {plugin} · 卸载插件即可移除',
@@ -2357,7 +2342,6 @@ const zhCN: TranslationDict = {
     },
     folderRequestEnded: '这次选择文件夹的请求已经结束，刚才选的文件夹没有生效。',
     abuCanDo: '阿布将可以：',
-    allowOnce: '允许本次',
     allowAlways: '总是允许',
     deny: '拒绝',
     rememberChoice: '总是允许访问此文件夹',

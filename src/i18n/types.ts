@@ -463,10 +463,6 @@ export interface TranslationDict {
     addAttachment: string;
     /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
     composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
-    // Agent selector in toolbar
-    pickAgent: string;
-    pickAgentEmpty: string;
-    pickAgentClear: string;
     /** Trailing tag on a plugin-contributed agent's row in the @ picker. */
     pickAgentPluginTag: string;
     // Conversation ID badge
@@ -810,10 +806,7 @@ export interface TranslationDict {
 
   // Status Bar
   status: {
-    ready: string;
     thinking: string;
-    responding: string;
-    usingTool: string;
   };
 
   // Task Block
@@ -1196,7 +1189,6 @@ export interface TranslationDict {
     advanced: string;
     pressEscToClose: string;
     // API Section
-    provider: string;
     providerAnthropic: string;
     providerOpenAI: string;
     providerLocal: string;
@@ -1219,17 +1211,14 @@ export interface TranslationDict {
     secretShow: string;
     secretHide: string;
     // Model Section
-    model: string;
     customModelOption: string;
     customModelName: string;
     customModelPlaceholder: string;
     customModelDesc: string;
     currentModel: string;
-    notSet: string;
     // Advanced Section
     baseUrl: string;
     baseUrlPlaceholder: string;
-    apiFormat: string;
     billingPaygo: string;
     billingPaygoBeijing: string;
     billingCoding: string;
@@ -1255,7 +1244,6 @@ export interface TranslationDict {
     serviceNameRequired: string;
     // Language
     language: string;
-    languageDescription: string;
     followSystem: string;
     // Image Generation — independent backend list (design doc §3.1, "C-a")
     imageGenVendor: string;
@@ -2611,7 +2599,6 @@ export interface TranslationDict {
     skillContextFork: string;
     skillMaxTurns: string;
     maxTurnsInheritGlobalHint: string;
-    skillContent: string;
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
@@ -2681,8 +2668,6 @@ export interface TranslationDict {
     installAgentSkillsHint: string;
     installAgentSkillsButton: string;
     recommendedSkills: string;
-    activeSkills: string;
-    activeSkillsRemove: string;
     // Category filter
     categoryAll: string;
     categoryDocument: string;
@@ -2705,7 +2690,6 @@ export interface TranslationDict {
     agentMemoryUser: string;
     agentMaxTurns: string;
     agentBackground: string;
-    agentSystemPrompt: string;
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
     agentFromPluginRemoveHint: string;
@@ -2896,7 +2880,6 @@ export interface TranslationDict {
     /** Toast: a folder was picked after the request it was picked for had ended. */
     folderRequestEnded: string;
     abuCanDo: string;
-    allowOnce: string;
     allowAlways: string;
     deny: string;
     rememberChoice: string;

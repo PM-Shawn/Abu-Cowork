@@ -380,9 +380,6 @@ const enUS: TranslationDict = {
     outputTokens: 'Output',
     addAttachment: 'Add images or files',
     composerMenu: { open: 'More', addFile: 'Add files', teamOrMember: 'Expert · Expert Team', skill: 'Skill' },
-    pickAgent: 'Pick expert',
-    pickAgentEmpty: 'No experts available',
-    pickAgentClear: 'No expert',
     pickAgentPluginTag: 'Plugin',
     copyConvIdTooltip: 'Click to copy conversation ID (attach when reporting bugs)',
     copyConvIdCopied: 'Conversation ID copied',
@@ -659,10 +656,7 @@ const enUS: TranslationDict = {
   },
 
   status: {
-    ready: 'Ready',
     thinking: 'Thinking',
-    responding: 'Responding',
-    usingTool: 'Using',
   },
 
   task: {
@@ -891,7 +885,6 @@ const enUS: TranslationDict = {
     advanced: 'Advanced',
     pressEscToClose: 'Press ESC to close',
     // API Section
-    provider: 'Provider',
     providerAnthropic: 'Anthropic (Claude)',
     providerOpenAI: 'OpenAI',
     providerLocal: 'Local Model / Third-party Proxy',
@@ -914,17 +907,14 @@ const enUS: TranslationDict = {
     secretShow: 'Show key',
     secretHide: 'Hide key',
     // Model Section
-    model: 'Model',
     customModelOption: 'Custom Model...',
     customModelName: 'Custom Model Name',
     customModelPlaceholder: 'e.g., claude-sonnet-4-6',
     customModelDesc: 'Enter any model ID supported by the API',
     currentModel: 'Current Model',
-    notSet: 'Not Set',
     // Advanced Section
     baseUrl: 'Base URL',
     baseUrlPlaceholder: 'Optional, custom API endpoint',
-    apiFormat: 'API Format',
     billingPaygo: 'Pay-as-you-go',
     billingPaygoBeijing: 'Pay-as-you-go (Beijing)',
     billingCoding: 'Coding Plan',
@@ -948,7 +938,6 @@ const enUS: TranslationDict = {
     deleteServiceConfirm: 'Delete this custom service?',
     serviceNameRequired: 'Service name is required',
     language: 'Language',
-    languageDescription: 'Select display language',
     followSystem: 'Follow System',
     // Image Generation — independent backend list (design doc §3.1, "C-a")
     imageGenVendor: 'Vendor',
@@ -2075,7 +2064,6 @@ const enUS: TranslationDict = {
     skillContextFork: 'Fork (replaces base prompt)',
     skillMaxTurns: 'Max Turns',
     maxTurnsInheritGlobalHint: 'Leave empty to inherit global setting',
-    skillContent: 'Skill Content',
     skillEnabled: 'Enabled',
     skillDisabled: 'Disabled',
     skillEdit: 'Edit',
@@ -2134,8 +2122,6 @@ const enUS: TranslationDict = {
     installAgentSkillsHint: 'Runs npx skills add <repo> -g',
     installAgentSkillsButton: 'Install',
     recommendedSkills: 'Recommended',
-    activeSkills: 'Active Skills',
-    activeSkillsRemove: 'Remove',
     // Category filter
     categoryAll: 'All',
     categoryDocument: 'Document',
@@ -2158,7 +2144,6 @@ const enUS: TranslationDict = {
     agentMemoryUser: 'User',
     agentMaxTurns: 'Max Turns',
     agentBackground: 'Background',
-    agentSystemPrompt: 'System Prompt',
     agentEdit: 'Edit',
     agentFromPluginRemoveHint: 'From plugin {plugin} · uninstall the plugin to remove',
     itemFromPluginRemoveHint: 'From plugin {plugin} · uninstall the plugin to remove',
@@ -2355,7 +2340,6 @@ const enUS: TranslationDict = {
     },
     folderRequestEnded: 'That folder request has already ended, so the folder you picked was not applied.',
     abuCanDo: 'Abu will be able to:',
-    allowOnce: 'Allow Once',
     allowAlways: 'Always Allow',
     deny: 'Deny',
     rememberChoice: 'Always allow access to this folder',

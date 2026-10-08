@@ -297,6 +297,12 @@ describe('ProviderCard for a provider the user added', () => {
     expect(action(t().settings.revalidate).querySelector('.animate-spin')).toBeNull();
   });
 
+  // E2E finds a provider's card by this id and the provider's name.
+  it('carries the test id provider-card on its box, which stays the hover group', () => {
+    renderCard([provider()]);
+    expect(screen.getByTestId('provider-card')).toBe(card());
+  });
+
   it('marks the provider in use with the selected fill', () => {
     renderCard([provider()], 'own-a');
     expect(card()).toHaveClass('bg-fill-selected');

@@ -17,7 +17,7 @@
  * the user approved its disclosure.
  *
  * Uninstall is destructive, so it goes through the shared
- * {@link UninstallPluginDialog}, which owns the confirmation and the store call.
+ * {@link useUninstallPlugin}, which owns the confirmation and the store call.
  */
 
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -32,7 +32,7 @@ import { isAuthoredInstall } from '@/core/plugin/authored';
 import InstalledPluginDetail, { InstalledPluginSummary } from './InstalledPluginDetail';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginCard from './InstalledPluginCard';
-import UninstallPluginDialog from './UninstallPluginDialog';
+import { useUninstallPlugin } from './useUninstallPlugin';
 import { cardIndex, cardOrNeighbour, cardProps, focusByTestId, focusIsOnWindow } from '../cardFocus';
 
 /**
@@ -91,7 +91,6 @@ export default function InstalledPluginList({
   const { t } = useI18n();
   const tb = t.toolbox;
   const installed = usePluginStore((s) => s.installed);
-  const [pendingRemoval, setPendingRemoval] = useState<InstalledPlugin | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // Both the list and the empty state key off this partition, so a user whose
@@ -112,10 +111,6 @@ export default function InstalledPluginList({
   // place, else the one before it, else the shelf's own button, else the page's 「添加」.
   const rootRef = useRef<HTMLDivElement>(null);
   const leaving = useRef<{ key: string; index: number } | null>(null);
-  const askToUninstall = useCallback((plugin: InstalledPlugin) => {
-    leaving.current = { key: plugin.key, index: cardIndex(rootRef.current, 'plugin-mine', plugin.key) };
-    setPendingRemoval(plugin);
-  }, []);
   const focusCardOrWhatReplacedIt = useCallback(() => {
     const root = rootRef.current;
     const gone = leaving.current;
@@ -125,6 +120,11 @@ export default function InstalledPluginList({
     if (next) next.focus();
     else focusByTestId('plugin-create-trigger');
   }, []);
+  const { ask } = useUninstallPlugin(home, focusCardOrWhatReplacedIt);
+  const askToUninstall = useCallback((plugin: InstalledPlugin) => {
+    leaving.current = { key: plugin.key, index: cardIndex(rootRef.current, 'plugin-mine', plugin.key) };
+    ask(plugin);
+  }, [ask]);
   useLayoutEffect(() => {
     const gone = leaving.current;
     if (!gone || installed.some((plugin) => plugin.key === gone.key)) return;
@@ -169,11 +169,6 @@ export default function InstalledPluginList({
         plugin={selected}
         onClose={() => setSelectedKey(null)}
         onUninstall={(plugin) => { setSelectedKey(null); askToUninstall(plugin); }}
-      />
-      <UninstallPluginDialog
-        home={home}
-        target={pendingRemoval}
-        onClose={() => { setPendingRemoval(null); focusCardOrWhatReplacedIt(); }}
       />
     </div>
   );

@@ -171,7 +171,7 @@ async function addProviderB(page: Page, baseUrl: string): Promise<void> {
 }
 
 function providerCard(dialog: Locator, name: string): Locator {
-  return dialog.locator('div.group', { hasText: name }).first();
+  return dialog.getByTestId('provider-card').filter({ hasText: name }).first();
 }
 
 async function openModelSettings(page: Page): Promise<Locator> {
@@ -317,7 +317,7 @@ test.describe('stale provider pin', () => {
       await card.hover();
       await card.getByRole('button', { name: '删除', exact: true }).click();
       await pressWhenSettled(page.getByRole('button', { name: '确认', exact: true }).last());
-      await expect(dialog.locator('div.group', { hasText: PROVIDER_A.name })).toHaveCount(0);
+      await expect(dialog.getByTestId('provider-card').filter({ hasText: PROVIDER_A.name })).toHaveCount(0);
       await closeSettings(page);
 
       // With the provider gone the label falls back to the model id.

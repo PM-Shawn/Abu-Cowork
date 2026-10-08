@@ -11,17 +11,20 @@ import AuthoredPluginList from './AuthoredPluginList';
 import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
-const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], error: null as string | null, refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn(), remove: vi.fn(), toast: vi.fn() }));
+const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], error: null as string | null, refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn(), remove: vi.fn(), toast: vi.fn(), askToUninstall: vi.fn() }));
 vi.mock('@/stores/pluginAuthorStore', () => ({ usePluginAuthorStore: Object.assign((selector: (value: unknown) => unknown) => selector({ ...state }), { getState: () => state }) }));
 vi.mock('@/stores/toastStore', () => ({ useToastStore: (selector: (value: unknown) => unknown) => selector({ addToast: state.toast }) }));
 vi.mock('@/stores/pluginStore', () => ({ cleanupPluginConfiguration: vi.fn().mockResolvedValue(undefined), usePluginStore: Object.assign((selector: (value: unknown) => unknown) => selector(state), { getState: () => state }) }));
 vi.mock('@/core/plugin/installer', () => ({ releasePreparedInstall: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('@/components/toolbox/plugins/InstalledPluginDetail', async () => {
   const { Button } = await import('@/components/ds/button');
-  return { default: ({ plugin, authorUpdate, authorActions }: { plugin: unknown; authorUpdate?: { available: boolean; onReview: () => void }; authorActions?: { id: string }[] }) => plugin && authorUpdate
-    ? <Button data-author-actions={authorActions?.map(action => action.id).join(',')} onClick={authorUpdate.onReview}>{authorUpdate.available ? getI18n().toolbox.pluginsPreviewUpdate : getI18n().toolbox.pluginsCheckChanges}</Button> : null };
+  return { default: ({ plugin, authorUpdate, authorActions, onUninstall }: { plugin: unknown; authorUpdate?: { available: boolean; onReview: () => void }; authorActions?: { id: string }[]; onUninstall: (plugin: unknown) => void }) => plugin && authorUpdate
+    ? <>
+      <Button data-author-actions={authorActions?.map(action => action.id).join(',')} onClick={authorUpdate.onReview}>{authorUpdate.available ? getI18n().toolbox.pluginsPreviewUpdate : getI18n().toolbox.pluginsCheckChanges}</Button>
+      <Button data-testid="detail-uninstall" onClick={() => onUninstall(plugin)}>{getI18n().toolbox.pluginsUninstall}</Button>
+    </> : null };
 });
-vi.mock('@/components/toolbox/plugins/UninstallPluginDialog', () => ({ default: () => null }));
+vi.mock('@/components/toolbox/plugins/useUninstallPlugin', () => ({ useUninstallPlugin: () => ({ ask: state.askToUninstall, asking: false }) }));
 vi.mock('@/components/toolbox/plugins/InstalledPluginCard', async () => {
   const { Button } = await import('@/components/ds/button');
   return { default: ({ onClick, actions }: { onClick: () => void; actions?: ReactNode }) => <Button data-testid="plugin-mine-row" onClick={onClick}>Installed{actions}</Button> };
@@ -193,6 +196,18 @@ it('offers delete for a draft only, never for a plugin that is installed', async
   render(<AuthoredPluginList home="/home" searchQuery="" />);
   fireEvent.click(screen.getByTestId('plugin-mine-row'));
   expect(screen.getByRole('button', { name: getI18n().toolbox.pluginsCheckChanges })).toHaveAttribute('data-author-actions', 'edit,source');
+});
+
+it('hands the install to the shared uninstall question and closes its window', () => {
+  const preparedAuthor = { ...author, name: 'demo', key: disclosure.key, prepared: { checksum: 'new' } };
+  const record = { key: disclosure.key, authoringId: author.id, checksum: 'new' };
+  state.authors = [preparedAuthor];
+  state.installed = [record];
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  fireEvent.click(screen.getByTestId('plugin-mine-row'));
+  fireEvent.click(screen.getByTestId('detail-uninstall'));
+  expect(state.askToUninstall).toHaveBeenCalledExactlyOnceWith(record);
+  expect(screen.queryByTestId('detail-uninstall')).toBeNull();
 });
 
 it('shows a store error as an announced message in the grid', () => {

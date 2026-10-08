@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -11,13 +11,14 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { MenuItem, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
 import { NavItem } from '@/components/ds/nav-item';
 import { Spinner } from '@/components/ds/spinner';
 import { FOCUS_RING } from '@/components/ds/styles';
 import { TextField } from '@/components/ds/text-field';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
+import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
 import { projectRowProps } from './projectRowFocus';
 import { opensOnKey } from './rowKeys';
 import { cn } from '@/lib/utils';
@@ -67,6 +68,15 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   // Whether to show every conversation under this project, or just the first
   // MAX_VISIBLE_CONVERSATIONS. Toggled by the "+N more" / "show less" button.
   const [showAll, setShowAll] = useState(false);
+  // Whether the project row's 「更多操作」 menu is open: its button stays visible meanwhile.
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  // After a task is deleted from its row menu the focus goes on to a row, never to the window.
+  const rowFocus = useConversationRowFocus();
+  // The project's tasks as of the last render: the delete question unlinks those it has at the answer.
+  const latestConversations = useRef(conversations);
+  useLayoutEffect(() => { latestConversations.current = conversations; });
+  // One archive or delete at a time for this project.
+  const leaving = useRef(false);
   // What a menu item starts once its menu has gone: a rename field, a confirmation or
   // a window must not open while the closing menu still holds focus.
   // `holdFocus`: the rename field must not have the menu hand focus back to its trigger or
@@ -78,13 +88,19 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   // of the content it replaces runs at once. Drop the earlier choice on open, or it would
   // be carried out under the new menu.
   const dropActionOnOpen = (open: boolean) => {
-    if (open) afterMenuClose.current = null;
+    if (!open) return;
+    afterMenuClose.current = null;
+    rowFocus.forget();
   };
 
   // Runs from the menus' close-focus hook, once the menu has gone.
   const runAfterMenuClose = (event: Event) => {
     const pending = afterMenuClose.current;
-    if (!pending) return;
+    if (!pending) {
+      // 删除会话 took the row away while the menu was closing: the focus goes on to a row.
+      rowFocus.afterMenuClose(event);
+      return;
+    }
     afterMenuClose.current = null;
     if (pending.holdFocus) event.preventDefault();
     pending.run();
@@ -95,6 +111,14 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
     setViewMode('chat');
   };
 
+  // Whether this row's project is still one of the listed projects, as the store holds it now.
+  // The answer to a question arrives later than the question: the project may have been
+  // archived or deleted from elsewhere meanwhile, and this row may be gone with it.
+  const stillListed = () => {
+    const current = useProjectStore.getState().projects[project.id];
+    return current !== undefined && !current.archived;
+  };
+
   const confirmArchive = async () => {
     const confirmed = await confirm({
       title: t.project.archiveProject,
@@ -102,25 +126,36 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       confirmLabel: t.project.archive,
       tone: 'danger',
     });
-    if (!confirmed) return;
-    onLeaving?.(project.id);
-    archiveProject(project.id);
+    if (!confirmed || leaving.current || !stillListed()) return;
+    leaving.current = true;
+    try {
+      onLeaving?.(project.id);
+      archiveProject(project.id);
+    } finally {
+      leaving.current = false;
+    }
   };
 
   const confirmDelete = async () => {
     const confirmed = await confirm({
       title: t.project.deleteProject,
-      message: t.project.deleteConfirm,
+      // The second line names the project.
+      message: `${t.project.deleteConfirm}\n${project.name}`,
       confirmLabel: t.project.delete,
       tone: 'danger',
     });
-    if (!confirmed) return;
-    // Unlink conversations → they go back to Recents
-    for (const conv of conversations) {
-      setConversationProject(conv.id, undefined);
+    if (!confirmed || leaving.current || !stillListed()) return;
+    leaving.current = true;
+    try {
+      // Unlink conversations → they go back to Recents
+      for (const conv of latestConversations.current) {
+        setConversationProject(conv.id, undefined);
+      }
+      onLeaving?.(project.id);
+      deleteProject(project.id);
+    } finally {
+      leaving.current = false;
     }
-    onLeaving?.(project.id);
-    deleteProject(project.id);
   };
 
   const projectMenuItems = (
@@ -177,7 +212,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
         {t.project.removeFromProject}
       </MenuItem>
       <MenuSeparator />
-      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => deleteConversation(convId)}>
+      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { rowFocus.note(convId); deleteConversation(convId); }}>
         {t.sidebar.deleteConversation}
       </MenuItem>
     </>
@@ -218,6 +253,23 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
             onClick={(e) => { e.stopPropagation(); onNewTask(project.id); }}
             className={REVEAL}
           />
+          {/* The right-click menu's items, for the keyboard and for a screen reader. The row is
+              no part of a `RowMenus` list, so this is a menu of its own. */}
+          <Menu
+            open={projectMenuOpen}
+            onOpenChange={(next) => { dropActionOnOpen(next); setProjectMenuOpen(next); }}
+            onCloseAutoFocus={runAfterMenuClose}
+            trigger={(
+              <IconButton
+                icon={AppIcons.more}
+                label={t.sidebar.moreActions}
+                size="sm"
+                className={cn(REVEAL, projectMenuOpen && 'opacity-100')}
+              />
+            )}
+          >
+            {projectMenuItems}
+          </Menu>
         </div>
       </ContextMenu>
 
@@ -247,6 +299,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   onKeyDown={opensOnKey(() => handleConvClick(conv.id))}
                   onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
                   aria-current={selected ? 'true' : undefined}
+                  {...conversationRowProps(conv.id)}
                   className={cn(
                     'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control pl-8 pr-2 text-left text-ui-sm transition-colors duration-fast',
                     FOCUS_RING,

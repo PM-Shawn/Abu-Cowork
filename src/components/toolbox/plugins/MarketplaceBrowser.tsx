@@ -36,7 +36,7 @@ import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginDetail from './InstalledPluginDetail';
-import UninstallPluginDialog from './UninstallPluginDialog';
+import { useUninstallPlugin } from './useUninstallPlugin';
 import { cardIndex, cardOrNeighbour, cardProps, focusIsOnWindow } from '../cardFocus';
 
 type PluginCardKind = 'plugin-market' | 'plugin-orphan';
@@ -195,7 +195,6 @@ export default function MarketplaceBrowser({
   const [flow, setFlow] = useState<InstallFlow>({ kind: 'closed' });
   const [installing, setInstalling] = useState(false);
   const [managing, setManaging] = useState<InstalledPlugin | null>(null);
-  const [uninstallTarget, setUninstallTarget] = useState<InstalledPlugin | null>(null);
 
   // Keyboard focus. The card a window was opened from, and for a card that can leave the page
   // (an install whose marketplace is gone) where it sat. An install or an uninstall replaces the
@@ -219,8 +218,11 @@ export default function MarketplaceBrowser({
     if (card) card.focus();
     else focusToolbar();
   }, [focusToolbar]);
+  // The uninstall question. The window it came from is gone: once it has ended the focus goes
+  // back to the card that window was opened from.
+  const { ask: askToUninstall, asking: uninstallAsked } = useUninstallPlugin(home, () => { if (focusIsOnWindow()) focusOpener(); });
   const windowOpen = useRef(false);
-  useLayoutEffect(() => { windowOpen.current = flow.kind !== 'closed' || managing !== null || uninstallTarget !== null; });
+  useLayoutEffect(() => { windowOpen.current = flow.kind !== 'closed' || managing !== null || uninstallAsked; });
   // Set when an uninstall is asked for: once the record has gone, its card has been replaced.
   const uninstalling = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -714,15 +716,8 @@ export default function MarketplaceBrowser({
         onUninstall={(plugin) => {
           setManaging(null);
           uninstalling.current = plugin.key;
-          setUninstallTarget(plugin);
+          askToUninstall(plugin);
         }}
-      />
-
-      <UninstallPluginDialog
-        home={home}
-        target={uninstallTarget}
-        // The window the question came from is gone: the focus goes back to the card it was opened from.
-        onClose={() => { setUninstallTarget(null); if (focusIsOnWindow()) focusOpener(); }}
       />
 
       <InstallDisclosureDialog

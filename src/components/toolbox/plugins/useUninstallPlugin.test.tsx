@@ -11,7 +11,7 @@
  * reinstalled later can still be uninstalled again.
  */
 
-import { StrictMode, useState, type ReactElement } from 'react';
+import { StrictMode, useEffect, useState, type ReactElement } from 'react';
 import { render as renderBare, screen, fireEvent, act } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -23,9 +23,9 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useAppStore } from '@/stores/appStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
-import UninstallPluginDialog from './UninstallPluginDialog';
+import { useUninstallPlugin } from './useUninstallPlugin';
 
-// The question is a design-system confirmation, so the component renders inside the provider like the app does.
+// The question is a design-system confirmation, so the owner renders inside the provider like the app does.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 const tb = () => getI18n().toolbox;
 
@@ -46,22 +46,35 @@ const uninstall = vi.fn();
 const addToast = vi.fn();
 const closed = vi.fn(() => { order.push('onClose'); });
 
-/** Mirrors a real owner: the component stays mounted, `target` asks and `onClose` forgets it. */
-function Harness({ mounted = true }: { mounted?: boolean }) {
-  const [target, setTarget] = useState<InstalledPlugin | null>(null);
-  const [shown, setShown] = useState(mounted);
+/** A page that owns the hook: its buttons ask, and `onClose` is its own step once a question has ended. */
+function Owner({ first = null, onClose = closed }: { first?: InstalledPlugin | null; onClose?: () => void }) {
+  const { ask, asking } = useUninstallPlugin('/Users/tester', onClose);
+  // A page that asks as soon as it is on screen.
+  useEffect(() => { if (first) ask(first); }, [first, ask]);
   return (
-    <div>
-      <Button onClick={() => setTarget(weather)}>open-weather</Button>
+    <div data-asking={asking}>
+      <Button onClick={() => ask(weather)}>open-weather</Button>
       {/* A new object for the same install, as an owner that reads it from the store again would pass. */}
-      <Button onClick={() => setTarget({ ...weather })}>open-weather-again</Button>
-      <Button onClick={() => setTarget(radar)}>open-radar</Button>
-      <Button onClick={() => setShown(false)}>unmount</Button>
-      <Button onClick={() => { setTarget(weather); setShown(true); }}>mount-with-weather</Button>
-      {shown && <UninstallPluginDialog home="/Users/tester" target={target} onClose={() => { closed(); setTarget(null); }} />}
+      <Button onClick={() => ask({ ...weather })}>open-weather-again</Button>
+      <Button onClick={() => ask(radar)}>open-radar</Button>
     </div>
   );
 }
+
+/** Mirrors a real page: it stays mounted, or leaves the screen with its hook. */
+function Harness({ mounted = true }: { mounted?: boolean }) {
+  const [first, setFirst] = useState<InstalledPlugin | null>(null);
+  const [shown, setShown] = useState(mounted);
+  return (
+    <div>
+      <Button onClick={() => setShown(false)}>unmount</Button>
+      <Button onClick={() => { setFirst(weather); setShown(true); }}>mount-with-weather</Button>
+      {shown && <Owner first={first} />}
+    </div>
+  );
+}
+
+const asking = () => document.querySelector('[data-asking]')?.getAttribute('data-asking');
 
 const question = () => screen.queryByRole('alertdialog');
 const confirmButton = () => screen.getByRole('button', { name: tb().pluginsUninstall });
@@ -95,16 +108,20 @@ beforeEach(() => {
   useToastStore.setState({ addToast });
 });
 
-describe('UninstallPluginDialog', () => {
+describe('useUninstallPlugin', () => {
   it('asks first, then forgets the target and only then uninstalls, with the home directory and the key', async () => {
     render(<Harness />);
+    expect(asking()).toBe('false');
     await ask();
     expect(screen.getByText(tb().pluginsUninstallTitle)).toBeInTheDocument();
     expect(uninstall).not.toHaveBeenCalled();
+    // The owner reads this as "my question is on the page".
+    expect(asking()).toBe('true');
 
     fireEvent.click(confirmButton());
     await flush();
 
+    expect(asking()).toBe('false');
     expect(order).toEqual(['onClose', 'uninstall']);
     expect(uninstall).toHaveBeenCalledExactlyOnceWith('/Users/tester', weather.key);
     expect(screen.queryByText(tb().pluginsUninstallTitle)).toBeNull();
@@ -180,9 +197,7 @@ describe('UninstallPluginDialog', () => {
       ...weather,
       contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: ['reviewer', 'planner'], teams: [] },
     };
-    render(
-      <UninstallPluginDialog home="/Users/tester" target={withAgents} onClose={() => {}} />,
-    );
+    render(<Owner first={withAgents} onClose={() => {}} />);
     await flush();
 
     expect(
@@ -205,7 +220,7 @@ describe('UninstallPluginDialog', () => {
     useAppStore.setState({
       installedApps: [{ appId: shopApp.key, name: '店铺运营', config: DEFAULT_APP_CONFIG, pluginKey: shopApp.key, pluginVersion: '1.0.0' }],
     });
-    render(<UninstallPluginDialog home="/Users/tester" target={shopApp} onClose={() => {}} />);
+    render(<Owner first={shopApp} onClose={() => {}} />);
     await flush();
 
     const dialog = screen.getByText(new RegExp(format(tb().pluginsUninstallTeamsNote, { teams: 1 }).trim()));
@@ -214,7 +229,7 @@ describe('UninstallPluginDialog', () => {
   });
 
   it('keeps the app sentence out of a plain plugin uninstall', async () => {
-    render(<UninstallPluginDialog home="/Users/tester" target={weather} onClose={() => {}} />);
+    render(<Owner first={weather} onClose={() => {}} />);
     await flush();
     expect(question()).not.toBeNull();
     expect(screen.queryByText(new RegExp(tb().pluginsUninstallAppNote.trim()))).toBeNull();
@@ -242,7 +257,7 @@ describe('UninstallPluginDialog', () => {
   });
 });
 
-describe('UninstallPluginDialog: one question per target, answered against what is installed now', () => {
+describe('useUninstallPlugin: one question per target, answered against what is installed now', () => {
   it('does nothing but close when the plugin is no longer installed at the moment of the answer', async () => {
     render(<Harness />);
     await ask();

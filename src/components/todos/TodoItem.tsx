@@ -11,7 +11,6 @@ interface TodoItemProps {
   todo: Todo;
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
-  onClick?: () => void;
 }
 
 /**
@@ -20,7 +19,7 @@ interface TodoItemProps {
  * that stay the same between renders: typing in the inline form or changing one todo draws no
  * other row again.
  */
-const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItemProps) {
+const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete }: TodoItemProps) {
   const { t } = useI18n();
   const done = todo.status === 'done';
   const priorityLabel = todo.priority === 'high' ? t.todos.priorityHigh
@@ -33,7 +32,6 @@ const TodoItem = memo(function TodoItem({ todo, onToggle, onDelete, onClick }: T
   return (
     <div
       data-todo-row={todo.id}
-      onClick={onClick}
       className={cn(
         'group flex items-start gap-3 rounded-control px-3 py-2 hover:bg-fill-hover',
         done && 'opacity-60',

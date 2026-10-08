@@ -11,7 +11,7 @@ import { useI18n } from '@/i18n';
 import { windowDragRowProps } from '@/utils/windowDrag';
 import { cn } from '@/lib/utils';
 import TodoItem from './TodoItem';
-import { useRowFocus } from './useRowFocus';
+import { useRowFocus } from '@/components/common/useRowFocus';
 
 type Tab = 'today' | 'all';
 

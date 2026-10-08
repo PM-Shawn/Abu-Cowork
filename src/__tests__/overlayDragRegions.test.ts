@@ -132,13 +132,12 @@ describe('overlay layers opt out of the OS drag lanes', () => {
   const files = listComponentFiles(path.join(SRC_DIR, 'components'))
     .filter((file) => !file.startsWith(CHROME_DIR));
 
-  it('finds the overlay roots it is meant to guard', () => {
-    // A scanner that silently matches nothing would pass every assertion below.
-    const total = files.reduce(
-      (sum, file) => sum + findOverlayRoots(fs.readFileSync(file, 'utf8')).length,
-      0,
-    );
-    expect(total).toBeGreaterThan(1);
+  it('finds exactly the overlay roots it is meant to guard', () => {
+    // The whole list: the scrim of the design-system dialog and the notice list. A new fixed
+    // overlay root outside the design system fails here; a scanner that matched nothing would too.
+    const found = files.flatMap((file) => findOverlayRoots(fs.readFileSync(file, 'utf8'))
+      .map(() => path.relative(SRC_DIR, file).split(path.sep).join('/')));
+    expect(found.sort()).toEqual(['components/ds/dialog.tsx', 'components/ds/toaster.tsx']);
   });
 
   it('marks every fixed overlay root with data-electron-no-drag', () => {

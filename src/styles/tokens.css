@@ -1,8 +1,7 @@
 /* Design-system tokens — single source of truth.
    Spec: docs/2026-09-28-design-system-brief.md §6.1 (workspace docs repo).
-   Coexists with the legacy --abu-* and shadcn variables until the cleanup batch;
-   no name here collides with them. Components use the Tailwind classes mapped
-   in @theme inline below, never the --ds-palette-* primitives. */
+   Components use the Tailwind classes mapped in @theme inline below, never the
+   --ds-palette-* primitives. */
 
 :root {
   /* Layer 1 — primitives (never referenced by components) */
@@ -95,7 +94,8 @@
   --ds-raised: #2c2c2e;
   --ds-code: #2a2a2d;
   --ds-field: #232326;
-  --ds-fill: rgba(120, 120, 128, 0.24);
+  /* The fill and the four soft fills keep their text at 4.5:1 over `surface` and over `raised`. */
+  --ds-fill: rgba(120, 120, 128, 0.16);
   --ds-fill-hover: rgba(255, 255, 255, 0.06);
   --ds-fill-selected: rgba(255, 255, 255, 0.09);
   --ds-fill-pressed: rgba(255, 255, 255, 0.13);
@@ -114,9 +114,9 @@
   --ds-warning: #ffb340;
   --ds-warning-soft: rgba(255, 159, 10, 0.18);
   --ds-danger: #ff6961;
-  --ds-danger-soft: rgba(255, 69, 58, 0.18);
+  --ds-danger-soft: rgba(255, 24, 20, 0.14);
   --ds-info: #4da3ff;
-  --ds-info-soft: rgba(10, 132, 255, 0.18);
+  --ds-info-soft: rgba(10, 132, 255, 0.14);
   --ds-scrim: rgba(0, 0, 0, 0.48);
   --ds-brand: #78c98b;
   --ds-brand-ink: #0f3d1e;
@@ -222,7 +222,9 @@
   --ds-desk: var(--ds-desk-solid);
 }
 
+/* Tailwind's own palette is cleared first: the colors below are the only ones a class can name. */
 @theme inline {
+  --color-*: initial;
   --color-desk: var(--ds-desk);
   --color-desk-solid: var(--ds-desk-solid);
   --color-surface: var(--ds-surface);
@@ -275,9 +277,14 @@
   --font-code: var(--ds-font-mono);
 }
 
-/* Font-size tokens. `caption` and `body` already exist in index.css with the
-   same values; the rest are new names that do not collide with legacy ones. */
+/* Font-size tokens: each size comes with its line height and weight. */
 @theme {
+  --text-caption: 11px;
+  --text-caption--line-height: 16px;
+  --text-caption--font-weight: 400;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-body--font-weight: 400;
   --text-title-lg: 22px;
   --text-title-lg--line-height: 28px;
   --text-title-lg--font-weight: 600;
@@ -307,11 +314,11 @@
 }
 
 /* Tailwind v4 has no theme namespace for z-index or transition duration. */
-/* Every floating level sits above any full-window overlay that is drawn by hand and is not a
-   design-system layer (the largest such value in src/ is 10001). A modal layer takes pointer
-   input away from everything else on the page, so it has to be the thing on top: what is seen
-   is what takes the press. scripts/designTokens.test.ts reads the hand-drawn values and fails
-   when one reaches these levels. z-sticky stays inside the page. z-fullscreen is a panel that
+/* Every floating level sits above any stacking value that is written by hand and is not a
+   design-system layer. A modal layer takes pointer input away from everything else on the
+   page, so it has to be the thing on top: what is seen is what takes the press.
+   scripts/designTokens.test.ts holds the list of the hand-written values in src/ and fails
+   when one is added or reaches these levels. z-sticky stays inside the page. z-fullscreen is a panel that
    covers the window as a layout state (FullscreenSurface, plain form): above what the page pins,
    the window's title-bar controls included, and under every floating level. */
 @utility z-sticky { z-index: 10; }

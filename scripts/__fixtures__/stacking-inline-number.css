@@ -1,0 +1,6 @@
+/* Read as text by scripts/designTokens.test.ts: a stacking value written in CSS text.
+   No page loads this file. */
+.stacking-inline-number {
+  position: relative;
+  z-index: 13;
+}

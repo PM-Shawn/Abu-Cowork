@@ -28,6 +28,7 @@ const SELECTORS: Record<Block, string> = {
 const css = readFileSync(TOKENS_PATH, 'utf8');
 const SRC_DIR = path.resolve(path.dirname(TOKENS_PATH), '..');
 const FIXTURES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '__fixtures__');
+const INDEX_CSS = readFileSync(path.resolve(path.dirname(TOKENS_PATH), 'index.css'), 'utf8');
 
 // The z-index of each layer utility in tokens.css.
 function layerLevels(source: string): Map<string, number> {
@@ -38,13 +39,23 @@ function layerLevels(source: string): Map<string, number> {
   return levels;
 }
 
-// Every stacking value written by hand under a directory (src/ by default): arbitrary classes
-// (`z-[9999]`), Tailwind steps (`z-50`), inline `zIndex` / `z-index` numbers, and a `zIndex` given
-// through a numeric constant of the same file (`zIndex: MENU_Z_INDEX`). Design-system files use
-// the layer utilities.
-// What it cannot see: values outside src/ (the private repository, the Electron host), a constant
-// imported from another file, and values computed at run time. A `zIndex` it cannot resolve is
-// reported with the value NaN, which fails the comparison below.
+// Every stacking value written by hand under a directory (src/ by default), in four forms:
+//   1. an arbitrary class               `z-[9999]`
+//   2. a Tailwind step                  `z-50`
+//   3. an inline number                 `zIndex: 12` in a style object, `z-index: 12` in CSS text
+//   4. a numeric constant of the same file, given as `zIndex: LEVEL` or `zIndex={LEVEL}`
+// Design-system files use the layer utilities. scripts/__fixtures__/ holds one file per form.
+// What it cannot see:
+//   - values outside src/ (the private repository, the Electron host);
+//   - a constant imported from another file and a value computed at run time: a `zIndex` it
+//     cannot resolve is reported with the value NaN, which fails the comparison below;
+//   - a quoted property name in a style object: `{ 'z-index': 12 }`;
+//   - an assignment to an element: `el.style.zIndex = '12'`;
+//   - `style.setProperty('z-index', '12')`;
+//   - a computed arbitrary class: `z-[calc(…)]`;
+//   - a negative step (`-z-10`), which sits under the page and is left out on purpose.
+// What it reports without a value behind it: a type annotation `zIndex: number` reads as a
+// constant named `number` and comes back as NaN.
 function handWrittenLevels(root: string = SRC_DIR): { file: string; value: number }[] {
   const found: { file: string; value: number }[] = [];
   const walk = (dir: string) => {
@@ -86,10 +97,10 @@ describe('design tokens — layer levels', () => {
     expect(new Set(order).size).toBe(order.length);
   });
 
-  it('finds the hand-written stacking values it is meant to compare with', () => {
-    const values = handWrittenLevels();
-    expect(values.length).toBeGreaterThan(0);
-    expect(Math.max(...values.map((entry) => entry.value))).toBeGreaterThanOrEqual(10);
+  // The whole list: a new hand-written value in src/ fails here and has to be a layer utility.
+  // The one entry is the `z-index:10` inside the SVG markup of the enlarged diagram.
+  it('finds exactly the hand-written stacking values left in src/', () => {
+    expect(handWrittenLevels()).toEqual([{ file: 'components/chat/MermaidBlock.tsx', value: 10 }]);
   });
 
   it.each(['z-popover', 'z-dialog', 'z-toast', 'z-tooltip'])('puts %s above every hand-written stacking value in src/', (name) => {
@@ -97,12 +108,103 @@ describe('design tokens — layer levels', () => {
     expect(above).toEqual([]);
   });
 
-  it('resolves a stacking value given through a constant of the same file', () => {
-    expect(handWrittenLevels(FIXTURES_DIR)).toEqual([{ file: 'stacking-constant.tsx', value: 10001 }]);
+  const inFixture = (file: string) => handWrittenLevels(FIXTURES_DIR).filter((entry) => entry.file === file).map((entry) => entry.value);
+
+  it('reads an arbitrary class', () => {
+    expect(inFixture('stacking-arbitrary-class.tsx')).toEqual([9999]);
   });
 
-  it('keeps z-sticky inside the page, below the hand-drawn windows', () => {
-    expect(level('z-sticky')).toBeLessThan(50);
+  it('reads a Tailwind step, and leaves a negative step out', () => {
+    expect(inFixture('stacking-tailwind-step.tsx')).toEqual([50]);
+  });
+
+  it('reads an inline number from a style object', () => {
+    expect(inFixture('stacking-inline-number.tsx')).toEqual([12]);
+  });
+
+  it('reads an inline number from CSS text', () => {
+    expect(inFixture('stacking-inline-number.css')).toEqual([13]);
+  });
+
+  it('resolves a constant of the same file, given as a style property and as a prop', () => {
+    expect(inFixture('stacking-constant.tsx')).toEqual([10001, 10001]);
+  });
+
+  it('reports a constant it cannot resolve as NaN', () => {
+    expect(inFixture('stacking-unresolved.tsx')).toEqual([Number.NaN]);
+  });
+
+  it('finds nothing else in the fixtures', () => {
+    const files = [...new Set(handWrittenLevels(FIXTURES_DIR).map((entry) => entry.file))].sort();
+    expect(files).toEqual([
+      'stacking-arbitrary-class.tsx',
+      'stacking-constant.tsx',
+      'stacking-inline-number.css',
+      'stacking-inline-number.tsx',
+      'stacking-tailwind-step.tsx',
+      'stacking-unresolved.tsx',
+    ]);
+  });
+
+  it('keeps z-sticky under the fullscreen panel', () => {
+    expect(level('z-sticky')).toBeLessThan(level('z-fullscreen'));
+  });
+});
+
+// Tailwind's own palette is off: a class such as `bg-gray-100` generates nothing, so the only
+// colors a class can name are the tokens of this file.
+describe('design tokens — the theme', () => {
+  const themes = (params: string) => {
+    const declarations: [string, string][] = [];
+    postcss.parse(css).walkAtRules('theme', (rule) => {
+      if (rule.params !== params) return;
+      rule.walkDecls((decl) => { declarations.push([decl.prop, decl.value]); });
+    });
+    return declarations;
+  };
+
+  it('clears every Tailwind color before it adds its own', () => {
+    expect(themes('inline')[0]).toEqual(['--color-*', 'initial']);
+  });
+
+  it.each([
+    ['--text-caption', '11px', '16px', '400'],
+    ['--text-body', '14px', '22px', '400'],
+  ])('defines %s with its line height and weight', (name, size, lineHeight, weight) => {
+    const sizes = new Map(themes(''));
+    expect(sizes.get(name)).toBe(size);
+    expect(sizes.get(`${name}--line-height`)).toBe(lineHeight);
+    expect(sizes.get(`${name}--font-weight`)).toBe(weight);
+  });
+});
+
+describe('index.css', () => {
+  it('holds no legacy color variable', () => {
+    expect(INDEX_CSS).not.toContain('--abu-');
+  });
+
+  it('does not import the shadcn stylesheet', () => {
+    expect(INDEX_CSS).not.toContain('shadcn/tailwind.css');
+  });
+
+  // Tailwind reads every file of the project for class names; a class named in a comment of
+  // either desktop host would be generated.
+  it.each(['electron', 'src-tauri'])('keeps the %s host out of the class scan', (directory) => {
+    const excluded: string[] = [];
+    postcss.parse(INDEX_CSS).walkAtRules('source', (rule) => { excluded.push(rule.params); });
+    expect(excluded).toContain(`not "../../${directory}"`);
+  });
+
+  it('defines no theme of its own', () => {
+    const themes: string[] = [];
+    postcss.parse(INDEX_CSS).walkAtRules('theme', (rule) => { themes.push(rule.params); });
+    expect(themes).toEqual([]);
+  });
+
+  it('defines no variable on the root or under the dark class', () => {
+    const selectors: string[] = [];
+    postcss.parse(INDEX_CSS).walkRules(/^(:root|\.dark)$/, (rule) => { selectors.push(rule.selector); });
+    expect(selectors).toEqual([]);
   });
 });
 
@@ -153,6 +255,7 @@ const APPEARANCES: Appearance[] = ['light', 'dark', 'light-contrast', 'dark-cont
 const TEXT = ['label', 'label-secondary', 'label-tertiary', 'link', 'success', 'warning', 'danger', 'info'];
 const SURFACES = ['surface', 'raised', 'code', 'field', 'desk-solid'];
 const STATUS = ['success', 'warning', 'danger', 'info'];
+const TAG_BASES = ['surface', 'raised'];
 const SYNTAX = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property'];
 const SELECTION_BASES = ['surface', 'code'];
 
@@ -213,10 +316,14 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
     },
   );
 
-  it.each(STATUS)('%s on its soft background is at least 4.5:1', (role) => {
-    const background = over(values, `${role}-soft`, 'surface');
-    expect(wcagContrast(color(values, role), background)).toBeGreaterThanOrEqual(4.5);
-  });
+  // A status tag sits on a content card (`surface`) or on a floating layer (`raised`).
+  it.each(STATUS.flatMap((role) => TAG_BASES.map((base) => [role, base] as const)))(
+    '%s on its soft background over %s is at least 4.5:1',
+    (role, base) => {
+      const background = over(values, `${role}-soft`, base);
+      expect(wcagContrast(color(values, role), background)).toBeGreaterThanOrEqual(4.5);
+    },
+  );
 
   it.each(['surface', 'raised', 'field'])('placeholder on %s is at least 3:1', (surface) => {
     expect(wcagContrast(color(values, 'label-placeholder'), color(values, surface))).toBeGreaterThanOrEqual(3);
@@ -242,10 +349,14 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
     expect(wcagContrast(text, color(values, 'diagram-canvas'))).toBeGreaterThanOrEqual(4.5);
   });
 
-  // The user's own message sits on a fill over the content card.
-  it.each(['label', 'label-secondary'])('%s on fill over surface is at least 4.5:1', (text) => {
-    expect(wcagContrast(color(values, text), over(values, 'fill', 'surface'))).toBeGreaterThanOrEqual(4.5);
-  });
+  // The user's own message sits on a fill over the content card; a neutral tag sits on a fill
+  // over the card or over a floating layer.
+  it.each(['label', 'label-secondary'].flatMap((text) => TAG_BASES.map((base) => [text, base] as const)))(
+    '%s on fill over %s is at least 4.5:1',
+    (text, base) => {
+      expect(wcagContrast(color(values, text), over(values, 'fill', base))).toBeGreaterThanOrEqual(4.5);
+    },
+  );
 
   // Selected text in the terminal, the source editor and document previews sits on the panel
   // surface or on a code block. Selection is a transient state: primary text keeps 4.5:1, and

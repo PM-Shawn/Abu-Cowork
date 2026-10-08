@@ -39,7 +39,8 @@ import { isWindows } from '../../utils/platform';
 import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
-import { adapterKindFor } from '../llm/adapterKind';
+import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
+import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
@@ -1133,7 +1134,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // 事件回调里的赋值编译器看不见，这里按声明的类型读回来。
           const spent = turnUsage.current as TokenUsage | null;
           if (spent) {
-            totalInputTokens += spent.inputTokens ?? 0;
+            // 累加的是整段输入。Anthropic 的 inputTokens 不含缓存读写，要按协议换算。
+            totalInputTokens += promptTokensOf(usageProtocolFor(adapterKind), {
+              ...spent,
+              inputTokens: spent.inputTokens ?? 0,
+            });
             totalOutputTokens += spent.outputTokens ?? 0;
           }
           turnUsage.current = null;

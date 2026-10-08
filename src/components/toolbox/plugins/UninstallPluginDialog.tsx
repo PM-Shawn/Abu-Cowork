@@ -21,6 +21,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useAppStore } from '@/stores/appStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
+import { appsUsing } from '@/core/app/appScope';
 
 interface UninstallPluginDialogProps {
   home: string;
@@ -38,10 +39,11 @@ export default function UninstallPluginDialog({
   const tb = t.toolbox;
   const uninstall = usePluginStore((s) => s.uninstall);
   const addToast = useToastStore((s) => s.addToast);
-  // A package that brought an app or expert teams takes them away too, and the
-  // conversations started inside the app stay readable — the user decides with
-  // all three in front of them, not just the skill and connector counts.
-  const isApp = useAppStore((s) => target !== null && s.installedApps.some((app) => app.pluginKey === target.key));
+  // A package that brought expert teams takes them away too, and an app the
+  // user added may be handing scenes to what it brings — the user decides with
+  // those in front of them, not just the skill and connector counts.
+  const addedApps = useAppStore((s) => s.addedApps);
+  const usedBy = target === null ? [] : appsUsing(addedApps, { kind: 'plugin', name: target.name });
   const teamCount = target?.contributed.teams?.length ?? 0;
   const message = [
     format(tb.pluginsUninstallMessage, {
@@ -51,7 +53,7 @@ export default function UninstallPluginDialog({
       agents: target?.contributed.agents.length ?? 0,
     }),
     teamCount > 0 ? format(tb.pluginsUninstallTeamsNote, { teams: teamCount }) : '',
-    isApp ? tb.pluginsUninstallAppNote : '',
+    usedBy.length > 0 ? format(tb.usedByApps, { names: usedBy.map((app) => app.name).join('、') }) : '',
   ].filter((part) => part !== '').join('');
 
   // Uninstall is not idempotent — the second call for a key finds the package

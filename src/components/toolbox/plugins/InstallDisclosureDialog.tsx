@@ -16,18 +16,16 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Bot, Loader2, Sparkles, Server, ShieldCheck, Package, UsersRound, LayoutGrid } from 'lucide-react';
+import { AlertTriangle, Bot, Loader2, Sparkles, Server, ShieldCheck, Package, UsersRound } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { resolveText } from '@/core/app/appBinding';
 import { roleIdAgentName } from '@/core/team/roleIdentity';
-import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import { Input } from '@/components/ui/input';
 import { PLUGIN_CONFIG_VALUE_LIMIT, pluginConfigFields } from '@/core/plugin/configuration';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { InstallDisclosure, PluginAgentDisclosure } from '@/core/plugin/installer';
-import type { ParsedPluginTeam } from '@/types/app';
 import type { PluginSource } from '@/core/plugin/marketplace';
 import { formatServerCommand } from './serverCommand';
 
@@ -87,18 +85,6 @@ function Section({
       {children}
     </section>
   );
-}
-
-/**
- * The name to show for the team a scene runs on. A scene names either one of
- * Abu's own teams (`builtin-team:<id>`) or a team the package ships (its id in
- * `teams/`); the dialog shows what the user will see in 专家, never the id.
- */
-function runTeamName(teamId: string, teams: ParsedPluginTeam[] | undefined): string {
-  const builtin = BUILTIN_TEAMS.find((team) => team.id === teamId);
-  if (builtin) return builtin.name;
-  const packaged = teams?.find((team) => team.id === teamId);
-  return packaged ? resolveText(packaged.name) : teamId;
 }
 
 /**
@@ -227,10 +213,102 @@ export default function InstallDisclosureDialog({
               </div>
             )}
 
-            {fields.length > 0 && <Section icon={Server} title={tb.pluginsConfiguration}>
-              <p className="text-minor text-[var(--abu-text-muted)]">{tb.pluginsConfigurationHint}</p>
-              {fields.map(field => <label key={field} className="block text-minor">{field}<Input type="password" maxLength={PLUGIN_CONFIG_VALUE_LIMIT} autoComplete="new-password" value={configuration[field] ?? ''} onChange={event => setConfiguration(current => ({ ...current, [field]: event.target.value }))} /></label>)}
-            </Section>}
+            <PluginConfigurationFields fields={fields} values={configuration} onChange={setConfiguration} />
+            <PluginDisclosureSections disclosure={d} />
+          </div>
+        );
+      }
+    }
+  })();
+
+  const footer = <div className="flex items-center justify-end gap-3">{isReady ? (
+            <>
+              <Button variant="ghost" onClick={onCancel} disabled={installing}>
+                {t.common.cancel}
+              </Button>
+              <Button data-testid="plugin-install-confirm" onClick={() => onConfirm(configuration)} disabled={installing || fields.some(field => !configuration[field]?.trim())}>
+                {installing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : tb.pluginsInstall}
+              </Button>
+            </>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={onCancel}>
+              {t.common.close}
+            </Button>
+          )}</div>;
+
+  if (authoring) return createPortal(
+    <ToolDetailModal open ariaLabel={title} testId="plugin-install-disclosure" onClose={() => { if (!installing) onCancel(); }} disableEscape={installing}
+      stackedHeader maxWidth="max-w-2xl" panelClassName="h-[min(640px,85vh)]"
+      avatar={<Package className="h-6 w-6" />} footer={footer}>
+      <div>
+        <h2 className="mb-4 text-h-lg font-semibold text-[var(--abu-text-primary)]">{title}</h2>
+        {body}
+      </div>
+    </ToolDetailModal>, document.body,
+  );
+
+  return createPortal(
+    <div
+      data-electron-no-drag
+      data-testid="plugin-install-disclosure"
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-6 animate-in fade-in duration-150"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !installing) onCancel();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="flex max-h-[80vh] w-[520px] flex-col rounded-2xl bg-[var(--abu-bg-base)] shadow-xl animate-in zoom-in-95 duration-150"
+      >
+        <h3 className="shrink-0 px-6 pt-6 text-h-sm text-[var(--abu-text-primary)]">{title}</h3>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{body}</div>
+
+        <div className="flex shrink-0 items-center justify-end gap-3 px-6 pb-6">
+          {footer}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * The values a plugin's connectors ask for (`${config.…}`), one password field
+ * each. Shown before anything is installed; the confirm button stays disabled
+ * until every field has a value.
+ */
+export function PluginConfigurationFields({ fields, values, onChange }: {
+  fields: string[];
+  values: Record<string, string>;
+  onChange: (next: (current: Record<string, string>) => Record<string, string>) => void;
+}) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  if (fields.length === 0) return null;
+  return (
+    <Section icon={Server} title={tb.pluginsConfiguration}>
+      <p className="text-minor text-[var(--abu-text-muted)]">{tb.pluginsConfigurationHint}</p>
+      {fields.map(field => <label key={field} className="block text-minor">{field}<Input type="password" maxLength={PLUGIN_CONFIG_VALUE_LIMIT} autoComplete="new-password" value={values[field] ?? ''} onChange={event => onChange(current => ({ ...current, [field]: event.target.value }))} /></label>)}
+    </Section>
+  );
+}
+
+/**
+ * Everything one plugin brings, as the user must see it before installing:
+ * where it comes from, its skills, the literal command line of every
+ * connector, its experts (with the ones that will be skipped), its teams, what
+ * it says it can do, and what it ships that Abu will not use. The plugin
+ * install dialog and the app confirmation page both render this.
+ */
+export function PluginDisclosureSections({ disclosure: d }: { disclosure: InstallDisclosure }) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  return (
+    <>
             <Section icon={ShieldCheck} title={tb.pluginsDisclosureSource}>
               <p className="text-body text-[var(--abu-text-secondary)]">
                 {d.marketplace.startsWith('author-') ? tb.pluginsAuthoredSource : d.marketplace}
@@ -336,35 +414,6 @@ export default function InstallDisclosureDialog({
               </Section>
             )}
 
-            {d.app && (
-              <Section icon={LayoutGrid} title={tb.pluginsDisclosureApp}>
-                <div data-testid="plugin-disclosure-app" className="space-y-1.5 text-minor text-[var(--abu-text-secondary)]">
-                  {d.app.nav && (
-                    <p>{format(tb.pluginsDisclosureAppNav, { items: d.app.nav.items.map((item) => item.title === undefined ? item.target : resolveText(item.title)).join('、') })}</p>
-                  )}
-                  {(d.app.allowedOrigins?.length ?? 0) > 0 && (
-                    <p data-testid="plugin-disclosure-app-pages">{format(tb.pluginsDisclosureAppPages, { origins: d.app.allowedOrigins!.join('、') })}</p>
-                  )}
-                  <p className="text-[var(--abu-text-muted)]">{tb.pluginsDisclosureAppScenes}</p>
-                  <ul className="space-y-1">
-                    {d.app.home.modes.items.flatMap((mode) => mode.scenes.map((scene) => {
-                      const run = scene.run ?? d.app!.defaultRun;
-                      const who = !run ? tb.pluginsDisclosureRunDefault
-                        : 'team' in run ? format(tb.pluginsDisclosureRunTeam, { name: runTeamName(run.team, d.teams) })
-                        : 'expert' in run ? format(tb.pluginsDisclosureRunExpert, { name: roleIdAgentName(run.expert) ?? run.expert })
-                        : format(tb.pluginsDisclosureRunSkill, { name: run.skill });
-                      return (
-                        <li key={`${mode.modeId}/${scene.id}`} className="flex items-baseline justify-between gap-3 rounded bg-[var(--abu-bg-muted)] px-2 py-1">
-                          <span className="truncate text-body text-[var(--abu-text-secondary)]">{resolveText(mode.title)} · {resolveText(scene.title)}</span>
-                          <span className="shrink-0 text-minor text-[var(--abu-text-muted)]">{who}</span>
-                        </li>
-                      );
-                    }))}
-                  </ul>
-                </div>
-              </Section>
-            )}
-
             {d.capabilities && d.capabilities.length > 0 && (
             <Section icon={ShieldCheck} title={tb.pluginsDisclosureCapabilities}>
                 <div className="flex flex-wrap gap-1.5">
@@ -405,67 +454,6 @@ export default function InstallDisclosureDialog({
                 </p>
               </Section>
             )}
-          </div>
-        );
-      }
-    }
-  })();
-
-  const footer = <div className="flex items-center justify-end gap-3">{isReady ? (
-            <>
-              <Button variant="ghost" onClick={onCancel} disabled={installing}>
-                {t.common.cancel}
-              </Button>
-              <Button data-testid="plugin-install-confirm" onClick={() => onConfirm(configuration)} disabled={installing || fields.some(field => !configuration[field]?.trim())}>
-                {installing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {/* An app arrived here from 「使用」, and this dialog is what the
-                    user is agreeing to, so the button answers it: 同意并使用. A
-                    draft of one's own is being installed from a preview, which
-                    reads as 安装并进入. */}
-                {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : state.kind === 'ready' && state.disclosure.app ? (authoring ? tb.pluginsInstallAndEnter : tb.pluginsAgreeAndUse) : tb.pluginsInstall}
-              </Button>
-            </>
-          ) : (
-            <Button variant="ghost" size="sm" onClick={onCancel}>
-              {t.common.close}
-            </Button>
-          )}</div>;
-
-  if (authoring) return createPortal(
-    <ToolDetailModal open ariaLabel={title} testId="plugin-install-disclosure" onClose={() => { if (!installing) onCancel(); }} disableEscape={installing}
-      stackedHeader maxWidth="max-w-2xl" panelClassName="h-[min(640px,85vh)]"
-      avatar={<Package className="h-6 w-6" />} footer={footer}>
-      <div>
-        <h2 className="mb-4 text-h-lg font-semibold text-[var(--abu-text-primary)]">{title}</h2>
-        {body}
-      </div>
-    </ToolDetailModal>, document.body,
-  );
-
-  return createPortal(
-    <div
-      data-electron-no-drag
-      data-testid="plugin-install-disclosure"
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-6 animate-in fade-in duration-150"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !installing) onCancel();
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="flex max-h-[80vh] w-[520px] flex-col rounded-2xl bg-[var(--abu-bg-base)] shadow-xl animate-in zoom-in-95 duration-150"
-      >
-        <h3 className="shrink-0 px-6 pt-6 text-h-sm text-[var(--abu-text-primary)]">{title}</h3>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{body}</div>
-
-        <div className="flex shrink-0 items-center justify-end gap-3 px-6 pb-6">
-          {footer}
-        </div>
-      </div>
-    </div>,
-    document.body,
+    </>
   );
 }

@@ -1,6 +1,6 @@
 # Abu's built-in experts and teams
 
-Reference these from `teams/*.json` (`builtin:<name>`) and from `app` run references (`{ "expert": "builtin:<name>" }`, `{ "team": "builtin-team:<id>" }`). Write the names exactly as listed; they do not change between releases.
+Reference built-in experts from `teams/*.json` as `builtin:<name>`. Write the names exactly as listed; they do not change between releases.
 
 ## Built-in experts
 
@@ -17,4 +17,4 @@ Reference these from `teams/*.json` (`builtin:<name>`) and from `app` run refere
 | `builtin-team:finance-reconciliation` | 财务对账专家团 | 财务助理 | 数据分析师、办公文档专家 |
 | `builtin-team:recruiting` | 招聘专家团 | HR 招聘官 | 行业调研专家、办公文档专家 |
 
-Pick a built-in team when its roster already fits the scene; ship a package team only when the app needs its own experts or a different roster.
+An app can name these teams directly, so ship a package team only when it needs the package's own experts or a different roster.

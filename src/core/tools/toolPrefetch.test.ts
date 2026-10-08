@@ -145,6 +145,14 @@ describe('toolPrefetch', () => {
       expect(result).toContain('read_skill_file');
     });
 
+    it('should load app_prepare while the app builder skill is active', () => {
+      const builder = prefetchTools(makeCtx({
+        activeSkills: [{ name: 'abu-app-builder', description: '', content: '' } as import('../../types').Skill],
+      }));
+      expect(builder).toContain('app_prepare');
+      expect(prefetchTools(makeCtx({ userInput: '创建一个应用' }))).not.toContain('app_prepare');
+    });
+
     it('should load only the runtime owned by the active browser skill', () => {
       const builtin = prefetchTools(makeCtx({
         activeSkills: [{ name: 'Abu-Browser', description: '', content: '' } as import('../../types').Skill],

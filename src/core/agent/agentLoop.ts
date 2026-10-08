@@ -359,6 +359,19 @@ export function skillBlockedTools(
   return [...new Set(patterns)];
 }
 
+/**
+ * The skills whose tools load this turn. A skill reached by `/name` is the
+ * route and is not in activeSkills yet, so the tools it needs
+ * (read_skill_file, its own tools) would otherwise wait for the next turn.
+ */
+export function prefetchSkills(
+  routedSkill: import('../../types').Skill | undefined,
+  activeSkills: import('../../types').Skill[],
+): import('../../types').Skill[] {
+  if (!routedSkill || activeSkills.some((skill) => skill.name === routedSkill.name)) return activeSkills;
+  return [routedSkill, ...activeSkills];
+}
+
 export function resolveTools(
   toolInvoker: ToolInvoker,
   route: RouteResult,
@@ -1885,7 +1898,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const prefetchCtx = {
         userInput: userMessage,
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
-        activeSkills: activeSkillObjects,
+        activeSkills: prefetchSkills(route.type === "skill" ? route.skill : undefined, activeSkillObjects),
         turnCount,
         hasGoal: conv?.goal !== undefined,
       };

@@ -154,4 +154,51 @@ describe('inline skill editor', () => {
     expect(ref.current!.value).toBe(kind === 'cut' ? '' : 'AB');
   });
 
+  it('gives every line break typed at the end a line to type on', () => {
+    // Chromium draws no line for a break that ends the box and moves the caret
+    // in front of it, so the next character lands before the break. The tail
+    // <br> is what makes that last line exist.
+    const { ref } = setup('', { name: 'brief', description: '', offset: 0 });
+    const tail = () => box().querySelector('[data-editor-tail]');
+    act(() => { ref.current!.focus(); ref.current!.insertText('a'); });
+    expect(tail()).toBeNull();
+    fireEvent.keyDown(box(), { key: 'Enter', shiftKey: true });
+    expect(ref.current!.value).toBe('a\n');
+    expect(tail()).toBe(box().lastChild);
+    act(() => ref.current!.insertText('b'));
+    expect(ref.current!.value).toBe('a\nb');
+    expect(tail()).toBeNull();
+    fireEvent.keyDown(box(), { key: 'Enter', shiftKey: true });
+    expect(tail()).toBe(box().lastChild);
+    act(() => ref.current!.insertText('c'));
+    expect(ref.current!.value).toBe('a\nb\nc');
+    expect(tail()).toBeNull();
+  });
+  it.each(['Backspace', 'Delete'])('%s over everything, tag included, empties the box', (key) => {
+    const { ref, output } = setup('ab\nc', { name: 'brief', description: '', offset: 0 });
+    const root = box();
+    act(() => {
+      ref.current!.focus();
+      const range = document.createRange();
+      range.selectNodeContents(root);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+    });
+    if (fireEvent.keyDown(root, { key })) {
+      // What Chromium leaves when its own deletion empties the box: the
+      // placeholder break of an empty pre-wrap block.
+      const after = document.createElement('span');
+      after.dataset.skillBoundary = 'after';
+      after.textContent = '\n';
+      root.replaceChildren(after);
+      fireEvent.input(root);
+    }
+    expect(output).toHaveBeenLastCalledWith('', null);
+    expect(box()).toBeInstanceOf(HTMLTextAreaElement);
+    expect(ref.current!.value).toBe('');
+    fireEvent.keyDown(box(), { key: 'z', ctrlKey: true });
+    expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
+    expect(ref.current!.value).toBe('ab\nc');
+  });
+
 });

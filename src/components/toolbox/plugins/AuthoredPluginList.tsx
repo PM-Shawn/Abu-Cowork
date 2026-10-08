@@ -5,7 +5,6 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useI18n } from '@/i18n';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
-import { useAppStore } from '@/stores/appStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { PluginAuthor } from '@/core/plugin/authorBridge';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -95,9 +94,6 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
       if (installed) await usePluginStore.getState().update({ ...request, key: installed.key });
       else await usePluginStore.getState().install(request);
       setPlan(null); setSelected(author);
-      // A draft with `app` installs as 「安装并进入」: land on its home once the
-      // app list has picked the new record up.
-      if (disclosure.app && !installed) useAppStore.getState().enterAppWhenAvailable(disclosure.key);
     } catch (error) { setPlan({ author, state: { kind: 'error', message: String(error) } }); report(error); }
     finally {
       if (installingToken) await releasePreparedInstall(installingToken).catch(() => {});

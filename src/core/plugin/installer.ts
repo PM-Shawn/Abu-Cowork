@@ -35,8 +35,8 @@ import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { MANIFEST_CANDIDATES, parsePluginManifest, PluginManifestError, type ScannedManifest, type ResolvedPluginManifest, type McpServerSpec } from './manifest';
 import { resolvePluginMcpServers, discoverPluginSkills, readPluginTeams } from './packageComponents';
-import { assertMinAbuVersionDeclared, checkMinAbuVersion, parseAppConfig, PLUGIN_AGENT_ROLE_PREFIX } from '../../../electron/shared/pluginAppSpec.mjs';
-import type { AppConfig, AppRunRef, ParsedPluginTeam } from '@/types/app';
+import { assertMinAbuVersionDeclared, checkMinAbuVersion, PLUGIN_AGENT_ROLE_PREFIX } from '../../../electron/shared/pluginSpec.mjs';
+import type { ParsedPluginTeam } from '@/types/app';
 import { APP_VERSION } from '@/utils/version';
 import { format, getI18n } from '@/i18n';
 import type { MarketplaceEntry, PluginSource } from './marketplace';
@@ -391,8 +391,6 @@ export interface InstallDisclosure {
    * optional for the same reason as `skippedSymlinks` below.
    */
   teams?: ParsedPluginTeam[];
-  /** The validated app configuration; `planInstall` sets it whenever the manifest carries `app`. */
-  app?: AppConfig;
   capabilities?: string[];
   /**
    * Top-level payload dirs Abu does NOT consume (commands / hooks — the
@@ -416,13 +414,13 @@ export interface InstallDisclosure {
 }
 
 /**
- * A team member or a scene's `run` may name one of the package's own experts
- * that will NOT be installed (`conflict` set by {@link discloseAgents}). The
- * package validated on its own terms, so the failure is reported against the
- * reference, naming the conflict: an install that silently produced a team
- * missing its leader would be worse than a refused one.
+ * A team member may name one of the package's own experts that will NOT be
+ * installed (`conflict` set by {@link discloseAgents}). The package validated
+ * on its own terms, so the failure is reported against the reference, naming
+ * the conflict: an install that silently produced a team missing its leader
+ * would be worse than a refused one.
  */
-function assertNoConflictingReferences(teams: ParsedPluginTeam[], app: AppConfig | undefined, agents: PluginAgentDisclosure[]): void {
+function assertNoConflictingReferences(teams: ParsedPluginTeam[], agents: PluginAgentDisclosure[]): void {
   const conflicts = new Map(agents.filter(agent => agent.conflict).map(agent => [`${PLUGIN_AGENT_ROLE_PREFIX}${agent.name}`, agent.conflict!]));
   if (conflicts.size === 0) return;
   const refuse = (roleId: string, field: string) => {
@@ -433,14 +431,6 @@ function assertNoConflictingReferences(teams: ParsedPluginTeam[], app: AppConfig
     refuse(team.leaderRoleId, `teams.${team.id}.leader`);
     team.memberRoleIds.forEach((roleId, index) => refuse(roleId, `teams.${team.id}.members[${index}]`));
   }
-  if (!app) return;
-  const refuseRun = (run: AppRunRef | undefined, field: string) => {
-    if (run && 'expert' in run) refuse(`${PLUGIN_AGENT_ROLE_PREFIX}${run.expert}`, `${field}.expert`);
-  };
-  refuseRun(app.defaultRun, 'app.defaultRun');
-  app.home.modes.items.forEach((mode, modeIndex) => mode.scenes.forEach((scene, sceneIndex) => {
-    refuseRun(scene.run, `app.home.modes.items[${modeIndex}].scenes[${sceneIndex}].run`);
-  }));
 }
 
 /** Payload dirs the ecosystem uses that Abu deliberately does not consume. */
@@ -459,7 +449,7 @@ export interface PlanInstallOptions {
   prepareSnapshot?: boolean;
   marketplaceName: string;
   marketplaceDir: string;
-  entry: Pick<MarketplaceEntry, 'name' | 'source' | 'providesApp'>;
+  entry: Pick<MarketplaceEntry, 'name' | 'source'>;
   /** Required for remote (`url`/`git-subdir`) sources; unused for relative. */
   home?: string;
   /**
@@ -592,27 +582,15 @@ async function planInstallWithHistory(opts: PlanInstallOptions, reader?: Awaited
   const skillEntries = await discoverPluginSkills(sourceDir, scan, scanned.skills, readText);
   const key = pluginKey(scanned.name, opts.marketplaceName);
   const payloadAgents = await readPayloadAgents(scan, sourceDir, key, readText);
-  // Teams and the app are validated against what THIS package ships, so they
-  // come after the skill and agent scans and before anything is disclosed.
+  // Teams are validated against what THIS package ships, so they come after
+  // the skill and agent scans and before anything is disclosed.
   const teams = await readPluginTeams(sourceDir, scan, { agentNames: payloadAgents.map(agent => agent.name) }, readText);
   assertMinAbuVersionDeclared(scanned, { hasTeams: teams.length > 0 });
   const compat = checkMinAbuVersion(scanned, APP_VERSION);
   if (!compat.ok) {
     throw new PluginManifestError(format(getI18n().toolbox.pluginsRequiresNewerAbu, { version: compat.required ?? '' }), 'minAbuVersion', 'version');
   }
-  if (opts.entry.providesApp && scanned.app === undefined) {
-    throw new PluginManifestError(getI18n().toolbox.pluginsProvidesAppWithoutApp, 'app', 'missing');
-  }
-  const { app: rawApp, ...manifestWithoutApp } = scanned;
-  const manifest: ResolvedPluginManifest = {
-    ...manifestWithoutApp,
-    app: rawApp === undefined ? undefined : parseAppConfig(rawApp, {
-      teamIds: teams.map(team => team.id),
-      agentNames: payloadAgents.map(agent => agent.name),
-      skillNames: skillEntries.map(skill => skill.name),
-      mcpServerNames: Object.keys(scanned.mcpServers ?? {}),
-    }),
-  };
+  const manifest: ResolvedPluginManifest = scanned;
   // Without a home there is no install record to read, so every taken name
   // counts as a conflict — the conservative direction: an agent is skipped
   // rather than a user's own one silently replaced.
@@ -622,7 +600,7 @@ async function planInstallWithHistory(opts: PlanInstallOptions, reader?: Awaited
       : [],
   );
   const agents = await discloseAgents(payloadAgents, previouslyContributed);
-  assertNoConflictingReferences(teams, manifest.app, agents);
+  assertNoConflictingReferences(teams, agents);
   const ignoredPayloads = await discoverIgnoredPayloads(scan);
   const mcpServers = Object.entries(manifest.mcpServers ?? {}).map(([name, spec]) => ({
     name,
@@ -643,7 +621,6 @@ async function planInstallWithHistory(opts: PlanInstallOptions, reader?: Awaited
       mcpServers,
       agents,
       teams,
-      app: manifest.app,
       capabilities: manifest.interface?.capabilities,
       ignoredPayloads,
       skippedSymlinks,

@@ -4,7 +4,7 @@ import { joinPath } from '@/utils/pathUtils';
 import { parseSkillFile } from '@/core/skill/loader';
 import type { PackageScan } from './fsOps';
 import type { ParsedPluginTeam } from '@/types/app';
-import { parseTeamFile } from '../../../electron/shared/pluginAppSpec.mjs';
+import { parseTeamFile } from '../../../electron/shared/pluginSpec.mjs';
 import { PluginManifestError, parseMcpServerMap, type McpServerSpec, type PluginManifest } from './manifest';
 import { normalizePluginComponentPath } from './paths';
 

@@ -53,6 +53,7 @@ const {
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
+const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
 const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
 const { createOperationSession } = require('./pluginOperationSession.cjs');
 const { PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost } = require('./pluginRegistryHost.cjs');
@@ -187,6 +188,8 @@ let unsubscribeNativeHelperEvents = null;
 let migrationStartupBlock = null;
 let migrationStartupPending = false;
 let migrationBackupPath = null;
+/** Markets added by address; created on first use, once `app` knows the home directory. */
+let marketSourceHost = null;
 
 function setMigrationStartupBlock(reason) {
   migrationStartupBlock = String(reason || 'migration-incomplete');
@@ -1457,6 +1460,11 @@ function registerTauriHost(app, options = {}) {
       // both re-validated here. Returns a Promise; this handler awaits it.
       const pluginGitResult = pluginGitDispatch(cmd, { args: a }, { packagesRoot: path.join(app.getPath('home'), '.abu', 'plugin-packages') });
       if (pluginGitResult !== PLUGIN_GIT_MISS) return pluginGitResult;
+      // Markets added by address — fetched into ~/.abu/markets/<name>/ in
+      // this process; the renderer only names the address (marketSourceHost.cjs).
+      if (!marketSourceHost) marketSourceHost = createMarketSourceHost({ marketsRoot: path.join(app.getPath('home'), '.abu', 'markets') });
+      const marketSourceResult = marketSourceDispatch(cmd, { args: a }, marketSourceHost);
+      if (marketSourceResult !== MARKET_SOURCE_MISS) return marketSourceResult;
       // Preview server (slice F13) — get_preview_server_info/register_preview_root/
       // unregister_preview_root, backed by a real loopback Node http server
       // (electron/previewServer.cjs) since the frontend hardcodes the `http://`

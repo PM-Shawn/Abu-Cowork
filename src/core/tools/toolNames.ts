@@ -4,6 +4,7 @@
  */
 export const TOOL_NAMES = {
   PLUGIN_PREPARE: 'plugin_prepare',
+  APP_PREPARE: 'app_prepare',
   // Core file/system tools
   GET_SYSTEM_INFO: 'get_system_info',
   READ_FILE: 'read_file',

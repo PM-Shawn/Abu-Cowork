@@ -105,6 +105,7 @@ const remoteEntry: MarketplaceEntry = {
 const marketplace: Marketplace = {
   name: 'official',
   plugins: [localEntry, remoteEntry],
+  apps: [],
 };
 
 const disclosure: InstallDisclosure = {
@@ -506,7 +507,7 @@ describe('MarketplaceBrowser', () => {
       description: `Plugin number ${i}`,
       source: { kind: 'relative', path: `./plugins/plugin-${i}` },
     }));
-    vi.mocked(loadMarketplaceFromDir).mockResolvedValue({ name: 'official', plugins });
+    vi.mocked(loadMarketplaceFromDir).mockResolvedValue({ name: 'official', plugins, apps: [] });
 
     renderBrowser();
     const list = await screen.findByTestId('plugin-marketplace-list');
@@ -621,6 +622,7 @@ describe('MarketplaceBrowser', () => {
       other.resolve({
         name: 'other',
         plugins: [{ name: 'weather', version: '2.0.0', source: { kind: 'relative', path: './weather' } }],
+        apps: [],
       });
     });
     await waitFor(() =>

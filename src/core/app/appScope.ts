@@ -1,30 +1,56 @@
-import type { AppDefinition, AppRunRef } from '@/types/app';
-import type { SubagentMetadata } from '@/types';
-import { PLUGIN_TEAM_ID_PREFIX } from '@/core/team/pluginTeams';
-import { runExpertName, runTeamId } from './appBinding';
+import type { AppDefinition } from '@/types/app';
+import { liveRefCatalog, resolveAppRefs, runTargets, type RefCatalog } from './appRefs';
+import { appRuns, splitRunTarget } from '../../../electron/shared/appSpec.mjs';
 
 /**
  * What the 「专家」 page shows under 「本应用」 (product spec §5.5): the experts
- * and teams the app's plugin ships, plus the built-in ones its scenes hand
- * work to.
+ * and teams the app's scenes and its default run name — whoever they come
+ * from, and nothing the app does not name.
  */
-function runs(app: AppDefinition): AppRunRef[] {
-  const scenes = app.config.home.modes.items.flatMap((mode) => mode.scenes);
-  return [app.config.defaultRun, ...scenes.map((scene) => scene.run)].filter((run): run is AppRunRef => run !== undefined);
+export interface AppMembers {
+  teamIds: ReadonlySet<string>;
+  agentNames: ReadonlySet<string>;
 }
 
-export function appTeamIds(app: AppDefinition): Set<string> {
-  return new Set(runs(app).map((run) => runTeamId(app, run)).filter((id): id is string => id !== undefined));
+export function appMembers(app: AppDefinition, catalog: RefCatalog = liveRefCatalog()): AppMembers {
+  const teamIds = new Set<string>();
+  const agentNames = new Set<string>();
+  for (const entry of resolveAppRefs(app, catalog).runs) {
+    for (const target of runTargets(entry.resolved)) {
+      if (target.status !== 'ok') continue;
+      if (target.kind === 'team') teamIds.add(target.team.id);
+      if (target.kind === 'expert') agentNames.add(target.agent.name);
+    }
+  }
+  return { teamIds, agentNames };
 }
 
-/** Is `teamId` the app's own (plugin) team, or a built-in team one of its scenes uses? */
-export function teamBelongsToApp(app: AppDefinition, teamId: string): boolean {
-  if (app.pluginKey !== null && teamId.startsWith(`${PLUGIN_TEAM_ID_PREFIX}${app.pluginKey}/`)) return true;
-  return appTeamIds(app).has(teamId);
+/**
+ * What an added app would lose, for the confirmations that remove something
+ * an app names: a plugin (by name), or the user's own expert (by name) or team
+ * (by id).
+ */
+export type AppDependency =
+  | { kind: 'plugin'; name: string }
+  | { kind: 'expert'; name: string }
+  | { kind: 'team'; id: string };
+
+function names(app: AppDefinition, dependency: AppDependency): boolean {
+  if (dependency.kind === 'plugin') return app.plugins.includes(dependency.name);
+  return appRuns(app.config).some(({ run }) => {
+    if (dependency.kind === 'expert' && 'expert' in run) {
+      const target = splitRunTarget('expert', run.expert);
+      return target?.origin === 'mine' && target.id === dependency.name;
+    }
+    if (dependency.kind === 'team' && 'team' in run) {
+      const target = splitRunTarget('team', run.team);
+      return target?.origin === 'mine' && target.id === dependency.id;
+    }
+    return false;
+  });
 }
 
-/** Is this expert the app plugin's own, or a built-in expert one of its scenes uses? */
-export function agentBelongsToApp(app: AppDefinition, agent: Pick<SubagentMetadata, 'name' | 'source'>): boolean {
-  if (app.pluginKey !== null && agent.source?.kind === 'plugin' && agent.source.plugin === app.pluginKey) return true;
-  return runs(app).some((run) => runExpertName(run) === agent.name);
+/** The apps among `apps` that name `dependency`. */
+export function appsUsing(apps: readonly AppDefinition[], dependency: AppDependency): AppDefinition[] {
+  return apps.filter((app) => names(app, dependency));
 }

@@ -2,28 +2,49 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { describe, it, expect } from 'vitest';
-import { overlayLintConfig } from '../eslint.config.js';
+import * as lintConfig from '../eslint.config.js';
+
+const { overlayLintConfig } = lintConfig;
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const eslint = new ESLint({ cwd: repoRoot });
 
-const MIGRATED = 'src/components/design-preview/__lint_fixture__.tsx';
-const UI_MIGRATED = 'src/components/ds/icon.tsx';
-const UI_TEST = 'src/components/ds/__lint_fixture__.test.tsx';
-const MIGRATED_TEST = 'src/components/design-preview/__lint_fixture__.test.tsx';
-const LEGACY = 'src/components/chat/__lint_fixture__.tsx';
+const PAGE = 'src/components/chat/__lint_fixture__.tsx';
+const PAGE_TEST = 'src/components/chat/__lint_fixture__.test.tsx';
+const DS = 'src/components/ds/icon.tsx';
+const DS_TEST = 'src/components/ds/__lint_fixture__.test.tsx';
 
 async function messages(code: string, filePath: string): Promise<string[]> {
   const [result] = await eslint.lintText(code, { filePath: path.join(repoRoot, filePath) });
   return result.messages.map((m) => m.message);
 }
 
+interface RestrictedSyntax { selector: string; message: string }
+interface RestrictedImports { paths: { name: string }[]; patterns?: { group: string[] }[] }
+
+// The rules ESLint ends up with for one path: the messages of no-restricted-syntax
+// and the package names of no-restricted-imports.
+async function rulesFor(filePath: string): Promise<{ syntax: string[]; imports: string[] }> {
+  const config = await eslint.calculateConfigForFile(path.join(repoRoot, filePath));
+  const [, ...selectors] = config.rules['no-restricted-syntax'] as [unknown, ...RestrictedSyntax[]];
+  const [, restriction] = config.rules['no-restricted-imports'] as [unknown, RestrictedImports];
+  return {
+    syntax: selectors.map((entry) => entry.message),
+    imports: restriction.paths.map((entry) => entry.name),
+  };
+}
+
+const ARBITRARY_SIZE = 'not an arbitrary size';
+const TOKEN_CLASS = 'use a token class';
+const RAW_CONTROL = 'instead of a raw form control';
+const DETERMINISM = 'TESTING.md';
+
 const component = (body: string) => `export function Fixture() { return (${body}); }\n`;
 
 describe('design-system lint rules', { timeout: 60_000 }, () => {
   it.each([
     ['arbitrary color', '<div className="bg-[#ffffff]" />'],
-    ['arbitrary var color', '<div className="text-[var(--abu-text-primary)]" />'],
+    ['arbitrary variable color', '<div className="text-[var(--ds-label)]" />'],
     ['arbitrary z-index', '<div className="z-[9999]" />'],
     ['arbitrary radius', '<div className="rounded-[12px]" />'],
     ['Tailwind palette gray', '<div className="bg-gray-100" />'],
@@ -31,46 +52,42 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     ['Tailwind palette black shadow', '<div className="shadow-black/20" />'],
     ['Tailwind palette white gradient stop', '<div className="from-white" />'],
     ['hand-written scrim', '<div className="fixed inset-0" />'],
-  ])('flags %s in a migrated file', async (_name, jsx) => {
-    expect(await messages(component(jsx), MIGRATED)).not.toEqual([]);
+  ])('flags %s in page code', async (_name, jsx) => {
+    expect(await messages(component(jsx), PAGE)).not.toEqual([]);
   });
 
-  it('flags raw form controls in a migrated file', async () => {
-    expect(await messages(component('<button type="button" />'), MIGRATED)).not.toEqual([]);
-    expect(await messages(component('<input />'), MIGRATED)).not.toEqual([]);
+  it('flags raw form controls in page code', async () => {
+    expect(await messages(component('<button type="button" />'), PAGE)).not.toEqual([]);
+    expect(await messages(component('<input />'), PAGE)).not.toEqual([]);
   });
 
-  it('flags importing lucide-react directly in a migrated file', async () => {
+  it('flags importing lucide-react directly in page code', async () => {
     const code = `import { X } from 'lucide-react';\n${component('<X />')}`;
-    expect(await messages(code, MIGRATED)).not.toEqual([]);
+    expect(await messages(code, PAGE)).not.toEqual([]);
   });
 
-  it('accepts design-system tokens in a migrated file', async () => {
+  it('accepts design-system tokens in page code', async () => {
     const jsx = '<div className="bg-surface text-label rounded-panel shadow-float z-popover duration-base ease-enter" />';
-    expect(await messages(component(jsx), MIGRATED)).toEqual([]);
+    expect(await messages(component(jsx), PAGE)).toEqual([]);
   });
 
   it('does not flag class names that only contain a palette prefix as a word part', async () => {
     const jsx = '<div className="divide-y history-item auto-cols-fr go-to-top" />';
-    expect(await messages(component(jsx), MIGRATED)).toEqual([]);
+    expect(await messages(component(jsx), PAGE)).toEqual([]);
   });
 
   it('lets ds/ files import lucide-react and render raw controls', async () => {
     const code = `import { X } from 'lucide-react';\n${component('<button type="button"><X /></button>')}`;
-    expect(await messages(code, UI_MIGRATED)).toEqual([]);
+    expect(await messages(code, DS)).toEqual([]);
   });
 
-  it('still bans arbitrary values in ds/ files', async () => {
-    expect(await messages(component('<div className="bg-[#ffffff]" />'), UI_MIGRATED)).not.toEqual([]);
+  it('bans arbitrary values in ds/ files', async () => {
+    expect(await messages(component('<div className="bg-[#ffffff]" />'), DS)).not.toEqual([]);
   });
 
-  it('leaves legacy files on the old rules during migration', async () => {
-    expect(await messages(component('<div className="bg-[#ffffff] fixed inset-0" />'), LEGACY)).toEqual([]);
-  });
-
-  it('keeps the existing typography ban in migrated files', async () => {
+  it('bans Tailwind named sizes in page code', async () => {
     // eslint-disable-next-line no-restricted-syntax -- fixture for the typography rule
-    expect(await messages(component('<div className="text-sm" />'), MIGRATED)).not.toEqual([]);
+    expect(await messages(component('<div className="text-sm" />'), PAGE)).not.toEqual([]);
   });
 
   it.each([
@@ -78,8 +95,8 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     ['shadcn muted text', '<div className="text-muted-foreground" />'],
     ['shadcn primary with opacity', '<div className="hover:bg-primary/90" />'],
     ['shadcn input border', '<div className="border-input" />'],
-    ['legacy font size', '<div className="text-minor" />'],
-    ['legacy heading size', '<div className="text-h-sm" />'],
+    ['font size outside the scale', '<div className="text-minor" />'],
+    ['heading size outside the scale', '<div className="text-h-sm" />'],
     ['Tailwind radius', '<div className="rounded-lg" />'],
     ['bare Tailwind radius', '<div className="rounded" />'],
     ['Tailwind side radius', '<div className="rounded-t-md" />'],
@@ -89,30 +106,30 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
     ['Tailwind shadow', '<div className="focus:shadow-lg" />'],
     ['bare Tailwind shadow', '<div className="shadow" />'],
     ['Tailwind easing', '<div className="ease-in-out" />'],
-  ])('flags legacy %s in migrated and ds/ files', async (_name, jsx) => {
-    expect(await messages(component(jsx), MIGRATED)).not.toEqual([]);
-    expect(await messages(component(jsx), UI_MIGRATED)).not.toEqual([]);
+  ])('flags %s in page code and in ds/ files', async (_name, jsx) => {
+    expect(await messages(component(jsx), PAGE)).not.toEqual([]);
+    expect(await messages(component(jsx), DS)).not.toEqual([]);
   });
 
-  it('accepts every design-system class that shares a prefix with a legacy one', async () => {
+  it('accepts every design-system class that shares a prefix with a banned one', async () => {
     const jsx = '<div className="rounded-full rounded-none rounded-t-panel shadow-none drop-shadow-md border-control-border ring-focus text-on-emphasis bg-fill-selected text-h1 text-caption data-[state=open]:duration-fast min-w-(--radix-select-trigger-width) font-code" />';
-    expect(await messages(component(jsx), MIGRATED)).toEqual([]);
-    expect(await messages(component(jsx), UI_MIGRATED)).toEqual([]);
+    expect(await messages(component(jsx), PAGE)).toEqual([]);
+    expect(await messages(component(jsx), DS)).toEqual([]);
   });
 
-  it('points migrated files at the design-system type scale', async () => {
+  it('points page code at the design-system type scale', async () => {
     // eslint-disable-next-line no-restricted-syntax -- fixture for the typography rule
-    const [message] = await messages(component('<div className="text-sm" />'), MIGRATED);
+    const [message] = await messages(component('<div className="text-sm" />'), PAGE);
     expect(message).toContain('text-ui');
   });
 
-  it('keeps design rules and determinism rules together in migrated and ds/ test files', async () => {
+  it('keeps design rules and determinism rules together in test files', async () => {
     const code = `${component('<div className="z-50" />')}export const now = Date.now();\n`;
-    const migrated = await messages(code, MIGRATED_TEST);
-    const ds = await messages(code, UI_TEST);
-    for (const found of [migrated, ds]) {
+    const page = await messages(code, PAGE_TEST);
+    const ds = await messages(code, DS_TEST);
+    for (const found of [page, ds]) {
       expect(found.some((m) => m.startsWith('Design system'))).toBe(true);
-      expect(found.some((m) => m.startsWith('TESTING.md'))).toBe(true);
+      expect(found.some((m) => m.startsWith(DETERMINISM))).toBe(true);
     }
   });
 
@@ -125,274 +142,129 @@ describe('design-system lint rules', { timeout: 60_000 }, () => {
       importLine.includes('FocusScope') ? 'typeof Dialog, ' : ', typeof FocusScope',
       '',
     );
-    const outside = await messages(code, MIGRATED);
+    const outside = await messages(code, PAGE);
     expect(outside.some((message) => message.includes('use the wrappers in @/components/ds'))).toBe(true);
-    const inside = await messages(code, UI_MIGRATED);
+    const inside = await messages(code, DS);
     expect(inside.some((message) => message.includes('use the wrappers in @/components/ds'))).toBe(false);
   });
 
   it('bans cmdk outside ds/', async () => {
     const code = `import { Command } from 'cmdk';\n${component('<Command />')}`;
-    expect(await messages(code, MIGRATED)).not.toEqual([]);
+    expect(await messages(code, PAGE)).not.toEqual([]);
   });
 
-  it('flags a bare animate-in class that the legacy global rule hijacks', async () => {
-    expect(await messages(component('<div className="animate-in fade-in-0" />'), MIGRATED)).not.toEqual([]);
+  it('flags a bare animate-in class', async () => {
+    expect(await messages(component('<div className="animate-in fade-in-0" />'), PAGE)).not.toEqual([]);
   });
 
   it('accepts state-scoped animate-in forms', async () => {
     const jsx = '<div className="data-[state=open]:animate-in data-[state=closed]:animate-out" />';
-    expect(await messages(component(jsx), MIGRATED)).toEqual([]);
+    expect(await messages(component(jsx), PAGE)).toEqual([]);
   });
+});
 
-  it('checks the chat files that finished migrating', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    expect(await messages(code, 'src/components/chat/ChatView.tsx')).not.toEqual([]);
+describe('where the design-system rules apply', { timeout: 60_000 }, () => {
+  it.each([
+    'src/App.tsx',
+    'src/pet/PetApp.tsx',
+    'src/components/chat/ChatView.tsx',
+    'src/hooks/useNativeViewOcclusion.ts',
+    'src/components/chat/ChatView.approvals.test.tsx',
+  ])('gives %s the three class groups and the import restriction', async (file) => {
+    const { syntax, imports } = await rulesFor(file);
+    expect(syntax.some((m) => m.startsWith('Design system'))).toBe(true);
+    expect(syntax.some((m) => m.includes(ARBITRARY_SIZE))).toBe(true);
+    expect(syntax.some((m) => m.includes(TOKEN_CLASS))).toBe(true);
+    expect(syntax.some((m) => m.includes(RAW_CONTROL))).toBe(true);
+    expect(imports).toContain('lucide-react');
+    expect(imports).toContain('radix-ui');
+    expect(imports).toContain('cmdk');
   });
 
   it.each([
-    'src/components/chat/chapters.ts',
-    'src/components/chat/FileAttachment.test.tsx',
-    'src/components/chat/SourcesSection.test.tsx',
-    'src/components/chat/IMInfoBar.test.tsx',
-    'src/components/common/FolderSelector.test.tsx',
-    'src/components/chat/ConvIdBadge.test.tsx',
-  ])('checks %s with the migrated rules', async (file) => {
-    const code = `export const style = 'text-[var(--abu-text-primary)]';\n`;
-    expect(await messages(code, file)).not.toEqual([]);
+    'src/core/team/avatarPresets.ts',
+    'src/stores/chatStore.ts',
+    'src/stores/pluginStore.test.ts',
+    'src/i18n/locales/zh-CN.ts',
+    'src/eval/promptSnapshot.test.ts',
+  ])('gives %s the import restriction and no class group', async (file) => {
+    const { syntax, imports } = await rulesFor(file);
+    expect(syntax.filter((m) => m.startsWith('Design system'))).toEqual([]);
+    expect(imports).toContain('lucide-react');
+    expect(imports).toContain('radix-ui');
+    expect(imports).toContain('cmdk');
   });
 
-  it('checks the right panel files that finished migrating', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    expect(await messages(code, 'src/components/panel/workspace/TabStrip.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/preview/ImagePreview.tsx')).not.toEqual([]);
+  it('keeps the determinism rules in the test files of the directories that hold prose', async () => {
+    for (const file of ['src/stores/pluginStore.test.ts', 'src/eval/promptSnapshot.test.ts']) {
+      const { syntax } = await rulesFor(file);
+      expect(syntax.some((m) => m.startsWith(DETERMINISM)), file).toBe(true);
+    }
+    const { syntax } = await rulesFor('src/stores/chatStore.ts');
+    expect(syntax.some((m) => m.startsWith(DETERMINISM))).toBe(false);
   });
 
-  it('checks the settings files that finished migrating', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    expect(await messages(code, 'src/components/settings/SystemSettingsDialog.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/settings/sections/SandboxSection.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/settings/sections/ai-services/AddProviderModal.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/account/LoginPage.tsx')).not.toEqual([]);
-    // The file that re-exports the sections holds no JSX: an icon imported past the design system shows it is checked.
-    const reexport = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(reexport, 'src/components/settings/sections/index.ts')).not.toEqual([]);
+  it('gives a page test file the three class groups next to the determinism rules', async () => {
+    const { syntax } = await rulesFor('src/components/chat/ChatView.approvals.test.tsx');
+    expect(syntax.some((m) => m.includes(RAW_CONTROL))).toBe(true);
+    expect(syntax.some((m) => m.startsWith(DETERMINISM))).toBe(true);
   });
 
-  it('checks the shell shared by the extensions and experts pages', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
+  it('gives src/components/ds/button.tsx the size and value groups, no structure group and free imports', async () => {
+    const { syntax, imports } = await rulesFor('src/components/ds/button.tsx');
+    expect(syntax.some((m) => m.includes(ARBITRARY_SIZE))).toBe(true);
+    expect(syntax.some((m) => m.includes(TOKEN_CLASS))).toBe(true);
+    expect(syntax.some((m) => m.includes(RAW_CONTROL))).toBe(false);
+    expect(imports).not.toContain('lucide-react');
+    expect(imports).not.toContain('radix-ui');
+    expect(imports).not.toContain('cmdk');
+  });
+
+  it('gives a ds/ test file the size and value groups next to the determinism rules', async () => {
+    const { syntax, imports } = await rulesFor('src/components/ds/button.test.tsx');
+    expect(syntax.some((m) => m.includes(TOKEN_CLASS))).toBe(true);
+    expect(syntax.some((m) => m.includes(RAW_CONTROL))).toBe(false);
+    expect(syntax.some((m) => m.startsWith(DETERMINISM))).toBe(true);
+    expect(imports).not.toContain('lucide-react');
+  });
+
+  it('checks a file in any directory of src/ from its first commit', async () => {
+    const code = component('<div className="z-50" />');
     for (const file of [
-      'src/components/toolbox/TopTabNav.tsx',
-      'src/components/toolbox/SourceSubNav.test.tsx',
-      'src/components/toolbox/ToolCard.tsx',
-      'src/components/toolbox/ToolGrid.test.tsx',
-      'src/components/toolbox/SourceBadge.tsx',
-      'src/components/common/AgentAvatar.tsx',
-      'src/components/common/AvatarPicker.test.tsx',
-      'src/components/common/PluginUpdateBadge.tsx',
-      'src/components/team/TeamAvatar.tsx',
-      'src/components/settings/ToolboxModal.tsx',
-      'src/components/settings/ToolboxModal.sources.test.tsx',
+      'src/NewFileAtTheRoot.tsx',
+      'src/components/NewDirectory/NewFile.tsx',
+      'src/features/new-feature/NewFile.tsx',
+      'src/hooks/useNewHook.ts',
+      'src/utils/newHelper.ts',
+      'src/lib/newWrapper.ts',
     ]) {
       expect(await messages(code, file), file).not.toEqual([]);
     }
+  });
+
+  it('reads no class name out of the prose of core/, stores/, i18n/ and eval/', async () => {
+    const prose = "export const text = 'a rounded container with a shadow';\n";
+    for (const file of [
+      'src/core/widget/newGuide.ts',
+      'src/stores/newStore.test.ts',
+      'src/i18n/locales/newLocale.ts',
+      'src/eval/newEval.test.ts',
+    ]) {
+      expect(await messages(prose, file), file).toEqual([]);
+    }
+    expect(await messages(prose, 'src/utils/newHelper.ts')).not.toEqual([]);
+  });
+
+  it('bans a direct icon import in the directories that hold prose', async () => {
     const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/toolbox/extensionSource.ts')).not.toEqual([]);
-    // common/ and team/ have no directory entry: files that have not migrated stay on the old rules.
-    expect(await messages(code, 'src/components/common/InlinePermissionRequest.tsx')).toEqual([]);
-    expect(await messages(code, 'src/components/team/useConversationTeam.test.tsx')).toEqual([]);
-  });
-
-  it('checks every file of the plugins page, tests and helpers included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/toolbox/plugins/PluginsTab.tsx',
-      'src/components/toolbox/plugins/MarketplaceBrowser.test.tsx',
-      'src/components/toolbox/plugins/InstallDisclosureDialog.tsx',
-      'src/components/toolbox/plugins/UninstallPluginDialog.tsx',
-      'src/components/toolbox/plugins/AddMarketplaceDialog.test.tsx',
-      'src/components/toolbox/plugins/AppMarketDialog.tsx',
-      'src/components/toolbox/plugins/NewFileOfThePage.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
-    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/toolbox/plugins/serverCommand.ts')).not.toEqual([]);
-    // The focus helper the card grids of the page share.
-    expect(await messages(icon, 'src/components/toolbox/cardFocus.ts')).not.toEqual([]);
-    expect(await messages(icon, 'src/components/toolbox/cardFocus.test.ts')).not.toEqual([]);
-  });
-
-  it('checks every file of the skills page, tests and helpers included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/customize/SkillsSection.tsx',
-      'src/components/customize/SkillsSection.test.tsx',
-      'src/components/customize/SkillEditor.tsx',
-      'src/components/customize/SkillEditor.nameCollision.test.tsx',
-      'src/components/customize/SkillUploadModal.tsx',
-      'src/components/customize/SkillHistoryModal.test.tsx',
-      'src/components/customize/SkillDraftsPanel.tsx',
-      'src/components/customize/SkillCategoryBlocksPanel.tsx',
-      'src/components/toolbox/skills/SkillDetailPanel.tsx',
-      'src/components/toolbox/skills/NewFileOfThePage.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
-    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/customize/skillHistoryTime.ts')).not.toEqual([]);
-    expect(await messages(icon, 'src/components/toolbox/skills/isSystemSkill.ts')).not.toEqual([]);
-    // customize/ has no directory entry: the unused files stay on the old rules.
-    expect(await messages(code, 'src/components/customize/SkillDetailModal.tsx')).toEqual([]);
-  });
-
-  it('checks every file of the connectors page, tests and helpers included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/customize/MCPSection.tsx',
-      'src/components/customize/MCPSection.test.tsx',
-      'src/components/customize/MCPServerFormDialog.tsx',
-      'src/components/customize/MCPServerFormDialog.test.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
-    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/customize/toolCountLabel.ts')).not.toEqual([]);
-    expect(await messages(icon, 'src/components/customize/toolCountLabel.test.ts')).not.toEqual([]);
-    expect(await messages(icon, 'src/components/toolbox/connectors/connectorPrefill.ts')).not.toEqual([]);
-    expect(await messages(icon, 'src/components/toolbox/windowHeight.ts')).not.toEqual([]);
-    // The unused files stay on the old rules.
-    expect(await messages(code, 'src/components/customize/ModelsSection.tsx')).toEqual([]);
-  });
-
-  it('checks every file of the experts and expert teams page, tests included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/team/TeamView.tsx',
-      'src/components/team/TeamView.test.tsx',
-      'src/components/customize/AgentsSection.tsx',
-      'src/components/customize/AgentsSection.source.test.tsx',
-      'src/components/customize/AgentsSection.deleteInTeams.test.tsx',
-      'src/components/customize/AgentsSection.pluginSource.test.tsx',
-      'src/components/customize/AgentEditor.tsx',
-      'src/components/customize/AgentEditor.identity.test.tsx',
-      'src/components/customize/AgentEditor.nameCollision.test.tsx',
-      'src/components/customize/AgentEditor.nameMode.test.tsx',
-      'src/components/customize/AgentEditor.pluginGuard.test.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
-    // customize/ has no directory entry: the files nothing renders stay on the old rules.
-    expect(await messages(code, 'src/components/customize/AgentDetailModal.tsx')).toEqual([]);
-  });
-
-  it('checks the extensions and experts files that finished migrating', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    expect(await messages(code, 'src/components/toolbox/ToolCard.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/toolbox/plugins/MarketplaceBrowser.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/customize/MCPSection.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/team/TeamView.tsx')).not.toEqual([]);
-    // The directory entry: a toolbox file no file-by-file entry names is checked as well.
-    expect(await messages(code, 'src/components/toolbox/NewFileOfTheDirectory.tsx')).not.toEqual([]);
-    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/toolbox/useTrialLauncher.ts')).not.toEqual([]);
-  });
-
-  it('checks every file of the automation frame and the scheduled tasks page, tests included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/automation/AutomationView.tsx',
-      'src/components/automation/AutomationView.test.tsx',
-      'src/components/schedule/ScheduleView.tsx',
-      'src/components/schedule/ScheduleTaskCard.tsx',
-      'src/components/schedule/ScheduleTaskDetail.test.tsx',
-      'src/components/schedule/ScheduleRunHistory.tsx',
-      'src/components/schedule/ScheduleEditor.tsx',
-      // The directory entries: a file added to either directory later is checked as well.
-      'src/components/automation/NewFileOfTheDirectory.tsx',
-      'src/components/schedule/NewFileOfTheDirectory.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
+    for (const file of ['src/core/team/newPresets.ts', 'src/stores/newStore.ts', 'src/i18n/newHelper.ts']) {
+      const found = await messages(icon, file);
+      expect(found.some((m) => m.includes('render icons through Icon + AppIcons')), file).toBe(true);
     }
   });
 
-  it('checks every file of the event listeners page, tests included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/trigger/TriggerView.tsx',
-      'src/components/trigger/TriggerView.test.tsx',
-      'src/components/trigger/TriggerCard.tsx',
-      'src/components/trigger/TriggerDetail.tsx',
-      'src/components/trigger/TriggerRunHistory.tsx',
-      'src/components/trigger/TriggerEditor.tsx',
-      'src/components/trigger/TriggerEditor.test.tsx',
-      // The directory entry: a file added to the directory later is checked as well.
-      'src/components/trigger/NewFileOfTheDirectory.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
-  });
-
-  it('checks every file of the inbox, the todos page and the app page, tests included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/inbox/InboxView.tsx',
-      'src/components/inbox/InboxView.test.tsx',
-      'src/components/inbox/InboxItem.tsx',
-      'src/components/todos/TodoView.tsx',
-      'src/components/todos/TodoView.test.tsx',
-      'src/components/todos/TodoItem.tsx',
-      'src/components/app/AppPageView.tsx',
-      'src/components/app/AppPageView.test.tsx',
-      'src/components/app/AppLogo.tsx',
-      // The directory entries: a file added to one of the directories later is checked as well.
-      'src/components/inbox/NewFileOfTheDirectory.tsx',
-      'src/components/todos/NewFileOfTheDirectory.tsx',
-      'src/components/app/NewFileOfTheDirectory.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
-  });
-
-  it('checks the automation, inbox and app page files that finished migrating', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    expect(await messages(code, 'src/components/trigger/TriggerEditor.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/schedule/ScheduleEditor.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/inbox/InboxView.tsx')).not.toEqual([]);
-    expect(await messages(code, 'src/components/app/AppPageView.tsx')).not.toEqual([]);
-    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/todos/useRowFocus.ts')).not.toEqual([]);
-  });
-
-  it('checks the approval windows and the close question, tests and helpers included', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/common/CommandConfirmDialog.tsx',
-      'src/components/common/CommandConfirmDialog.test.tsx',
-      'src/components/common/PermissionDialog.tsx',
-      'src/components/common/PermissionDialog.test.tsx',
-      'src/components/common/CloseDialog.tsx',
-      'src/components/common/CloseDialog.approvals.test.tsx',
-      'src/components/settings/CapabilitySetupDialog.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
-    const icon = "import { X } from 'lucide-react';\nexport { X };\n";
-    expect(await messages(icon, 'src/components/common/approvalQueueView.ts')).not.toEqual([]);
-    expect(await messages(icon, 'src/components/common/approvalQueueView.test.ts')).not.toEqual([]);
-  });
-
-  it('checks the windows, the viewers and the notice list', async () => {
-    const code = component('<div className="text-[var(--abu-text-primary)]" />');
-    for (const file of [
-      'src/components/chat/ImageLightbox.tsx',
-      'src/components/panel/PreviewPanel.tsx',
-      'src/components/common/ProjectSettingsDialog.tsx',
-      'src/components/share/ShareExportDialog.tsx',
-      'src/components/common/ToasterMount.tsx',
-    ]) {
-      expect(await messages(code, file), file).not.toEqual([]);
-    }
+  it('exports no list of files', () => {
+    expect(Object.keys(lintConfig).sort()).toEqual(['default', 'overlayLintConfig']);
   });
 });
 

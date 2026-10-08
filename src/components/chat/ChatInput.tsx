@@ -28,6 +28,7 @@ import {
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
+import { noteComposerDraft, noteComposerKey } from '@/components/chat/composerActivity';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
@@ -822,6 +823,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       selectedAgent,
     };
   }, [files, images, references, selectedAgent, selectedSkill, text]);
+
+  // The agent's question dock leaves the focus with a user who is writing a message: it is told
+  // whether this field holds a draft (composerActivity.ts).
+  const [composerOwner] = useState(() => ({}));
+  const holdsDraft = hasComposerContent({ text, images, files, references, selectedSkill, selectedAgent });
+  useLayoutEffect(() => {
+    noteComposerDraft(composerOwner, holdsDraft);
+    return () => noteComposerDraft(composerOwner, false);
+  }, [composerOwner, holdsDraft]);
 
   useLayoutEffect(() => {
     const pendingSelection = pendingSelectionRef.current;
@@ -1903,6 +1913,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // A key went down in the message field, a key of an input method included: the user is
+    // writing here, and a question that arrives now leaves them the focus (composerActivity.ts).
+    noteComposerKey();
     if (isImeComposing(e, composingRef.current)) return;
 
     if (showSuggestions && suggestions.length > 0) {

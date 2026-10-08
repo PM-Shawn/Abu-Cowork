@@ -14,10 +14,11 @@
  * tests/e2e/chat-newline.spec.ts against the actual Electron shell.
  */
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
+import { COMPOSER_TYPING_MS, userIsWritingAMessage } from './composerActivity';
 import { useChatStore } from '@/stores/chatStore';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -282,6 +283,70 @@ describe('ChatInput keyboard contract', () => {
         expect(fireEvent.keyDown(textarea, { key: 'ArrowUp', code: 'ArrowUp', repeat: true })).toBe(false);
         expect(highlighted()).toBe(0);
       });
+    });
+  });
+
+  // The agent's question dock leaves the focus with a user who is writing a message. The field
+  // says so: it holds a draft, or a key went down in it within the last second.
+  describe('what the field tells the question dock', () => {
+    // Each test's fake clock starts from nothing again, and the last key is remembered across
+    // tests: each test starts an hour later than the one before, long after every key pressed above.
+    let start = 0;
+    beforeEach(() => {
+      // The clock that judges "the last second" moves only when a test moves it.
+      vi.useFakeTimers();
+      start += 3_600_000;
+      vi.advanceTimersByTime(start);
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    const emptyField = () => {
+      render(<ChatInput variant="chat" onSend={vi.fn()} />);
+      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      act(() => textarea.focus());
+      return textarea;
+    };
+
+    it('nothing while it is empty and no key was pressed in it', () => {
+      emptyField();
+      expect(userIsWritingAMessage()).toBe(false);
+    });
+
+    it('that a message is being written while it holds text, however long ago the last key was, and no longer once it is empty', () => {
+      const textarea = emptyField();
+      typeInto(textarea, 'hello');
+      vi.advanceTimersByTime(60_000);
+      expect(userIsWritingAMessage()).toBe(true);
+      typeInto(textarea, '');
+      expect(userIsWritingAMessage()).toBe(false);
+    });
+
+    it('that a message is being written for one second after a key went down in it', () => {
+      const textarea = emptyField();
+      fireEvent.keyDown(textarea, { key: 'Backspace', code: 'Backspace' });
+      vi.advanceTimersByTime(COMPOSER_TYPING_MS - 1);
+      expect(userIsWritingAMessage()).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(userIsWritingAMessage()).toBe(false);
+    });
+
+    it('nothing when the focus is not in it, whatever it holds', () => {
+      const textarea = emptyField();
+      typeInto(textarea, 'hello');
+      act(() => textarea.blur());
+      expect(userIsWritingAMessage()).toBe(false);
+    });
+
+    it('nothing more about its draft once it has left the page', () => {
+      const textarea = emptyField();
+      typeInto(textarea, 'hello');
+      cleanup();
+      const other = document.createElement('textarea');
+      other.setAttribute('data-chat-composer', '');
+      document.body.append(other);
+      other.focus();
+      expect(userIsWritingAMessage()).toBe(false);
+      other.remove();
     });
   });
 });

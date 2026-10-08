@@ -19,6 +19,7 @@ import { TextField } from '@/components/ds/text-field';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
 import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
+import { useDeleteConversation } from './useDeleteConversation';
 import { projectRowProps } from './projectRowFocus';
 import { opensOnKey } from './rowKeys';
 import { cn } from '@/lib/utils';
@@ -48,7 +49,6 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const archiveProject = useProjectStore((s) => s.archiveProject);
   const deleteProject = useProjectStore((s) => s.deleteProject);
   const switchConversation = useChatStore((s) => s.switchConversation);
-  const deleteConversation = useChatStore((s) => s.deleteConversation);
   const renameConversation = useChatStore((s) => s.renameConversation);
   const loadConversation = useChatStore((s) => s.loadConversation);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
@@ -72,6 +72,9 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   // After a task is deleted from its row menu the focus goes on to a row, never to the window.
   const rowFocus = useConversationRowFocus();
+  // 删除会话 for a task of this project: a task whose record cannot be read is deleted only after
+  // a question. No undo is offered here.
+  const deletion = useDeleteConversation(rowFocus, false);
   // The project's tasks as of the last render: the delete question unlinks those it has at the answer.
   const latestConversations = useRef(conversations);
   useLayoutEffect(() => { latestConversations.current = conversations; });
@@ -91,10 +94,12 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
     if (!open) return;
     afterMenuClose.current = null;
     rowFocus.forget();
+    deletion.menuOpened();
   };
 
   // Runs from the menus' close-focus hook, once the menu has gone.
   const runAfterMenuClose = (event: Event) => {
+    deletion.menuClosed();
     const pending = afterMenuClose.current;
     if (!pending) {
       // 删除会话 took the row away while the menu was closing: the focus goes on to a row.
@@ -212,7 +217,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
         {t.project.removeFromProject}
       </MenuItem>
       <MenuSeparator />
-      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { rowFocus.note(convId); deleteConversation(convId); }}>
+      <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => deletion.fromMenu(convId)}>
         {t.sidebar.deleteConversation}
       </MenuItem>
     </>

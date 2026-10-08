@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ComponentProps } from 'react';
+import { StrictMode, type ComponentProps } from 'react';
+import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TextArea } from '@/components/ds/text-area';
+import { COMPOSER_TYPING_MS, noteComposerDraft, noteComposerKey } from './composerActivity';
 import UserQuestionDock from './UserQuestionDock';
 import * as bridge from '@/core/agent/permissionBridge';
 import type { UserQuestionPayload } from '@/types';
@@ -467,6 +470,111 @@ describe('UserQuestionDock', () => {
       pressed('Escape');
 
       expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-escape', null);
+    });
+
+    // The dock takes the focus so that the keyboard can answer. A user who is writing a message
+    // keeps it: an Enter meant for the message must not answer the question.
+    describe('and the user is writing a message', () => {
+      const owner = {};
+      // Stands in for ChatView: the dock above the message field.
+      function Page({ asked, toolCallId = 'tc-typing', payload = SINGLE_PAYLOAD }: { asked: boolean; toolCallId?: string; payload?: UserQuestionPayload }) {
+        return (
+          <DesignSystemProvider>
+            {asked && <UserQuestionDock conversationId="conv-a" messageId="msg-1" toolCallId={toolCallId} payload={payload} />}
+            <TextArea bare data-chat-composer="" aria-label="Message" />
+            <Button>Elsewhere</Button>
+          </DesignSystemProvider>
+        );
+      }
+      const field = () => screen.getByRole('textbox', { name: 'Message' });
+
+      // Each test's fake clock starts from nothing again, and the last key is remembered across
+      // tests: each test starts later than every test before it.
+      let start = 0;
+      beforeEach(() => {
+        // The clock the dock reads moves only when a test moves it.
+        vi.useFakeTimers();
+        start += 100_000;
+        vi.advanceTimersByTime(start);
+      });
+      afterEach(() => {
+        noteComposerDraft(owner, false);
+        vi.useRealTimers();
+      });
+
+      it('takes the focus, as before, from an empty message field that no key was pressed in', () => {
+        const view = render(<Page asked={false} />);
+        act(() => field().focus());
+        view.rerender(<Page asked />);
+        expect(dock()).toHaveFocus();
+      });
+
+      it('takes the focus, as before, when the draft is held and the focus is somewhere else', () => {
+        const view = render(<Page asked={false} />);
+        noteComposerDraft(owner, true);
+        act(() => screen.getByRole('button', { name: 'Elsewhere' }).focus());
+        view.rerender(<Page asked />);
+        expect(dock()).toHaveFocus();
+      });
+
+      it('shows without taking the focus from a message field that holds a draft; Enter there answers nothing', () => {
+        const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+        const view = render(<Page asked={false} />);
+        noteComposerDraft(owner, true);
+        act(() => field().focus());
+        view.rerender(<Page asked />);
+
+        expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+        expect(field()).toHaveFocus();
+        fireEvent.keyDown(field(), { key: 'Enter', code: 'Enter' });
+        fireEvent.keyDown(field(), { key: 'Escape', code: 'Escape' });
+        expect(resolveSpy).not.toHaveBeenCalled();
+        expect(mockSetAnswers).not.toHaveBeenCalled();
+      });
+
+      it('shows without taking the focus when a key went down in the message field within the last second, and takes it after that second', () => {
+        const view = render(<Page asked={false} />);
+        act(() => field().focus());
+        noteComposerKey();
+        vi.advanceTimersByTime(COMPOSER_TYPING_MS - 1);
+        view.rerender(<Page asked />);
+        expect(field()).toHaveFocus();
+
+        // The next question arrives after a pause.
+        view.rerender(<Page asked={false} />);
+        vi.advanceTimersByTime(1);
+        view.rerender(<Page asked toolCallId="tc-typing-2" />);
+        expect(dock()).toHaveFocus();
+      });
+
+      it('decides the same when React runs its effects twice (StrictMode)', () => {
+        const view = render(<StrictMode><Page asked={false} /></StrictMode>);
+        noteComposerDraft(owner, true);
+        act(() => field().focus());
+        view.rerender(<StrictMode><Page asked /></StrictMode>);
+        expect(field()).toHaveFocus();
+      });
+
+      it('stays within reach: its options are Tab stops, a press on one answers, and it takes the focus once the user turns its page', async () => {
+        vi.useRealTimers();
+        const user = userEvent.setup();
+        const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+        const view = render(<Page asked={false} />);
+        noteComposerDraft(owner, true);
+        act(() => field().focus());
+        view.rerender(<Page asked payload={TWO_Q_PAYLOAD} />);
+        expect(field()).toHaveFocus();
+
+        // The dock is before the message field in the page: Shift+Tab walks into it.
+        const option = screen.getByText('A').closest('button')!;
+        expect(option.tabIndex).toBe(0);
+        expect(dock().compareDocumentPosition(field()) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+        await user.click(option);
+        expect(screen.getByText('2 / 2')).toBeInTheDocument();
+        expect(dock()).toHaveFocus();
+        await user.click(screen.getByText('C').closest('button')!);
+        expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-typing', answered(['A'], ['C']));
+      });
     });
 
     it('keeps walking the options with a held arrow', () => {

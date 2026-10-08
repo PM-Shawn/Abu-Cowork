@@ -20,6 +20,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
   type LaunchedApp,
@@ -31,7 +32,9 @@ const REPLY = 'E2E记录读取答复';
 const OTHER_PROMPT = 'E2E另一个任务';
 const OTHER_REPLY = 'E2E另一个答复';
 const WELCOME_TITLE = '交给阿布就行啦';
-const UNREADABLE = '无法读取文件';
+const UNREADABLE = '无法读取这个任务的记录';
+const DELETE_QUESTION = '删除这个任务？';
+const DELETE_WARNING = `「${PROMPT}」的记录目前读不出来，删除后无法恢复。`;
 
 type MockMessage = { role: string; content?: string | Array<{ text?: string }> | null };
 
@@ -275,6 +278,96 @@ test('a record that cannot be read says so with 重试, keeps the rest of the ap
     launched = undefined;
     // The record is byte for byte what it was before it could not be read.
     expect(fs.readFileSync(ledger).equals(whole)).toBe(true);
+  } finally {
+    if (launched) await closeAbuElectron(launched.app);
+    await mock.close();
+    removeElectronDataRoot(dataRoot);
+  }
+});
+
+/** Every file and folder under `dir`, with each file's bytes: what a cancelled delete must leave as it is. */
+function snapshot(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return [`${entryPath}/`, ...snapshot(entryPath)];
+    return [`${entryPath} ${fs.readFileSync(entryPath).toString('base64')}`];
+  });
+}
+
+// Nothing an undo could bring back: the delete of such a task asks first, by name.
+test('deleting a task whose record cannot be read asks first: 取消 keeps the record as it is, a held Enter answers nothing, 删除 removes it', async () => {
+  test.setTimeout(240_000);
+  const dataRoot = createElectronDataRoot();
+  const mock = await startMock();
+  let launched: LaunchedApp | undefined;
+  try {
+    const ledger = await seedTwoConversations(dataRoot, mock.baseUrl);
+    const recordDir = path.dirname(ledger);
+    fs.rmSync(ledger);
+    fs.mkdirSync(ledger);
+    const before = snapshot(recordDir);
+
+    const opened = await reopen(dataRoot);
+    launched = opened.launched;
+    const page = opened.page;
+    const taskRow = page.locator('[data-conversation-row]').filter({ hasText: PROMPT });
+    const more = taskRow.getByRole('button', { name: '更多操作', exact: true });
+    const question = page.getByRole('alertdialog', { name: DELETE_QUESTION });
+    const cancel = question.getByRole('button', { name: '取消', exact: true });
+    const notices = page.getByRole('region', { name: '通知' });
+
+    // By pointer, never opened: the delete reads the record, cannot, and asks.
+    await taskRow.hover();
+    await more.click();
+    await page.getByRole('menuitem', { name: '删除会话', exact: true }).click();
+    await expect(question).toBeVisible();
+    await expect(question).toContainText(DELETE_WARNING);
+    await expect(cancel).toBeFocused();
+    await expect(question.getByRole('button')).toHaveText(['取消', '删除']);
+    await page.screenshot({ path: test.info().outputPath('delete-question.png') });
+    expect(snapshot(recordDir)).toEqual(before);
+
+    await pressWhenSettled(cancel);
+    await expect(question).toHaveCount(0);
+    await expect(taskRow).toHaveCount(1);
+    await expect(more).toBeFocused();
+    expect(snapshot(recordDir)).toEqual(before);
+    await expect(notices.getByText('会话已删除')).toHaveCount(0);
+
+    // From the keyboard, with the Enter that chooses 删除会话 held down: the question waits.
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('menu')).toBeVisible();
+    await page.keyboard.press('End');
+    await expect(page.getByRole('menuitem', { name: '删除会话', exact: true })).toBeFocused();
+    await page.keyboard.down('Enter');
+    try {
+      await expect(question).toBeVisible();
+      for (let i = 0; i < 30; i += 1) {
+        await page.keyboard.down('Enter');
+        await page.waitForTimeout(30);
+      }
+      await expect(question).toBeVisible();
+      await expect(cancel).toBeFocused();
+    } finally {
+      await page.keyboard.up('Enter');
+    }
+    await expect(question).toBeVisible();
+    await expect(taskRow).toHaveCount(1);
+    expect(snapshot(recordDir)).toEqual(before);
+
+    // 删除: the row leaves, the record is removed, no undo is offered, and the focus is on a row.
+    await pressWhenSettled(question.getByRole('button', { name: '删除', exact: true }));
+    await expect(question).toHaveCount(0);
+    await expect(taskRow).toHaveCount(0);
+    await expect.poll(() => fs.existsSync(recordDir), { timeout: 30_000 }).toBe(false);
+    await expect(notices.getByText('会话已删除')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => {
+      const active = document.activeElement;
+      return active?.hasAttribute('data-conversation-row') || active?.getAttribute('data-sidebar-action') === 'new-task';
+    })).toBe(true);
+    // The other task is untouched and opens.
+    await row(page, OTHER_PROMPT).click();
+    await expect(page.getByText(OTHER_REPLY)).toBeVisible();
   } finally {
     if (launched) await closeAbuElectron(launched.app);
     await mock.close();

@@ -245,7 +245,7 @@ function ConversationLoadError({ convId }: { convId: string }) {
       {/* No header row here either: the same 44px drag band as the welcome page. */}
       <div {...windowDragRowProps()} className="h-11 shrink-0" />
       <div className="flex flex-1 items-center justify-center">
-        <LoadError reason={t.panel.failedToReadFile} onRetry={retry} busy={retrying} />
+        <LoadError reason={t.chat.recordUnreadable} onRetry={retry} busy={retrying} />
       </div>
     </div>
   );

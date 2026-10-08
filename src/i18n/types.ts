@@ -166,6 +166,10 @@ export interface TranslationDict {
     deleteConversation: string;
     conversationDeleted: string;
     undo: string;
+    /** The question before a task whose record cannot be read is deleted: no undo can be offered for it. */
+    deleteUnreadableTitle: string;
+    /** `{name}` is the task's title. */
+    deleteUnreadableMessage: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -560,6 +564,8 @@ export interface TranslationDict {
      * names what happened and carries no instruction.
      */
     historyUnavailable: string;
+    /** The chat page of a task whose record is on disk and cannot be read, above 「重试」. */
+    recordUnreadable: string;
     /**
      * The sidecar never reached `running`, so the message was never sent (#549).
      * The chat row says 「发送失败」 and offers Retry instead of this sentence;

@@ -11,6 +11,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getI18n } from '@/i18n';
+import zhCN from '@/i18n/locales/zh-CN';
 import * as conversationStorage from '@/core/session/conversationStorage';
 import type { Message } from '@/types';
 
@@ -91,11 +92,16 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     vi.restoreAllMocks();
   });
 
-  it('says that the record cannot be read, in the existing words, with a retry button', async () => {
+  it('says that the record of this task cannot be read, in a sentence of its own, with a retry button', async () => {
     await givenUnreadableConversationInView();
     render(<ChatView />);
     const alert = screen.getByRole('alert');
-    expect(alert).toHaveTextContent(getI18n().panel.failedToReadFile);
+    expect(alert).toHaveTextContent("Couldn't read this task's record");
+    expect(getI18n().chat.recordUnreadable).toBe("Couldn't read this task's record");
+    expect(zhCN.chat.recordUnreadable).toBe('无法读取这个任务的记录');
+    // The sentence about a file stays with the places that read a file.
+    expect(zhCN.panel.failedToReadFile).toBe('无法读取文件');
+    expect(alert).not.toHaveTextContent(getI18n().panel.failedToReadFile);
     expect(screen.getByRole('button', { name: getI18n().common.retry })).toBeInTheDocument();
     expect(screen.queryByText(getI18n().chat.welcomeTitle)).toBeNull();
     expect(screen.queryByText(getI18n().common.loading)).toBeNull();
@@ -112,7 +118,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     expect(page).not.toContain('permission denied');
     const alert = screen.getByRole('alert');
     expect(alert.querySelector('[title]')).toBeNull();
-    expect(alert.textContent).toBe(`${getI18n().panel.failedToReadFile}${getI18n().common.retry}`);
+    expect(alert.textContent).toBe(`${getI18n().chat.recordUnreadable}${getI18n().common.retry}`);
   });
 
   it('retry reads once per press, is busy while it reads, keeps the explanation when the read fails again, and shows the conversation when it succeeds', async () => {
@@ -127,7 +133,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     await user.click(retry);
     await waitFor(() => expect(loadMessages).toHaveBeenCalledTimes(2));
     expect(retry).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByRole('alert')).toHaveTextContent(getI18n().panel.failedToReadFile);
+    expect(screen.getByRole('alert')).toHaveTextContent(getI18n().chat.recordUnreadable);
     // A second press while the read is in flight starts no second read.
     await user.click(retry);
     retry.focus();
@@ -137,7 +143,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     await act(async () => { fail(new Error(HOST_ERROR)); });
     await waitFor(() => expect(retry).not.toHaveAttribute('aria-disabled'));
     expect(retry).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent(getI18n().panel.failedToReadFile);
+    expect(screen.getByRole('alert')).toHaveTextContent(getI18n().chat.recordUnreadable);
     expect(everythingOnThePage()).not.toContain('EACCES');
 
     loadMessages.mockResolvedValueOnce([message('m1', 'user', 'hello'), message('m2', 'assistant', 'answer')]);
@@ -165,7 +171,7 @@ describe('ChatView: a conversation whose record cannot be read', () => {
     loadMessages.mockRejectedValueOnce(new Error(HOST_ERROR));
     await act(async () => { await useChatStore.getState().switchConversation('c1'); });
     expect(loadMessages).toHaveBeenCalledTimes(4);
-    expect(screen.getByRole('alert')).toHaveTextContent(getI18n().panel.failedToReadFile);
+    expect(screen.getByRole('alert')).toHaveTextContent(getI18n().chat.recordUnreadable);
     expect(screen.getByRole('button', { name: getI18n().common.retry })).not.toHaveAttribute('aria-disabled');
   });
 

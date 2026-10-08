@@ -73,7 +73,11 @@ vi.mock('@/components/share/ShareExportDialog', () => ({
 }));
 
 vi.mock('@/stores/chatStore', () => ({
-  useChatStore: (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.chat),
+  useChatStore: Object.assign(
+    (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.chat),
+    // What the store holds at the moment it is read: the delete of a task reads it after the record was read.
+    { getState: () => mocks.chat },
+  ),
 }));
 
 vi.mock('@/stores/projectStore', () => ({
@@ -145,6 +149,7 @@ beforeEach(() => {
     activeConversationId: null,
     conversations: {},
     conversationIndex: {},
+    loadFailures: {},
     setConversationProject: vi.fn(),
   };
   mocks.projects = { p1: project };
@@ -690,6 +695,82 @@ describe('ProjectItem — task rows', () => {
     it('moves the focus to the row before it when it was the last', async () => {
       await deleteFromKeyboard([makeConv(0), makeConv(1)], '对话1', [makeConv(0)]);
       expect(taskRow('对话0')).toHaveFocus();
+    });
+  });
+
+  // A record that is on disk and cannot be read: the delete asks first, as in the recent tasks.
+  describe('删除会话 for a task whose record cannot be read', () => {
+    const question = () => screen.queryByRole('alertdialog', { name: '删除这个任务？' });
+    const menuGone = () => act(() => vi.advanceTimersByTimeAsync(10));
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mocks.chat.conversationIndex = { c0: makeConv(0), c1: makeConv(1), c2: makeConv(2) };
+      mocks.chat.loadFailures = { c1: true };
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    async function chooseDelete(title: string) {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const view = renderItem([makeConv(0), makeConv(1), makeConv(2)]);
+      act(() => taskMore(title).focus());
+      await user.keyboard('{Enter}');
+      await user.click(await screen.findByRole('menuitem', { name: '删除会话' }));
+      await menuGone();
+      return { user, view };
+    }
+
+    it('reads the record, then asks by name, with the focus on 取消, and deletes nothing meanwhile', async () => {
+      await chooseDelete('对话1');
+      expect(mocks.chat.loadConversation).toHaveBeenCalledWith('c1');
+      const asked = question()!;
+      expect(asked).toHaveTextContent('「对话1」的记录目前读不出来，删除后无法恢复。');
+      expect(within(asked).getByRole('button', { name: '取消' })).toHaveFocus();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
+    });
+
+    it('keeps the task on 取消, with the focus back on the row\'s button', async () => {
+      await chooseDelete('对话1');
+      fireEvent.click(within(question()!).getByRole('button', { name: '取消' }));
+      await menuGone();
+      expect(question()).toBeNull();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
+      expect(taskMore('对话1')).toHaveFocus();
+    });
+
+    it('deletes once on 删除 and moves the focus to the row that took its place', async () => {
+      const { view } = await chooseDelete('对话1');
+      const confirmButton = within(question()!).getByRole('button', { name: '删除' });
+      fireEvent.click(confirmButton);
+      fireEvent.click(confirmButton);
+      await menuGone();
+      expect(mocks.chat.deleteConversation).toHaveBeenCalledExactlyOnceWith('c1');
+      view.rerender(<ProjectItem project={project} conversations={[makeConv(0), makeConv(2)]} expanded onNewTask={vi.fn()} onOpenSettings={vi.fn()} />);
+      await menuGone();
+      expect(taskRow('对话2')).toHaveFocus();
+      expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+    });
+
+    it('leaves a task alone that has gone by the time the question is answered', async () => {
+      await chooseDelete('对话1');
+      mocks.chat.conversationIndex = { c0: makeConv(0), c2: makeConv(2) };
+      fireEvent.click(within(question()!).getByRole('button', { name: '删除' }));
+      await menuGone();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
+    });
+
+    it('asks nothing for a task whose record can be read', async () => {
+      await chooseDelete('对话2');
+      expect(mocks.chat.loadConversation).toHaveBeenCalledWith('c2');
+      expect(question()).toBeNull();
+      expect(mocks.chat.deleteConversation).toHaveBeenCalledExactlyOnceWith('c2');
+    });
+
+    it('deletes nothing when the row leaves the page with its project while the question waits', async () => {
+      const { view } = await chooseDelete('对话1');
+      expect(question()).not.toBeNull();
+      view.unmount();
+      await menuGone();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
     });
   });
 

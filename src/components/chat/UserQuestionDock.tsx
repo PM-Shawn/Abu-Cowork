@@ -27,6 +27,7 @@ import { Pressable } from '@/components/ds/pressable';
 import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
 import { cn } from '@/lib/utils';
+import { userIsWritingAMessage } from './composerActivity';
 import type { UserQuestionPayload, UserQuestionResult, UserQuestionAnswerItem } from '@/types';
 
 interface Props {
@@ -81,10 +82,17 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
   const state = questionStates[page];
   const isLast = page === total - 1;
 
-  // Focus the dock so keyboard nav works as soon as it appears / pages.
+  // The user turned a page of this dock: from then on it is the dock they are working in.
+  const pageTurned = useRef(false);
+
+  // Focus the dock so keyboard nav works as soon as it appears / pages. A question that arrives
+  // while the user is writing a message leaves the focus in the message field: an Enter meant
+  // for the message must not answer the question. The dock shows all the same, before the field
+  // in the page, so Shift+Tab and the pointer reach it.
   useEffect(() => {
-    containerRef.current?.focus();
     setHighlight(0);
+    if (!pageTurned.current && userIsWritingAMessage()) return;
+    containerRef.current?.focus();
   }, [page]);
 
   // ── Selection mutators ──────────────────────────────────────────────────
@@ -150,8 +158,14 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
 
   // ── Navigation / submit ─────────────────────────────────────────────────
 
-  const goPrev = useCallback(() => setPage((p) => Math.max(0, p - 1)), []);
-  const goNext = useCallback(() => setPage((p) => Math.min(total - 1, p + 1)), [total]);
+  const goPrev = useCallback(() => {
+    pageTurned.current = true;
+    setPage((p) => Math.max(0, p - 1));
+  }, []);
+  const goNext = useCallback(() => {
+    pageTurned.current = true;
+    setPage((p) => Math.min(total - 1, p + 1));
+  }, [total]);
 
   // Build the answer payload from a given snapshot of states. Pure so callers
   // can submit with a freshly-derived snapshot without waiting on a re-render.

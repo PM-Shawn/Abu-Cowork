@@ -20,7 +20,7 @@ import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { resolveUserQuestion } from '@/core/agent/permissionBridge';
 import { Button, IconButton } from '@/components/ds/button';
-import { dropsHeldRepeat } from '@/components/ds/heldKey';
+import { dropsHeldEscape, dropsHeldRepeat } from '@/components/ds/heldKey';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
@@ -236,6 +236,8 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
     // arrives or the page turns, and the Enter that sent the message, or that answered the page
     // before, may still be down: its repeats choose nothing and confirm nothing (ds/heldKey.ts).
     if (dropsHeldRepeat(e)) return;
+    // Nor does a held Escape cancel a question that arrives: one press of Escape cancels.
+    if (e.key === 'Escape' && dropsHeldEscape(e)) return;
 
     switch (e.key) {
       case 'ArrowDown':

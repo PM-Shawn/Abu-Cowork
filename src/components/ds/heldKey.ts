@@ -5,7 +5,7 @@ import { useLayoutEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEv
 // key still down when the focus is handed to another control, or when a layer appears with the
 // focus on one of its buttons, would press what the user has not read.
 //
-// Two rules, both about repeats only (`event.repeat`). The first press of a key always acts.
+// Three rules, all about repeats only (`event.repeat`). The first press of a key always acts.
 //   - A control that acts at once (a button, a switch, a link) acts once per press of Enter or
 //     Space: `dropsHeldRepeat`, `oncePerPress`. A text field drops a repeating Enter only:
 //     `dropsHeldEnter`.
@@ -13,6 +13,9 @@ import { useLayoutEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEv
 //     `useHeldKeys`. Such a key, of whatever kind, does nothing in the layer until it is released
 //     and pressed again. Keys pressed inside the layer repeat as its controls define (arrows in a
 //     list, Tab, Backspace in a field).
+//   - A layer acts once per press of Escape: `dropsHeldEscape`. An Escape still down when an
+//     approval arrives would refuse it unread, and one that has closed a layer would go on to
+//     close the layer under it.
 
 interface HeldKeyEvent {
   key: string;
@@ -50,6 +53,20 @@ export function dropsHeldRepeat(event: HeldKeyEvent): boolean {
 // input method is left alone.
 export function dropsHeldEnter(event: TextKeyEvent): boolean {
   if (!event.repeat || event.key !== 'Enter' || composing(event)) return false;
+  event.preventDefault();
+  return true;
+}
+
+// For whatever acts on Escape: a layer's `onEscapeKeyDown` (Radix hears the key on the document,
+// before any handler on the layer's content, and asks the top layer there), and a listener of its
+// own. True when the event was the repeat of a held Escape: its default is prevented, which is
+// what tells Radix, and every listener after it, that the key is used up. So the Escape that was
+// down when a layer appeared, was uncovered or came back does nothing to it, and the Escape that
+// closed one layer does not go on to the next: one press, one thing closed, refused or asked.
+// It reads `repeat` alone and keeps nothing, so it also holds for an Escape whose first press the
+// page never heard, and no lost key-up can leave Escape without effect: a new press is no repeat.
+export function dropsHeldEscape(event: { repeat: boolean; preventDefault: () => void }): boolean {
+  if (!event.repeat) return false;
   event.preventDefault();
   return true;
 }
@@ -126,8 +143,8 @@ export function trackKeysDown(): () => void {
 // native view, another window), and every key after the window lost the focus. Enter and Space
 // are still dropped by the controls themselves and by the lists below.
 //
-// Escape is left alone: Radix handles it on the document before these handlers run, and what a
-// held Escape does to a layer is that layer's own rule.
+// Escape is left alone here: Radix handles it on the document before these handlers run. Its
+// repeats are dropped where the layer hears of the key (`dropsHeldEscape`).
 //
 // `chooses`: the layer is a list whose rows act on the key-down of these keys (a menu and a
 // select list choose on Enter and Space, a list with a search box on Enter). Their repeats are

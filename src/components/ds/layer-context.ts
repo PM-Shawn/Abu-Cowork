@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useId, useLayoutEffect, useRef, useState } from 'react';
+import { dropsHeldEscape } from './heldKey';
 
 // An alert is a question about whatever is on screen, so it stacks over an open dialog.
 // An approval decides whether Abu does something: only its owner closes it. Other layers wait
@@ -139,7 +140,10 @@ export interface LayerHandle {
   returnFocus: { current: HTMLElement | null };
   // Passed to the Radix Content. A layer stays on the page while it fades out and Radix still
   // counts it as the top layer: an Escape that reaches it then goes to the top open layer.
-  onEscapeKeyDown: (event: Event) => void;
+  // One press of Escape acts once: the repeats of a held Escape are used up here and do nothing
+  // (heldKey.ts), so the key that was down when the layer appeared does not close it, and the key
+  // that closed a layer does not go on to the one under it.
+  onEscapeKeyDown: (event: KeyboardEvent) => void;
 }
 
 // Radix turns pointer input off on <body> while a modal layer is on the page and turns it back on
@@ -238,7 +242,9 @@ export function useLayer(
     releaseOwnerlessPointerLock();
     registry.left(id);
   }, [registry, id]);
-  const onEscapeKeyDown = useCallback((event: Event) => {
+  const onEscapeKeyDown = useCallback((event: KeyboardEvent) => {
+    // The repeat of a held Escape: this layer leaves it unused, open or closing.
+    if (dropsHeldEscape(event)) return;
     if (latest.current.open) return;
     // Radix would use the key up on this layer, which is already closing.
     event.preventDefault();

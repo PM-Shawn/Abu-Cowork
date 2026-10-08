@@ -445,7 +445,31 @@ describe('UserQuestionDock', () => {
       expect(fireEvent.keyDown(field, { key: 'Backspace', code: 'Backspace', repeat: true })).toBe(true);
     });
 
-    it('keeps walking the options with a held arrow, and a held Escape still cancels', () => {
+    it('cancels on one press of Escape, at the first moment', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-escape');
+
+      pressed('Escape');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-escape', null);
+    });
+
+    it('is not cancelled by the repeats of a held Escape; released and pressed again, Escape cancels', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-held-escape');
+
+      for (let i = 0; i < 5; i += 1) expect(repeated('Escape')).toBe(false);
+
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+
+      released('Escape');
+      pressed('Escape');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-escape', null);
+    });
+
+    it('keeps walking the options with a held arrow', () => {
       const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
       renderDock(SINGLE_PAYLOAD, 'tc-held-arrow');
 
@@ -458,12 +482,6 @@ describe('UserQuestionDock', () => {
       pressed('ArrowUp');
       pressed('Enter');
       expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-arrow', answered(['简洁']));
-
-      cleanup();
-      resolveSpy.mockClear();
-      renderDock(SINGLE_PAYLOAD, 'tc-held-escape');
-      repeated('Escape');
-      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-escape', null);
     });
   });
 });

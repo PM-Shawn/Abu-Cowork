@@ -4,7 +4,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { Button, IconButton } from './button';
-import { useHeldKeys } from './heldKey';
+import { dropsHeldEscape, useHeldKeys } from './heldKey';
 import { AppIcons } from './icons';
 import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
@@ -304,6 +304,8 @@ export function Dialog({
   // layer before. Every kind of window, and its question about unsaved input, which share one
   // mark. Marked wherever the settle interval starts, and when the question is answered: the
   // window is in use again. Keys pressed inside repeat as their controls define (heldKey.ts).
+  // Escape is not among them: its repeats are dropped whenever the key went down, where Radix
+  // asks the window about the key (`onEscapeKeyDown` below, through the layer's handler).
   const heldKeys = useHeldKeys();
   const {
     id, onCloseAutoFocus, held, aside, admitted, returnFocus: returnTo, onEscapeKeyDown: passEscapeWhileClosing,
@@ -585,9 +587,11 @@ export function Dialog({
             data-ds-layer
             data-ds-motion
             data-electron-no-drag
-            // The question is fading out: the key goes to the top open layer, as for any closing layer.
+            // One press of Escape asks, the next one takes the question back: the repeats of the
+            // press that asked leave it on the page (heldKey.ts). While the question fades out the
+            // key goes to the top open layer, as for any closing layer.
             onEscapeKeyDown={(event) => {
-              if (discardAsked) return;
+              if (dropsHeldEscape(event) || discardAsked) return;
               event.preventDefault();
               registry.escapeTop();
             }}

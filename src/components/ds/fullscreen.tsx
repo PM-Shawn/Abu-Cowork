@@ -188,7 +188,9 @@ export function FullscreenSurface({
   useEffect(() => {
     if (!shown) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      // One press of Escape leaves one thing: the repeats of a held Escape (down when the surface
+      // opened, or the press that closed a layer over it) leave the surface open (heldKey.ts).
+      if (event.key !== 'Escape' || event.repeat) return;
       // An Escape pressed inside a menu, a popover or a question belongs to that layer.
       const within = event.target instanceof Element ? event.target.closest('[data-ds-layer]') : null;
       if (within && within !== rootRef.current) return;

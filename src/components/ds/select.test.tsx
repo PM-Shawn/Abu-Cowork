@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { useState } from 'react';
 import ReactDOM from 'react-dom';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
@@ -555,5 +555,36 @@ describe('keys held when a list opens', () => {
     expect(screen.getByRole('option', { name: 'DeepSeek V4 Pro' })).toHaveAttribute('aria-selected', 'true');
     down(search, 'Enter');
     expect(onValueChange.mock.calls).toEqual([['deepseek']]);
+  });
+
+  it('Select: an Escape that was down when the list opened does not close it; released and pressed again, Escape closes it', async () => {
+    const user = userEvent.setup();
+    render(<SelectHarness />, { wrapper: DesignSystemProvider });
+    down(document.body, 'Escape');
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
+    expect(await screen.findByRole('listbox')).toBeInTheDocument();
+    for (let i = 0; i < 5; i += 1) repeat(focused(), 'Escape');
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    up(focused(), 'Escape');
+    down(focused(), 'Escape');
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+  });
+
+  it('Combobox: an Escape that was down when the list opened does not close it; released and pressed again, Escape closes it', async () => {
+    const user = userEvent.setup();
+    render(
+      <Combobox label="Model" value="" onValueChange={() => undefined} options={MODELS} placeholder="Choose a model" searchPlaceholder="Search models" emptyText="No matching model" />,
+      { wrapper: DesignSystemProvider },
+    );
+    down(document.body, 'Escape');
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
+    const search = await screen.findByRole('combobox', { name: 'Search models' });
+    for (let i = 0; i < 5; i += 1) repeat(search, 'Escape');
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(search).toBeInTheDocument();
+    up(search, 'Escape');
+    down(search, 'Escape');
+    await waitFor(() => expect(screen.queryByRole('combobox', { name: 'Search models' })).toBeNull());
   });
 });

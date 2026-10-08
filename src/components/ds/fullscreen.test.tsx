@@ -24,6 +24,8 @@ const classes = (element: Element) => (element.getAttribute('class') ?? '').spli
 // The surface's own element: the parent of the content given to it.
 const surfaceOf = (content: HTMLElement) => content.parentElement as HTMLElement;
 const escape = () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' }); };
+// The repeat of an Escape that stays down.
+const heldEscape = () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape', code: 'Escape', repeat: true }); };
 // What a layer does once it has left the page runs one timer tick later.
 const settle = () => { act(() => { vi.runOnlyPendingTimers(); }); };
 // A press from the keyboard: the button has the focus, as it has after a real press.
@@ -397,6 +399,40 @@ describe('FullscreenSurface, open in place (not a layer)', () => {
     expect(onExit).toHaveBeenCalledTimes(1);
   });
 
+  // A held Escape repeats. One press leaves one thing.
+  it('stays under an Escape that was down when it opened; released and pressed again, Escape leaves it', () => {
+    const onExit = vi.fn();
+    const view = render(<Stage open={false} onExit={onExit} />);
+    escape();
+    view.rerender(<Stage open onExit={onExit} />);
+    for (let i = 0; i < 5; i += 1) heldEscape();
+    expect(onExit).not.toHaveBeenCalled();
+    fireEvent.keyUp(document.body, { key: 'Escape', code: 'Escape' });
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays under the Escape that closed a window over it, for as long as that key stays down', () => {
+    const onExit = vi.fn();
+    function Page() {
+      const [dialog, setDialog] = useState(true);
+      return <Stage open onExit={onExit} dialog={dialog} onDialogChange={setDialog} />;
+    }
+    render(<Page />);
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    // While the window fades, and once it has gone.
+    for (let i = 0; i < 3; i += 1) heldEscape();
+    settle();
+    settle();
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+    for (let i = 0; i < 5; i += 1) heldEscape();
+    expect(onExit).not.toHaveBeenCalled();
+    fireEvent.keyUp(document.body, { key: 'Escape', code: 'Escape' });
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves an Escape pressed inside a menu to the menu', () => {
     const onExit = vi.fn();
     render(
@@ -764,6 +800,19 @@ describe('FullscreenSurface as a layer', () => {
     escape();
     expect(onExit).toHaveBeenCalledTimes(1);
     settle();
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays under an Escape that was down when it opened; released and pressed again, Escape leaves it', () => {
+    const onExit = vi.fn();
+    render(<Owned layer scrim onExit={onExit} />);
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    enterFullscreen();
+    settle();
+    for (let i = 0; i < 5; i += 1) heldEscape();
+    expect(onExit).not.toHaveBeenCalled();
+    fireEvent.keyUp(document.body, { key: 'Escape', code: 'Escape' });
     escape();
     expect(onExit).toHaveBeenCalledTimes(1);
   });

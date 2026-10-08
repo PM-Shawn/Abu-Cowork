@@ -2,7 +2,7 @@
 import { createElement } from 'react';
 import { act, cleanup, fireEvent, render, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { dropsHeldEnter, dropsHeldRepeat, keysDown, oncePerPress, trackKeysDown, useHeldKeys } from './heldKey';
+import { dropsHeldEnter, dropsHeldEscape, dropsHeldRepeat, keysDown, oncePerPress, trackKeysDown, useHeldKeys } from './heldKey';
 
 // A key event as a control's handler receives it.
 function keyEvent(init: { key: string; code?: string; repeat?: boolean; keyCode?: number; isComposing?: boolean }) {
@@ -121,6 +121,34 @@ describe('dropsHeldRepeat: a control acts once per press of Enter or Space', () 
     const event = keyEvent(init);
     expect(dropsHeldRepeat(event)).toBe(false);
     expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+describe('dropsHeldEscape: a layer acts once per press of Escape', () => {
+  let stop: () => void;
+  beforeEach(() => { stop = trackKeysDown(); });
+  afterEach(() => { stop(); });
+
+  it('drops the repeat of Escape, whether or not the page heard its first press', () => {
+    const unheard = keyEvent({ key: 'Escape', code: 'Escape', repeat: true });
+    expect(dropsHeldEscape(unheard)).toBe(true);
+    expect(unheard.preventDefault).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    const heard = keyEvent({ key: 'Escape', code: 'Escape', repeat: true });
+    expect(dropsHeldEscape(heard)).toBe(true);
+    expect(heard.preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it('never drops a first press: not while the page believes the key is still down, nor after the window lost the focus', () => {
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    // The key-up was never heard: the key is released and pressed again.
+    const again = keyEvent({ key: 'Escape', code: 'Escape', repeat: false });
+    expect(dropsHeldEscape(again)).toBe(false);
+    expect(again.preventDefault).not.toHaveBeenCalled();
+    fireEvent.blur(window);
+    const afterBlur = keyEvent({ key: 'Escape', code: 'Escape', repeat: false });
+    expect(dropsHeldEscape(afterBlur)).toBe(false);
+    expect(afterBlur.preventDefault).not.toHaveBeenCalled();
   });
 });
 
@@ -291,7 +319,7 @@ describe('useHeldKeys: a layer and the keys that were down when it was shown', (
     expect(heard).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves Escape alone: the layer below the handlers decides what a held Escape does', () => {
+  it('leaves Escape alone: Radix hears it on the document, and the layer drops its repeats there (dropsHeldEscape)', () => {
     down(document.body, 'Escape');
     const { heard, inside, shown } = setup();
     shown();

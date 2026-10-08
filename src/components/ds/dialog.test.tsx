@@ -3059,15 +3059,46 @@ describe('keys held: a key that was down before a layer was shown', () => {
       expect(answers).toEqual(['cancel']);
     });
 
-    it('refuses an approval that arrives while Escape is held down: a held Escape is not dropped', () => {
+    it('refuses an approval with one press of Escape right after it appeared, at the first moment', () => {
       const answers: Answer[] = [];
-      const onAnswer = (answer: Answer) => { answers.push(answer); };
-      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
-      press('Escape');
-      view.rerender(<Approval onAnswer={onAnswer} />);
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
       expect(by('Cancel')).toHaveFocus();
-      repeat('Escape');
+      press('Escape');
       expect(answers).toEqual(['refuse']);
+    });
+
+    it('closes a window with one press of Escape, and leaves one only its own buttons may close open', () => {
+      const onPlain = vi.fn();
+      const onKept = vi.fn();
+      const view = show(<Dialog open onOpenChange={onPlain} title="Rename task"><Button>Save</Button></Dialog>);
+      press('Escape');
+      expect(onPlain.mock.calls).toEqual([[false]]);
+      view.unmount();
+      show(<Dialog open onOpenChange={onKept} dismissible={false} title="Before you start"><Button>Agree</Button></Dialog>);
+      press('Escape');
+      release('Escape');
+      press('Escape');
+      expect(onKept).not.toHaveBeenCalled();
+    });
+
+    it('asks about unsaved input with one press of Escape, and takes the question back with the next press', () => {
+      const onForm = vi.fn();
+      show(<Dialog open onOpenChange={onForm} dirty title="Add a service"><input aria-label="Address" /></Dialog>);
+      press('Escape');
+      release('Escape');
+      expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+      press('Escape');
+      tick();
+      expect(screen.queryByRole('alertdialog', { name: 'Discard these changes?' })).toBeNull();
+      expect(onForm).not.toHaveBeenCalled();
+    });
+
+    it('answers a question with cancel on one press of Escape', async () => {
+      show(<Capture onReady={keepConfirm} />);
+      const heard = askQuestion();
+      press('Escape');
+      await flush();
+      expect(heard).toEqual([false]);
     });
 
     it('takes a click that comes with no key and no pointer (assistive technology) while a key is down from before', () => {
@@ -3373,6 +3404,188 @@ describe('keys held: a key that was down before a layer was shown', () => {
       expect(repeat('Enter')).toBe(false);
       // The field heard the Escape that asked, and nothing since.
       expect(heard).toEqual(['Escape']);
+    });
+  });
+
+  // Radix hears Escape on the document and asks the top layer. A held Escape repeats: each repeat
+  // would refuse, close or ask again. One press of Escape acts once; its repeats act on nothing.
+  describe('a held Escape', () => {
+    it('does not refuse an approval that arrives while it is down; released and pressed again, it refuses', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Escape');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      expect(by('Cancel')).toHaveFocus();
+      for (let i = 0; i < 20; i += 1) repeat('Escape');
+      expect(answers).toEqual([]);
+      expect(onPage('Run this command?')).toBe(true);
+      expect(by('Cancel')).toHaveFocus();
+
+      release('Escape');
+      expect(answers).toEqual([]);
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('refuses with the next press after a key-up the page never heard', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Escape');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      repeat('Escape');
+      expect(answers).toEqual([]);
+      // Released while another application had the focus.
+      fireEvent.blur(window);
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('refuses with the next press even when the window never reported losing the focus', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Escape');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      repeat('Escape');
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('does not refuse an approval with repeats whose first press the page never heard', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(answers).toEqual([]);
+    });
+
+    it('does not refuse the approval that follows the one it refused', () => {
+      const answers: string[] = [];
+      const page = (first: boolean, second: boolean) => (
+        <>
+          <Dialog key="1" open={first} onOpenChange={(next) => { if (!next) answers.push('first: refuse'); }} layer="approval" role="alertdialog" outsidePress="ignore" title="First command" initialFocus={cancelOf}
+            footer={<Button data-approval-cancel="">Cancel</Button>} />
+          <Dialog key="2" open={second} onOpenChange={(next) => { if (!next) answers.push('second: refuse'); }} layer="approval" role="alertdialog" outsidePress="ignore" title="Second command" initialFocus={cancelOf}
+            footer={<Button data-approval-cancel="">Cancel</Button>} />
+        </>
+      );
+      const view = show(page(true, true));
+      later();
+      expect(onPage('First command')).toBe(true);
+      press('Escape');
+      expect(answers).toEqual(['first: refuse']);
+      view.rerender(page(false, true));
+      // While the first one fades, and once the second one is on the page.
+      for (let i = 0; i < 3; i += 1) repeat('Escape');
+      tick();
+      later();
+      expect(onPage('Second command')).toBe(true);
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(answers).toEqual(['first: refuse']);
+      release('Escape');
+      press('Escape');
+      expect(answers).toEqual(['first: refuse', 'second: refuse']);
+    });
+
+    it('does not refuse the approval under the question it cancelled', async () => {
+      const answers: Answer[] = [];
+      show(
+        <>
+          <Approval onAnswer={(answer) => answers.push(answer)} />
+          <Capture onReady={keepConfirm} />
+        </>,
+      );
+      later();
+      const heard = askQuestion();
+      press('Escape');
+      await flush();
+      expect(heard).toEqual([false]);
+      // While the question fades, and once the approval is uncovered.
+      repeat('Escape');
+      tick();
+      later();
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(answers).toEqual([]);
+      release('Escape');
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('does not close a window that opens while it is down, nor answer a question asked then', async () => {
+      const onWindow = vi.fn();
+      const page = (open: boolean) => (
+        <>
+          <Dialog open={open} onOpenChange={onWindow} title="Rename task"><Button>Save</Button></Dialog>
+          <Capture onReady={keepConfirm} />
+        </>
+      );
+      const view = show(page(false));
+      press('Escape');
+      view.rerender(page(true));
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(onWindow).not.toHaveBeenCalled();
+      const heard = askQuestion();
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      await flush();
+      expect(heard).toEqual([]);
+      expect(onWindow).not.toHaveBeenCalled();
+      release('Escape');
+      press('Escape');
+      await flush();
+      expect(heard).toEqual([false]);
+      expect(onWindow).not.toHaveBeenCalled();
+    });
+
+    it('closes one window per press: the window around the one it closed stays', () => {
+      const onOuter = vi.fn();
+      function Page() {
+        const [inner, setInner] = useState(true);
+        return (
+          <Dialog open onOpenChange={onOuter} title="Connector">
+            <Button>Edit</Button>
+            <Dialog open={inner} onOpenChange={setInner} title="Edit connector"><Button>Save</Button></Dialog>
+          </Dialog>
+        );
+      }
+      show(<Page />);
+      later();
+      expect(onPage('Edit connector')).toBe(true);
+      press('Escape');
+      // While the inner window fades, and once it has gone.
+      for (let i = 0; i < 3; i += 1) repeat('Escape');
+      tick();
+      later();
+      expect(onPage('Edit connector')).toBe(false);
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(onOuter).not.toHaveBeenCalled();
+      release('Escape');
+      press('Escape');
+      expect(onOuter.mock.calls).toEqual([[false]]);
+    });
+
+    it('asks about unsaved input once, and the question stays on the page', () => {
+      const onForm = vi.fn();
+      show(<Dialog open onOpenChange={onForm} dirty title="Add a service"><input aria-label="Address" /></Dialog>);
+      later();
+      press('Escape');
+      expect(by('Keep editing')).toHaveFocus();
+      // Each repeat used to take the question back, and the next one to ask it again.
+      for (let i = 0; i < 6; i += 1) {
+        repeat('Escape');
+        tick();
+        expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+      }
+      expect(by('Keep editing')).toHaveFocus();
+      expect(onForm).not.toHaveBeenCalled();
+    });
+
+    it('does nothing more to a window only its own buttons may close', () => {
+      const onKept = vi.fn();
+      show(<Dialog open onOpenChange={onKept} dismissible={false} title="Before you start"><Button>Agree</Button></Dialog>);
+      press('Escape');
+      for (let i = 0; i < 3; i += 1) repeat('Escape');
+      expect(onKept).not.toHaveBeenCalled();
     });
   });
 

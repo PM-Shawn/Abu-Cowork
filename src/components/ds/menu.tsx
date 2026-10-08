@@ -1,9 +1,9 @@
 import { ContextMenu as ContextMenuPrimitive, DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import { useId, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
+import { useId, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type { DataAttributes } from './dialog';
-import { dropsHeldRepeat, useHeldKeys } from './heldKey';
+import { dropsHeldEscape, dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
@@ -57,7 +57,7 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   // The repeat of a held key opens nothing, whatever the trigger is made of (Enter, Space, and
   // the arrow that opens the menu): a prevented key-down is one Radix leaves alone, and the
   // browser makes no click from it. A new press opens. A working trigger takes none of the three.
-  const dropOpeningKey = (event: KeyboardEvent<HTMLElement>) => {
+  const dropOpeningKey = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (dropsHeldRepeat(event)) return;
     const opens = event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown';
     if (opens && isWorking(event.currentTarget)) event.preventDefault();
@@ -144,6 +144,8 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
   // The key that opened the nested list chooses nothing in it while it stays down (see Menu).
   const heldKeys = useHeldKeys(false, 'enter-space');
   const markShown = (open: boolean) => { if (open) heldKeys.mark(); };
+  // Escape in the nested list closes the whole menu: once per press, like the menu's own list.
+  const dropHeldEscape = (event: KeyboardEvent) => { dropsHeldEscape(event); };
   const triggerBody = (
     <>
       {icon && <Icon icon={icon} size="sm" className="text-label-secondary" />}
@@ -160,6 +162,7 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
         <DropdownMenuPrimitive.Portal container={container}>
           <DropdownMenuPrimitive.SubContent
             {...heldKeys.handlers}
+            onEscapeKeyDown={dropHeldEscape}
             sideOffset={4}
             collisionPadding={EDGE_GAP}
             data-ds-motion
@@ -178,6 +181,7 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
       <ContextMenuPrimitive.Portal container={container}>
         <ContextMenuPrimitive.SubContent
           {...heldKeys.handlers}
+          onEscapeKeyDown={dropHeldEscape}
           sideOffset={4}
           collisionPadding={EDGE_GAP}
           data-ds-motion

@@ -886,14 +886,101 @@ describe('keys held in a menu', () => {
     expect(onPick.mock.calls).toEqual([['Archive']]);
   });
 
-  it('leaves Escape to the menu: a held Escape closes it', async () => {
+  it('closes on one press of Escape', async () => {
+    const user = userEvent.setup();
+    render(<FileMenu onPick={() => undefined} />, { wrapper: DesignSystemProvider });
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    down(focused(), 'Escape');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('is not closed by an Escape that was down when it opened; released and pressed again, Escape closes it', async () => {
     const user = userEvent.setup();
     render(<FileMenu onPick={() => undefined} />, { wrapper: DesignSystemProvider });
     down(document.body, 'Escape');
     await user.click(screen.getByRole('button', { name: 'Actions' }));
     expect(screen.getByRole('menu')).toBeInTheDocument();
-    repeat(focused(), 'Escape');
+    for (let i = 0; i < 5; i += 1) repeat(focused(), 'Escape');
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    up(focused(), 'Escape');
+    down(focused(), 'Escape');
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('is not closed from its nested list by an Escape that was down before', async () => {
+    const user = userEvent.setup();
+    render(<FileMenu onPick={() => undefined} />, { wrapper: DesignSystemProvider });
+    down(document.body, 'Escape');
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    screen.getByRole('menuitem', { name: 'Move to' }).focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await screen.findByRole('menuitem', { name: 'Launch plan' })).toHaveFocus();
+    for (let i = 0; i < 5; i += 1) repeat(focused(), 'Escape');
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.getByRole('menuitem', { name: 'Launch plan' })).toBeInTheDocument();
+    expect(screen.getAllByRole('menu')).toHaveLength(2);
+  });
+
+  it('is not closed, as a context menu, by an Escape that was down when it opened', async () => {
+    render(
+      <ContextMenu content={<MenuItem>Copy</MenuItem>}><div>Message body</div></ContextMenu>,
+      { wrapper: DesignSystemProvider },
+    );
+    down(document.body, 'Escape');
+    fireEvent.contextMenu(screen.getByText('Message body'));
+    (await screen.findByRole('menuitem', { name: 'Copy' })).focus();
+    for (let i = 0; i < 5; i += 1) repeat(focused(), 'Escape');
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    up(focused(), 'Escape');
+    down(focused(), 'Escape');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('closes alone under an Escape that stays down: the window it is in stays, while the menu fades and after', async () => {
+    const user = userEvent.setup();
+    const onWindow = vi.fn();
+    keepClosingLayersOnScreen();
+    render(
+      <Dialog open onOpenChange={onWindow} title="Task"><FileMenu onPick={() => undefined} /></Dialog>,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    down(focused(), 'Escape');
+    for (let i = 0; i < 5; i += 1) repeat(focused(), 'Escape');
+    expect(onWindow).not.toHaveBeenCalled();
+    up(focused(), 'Escape');
+    // A new press while the menu still fades acts on the window, as before.
+    down(focused(), 'Escape');
+    expect(onWindow.mock.calls).toEqual([[false]]);
+  });
+
+  it('does not let an Escape that was down in an open menu close the window that opens over it', async () => {
+    const user = userEvent.setup();
+    const onWindow = vi.fn();
+    function Page({ dialog }: { dialog: boolean }) {
+      return (
+        <>
+          <FileMenu onPick={() => undefined} />
+          <Dialog open={dialog} onOpenChange={onWindow} title="Rename task"><Button>Save</Button></Dialog>
+        </>
+      );
+    }
+    const view = render(<Page dialog={false} />, { wrapper: DesignSystemProvider });
+    down(document.body, 'Escape');
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    repeat(focused(), 'Escape');
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    view.rerender(<Page dialog />);
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Rename task' })).toBeInTheDocument());
+    for (let i = 0; i < 5; i += 1) repeat(focused(), 'Escape');
+    expect(onWindow).not.toHaveBeenCalled();
+    up(focused(), 'Escape');
+    down(focused(), 'Escape');
+    expect(onWindow.mock.calls).toEqual([[false]]);
   });
 });
 
@@ -1154,6 +1241,20 @@ describe('keys held when a popover opens', () => {
     expect(fireEvent.keyDown(field, { key: 'a', code: 'KeyA' })).toBe(true);
     expect(fireEvent.keyDown(field, { key: 'a', code: 'KeyA', repeat: true })).toBe(true);
     expect(heard).toEqual(['a', 'a']);
+  });
+
+  it('is not closed by an Escape that was down when it opened; released and pressed again, Escape closes it', async () => {
+    const user = userEvent.setup();
+    render(<Popover trigger={<Button>Details</Button>}>Popover body</Popover>, { wrapper: DesignSystemProvider });
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    await user.click(screen.getByRole('button', { name: 'Details' }));
+    const body = () => document.activeElement ?? document.body;
+    for (let i = 0; i < 5; i += 1) fireEvent.keyDown(body(), { key: 'Escape', code: 'Escape', repeat: true });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.getByText('Popover body')).toBeInTheDocument();
+    fireEvent.keyUp(body(), { key: 'Escape', code: 'Escape' });
+    fireEvent.keyDown(body(), { key: 'Escape', code: 'Escape' });
+    await waitFor(() => expect(screen.queryByText('Popover body')).toBeNull());
   });
 });
 

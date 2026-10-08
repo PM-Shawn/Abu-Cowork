@@ -3,7 +3,7 @@ import type { LucideIcon } from 'lucide-react';
 import { useId, useRef, type KeyboardEvent } from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './icon';
-import { dropsHeldRepeat, useHeldKeys } from './heldKey';
+import { dropsHeldEscape, dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
 import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
@@ -114,6 +114,9 @@ export function Select({ value, onValueChange, onReselect, options, label, place
           position="popper"
           sideOffset={4}
           collisionPadding={EDGE_GAP}
+          // One press of Escape closes one thing: an Escape that was down when the list opened
+          // leaves it open, as in every other layer (heldKey.ts).
+          onEscapeKeyDown={(event) => { dropsHeldEscape(event); }}
           onCloseAutoFocus={(event) => {
             // The layer's handler first: it prevents the default when the registry closed this list.
             onCloseAutoFocus(event);

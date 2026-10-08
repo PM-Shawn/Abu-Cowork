@@ -42,7 +42,7 @@ describe('buildFullHtml — fullscreen wrapper', () => {
   it('injects the design system into the FRAGMENT-wrap branch', () => {
     // A widget styled inline with .w-*/--w-* must render identically
     // fullscreen — the wrap has to ship the same design CSS as RECEIVER_HTML.
-    const html = buildFullHtml('<div class="w-card">hi</div>');
+    const html = buildFullHtml('<div class="w-card">hi</div>', false);
     expect(html).toContain('.w-card {');
     expect(html).toContain('--w-primary:');
   });
@@ -51,9 +51,26 @@ describe('buildFullHtml — fullscreen wrapper', () => {
     // Complete documents render verbatim; our classes don't apply there, so we
     // must NOT inject the design system into them.
     const doc = '<!DOCTYPE html><html><head></head><body><p>x</p></body></html>';
-    const out = buildFullHtml(doc);
+    const out = buildFullHtml(doc, false);
     expect(out).not.toContain('.w-card {');
     expect(out).not.toContain('--w-primary:');
+  });
+
+  // The enlarged fragment follows the appearance through the same class as the inline frame.
+  it('stamps the dark class on the body of an enlarged fragment in the dark appearance', () => {
+    expect(buildFullHtml('<p>fixture widget</p>', true)).toContain('<body class="dark"><div class="abu-fs-center">');
+  });
+
+  it('leaves the body of an enlarged fragment without the class in the light appearance', () => {
+    const html = buildFullHtml('<p>fixture widget</p>', false);
+    expect(html).toContain('<body><div class="abu-fs-center">');
+    expect(html).not.toContain('class="dark"');
+  });
+
+  it('hands a complete document on unchanged in either appearance', () => {
+    const doc = '<!DOCTYPE html><html><head></head><body><p>x</p></body></html>';
+    expect(buildFullHtml(doc, true)).toBe(doc);
+    expect(buildFullHtml(doc, false)).toBe(doc);
   });
 });
 
@@ -62,8 +79,17 @@ describe('buildFullHtml — fullscreen wrapper', () => {
 // default and dark under the `dark` class the host stamps on <body>.
 describe.each([
   ['the inline frame', () => buildReceiverHtml(false)],
-  ['the enlarged fragment', () => buildFullHtml('<p>fixture widget</p>')],
+  ['the enlarged fragment', () => buildFullHtml('<p>fixture widget</p>', false)],
 ])('base styles of %s', (_name, build) => {
+  // The page color and the text color of the frame come from the kit's variables (`--w-bg`,
+  // `--w-fg`), which follow the appearance; no second rule gives the body a color.
+  it('color the body in one rule, from the kit', () => {
+    const colored = [...build().matchAll(/(?:^|[\s}])body\s*\{([^}]*)\}/g)]
+      .map((match) => match[1].trim())
+      .filter((declarations) => /(?:^|[;\s])(?:color|background)\s*:/.test(declarations));
+    expect(colored).toEqual(['background: var(--w-bg); color: var(--w-fg);']);
+  });
+
   it('do not read the text color of the host page', () => {
     expect(build()).not.toContain('var(--abu-text-primary)');
   });

@@ -7,7 +7,7 @@ import { initLanguage } from '@/i18n';
 import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableCodeBlock';
 
 const CODE = '<p>fixture widget</p>';
-const buildFullscreenHtml = (code: string) => `<!doctype html><html><body data-fullscreen-fixture>${code}</body></html>`;
+const buildFullscreenHtml = (code: string, isDark: boolean) => `<!doctype html><html><body data-fullscreen-fixture="${isDark ? 'dark' : 'light'}">${code}</body></html>`;
 
 function widgetConfig(): CodeBlockRendererConfig {
   return {
@@ -37,6 +37,7 @@ describe('RenderableCodeBlock fullscreen', () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    document.documentElement.classList.remove('dark');
   });
 
   it('draws the enlarged widget in a new frame that may run scripts and nothing else', async () => {
@@ -47,8 +48,33 @@ describe('RenderableCodeBlock fullscreen', () => {
 
     const frame = fullscreenFrame();
     expect(frame).not.toBeNull();
-    expect(frame).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE));
+    expect(frame).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, false));
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+  });
+
+  it('builds the enlarged widget for the dark appearance while the page carries the dark class', async () => {
+    document.documentElement.classList.add('dark');
+    await renderWidget();
+    fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
+    expect(fullscreenFrame()).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, true));
+  });
+
+  it('rebuilds the enlarged widget when the appearance changes while it is open', async () => {
+    await renderWidget();
+    fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
+    expect(fullscreenFrame()).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, false));
+
+    await act(async () => {
+      document.documentElement.classList.add('dark');
+      await Promise.resolve();
+    });
+    expect(fullscreenFrame()).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, true));
+
+    await act(async () => {
+      document.documentElement.classList.remove('dark');
+      await Promise.resolve();
+    });
+    expect(fullscreenFrame()).toHaveAttribute('srcdoc', buildFullscreenHtml(CODE, false));
   });
 
   it('opens the enlarged widget as a viewer window, on its close button and not in the frame', async () => {

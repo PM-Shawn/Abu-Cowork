@@ -11,7 +11,6 @@ import type {
   BatchTaskTerminalReason,
   BatchTaskTerminalStatus,
   BatchTerminalSummary,
-  TokenUsage,
   ToolResultContent,
 } from '@/types';
 import { makeBatchKey } from '@/types';
@@ -35,6 +34,15 @@ export interface BatchTaskStep {
   endTime?: number;
 }
 
+/**
+ * 一名成员到目前为止用掉的 token。`inputTokens` 是各轮整段输入之和，
+ * 已经含缓存读写（子代理循环按协议换算过）。
+ */
+export interface BatchTaskTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface BatchTaskProgress {
   label: string;
   status: BatchTaskStatus;
@@ -45,7 +53,7 @@ export interface BatchTaskProgress {
   endedAt?: number;
   toolCallCount: number;
   lastToolName?: string;
-  tokenUsage?: TokenUsage;
+  tokenUsage?: BatchTaskTokenUsage;
   steps: BatchTaskStep[];
 }
 
@@ -85,11 +93,11 @@ interface BatchProgressActions {
     idx: number,
     result: Pick<BatchTaskStep, 'id' | 'toolName' | 'result' | 'resultContent'> & { error: boolean },
   ) => void;
-  setTaskTokenUsage: (identity: BatchIdentity, idx: number, tokenUsage: TokenUsage) => void;
+  setTaskTokenUsage: (identity: BatchIdentity, idx: number, tokenUsage: BatchTaskTokenUsage) => void;
   setTaskFinalStats: (
     identity: BatchIdentity,
     idx: number,
-    stats: { toolCallCount: number; tokenUsage: TokenUsage },
+    stats: { toolCallCount: number; tokenUsage: BatchTaskTokenUsage },
   ) => void;
   setTaskTerminal: (
     identity: BatchIdentity,

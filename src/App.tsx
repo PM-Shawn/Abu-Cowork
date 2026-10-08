@@ -101,8 +101,7 @@ import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
 import { checkForUpdate } from '@/core/updates/checker';
 import { usePingCadence } from '@/hooks/usePingCadence';
 import { fetchUnseenAnnouncements, markSeen, type AnnouncementItem } from '@/utils/consoleAnnouncement';
-import AnnouncementBanner from '@/components/common/AnnouncementBanner';
-import DisclaimerBanner from '@/components/common/DisclaimerBanner';
+import CornerBanners from '@/components/common/CornerBanners';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -977,24 +976,19 @@ function App() {
             hasRunSensitiveAudit_v015 settings flag. */}
         <SensitiveAuditDialog />
 
-        {/* First-launch disclaimer banner — shows once until dismissed.
-            Self-gates on hasAcknowledgedDisclaimer in settingsStore. */}
-        <DisclaimerBanner />
-
         {/* Enterprise policy confirmation: an approval layer since batch 9; renders nothing in the OSS build. */}
         <PolicyConfirmModal />
 
-        {/* Cloud announcement banner — shows the first unseen announcement */}
-        {pendingAnnouncements.length > 0 && pendingAnnouncements[0] && (
-          <AnnouncementBanner
-            item={pendingAnnouncements[0]}
-            onDismiss={() => {
-              const id = pendingAnnouncements[0]?.id;
-              if (id != null) markSeen(id);
-              setPendingAnnouncements((prev) => prev.slice(1));
-            }}
-          />
-        )}
+        {/* The corner banners, one at a time: the first-launch disclaimer until it is
+            acknowledged, then the first unseen cloud announcement. */}
+        <CornerBanners
+          announcement={pendingAnnouncements[0]}
+          onDismissAnnouncement={() => {
+            const id = pendingAnnouncements[0]?.id;
+            if (id != null) markSeen(id);
+            setPendingAnnouncements((prev) => prev.slice(1));
+          }}
+        />
 
       </div>
     </DesignSystemProvider>

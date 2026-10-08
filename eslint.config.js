@@ -282,6 +282,7 @@ export const DESIGN_SYSTEM_MIGRATED_FILES = [
   // The banners and the error boundary (batch 10).
   'src/components/common/AnnouncementBanner*.{ts,tsx}',
   'src/components/common/DisclaimerBanner*.{ts,tsx}',
+  'src/components/common/CornerBanners*.{ts,tsx}',
   'src/components/common/ErrorBoundary*.{ts,tsx}',
   // The pet window, the avatar glyph table and the class merge (batch 10).
   'src/pet/**/*.{ts,tsx}',

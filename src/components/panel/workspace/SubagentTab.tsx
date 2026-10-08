@@ -70,7 +70,7 @@ function StatusIcon({ status }: { status: BatchTaskProgress['status'] }) {
 function totalTokens(task: BatchTaskProgress): number | null {
   const usage = task.tokenUsage;
   if (!usage) return null;
-  return usage.inputTokens + usage.outputTokens + (usage.cacheCreationInputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0);
+  return usage.inputTokens + usage.outputTokens;
 }
 
 interface PersistedBatchTask {

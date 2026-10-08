@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { adapterKindFor } from './adapterKind';
+import { adapterKindFor, usageProtocolFor } from './adapterKind';
+
+describe('usageProtocolFor', () => {
+  it('reads Claude adapter usage as Anthropic and the other adapters as OpenAI-compatible', () => {
+    expect(usageProtocolFor('claude')).toBe('anthropic');
+    expect(usageProtocolFor('openai-compatible')).toBe('openai-compatible');
+    expect(usageProtocolFor('ollama')).toBe('openai-compatible');
+  });
+});
 
 describe('adapterKindFor', () => {
   it('sends the Ollama provider to its native adapter', () => {

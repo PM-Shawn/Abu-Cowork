@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, Compass, LayoutGrid, Wand2 } from 'lucide-react';
+import { ChevronDown, Compass, LayoutGrid, Wand2, X } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
-import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
+import { createAppDraft } from '@/core/app/appDraft';
 import { useToastStore } from '@/stores/toastStore';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
+import { removeApp } from '@/core/app/appSync';
 import AppLogo from '@/components/app/AppLogo';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
 
 /**
  * The app switcher, beside Abu's own name in the sidebar's brand row (product
@@ -26,12 +28,16 @@ import AppLogo from '@/components/app/AppLogo';
  * An organization can keep its employees inside the app it provides
  * (`useEnterpriseAppPolicy`): the 通用 row then leaves the menu, while the
  * organization's other apps stay switchable.
+ *
+ * Every app the user added has 移除 on its row; removing takes only the app.
+ * An app the user made in 创建应用 exists nowhere else, so removing it asks
+ * first. Organization apps have no 移除: the organization decides them.
  */
 /** An app row carries a logo, a name and a one-line description; the trigger is only a chip. */
 const MENU_WIDTH = 252;
 
 export default function AppSwitcher({ className }: { className?: string }) {
-  const { t } = useI18n();
+  const { t, format } = useI18n();
   const apps = useAvailableApps();
   const selected = useSelectedApp();
   const { allowExit } = useEnterpriseAppPolicy();
@@ -40,6 +46,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const addToast = useToastStore((s) => s.addToast);
   const setAppMarketOpen = useAppStore((s) => s.setAppMarketOpen);
   const [open, setOpen] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<AppDefinition | null>(null);
   const [anchor, setAnchor] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
   const root = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -89,8 +96,17 @@ export default function AppSwitcher({ className }: { className?: string }) {
   };
   const createApp = () => {
     setOpen(false);
-    void usePluginAuthorStore.getState().create('app').catch((error) => addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) }));
+    void createAppDraft().catch((error) => addToast({ type: 'error', title: t.appSwitcher.create, message: String(error) }));
   };
+  const remove = (app: AppDefinition) => {
+    void removeApp(app.appId).catch((error) => addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) }));
+  };
+  const requestRemove = (app: AppDefinition) => {
+    setOpen(false);
+    if (app.origin?.kind === 'created') setConfirmRemove(app);
+    else remove(app);
+  };
+  const removable = (app: AppDefinition) => app.origin !== null && app.origin.kind !== 'enterprise';
 
   const row = (app: AppDefinition, current: boolean) => (
     <div
@@ -103,7 +119,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
       onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); enter(app.appId); } }}
       className={cn('group flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left', current ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-hover)]')}
     >
-      <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} general={app.appId === GENERAL_APP_ID} size="md" />
+      <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="md" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-body text-[var(--abu-text-primary)]">{app.name}</span>
         {app.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{app.description}</span>}
@@ -116,6 +132,18 @@ export default function AppSwitcher({ className }: { className?: string }) {
         >
           {t.appSwitcher.enter}
         </span>
+      )}
+      {removable(app) && (
+        <button
+          type="button"
+          data-testid={`app-switcher-remove-${app.appId}`}
+          aria-label={`${t.appSwitcher.remove}: ${app.name}`}
+          title={t.appSwitcher.remove}
+          onClick={(event) => { event.stopPropagation(); requestRemove(app); }}
+          className="hidden shrink-0 rounded-md p-1 text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)] group-hover:inline-flex focus-visible:inline-flex"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
       )}
     </div>
   );
@@ -170,7 +198,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
       >
         {isGeneral
           ? <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)]" />
-          : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} size="sm" />}
+          : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" />}
         <span
           className={cn('min-w-0 flex-1 text-caption font-medium text-[var(--abu-text-primary)]', isGeneral ? 'whitespace-nowrap' : 'truncate')}
           data-testid="app-switcher-current"
@@ -180,6 +208,19 @@ export default function AppSwitcher({ className }: { className?: string }) {
         <ChevronDown className={cn('h-3 w-3 shrink-0 text-[var(--abu-text-tertiary)] transition-transform', open && 'rotate-180')} />
       </button>
       {open && createPortal(menuBody, document.body)}
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        title={format(t.appSwitcher.removeCreatedTitle, { name: confirmRemove?.name ?? '' })}
+        message={t.appSwitcher.removeCreatedMessage}
+        confirmText={t.appSwitcher.remove}
+        cancelText={t.common.cancel}
+        variant="danger"
+        onConfirm={() => {
+          if (confirmRemove) remove(confirmRemove);
+          setConfirmRemove(null);
+        }}
+        onCancel={() => setConfirmRemove(null)}
+      />
     </div>
   );
 }

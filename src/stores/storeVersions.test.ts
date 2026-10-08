@@ -6,6 +6,7 @@ const PERSISTED_STORES = [
   { key: 'abu-settings', minVersion: 52 },
   { key: 'abu-chat', minVersion: 16 },
   { key: 'abu-app', minVersion: 1 },
+  { key: 'abu-app-drafts', minVersion: 1 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
   { key: 'abu-permissions', minVersion: 1 },
   { key: 'abu-workspace', minVersion: 1 },
@@ -53,6 +54,7 @@ beforeAll(async () => {
   await import('./extensionSourceStore');
   await import('./voiceInputStore');
   await import('./appStore');
+  await import('./appDraftStore');
 }, 120_000); // Store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
 
 describe('Store version compliance', () => {

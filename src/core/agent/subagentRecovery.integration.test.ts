@@ -1453,6 +1453,28 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(result.tokenUsage).toEqual({ input: 100, output: 20 });
   });
 
+  it('counts cached prompt tokens in the input total on the Anthropic protocol', async () => {
+    // Anthropic 的 inputTokens 不含缓存读写。开了提示缓存之后，一轮里绝大部分输入都在缓存的两项里，
+    // 只累加 inputTokens 会让成员卡片上的 token 数少掉这一大块。
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'done' } as StreamEvent,
+      {
+        type: 'done',
+        stopReason: 'end_turn',
+        usage: {
+          inputTokens: 600,
+          outputTokens: 25,
+          cacheReadInputTokens: 48_000,
+          cacheCreationInputTokens: 1_400,
+        },
+      } as StreamEvent,
+    ]));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    expect(result.tokenUsage).toEqual({ input: 50_000, output: 25 });
+  });
+
   it.each([
     ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
     ['agent denylist', { tools: [], disallowedTools: ['write_file'] }, 'write_file'],

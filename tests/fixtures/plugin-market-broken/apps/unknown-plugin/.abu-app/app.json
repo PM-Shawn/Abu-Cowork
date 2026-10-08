@@ -1,0 +1,29 @@
+{
+  "name": "unknown-plugin",
+  "version": "1.0.0",
+  "minAbuVersion": "0.51.0",
+  "interface": { "displayName": "Unknown plugin", "shortDescription": "lists a plugin no checked market has" },
+  "plugins": ["nowhere"],
+  "home": {
+    "modes": {
+      "items": [
+        {
+          "modeId": "only",
+          "title": "Only mode",
+          "scenes": [
+            {
+              "id": "scene",
+              "title": "Scene",
+              "run": { "expert": "plugin:nowhere/helper" },
+              "templates": [
+                { "id": "a", "title": "A", "prompt": "A" },
+                { "id": "b", "title": "B", "prompt": "B" },
+                { "id": "c", "title": "C", "prompt": "C" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

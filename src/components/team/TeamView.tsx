@@ -3,9 +3,10 @@ import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { getVisibleTeams, isReadOnlyTeam, selectVisibleTeams, useTeamStore, type Team } from '@/stores/teamStore';
 import { pluginTeamOwner } from '@/core/team/pluginTeams';
-import { useSelectedApp } from '@/stores/appStore';
+import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { GENERAL_APP_ID } from '@/types/app';
-import { agentBelongsToApp, teamBelongsToApp } from '@/core/app/appScope';
+import { appMembers, appsUsing } from '@/core/app/appScope';
+import { refCatalogFrom } from '@/core/app/appRefs';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
 import SourceBadge from '@/components/toolbox/SourceBadge';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -432,6 +433,9 @@ export default function TeamView() {
   const [detailTeam, setDetailTeam] = useState<Team | null>(null);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [confirmDeleteTeam, setConfirmDeleteTeam] = useState<Team | null>(null);
+  // An app scene can name one of the user's own teams; deleting it leaves that scene without an owner.
+  const addedApps = useAppStore((s) => s.addedApps);
+  const deleteTeamUsedBy = confirmDeleteTeam ? appsUsing(addedApps, { kind: 'team', id: confirmDeleteTeam.id }) : [];
 
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
@@ -447,17 +451,25 @@ export default function TeamView() {
     setManualCreateTrigger(0);
   }, [activeTeamTab]);
 
-  // Inside an app the page opens on 「本应用」: the app's own experts and teams
-  // plus the built-in ones its scenes hand work to (product spec §5.5).
+  // Inside an app the page opens on 「本应用」: the experts and teams the app's
+  // scenes hand work to (product spec §5.5).
   const selectedApp = useSelectedApp();
   const inApp = selectedApp.appId !== GENERAL_APP_ID;
   const [appScope, setAppScope] = useState<'app' | 'all'>('app');
   const scopedToApp = inApp && appScope === 'app';
+  // The members are resolved against the live teams, experts and plugins, so
+  // they are recomputed whenever any of them changes.
+  const pluginRecords = usePluginStore((s) => s.installed);
+  const pluginActivations = usePluginStore((s) => s.activationByKey);
+  const discoveredSkills = useDiscoveryStore((s) => s.skills);
+  const members = useMemo(() => (scopedToApp
+    ? appMembers(selectedApp, refCatalogFrom({ installed: pluginRecords, activations: pluginActivations, teams, managedTeamSources, agents: discoveredAgents, skills: discoveredSkills }))
+    : undefined), [scopedToApp, selectedApp, pluginRecords, pluginActivations, teams, managedTeamSources, discoveredAgents, discoveredSkills]);
   const activeTeams = useMemo(() => {
     const visible = selectVisibleTeams({ teams, managedTeamSources });
-    return scopedToApp ? visible.filter((team) => teamBelongsToApp(selectedApp, team.id)) : visible;
-  }, [teams, managedTeamSources, scopedToApp, selectedApp]);
-  const agentFilter = useMemo(() => (scopedToApp ? (agent: SubagentDefinition) => agentBelongsToApp(selectedApp, agent) : undefined), [scopedToApp, selectedApp]);
+    return members ? visible.filter((team) => members.teamIds.has(team.id)) : visible;
+  }, [teams, managedTeamSources, members]);
+  const agentFilter = useMemo(() => (members ? (agent: SubagentDefinition) => members.agentNames.has(agent.name) : undefined), [members]);
 
   // `_agents` / `_ready` are unused by value — they exist only to make
   // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
@@ -853,7 +865,10 @@ export default function TeamView() {
       <ConfirmDialog
         open={!!confirmDeleteTeam}
         title={t.team.deleteTeamTitle}
-        message={format(t.team.deleteTeamMessage, { name: confirmDeleteTeam?.name ?? '' })}
+        message={[
+          format(t.team.deleteTeamMessage, { name: confirmDeleteTeam?.name ?? '' }),
+          deleteTeamUsedBy.length > 0 ? format(t.toolbox.usedByApps, { names: deleteTeamUsedBy.map((app) => app.name).join('、') }) : '',
+        ].join('')}
         confirmText={t.team.deleteTeamAction}
         cancelText={t.common.cancel}
         variant="danger"

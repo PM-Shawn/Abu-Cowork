@@ -141,29 +141,28 @@ describe('UninstallPluginDialog', () => {
     ).toBeInTheDocument();
   });
 
-  it('says an app leaves the switcher and its conversations stay, and names the teams going with it', () => {
-    // Removing an app is a bigger step than removing a plugin: the switcher
-    // loses an entry and a package team disappears from 专家. The user sees
-    // both, plus the reassurance that the conversations survive.
-    const shopApp: InstalledPlugin = {
+  it('names the apps that use the plugin, and the teams going with it', () => {
+    // An app added from a market may hand its scenes to what this plugin
+    // brings; the user sees which apps before confirming.
+    const shop: InstalledPlugin = {
       ...weather,
-      key: 'shop@official',
-      name: 'shop',
+      key: 'shop-assistant@official',
+      name: 'shop-assistant',
       contributed: { skills: ['product-listing'], mcpServers: ['shop-api'], agents: ['advisor'], teams: ['store-ops'] },
     };
     useAppStore.setState({
-      installedApps: [{ appId: shopApp.key, name: '店铺运营', config: DEFAULT_APP_CONFIG, pluginKey: shopApp.key, pluginVersion: '1.0.0' }],
+      addedApps: [{ appId: 'shop-ops@official', name: '店铺运营', config: DEFAULT_APP_CONFIG, version: '1.0.0', origin: { kind: 'market', market: 'official' }, plugins: ['shop-assistant'] }],
     });
-    render(<UninstallPluginDialog home="/Users/tester" target={shopApp} onClose={() => {}} />);
+    render(<UninstallPluginDialog home="/Users/tester" target={shop} onClose={() => {}} />);
 
     const dialog = screen.getByText(new RegExp(format(tb().pluginsUninstallTeamsNote, { teams: 1 }).trim()));
-    expect(dialog).toHaveTextContent(tb().pluginsUninstallAppNote.trim());
-    useAppStore.setState({ installedApps: [] });
+    expect(dialog).toHaveTextContent(format(tb().usedByApps, { names: '店铺运营' }).trim());
+    useAppStore.setState({ addedApps: [] });
   });
 
-  it('keeps the app sentence out of a plain plugin uninstall', () => {
+  it('keeps the app sentence out of an uninstall no app depends on', () => {
     render(<UninstallPluginDialog home="/Users/tester" target={weather} onClose={() => {}} />);
-    expect(screen.queryByText(new RegExp(tb().pluginsUninstallAppNote.trim()))).toBeNull();
+    expect(screen.queryByText(/用到它|Used by the app/)).toBeNull();
     expect(screen.queryByText(new RegExp(format(tb().pluginsUninstallTeamsNote, { teams: 0 }).trim()))).toBeNull();
   });
 

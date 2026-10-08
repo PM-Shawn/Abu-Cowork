@@ -8,7 +8,7 @@ import type { DataAttributes } from './dialog';
 import { lastInputWasPointer } from './input-modality';
 import { LayerScope } from './layer';
 import { InDialogContext, useLayer, useLayerRegistry } from './layer-context';
-import { isTabbable } from './tabbable';
+import { firstTabbable, isTabbable, lastTabbable } from './tabbable';
 
 // eslint-disable-next-line no-restricted-syntax -- FullscreenSurface is the in-place full-window surface (a dialog cannot portal a live iframe)
 const COVER = 'fixed inset-0';
@@ -89,11 +89,25 @@ function isDisplayed(surface: HTMLElement): boolean {
   return true;
 }
 
+// The notice list is drawn over the surface and is no layer: it takes no focus by itself, and a
+// notice's action lasts a few seconds. Its buttons follow the surface's controls in the round Tab
+// makes, so the keyboard reaches them. The first and the last control Tab reaches in the list, or
+// null while it shows no notice.
+function noticeEnds(): { list: HTMLElement; first: HTMLElement; last: HTMLElement } | null {
+  const list = document.querySelector<HTMLElement>('[data-ds-toasts]');
+  const first = list ? firstTabbable(list) : null;
+  const last = list ? lastTabbable(list) : null;
+  return list && first && last ? { list, first, last } : null;
+}
+
+const comesAfter = (element: Element, other: Element) => (other.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
 // Tab pressed inside a frame never reaches the page. When the focus comes out of a frame at
-// either end of the surface it arrives on one of the two stops, which turns it round.
+// either end of the surface it arrives on one of the two stops, which sends it on: to the notice
+// list when it shows a notice, else round to the surface's other end.
 function turnRound(stop: HTMLElement, to: 'first' | 'last') {
   const surface = stop.parentElement;
-  const ends = surface ? tabEnds(surface) : null;
+  const ends = noticeEnds() ?? (surface ? tabEnds(surface) : null);
   ends?.[to].focus();
 }
 
@@ -108,7 +122,9 @@ function turnRound(stop: HTMLElement, to: 'first' | 'last') {
 // and Escape leaves it unless the key was pressed inside a design-system layer or something else
 // has used the key (a window over the panel that closed on it, an approval that it refused).
 // The page it covers cannot be seen, so Tab stays among the surface's own controls and goes
-// round from the last to the first and back; pressed on the covered page, it comes in. A
+// round from the last to the first and back; pressed on the covered page, it comes in. While
+// the notice list shows a notice, its buttons come after the surface's last control in that
+// round and before its first. A
 // design-system layer opened over the surface (a menu, a window, an approval) keeps its own
 // keyboard handling, and the rest of the page is not made inert: layers are portaled there.
 //
@@ -190,7 +206,8 @@ export function FullscreenSurface({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [shown, layer, registry]);
 
-  // The plain surface keeps Tab among its own controls. The `layer` form has a focus scope.
+  // The plain surface keeps Tab among its own controls and the notice list's. The `layer` form
+  // has a focus scope.
   const guarded = shown && !layer;
   useEffect(() => {
     if (!guarded) return undefined;
@@ -207,17 +224,33 @@ export function FullscreenSurface({
       // for a control under it.
       if (document.querySelector(WINDOW_ON_THE_PAGE)) return;
       const ends = tabEnds(element);
-      if (!ends) {
+      const notices = noticeEnds();
+      const active = document.activeElement;
+      const back = event.shiftKey;
+      if (notices && active && notices.list.contains(active)) {
+        // Between two buttons of the list the browser moves the focus.
+        const leavesTheList = back
+          ? active === notices.first || comesAfter(notices.first, active)
+          : active === notices.last || comesAfter(active, notices.last);
+        if (!leavesTheList) return;
         event.preventDefault();
+        // Back into the surface; the list alone is gone round when the surface holds no control.
+        (back ? (ends ?? notices).last : (ends ?? notices).first).focus();
         return;
       }
-      const active = document.activeElement;
+      if (!ends) {
+        event.preventDefault();
+        if (notices) (back ? notices.last : notices.first).focus();
+        return;
+      }
       const inside = active !== null && element.contains(active) && !isGuard(active);
-      const leavesAtTheEnd = active === (event.shiftKey ? ends.first : ends.last);
+      const leavesAtTheEnd = active === (back ? ends.first : ends.last);
       // Between two of its own controls the browser moves the focus.
       if (inside && !leavesAtTheEnd) return;
       event.preventDefault();
-      (event.shiftKey ? ends.last : ends.first).focus();
+      // From its last control on to the notice list; from the covered page, in.
+      const next = inside && notices ? notices : ends;
+      (back ? next.last : next.first).focus();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);

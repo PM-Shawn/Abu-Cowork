@@ -72,12 +72,14 @@ function handWrittenLevels(root: string = SRC_DIR): { file: string; value: numbe
       }
       if (!/\.(tsx?|css)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name) || full === TOKENS_PATH) continue;
       const text = readFileSync(full, 'utf8');
+      // Reported with `/` on every platform, so the lists below read the same on Windows.
+      const file = path.relative(root, full).split(path.sep).join('/');
       for (const match of text.matchAll(/\bz-\[(\d+)\]|(?<![\w-])z-(\d+)(?![\w-])|\bzIndex:\s*(\d+)|\bz-index:\s*(\d+)/g)) {
-        found.push({ file: path.relative(root, full), value: Number(match[1] ?? match[2] ?? match[3] ?? match[4]) });
+        found.push({ file, value: Number(match[1] ?? match[2] ?? match[3] ?? match[4]) });
       }
       for (const match of text.matchAll(/\bzIndex(?::|=\{)\s*([A-Za-z_$][\w$]*)/g)) {
         const declared = new RegExp(`\\bconst\\s+${match[1].replace(/\$/g, '\\$')}\\s*=\\s*(\\d+)\\b`).exec(text);
-        found.push({ file: path.relative(root, full), value: declared ? Number(declared[1]) : Number.NaN });
+        found.push({ file, value: declared ? Number(declared[1]) : Number.NaN });
       }
     }
   };

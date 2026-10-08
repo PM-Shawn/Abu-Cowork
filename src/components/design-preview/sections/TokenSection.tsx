@@ -42,6 +42,7 @@ const SOFT_CLASS: Record<string, string> = {
 // Non-color scales, measured from a sample element that carries the class.
 const SCALES: { name: string; className: string; property: string }[] = [
   { name: 'z-sticky', className: 'relative z-sticky', property: 'z-index' },
+  { name: 'z-fullscreen', className: 'relative z-fullscreen', property: 'z-index' },
   { name: 'z-popover', className: 'relative z-popover', property: 'z-index' },
   { name: 'z-dialog', className: 'relative z-dialog', property: 'z-index' },
   { name: 'z-toast', className: 'relative z-toast', property: 'z-index' },

@@ -34,23 +34,30 @@ interface ThemeVarSpec {
 
 /**
  * Semantic theme variables. `--w-` prefix — short, unlikely to collide with
- * author CSS (verified: no existing widget/receiver code uses this prefix)
- * or with Abu's own host tokens (`--abu-*`, `--claude-*`, shadcn's
- * `--background`/`--foreground`/etc. — see src/styles/index.css). Values are
- * fixed fallbacks matching Abu's light/dark palette (same source file); P3
- * will later pipe in live host tokens instead of these hardcoded ones.
+ * author CSS (verified: no existing widget/receiver code uses this prefix).
+ *
+ * The frame is a document of its own and cannot read a variable of the host
+ * page, so the first ten values are literal copies of the host's design
+ * tokens in src/styles/tokens.css, light from `:root` and dark from `.dark`:
+ * surface, label, raised, label, code, label-tertiary, separator, emphasis,
+ * on-emphasis and fill-selected, in the order below. designSystem.test.ts
+ * reads tokens.css and holds each copy to its token.
+ *
+ * The four `--w-series-*` values are a categorical palette for chart series.
+ * They name no status and follow no host token.
  */
 export const WIDGET_THEME_VARS: readonly ThemeVarSpec[] = [
-  { name: '--w-bg', desc: 'Page background', light: '#faf9f5', dark: '#1a1917' },
-  { name: '--w-fg', desc: 'Primary text', light: '#141413', dark: '#f0ede8' },
-  { name: '--w-card', desc: 'Card/surface background', light: '#ffffff', dark: '#201f1d' },
-  { name: '--w-card-fg', desc: 'Text on a card surface', light: '#141413', dark: '#f0ede8' },
-  { name: '--w-muted', desc: 'Muted/secondary surface (badges, subtle fills)', light: '#f5f3ee', dark: '#211f1c' },
-  { name: '--w-muted-fg', desc: 'Muted/secondary text (captions, labels)', light: '#656358', dark: '#8a8479' },
-  { name: '--w-border', desc: 'Hairline borders/dividers', light: '#e8e4dd', dark: '#302e2b' },
-  { name: '--w-primary', desc: 'Brand accent — primary buttons, emphasis, chart series 1', light: '#d97757', dark: '#d97757' },
-  { name: '--w-primary-fg', desc: 'Text/icon on a primary-filled surface', light: '#ffffff', dark: '#ffffff' },
-  { name: '--w-accent', desc: 'Secondary accent surface (hover/active fills)', light: '#f0eee6', dark: '#272522' },
+  { name: '--w-bg', desc: 'Page background', light: '#ffffff', dark: '#1c1c1e' },
+  { name: '--w-fg', desc: 'Primary text', light: '#1d1d1f', dark: '#f5f5f7' },
+  { name: '--w-card', desc: 'Card/surface background', light: '#ffffff', dark: '#2c2c2e' },
+  { name: '--w-card-fg', desc: 'Text on a card surface', light: '#1d1d1f', dark: '#f5f5f7' },
+  { name: '--w-muted', desc: 'Muted/secondary surface (badges, subtle fills)', light: '#f5f5f7', dark: '#2a2a2d' },
+  { name: '--w-muted-fg', desc: 'Muted/secondary text (captions, labels)', light: '#66666b', dark: '#98989d' },
+  { name: '--w-border', desc: 'Hairline borders/dividers', light: 'rgba(0, 0, 0, 0.09)', dark: 'rgba(255, 255, 255, 0.09)' },
+  { name: '--w-primary', desc: 'Primary action — the fill of primary buttons and badges (near-black on a light host, near-white on a dark one)', light: '#1d1d1f', dark: '#f5f5f7' },
+  { name: '--w-primary-fg', desc: 'Text/icon on a primary-filled surface', light: '#ffffff', dark: '#1c1c1e' },
+  { name: '--w-accent', desc: 'Hover/selected fill', light: 'rgba(0, 0, 0, 0.07)', dark: 'rgba(255, 255, 255, 0.09)' },
+  { name: '--w-series-1', desc: 'Chart series color 1', light: '#d97757', dark: '#d97757' },
   { name: '--w-series-2', desc: 'Chart series color 2', light: '#5b8dee', dark: '#6f9ff2' },
   { name: '--w-series-3', desc: 'Chart series color 3', light: '#4caf7d', dark: '#5cc08f' },
   { name: '--w-series-4', desc: 'Chart series color 4', light: '#9b7fd4', dark: '#ab8fe0' },
@@ -111,7 +118,7 @@ export const WIDGET_UTILITY_CLASSES: readonly UtilityClassSpec[] = [
   },
   {
     name: 'w-badge-primary',
-    desc: 'Accent-filled variant of `.w-badge` — pair the two classes together.',
+    desc: 'Variant of `.w-badge` filled with the primary color — pair the two classes together.',
     css: 'background: var(--w-primary); color: var(--w-primary-fg);',
   },
   {
@@ -121,7 +128,7 @@ export const WIDGET_UTILITY_CLASSES: readonly UtilityClassSpec[] = [
   },
   {
     name: 'w-btn-primary',
-    desc: 'Accent-filled variant of `.w-btn` — pair the two classes together.',
+    desc: 'Variant of `.w-btn` filled with the primary color, for the main action — pair the two classes together.',
     css: 'background: var(--w-primary); color: var(--w-primary-fg); border-color: var(--w-primary);',
   },
   {
@@ -260,11 +267,11 @@ export function getDesignSystemGuideText(): string {
     .join('\n');
 
   // Canvas can't resolve var() — the model needs literal hex for chart series.
-  // Derived from the SAME array's light values (single source, no second copy).
-  // Series 1 = --w-primary, then --w-series-2..4, in order.
+  // Derived from the SAME array's light values (single source, no second copy):
+  // --w-series-1..4, in order.
   const lightOf = (name: string): string =>
     WIDGET_THEME_VARS.find((v) => v.name === name)?.light ?? '';
-  const seriesHex = ['--w-primary', '--w-series-2', '--w-series-3', '--w-series-4']
+  const seriesHex = ['--w-series-1', '--w-series-2', '--w-series-3', '--w-series-4']
     .map(lightOf)
     .join(', ');
 

@@ -20,6 +20,7 @@ import { useScheduleStore } from '@/stores/scheduleStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ScheduledTask } from '@/types/schedule';
 import { testSiteVerdicts } from '@/test/browserSiteVerdicts';
+import { passSettleInterval } from '@/test/dsWindows';
 
 vi.mock('@/core/scheduler/scheduler', () => ({
   schedulerEngine: { runNow: vi.fn() },
@@ -136,6 +137,8 @@ describe('ScheduleTaskDetail — what its buttons do', () => {
     await user.click(button('Delete'));
     expect(Object.keys(useScheduleStore.getState().tasks)).toEqual(['task-1', 'task-2']);
 
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await user.click(button('Confirm'));
     expect(Object.keys(useScheduleStore.getState().tasks)).toEqual(['task-2']);
   });
@@ -145,6 +148,7 @@ describe('ScheduleTaskDetail — what its buttons do', () => {
     renderDetail();
 
     await user.click(button('Delete'));
+    passSettleInterval();
     await user.click(button('Cancel'));
 
     expect(Object.keys(useScheduleStore.getState().tasks)).toEqual(['task-1', 'task-2']);
@@ -210,6 +214,7 @@ describe('ScheduleTaskDetail — what its buttons do', () => {
       await user.click(button('Delete'));
       act(() => useScheduleStore.setState({ tasks: { 'task-2': { ...TASK, id: 'task-2', name: 'Weekly digest' } } }));
 
+      passSettleInterval();
       await user.click(button('Confirm'));
 
       expect(deleteTask).not.toHaveBeenCalled();
@@ -226,6 +231,7 @@ describe('ScheduleTaskDetail — what its buttons do', () => {
     try {
       renderDetail();
       await user.click(button('Delete'));
+      passSettleInterval();
       await user.click(button('Confirm'));
 
       expect(deleteTask).toHaveBeenCalledTimes(1);

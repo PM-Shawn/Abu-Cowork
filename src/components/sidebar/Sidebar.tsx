@@ -40,8 +40,8 @@ import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { RowMenus } from './RowMenus';
 import { conversationRowProps, useConversationRowFocus } from './conversationRowFocus';
-import { UNDO_OFFER_MS } from './undoOffer';
-import { useToastStore } from '@/stores/toastStore';
+import { opensOnKey } from './rowKeys';
+import { useDeleteConversation } from './useDeleteConversation';
 import { isMacOS, isWindows } from '@/utils/platform';
 
 /** A nav item's label: the package's own title when it gives one, else Abu's name for that entry. */
@@ -99,10 +99,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const switchConversation = useChatStore((s) => s.switchConversation);
-  const deleteConversation = useChatStore((s) => s.deleteConversation);
   const renameConversation = useChatStore((s) => s.renameConversation);
   const clearCompletedStatus = useChatStore((s) => s.clearCompletedStatus);
-  const exportConversation = useChatStore((s) => s.exportConversation);
   const importConversation = useChatStore((s) => s.importConversation);
   const loadConversation = useChatStore((s) => s.loadConversation);
   const openExtensions = useSettingsStore((s) => s.openExtensions);
@@ -142,6 +140,9 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const exportAfterClose = useRef<string | null>(null);
   // After a conversation is deleted the focus goes on to a row, never to the window.
   const rowFocus = useConversationRowFocus();
+  // 删除会话: the record is read first, for the offer to undo; a task whose record cannot be read
+  // is deleted only after a question.
+  const deletion = useDeleteConversation(rowFocus, true);
 
   // Guide modal state lives in the store so it can be reopened from Settings ›
   // About. Auto-opens on first launch only (below).
@@ -193,25 +194,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     .filter((c) => c.messageCount !== 0 || c.id === activeConversationId || !!c.imChannelId)
     .sort((a, b) => b.createdAt - a.createdAt);
 
-  const handleDeleteConversation = async (convId: string) => {
-    // Ensure conversation is loaded before exporting for undo
-    await loadConversation(convId);
-    // Save conversation data for undo before deleting
-    const json = exportConversation(convId);
-    rowFocus.note(convId);
-    deleteConversation(convId);
-    if (json) {
-      // One offer at a time: the notification list shows equal notifications as one, the newest,
-      // with its time started again. So only the last delete can be undone.
-      useToastStore.getState().addToast({
-        type: 'info',
-        title: t.sidebar.conversationDeleted,
-        duration: UNDO_OFFER_MS,
-        actions: [{ label: t.sidebar.undo, onClick: () => { importConversation(json, { keepPermissionMode: true }); } }],
-      });
-    }
-  };
-
   const handleClearCompletedStatus = useCallback((convId: string) => {
     clearCompletedStatus(convId);
   }, [clearCompletedStatus]);
@@ -233,6 +215,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   // that gives the focus back to where it was when it opened: the menu returns it to the
   // row's button or the row first, and the window opens after that.
   const runAfterMenuClose = (event: Event) => {
+    deletion.menuClosed();
     const renameId = renameAfterClose.current;
     const exportId = exportAfterClose.current;
     renameAfterClose.current = null;
@@ -254,6 +237,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     renameAfterClose.current = null;
     exportAfterClose.current = null;
     rowFocus.forget();
+    deletion.menuOpened();
   };
 
   // One menu for a row, shown both by right-click and by the "⋯" button.
@@ -296,7 +280,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           </MenuSub>
         )}
         <MenuSeparator />
-        <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => { void handleDeleteConversation(convId); }}>
+        <MenuItem icon={AppIcons.delete} tone="danger" onSelect={() => deletion.fromMenu(convId)}>
           {t.sidebar.deleteConversation}
         </MenuItem>
       </>
@@ -511,15 +495,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               const selected = conv.id === activeConversationId && viewMode === 'chat';
               const editing = editingId === conv.id;
               const menuOpen = menus.isMoreOpen(conv.id);
+              const open = () => {
+                switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id);
+              };
               return (
               <div
                 key={conv.id}
                 {...conversationRowProps(conv.id)}
                 role="button"
                 tabIndex={0}
-                onClick={() => {
-                  switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id);
-                }}
+                onClick={open}
+                onKeyDown={opensOnKey(open)}
                 onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
                 aria-current={selected ? 'true' : undefined}
                 className={cn(

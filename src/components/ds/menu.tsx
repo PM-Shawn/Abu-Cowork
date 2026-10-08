@@ -1,14 +1,15 @@
 import { ContextMenu as ContextMenuPrimitive, DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import { useId, type ReactNode } from 'react';
+import { useId, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type { DataAttributes } from './dialog';
+import { dropsHeldEscape, dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
 import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
-import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
+import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED, isWorking } from './styles';
 
 // The panel never grows past the room Radix measures between the trigger and the window edge; a longer list scrolls.
 const MENU_PANEL = 'max-h-(--radix-dropdown-menu-content-available-height) min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto p-1';
@@ -31,11 +32,41 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
   const { id, onCloseAutoFocus: layerCloseAutoFocus, onEscapeKeyDown } = useLayer('popover', isOpen, setOpen);
   const level = useFloatingLevel();
+  // A menu chooses on the key-down of Enter or Space, and the key that opened it is still down
+  // when it shows with the focus on its first item: that key chooses nothing, and moves nothing,
+  // until it is pressed again. Keys pressed inside the menu repeat (arrows walk the list), except
+  // Enter and Space: one press chooses once, also while the menu fades out.
+  const heldKeys = useHeldKeys(isOpen, 'enter-space');
+  // Radix opens the menu when the pointer goes down on the trigger and on the key-down of Enter,
+  // Space or ArrowDown, and never on a click. A screen reader activates a button with a click
+  // alone (`detail` 0: no pointer went down for it); that click opens the menu here. The click of
+  // a pointer press counts its presses (`detail` 1 and up) and is left to the pointer-down, and
+  // the opening keys make no click (Radix prevents their default; the trigger's own control drops
+  // their repeats), so one press of either kind opens the menu once. A trigger that refuses its
+  // click (a busy button) opens nothing.
+  const openOnBareClick = (event: MouseEvent<HTMLElement>) => {
+    if (event.detail === 0 && !event.defaultPrevented && !isOpen && !isWorking(event.currentTarget)) setOpen(true);
+  };
+  // A trigger that is busy, or that its owner marks `aria-disabled`, is no menu button for now:
+  // the pointer-down is prevented, and Radix leaves a prevented event alone.
+  const refuseWhileWorking = (event: PointerEvent<HTMLElement>) => {
+    if (isWorking(event.currentTarget)) event.preventDefault();
+  };
+  // The repeat of a held key opens nothing, whatever the trigger is made of (Enter, Space, and
+  // the arrow that opens the menu): a prevented key-down is one Radix leaves alone, and the
+  // browser makes no click from it. A new press opens. A working trigger takes none of the three.
+  const dropOpeningKey = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (dropsHeldRepeat(event)) return;
+    const opens = event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown';
+    if (opens && isWorking(event.currentTarget)) event.preventDefault();
+    else if (event.repeat && event.key === 'ArrowDown') event.preventDefault();
+  };
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
-      <DropdownMenuPrimitive.Trigger asChild>{trigger}</DropdownMenuPrimitive.Trigger>
+      <DropdownMenuPrimitive.Trigger asChild onClick={openOnBareClick} onPointerDown={refuseWhileWorking} onKeyDown={dropOpeningKey}>{trigger}</DropdownMenuPrimitive.Trigger>
       <DropdownMenuPrimitive.Portal container={container}>
         <DropdownMenuPrimitive.Content
+          {...heldKeys.handlers}
           align={align}
           side={side}
           sideOffset={4}
@@ -108,6 +139,11 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
   const kind = useMenuKind();
   const container = useLayerContainer();
   const level = useFloatingLevel();
+  // The key that opened the nested list chooses nothing in it while it stays down (see Menu).
+  const heldKeys = useHeldKeys(false, 'enter-space');
+  const markShown = (open: boolean) => { if (open) heldKeys.mark(); };
+  // Escape in the nested list closes the whole menu: once per press, like the menu's own list.
+  const dropHeldEscape = (event: KeyboardEvent) => { dropsHeldEscape(event); };
   const triggerBody = (
     <>
       {icon && <Icon icon={icon} size="sm" className="text-label-secondary" />}
@@ -119,10 +155,12 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
   const contentClass = cn(level, 'min-w-40 p-1', FLOAT_SURFACE, FLOAT_MOTION);
   if (kind === 'dropdown') {
     return (
-      <DropdownMenuPrimitive.Sub>
+      <DropdownMenuPrimitive.Sub onOpenChange={markShown}>
         <DropdownMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</DropdownMenuPrimitive.SubTrigger>
         <DropdownMenuPrimitive.Portal container={container}>
           <DropdownMenuPrimitive.SubContent
+            {...heldKeys.handlers}
+            onEscapeKeyDown={dropHeldEscape}
             sideOffset={4}
             collisionPadding={EDGE_GAP}
             data-ds-motion
@@ -136,10 +174,12 @@ export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: Lu
     );
   }
   return (
-    <ContextMenuPrimitive.Sub>
+    <ContextMenuPrimitive.Sub onOpenChange={markShown}>
       <ContextMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</ContextMenuPrimitive.SubTrigger>
       <ContextMenuPrimitive.Portal container={container}>
         <ContextMenuPrimitive.SubContent
+          {...heldKeys.handlers}
+          onEscapeKeyDown={dropHeldEscape}
           sideOffset={4}
           collisionPadding={EDGE_GAP}
           data-ds-motion

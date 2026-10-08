@@ -3,7 +3,7 @@ import { EmptyState } from '@/components/ds/empty-state';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
 import { ScrollArea } from '@/components/ds/scroll-area';
-import { useRowFocus } from '@/components/todos/useRowFocus';
+import { useRowFocus } from '@/components/common/useRowFocus';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useI18n, format } from '@/i18n';

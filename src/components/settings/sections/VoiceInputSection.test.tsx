@@ -16,6 +16,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { SpeechStatus } from '@/core/speech/speechBridge';
 import { formatFileSize } from '@/utils/formatFileSize';
+import { passSettleInterval } from '@/test/dsWindows';
 
 vi.mock('@/core/speech/microphoneBridge', () => ({
   getMicrophoneStatus: vi.fn(async () => 'granted'),
@@ -50,6 +51,8 @@ async function askToDelete() {
 }
 
 async function answerYes(question: HTMLElement) {
+  // The question takes no pointer press for a moment after it appears: it has been read.
+  passSettleInterval();
   await userEvent.click(within(question).getByRole('button', { name: getI18n().voiceInput.deleteModel }));
 }
 

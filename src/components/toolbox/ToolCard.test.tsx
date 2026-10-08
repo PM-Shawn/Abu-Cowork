@@ -1,8 +1,12 @@
 // @vitest-environment happy-dom
+/// <reference types="@testing-library/jest-dom" />
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Button } from '@/components/ds/button';
+import { Switch } from '@/components/ds/switch';
+import { pointerTargetOf } from '@/test/pointerTarget';
 import SourceBadge from './SourceBadge';
 import ToolCard from './ToolCard';
 
@@ -87,6 +91,84 @@ describe('ToolCard name row width priority', () => {
     card.focus();
     await userEvent.keyboard(' ');
     expect(onClick).toHaveBeenCalledTimes(3);
+  });
+
+  // The focus is handed to a card after an editor closes or a neighbour is deleted; a key that
+  // is still down then repeats on it.
+  it('opens once per press: the repeats of a held Enter or Space open nothing', () => {
+    const onClick = vi.fn();
+    render(<ToolCard item={item} onClick={onClick} />);
+    const card = screen.getByRole('button', { name: /abu-prd-doctor/ });
+    card.focus();
+
+    // fireEvent returns false once the default was prevented.
+    expect(fireEvent.keyDown(card, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    expect(fireEvent.keyDown(card, { key: 'Enter', code: 'NumpadEnter', repeat: true })).toBe(false);
+    expect(fireEvent.keyDown(card, { key: ' ', code: 'Space', repeat: true })).toBe(false);
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.keyUp(card, { key: 'Enter', code: 'Enter' });
+    expect(fireEvent.keyDown(card, { key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(fireEvent.keyDown(card, { key: ' ', code: 'Space' })).toBe(false);
+    expect(onClick).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves the repeats of other keys, and of keys pressed in a nested control, alone', () => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: <span data-testid="switch" tabIndex={0} /> }} onClick={onClick} />);
+    const card = screen.getByRole('button', { name: /abu-prd-doctor/ });
+
+    expect(fireEvent.keyDown(card, { key: 'Tab', code: 'Tab', repeat: true })).toBe(true);
+    expect(fireEvent.keyDown(card, { key: 'ArrowDown', code: 'ArrowDown', repeat: true })).toBe(true);
+    expect(fireEvent.keyDown(screen.getByTestId('switch'), { key: 'Enter', code: 'Enter', repeat: true })).toBe(true);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});
+
+// A card's action that is running takes the press itself. `pointerTargetOf` gives the element
+// the pointer lands on.
+describe('ToolCard with a busy control on it', () => {
+  const item = { id: 'p', name: 'abu-prd-doctor', description: 'd' };
+  const BUSY: [string, () => ReactElement, () => HTMLElement][] = [
+    ['Button', () => <Button busy size="sm" onClick={() => { throw new Error('a busy button ran its handler'); }}>安装</Button>, () => screen.getByRole('button', { name: '安装' })],
+    ['Switch', () => <Switch busy checked={false} aria-label="Connect" onCheckedChange={() => { throw new Error('a busy switch changed'); }} />, () => screen.getByRole('switch', { name: 'Connect' })],
+  ];
+
+  it.each(BUSY)('does not open on a pointer press on its busy %s, and the focus stays on that control', async (_name, control, find) => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: control() }} onClick={onClick} />);
+    find().focus();
+
+    await userEvent.click(pointerTargetOf(find()));
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(find()).toHaveFocus();
+    expect(find()).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it.each(BUSY)('does not open on Enter, Space or a click made by code on its busy %s', async (_name, control, find) => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: control() }} onClick={onClick} />);
+    find().focus();
+
+    await userEvent.keyboard('{Enter}');
+    await userEvent.keyboard(' ');
+    fireEvent.click(find());
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(find()).toHaveFocus();
+  });
+
+  it.each(BUSY)('neither opens nor takes the focus when its busy %s is pressed with the focus elsewhere', async (_name, control, find) => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: control() }} onClick={onClick} />);
+    const card = screen.getByRole('button', { name: /abu-prd-doctor/ });
+
+    await userEvent.click(pointerTargetOf(find()));
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(card).not.toHaveFocus();
   });
 });
 

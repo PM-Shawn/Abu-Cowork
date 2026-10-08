@@ -38,7 +38,8 @@ import { useConfirm } from '@/components/ds/confirm-context';
 import { useToastStore } from '@/stores/toastStore';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
-import UserQuestionDock from './UserQuestionDock';
+import { focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
+import UserQuestionDock, { type ArrivedQuestion } from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
@@ -65,6 +66,7 @@ import { isMacOS } from '@/utils/platform';
 import { windowDragRowProps } from '@/utils/windowDrag';
 import { Button } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
+import { LoadError } from '@/components/ds/load-error';
 import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon } from '@/components/ds/status-icon';
@@ -211,6 +213,44 @@ const virtuosoComponents: Components<Message[], MessageListContext> = {
   Footer: VirtuosoTypingFooter,
 };
 
+// F13: the record of the conversation in view is on disk and could not be read. The page says so
+// and offers a retry. The host's own error text is never shown, in no attribute either: it can
+// carry a path with the account name. The explanation stays while a retry reads, so the button
+// that was pressed stays under the focus; when the read succeeds this page leaves with that
+// button and the message field takes the focus. The same holds when another caller's read
+// succeeds while a control of this page has the focus: the page leaves under it, so the message
+// field takes it, and only when it would otherwise be on the window.
+function ConversationLoadError({ convId }: { convId: string }) {
+  const { t } = useI18n();
+  const [retrying, setRetrying] = useState(false);
+  const pageRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    // Runs before the page's nodes are taken out, so the focus can still be read.
+    return () => {
+      if (!page?.contains(document.activeElement)) return;
+      const state = useChatStore.getState();
+      if (state.activeConversationId === convId && state.conversations[convId]) focusComposerAfterPageChange();
+    };
+  }, [convId]);
+  const retry = useCallback(() => {
+    setRetrying(true);
+    void useChatStore.getState().retryLoadConversation(convId).finally(() => {
+      setRetrying(false);
+      if (useChatStore.getState().conversations[convId]) focusComposerAfterPageChange();
+    });
+  }, [convId]);
+  return (
+    <div ref={pageRef} className="flex h-full flex-col">
+      {/* No header row here either: the same 44px drag band as the welcome page. */}
+      <div {...windowDragRowProps()} className="h-11 shrink-0" />
+      <div className="flex flex-1 items-center justify-center">
+        <LoadError reason={t.chat.recordUnreadable} onRetry={retry} busy={retrying} />
+      </div>
+    </div>
+  );
+}
+
 interface ChatViewProps {
   windowsWorkspaceHeader?: boolean;
   rightPanelToggleVisible?: boolean;
@@ -222,6 +262,7 @@ export default function ChatView({
 }: ChatViewProps) {
   const activeConvId = useChatStore((s) => s.activeConversationId);
   const activeConv = useActiveConversation();
+  const loadFailed = useChatStore((s) => (s.activeConversationId ? s.loadFailures[s.activeConversationId] === true : false));
   const pendingSearchJump = useChatStore((s) => s.pendingSearchJump);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const renameConversation = useChatStore((s) => s.renameConversation);
@@ -413,6 +454,9 @@ export default function ChatView({
   // loop on top of Virtuoso's own one.
   const turnAnchorRef = useRef<TurnScrollAnchor | null>(null);
   const pendingTurnAnchorRef = useRef<PendingTurnAnchor | null>(null);
+  // The conversation whose first message was sent from the new-task page and has not replaced
+  // that page with the chat page yet.
+  const firstMessageOfRef = useRef<string | null>(null);
   const turnSpacerElementRef = useRef<HTMLDivElement | null>(null);
   const turnSpacerHeightRef = useRef(0);
   /** scrollHeight the last spacer-surplus reclaim expects once Virtuoso
@@ -991,6 +1035,9 @@ export default function ChatView({
     // can report the new total height before ChatView's parent layout effect
     // has had a chance to arm the DOM anchor.
     announceChatTurnScrollIntent({ conversationId: convId, source: 'composer' });
+    // Sent from the new-task page: the page changes once the runner has added the message.
+    const sentFromNewTaskPage = !activeConv || activeConv.messages.length === 0;
+    if (sentFromNewTaskPage) firstMessageOfRef.current = convId;
     let dispatch: AgentLoopDispatchResult;
     try {
       dispatch = await runAgentLoopDispatched(convId, sendText, {
@@ -1001,6 +1048,7 @@ export default function ChatView({
         initiatedBy: 'user',
       });
     } catch (error) {
+      if (firstMessageOfRef.current === convId) firstMessageOfRef.current = null;
       // The runner deliberately keeps persistence/transport failures as
       // rejections for non-UI callers. Once it has appended the user message,
       // however, the failed transcript row (and its Retry action) owns
@@ -1020,6 +1068,8 @@ export default function ChatView({
       }
       return;
     }
+    // The dispatch returned with the new-task page still in view: no page change is due any more.
+    if (firstMessageOfRef.current === convId) firstMessageOfRef.current = null;
     if (!useChatStore.getState().conversations[convId]?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
       useChatStore.getState().clearStagedExpertContact(convId);
     }
@@ -1064,6 +1114,8 @@ export default function ChatView({
     setTimeout(() => setResuming(false), 4000);
   }, []);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).status);
+  // The words of a question whose dock left the focus in the message field, for the live element.
+  const [arrivedQuestion, setArrivedQuestion] = useState<ArrivedQuestion | null>(null);
 
   const handleSelectPrompt = useCallback((prompt: string) => {
     // Fill the prompt into the input via pendingInput
@@ -1084,6 +1136,18 @@ export default function ChatView({
   const handleWelcomeInputChange = useCallback((hasText: boolean) => {
     setGuideVisible(!hasText);
   }, []);
+
+  // The first message of a task replaces the new-task page with the chat page, and the message
+  // field that was typed in leaves with it. The chat page's field takes the focus on the next
+  // frame, from no control and from no layer. Only for a message sent from this page: one that
+  // arrives by another way moves no focus.
+  const onNewTaskPage = !activeConv || activeConv.messages.length === 0;
+  useLayoutEffect(() => {
+    if (onNewTaskPage || firstMessageOfRef.current === null) return;
+    const sentIn = firstMessageOfRef.current;
+    firstMessageOfRef.current = null;
+    if (sentIn === activeConvId) focusComposerAfterPageChange();
+  }, [onNewTaskPage, activeConvId]);
 
   // Message projection for the list. Computed above the early returns below
   // so the hooks that depend on it stay unconditional (rules-of-hooks).
@@ -1395,6 +1459,12 @@ export default function ChatView({
     stickToBottom,
   ]);
 
+  // The record could not be read: say so, with a retry. Keyed, so a retry in flight for one
+  // conversation shows no busy button on another.
+  if (activeConvId && !activeConv && loadFailed) {
+    return <ConversationLoadError key={activeConvId} convId={activeConvId} />;
+  }
+
   // Conversation loading from disk (LRU cache miss) — show a loading line instead of the welcome page
   if (activeConvId && !activeConv) {
     return (
@@ -1601,6 +1671,7 @@ export default function ChatView({
           isRequestActive={() => getPendingCommandConfirmation() === commandConfirmRequest}
           onConfirm={handleCommandConfirm}
           onCancel={handleCommandCancel}
+          onFocusUnplaced={focusComposerFromWindow}
         />
       )}
 
@@ -1615,6 +1686,7 @@ export default function ChatView({
           }}
           onAllow={handleFilePermissionAllow}
           onDeny={handleFilePermissionDeny}
+          onFocusUnplaced={focusComposerFromWindow}
         />
       )}
 
@@ -1631,6 +1703,7 @@ export default function ChatView({
           onChooseFolder={handleWorkspaceSelect}
           onAuthorize={handleWorkspaceAuthorize}
           onDeny={handleWorkspaceDeny}
+          onFocusUnplaced={focusComposerFromWindow}
         />
       )}
 
@@ -1791,6 +1864,17 @@ export default function ChatView({
           {/* Docked ask_user_question card — sits flush above the composer,
               same width. Render the first pending question that belongs to the
               active conversation and whose owning message can be located. */}
+          {/* A question that leaves the focus with a user who is writing is read out from here.
+              The element is on the page before the question arrives, or nothing is read. */}
+          <div aria-live="polite" aria-atomic="true" className="sr-only">
+            {arrivedQuestion && (
+              <>
+                <span>{arrivedQuestion.header}</span>
+                {' '}
+                <span>{arrivedQuestion.question}</span>
+              </>
+            )}
+          </div>
           {(() => {
             const pending = pendingUserQuestions.find((pq) => pq.conversationId === activeConvId);
             if (!pending) return null;
@@ -1804,6 +1888,7 @@ export default function ChatView({
                 toolCallId={pending.id}
                 payload={pending.payload}
                 onSubmitted={handleQuestionSubmitted}
+                onArrivedWithoutFocus={setArrivedQuestion}
               />
             );
           })()}

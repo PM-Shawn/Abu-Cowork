@@ -15,6 +15,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -170,7 +171,7 @@ async function addProviderB(page: Page, baseUrl: string): Promise<void> {
 }
 
 function providerCard(dialog: Locator, name: string): Locator {
-  return dialog.locator('div.group', { hasText: name }).first();
+  return dialog.getByTestId('provider-card').filter({ hasText: name }).first();
 }
 
 async function openModelSettings(page: Page): Promise<Locator> {
@@ -315,8 +316,8 @@ test.describe('stale provider pin', () => {
       const card = providerCard(dialog, PROVIDER_A.name);
       await card.hover();
       await card.getByRole('button', { name: '删除', exact: true }).click();
-      await page.getByRole('button', { name: '确认', exact: true }).last().click();
-      await expect(dialog.locator('div.group', { hasText: PROVIDER_A.name })).toHaveCount(0);
+      await pressWhenSettled(page.getByRole('button', { name: '确认', exact: true }).last());
+      await expect(dialog.getByTestId('provider-card').filter({ hasText: PROVIDER_A.name })).toHaveCount(0);
       await closeSettings(page);
 
       // With the provider gone the label falls back to the model id.

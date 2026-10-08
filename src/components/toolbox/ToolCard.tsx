@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { dropsHeldRepeat } from '@/components/ds/heldKey';
 import { FOCUS_RING } from '@/components/ds/styles';
 import { cn } from '@/lib/utils';
 
@@ -54,6 +55,9 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
         // Toggle). A Space/Enter keydown on the Toggle bubbles here; without this
         // guard it would also open the detail modal on top of the toggle action.
         if (e.target !== e.currentTarget) return;
+        // The card opens once per press, like a ds button: the focus is handed to a card after an
+        // editor closes or a neighbour is deleted, and a key that is still down then repeats here.
+        if (dropsHeldRepeat(e)) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           onClick();

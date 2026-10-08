@@ -9,6 +9,8 @@ import { FullscreenSurface } from './fullscreen';
 import { Menu, MenuItem } from './menu';
 import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
+import { Toaster } from './toaster';
+import type { Toast } from '@/stores/toastStore';
 
 // happy-dom does not implement the pointer-capture and scrolling calls Radix menus make while opening.
 beforeAll(() => {
@@ -22,6 +24,8 @@ const classes = (element: Element) => (element.getAttribute('class') ?? '').spli
 // The surface's own element: the parent of the content given to it.
 const surfaceOf = (content: HTMLElement) => content.parentElement as HTMLElement;
 const escape = () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' }); };
+// The repeat of an Escape that stays down.
+const heldEscape = () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape', code: 'Escape', repeat: true }); };
 // What a layer does once it has left the page runs one timer tick later.
 const settle = () => { act(() => { vi.runOnlyPendingTimers(); }); };
 // A press from the keyboard: the button has the focus, as it has after a real press.
@@ -159,7 +163,7 @@ describe('FullscreenSurface, open in place (not a layer)', () => {
     expect(surface).toHaveAttribute('role', 'group');
     expect(surface).toHaveAttribute('aria-label', 'Weather app');
     expect(screen.queryByTestId('backdrop')).toBeNull();
-    expect(onModalChange).not.toHaveBeenCalled();
+    expect(onModalChange.mock.calls).toEqual([[false]]);
   });
 
   it('never has a backdrop, also when asked for one', () => {
@@ -395,6 +399,40 @@ describe('FullscreenSurface, open in place (not a layer)', () => {
     expect(onExit).toHaveBeenCalledTimes(1);
   });
 
+  // A held Escape repeats. One press leaves one thing.
+  it('stays under an Escape that was down when it opened; released and pressed again, Escape leaves it', () => {
+    const onExit = vi.fn();
+    const view = render(<Stage open={false} onExit={onExit} />);
+    escape();
+    view.rerender(<Stage open onExit={onExit} />);
+    for (let i = 0; i < 5; i += 1) heldEscape();
+    expect(onExit).not.toHaveBeenCalled();
+    fireEvent.keyUp(document.body, { key: 'Escape', code: 'Escape' });
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays under the Escape that closed a window over it, for as long as that key stays down', () => {
+    const onExit = vi.fn();
+    function Page() {
+      const [dialog, setDialog] = useState(true);
+      return <Stage open onExit={onExit} dialog={dialog} onDialogChange={setDialog} />;
+    }
+    render(<Page />);
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    // While the window fades, and once it has gone.
+    for (let i = 0; i < 3; i += 1) heldEscape();
+    settle();
+    settle();
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+    for (let i = 0; i < 5; i += 1) heldEscape();
+    expect(onExit).not.toHaveBeenCalled();
+    fireEvent.keyUp(document.body, { key: 'Escape', code: 'Escape' });
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves an Escape pressed inside a menu to the menu', () => {
     const onExit = vi.fn();
     render(
@@ -459,6 +497,179 @@ describe('FullscreenSurface, open in place (not a layer)', () => {
       document.removeEventListener('keydown', used, true);
     }
     expect(onExit).not.toHaveBeenCalled();
+  });
+});
+
+// The notice list is drawn over the surface, and a notice's action (Undo) lasts a few seconds:
+// the keyboard reaches it from the surface, and comes back.
+describe('FullscreenSurface, open in place, and the notice list', () => {
+  const undo = vi.fn();
+  const NOTICE: Toast = { id: 'n1', type: 'info', title: 'Task deleted', actions: [{ label: 'Undo', onClick: undo }] };
+  const SECOND: Toast = { id: 'n2', type: 'success', title: 'Copied' };
+  function Page({ toasts, children, dialog = false, open = true }: { toasts: Toast[]; children?: ReactNode; dialog?: boolean; open?: boolean }) {
+    return (
+      <DesignSystemProvider>
+        <Button>Outside</Button>
+        <FullscreenSurface open={open} onExit={() => undefined} label="Notes">
+          <div data-testid="content">
+            {children ?? (
+              <>
+                <Button>First</Button>
+                <Button>Exit</Button>
+              </>
+            )}
+          </div>
+        </FullscreenSurface>
+        <Button>After</Button>
+        <Toaster toasts={toasts} onDismiss={() => undefined} />
+        {dialog && <Dialog open layer="approval" role="alertdialog" outsidePress="ignore" title="Run this command?" footer={<Button>Cancel</Button>} />}
+      </DesignSystemProvider>
+    );
+  }
+  const button = (name: string) => screen.getByRole('button', { name });
+  const closeOf = (title: string) => {
+    const notice = screen.getByText(title).closest('li') as HTMLElement;
+    return notice.querySelector('[data-toast-close]') as HTMLElement;
+  };
+  const focus = (element: HTMLElement) => { act(() => { element.focus(); }); };
+  beforeEach(() => { undo.mockClear(); });
+
+  it('keeps going round its own controls while the list is empty', () => {
+    render(<Page toasts={[]} />);
+    focus(button('Exit'));
+    expect(fireEvent.keyDown(button('Exit'), { key: 'Tab' })).toBe(false);
+    expect(button('First')).toHaveFocus();
+    expect(fireEvent.keyDown(button('First'), { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(button('Exit')).toHaveFocus();
+  });
+
+  it('hands Tab from its last control to the first button of the list, and from the last button of the list back to its first control', () => {
+    render(<Page toasts={[NOTICE]} />);
+    focus(button('Exit'));
+    expect(fireEvent.keyDown(button('Exit'), { key: 'Tab' })).toBe(false);
+    expect(button('Undo')).toHaveFocus();
+    // Between two buttons of the list the browser moves the focus.
+    expect(fireEvent.keyDown(button('Undo'), { key: 'Tab' })).toBe(true);
+    expect(button('Undo')).toHaveFocus();
+    focus(closeOf('Task deleted'));
+    expect(fireEvent.keyDown(closeOf('Task deleted'), { key: 'Tab' })).toBe(false);
+    expect(button('First')).toHaveFocus();
+    // Reaching a notice presses nothing.
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it('hands Shift+Tab from its first control to the last button of the list, and from the first button of the list back to its last control', () => {
+    render(<Page toasts={[NOTICE]} />);
+    focus(button('First'));
+    expect(fireEvent.keyDown(button('First'), { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(closeOf('Task deleted')).toHaveFocus();
+    expect(fireEvent.keyDown(closeOf('Task deleted'), { key: 'Tab', shiftKey: true })).toBe(true);
+    expect(closeOf('Task deleted')).toHaveFocus();
+    focus(button('Undo'));
+    expect(fireEvent.keyDown(button('Undo'), { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(button('Exit')).toHaveFocus();
+  });
+
+  it('walks every notice of the list before it comes back: the newest first', () => {
+    render(<Page toasts={[NOTICE, SECOND]} />);
+    focus(button('Exit'));
+    fireEvent.keyDown(button('Exit'), { key: 'Tab' });
+    // The newest notice is drawn first, and has no action: its close button is the first button.
+    expect(closeOf('Copied')).toHaveFocus();
+    expect(fireEvent.keyDown(closeOf('Copied'), { key: 'Tab' })).toBe(true);
+    focus(closeOf('Task deleted'));
+    expect(fireEvent.keyDown(closeOf('Task deleted'), { key: 'Tab' })).toBe(false);
+    expect(button('First')).toHaveFocus();
+  });
+
+  // A title that scrolls is a Tab stop, so the keyboard can scroll it: the first stop of its notice.
+  it('walks a notice title that scrolls in the round, before the buttons of its notice', () => {
+    const LONG: Toast = { id: 'n3', type: 'error', title: 'The goal was not updated because '.repeat(12).trim() };
+    const scrolls = (element: Element) => element.textContent === LONG.title;
+    const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) { return scrolls(this) ? 234 : 18; });
+    const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return scrolls(this) ? 54 : 18; });
+    try {
+      render(<Page toasts={[LONG]} />);
+      const title = screen.getByText(LONG.title);
+      focus(button('Exit'));
+      expect(fireEvent.keyDown(button('Exit'), { key: 'Tab' })).toBe(false);
+      expect(title).toHaveFocus();
+      // From the title to the close button of its notice the browser moves the focus.
+      expect(fireEvent.keyDown(title, { key: 'Tab' })).toBe(true);
+      expect(fireEvent.keyDown(title, { key: 'Tab', shiftKey: true })).toBe(false);
+      expect(button('Exit')).toHaveFocus();
+
+      focus(closeOf(LONG.title));
+      expect(fireEvent.keyDown(closeOf(LONG.title), { key: 'Tab', shiftKey: true })).toBe(true);
+      expect(fireEvent.keyDown(closeOf(LONG.title), { key: 'Tab' })).toBe(false);
+      expect(button('First')).toHaveFocus();
+      // The arrow keys are the scrolling text's own: the surface does nothing with them.
+      focus(title);
+      expect(fireEvent.keyDown(title, { key: 'ArrowDown' })).toBe(true);
+      expect(title).toHaveFocus();
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
+  });
+
+  it('still brings the focus in from the covered page, never to the list', () => {
+    render(<Page toasts={[NOTICE]} />);
+    focus(button('Outside'));
+    expect(fireEvent.keyDown(button('Outside'), { key: 'Tab' })).toBe(false);
+    expect(button('First')).toHaveFocus();
+    focus(button('After'));
+    expect(fireEvent.keyDown(button('After'), { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(button('Exit')).toHaveFocus();
+  });
+
+  it('gives the list no focus by itself when a notice arrives', () => {
+    const view = render(<Page toasts={[]} />);
+    focus(button('First'));
+    view.rerender(<Page toasts={[NOTICE]} />);
+    settle();
+    expect(button('First')).toHaveFocus();
+  });
+
+  // Tab pressed inside a frame never reaches the page: the focus comes out on one of the two stops.
+  it('sends the focus that comes out of a frame at either end on to the list', () => {
+    render(<Page toasts={[NOTICE]} />);
+    const surface = surfaceOf(screen.getByTestId('content'));
+    const stops = Array.from(surface.querySelectorAll<HTMLElement>('[data-ds-focus-guard]'));
+    focus(stops[1]);
+    expect(button('Undo')).toHaveFocus();
+    focus(stops[0]);
+    expect(closeOf('Task deleted')).toHaveFocus();
+  });
+
+  it('goes round the list alone when the surface holds no control', () => {
+    render(<Page toasts={[NOTICE]}><span>Nothing to press</span></Page>);
+    focus(button('Outside'));
+    expect(fireEvent.keyDown(button('Outside'), { key: 'Tab' })).toBe(false);
+    expect(button('Undo')).toHaveFocus();
+    focus(closeOf('Task deleted'));
+    expect(fireEvent.keyDown(closeOf('Task deleted'), { key: 'Tab' })).toBe(false);
+    expect(button('Undo')).toHaveFocus();
+    expect(fireEvent.keyDown(button('Undo'), { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(closeOf('Task deleted')).toHaveFocus();
+  });
+
+  it('leaves a Tab pressed on a notice alone while an approval shows over the surface', () => {
+    render(<Page toasts={[NOTICE]} dialog />);
+    settle();
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(cancel).toHaveFocus();
+    // The approval holds the focus; the key is sent to the notice's button as a press there would.
+    expect(fireEvent.keyDown(closeOf('Task deleted'), { key: 'Tab' })).toBe(true);
+    expect(fireEvent.keyDown(closeOf('Task deleted'), { key: 'Tab', shiftKey: true })).toBe(true);
+    expect(cancel).toHaveFocus();
+  });
+
+  it('leaves a Tab pressed on a notice to the page when the surface is closed', () => {
+    render(<Page toasts={[NOTICE]} open={false} />);
+    focus(closeOf('Task deleted'));
+    expect(fireEvent.keyDown(closeOf('Task deleted'), { key: 'Tab' })).toBe(true);
+    expect(closeOf('Task deleted')).toHaveFocus();
   });
 });
 
@@ -609,7 +820,7 @@ describe('FullscreenSurface as a layer', () => {
     expect(screen.queryByTestId('backdrop')).toBeNull();
     expect(classes(surfaceOf(screen.getByTestId('content')))).toEqual(['contents']);
     // It has no fade: the app hears that it has left as soon as it has, not one fade later.
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -620,6 +831,19 @@ describe('FullscreenSurface as a layer', () => {
     escape();
     expect(onExit).toHaveBeenCalledTimes(1);
     settle();
+    escape();
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays under an Escape that was down when it opened; released and pressed again, Escape leaves it', () => {
+    const onExit = vi.fn();
+    render(<Owned layer scrim onExit={onExit} />);
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    enterFullscreen();
+    settle();
+    for (let i = 0; i < 5; i += 1) heldEscape();
+    expect(onExit).not.toHaveBeenCalled();
+    fireEvent.keyUp(document.body, { key: 'Escape', code: 'Escape' });
     escape();
     expect(onExit).toHaveBeenCalledTimes(1);
   });

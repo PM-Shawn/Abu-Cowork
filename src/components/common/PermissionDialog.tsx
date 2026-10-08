@@ -25,6 +25,8 @@ interface PermissionDialogProps {
   onDeny: () => void;
   onChooseFolder?: () => void;  // For folder-select type
   onAuthorize?: () => void;     // For folder-select: directly authorize suggestedPath
+  // Where the focus goes once the window has left, when the control that had it is gone.
+  onFocusUnplaced?: () => void;
 }
 
 // The kind of grant shows as an icon; the title says it in words.
@@ -53,7 +55,7 @@ export default function PermissionDialog(props: PermissionDialogProps) {
   return <PermissionWindow key={`${props.request.type}\n${props.request.path ?? ''}`} {...props} />;
 }
 
-function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthorize }: PermissionDialogProps) {
+function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthorize, onFocusUnplaced }: PermissionDialogProps) {
   const [selectedDuration, setSelectedDuration] = useState<PermissionDuration>('session');
   const [showAlwaysConfirm, setShowAlwaysConfirm] = useState(false);
   const { t } = useI18n();
@@ -239,12 +241,16 @@ function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthoriz
       // A workspace request answers itself 60 seconds after it was asked: among the approvals
       // that wait their turn it goes first.
       urgent={isFolderSelect}
+      // The question about a grant for good turns the allowing button into the one that grants
+      // for good, at the same spot: the window holds pointer presses back again, as when it appeared.
+      settleKey={showAlwaysConfirm}
       // Escape and the corner button. The layer registry never closes an approval.
       onOpenChange={(next) => { if (!next) onDeny(); }}
       title={title}
       description={description}
       // The form that only asks for a folder has no Deny: it opens on its one button.
       initialFocus={(content) => content.querySelector<HTMLElement>('[data-approval-cancel]')}
+      onFocusUnplaced={onFocusUnplaced}
       header={(
         <div className={asksToPick ? 'flex justify-center' : 'flex items-start gap-3'}>
           <Icon icon={iconMap[request.type]} size="lg" className="text-label-secondary" />

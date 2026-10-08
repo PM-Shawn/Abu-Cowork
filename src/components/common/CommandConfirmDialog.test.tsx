@@ -12,6 +12,7 @@ import { TextField } from '@/components/ds/text-field';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore, __resetBrowserConfigPersistenceForTests } from '@/stores/settingsStore';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import { passSettleInterval } from '@/test/dsWindows';
 import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 
 // Pins the browser-confirmation button set: which scopes are offered is a
@@ -19,7 +20,14 @@ import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // "always allow this site" click must both persist the verdict and resolve
 // the approval — a dialog that only did one of the two would either nag
 // forever or grant without asking.
-const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+// An approval takes no pointer press for a moment after it appears; the keyboard is never held.
+// These cases are about what each control answers and records, so the approval has been read when
+// they begin: the clock it reads is past that moment once it is on the page.
+const render = (ui: ReactElement) => {
+  const view = renderBare(ui, { wrapper: DesignSystemProvider });
+  passSettleInterval();
+  return view;
+};
 
 const originalLocksDescriptor = Object.getOwnPropertyDescriptor(navigator, 'locks');
 function restoreNavigatorLocks() {
@@ -780,6 +788,8 @@ describe('command approval as an approval layer', () => {
       unanswered(calls);
       expect(calls.onForm).not.toHaveBeenCalled();
 
+      // The question about the unsaved input has been read.
+      passSettleInterval();
       await user.click(button('放弃'));
       expect(calls.onForm.mock.calls).toEqual([[false]]);
       expect(approval()).toBeInTheDocument();
@@ -791,6 +801,7 @@ describe('command approval as an approval layer', () => {
       const { calls, Page } = harness();
       const view = render(<Page form dirty />);
       view.rerender(<Page form dirty approvalShown />);
+      passSettleInterval();
       await user.click(button('继续填写'));
 
       expect(box('操作确认')).toBeNull();

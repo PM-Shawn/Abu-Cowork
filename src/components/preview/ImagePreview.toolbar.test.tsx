@@ -136,6 +136,7 @@ describe('ImagePreview toolbar', () => {
       expect(write).toHaveBeenCalledTimes(1);
       // The button's own hover color would otherwise win under the pointer.
       expect(copy).toHaveClass('hover:text-success');
+      expect(copy).not.toHaveClass('not-aria-disabled:hover:text-label');
 
       await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
       expect(copy).not.toHaveClass('text-success');

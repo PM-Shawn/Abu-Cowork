@@ -13,6 +13,7 @@ import type { IMChannel } from '@/types/imChannel';
 import type { Project } from '@/types/project';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import type { ScheduledTask } from '@/types/schedule';
+import { passSettleInterval } from '@/test/dsWindows';
 import ScheduleEditor from './ScheduleEditor';
 
 // `list` stands in for the visible teams. A block that sets `fromStore` gets the real hook
@@ -524,11 +525,14 @@ describe('ScheduleEditor', () => {
       expect(screen.getByRole('alertdialog', { name: ds().discardTitle })).toBeVisible();
       expect(useScheduleStore.getState().showEditor).toBe(true);
 
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: ds().keepEditing }));
       expect(useScheduleStore.getState().showEditor).toBe(true);
       expect(nameField()).toHaveValue('晨报');
 
       await user.click(screen.getByRole('button', { name: '取消' }));
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: ds().discard }));
       expect(useScheduleStore.getState().showEditor).toBe(false);
       expect(createTask).not.toHaveBeenCalled();
@@ -568,6 +572,8 @@ describe('ScheduleEditor', () => {
       await user.keyboard('{Escape}');
       expect(screen.getByRole('alertdialog', { name: ds().discardTitle })).toBeVisible();
       expect(useScheduleStore.getState().showEditor).toBe(true);
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: ds().keepEditing }));
 
       // The save writes the form as the user sees it, and none of the run's own records.

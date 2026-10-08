@@ -6,7 +6,6 @@ import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore
 import { useAppStore } from '@/stores/appStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { PluginAuthor } from '@/core/plugin/authorBridge';
-import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { Button } from '@/components/ds/button';
@@ -21,7 +20,7 @@ import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
-import UninstallPluginDialog from './UninstallPluginDialog';
+import { useUninstallPlugin } from './useUninstallPlugin';
 import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
 import { cardIndex, cardOrNeighbour, cardProps, focusByTestId, focusIsOnWindow } from '../cardFocus';
 
@@ -51,7 +50,6 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
   const installed = usePluginStore(s => s.installed);
   const deletingRef = useRef(false);
   const [selected, setSelected] = useState<PluginAuthor | null>(null);
-  const [removing, setRemoving] = useState<InstalledPlugin | null>(null);
   const [plan, setPlan] = useState<{ author: PluginAuthor; state: InstallPlanState } | null>(null);
   const epoch = useRef(0);
   const installing = useRef(false);
@@ -68,8 +66,10 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
   // preview, detail again), so the one that closes last may have opened from a control that is
   // gone: the focus then goes back to the card, or to what took its place once it has gone.
   const opener = useRef<{ id: string; index: number } | null>(null);
+  // The uninstall question; once it has ended the focus goes back to the card.
+  const { ask: askToUninstall, asking: removing } = useUninstallPlugin(home, () => { if (focusIsOnWindow()) focusMineCard(opener.current); });
   const windowOpen = useRef(false);
-  useLayoutEffect(() => { windowOpen.current = selected !== null || plan !== null || removing !== null; });
+  useLayoutEffect(() => { windowOpen.current = selected !== null || plan !== null || removing; });
   const openDetail = (author: PluginAuthor) => {
     opener.current = { id: author.id, index: cardIndex(document, 'plugin-mine', author.id) };
     setSelected(author);
@@ -194,7 +194,7 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
       <p className="mt-3 text-ui text-label-tertiary">{draft.prepared?.description || tb.pluginsDraftHint}</p>
     </ToolDetailModal>}
     <InstalledPluginDetail home={home} plugin={selectedRecord ?? null} description={shown?.prepared?.description} onClose={() => setSelected(null)} onCloseAutoFocus={afterWindowClosed}
-      onUninstall={plugin => { setSelected(null); uninstalled.current = true; setRemoving(plugin); }}
+      onUninstall={plugin => { setSelected(null); uninstalled.current = true; askToUninstall(plugin); }}
       authorUpdate={shown ? { available: hasUpdate(shown), onReview: () => { if (stillOpen(shown)) void prepare(shown); } } : undefined}
       authorActions={shown ? [
         // The installed window runs these only while it is open.
@@ -205,7 +205,6 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
     <InstallDisclosureDialog authoring updating={Boolean(plan && recordFor(plan.author))} open={plan !== null} entryName={plan?.author.name ?? tb.pluginsDraft} state={plan?.state ?? { kind: 'loading' }} installing={busy}
       onCloseAutoFocus={afterWindowClosed}
       onCancel={cancel} onConfirm={configuration => { if (plan?.state.kind === 'ready') void confirm(plan.author, plan.state.disclosure, configuration); }} />
-    <UninstallPluginDialog home={home} target={removing} onClose={() => { setRemoving(null); if (focusIsOnWindow()) focusMineCard(opener.current); }} />
   </>;
   return <>
     {error && <div className="col-span-full"><InlineMessage tone="danger">{error}</InlineMessage></div>}

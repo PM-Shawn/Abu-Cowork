@@ -77,9 +77,18 @@ describe('DesignPreview', () => {
     render(<DesignPreview />);
     const tokens = within(document.querySelector('[data-preview-section="tokens"]') as HTMLElement);
     const table = tokens.getByRole('table', { name: 'Scales' });
-    for (const name of ['z-sticky', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip', 'duration-fast', 'duration-base', 'duration-slow', 'ease-enter', 'ease-exit', 'rounded-window', 'rounded-panel', 'rounded-control', 'shadow-panel', 'shadow-float', 'shadow-dialog', 'shadow-composer']) {
+    for (const name of ['z-sticky', 'z-fullscreen', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip', 'duration-fast', 'duration-base', 'duration-slow', 'ease-enter', 'ease-exit', 'rounded-window', 'rounded-panel', 'rounded-control', 'shadow-panel', 'shadow-float', 'shadow-dialog', 'shadow-composer']) {
       expect(within(table).getByText(name), name).toBeInTheDocument();
     }
+  });
+
+  it('lists the six layer levels from the page upward', () => {
+    render(<DesignPreview />);
+    const tokens = within(document.querySelector('[data-preview-section="tokens"]') as HTMLElement);
+    const names = [...tokens.getByRole('table', { name: 'Scales' }).querySelectorAll('[data-scale-sample]')]
+      .map((sample) => sample.getAttribute('data-scale-sample'))
+      .filter((name) => name?.startsWith('z-'));
+    expect(names).toEqual(['z-sticky', 'z-fullscreen', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip']);
   });
 
   it('shows the disabled, invalid and size variants', () => {

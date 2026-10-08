@@ -2,57 +2,84 @@ import { describe, it, expect } from 'vitest';
 import { cn } from './utils';
 
 /**
- * Regression: tailwind-merge used to misclassify `text-[var(--abu-*)]` color
- * classes as font-sizes and silently DROP our custom size tokens from the
- * same cn() call — e.g. cn('text-caption', 'text-[var(--abu-info)]') lost
- * text-caption, so the element fell back to the body default size. Found via
- * a live-DOM probe (the "结果" toggle rendered 14px while its source said
- * text-caption). Fixed by extendTailwindMerge config in utils.ts.
+ * tailwind-merge reads every `text-<word>` it does not know as a text color, so a size name of
+ * ours that is not registered would be dropped by the color that follows it in the same cn()
+ * call, and the element would fall back to the inherited size with no test failing. Every token
+ * name of tokens.css is registered in utils.ts under the property it sets; these cases hold one
+ * name of each kind next to its neighbours, and the table below holds every name.
  */
-describe('cn (tailwind-merge token config)', () => {
-  it('keeps a size token alongside a CSS-var color (color after size)', () => {
-    expect(cn('text-caption', 'text-[var(--abu-info)]')).toBe(
-      'text-caption text-[var(--abu-info)]'
-    );
+describe('cn() — a size next to a color', () => {
+  it('keeps a size token beside a text color, in either order', () => {
+    expect(cn('text-caption', 'text-info')).toBe('text-caption text-info');
+    expect(cn('text-danger', 'text-body')).toBe('text-danger text-body');
   });
 
-  it('keeps a size token alongside a CSS-var color (size after color)', () => {
-    expect(cn('text-[var(--abu-danger)]', 'text-body')).toBe(
-      'text-[var(--abu-danger)] text-body'
-    );
+  it('keeps size, line height and text color together', () => {
+    expect(cn('text-body leading-5', 'text-label-tertiary')).toBe('text-body leading-5 text-label-tertiary');
   });
 
-  it('keeps size + line-height + var color together', () => {
-    expect(cn('text-body leading-5', 'text-[var(--abu-text-tertiary)]')).toBe(
-      'text-body leading-5 text-[var(--abu-text-tertiary)]'
-    );
-  });
-
-  it('still merges genuine size conflicts (later wins)', () => {
+  it('lets the later of two sizes win, and the later of two text colors', () => {
     expect(cn('text-caption', 'text-body')).toBe('text-body');
-    // eslint-disable-next-line no-restricted-syntax -- deliberately testing that a banned arbitrary px size still merges correctly
-    expect(cn('text-[13px]', 'text-body')).toBe('text-body');
+    expect(cn('text-label', 'text-danger')).toBe('text-danger');
   });
 
-  it('still merges genuine var-color conflicts (later wins)', () => {
-    expect(cn('text-[var(--abu-info)]', 'text-[var(--abu-danger)]')).toBe(
-      'text-[var(--abu-danger)]'
-    );
+  it('keeps a border width beside a border color, and lets the later border color win', () => {
+    expect(cn('border', 'border-separator')).toBe('border border-separator');
+    expect(cn('border border-separator', 'border-control-border')).toBe('border border-control-border');
   });
 
-  it('does not disturb border width + var border color', () => {
-    expect(cn('border', 'border-[var(--abu-border)]')).toBe(
-      'border border-[var(--abu-border)]'
-    );
+  it('keeps a ring width beside the focus ring color', () => {
+    expect(cn('focus-visible:ring-2 focus-visible:ring-focus')).toBe('focus-visible:ring-2 focus-visible:ring-focus');
+    expect(cn('ring-1', 'ring-focus')).toBe('ring-1 ring-focus');
+  });
+});
+
+// Every name utils.ts registers, by the property it sets. A name missing there is read as
+// something else (a size as a color, `font-code` as a weight) and merges wrongly.
+const FONT_SIZES = ['caption', 'body', 'title-lg', 'title', 'ui', 'ui-sm', 'h1', 'h2', 'h3', 'mono', 'code-inline'];
+const TEXT_COLORS = ['label', 'label-secondary', 'label-tertiary', 'label-placeholder', 'on-emphasis', 'link', 'success', 'warning', 'danger', 'info', 'brand-ink'];
+const BG_COLORS = [
+  'desk', 'desk-solid', 'surface', 'raised', 'code', 'diagram-canvas', 'page-canvas', 'field',
+  'fill', 'fill-hover', 'fill-selected', 'fill-pressed', 'emphasis', 'scrim', 'brand',
+  'success-soft', 'warning-soft', 'danger-soft', 'info-soft', 'heat-1', 'heat-2', 'heat-3', 'heat-4',
+];
+// A second name of the same list, to merge against.
+const other = (names: string[], name: string) => names.find((candidate) => candidate !== name)!;
+
+describe('cn() — every registered token name', () => {
+  it.each(FONT_SIZES)('text-%s is a size: it replaces a size and stays beside a color', (name) => {
+    expect(cn(`text-${other(FONT_SIZES, name)}`, `text-${name}`)).toBe(`text-${name}`);
+    expect(cn(`text-${name}`, 'text-label')).toBe(`text-${name} text-label`);
+    expect(cn('text-label', `text-${name}`)).toBe(`text-label text-${name}`);
   });
 
-  it('does not disturb ring width + var ring color (form focus rings)', () => {
-    expect(cn('focus:ring-2 focus:ring-[var(--abu-clay-ring)]')).toBe(
-      'focus:ring-2 focus:ring-[var(--abu-clay-ring)]'
-    );
-    expect(cn('ring-1 ring-[var(--abu-warning-bg)]')).toBe(
-      'ring-1 ring-[var(--abu-warning-bg)]'
-    );
+  it.each(TEXT_COLORS)('text-%s is a text color: it replaces a text color and stays beside a size', (name) => {
+    expect(cn(`text-${other(TEXT_COLORS, name)}`, `text-${name}`)).toBe(`text-${name}`);
+    expect(cn('text-ui', `text-${name}`)).toBe(`text-ui text-${name}`);
+  });
+
+  it.each(BG_COLORS)('bg-%s is a background color: it replaces another one', (name) => {
+    expect(cn(`bg-${other(BG_COLORS, name)}`, `bg-${name}`)).toBe(`bg-${name}`);
+  });
+
+  it.each([
+    ['border colors', ['border-separator', 'border-control-border']],
+    ['radii', ['rounded-window', 'rounded-panel', 'rounded-control']],
+    ['elevations', ['shadow-panel', 'shadow-float', 'shadow-dialog', 'shadow-composer']],
+    ['levels', ['z-sticky', 'z-fullscreen', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip']],
+    ['durations', ['duration-fast', 'duration-base', 'duration-slow']],
+    ['easings', ['ease-enter', 'ease-exit']],
+  ])('the %s replace each other, the later one winning', (_kind, classes) => {
+    for (const earlier of classes) {
+      for (const later of classes) {
+        if (earlier !== later) expect(cn(earlier, later)).toBe(later);
+      }
+    }
+  });
+
+  it('the focus ring color replaces another ring color and stays beside a ring width', () => {
+    expect(cn('ring-transparent', 'ring-focus')).toBe('ring-focus');
+    expect(cn('ring-focus', 'ring-2')).toBe('ring-focus ring-2');
   });
 });
 
@@ -70,7 +97,7 @@ describe('cn() — design-system tokens', () => {
     expect(cn('text-label', 'text-danger')).toBe('text-danger');
   });
 
-  it('merges background, radius, shadow, z-index, duration and easing tokens', () => {
+  it('merges background, radius, elevation, z-index, duration and easing tokens', () => {
     expect(cn('bg-surface', 'bg-raised')).toBe('bg-raised');
     expect(cn('rounded-panel', 'rounded-control')).toBe('rounded-control');
     expect(cn('shadow-panel', 'shadow-float')).toBe('shadow-float');
@@ -84,7 +111,7 @@ describe('cn() — design-system tokens', () => {
     expect(cn('text-code-inline', 'text-label')).toBe('text-code-inline text-label');
   });
 
-  it('lets the composer shadow replace another design-system shadow', () => {
+  it('lets the composer elevation replace another design-system elevation', () => {
     expect(cn('shadow-panel', 'shadow-composer')).toBe('shadow-composer');
   });
 
@@ -94,6 +121,30 @@ describe('cn() — design-system tokens', () => {
 
   it('lets a heatmap step replace the empty-day fill', () => {
     expect(cn('bg-fill', 'bg-heat-2')).toBe('bg-heat-2');
+  });
+});
+
+// A ds button writes its hover and pressed classes `not-aria-disabled:hover:` / `:active:` (off
+// while it is busy). A caller's class for the same property replaces them, with or without that
+// variant, as it did when the button wrote plain `hover:`.
+describe('cn() — a caller\'s hover class against a ds button\'s own', () => {
+  it('lets a plain hover class replace the button\'s gated one', () => {
+    expect(cn('not-aria-disabled:hover:text-label', 'text-success hover:text-success')).toBe('text-success hover:text-success');
+    expect(cn('not-aria-disabled:hover:bg-fill-hover not-aria-disabled:active:bg-fill-pressed', 'hover:bg-raised')).toBe('not-aria-disabled:active:bg-fill-pressed hover:bg-raised');
+    expect(cn('not-aria-disabled:active:opacity-80', 'active:opacity-100')).toBe('active:opacity-100');
+  });
+
+  it('lets a gated hover class replace the button\'s gated one, and the later of two wins either way', () => {
+    expect(cn('not-aria-disabled:hover:text-label', 'not-aria-disabled:hover:text-on-emphasis')).toBe('not-aria-disabled:hover:text-on-emphasis');
+    expect(cn('hover:bg-raised', 'not-aria-disabled:hover:bg-fill-hover')).toBe('not-aria-disabled:hover:bg-fill-hover');
+  });
+
+  it('keeps classes that answer something else', () => {
+    // Another property, another state, or the busy look itself.
+    expect(cn('not-aria-disabled:hover:bg-fill-hover', 'hover:text-success')).toBe('not-aria-disabled:hover:bg-fill-hover hover:text-success');
+    expect(cn('not-aria-disabled:hover:bg-fill-hover', 'bg-raised')).toBe('not-aria-disabled:hover:bg-fill-hover bg-raised');
+    expect(cn('aria-pressed:not-aria-disabled:hover:bg-fill-selected', 'hover:bg-raised')).toBe('aria-pressed:not-aria-disabled:hover:bg-fill-selected hover:bg-raised');
+    expect(cn('aria-disabled:opacity-40', 'not-aria-disabled:hover:opacity-90')).toBe('aria-disabled:opacity-40 not-aria-disabled:hover:opacity-90');
   });
 });
 

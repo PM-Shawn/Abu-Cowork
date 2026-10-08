@@ -8,19 +8,19 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 const TYPOGRAPHY_SELECTORS = [
   {
     selector: 'Literal[value=/text-\\[[0-9.]+px\\]/]',
-    message: 'Use a font-size token (text-caption/minor/body/h-xs..h-xl) instead of an arbitrary text-[Npx] class.',
+    message: 'Use a font-size token (text-title-lg / text-title / text-ui / text-ui-sm / text-caption, or text-body / text-h1..h3 / text-mono for content), not an arbitrary text-[Npx] class. See AGENTS.md §6.1.',
   },
   {
     selector: 'TemplateElement[value.raw=/text-\\[[0-9.]+px\\]/]',
-    message: 'Use a font-size token instead of an arbitrary text-[Npx] class (template literal).',
+    message: 'Use a font-size token, not an arbitrary text-[Npx] class (template literal). See AGENTS.md §6.1.',
   },
   {
     selector: 'Literal[value=/\\btext-(xs|sm|base|lg|xl|2xl|3xl)\\b/]',
-    message: 'Use a font-size token (text-minor/body/h-*) instead of Tailwind named sizes. One scale only.',
+    message: 'Use a font-size token (text-ui / text-ui-sm / text-caption / text-title, or text-body / text-h1..h3 for content), not Tailwind named sizes. See AGENTS.md §6.1.',
   },
   {
     selector: 'TemplateElement[value.raw=/\\btext-(xs|sm|base|lg|xl|2xl|3xl)\\b/]',
-    message: 'Use a font-size token instead of Tailwind named sizes (template literal).',
+    message: 'Use a font-size token, not Tailwind named sizes (template literal). See AGENTS.md §6.1.',
   },
 ]
 
@@ -46,11 +46,11 @@ const DESIGN_TYPOGRAPHY_SELECTORS = [
 const STATUS_COLOR_SELECTORS = [
   {
     selector: 'Literal[value=/\\b(text|bg|border|ring|fill)-(red|green|emerald|lime|amber|yellow|blue|sky|indigo|orange)-[0-9]/]',
-    message: 'Use a semantic color token (e.g. text-[var(--abu-danger)], bg-[var(--abu-success-bg)]) instead of raw Tailwind status/link colors. See CLAUDE.md §6.2.',
+    message: 'Use a status or link token (text-success / text-warning / text-danger / text-info on bg-{role}-soft, text-link), not a Tailwind palette color. See AGENTS.md §6.1.',
   },
   {
     selector: 'TemplateElement[value.raw=/\\b(text|bg|border|ring|fill)-(red|green|emerald|lime|amber|yellow|blue|sky|indigo|orange)-[0-9]/]',
-    message: 'Use a semantic color token instead of raw Tailwind status/link colors (template literal). See CLAUDE.md §6.2.',
+    message: 'Use a status or link token, not a Tailwind palette color (template literal). See AGENTS.md §6.1.',
   },
 ]
 
@@ -79,210 +79,18 @@ const UPDATER_IMPORT_RESTRICTION = [{
   message: 'The Electron host returns a three-state result the plugin\'s check() cannot represent. Use checkForUpdate from @/core/updates/checker instead.',
 }]
 
-// Design-system migration list (docs/2026-09-28-design-system-brief.md §6.6).
-// Append a glob when a directory or file finishes migrating; never remove one.
-// The cleanup batch deletes both lists and applies the rules to every file.
-export const DESIGN_SYSTEM_MIGRATED_FILES = [
-  'src/components/design-preview/**/*.{ts,tsx}',
-  'src/components/window/**/*.{ts,tsx}',
-  'src/components/sidebar/**/*.{ts,tsx}',
-  // Chat area, file by file (batch 4). The directory glob joins in batch 8 with the scrims.
-  'src/components/chat/MarkdownRenderer*.{ts,tsx}',
-  'src/components/chat/syntaxTheme*.ts',
-  'src/components/chat/MermaidBlock.tsx',
-  'src/components/chat/mermaidTheme.ts',
-  'src/components/chat/SvgHtmlBlock.tsx',
-  'src/components/chat/HtmlWidgetBlock*.{ts,tsx}',
-  'src/components/chat/ShowWidgetCard*.{ts,tsx}',
-  'src/components/chat/codeBlockRenderers.ts',
-  'src/components/chat/MessageBubble*.{ts,tsx}',
-  'src/components/chat/MessageGroup*.{ts,tsx}',
-  'src/components/chat/FileAttachment*.{ts,tsx}',
-  'src/components/chat/SourceCard.tsx',
-  'src/components/chat/SourcesSection*.{ts,tsx}',
-  'src/components/chat/CompactDivider*.{ts,tsx}',
-  'src/components/chat/WelcomeAvatar.tsx',
-  'src/components/chat/ThinkingStatusLine.tsx',
-  'src/components/chat/TaskBlock*.{ts,tsx}',
-  'src/components/chat/SmoothHeight*.{ts,tsx}',
-  'src/components/chat/BrowserRunReportCard*.{ts,tsx}',
-  'src/components/chat/ComputerUseRunReportCard*.{ts,tsx}',
-  'src/components/chat/ComputerUseStatusBar*.{ts,tsx}',
-  'src/components/chat/TeamMemberBar*.{ts,tsx}',
-  'src/components/chat/AgentStatusStrip*.{ts,tsx}',
-  'src/components/chat/BatchProgress*.{ts,tsx}',
-  'src/components/chat/batchProgressViewModel*.ts',
-  'src/components/chat/PlanStepsCard*.{ts,tsx}',
-  'src/components/chat/TeamConfirmationsStrip*.{ts,tsx}',
-  'src/components/chat/UserQuestionDock*.{ts,tsx}',
-  'src/components/chat/UserQuestionCard*.{ts,tsx}',
-  'src/components/chat/SkillProposalCard*.{ts,tsx}',
-  'src/components/chat/SandboxRecoveryCard*.{ts,tsx}',
-  'src/components/chat/MaxTurnsNoticeCard*.{ts,tsx}',
-  'src/components/chat/ManagedProviderOfflineBar*.{ts,tsx}',
-  'src/components/chat/IMInfoBar*.{ts,tsx}',
-  'src/components/chat/SourceInfoBar.tsx',
-  'src/components/chat/ConversationAppNotice.tsx',
-  'src/components/chat/ConversationAppBadge.tsx',
-  'src/components/chat/PromoteToProjectHint.tsx',
-  'src/components/chat/QueuedMessagesStrip*.{ts,tsx}',
-  'src/components/chat/ModelSelector*.{ts,tsx}',
-  'src/components/chat/PermissionModeChip*.{ts,tsx}',
-  'src/components/chat/ContextIndicator*.{ts,tsx}',
-  'src/components/common/FolderSelector*.{ts,tsx}',
-  'src/components/chat/ChatInput*.{ts,tsx}',
-  'src/components/chat/ChatView*.{ts,tsx}',
-  'src/components/chat/ChapterMenu*.{ts,tsx}',
-  'src/components/chat/VoiceInputControl*.{ts,tsx}',
-  'src/components/chat/ChapterRail*.{ts,tsx}',
-  'src/components/chat/chapters*.ts',
-  'src/components/chat/AppHome.tsx',
-  'src/components/chat/ScenarioGuide.tsx',
-  'src/components/chat/promptGrid.ts',
-  'src/components/chat/chatSpacing.ts',
-  'src/components/chat/UsageChip.tsx',
-  'src/components/chat/ConvIdBadge*.{ts,tsx}',
-  'src/components/chat/GoalBar*.{ts,tsx}',
-  'src/components/chat/GoalRoundMarker*.{ts,tsx}',
-  // Right panel, file by file (batch 5). PreviewPanel and the panel directory glob join in batch 8 with the in-place fullscreen.
-  'src/components/panel/RightPanel*.{ts,tsx}',
-  'src/components/panel/panelWidths*.ts',
-  'src/components/panel/workspace/WorkspacePanel*.{ts,tsx}',
-  'src/components/panel/workspace/TabStrip*.{ts,tsx}',
-  'src/components/panel/workspace/SummaryBody.tsx',
-  'src/components/panel/TaskProgressPanel*.{ts,tsx}',
-  'src/components/panel/WorkspaceSection*.{ts,tsx}',
-  'src/components/panel/FilesSection*.{ts,tsx}',
-  'src/components/panel/ContextSection*.{ts,tsx}',
-  'src/components/panel/useActiveToolCallLists*.ts',
-  'src/components/panel/PreviewActionsMenu*.{ts,tsx}',
-  'src/components/panel/VersionHistoryMenu*.{ts,tsx}',
-  'src/components/panel/CodeMirrorEditor.tsx',
-  'src/components/panel/codeMirrorTheme*.ts',
-  'src/components/panel/previewToolbarConfig*.ts',
-  'src/components/panel/previewFileActions*.ts',
-  'src/features/reference/**/*.{ts,tsx}',
-  'src/components/preview/**/*.{ts,tsx}',
-  'src/components/panel/workspace/TerminalTab*.{ts,tsx}',
-  'src/hooks/useTokenRevision*.ts',
-  'src/components/panel/workspace/BrowserTab*.{ts,tsx}',
-  'src/components/panel/workspace/SubagentTab*.{ts,tsx}',
-  'src/components/panel/workspace/TeamTab*.{ts,tsx}',
-  'src/components/panel/WorkspaceFileTree*.{ts,tsx}',
-  // Settings window, file by file (batch 6). ToolboxModal (extensions, batch 7) and LanguageSection (unused) stay out, so no directory glob yet.
-  'src/components/settings/SystemSettingsDialog*.{ts,tsx}',
-  'src/components/settings/SystemSettingsModal*.{ts,tsx}',
-  'src/components/settings/SettingsSectionHeader.tsx',
-  'src/components/settings/settingsLayout.ts',
-  'src/hooks/useBlockingApprovalVisible*.ts',
-  'src/components/settings/sections/GeneralSection*.{ts,tsx}',
-  'src/components/settings/sections/LabsSection*.{ts,tsx}',
-  'src/components/settings/sections/PetSection*.{ts,tsx}',
-  'src/components/settings/sections/SandboxSection*.{ts,tsx}',
-  'src/components/settings/sections/ComputerUseGrantsCard*.{ts,tsx}',
-  'src/components/settings/sections/CapabilitiesSection*.{ts,tsx}',
-  'src/components/settings/sections/CapabilitySetupView*.{ts,tsx}',
-  'src/components/settings/sections/ChromeConnectionCard.test.tsx',
-  'src/components/settings/CapabilitySetupDialog*.{ts,tsx}',
-  'src/components/settings/sections/NewBrowserPermissionCards*.{ts,tsx}',
-  'src/components/settings/sections/NewBrowserSitePermissionsPage.test.tsx',
-  'src/components/settings/sections/BrowserPermissionCards.tsx',
-  'src/components/settings/sections/BrowserDownloadHistoryPage*.{ts,tsx}',
-  'src/components/settings/sections/browserSitePermissionDraft*.ts',
-  'src/components/settings/sections/browserDownloadHistoryProjection*.ts',
-  'src/components/settings/SecretField*.{ts,tsx}',
-  'src/components/settings/sections/AIServicesSection*.{ts,tsx}',
-  'src/components/settings/sections/ai-services/ProviderCard*.{ts,tsx}',
-  'src/components/settings/sections/WebSearchSection*.{ts,tsx}',
-  'src/components/settings/sections/ImageGenSection*.{ts,tsx}',
-  'src/components/settings/sections/ai-services/**/*.{ts,tsx}',
-  'src/components/settings/sections/AccountSection*.{ts,tsx}',
-  'src/components/account/**/*.{ts,tsx}',
-  'src/components/settings/sections/EnterpriseSection*.{ts,tsx}',
-  'src/components/settings/sections/IMChannelSection*.{ts,tsx}',
-  'src/components/settings/sections/WeChatQRPanel.tsx',
-  'src/components/settings/sections/WeChatQRPanel.test.tsx',
-  'src/components/settings/SensitiveAuditDialog*.{ts,tsx}',
-  'src/components/settings/sections/PersonalMemorySection*.{ts,tsx}',
-  'src/components/settings/sections/SoulSection*.{ts,tsx}',
-  'src/components/settings/sections/ProactivityPicker.tsx',
-  'src/components/settings/sections/UsageSection*.{ts,tsx}',
-  'src/components/settings/sections/DiagnosticSection*.{ts,tsx}',
-  'src/components/settings/sections/diagnostic/**/*.{ts,tsx}',
-  'src/components/settings/sections/FeedbackSection*.{ts,tsx}',
-  'src/components/settings/sections/AboutSection*.{ts,tsx}',
-  'src/components/settings/sections/AuthorSection*.{ts,tsx}',
-  'src/components/settings/sections/VoiceInputSection*.{ts,tsx}',
-  'src/components/settings/sections/index.ts',
-  // Other pages, file by file (batch 7). customize/ and common/ keep legacy files, so no directory glob there.
-  'src/components/toolbox/TopTabNav*.{ts,tsx}',
-  'src/components/toolbox/SourceSubNav*.{ts,tsx}',
-  'src/components/toolbox/ToolCard*.{ts,tsx}',
-  'src/components/toolbox/ToolGrid*.{ts,tsx}',
-  'src/components/toolbox/SourceBadge.tsx',
-  'src/components/toolbox/extensionSource.ts',
-  'src/components/common/AgentAvatar*.{ts,tsx}',
-  'src/components/common/AvatarPicker*.{ts,tsx}',
-  'src/components/common/PluginUpdateBadge.tsx',
-  'src/components/team/TeamAvatar*.{ts,tsx}',
-  'src/components/settings/ToolboxModal*.{ts,tsx}',
-  'src/components/toolbox/ToolDetailModal*.{ts,tsx}',
-  'src/components/toolbox/InstalledItemMenu*.{ts,tsx}',
-  'src/components/toolbox/ToolboxCreateMenu*.{ts,tsx}',
-  'src/components/toolbox/plugins/**/*.{ts,tsx}',
-  'src/components/customize/SkillsSection*.{ts,tsx}',
-  'src/components/customize/SkillEditor*.{ts,tsx}',
-  'src/components/customize/SkillUploadModal*.{ts,tsx}',
-  'src/components/customize/SkillHistoryModal*.{ts,tsx}',
-  'src/components/customize/SkillDraftsPanel*.{ts,tsx}',
-  'src/components/customize/SkillCategoryBlocksPanel*.{ts,tsx}',
-  'src/components/customize/skillHistoryTime*.ts',
-  'src/components/toolbox/skills/**/*.{ts,tsx}',
-  'src/components/toolbox/cardFocus*.ts',
-  'src/components/customize/MCPSection*.{ts,tsx}',
-  'src/components/customize/MCPServerFormDialog*.{ts,tsx}',
-  'src/components/customize/toolCountLabel*.ts',
-  'src/components/toolbox/connectors/**/*.ts',
-  'src/components/toolbox/windowHeight.ts',
-  'src/components/team/TeamView*.{ts,tsx}',
-  'src/components/customize/AgentsSection*.{ts,tsx}',
-  'src/components/customize/AgentEditor*.{ts,tsx}',
-  // The whole toolbox directory has migrated: files added to it later are checked from their first commit.
-  'src/components/toolbox/**/*.{ts,tsx}',
-  // The automation page (batch 7b), directory by directory.
-  'src/components/automation/**/*.{ts,tsx}',
-  'src/components/schedule/**/*.{ts,tsx}',
-  'src/components/trigger/**/*.{ts,tsx}',
-  // The inbox, the todos page and the app page (batch 7b).
-  'src/components/inbox/**/*.{ts,tsx}',
-  'src/components/todos/**/*.{ts,tsx}',
-  'src/components/app/**/*.{ts,tsx}',
-  // Dialogs, viewers and notices, file by file (batch 8). chat/, panel/ and common/ keep unused legacy files, so no directory glob yet.
-  'src/components/common/CommandConfirmDialog*.{ts,tsx}',
-  'src/components/common/approvalQueueView*.ts',
-  'src/components/common/PermissionDialog*.{ts,tsx}',
-  'src/components/common/CloseDialog*.{ts,tsx}',
-  'src/components/common/ToasterMount*.{ts,tsx}',
-  'src/components/common/CreateProjectDialog*.{ts,tsx}',
-  'src/components/common/ProjectSettingsDialog*.{ts,tsx}',
-  'src/components/common/ProfileEditModal*.{ts,tsx}',
-  'src/components/common/DefaultUserAvatar*.{ts,tsx}',
-  'src/components/common/GuideModal*.{ts,tsx}',
-  'src/components/common/InstructionsEditModal*.{ts,tsx}',
-  'src/components/common/MemoryViewModal*.{ts,tsx}',
-  'src/components/share/**/*.{ts,tsx}',
-  'src/components/chat/composerFocus*.ts',
-  'src/components/chat/rewindQuestion*.ts',
-  'src/components/chat/McpAppBlock*.{ts,tsx}',
-  'src/components/chat/ImageLightbox*.{ts,tsx}',
-  'src/components/chat/ToolCallsGroup*.{ts,tsx}',
-  'src/components/chat/DetailBlockView*.{ts,tsx}',
-  'src/components/chat/RenderableCodeBlock*.{ts,tsx}',
-  'src/components/panel/PreviewPanel*.{ts,tsx}',
-]
-export const DESIGN_SYSTEM_UI_FILES = [
-  'src/components/ds/**/*.{ts,tsx}',
-]
+// Where the design-system rules apply (AGENTS.md §6.1): every file of src/.
+// - src/components/ds/ is the component library: it renders the raw controls
+//   and imports the icon and primitive packages, so it gets the size and value
+//   groups only.
+// - The directories in DESIGN_SYSTEM_PROSE_DIRS hold no JSX class names and do
+//   hold English prose (prompt text, translations, test titles) in which
+//   "rounded" and "shadow" are words: no class group reads them. The import
+//   restriction applies there as everywhere else.
+const DESIGN_SYSTEM_SCOPE = ['src/**/*.{ts,tsx}']
+const DESIGN_SYSTEM_LIBRARY = 'src/components/ds/**'
+const DESIGN_SYSTEM_PROSE_DIRS = ['src/core/**', 'src/stores/**', 'src/i18n/**', 'src/eval/**']
+const TEST_FILES = 'src/**/*.test.{ts,tsx}'
 
 const ARBITRARY_VALUE = '\\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|shadow|z|rounded|duration|ease)-\\['
 const PALETTE_COLOR = '\\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|shadow)-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]|\\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|shadow)-(black|white)\\b'
@@ -291,16 +99,18 @@ const HAND_WRITTEN_SCRIM = '\\bfixed\\b.*\\binset-0\\b|\\binset-0\\b.*\\bfixed\\
 // after the important bang — never after a hyphen, so `drop-shadow-md` is not `shadow-md`.
 const CLASS_START = '(^|[\\s:!])'
 const CLASS_END = '(?![\\w-])'
-const LEGACY_CLASS_PATTERNS = [
-  [`${CLASS_START}-?(bg|text|border|ring|outline|fill|stroke|divide|from|via|to)-(background|foreground|card|card-foreground|popover|popover-foreground|primary|primary-foreground|secondary|secondary-foreground|muted|muted-foreground|accent|accent-foreground|destructive|input|border|ring|sidebar[a-z-]*|chart-[1-5])${CLASS_END}`, 'Design system: shadcn color names are legacy. Use a semantic token (bg-surface, text-label-secondary, bg-emphasis…).'],
-  [`${CLASS_START}text-(minor|h-xs|h-sm|h-md|h-lg|h-xl)${CLASS_END}`, 'Design system: legacy font-size token. Use text-title-lg / text-title / text-ui / text-ui-sm / text-caption, or text-body / text-h1..h3 / text-mono for content.'],
+// Class names that have no token behind them: shadcn color names, sizes outside
+// the type scale, and Tailwind's own radius, level, duration, shadow and easing steps.
+const OFF_SCALE_CLASS_PATTERNS = [
+  [`${CLASS_START}-?(bg|text|border|ring|outline|fill|stroke|divide|from|via|to)-(background|foreground|card|card-foreground|popover|popover-foreground|primary|primary-foreground|secondary|secondary-foreground|muted|muted-foreground|accent|accent-foreground|destructive|input|border|ring|sidebar[a-z-]*|chart-[1-5])${CLASS_END}`, 'Design system: shadcn color names have no token. Use a semantic token (bg-surface, text-label-secondary, bg-emphasis…).'],
+  [`${CLASS_START}text-(minor|h-xs|h-sm|h-md|h-lg|h-xl)${CLASS_END}`, 'Design system: this size is not on the type scale. Use text-title-lg / text-title / text-ui / text-ui-sm / text-caption, or text-body / text-h1..h3 / text-mono for content.'],
   [`${CLASS_START}rounded(-(t|r|b|l|s|e|tl|tr|br|bl|ss|se|es|ee))?(-(xs|sm|md|lg|xl|2xl|3xl|4xl))?${CLASS_END}`, 'Design system: use rounded-window / rounded-panel / rounded-control (or rounded-full).'],
   [`${CLASS_START}-?z-([0-9]+|auto)${CLASS_END}`, 'Design system: use z-sticky / z-fullscreen / z-popover / z-dialog / z-toast / z-tooltip.'],
   [`${CLASS_START}duration-([0-9]+|initial)${CLASS_END}`, 'Design system: use duration-fast / duration-base / duration-slow.'],
   [`${CLASS_START}shadow(-(2xs|xs|sm|md|lg|xl|2xl|inner))?${CLASS_END}`, 'Design system: use shadow-panel / shadow-float / shadow-dialog.'],
   [`${CLASS_START}ease-(linear|in|out|in-out)${CLASS_END}`, 'Design system: use ease-enter / ease-exit.'],
   // No variant colon here: data-[state=…]:animate-in is the required form.
-  ['(^|[\\s!])animate-in(?![\\w-])', 'Design system: the legacy global .animate-in rule overrides a bare animate-in. Use data-[state=…]:animate-in.'],
+  ['(^|[\\s!])animate-in(?![\\w-])', 'Design system: an enter animation belongs to a state. Use data-[state=…]:animate-in.'],
 ]
 
 const DESIGN_VALUE_SELECTORS = [
@@ -310,7 +120,7 @@ const DESIGN_VALUE_SELECTORS = [
   { selector: `TemplateElement[value.raw=/${PALETTE_COLOR}/]`, message: 'Design system: Tailwind palette colors are not part of the design system (template literal).' },
   { selector: `Literal[value=/${HAND_WRITTEN_SCRIM}/]`, message: 'Design system: do not hand-write a full-window scrim. Use Dialog from @/components/ds/dialog.' },
   { selector: `TemplateElement[value.raw=/${HAND_WRITTEN_SCRIM}/]`, message: 'Design system: do not hand-write a full-window scrim (template literal).' },
-  ...LEGACY_CLASS_PATTERNS.flatMap(([pattern, message]) => [
+  ...OFF_SCALE_CLASS_PATTERNS.flatMap(([pattern, message]) => [
     { selector: `Literal[value=/${pattern}/]`, message },
     { selector: `TemplateElement[value.raw=/${pattern}/]`, message: `${message} (template literal)` },
   ]),
@@ -371,31 +181,28 @@ const BASE_BLOCK = {
     'react-hooks/set-state-in-effect': 'off',
     'react-hooks/purity': 'off',
     'react-hooks/static-components': 'off',
-    // Typography guardrail — enforce the 8-token font-size scale (index.css
-    // `--text-*`). Ban arbitrary `text-[Npx]` and Tailwind default named
-    // sizes so the whole app stays on one scale. Both are at zero after the
-    // 2026-07 migration; this keeps them there. Use text-caption/minor/body
-    // /h-xs/h-sm/h-md/h-lg/h-xl. (Colors are intentionally NOT covered yet —
-    // link/status colors are still raw Tailwind, a separate follow-up.)
-    // Semantic-color guardrail — enforce the --abu-{danger,warning,success,
-    // info,link} token scale (index.css). Ban raw Tailwind status/link hues
-    // in text/bg/border/ring/fill so link + status colors stay tokenized and
-    // theme-aware. Neutral grays and categorical hues (purple/teal) are NOT
-    // covered. See CLAUDE.md §6.2.
+    // Every TypeScript file, in src/ and outside it (sidecar, scripts, tests):
+    // font sizes come from the type scale of src/styles/tokens.css
+    // (text-title-lg / text-title / text-ui / text-ui-sm / text-caption for
+    // the interface, text-body / text-h1..h3 / text-mono for content), and
+    // status and link colors from its status tokens (text-success /
+    // text-warning / text-danger / text-info on bg-{role}-soft, text-link).
+    // An arbitrary text-[Npx], a Tailwind named size and a Tailwind status or
+    // link hue are banned. See AGENTS.md §6.1.
     'no-restricted-syntax': ['error', ...TYPOGRAPHY_SELECTORS, ...STATUS_COLOR_SELECTORS],
   },
 }
 
 // The rules for a repository that is compiled into this app from a sibling
 // directory and has no node_modules of its own: the base block, plus the
-// design-system rules for the files that repository lists as migrated. Its
-// config file calls this, so the globs are relative to that repository.
-export function overlayLintConfig(migrated) {
-  if (migrated.length === 0) return defineConfig([BASE_BLOCK])
+// design-system rules for the globs that repository passes. Its config file
+// calls this, so the globs are relative to that repository.
+export function overlayLintConfig(globs) {
+  if (globs.length === 0) return defineConfig([BASE_BLOCK])
   return defineConfig([
     BASE_BLOCK,
     {
-      files: migrated,
+      files: globs,
       rules: {
         'no-restricted-syntax': ['error', ...DESIGN_TYPOGRAPHY_SELECTORS, ...DESIGN_VALUE_SELECTORS, ...DESIGN_STRUCTURE_SELECTORS],
         'no-restricted-imports': ['error', DESIGN_IMPORT_RESTRICTION],
@@ -436,18 +243,28 @@ export default defineConfig([
     'electron/chrome-bridge-runtime/dist',
   ]),
   BASE_BLOCK,
+  // The component library: the size and value groups.
   {
-    files: DESIGN_SYSTEM_UI_FILES,
+    files: [`${DESIGN_SYSTEM_LIBRARY}/*.{ts,tsx}`],
     rules: {
       'no-restricted-syntax': ['error', ...DESIGN_TYPOGRAPHY_SELECTORS, ...DESIGN_VALUE_SELECTORS],
     },
   },
+  // Every other file of src/: icons, primitives and the command list come
+  // through the component library.
   {
-    files: DESIGN_SYSTEM_MIGRATED_FILES,
-    ignores: ['src/components/ds/**'],
+    files: DESIGN_SYSTEM_SCOPE,
+    ignores: [DESIGN_SYSTEM_LIBRARY],
+    rules: {
+      'no-restricted-imports': ['error', DESIGN_IMPORT_RESTRICTION],
+    },
+  },
+  // Interface code: the size, value and structure groups.
+  {
+    files: DESIGN_SYSTEM_SCOPE,
+    ignores: [DESIGN_SYSTEM_LIBRARY, ...DESIGN_SYSTEM_PROSE_DIRS],
     rules: {
       'no-restricted-syntax': ['error', ...DESIGN_TYPOGRAPHY_SELECTORS, ...DESIGN_VALUE_SELECTORS, ...DESIGN_STRUCTURE_SELECTORS],
-      'no-restricted-imports': ['error', DESIGN_IMPORT_RESTRICTION],
     },
   },
   // sidecar/src runs in a plain Node process — no DOM, no webview. But
@@ -491,9 +308,8 @@ export default defineConfig([
   // file (verified empirically — ESLint v10 flat config does not
   // concatenate array-valued rule options from multiple matching configs).
   // Since this block's `files` glob is a subset of the base
-  // `**/*.{ts,tsx}` block above, the base block's typography/color-token
-  // selectors are repeated here so test files keep both guardrails instead
-  // of silently losing the earlier ones.
+  // `**/*.{ts,tsx}` block above, the base block's typography and status-color
+  // selectors are repeated here so test files keep both guardrails.
   //
   // Legitimate mock patterns are NOT flagged: `vi.spyOn(Date, 'now')` and
   // `vi.setSystemTime(fixedDate)` pass `Date`/`'now'` as arguments (a
@@ -501,23 +317,24 @@ export default defineConfig([
   // selectors below only match actual CallExpression/NewExpression call
   // sites, not references to the function.
   {
-    files: ['src/**/*.test.{ts,tsx}'],
+    files: [TEST_FILES],
     rules: {
       'no-restricted-syntax': ['error', ...TYPOGRAPHY_SELECTORS, ...STATUS_COLOR_SELECTORS, ...TEST_DETERMINISM_SELECTORS],
     },
   },
-  // Test files inside the design-system lists: the test block above replaces
-  // no-restricted-syntax wholesale, so repeat the design selectors next to the
-  // determinism selectors for files that match both.
+  // Test files of the component library and of interface code: the test block
+  // above replaces no-restricted-syntax wholesale, so each repeats its design
+  // groups next to the determinism selectors. Test files in the directories
+  // that hold prose stay on the block above.
   {
-    files: DESIGN_SYSTEM_UI_FILES.map((glob) => [glob, 'src/**/*.test.{ts,tsx}']),
+    files: [`${DESIGN_SYSTEM_LIBRARY}/*.test.{ts,tsx}`],
     rules: {
       'no-restricted-syntax': ['error', ...DESIGN_TYPOGRAPHY_SELECTORS, ...DESIGN_VALUE_SELECTORS, ...TEST_DETERMINISM_SELECTORS],
     },
   },
   {
-    files: DESIGN_SYSTEM_MIGRATED_FILES.map((glob) => [glob, 'src/**/*.test.{ts,tsx}']),
-    ignores: ['src/components/ds/**'],
+    files: [TEST_FILES],
+    ignores: [DESIGN_SYSTEM_LIBRARY, ...DESIGN_SYSTEM_PROSE_DIRS],
     rules: {
       'no-restricted-syntax': ['error', ...DESIGN_TYPOGRAPHY_SELECTORS, ...DESIGN_VALUE_SELECTORS, ...DESIGN_STRUCTURE_SELECTORS, ...TEST_DETERMINISM_SELECTORS],
     },

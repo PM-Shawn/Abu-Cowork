@@ -2,6 +2,7 @@ import { Popover as PopoverPrimitive } from 'radix-ui';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type { DataAttributes } from './dialog';
+import { useHeldKeys } from './heldKey';
 import { LayerScope } from './layer';
 import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE, FOCUS_RING } from './styles';
@@ -44,11 +45,14 @@ export function Popover({
     callerCloseAutoFocus?.(event);
   };
   const level = useFloatingLevel();
+  // A key that was down when the popover opened does nothing in it until it is pressed again.
+  const heldKeys = useHeldKeys(isOpen);
   return (
     <PopoverPrimitive.Root open={isOpen} onOpenChange={setOpen}>
       <PopoverPrimitive.Trigger asChild>{trigger}</PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal container={container}>
         <PopoverPrimitive.Content
+          {...heldKeys.handlers}
           align={align}
           side={side}
           sideOffset={6}

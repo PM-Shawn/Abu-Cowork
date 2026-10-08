@@ -133,6 +133,7 @@ function UserProviderCard({ provider, isActive, onEdit }: ProviderCardProps) {
 
   return (
     <div
+      data-testid="provider-card"
       className={cn(
         CARD,
         isActive && 'bg-fill-selected',
@@ -226,7 +227,7 @@ function ManagedProviderCard({ provider, isActive }: Pick<ProviderCardProps, 'pr
     : modelNames.join(', ');
 
   return (
-    <div className={cn(CARD, isActive && 'bg-fill-selected')}>
+    <div data-testid="provider-card" className={cn(CARD, isActive && 'bg-fill-selected')}>
       <div className="flex items-center gap-2">
         <span className="min-w-0 truncate text-ui font-medium text-label">
           {provider.name}

@@ -8,6 +8,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { getI18n } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -39,6 +40,9 @@ async function pickFolder(user: ReturnType<typeof userEvent.setup>) {
   render(<ChatInput variant="welcome" onSend={vi.fn()} />);
   await user.click(screen.getByRole('button', { name: new RegExp(t().folder.loadFolder) }));
   await waitFor(() => expect(title()).toBeInTheDocument());
+  // The grant window takes no pointer press for a moment after it appears; the keyboard is never
+  // held. It has been read by the time a case presses it.
+  passSettleInterval();
 }
 
 describe('ChatInput: access to the folder picked on the welcome page', () => {
@@ -98,6 +102,8 @@ describe('ChatInput: access to the folder picked on the welcome page', () => {
     expect(title()).toBeInTheDocument();
     expect(folderControl('project')).toBeNull();
 
+    // Confirm is where the allowing button was: the window holds pointer presses again for a moment.
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: t().common.confirm }));
     expect(grants().session).toEqual({});
     expect(grants().persisted[FOLDER]).toEqual(expect.objectContaining({

@@ -110,7 +110,7 @@ test('security settings dropdown saves modes and keeps protection confirmations'
 
   await page.getByRole('button', { name: '偏好', exact: true }).click();
   // Appearance is a segmented control: one press picks dark.
-  await page.getByRole('radio', { name: '暗色', exact: true }).click();
+  await page.getByRole('radio', { name: '深色', exact: true }).click();
   await page.getByRole('button', { name: '安全', exact: true }).click();
   await page.locator('[data-abu-settings-dialog]').screenshot({ path: testInfo.outputPath('security-dark.png') });
 

@@ -1,6 +1,7 @@
 import { ContextMenu as ContextMenuPrimitive } from 'radix-ui';
 import { useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { useHeldKeys } from './heldKey';
 import { LayerScope } from './layer';
 import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext } from './menu-context';
@@ -38,8 +39,11 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
   const closingContents = useRef(0);
   const focusBeforeRun = useRef<HTMLElement | null>(null);
   const runStart = useRef(0);
+  // A key that was down when the menu opened chooses nothing in it until it is pressed again (see Menu).
+  const heldKeys = useHeldKeys(false, 'enter-space');
   const handleOpenChange = (next: boolean) => {
     if (next) {
+      heldKeys.mark();
       setDismissed(false);
       latestOpening.current += 1;
       if (closingContents.current === 0) {
@@ -58,6 +62,7 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
         {!dismissed && (
           <ContextMenuPrimitive.Content
             key={opening}
+            {...heldKeys.handlers}
             collisionPadding={EDGE_GAP}
             data-ds-layer
             data-ds-motion

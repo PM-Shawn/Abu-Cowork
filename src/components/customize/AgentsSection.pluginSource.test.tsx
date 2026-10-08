@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 /**
- * The live agent detail (扩展 › 代理) is this section's `ToolDetailModal`, not
- * the standalone `AgentDetailModal`. Same contract: a plugin-contributed agent
- * says where it came from, and neither editing nor deleting it is offered —
+ * The agent detail (扩展 › 代理) is this section's `ToolDetailModal`: a
+ * plugin-contributed agent says where it came from, and neither editing nor
+ * deleting it is offered —
  * a plugin update would overwrite the edit, and the file goes away when the
  * plugin is uninstalled.
  *

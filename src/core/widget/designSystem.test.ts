@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import postcss from 'postcss';
 import { describe, it, expect } from 'vitest';
 import {
   WIDGET_THEME_VARS,
@@ -6,6 +10,64 @@ import {
   buildWidgetDesignCss,
   getDesignSystemGuideText,
 } from './designSystem';
+
+// The frame cannot read a variable of the host page, so the kit carries copies of the host's
+// tokens. This reads tokens.css and holds each copy to its token, light and dark.
+describe('WIDGET_THEME_VARS', () => {
+  const tokens = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../styles/tokens.css'), 'utf8');
+  const block = (selector: string) => {
+    const values = new Map<string, string>();
+    postcss.parse(tokens).walkRules((rule) => {
+      if (rule.parent?.type !== 'root' || rule.selector !== selector) return;
+      rule.walkDecls(/^--ds-/, (decl) => { values.set(decl.prop, decl.value); });
+    });
+    return values;
+  };
+  const light = block(':root');
+  const dark = block('.dark');
+  const kit = (name: string) => {
+    const spec = WIDGET_THEME_VARS.find((v) => v.name === name);
+    if (!spec) throw new Error(`${name} is not in the kit`);
+    return spec;
+  };
+
+  it.each([
+    ['--w-bg', '--ds-surface'],
+    ['--w-fg', '--ds-label'],
+    ['--w-card', '--ds-raised'],
+    ['--w-card-fg', '--ds-label'],
+    ['--w-muted', '--ds-code'],
+    ['--w-muted-fg', '--ds-label-tertiary'],
+    ['--w-border', '--ds-separator'],
+    ['--w-accent', '--ds-fill-selected'],
+    ['--w-primary', '--ds-emphasis'],
+    ['--w-primary-fg', '--ds-on-emphasis'],
+  ])('%s is the value of %s, light and dark', (name, token) => {
+    expect(light.get(token)).toBeTruthy();
+    expect(dark.get(token)).toBeTruthy();
+    expect(kit(name).light).toBe(light.get(token));
+    expect(kit(name).dark).toBe(dark.get(token));
+  });
+
+  // A categorical palette for chart series: it names no status and follows no host token.
+  it.each([
+    ['--w-series-1', '#d97757', '#d97757'],
+    ['--w-series-2', '#5b8dee', '#6f9ff2'],
+    ['--w-series-3', '#4caf7d', '#5cc08f'],
+    ['--w-series-4', '#9b7fd4', '#ab8fe0'],
+  ])('%s keeps its chart color', (name, lightValue, darkValue) => {
+    expect(kit(name).light).toBe(lightValue);
+    expect(kit(name).dark).toBe(darkValue);
+  });
+
+  it('holds the ten host copies and the four series colors, and nothing else', () => {
+    expect(WIDGET_THEME_VARS.map((v) => v.name)).toEqual([
+      '--w-bg', '--w-fg', '--w-card', '--w-card-fg', '--w-muted', '--w-muted-fg', '--w-border',
+      '--w-primary', '--w-primary-fg', '--w-accent',
+      '--w-series-1', '--w-series-2', '--w-series-3', '--w-series-4',
+    ]);
+  });
+});
 
 describe('buildWidgetDesignCss', () => {
   const css = buildWidgetDesignCss();
@@ -93,11 +155,26 @@ describe('getDesignSystemGuideText', () => {
   it('prints literal series hex for canvas (derived from the same array, single source)', () => {
     // Canvas can't resolve var() — the guide must give literal hex. Each must
     // be the actual .light value from WIDGET_THEME_VARS, not a hand-typed copy.
-    for (const name of ['--w-primary', '--w-series-2', '--w-series-3', '--w-series-4']) {
+    for (const name of ['--w-series-1', '--w-series-2', '--w-series-3', '--w-series-4']) {
       const hex = WIDGET_THEME_VARS.find((v) => v.name === name)?.light;
       expect(hex).toBeTruthy();
       expect(guide).toContain(hex as string);
     }
+  });
+
+  it('gives the four series colors in order, the first one first', () => {
+    expect(guide).toContain('(series 1 first): #d97757, #5b8dee, #4caf7d, #9b7fd4.');
+  });
+
+  it('describes the primary color as the primary action alone', () => {
+    const row = guide.split('\n').find((line) => line.startsWith('| `--w-primary` |')) ?? '';
+    expect(row).toContain('Primary action');
+    expect(row).not.toMatch(/series|brand|accent/i);
+  });
+
+  it('sends chart series to the series variables', () => {
+    const row = guide.split('\n').find((line) => line.startsWith('| `--w-series-1` |')) ?? '';
+    expect(row).toContain('Chart series color 1');
   });
 
   it('warns against using near-black --w-fg for canvas text (legibility on dark hosts)', () => {

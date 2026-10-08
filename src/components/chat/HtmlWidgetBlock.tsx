@@ -30,18 +30,29 @@ const CDN_ALLOWLIST = [
   'https://fonts.gstatic.com',
 ].join(' ');
 
+// The frame is a document of its own and cannot read a variable of the host page, so every color
+// here is a literal copied from src/styles/tokens.css: label, focus, label-tertiary, surface,
+// code and control-border, light in `:root` and dark under the `dark` class that the host stamps
+// on <body> (buildReceiverHtml, buildFullHtml) and toggles with `widget:theme`. The `--abu-*`
+// names below exist only inside the frame; they are the names widget authors use, so they stay.
+// The body takes its page color and its text color from the kit (buildWidgetDesignCss), which
+// every document built from these styles also carries.
 const BASE_STYLES = `
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: auto !important; min-height: 0 !important; }
 body {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 14px; line-height: 1.6;
-  color: var(--abu-text-primary); background: #fff; padding: 16px; overflow: hidden;
+  padding: 16px; overflow: hidden;
 }
 :root {
-  --abu-primary: var(--abu-clay); --abu-text: var(--abu-text-primary); --abu-text-muted: var(--abu-text-muted);
-  --abu-bg: #fff; --abu-bg-secondary: var(--abu-bg-muted); --abu-border: var(--abu-bg-pressed);
+  --abu-primary: #0a84ff; --abu-text: #1d1d1f; --abu-text-muted: #66666b;
+  --abu-bg: #fff; --abu-bg-secondary: #f5f5f7; --abu-border: rgba(0, 0, 0, 0.14);
   --abu-font: system-ui, -apple-system, sans-serif;
+}
+.dark {
+  --abu-primary: #409cff; --abu-text: #f5f5f7; --abu-text-muted: #98989d;
+  --abu-bg: #1c1c1e; --abu-bg-secondary: #2a2a2d; --abu-border: rgba(255, 255, 255, 0.16);
 }
 button {
   cursor: pointer; font-family: inherit;
@@ -593,18 +604,21 @@ function captureHtmlWidgetImage(_code: string, container: HTMLDivElement): Promi
 // Exported so the fragment/full-document styling split can be unit-tested
 // without rendering the component (mirrors this file's other testable helpers).
 // eslint-disable-next-line react-refresh/only-export-components
-export function buildFullHtml(widgetCode: string): string {
+export function buildFullHtml(widgetCode: string, isDark: boolean): string {
   // Fullscreen is a REAL viewport — the author's fixed/vh choices are correct
   // there, so no neutralization. Full documents render verbatim (wrapping
   // them in another document would nest <html> inside <body>), with a
   // doctype guaranteed so they don't fall into quirks mode; fragments get
   // the base-style wrap.
   // Full-document passthrough: the author owns complete styling (our classes
-  // don't apply), so no design CSS is injected here.
+  // don't apply), so no design CSS is injected here and the appearance of the
+  // host is not applied.
   if (isFullDocument(widgetCode)) return ensureDoctype(widgetCode);
   // Fragment wrap: mirror RECEIVER_HTML and ship the design system too, so a
   // widget styled with .w-*/--w-* inline renders identically fullscreen
-  // (without it, those classes/vars would be undefined in this window).
+  // (without it, those classes/vars would be undefined in this window). The
+  // body carries the same `dark` class as the inline frame, so the enlarged
+  // widget follows the appearance.
   // Center a short fragment in the fullscreen viewport instead of top-aligning
   // it (which leaves a large void below). margin:auto on a single wrapper is
   // scroll-safe for content taller than the viewport, unlike align-items.
@@ -614,7 +628,7 @@ export function buildFullHtml(widgetCode: string): string {
 ${buildWidgetDesignCss()}
 body { overflow: auto; min-height: 100vh; margin: 0; display: flex; box-sizing: border-box; }
 .abu-fs-center { margin: auto; max-width: 100%; }</style>
-</head><body><div class="abu-fs-center">${widgetCode}</div></body></html>`;
+</head><body${isDark ? ' class="dark"' : ''}><div class="abu-fs-center">${widgetCode}</div></body></html>`;
 }
 
 // ---------------------------------------------------------------------------

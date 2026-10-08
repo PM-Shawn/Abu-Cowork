@@ -8,6 +8,7 @@ import {
   terminateAbuElectron,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   REPO_ROOT,
   type ElectronDataRoot,
@@ -885,7 +886,7 @@ test('deletes only draft metadata and explicitly archives an unreadable operatio
     await expect(page.getByText(/本期无法重新接管该目录|This release cannot re-adopt/)).toBeVisible();
     // The question is one sentence followed by the directory that stays behind.
     await expect(page.getByRole('alertdialog')).toContainText(sourceDir);
-    await page.getByRole('button', { name: /^(删除草稿|Delete draft)$/ }).click();
+    await pressWhenSettled(page.getByRole('button', { name: /^(删除草稿|Delete draft)$/ }));
     await expect(page.getByTestId('plugin-mine-draft')).toHaveCount(0);
     expect(JSON.parse(fs.readFileSync(authorsPath, 'utf8'))).toEqual([]);
     expect(fs.readFileSync(sourceFile, 'utf8')).toBe('Keep my source.');

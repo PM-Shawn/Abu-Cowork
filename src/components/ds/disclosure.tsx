@@ -1,6 +1,7 @@
 import { Collapsible as CollapsiblePrimitive } from 'radix-ui';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { dropsHeldRepeat } from './heldKey';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { FOCUS_RING } from './styles';
@@ -14,7 +15,8 @@ export function Disclosure({ title, children, open, defaultOpen = false, onOpenC
 }) {
   return (
     <CollapsiblePrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={onOpenChange}>
-      <CollapsiblePrimitive.Trigger className={cn('group flex h-7 w-full items-center gap-1 rounded-control text-left text-ui font-medium text-label', FOCUS_RING)}>
+      {/* One change per press: the repeats of a held Enter or Space are dropped (heldKey.ts). */}
+      <CollapsiblePrimitive.Trigger onKeyDown={dropsHeldRepeat} className={cn('group flex h-7 w-full items-center gap-1 rounded-control text-left text-ui font-medium text-label', FOCUS_RING)}>
         <Icon icon={AppIcons.disclose} size="sm" className="text-label-secondary transition-transform duration-fast group-data-[state=open]:rotate-90" />
         {title}
       </CollapsiblePrimitive.Trigger>

@@ -133,6 +133,13 @@ describe('TodoView', () => {
       expect(calls).toEqual([['deleteTodo', 'running']]);
       expect(shownTitles()).toEqual([urgent.title, someday.title, doneToday.title]);
     });
+
+    it('does nothing when a row is pressed beside its buttons', () => {
+      show();
+      fireEvent.click(row(running).getByText(running.title));
+      expect(calls).toEqual([]);
+      expect(shownTitles()).toEqual([urgent.title, running.title, someday.title, doneToday.title]);
+    });
   });
 
   describe('a new todo', () => {

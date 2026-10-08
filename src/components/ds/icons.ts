@@ -1,9 +1,9 @@
 import {
-  Activity, AppWindow, Archive, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, Bot, Brain, Building2, Camera, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Chrome, CircleCheck, CircleHelp,
-  Circle, CircleMinus, CircleStop, CircleX, Clock, CloudOff, Code, Compass, Copy, CornerDownRight, Download, Ellipsis, ExternalLink, Eye, EyeOff, File, FileArchive, FileCode, FileImage, FileJson, FilePen, FilePlus,
+  Activity, AppWindow, Archive, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, BookOpen, Bot, Brain, Building2, Calculator, Camera, ChartBar, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Chrome, CircleCheck, CircleHelp,
+  Circle, CircleMinus, CircleStop, CircleX, Clock, CloudOff, Code, Compass, Copy, CornerDownRight, Cpu, Database, Download, Ellipsis, ExternalLink, Eye, EyeOff, File, FileArchive, FileCode, FileImage, FileJson, FilePen, FilePlus,
   FileSearch, FileText, FileType2, FileWarning, FileX, FlaskConical, Folder, FolderInput, FolderLock, FolderOpen, FolderPlus, Globe, Hand, Hash, Heart, History, ImageIcon, ImageOff, ImagePlus, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
-  LoaderCircle, Lock, LogIn, LogOut, Maximize2, MessageCircle, MessageSquare, MessageSquarePlus, Mic, Minimize2, Minus, Monitor, MonitorCog, MousePointer2, Palette, PanelLeft, PanelRight,
-  Package, Paperclip, Pause, PawPrint, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Radio, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scan, ScanEye, ScanLine, Search, Send, Server, Settings, Settings2, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
+  LoaderCircle, Lock, LogIn, LogOut, Maximize2, Megaphone, MessageCircle, MessageSquare, MessageSquarePlus, Mic, Minimize2, Minus, Monitor, MonitorCog, MousePointer2, Palette, PanelLeft, PanelRight,
+  Package, Paperclip, Pause, PawPrint, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Radio, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scale, Scan, ScanEye, ScanLine, Search, Send, Server, Settings, Settings2, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
   SlidersHorizontal, Sparkles, Square, SquareDashedMousePointer, SquarePen, Star, Target, Terminal, ThumbsDown, ThumbsUp, Timer, Trash2, TriangleAlert, Undo2, Upload, UserCheck, UserRound, UsersRound,
   Wand2, Workflow, Wrench, X, Zap, ZoomIn, ZoomOut,
   type LucideIcon,
@@ -215,3 +215,30 @@ export const AppIcons = {
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;
+
+// The glyphs an expert or a team can carry as its avatar. They are data: the stored avatar
+// names of `core/team/avatarPresets.ts` point at these, so no entry is renamed or removed.
+export const AvatarGlyphs = {
+  bot: Bot,
+  chartBar: ChartBar,
+  code: Code,
+  flask: FlaskConical,
+  pen: PenLine,
+  shield: ShieldCheck,
+  users: UsersRound,
+  search: Search,
+  database: Database,
+  palette: Palette,
+  compass: Compass,
+  wrench: Wrench,
+  book: BookOpen,
+  megaphone: Megaphone,
+  scale: Scale,
+  sparkles: Sparkles,
+  cpu: Cpu,
+  globe: Globe,
+  camera: Camera,
+  calculator: Calculator,
+} as const satisfies Record<string, LucideIcon>;
+
+export type AvatarGlyph = (typeof AvatarGlyphs)[keyof typeof AvatarGlyphs];

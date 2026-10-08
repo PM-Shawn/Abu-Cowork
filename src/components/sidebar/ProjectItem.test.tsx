@@ -19,6 +19,7 @@ import { act, render, screen, cleanup, fireEvent, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
 import ProjectItem from './ProjectItem';
 import type { Project } from '@/types/project';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
@@ -26,6 +27,7 @@ import type { ConversationMeta } from '@/core/session/conversationStorage';
 const mocks = vi.hoisted(() => ({
   chat: {} as Record<string, unknown>,
   project: {} as Record<string, unknown>,
+  projects: {} as Record<string, unknown>,
   viewMode: 'chat',
 }));
 
@@ -72,11 +74,19 @@ vi.mock('@/components/share/ShareExportDialog', () => ({
 }));
 
 vi.mock('@/stores/chatStore', () => ({
-  useChatStore: (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.chat),
+  useChatStore: Object.assign(
+    (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.chat),
+    // What the store holds at the moment it is read: the delete of a task reads it after the record was read.
+    { getState: () => mocks.chat },
+  ),
 }));
 
 vi.mock('@/stores/projectStore', () => ({
-  useProjectStore: (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.project),
+  useProjectStore: Object.assign(
+    (sel: (s: Record<string, unknown>) => unknown) => sel(mocks.project),
+    // What the store holds at the moment it is read: the answer to a question reads it again.
+    { getState: () => ({ ...mocks.project, projects: mocks.projects }) },
+  ),
 }));
 
 vi.mock('@/stores/settingsStore', () => ({
@@ -119,6 +129,9 @@ function renderItem(convs: ConversationMeta[], props: Partial<Parameters<typeof 
   );
 }
 
+// The project's name and the three buttons beside it, found by the name they are grouped under.
+const projectGroup = () => screen.getByRole('group', { name: 'fastapi-bridge-dev' });
+
 beforeAll(() => {
   // happy-dom lacks the pointer-capture and scroll APIs Radix menus call.
   Element.prototype.hasPointerCapture ??= () => false;
@@ -140,8 +153,10 @@ beforeEach(() => {
     activeConversationId: null,
     conversations: {},
     conversationIndex: {},
+    loadFailures: {},
     setConversationProject: vi.fn(),
   };
+  mocks.projects = { p1: project };
   mocks.project = {
     toggleExpanded: vi.fn(),
     togglePin: vi.fn(),
@@ -193,9 +208,64 @@ describe('ProjectItem — project row', () => {
     const header = screen.getByRole('button', { name: 'fastapi-bridge-dev' });
     await userEvent.click(header);
     expect(mocks.project.toggleExpanded).toHaveBeenCalledWith('p1');
-    // The E2E specs find 新任务 as a sibling of the project name.
-    await userEvent.click(within(header.parentElement!).getByRole('button', { name: '新任务' }));
+    await userEvent.click(within(projectGroup()).getByRole('button', { name: '新任务' }));
     expect(onNewTask).toHaveBeenCalledWith('p1');
+  });
+
+  // 项目文件, 新任务 and 更多操作 read the same on every project row: the group says whose they are.
+  it('groups the row\'s buttons under the name of the project', () => {
+    renderItem([makeConv(0)]);
+    const group = projectGroup();
+    expect(group).toHaveAttribute('aria-labelledby', screen.getByRole('button', { name: 'fastapi-bridge-dev' }).id);
+    expect(within(group).getAllByRole('button').map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual([
+      'fastapi-bridge-dev', '项目文件', '新任务', '更多操作',
+    ]);
+    // The E2E specs find 新任务 from the element around the project name: both sit directly in the group.
+    expect(Array.from(group.children)).toContain(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+    expect(Array.from(group.children)).toContain(within(group).getByRole('button', { name: '新任务' }));
+    // A task row's buttons are no part of it.
+    expect(group).not.toContainElement(screen.getByText('对话0'));
+  });
+
+  it('lists the project\'s actions in its right-click menu, and pins at once', async () => {
+    renderItem([]);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      '置顶', '项目设置', '在 Finder 中打开', '归档', '删除',
+    ]);
+    expect(within(menu).getByRole('menuitem', { name: '删除' })).toHaveClass('text-danger');
+    await userEvent.click(within(menu).getByRole('menuitem', { name: '置顶' }));
+    expect(mocks.project.togglePin).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('offers 取消置顶 for a pinned project', async () => {
+    renderItem([], { project: { ...project, pinned: true } });
+    fireEvent.contextMenu(screen.getByRole('button', { name: /fastapi-bridge-dev/ }));
+    expect(await screen.findByRole('menuitem', { name: '取消置顶' })).toBeInTheDocument();
+  });
+
+  // What the two questions say. The text of a question is found through the box it describes.
+  it.each([
+    ['归档', '归档项目', '「fastapi-bridge-dev」将从项目列表中移除。对话、定时任务和文件不会被删除。', '归档'],
+    // The project's name is the second line of the delete question.
+    ['删除', '删除项目', '删除项目后，对话将保留为独立对话\nfastapi-bridge-dev', '删除'],
+  ] as const)('asks about 「%s」 with the title 「%s」, its sentence and two buttons', async (item, title, sentence, answer) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderItem([]);
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
+      await user.click(await screen.findByRole('menuitem', { name: item }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+      const asked = await screen.findByRole('alertdialog', { name: title });
+      expect(document.getElementById(asked.getAttribute('aria-describedby')!)?.textContent).toBe(sentence);
+      expect(within(asked).getByRole('button', { name: '取消' })).toBeInTheDocument();
+      expect(within(asked).getByRole('button', { name: answer })).toHaveClass('text-danger');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('asks before deleting the project from its right-click menu, and unlinks its tasks', async () => {
@@ -205,10 +275,9 @@ describe('ProjectItem — project row', () => {
       renderItem([makeConv(0)]);
       fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
       await user.click(await screen.findByRole('menuitem', { name: '删除' }));
-      // The question opens once the menu has gone.
-      await act(() => vi.runOnlyPendingTimersAsync());
       const question = await screen.findByRole('alertdialog', { name: '删除项目' });
       expect(mocks.project.deleteProject).not.toHaveBeenCalled();
+      passSettleInterval();
       await user.click(within(question).getByRole('button', { name: '删除' }));
       expect(mocks.chat.setConversationProject).toHaveBeenCalledWith('c0', undefined);
       expect(mocks.project.deleteProject).toHaveBeenCalledWith('p1');
@@ -230,10 +299,10 @@ describe('ProjectItem — project row', () => {
       renderItem([], { onLeaving });
       fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
       await user.click(await screen.findByRole('menuitem', { name: item }));
-      await act(() => vi.runOnlyPendingTimersAsync());
       const asked = await screen.findByRole('alertdialog', { name: question });
       expect(onLeaving).not.toHaveBeenCalled();
 
+      passSettleInterval();
       await user.click(within(asked).getByRole('button', { name: answer }));
 
       expect(onLeaving).toHaveBeenCalledTimes(1);
@@ -254,9 +323,9 @@ describe('ProjectItem — project row', () => {
       renderItem([], { onLeaving });
       fireEvent.contextMenu(screen.getByRole('button', { name: 'fastapi-bridge-dev' }));
       await user.click(await screen.findByRole('menuitem', { name: '归档' }));
-      await act(() => vi.runOnlyPendingTimersAsync());
       const asked = await screen.findByRole('alertdialog', { name: '归档项目' });
 
+      passSettleInterval();
       await user.click(within(asked).getByRole('button', { name: '取消' }));
 
       expect(onLeaving).not.toHaveBeenCalled();
@@ -302,7 +371,6 @@ describe('ProjectItem — project row', () => {
       const archive = await screen.findByRole('menuitem', { name: '归档' });
       document.addEventListener('focusin', record);
       await user.click(archive);
-      await act(() => vi.runOnlyPendingTimersAsync());
       const question = await screen.findByRole('alertdialog', { name: '归档项目' });
       // The question is a ds dialog: it remembers the row as where focus was, so the
       // menu must not keep focus off the row the way it does for legacy dialogs.
@@ -310,6 +378,7 @@ describe('ProjectItem — project row', () => {
       expect(rowAt).toBeGreaterThanOrEqual(0);
       expect(focused.slice(rowAt + 1).every((el) => question.contains(el))).toBe(true);
       expect(question).toContainElement(document.activeElement as HTMLElement);
+      passSettleInterval();
       await user.click(within(question).getByRole('button', { name: '取消' }));
       await act(() => vi.runOnlyPendingTimersAsync());
       expect(mocks.project.archiveProject).not.toHaveBeenCalled();
@@ -319,6 +388,221 @@ describe('ProjectItem — project row', () => {
       document.removeEventListener('focusin', record);
       vi.useRealTimers();
     }
+  });
+});
+
+const projectRow = () => screen.getByRole('button', { name: 'fastapi-bridge-dev' });
+// The project's own 更多操作 sits in the project's group; a task row's sits inside that row.
+const projectMore = () => within(projectGroup()).getByRole('button', { name: '更多操作' });
+const taskRow = (title: string) => screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
+const taskMore = (title = '对话0') => within(taskRow(title)).getByRole('button', { name: '更多操作' });
+const PROJECT_ITEMS = ['置顶', '项目设置', '在 Finder 中打开', '归档', '删除'];
+
+describe('ProjectItem — the project row\'s 更多操作', () => {
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+  const setup = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+  it('shows on the terms of a task row\'s button: under the pointer, with the focus, and while its menu is open', () => {
+    renderItem([makeConv(0)]);
+    for (const button of [projectMore(), taskMore()]) {
+      expect(button).toHaveClass('opacity-0');
+      expect(button).toHaveClass('group-hover:opacity-100');
+      expect(button).toHaveClass('focus-visible:opacity-100');
+      expect(button).toHaveAttribute('aria-haspopup', 'menu');
+      expect(button).toHaveAttribute('aria-expanded', 'false');
+      // Hidden by opacity alone: Tab reaches it.
+      expect(button.tabIndex).toBe(0);
+    }
+    // After 项目文件 and 新任务, the last control of the row.
+    expect(within(projectGroup()).getAllByRole('button').map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual([
+      'fastapi-bridge-dev', '项目文件', '新任务', '更多操作',
+    ]);
+  });
+
+  it.each([['Enter', '{Enter}'], ['Space', ' ']])('opens the right-click menu\'s items with %s, and Escape gives the focus back to it', async (_name, key) => {
+    const user = setup();
+    renderItem([]);
+    act(() => projectMore().focus());
+    await user.keyboard(key);
+    const menu = await screen.findByRole('menu');
+    expect(menu).toHaveAccessibleName('更多操作');
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(PROJECT_ITEMS);
+    expect(within(menu).getByRole('menuitem', { name: '删除' })).toHaveClass('text-danger');
+    const button = screen.getByRole('button', { name: '更多操作', hidden: true });
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    expect(button).toHaveClass('opacity-100');
+    // The folder is not opened or closed by a press on the button.
+    expect(mocks.project.toggleExpanded).not.toHaveBeenCalled();
+
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(projectMore()).toHaveFocus();
+    expect(projectMore()).not.toHaveClass('opacity-100');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('opens with a pointer press, and the folder stays as it is', async () => {
+    const user = setup();
+    renderItem([]);
+    await user.click(projectMore());
+    expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(PROJECT_ITEMS);
+    expect(mocks.project.toggleExpanded).not.toHaveBeenCalled();
+  });
+
+  it('is its own menu: no task row\'s menu opens with it', async () => {
+    const user = setup();
+    renderItem([makeConv(0)]);
+    await user.click(projectMore());
+    await screen.findByRole('menu');
+    expect(screen.queryByRole('menuitem', { name: '删除会话' })).toBeNull();
+    expect(screen.getAllByRole('menu')).toHaveLength(1);
+  });
+
+  it('opens project settings once the menu has gone, with the focus back on the button', async () => {
+    const user = setup();
+    // What was on the page at the moment the window was asked for.
+    const menusAtCall: number[] = [];
+    const onOpenSettings = vi.fn(() => { menusAtCall.push(screen.queryAllByRole('menu').length); });
+    renderItem([], { onOpenSettings });
+    act(() => projectMore().focus());
+    await user.keyboard('{Enter}');
+    await user.click(await screen.findByRole('menuitem', { name: '项目设置' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onOpenSettings).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(menusAtCall).toEqual([0]);
+    expect(projectMore()).toHaveFocus();
+  });
+
+  it.each([
+    ['归档', '归档项目', 'archiveProject'],
+    ['删除', '删除项目', 'deleteProject'],
+  ] as const)('asks about 「%s」 once the menu has gone and acts on the answer', async (item, title, action) => {
+    const user = setup();
+    const onLeaving = vi.fn();
+    renderItem([makeConv(0)], { onLeaving });
+    await user.click(projectMore());
+    await user.click(await screen.findByRole('menuitem', { name: item }));
+    const asked = await screen.findByRole('alertdialog', { name: title });
+    expect(mocks.project[action]).not.toHaveBeenCalled();
+    passSettleInterval();
+    await user.click(within(asked).getByRole('button', { name: item }));
+    expect(onLeaving).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(mocks.project[action]).toHaveBeenCalledExactlyOnceWith('p1');
+  });
+});
+
+// The answer acts on the project as the store holds it at that moment.
+describe('ProjectItem — the archive and delete questions read their project again at the answer', () => {
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  // The question, on the page long enough to take a pointer press.
+  async function ask(user: ReturnType<typeof userEvent.setup>, item: '归档' | '删除') {
+    fireEvent.contextMenu(projectRow());
+    await user.click(await screen.findByRole('menuitem', { name: item }));
+    const asked = await screen.findByRole('alertdialog', { name: item === '归档' ? '归档项目' : '删除项目' });
+    passSettleInterval();
+    return asked;
+  }
+
+  it.each([
+    ['归档', 'deleted from elsewhere', () => ({})],
+    ['归档', 'archived from elsewhere', () => ({ p1: { ...project, archived: true } })],
+    ['删除', 'deleted from elsewhere', () => ({})],
+    ['删除', 'archived from elsewhere', () => ({ p1: { ...project, archived: true } })],
+  ] as const)('「%s」 does nothing for a project %s while the question was on the page', async (item, _what, now) => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onLeaving = vi.fn();
+    renderItem([makeConv(0)], { onLeaving });
+    const asked = await ask(user, item);
+    mocks.projects = now();
+
+    await user.click(within(asked).getByRole('button', { name: item }));
+
+    expect(mocks.project.archiveProject).not.toHaveBeenCalled();
+    expect(mocks.project.deleteProject).not.toHaveBeenCalled();
+    expect(mocks.chat.setConversationProject).not.toHaveBeenCalled();
+    expect(onLeaving).not.toHaveBeenCalled();
+  });
+
+  // The question is asked from the menu's close hook, later than the choice: a project that has
+  // gone meanwhile is asked nothing about.
+  it.each([
+    ['归档', 'deleted', () => ({})],
+    ['归档', 'archived', () => ({ p1: { ...project, archived: true } })],
+    ['删除', 'deleted', () => ({})],
+    ['删除', 'archived', () => ({ p1: { ...project, archived: true } })],
+  ] as const)('asks nothing about 「%s」 for a project %s from elsewhere while its menu was closing', async (item, _what, now) => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0)]);
+    await user.click(projectMore());
+    await screen.findByRole('menu');
+    act(() => menuProps.itemSelect.get(item)?.(new Event('select')));
+    mocks.projects = now();
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('asks nothing when the row left the page with its project while the menu was closing', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const view = renderItem([makeConv(0)]);
+    await user.click(projectMore());
+    await screen.findByRole('menu');
+    act(() => menuProps.itemSelect.get('删除')?.(new Event('select')));
+    mocks.projects = {};
+    view.rerender(<span>No project</span>);
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mocks.project.deleteProject).not.toHaveBeenCalled();
+  });
+
+  it('deletes a project once: 删除 chosen again on the row that is still drawn asks nothing', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    // The store drops the project; this row is still drawn, as it is until the list renders again.
+    (mocks.project.deleteProject as ReturnType<typeof vi.fn>).mockImplementation(() => { mocks.projects = {}; });
+    renderItem([makeConv(0)]);
+    await user.click(within(await ask(user, '删除')).getByRole('button', { name: '删除' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+    fireEvent.contextMenu(projectRow());
+    await user.click(await screen.findByRole('menuitem', { name: '删除' }));
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mocks.project.deleteProject).toHaveBeenCalledTimes(1);
+    expect(mocks.chat.setConversationProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes once when the confirming button is pressed twice', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0)]);
+    const confirmButton = within(await ask(user, '删除')).getByRole('button', { name: '删除' });
+    act(() => {
+      fireEvent.click(confirmButton);
+      fireEvent.click(confirmButton);
+    });
+    await act(() => vi.runOnlyPendingTimersAsync());
+
+    expect(mocks.project.deleteProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('unlinks the tasks the project has at the answer, also one that arrived while the question was on the page', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const view = renderItem([makeConv(0)]);
+    const asked = await ask(user, '删除');
+    view.rerender(<ProjectItem project={project} conversations={[makeConv(0), makeConv(1)]} expanded onNewTask={vi.fn()} onOpenSettings={vi.fn()} />);
+
+    await user.click(within(asked).getByRole('button', { name: '删除' }));
+
+    expect(mocks.chat.setConversationProject).toHaveBeenCalledWith('c0', undefined);
+    expect(mocks.chat.setConversationProject).toHaveBeenCalledWith('c1', undefined);
+    expect(mocks.project.deleteProject).toHaveBeenCalledExactlyOnceWith('p1');
   });
 });
 
@@ -343,6 +627,48 @@ describe('ProjectItem — a menu opened again before its close hook ran', () => 
     expect(onOpenSettings).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['删除', 'deleteProject'],
+    ['归档', 'archiveProject'],
+  ] as const)('forgets 「%s」 chosen in the project row\'s 更多操作 menu: no question is asked under the menu opened again', async (item, action) => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0)]);
+    await user.click(projectMore());
+    await screen.findByRole('menu');
+    act(() => menuProps.itemSelect.get(item)?.(new Event('select')));
+    // The project row's own 更多操作 menu is the first one mounted.
+    act(() => [...menuProps.menus.values()][0]?.(true));
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mocks.project[action]).not.toHaveBeenCalled();
+  });
+
+  it('forgets 删除 chosen in the 更多操作 menu when the project\'s right-click menu opens before the close hook ran', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0)]);
+    await user.click(projectMore());
+    await screen.findByRole('menu');
+    act(() => menuProps.itemSelect.get('删除')?.(new Event('select')));
+    act(() => [...menuProps.contextMenus.values()][0]?.(true));
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mocks.project.deleteProject).not.toHaveBeenCalled();
+  });
+
+  it('asks 「删除」 chosen in the 更多操作 menu when no menu opened in between', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0)]);
+    await user.click(projectMore());
+    await screen.findByRole('menu');
+    act(() => menuProps.itemSelect.get('删除')?.(new Event('select')));
+    await user.keyboard('{Escape}');
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(screen.getByRole('alertdialog', { name: '删除项目' })).toBeInTheDocument();
+  });
+
   it('forgets 重命名 chosen in a task row menu, opened by right-click', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderItem([makeConv(0)]);
@@ -358,9 +684,10 @@ describe('ProjectItem — a menu opened again before its close hook ran', () => 
   it('forgets 重命名 chosen in a task row menu, opened from 更多操作', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderItem([makeConv(0)]);
-    await user.click(screen.getByRole('button', { name: '更多操作' }));
+    await user.click(taskMore());
     act(() => menuProps.itemSelect.get('重命名')?.(new Event('select')));
-    act(() => [...menuProps.menus.values()][0]?.(true));
+    // The project row's own menu is the first one mounted, the task rows' the second.
+    act(() => [...menuProps.menus.values()][1]?.(true));
     await user.keyboard('{Escape}');
     await act(() => vi.runOnlyPendingTimersAsync());
     expect(screen.queryByRole('menu')).toBeNull();
@@ -384,7 +711,7 @@ describe('ProjectItem — task rows', () => {
   it('opens the row menu from 更多操作 without opening the task', async () => {
     const user = userEvent.setup();
     renderItem([makeConv(0)]);
-    await user.click(screen.getByRole('button', { name: '更多操作' }));
+    await user.click(taskMore());
     const menu = await screen.findByRole('menu');
     expect(menu).toHaveAccessibleName('更多操作');
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
@@ -399,10 +726,11 @@ describe('ProjectItem — task rows', () => {
     renderItem(Array.from({ length: 8 }, (_, i) => makeConv(i)));
     await userEvent.click(screen.getByRole('button', { name: /还有 3 个/ }));
 
-    expect(screen.getAllByRole('button', { name: '更多操作' })).toHaveLength(8);
-    // The project row's own menu, and the task list's.
+    // Eight task rows and the project row.
+    expect(screen.getAllByRole('button', { name: '更多操作' })).toHaveLength(9);
+    // The project row's own two menus, and the task list's two.
     expect(menuProps.contextMenus.size).toBe(2);
-    expect(menuProps.menus.size).toBe(1);
+    expect(menuProps.menus.size).toBe(2);
   });
 
   it('opens the menu of the row whose 更多操作 was pressed', async () => {
@@ -421,7 +749,7 @@ describe('ProjectItem — task rows', () => {
     try {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       renderItem([makeConv(0)]);
-      const more = screen.getByRole('button', { name: '更多操作' });
+      const more = taskMore();
       await user.click(more);
       await user.click(await screen.findByRole('menuitem', { name: '导出会话' }));
       await act(() => vi.runOnlyPendingTimersAsync());
@@ -434,10 +762,161 @@ describe('ProjectItem — task rows', () => {
     }
   });
 
+  // The row leaves while its menu is still closing with the focus in it.
+  describe('after 删除会话 chosen from the keyboard', () => {
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    async function deleteFromKeyboard(convs: ConversationMeta[], title: string, left: ConversationMeta[]) {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const view = renderItem(convs);
+      act(() => taskMore(title).focus());
+      await user.keyboard('{Enter}');
+      await user.click(await screen.findByRole('menuitem', { name: '删除会话' }));
+      // The store drops the task; the list renders without its row before the menu has gone.
+      view.rerender(<ProjectItem project={project} conversations={left} expanded onNewTask={vi.fn()} onOpenSettings={vi.fn()} />);
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(screen.queryByRole('menu')).toBeNull();
+    }
+
+    it('marks its task rows as conversation rows', () => {
+      renderItem([makeConv(0)]);
+      expect(taskRow('对话0')).toHaveAttribute('data-conversation-row', 'c0');
+    });
+
+    it('moves the focus to the row that took its place', async () => {
+      await deleteFromKeyboard([makeConv(0), makeConv(1), makeConv(2)], '对话1', [makeConv(0), makeConv(2)]);
+      expect(mocks.chat.deleteConversation).toHaveBeenCalledExactlyOnceWith('c1');
+      expect(taskRow('对话2')).toHaveFocus();
+      expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+    });
+
+    it('moves the focus to the row before it when it was the last', async () => {
+      await deleteFromKeyboard([makeConv(0), makeConv(1)], '对话1', [makeConv(0)]);
+      expect(taskRow('对话0')).toHaveFocus();
+    });
+
+    it('moves the focus to the project\'s own row when its only task is deleted', async () => {
+      await deleteFromKeyboard([makeConv(0)], '对话0', []);
+      expect(mocks.chat.deleteConversation).toHaveBeenCalledExactlyOnceWith('c0');
+      expect(projectRow()).toHaveFocus();
+      expect(mocks.project.toggleExpanded).not.toHaveBeenCalled();
+    });
+  });
+
+  // A record that is on disk and cannot be read: the delete asks first, as in the recent tasks.
+  describe('删除会话 for a task whose record cannot be read', () => {
+    const question = () => screen.queryByRole('alertdialog', { name: '删除这个任务？' });
+    const menuGone = () => act(() => vi.advanceTimersByTimeAsync(10));
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mocks.chat.conversationIndex = { c0: makeConv(0), c1: makeConv(1), c2: makeConv(2) };
+      mocks.chat.loadFailures = { c1: true };
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    async function chooseDelete(title: string) {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const view = renderItem([makeConv(0), makeConv(1), makeConv(2)]);
+      act(() => taskMore(title).focus());
+      await user.keyboard('{Enter}');
+      await user.click(await screen.findByRole('menuitem', { name: '删除会话' }));
+      await menuGone();
+      return { user, view };
+    }
+
+    it('reads the record, then asks by name, with the focus on 取消, and deletes nothing meanwhile', async () => {
+      await chooseDelete('对话1');
+      expect(mocks.chat.loadConversation).toHaveBeenCalledWith('c1');
+      const asked = question()!;
+      expect(asked).toHaveTextContent('「对话1」的记录目前读不出来，删除后无法恢复。');
+      expect(within(asked).getByRole('button', { name: '取消' })).toHaveFocus();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
+    });
+
+    it('keeps the task on 取消, with the focus back on the row\'s button', async () => {
+      await chooseDelete('对话1');
+      fireEvent.click(within(question()!).getByRole('button', { name: '取消' }));
+      await menuGone();
+      expect(question()).toBeNull();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
+      expect(taskMore('对话1')).toHaveFocus();
+    });
+
+    it('deletes once on 删除 and moves the focus to the row that took its place', async () => {
+      const { view } = await chooseDelete('对话1');
+      const confirmButton = within(question()!).getByRole('button', { name: '删除' });
+      fireEvent.click(confirmButton);
+      fireEvent.click(confirmButton);
+      await menuGone();
+      expect(mocks.chat.deleteConversation).toHaveBeenCalledExactlyOnceWith('c1');
+      view.rerender(<ProjectItem project={project} conversations={[makeConv(0), makeConv(2)]} expanded onNewTask={vi.fn()} onOpenSettings={vi.fn()} />);
+      await menuGone();
+      expect(taskRow('对话2')).toHaveFocus();
+      expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+    });
+
+    it('leaves a task alone that has gone by the time the question is answered', async () => {
+      await chooseDelete('对话1');
+      mocks.chat.conversationIndex = { c0: makeConv(0), c2: makeConv(2) };
+      fireEvent.click(within(question()!).getByRole('button', { name: '删除' }));
+      await menuGone();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
+    });
+
+    it('asks nothing for a task whose record can be read', async () => {
+      await chooseDelete('对话2');
+      expect(mocks.chat.loadConversation).toHaveBeenCalledWith('c2');
+      expect(question()).toBeNull();
+      expect(mocks.chat.deleteConversation).toHaveBeenCalledExactlyOnceWith('c2');
+    });
+
+    it('deletes nothing when the row leaves the page with its project while the question waits', async () => {
+      const { view } = await chooseDelete('对话1');
+      expect(question()).not.toBeNull();
+      view.unmount();
+      await menuGone();
+      expect(mocks.chat.deleteConversation).not.toHaveBeenCalled();
+    });
+  });
+
   it('opens the task when the row itself is clicked', async () => {
     renderItem([makeConv(0)]);
     await userEvent.click(screen.getByText('对话0'));
     expect(mocks.chat.switchConversation).toHaveBeenCalledWith('c0');
+  });
+
+  // Tab reaches a row; Enter and Space on the row open the task as a click does.
+  describe('from the keyboard', () => {
+    const row = () => screen.getByText('对话0').closest<HTMLElement>('[role="button"]')!;
+
+    it.each([['Enter', 'Enter'], [' ', 'Space']])('opens the task with %j pressed on the row, and the page does not scroll', (key, code) => {
+      renderItem([makeConv(0)]);
+      expect(row().tabIndex).toBe(0);
+
+      // fireEvent returns false once the default was prevented.
+      expect(fireEvent.keyDown(row(), { key, code })).toBe(false);
+
+      expect(mocks.chat.switchConversation).toHaveBeenCalledExactlyOnceWith('c0');
+    });
+
+    it('opens nothing on the repeats of a held Enter or Space', () => {
+      renderItem([makeConv(0)]);
+
+      expect(fireEvent.keyDown(row(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      expect(fireEvent.keyDown(row(), { key: ' ', code: 'Space', repeat: true })).toBe(false);
+
+      expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+    });
+
+    it('leaves keys pressed on the row\'s 更多操作 to that button, and other keys alone', () => {
+      renderItem([makeConv(0)]);
+
+      fireEvent.keyDown(within(row()).getByRole('button', { name: '更多操作' }), { key: 'Enter', code: 'Enter' });
+      expect(fireEvent.keyDown(row(), { key: 'Tab', code: 'Tab' })).toBe(true);
+
+      expect(mocks.chat.switchConversation).not.toHaveBeenCalled();
+    });
   });
 
   describe('rename', () => {
@@ -446,7 +925,7 @@ describe('ProjectItem — task rows', () => {
     afterEach(() => { vi.useRealTimers(); });
 
     async function startRename(user: ReturnType<typeof userEvent.setup>) {
-      await user.click(screen.getByRole('button', { name: '更多操作' }));
+      await user.click(taskMore());
       await user.click(await screen.findByRole('menuitem', { name: '重命名' }));
       await act(() => vi.runOnlyPendingTimersAsync());
       const field = screen.getByRole('textbox', { name: '重命名' });

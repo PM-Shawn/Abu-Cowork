@@ -8,6 +8,7 @@ import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
 import CloseDialog from './CloseDialog';
 
 // Every callback of the question, with the order they were called in.
@@ -37,9 +38,12 @@ function Question({ open = true, running = false, on }: { open?: boolean; runnin
   );
 }
 
+// The question takes no pointer press for a moment after it appears; the keyboard is never held.
+// These cases are about what each control answers, so the question has been read when they begin.
 function renderQuestion(props: { open?: boolean; running?: boolean } = {}) {
   const on = answers();
   const view = render(<Question {...props} on={on} />, { wrapper: DesignSystemProvider });
+  passSettleInterval();
   return { on, view, rerender: (next: { open?: boolean; running?: boolean }) => view.rerender(<Question {...next} on={on} />) };
 }
 
@@ -190,6 +194,7 @@ describe('CloseDialog', () => {
       const on = answers();
       useAppQuestion.setState({ open: true });
       render(<AppLike on={on} />, { wrapper: DesignSystemProvider });
+      passSettleInterval();
       await user.click(remember());
       expect(remember()).toBeChecked();
 
@@ -212,6 +217,7 @@ describe('CloseDialog', () => {
 
       rerender({ open: true });
       expect(await screen.findByRole('checkbox', { name: 'Remember my choice' })).not.toBeChecked();
+      passSettleInterval();
       await user.click(quit());
       expect(on.order).toEqual(['quit']);
     });
@@ -388,6 +394,7 @@ describe('CloseDialog while it fades out', () => {
     const user = userEvent.setup();
     const on = answers();
     render(<AppLike on={on} />, { wrapper: DesignSystemProvider });
+    passSettleInterval();
     await user.click(remember());
     await user.tab();
     await user.tab();
@@ -452,7 +459,15 @@ describe('CloseDialog and an approval', () => {
       <><Question open={questionOpen} on={on} /><Approval /></>,
       { wrapper: DesignSystemProvider },
     );
-    return { on, ask: (open: boolean) => view.rerender(<><Question open={open} on={on} /><Approval /></>) };
+    // The question has been read by the time a case presses it (see renderQuestion).
+    passSettleInterval();
+    return {
+      on,
+      ask: (open: boolean) => {
+        view.rerender(<><Question open={open} on={on} /><Approval /></>);
+        passSettleInterval();
+      },
+    };
   }
 
   describe('asked while the approval is on screen', () => {
@@ -544,6 +559,8 @@ describe('CloseDialog and an approval', () => {
       expect(remember()).toHaveAttribute('aria-checked', 'true');
       expect(on.order).toEqual([]);
 
+      // Back at the spot where the approval was: it holds pointer presses again for a moment.
+      passSettleInterval();
       await user.click(quit());
       expect(on.order).toEqual(['remember:quit', 'quit']);
     });

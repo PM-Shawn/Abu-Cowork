@@ -133,6 +133,8 @@ const enUS: TranslationDict = {
     deleteConversation: 'Delete conversation',
     conversationDeleted: 'Conversation deleted',
     undo: 'Undo',
+    deleteUnreadableTitle: 'Delete this task?',
+    deleteUnreadableMessage: 'The record of "{name}" can\'t be read right now. Deleting it can\'t be undone.',
     importSession: 'Import session',
     renameConversation: 'Rename',
     moreActions: 'More actions',
@@ -378,9 +380,6 @@ const enUS: TranslationDict = {
     outputTokens: 'Output',
     addAttachment: 'Add images or files',
     composerMenu: { open: 'More', addFile: 'Add files', teamOrMember: 'Expert · Expert Team', skill: 'Skill' },
-    pickAgent: 'Pick expert',
-    pickAgentEmpty: 'No experts available',
-    pickAgentClear: 'No expert',
     pickAgentPluginTag: 'Plugin',
     copyConvIdTooltip: 'Click to copy conversation ID (attach when reporting bugs)',
     copyConvIdCopied: 'Conversation ID copied',
@@ -494,6 +493,7 @@ const enUS: TranslationDict = {
     sidecarUnavailable: 'The background service could not confirm this task\'s state during recovery. Abu stopped waiting and will not replay it automatically, but cannot confirm whether the original task is still running. Check the existing result before deciding to retry.',
     payloadTooLarge: 'This conversation is too long to continue.',
     historyUnavailable: "Couldn't read this conversation's history.",
+    recordUnreadable: "Couldn't read this task's record",
     sidecarNotReady: 'The background service did not start, so this message was not sent. Click Retry to try again.',
     automationRunFailed: 'The automated task did not finish: {error}',
     messageSaveFailed: 'The message could not be saved to disk, so Abu did not start the task. Check disk access and retry.',
@@ -656,10 +656,7 @@ const enUS: TranslationDict = {
   },
 
   status: {
-    ready: 'Ready',
     thinking: 'Thinking',
-    responding: 'Responding',
-    usingTool: 'Using',
   },
 
   task: {
@@ -888,7 +885,6 @@ const enUS: TranslationDict = {
     advanced: 'Advanced',
     pressEscToClose: 'Press ESC to close',
     // API Section
-    provider: 'Provider',
     providerAnthropic: 'Anthropic (Claude)',
     providerOpenAI: 'OpenAI',
     providerLocal: 'Local Model / Third-party Proxy',
@@ -911,17 +907,14 @@ const enUS: TranslationDict = {
     secretShow: 'Show key',
     secretHide: 'Hide key',
     // Model Section
-    model: 'Model',
     customModelOption: 'Custom Model...',
     customModelName: 'Custom Model Name',
     customModelPlaceholder: 'e.g., claude-sonnet-4-6',
     customModelDesc: 'Enter any model ID supported by the API',
     currentModel: 'Current Model',
-    notSet: 'Not Set',
     // Advanced Section
     baseUrl: 'Base URL',
     baseUrlPlaceholder: 'Optional, custom API endpoint',
-    apiFormat: 'API Format',
     billingPaygo: 'Pay-as-you-go',
     billingPaygoBeijing: 'Pay-as-you-go (Beijing)',
     billingCoding: 'Coding Plan',
@@ -945,7 +938,6 @@ const enUS: TranslationDict = {
     deleteServiceConfirm: 'Delete this custom service?',
     serviceNameRequired: 'Service name is required',
     language: 'Language',
-    languageDescription: 'Select display language',
     followSystem: 'Follow System',
     // Image Generation — independent backend list (design doc §3.1, "C-a")
     imageGenVendor: 'Vendor',
@@ -2025,22 +2017,6 @@ const enUS: TranslationDict = {
     systemSkills: 'System Skills',
     customSkills: 'Custom Skills',
     noCustomSkills: 'No custom skills yet',
-    // ModelsSection
-    currentConfig: 'Current Config',
-    quickSwitch: 'Quick Switch',
-    current: 'Current',
-    configured: 'Configured',
-    notConfigured: 'Not Configured',
-    localModels: 'Local Models',
-    openaiCompatible: 'OpenAI / Compatible',
-    qiniuCloud: 'Qiniu Cloud',
-    openrouter: 'OpenRouter',
-    deepseek: 'DeepSeek',
-    anthropic: 'Anthropic',
-    volcengine: 'Volcengine',
-    bailian: 'Alibaba Bailian',
-    advancedSettings: 'Advanced Settings',
-    advancedSettingsDesc: 'API Key, Temperature, Extended Thinking, etc.',
     // Sub-tab labels
     tabSystem: 'System',
     tabCustom: 'Custom',
@@ -2088,7 +2064,6 @@ const enUS: TranslationDict = {
     skillContextFork: 'Fork (replaces base prompt)',
     skillMaxTurns: 'Max Turns',
     maxTurnsInheritGlobalHint: 'Leave empty to inherit global setting',
-    skillContent: 'Skill Content',
     skillEnabled: 'Enabled',
     skillDisabled: 'Disabled',
     skillEdit: 'Edit',
@@ -2147,8 +2122,6 @@ const enUS: TranslationDict = {
     installAgentSkillsHint: 'Runs npx skills add <repo> -g',
     installAgentSkillsButton: 'Install',
     recommendedSkills: 'Recommended',
-    activeSkills: 'Active Skills',
-    activeSkillsRemove: 'Remove',
     // Category filter
     categoryAll: 'All',
     categoryDocument: 'Document',
@@ -2171,7 +2144,6 @@ const enUS: TranslationDict = {
     agentMemoryUser: 'User',
     agentMaxTurns: 'Max Turns',
     agentBackground: 'Background',
-    agentSystemPrompt: 'System Prompt',
     agentEdit: 'Edit',
     agentFromPluginRemoveHint: 'From plugin {plugin} · uninstall the plugin to remove',
     itemFromPluginRemoveHint: 'From plugin {plugin} · uninstall the plugin to remove',
@@ -2368,7 +2340,6 @@ const enUS: TranslationDict = {
     },
     folderRequestEnded: 'That folder request has already ended, so the folder you picked was not applied.',
     abuCanDo: 'Abu will be able to:',
-    allowOnce: 'Allow Once',
     allowAlways: 'Always Allow',
     deny: 'Deny',
     rememberChoice: 'Always allow access to this folder',
@@ -2385,10 +2356,6 @@ const enUS: TranslationDict = {
     allowSessionButton: 'Allow for Session',
     allow24hButton: 'Allow for 24h',
     allowAlwaysButton: 'Always Allow',
-    // Compact inline permission labels (InlinePermissionRequest)
-    compactAccessLabel: 'Access',
-    compactShellLabel: 'Execute',
-    compactWriteLabel: 'Write',
   },
 
   panel: {

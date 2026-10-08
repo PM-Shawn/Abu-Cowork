@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
+import { followSystemColorScheme } from '@/styles/colorScheme';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
@@ -59,7 +60,6 @@ const platformInitialization = initPlatform().then((detectedPlatform) => {
   return 'unknown';
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
-import { TooltipProvider } from '@/components/ui/tooltip';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS, isWindows } from '@/utils/platform';
@@ -101,8 +101,7 @@ import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
 import { checkForUpdate } from '@/core/updates/checker';
 import { usePingCadence } from '@/hooks/usePingCadence';
 import { fetchUnseenAnnouncements, markSeen, type AnnouncementItem } from '@/utils/consoleAnnouncement';
-import AnnouncementBanner from '@/components/common/AnnouncementBanner';
-import DisclaimerBanner from '@/components/common/DisclaimerBanner';
+import CornerBanners from '@/components/common/CornerBanners';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -260,12 +259,10 @@ function App() {
       root.classList.toggle('dark', dark);
     };
     if (theme === 'system') {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      apply(mq.matches);
+      // The same rule the pet window follows (styles/colorScheme.ts).
+      const stopFollowing = followSystemColorScheme(root);
       syncNativeTheme(null);
-      const handler = (e: MediaQueryListEvent) => apply(e.matches);
-      mq.addEventListener('change', handler);
-      return () => mq.removeEventListener('change', handler);
+      return stopFollowing;
     } else {
       apply(theme === 'dark');
       syncNativeTheme(theme === 'dark' ? 'dark' : 'light');
@@ -884,7 +881,6 @@ function App() {
     <ErrorBoundary onError={traceAppRootRenderError}>
     {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
     <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen} onDecisionChange={setToastPlacesForDecision}>
-    <TooltipProvider delayDuration={200}>
       <div
         data-abu-app-shell
         className="relative flex h-full w-full flex-col overflow-hidden bg-desk"
@@ -980,27 +976,21 @@ function App() {
             hasRunSensitiveAudit_v015 settings flag. */}
         <SensitiveAuditDialog />
 
-        {/* First-launch disclaimer banner — shows once until dismissed.
-            Self-gates on hasAcknowledgedDisclaimer in settingsStore. */}
-        <DisclaimerBanner />
-
         {/* Enterprise policy confirmation: an approval layer since batch 9; renders nothing in the OSS build. */}
         <PolicyConfirmModal />
 
-        {/* Cloud announcement banner — shows the first unseen announcement */}
-        {pendingAnnouncements.length > 0 && pendingAnnouncements[0] && (
-          <AnnouncementBanner
-            item={pendingAnnouncements[0]}
-            onDismiss={() => {
-              const id = pendingAnnouncements[0]?.id;
-              if (id != null) markSeen(id);
-              setPendingAnnouncements((prev) => prev.slice(1));
-            }}
-          />
-        )}
+        {/* The corner banners, one at a time: the first-launch disclaimer until it is
+            acknowledged, then the first unseen cloud announcement. */}
+        <CornerBanners
+          announcement={pendingAnnouncements[0]}
+          onDismissAnnouncement={() => {
+            const id = pendingAnnouncements[0]?.id;
+            if (id != null) markSeen(id);
+            setPendingAnnouncements((prev) => prev.slice(1));
+          }}
+        />
 
       </div>
-    </TooltipProvider>
     </DesignSystemProvider>
     </ErrorBoundary>
   );

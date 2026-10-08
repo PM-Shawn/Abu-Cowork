@@ -442,6 +442,23 @@ describe('TabStrip pointer interactions', () => {
     expect(summary).toHaveFocus();
   });
 
+  // Delete hands the focus to the next tab; the repeats of a held Delete would close that one too.
+  it('closes one tab per press of Delete: the repeats of a held Delete close nothing', () => {
+    renderTabs();
+    const before = tabIds();
+    const terminal = screen.getByRole('tab', { name: /Terminal/ });
+    terminal.focus();
+
+    // fireEvent returns false once the default was prevented.
+    expect(fireEvent.keyDown(terminal, { key: 'Delete', code: 'Delete', repeat: true })).toBe(false);
+    expect(tabIds()).toEqual(before);
+
+    fireEvent.keyDown(terminal, { key: 'Delete', code: 'Delete' });
+    expect(tabIds()).toEqual([SUMMARY_ID]);
+    fireEvent.keyDown(screen.getByRole('tab', { name: /Task Summary/ }), { key: 'Delete', code: 'Delete', repeat: true });
+    expect(tabIds()).toEqual([SUMMARY_ID]);
+  });
+
   it('closes the focused tab with Delete while preserving the single roving tab stop', () => {
     renderTabs();
     const tablist = screen.getByRole('tablist', { name: 'Workspace tabs' });

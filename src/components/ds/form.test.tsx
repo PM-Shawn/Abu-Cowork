@@ -4,6 +4,7 @@ import { createRef, useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pointerTargetOf } from '@/test/pointerTarget';
 import { Button } from './button';
 import { Checkbox } from './checkbox';
 import { Combobox, MultiCombobox, type ComboboxOption } from './combobox';
@@ -52,6 +53,37 @@ describe('form controls', () => {
   it('TextArea is a multi-line field with three rows by default', () => {
     render(<TextArea aria-label="Notes" />);
     expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveAttribute('rows', '3');
+  });
+
+  it('TextArea draws its own box: border, fill, focus ring', () => {
+    render(<TextArea aria-label="Notes" />);
+    const area = screen.getByRole('textbox', { name: 'Notes' });
+    expect(area).toHaveClass('border');
+    expect(area).toHaveClass('bg-field');
+    expect(area).toHaveClass('focus-visible:ring-2');
+    expect(area).toHaveClass('disabled:opacity-40');
+    expect(area).toHaveClass('min-h-16');
+    expect(area).toHaveClass('py-2');
+  });
+
+  // The editing area of a card that draws the box itself (the composer).
+  it('TextArea bare has no box of its own: no border, no fill, no ring, no padding', () => {
+    render(<TextArea bare aria-label="Message" className="flex-1" />);
+    const area = screen.getByRole('textbox', { name: 'Message' });
+    expect(area).not.toHaveClass('border');
+    expect(area).not.toHaveClass('bg-field');
+    expect(area).toHaveClass('bg-transparent');
+    expect(area.className).toBe('w-full resize-none bg-transparent outline-none flex-1');
+    expect(area).not.toHaveAttribute('bare');
+    expect(area).toHaveAttribute('rows', '3');
+  });
+
+  it('TextArea bare takes the rows and the state its caller gives', () => {
+    render(<TextArea bare aria-label="Message" rows={1} disabled invalid />);
+    const area = screen.getByRole('textbox', { name: 'Message' });
+    expect(area).toHaveAttribute('rows', '1');
+    expect(area).toBeDisabled();
+    expect(area).toHaveAttribute('aria-invalid', 'true');
   });
 
   it('Checkbox toggles from its label and shows the mixed state', async () => {
@@ -136,6 +168,68 @@ describe('form controls', () => {
     expect(onCheckedChange).not.toHaveBeenCalled();
     expect(control).toHaveAttribute('aria-checked', 'false');
     expect(control).toHaveFocus();
+  });
+
+  // A busy switch takes the press itself: the card it sits on does not open, and the focus stays.
+  it('a busy Switch keeps a pointer press, Enter, Space and a click made by code from the card behind it', async () => {
+    const user = userEvent.setup();
+    const onCheckedChange = vi.fn();
+    const onCardClick = vi.fn();
+    render(
+      <div role="button" tabIndex={0} aria-label="Card" onClick={onCardClick}>
+        <Switch aria-label="Connect" busy checked={false} onCheckedChange={onCheckedChange} />
+      </div>,
+    );
+    const control = screen.getByRole('switch', { name: 'Connect' });
+    expect(control).not.toHaveClass('aria-disabled:pointer-events-none');
+    expect(control).toHaveClass('aria-disabled:cursor-default');
+    expect(control).toHaveClass('aria-disabled:opacity-40');
+    control.focus();
+
+    await user.click(pointerTargetOf(control));
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    const notPrevented = fireEvent.click(control);
+
+    expect(onCardClick).not.toHaveBeenCalled();
+    expect(onCheckedChange).not.toHaveBeenCalled();
+    expect(notPrevented).toBe(false);
+    expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    expect(control).toHaveFocus();
+  });
+
+  it('a busy Switch takes a press made while the focus was on the card, and the card keeps closed', async () => {
+    const user = userEvent.setup();
+    const onCardClick = vi.fn();
+    render(
+      <div role="button" tabIndex={0} aria-label="Card" onClick={onCardClick}>
+        <Switch aria-label="Connect" busy checked={false} onCheckedChange={() => undefined} />
+      </div>,
+    );
+    const card = screen.getByRole('button', { name: 'Card' });
+    card.focus();
+
+    await user.click(pointerTargetOf(screen.getByRole('switch', { name: 'Connect' })));
+
+    expect(onCardClick).not.toHaveBeenCalled();
+    expect(card).not.toHaveFocus();
+  });
+
+  it('a Switch that is not busy changes on a press and lets the click go on', async () => {
+    const user = userEvent.setup();
+    const onCheckedChange = vi.fn();
+    const onCardClick = vi.fn();
+    render(
+      <div role="button" tabIndex={0} aria-label="Card" onClick={onCardClick}>
+        <Switch aria-label="Connect" checked={false} onCheckedChange={onCheckedChange} />
+      </div>,
+    );
+
+    await user.click(screen.getByRole('switch', { name: 'Connect' }));
+
+    expect(onCheckedChange).toHaveBeenCalledExactlyOnceWith(true);
+    expect(onCardClick).toHaveBeenCalledOnce();
   });
 
   it('a Switch that stops being busy takes the next press, with the focus still on it', async () => {
@@ -362,6 +456,27 @@ describe('MultiCombobox', () => {
     expect(onValuesChange).toHaveBeenCalledWith(['ada', 'lin']);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('listbox', { name: 'Members' })).toBeInTheDocument();
+  });
+
+  it('turns the highlighted option on once for a held Enter, and lets a held arrow walk the list', async () => {
+    const user = userEvent.setup();
+    const onValuesChange = vi.fn();
+    render(
+      <MultiCombobox label="Members" values={[]} onValuesChange={onValuesChange} options={EXPERTS} {...COMBOBOX_TEXT} />,
+      { wrapper: DesignSystemProvider },
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Members' }));
+    const search = screen.getByRole('combobox', { name: 'Search experts' });
+    fireEvent.keyDown(search, { key: 'ArrowDown', code: 'ArrowDown' });
+    fireEvent.keyDown(search, { key: 'ArrowDown', code: 'ArrowDown', repeat: true });
+    expect(screen.getByRole('option', { name: 'Sol' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(search, { key: 'Enter', code: 'Enter' });
+    // The list stays open, so every repeat would turn the option off and on again.
+    for (let i = 0; i < 5; i += 1) expect(fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    expect(onValuesChange.mock.calls).toEqual([[['sol']]]);
+    // Space typed into the search box repeats.
+    fireEvent.keyDown(search, { key: ' ', code: 'Space' });
+    expect(fireEvent.keyDown(search, { key: ' ', code: 'Space', repeat: true })).toBe(true);
   });
 
   it('takes a chosen option out on Enter and keeps the list open', async () => {

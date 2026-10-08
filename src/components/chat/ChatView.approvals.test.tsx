@@ -6,18 +6,22 @@ import type { ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dialog } from '@/components/ds/dialog';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import ChatView from './ChatView';
 import WorkspaceSection from '@/components/panel/WorkspaceSection';
 import * as approvalBridge from '@/core/agent/ports/approvalBridge';
 import {
   drainConfirmationQueue,
   drainFilePermissionQueue,
+  drainUserQuestions,
   drainWorkspaceRequest,
   getPendingCommandConfirmation,
   getPendingFilePermission,
   getPendingWorkspaceRequest,
   requestCommandConfirmationForConversation,
+  requestUserQuestion,
   requestWorkspace,
+  resolveUserQuestion,
 } from '@/core/agent/permissionBridge';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useChatStore } from '@/stores/chatStore';
@@ -26,7 +30,8 @@ import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getI18n } from '@/i18n';
-import type { Message } from '@/types';
+import type { Message, UserQuestionPayload } from '@/types';
+import { noteComposerKey } from './composerActivity';
 
 // The approvals a task asks for, as the chat view shows them: which one is on the page, and
 // that nothing but a press on its own buttons answers it. The requests are real entries of the
@@ -37,7 +42,23 @@ vi.mock('react-virtuoso', async () => {
   return { Virtuoso: React.forwardRef(function MockVirtuoso() { return React.createElement('div'); }) };
 });
 vi.mock('./MessageGroup', () => ({ default: () => null }));
-vi.mock('./ChatInput', () => ({ default: () => null }));
+// Stands in for the composer: the message field, and a Send button that the Stop button takes
+// the place of once a message is sent (two elements, as in the composer).
+vi.mock('./ChatInput', async () => {
+  const { useState } = await import('react');
+  const { Button } = await import('@/components/ds/button');
+  const { TextArea } = await import('@/components/ds/text-area');
+  function ComposerStandIn() {
+    const [running, setRunning] = useState(false);
+    return (
+      <>
+        <TextArea data-chat-composer="" aria-label="Message" />
+        {running ? <Button key="stop">Stop</Button> : <Button key="send" onClick={() => setRunning(true)}>Send</Button>}
+      </>
+    );
+  }
+  return { default: ComposerStandIn };
+});
 vi.mock('./AgentStatusStrip', () => ({ default: () => null }));
 vi.mock('./QueuedMessagesStrip', () => ({ default: () => null }));
 // The workspace panel looks for project memory when it mounts.
@@ -101,6 +122,9 @@ function askWorkspace(conversationId: string, suggestedPath: string | null = FOL
 }
 
 const settle = () => act(async () => { await Promise.resolve(); });
+// An approval takes no pointer press for a moment after it appears; the keyboard is never held.
+// After this the window on the page has been there long enough to be read.
+const readable = () => act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
 const view = (id: string) => act(() => { useChatStore.setState({ activeConversationId: id }); });
 const heading = (name: string) => screen.queryByRole('heading', { name });
 const headings = () => screen.queryAllByRole('heading').map((element) => element.textContent);
@@ -252,6 +276,67 @@ describe('ChatView approvals', () => {
     expect(screen.getByText(SECOND_COMMAND)).toBeInTheDocument();
   });
 
+  describe('focus after an approval is answered', () => {
+    const messageField = () => screen.getByRole('textbox', { name: 'Message' });
+    const left = () => act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
+
+    it('goes to the message field when the command approval is refused with Escape and the Send button that was pressed has left the page', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const send = screen.getByRole('button', { name: 'Send' });
+      send.focus();
+      fireEvent.click(send);
+      expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+      const answers = askCommand(id);
+      await settle();
+      expect(screen.getByRole('button', { name: t().commandConfirm.cancel })).toHaveFocus();
+
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      await settle();
+      left();
+      expect(answers).toEqual([false]);
+      expect(messageField()).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Stop' })).not.toHaveFocus();
+    });
+
+    it('goes to the message field after a file grant is denied and after a workspace request is denied, when no control had the focus', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const file = askFile(id);
+      await settle();
+      press(t().permission.deny);
+      await settle();
+      left();
+      expect(file).toEqual([false]);
+      expect(messageField()).toHaveFocus();
+
+      act(() => { messageField().blur(); });
+      expect(document.body).toHaveFocus();
+      const workspace = askWorkspace(id);
+      await settle();
+      press(t().permission.deny);
+      await settle();
+      left();
+      expect(workspace).toEqual([null]);
+      expect(messageField()).toHaveFocus();
+    });
+
+    it('returns to the control that had the focus while it is still on the page', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const send = screen.getByRole('button', { name: 'Send' });
+      send.focus();
+      const answers = askCommand(id);
+      await settle();
+
+      press(t().commandConfirm.cancel);
+      await settle();
+      left();
+      expect(answers).toEqual([false]);
+      expect(send).toHaveFocus();
+    });
+  });
+
   it('opens the next approval in the queue with the focus on Cancel again: Enter after confirming the first cancels the second', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const id = conversation();
@@ -261,6 +346,7 @@ describe('ChatView approvals', () => {
     expect(screen.getByRole('button', { name: t().commandConfirm.cancel })).toHaveFocus();
 
     // The press leaves the focus on the confirming button of the first approval.
+    readable();
     await user.click(screen.getByRole('button', { name: t().commandConfirm.confirm }));
     await settle();
     expect(first).toEqual([true]);
@@ -270,6 +356,69 @@ describe('ChatView approvals', () => {
     await user.keyboard('{Enter}');
     await settle();
     expect(second).toEqual([false]);
+  });
+
+  // The window of the next request appears where the one just answered was, its buttons at the
+  // same spots. The second press of a double press lands there before anyone could read it.
+  describe('a double press with two approvals due', () => {
+    // A pointer press as the browser reports it: it begins on the button and its click says detail 1.
+    const pointerPress = (name: string) => {
+      const button = screen.getByRole('button', { name });
+      fireEvent.pointerDown(button);
+      fireEvent.click(button, { detail: 1 });
+    };
+
+    it('confirms one command with a double press on Confirm: the second stays on the page, waiting, with the focus on Cancel', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const first = askCommand(id);
+      const second = askCommand(id, SECOND_COMMAND);
+      readable();
+      pointerPress(t().commandConfirm.confirm);
+      await settle();
+      pointerPress(t().commandConfirm.confirm);
+      await settle();
+      expect(first).toEqual([true]);
+      expect(second).toEqual([]);
+      expect(screen.getByText(SECOND_COMMAND)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: t().commandConfirm.cancel })).toHaveFocus();
+
+      readable();
+      pointerPress(t().commandConfirm.confirm);
+      await settle();
+      expect(second).toEqual([true]);
+    });
+
+    it('cancels one command with a double press on Cancel: the second is not refused by it', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const first = askCommand(id);
+      const second = askCommand(id, SECOND_COMMAND);
+      readable();
+      pointerPress(t().commandConfirm.cancel);
+      await settle();
+      pointerPress(t().commandConfirm.cancel);
+      await settle();
+      expect(first).toEqual([false]);
+      expect(second).toEqual([]);
+      expect(screen.getByText(SECOND_COMMAND)).toBeInTheDocument();
+    });
+
+    it('grants nothing for the next file with the second press of a double press on the allowing button', async () => {
+      const id = conversation();
+      render(<ChatView />);
+      const first = askFile(id);
+      const second = askFile(id, SECOND_FILE);
+      readable();
+      pointerPress(t().permission.allowSessionButton);
+      await settle();
+      pointerPress(t().permission.allowSessionButton);
+      await settle();
+      expect(first).toEqual([true]);
+      expect(second).toEqual([]);
+      expect(screen.getByText(SECOND_FILE)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: t().permission.deny })).toHaveFocus();
+    });
   });
 
   // A file grant lets Abu read or write under a path. What each answer records is pinned here
@@ -726,6 +875,7 @@ describe('ChatView approvals', () => {
       await settle();
 
       // The press leaves the focus on the allowing button of the first grant.
+      readable();
       await user.click(allowSession());
       await settle();
       expect(first).toEqual([true]);
@@ -747,8 +897,11 @@ describe('ChatView approvals', () => {
       const second = askFile(id, SECOND_FILE);
       await settle();
 
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
+      // The allowing button now reads Confirm: the window holds pointer presses again for a moment.
+      readable();
       await user.click(screen.getByRole('button', { name: t().common.confirm }));
       await settle();
       expect(first).toEqual([true]);
@@ -771,6 +924,7 @@ describe('ChatView approvals', () => {
       const second = askFile(id);
       await settle();
 
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
       expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
@@ -800,6 +954,7 @@ describe('ChatView approvals', () => {
       const command = askCommand(id);
       await settle();
 
+      readable();
       await user.click(screen.getByRole('button', { name: t().commandConfirm.confirm }));
       await settle();
       expect(command).toEqual([true]);
@@ -841,6 +996,7 @@ describe('ChatView approvals', () => {
       render(<ChatView />);
       const file = askFile(id);
       await settle();
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
       expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
@@ -888,6 +1044,7 @@ describe('ChatView approvals', () => {
       render(<ChatView />);
       const answers = askFile(id);
       await settle();
+      readable();
       await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
       await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
       expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
@@ -1036,6 +1193,7 @@ describe('ChatView approvals', () => {
       expect(windows()).toEqual([fileTitle()]);
       expect(screen.queryByText(PICKED)).toBeNull();
 
+      readable();
       await user.click(screen.getByRole('button', { name: t().permission.allowSessionButton }));
       await settle();
       expect(answers).toEqual([true]);
@@ -1079,6 +1237,64 @@ describe('ChatView approvals', () => {
       await settle();
       expect(answers).toEqual([]);
       expect(getPendingCommandConfirmation()?.conversationId).toBe(id);
+    });
+  });
+
+  // The question dock goes through the same bridge. It leaves the focus with a user who is
+  // writing, so a screen reader hears of it through the page's live element.
+  describe('a question of the agent that arrives while the user writes a message', () => {
+    const QUESTION: UserQuestionPayload = {
+      questions: [{ header: 'Format', question: 'Which format do you want?', multiSelect: false, options: [{ label: 'Long' }, { label: 'Short' }] }],
+    };
+    const liveElement = () => document.querySelector<HTMLElement>('[aria-live="polite"][aria-atomic="true"]');
+    const messageField = () => screen.getByRole('textbox', { name: 'Message' });
+    function conversationThatAsks(): string {
+      const id = conversation();
+      useChatStore.getState().addMessage(id, {
+        id: `asks-${id}`, role: 'assistant', content: '', loopId: `loop-${id}`, timestamp: 2,
+        toolCalls: [{ id: 'question-1', name: 'ask_user_question', input: {} }],
+      });
+      return id;
+    }
+    afterEach(() => { drainUserQuestions(); });
+
+    it('keeps one polite live element on the chat page, empty while no question has arrived', () => {
+      conversationThatAsks();
+      render(<ChatView />);
+      expect(liveElement()).toBeInTheDocument();
+      expect(liveElement()).toBeEmptyDOMElement();
+      expect(liveElement()).toHaveClass('sr-only');
+    });
+
+    it('writes the header and the question into it when the dock leaves the focus in the message field, and empties it when the question is answered', async () => {
+      const id = conversationThatAsks();
+      render(<ChatView />);
+      const live = liveElement();
+      act(() => { messageField().focus(); });
+      noteComposerKey();
+      act(() => { void requestUserQuestion('question-1', id, QUESTION); });
+      await settle();
+
+      expect(screen.getByRole('group', { name: 'Which format do you want?' })).toBeInTheDocument();
+      expect(messageField()).toHaveFocus();
+      expect(liveElement()).toBe(live);
+      expect(live).toHaveTextContent('Format');
+      expect(live).toHaveTextContent('Which format do you want?');
+
+      act(() => { resolveUserQuestion('question-1', null); });
+      await settle();
+      expect(screen.queryByRole('group', { name: 'Which format do you want?' })).toBeNull();
+      expect(live).toBeEmptyDOMElement();
+    });
+
+    it('writes nothing into it when the dock takes the focus', async () => {
+      const id = conversationThatAsks();
+      render(<ChatView />);
+      act(() => { void requestUserQuestion('question-1', id, QUESTION); });
+      await settle();
+
+      expect(screen.getByRole('group', { name: 'Which format do you want?' })).toHaveFocus();
+      expect(liveElement()).toBeEmptyDOMElement();
     });
   });
 });

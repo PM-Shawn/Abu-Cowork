@@ -1,8 +1,15 @@
-// Shared class fragments for src/components/ds. Complete literals so Tailwind generates them.
+// Shared class fragments for src/components/ds, with the constants and the one test that go with
+// them. Complete literals so Tailwind generates them.
 export const FOCUS_RING = 'outline-none focus-visible:ring-2 focus-visible:ring-focus';
 export const DISABLED = 'disabled:pointer-events-none disabled:opacity-40';
-// The look of DISABLED on a button that is working (aria-disabled): it keeps the focus.
-export const BUSY = 'aria-disabled:pointer-events-none aria-disabled:opacity-40';
+// The look of DISABLED on a control that is working (aria-disabled): it keeps the focus. It still
+// takes the pointer, so a press lands on it and not on what is behind it (a card that opens, a
+// window's own box); the control swallows that press (button.tsx, switch.tsx). The fills that
+// answer the pointer are written `not-aria-disabled:hover:` / `not-aria-disabled:active:`, so a
+// working control keeps its resting look.
+export const BUSY = 'aria-disabled:opacity-40 aria-disabled:cursor-default';
+// Whether a control carries that mark: one that is working opens no menu and starts nothing.
+export const isWorking = (element: Element) => element.getAttribute('aria-disabled') === 'true';
 export const FIELD_BOX = 'w-full rounded-control border border-control-border bg-field px-2 text-ui text-label placeholder:text-label-placeholder aria-[invalid=true]:border-danger';
 export const FLOAT_SURFACE = 'rounded-panel bg-raised text-label shadow-float';
 export const MENU_ITEM = 'flex h-6 cursor-default select-none items-center gap-2 rounded-control px-2 text-ui text-label outline-none data-[highlighted]:bg-fill-selected';
@@ -33,3 +40,8 @@ export const LAYER_FADE_MS = 200;
 // changed and hold back a press that is already on its way. A press that started before the move
 // lands inside this window and is dropped; one made after it was aimed at what is there.
 export const TOAST_SETTLE_MS = LAYER_FADE_MS + 300;
+// An approval, a question and a window's question about unsaved input hold pointer presses back
+// for the same interval after they appear (`data-ds-settling` on the box, see dialog.tsx). While
+// the box carries the mark, nothing inside it is the target of the pointer: a press lands on the
+// box itself, so no control in it hears the press begin. Important, like DIALOG_CLOSING.
+export const SETTLING_BOX = 'data-ds-settling:**:pointer-events-none!';

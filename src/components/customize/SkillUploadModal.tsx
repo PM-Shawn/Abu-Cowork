@@ -57,7 +57,8 @@ function DropZone({ busy, onPick, onDropPaths }: { busy: boolean; onPick: () => 
       className={cn(
         'flex w-full flex-col items-center gap-2 rounded-panel border-2 border-dashed px-4 py-8',
         BUSY,
-        isDragging ? 'border-control-border bg-fill-selected' : 'border-separator hover:bg-fill-hover',
+        // Like a ds button, it keeps its resting look under the pointer while it is busy.
+        isDragging ? 'border-control-border bg-fill-selected' : 'border-separator not-aria-disabled:hover:bg-fill-hover',
       )}
     >
       {/* One height for both states, so the window does not move when an import starts. */}
@@ -366,7 +367,7 @@ export default function SkillUploadModal({ open = true, onClose, onInstalled, on
           <Pressable
             aria-disabled={importInProgress || undefined}
             onClick={importInProgress ? undefined : () => { void pickFile(); }}
-            className={cn('inline-flex items-center gap-1 rounded-control text-ui-sm text-link hover:underline', BUSY)}
+            className={cn('inline-flex items-center gap-1 rounded-control text-ui-sm text-link not-aria-disabled:hover:underline', BUSY)}
           >
             <Icon icon={AppIcons.fileArchive} size="sm" />
             {t.toolbox.pickFile}

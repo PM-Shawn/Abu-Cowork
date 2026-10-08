@@ -1,18 +1,20 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from './button';
 import { Combobox } from './combobox';
-import { useConfirm } from './confirm-context';
+import { useConfirm, type Confirm } from './confirm-context';
 import { ContextMenu } from './context-menu';
 import { Dialog, DialogClose } from './dialog';
 import { Menu, MenuItem } from './menu';
 import { Popover } from './popover';
 import { DesignSystemProvider } from './provider';
 import { Select } from './select';
+import { TOAST_SETTLE_MS } from './styles';
+import { keepClosingLayersOnScreen, passSettleInterval } from '@/test/dsWindows';
 
 const platformMock = vi.hoisted(() => ({ mac: false }));
 vi.mock('@/utils/platform', () => ({
@@ -94,6 +96,8 @@ describe('Dialog', () => {
     expect(screen.queryByText('Newcomer')).toBeNull();
     expect(onOuterChange).not.toHaveBeenCalled();
 
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(screen.getByRole('dialog', { name: 'Newcomer' })).toBeInTheDocument();
     expect(screen.queryByText('Outer')).toBeNull();
@@ -165,10 +169,12 @@ describe('Dialog', () => {
     await user.keyboard('{Escape}');
     expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' }))
       .toHaveAccessibleDescription('What you typed will not be kept.');
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Rename task' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -199,6 +205,7 @@ describe('Dialog', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull();
     // The next Escape asks afresh, and Discard closes once.
     await user.keyboard('{Escape}');
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(onOpenChange).toHaveBeenCalledOnce();
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -210,6 +217,7 @@ describe('Dialog', () => {
     const trigger = screen.getByRole('button', { name: 'Rename' });
     await user.click(trigger);
     await user.keyboard('{Escape}');
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(trigger).toHaveFocus();
@@ -224,6 +232,7 @@ describe('Dialog', () => {
     // Only the first dialog exists; the discard prompt hides it from screen readers.
     expect(screen.getAllByRole('dialog', { hidden: true })).toHaveLength(1);
     expect(screen.queryByText('Second')).toBeNull();
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(screen.getAllByRole('dialog', { hidden: true })).toHaveLength(1);
     expect(screen.getByRole('dialog', { name: 'Second' })).toBeInTheDocument();
@@ -239,13 +248,17 @@ describe('Dialog', () => {
     await user.click(screen.getByRole('button', { name: 'Open second' }));
     expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
     expect(onSecondChange).not.toHaveBeenCalled();
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(screen.getByRole('dialog', { name: 'Second' })).toBeInTheDocument();
     expect(onSecondChange).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['Keep editing', async (user: ReturnType<typeof userEvent.setup>) => { await user.click(screen.getByRole('button', { name: 'Keep editing' })); }],
+    ['Keep editing', async (user: ReturnType<typeof userEvent.setup>) => {
+      passSettleInterval();
+      await user.click(screen.getByRole('button', { name: 'Keep editing' }));
+    }],
     ['Escape', async (user: ReturnType<typeof userEvent.setup>) => { await user.keyboard('{Escape}'); }],
   ])('closes the waiting dialog when the user answers with %s, and keeps the first one', async (_name, answer) => {
     const user = userEvent.setup();
@@ -305,6 +318,7 @@ describe('Dialog', () => {
     const row = screen.getByRole('button', { name: 'Launch plan' });
     await user.click(row);
     const question = screen.getByRole('alertdialog', { name: 'Archive this project?' });
+    passSettleInterval();
     await user.click(within(question).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
     await waitFor(() => expect(row).toHaveFocus());
@@ -630,6 +644,7 @@ describe('Dialog close button, data attributes and focus', () => {
     expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
     // The dialog is still there, hidden from screen readers by the question.
     expect(screen.getAllByRole('dialog', { hidden: true })).toHaveLength(1);
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(screen.queryByRole('dialog', { hidden: true })).toBeNull();
   });
@@ -795,18 +810,19 @@ describe('telling the app that a dialog is on screen', () => {
 
     await user.click(screen.getByRole('button', { name: 'Actions' }));
     await user.keyboard('{Escape}');
-    expect(onModalChange).not.toHaveBeenCalled();
+    expect(onModalChange.mock.calls).toEqual([[false]]);
 
     await user.click(screen.getByRole('button', { name: 'Search' }));
-    expect(onModalChange.mock.calls).toEqual([[true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true]]);
     await user.keyboard('{Escape}');
-    expect(onModalChange.mock.calls).toEqual([[true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false]]);
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(screen.getByRole('alertdialog', { name: 'Delete this file?' })).toBeInTheDocument();
-    expect(onModalChange.mock.calls).toEqual([[true], [false], [true]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false], [true]]);
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(onModalChange.mock.calls).toEqual([[true], [false], [true], [false]]);
+    expect(onModalChange.mock.calls).toEqual([[false], [true], [false], [true], [false]]);
   });
 });
 
@@ -845,6 +861,8 @@ describe('Dialog that only its buttons can close', () => {
   async function openCheck(user: ReturnType<typeof userEvent.setup>) {
     const opener = screen.getByRole('button', { name: 'Check memories' });
     await user.click(opener);
+    // A question takes no pointer press for a moment after it appears: this one has been read.
+    passSettleInterval();
     return { opener, check: screen.getByRole('alertdialog', { name: 'Privacy check' }) };
   }
 
@@ -960,6 +978,7 @@ describe('Dialog that only its buttons can close', () => {
     expect(check).toHaveAttribute('data-state', 'open');
     // The dialog underneath is hidden from screen readers while the question is over it.
     expect(screen.getByRole('dialog', { hidden: true })).toHaveAttribute('data-state', 'open');
+    passSettleInterval();
     await user.click(within(check).getByRole('button', { name: 'Later' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveAttribute('data-state', 'open');
@@ -987,6 +1006,7 @@ describe('Dialog that only its buttons can close', () => {
     }
     render(<OverSettings />, { wrapper: DesignSystemProvider });
     await user.click(screen.getByRole('button', { name: 'Open check' }));
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Close settings' }));
     expect(onCheckChange.mock.calls).toEqual([[false]]);
     expect(screen.queryByRole('alertdialog')).toBeNull();
@@ -1838,6 +1858,96 @@ describe('approvals and the windows around them', () => {
     expect(send).toHaveFocus();
   });
 
+  describe('when the place the focus returns to is no control on the page', () => {
+    function Composer({ command = false, folder = false, send = true, onFocusUnplaced }: {
+      command?: boolean;
+      folder?: boolean;
+      send?: boolean;
+      onFocusUnplaced: () => void;
+    }) {
+      return (
+        <DesignSystemProvider>
+          <input aria-label="Message" />
+          {send && <Button>Send</Button>}
+          <Dialog
+            open={command}
+            layer="approval"
+            role="alertdialog"
+            outsidePress="ignore"
+            title="Run this command?"
+            initialFocus={cancelOf}
+            onFocusUnplaced={onFocusUnplaced}
+            footer={<><Button data-approval-cancel="">Cancel</Button><Button variant="primary">Run</Button></>}
+          />
+          <Dialog
+            open={folder}
+            layer="approval"
+            role="alertdialog"
+            outsidePress="ignore"
+            title="Allow this folder?"
+            initialFocus={cancelOf}
+            onFocusUnplaced={onFocusUnplaced}
+            footer={<><Button data-approval-cancel="">Deny</Button><Button variant="primary">Allow</Button></>}
+          />
+        </DesignSystemProvider>
+      );
+    }
+    const toMessage = () => vi.fn(() => { screen.getByRole('textbox', { name: 'Message' }).focus(); });
+
+    it('asks its owner once the window has left, when the control that had the focus is gone', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      screen.getByRole('button', { name: 'Send' }).focus();
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      expect(cancel()).toHaveFocus();
+      view.rerender(<Composer command send={false} onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer send={false} onFocusUnplaced={onFocusUnplaced} />);
+      expect(onFocusUnplaced).not.toHaveBeenCalled();
+
+      expect(endFade('Run this command?')).toEqual(['Message']);
+      expect(onFocusUnplaced).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus();
+    });
+
+    it('asks its owner when no control had the focus as the window appeared', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      expect(document.body).toHaveFocus();
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer onFocusUnplaced={onFocusUnplaced} />);
+
+      expect(endFade('Run this command?')).toEqual(['Message']);
+      expect(onFocusUnplaced).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not ask while the control that had the focus is on the page: the focus returns there', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      const send = screen.getByRole('button', { name: 'Send' });
+      send.focus();
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer onFocusUnplaced={onFocusUnplaced} />);
+
+      expect(endFade('Run this command?')).toEqual(['Send']);
+      expect(onFocusUnplaced).not.toHaveBeenCalled();
+      expect(send).toHaveFocus();
+    });
+
+    it('does not ask for an approval the next one takes the place of; the last of the run asks', () => {
+      const onFocusUnplaced = toMessage();
+      const view = render(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer command onFocusUnplaced={onFocusUnplaced} />);
+      view.rerender(<Composer folder onFocusUnplaced={onFocusUnplaced} />);
+      expect(endFade('Run this command?')).toEqual([]);
+      expect(onFocusUnplaced).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
+
+      view.rerender(<Composer onFocusUnplaced={onFocusUnplaced} />);
+      expect(endFade('Allow this folder?')).toEqual(['Message']);
+      expect(onFocusUnplaced).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('gives focus back to where it was before the first approval after two approvals in a row', () => {
     const view = render(<Desk />);
     const send = screen.getByRole('button', { name: 'Send' });
@@ -2275,5 +2385,1319 @@ describe('approvals and the windows around them', () => {
     act(() => { vi.runOnlyPendingTimers(); });
     expect(vi.getTimerCount()).toBe(0);
     expect(onModalChange).not.toHaveBeenCalled();
+  });
+});
+
+// An approval opens by itself, and a question's confirming button sits where the button that
+// asked it, or the button of the layer before it, was. A pointer press that is on its way when
+// such a layer appears was aimed at something else.
+describe('approvals and questions: a pointer press begun before the layer could be read', () => {
+  // The clock of the page: a layer counts its interval from the moment it is on the page.
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  type Answer = 'cancel' | 'run' | 'refuse';
+  const cancelOf = (content: HTMLElement) => content.querySelector<HTMLElement>('[data-approval-cancel]');
+
+  // An approval as the app builds one: only its own buttons answer; Escape and the corner refuse.
+  function Approval({
+    shown = true, title = 'Run this command?', role = 'alertdialog', outsidePress = 'ignore', settleKey, confirmLabel = 'Run', onAnswer, children,
+  }: {
+    shown?: boolean;
+    title?: string;
+    role?: 'dialog' | 'alertdialog';
+    outsidePress?: 'close' | 'ignore';
+    settleKey?: unknown;
+    confirmLabel?: string;
+    onAnswer: (answer: Answer) => void;
+    children?: ReactNode;
+  }) {
+    return (
+      <Dialog
+        open={shown}
+        onOpenChange={(next) => { if (!next) onAnswer('refuse'); }}
+        layer="approval"
+        role={role}
+        outsidePress={outsidePress}
+        title={title}
+        settleKey={settleKey}
+        initialFocus={cancelOf}
+        footer={(
+          <>
+            <Button data-approval-cancel="" onClick={() => onAnswer('cancel')}>Cancel</Button>
+            <Button variant="primary" onClick={() => onAnswer('run')}>{confirmLabel}</Button>
+          </>
+        )}
+      >
+        {children}
+      </Dialog>
+    );
+  }
+
+  function Capture({ onReady }: { onReady: (confirm: Confirm) => void }) {
+    const confirm = useConfirm();
+    useEffect(() => { onReady(confirm); }, [confirm, onReady]);
+    return null;
+  }
+  let confirmOf: Confirm | null = null;
+  const keepConfirm = (confirm: Confirm) => { confirmOf = confirm; };
+  // Asks a useConfirm() question; the list holds its answer once it has one.
+  function askQuestion(title = 'Remove this site?', confirmLabel = 'Remove'): boolean[] {
+    const heard: boolean[] = [];
+    const confirm = confirmOf;
+    if (!confirm) throw new Error('Capture did not render');
+    act(() => { void confirm({ title, confirmLabel, tone: 'danger' }).then((answer) => { heard.push(answer); }); });
+    return heard;
+  }
+
+  const by = (name: string) => screen.getByRole('button', { name });
+  // A pointer press as the browser reports it: it begins on the button and its click says detail 1.
+  // A click raised by Enter or Space says detail 0.
+  // The mouse-down in between moves the focus to the button unless it was told not to.
+  const begin = (name: string) => {
+    const button = by(name);
+    fireEvent.pointerDown(button);
+    if (fireEvent.mouseDown(button)) button.focus();
+  };
+  const end = (name: string, detail = 1) => fireEvent.click(by(name), { detail });
+  const pointerPress = (name: string) => { begin(name); end(name); };
+  // user-event waits on timers between its steps, so for it the clock moves by itself. Used where
+  // the case reads no interval: what a key or a press outside does at the first moment.
+  const realUser = (options: Parameters<typeof userEvent.setup>[0] = {}) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    return userEvent.setup({ advanceTimers: vi.advanceTimersByTime, ...options });
+  };
+  const settle = () => act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
+  const later = () => act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS * 10); });
+  // What a layer does once it has left the page runs one timer tick later.
+  const tick = () => act(() => { vi.advanceTimersByTime(0); });
+  const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  const show = (ui: ReactNode) => render(ui, { wrapper: DesignSystemProvider });
+  function windowOf(title: string): HTMLElement {
+    const found = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]'))
+      .find((element) => element.querySelector('h2')?.textContent === title);
+    if (!found) throw new Error(`No window titled ${title} is on the page`);
+    return found;
+  }
+  const onPage = (title: string) => Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]'))
+    .some((element) => element.querySelector('h2')?.textContent === title && !element.hasAttribute('hidden'));
+
+  describe('what stays as it is', () => {
+    it('answers from the keyboard at the first moment: Enter on the focused Cancel cancels', async () => {
+      const user = realUser();
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      expect(by('Cancel')).toHaveFocus();
+      await user.keyboard('{Enter}');
+      expect(answers).toEqual(['cancel']);
+    });
+
+    it('answers from the keyboard at the first moment: a key on Run, reached on purpose, allows', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      fireEvent.click(by('Run'), { detail: 0 });
+      expect(answers).toEqual(['run']);
+    });
+
+    it('refuses on Escape at the first moment, once', async () => {
+      const user = realUser();
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      await user.keyboard('{Escape}');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('opens on its cancelling button, and neither opening nor leaving the page answers it', () => {
+      const answers: Answer[] = [];
+      const view = show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      expect(by('Cancel')).toHaveFocus();
+      later();
+      view.unmount();
+      tick();
+      expect(answers).toEqual([]);
+    });
+
+    it('does nothing on a press on the area around an approval that ignores it', async () => {
+      const user = realUser({ pointerEventsCheck: 0 });
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      tick();
+      await user.click(document.querySelector('.bg-scrim') as HTMLElement);
+      expect(answers).toEqual([]);
+      expect(onPage('Run this command?')).toBe(true);
+    });
+
+    it('refuses the task grant window on a press on the area around it, at the first moment', async () => {
+      const user = realUser({ pointerEventsCheck: 0 });
+      const answers: Answer[] = [];
+      show(<Approval role="dialog" outsidePress="close" title="Set up the browser" onAnswer={(answer) => answers.push(answer)} />);
+      // Radix starts to listen for presses outside one timer tick after the window is on the page.
+      tick();
+      await user.click(document.querySelector('.bg-scrim') as HTMLElement);
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('stacks a question over the approval; the answer to the question leaves the approval on the page, unanswered', async () => {
+      const answers: Answer[] = [];
+      show(<><Approval onAnswer={(answer) => answers.push(answer)} /><Capture onReady={keepConfirm} /></>);
+      const removed = askQuestion();
+      const titles = Array.from(document.querySelectorAll('[role="alertdialog"]')).map((element) => element.querySelector('h2')?.textContent);
+      expect(titles).toEqual(['Run this command?', 'Remove this site?']);
+      expect(by('Cancel')).toHaveFocus();
+
+      fireEvent.click(by('Remove'), { detail: 0 });
+      await flush();
+      tick();
+      expect(removed).toEqual([true]);
+      expect(answers).toEqual([]);
+      expect(windowOf('Run this command?')).toHaveAttribute('data-state', 'open');
+    });
+
+    it('takes a pointer press on an ordinary window the moment it is on the page', () => {
+      const onSave = vi.fn();
+      show(<Dialog open title="Rename task" footer={<Button onClick={onSave}>Save</Button>}><input aria-label="Name" /></Dialog>);
+      expect(windowOf('Rename task')).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Save');
+      expect(onSave).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('an approval', () => {
+    it('takes no pointer press when it has just appeared, keeps the focus on Cancel, and takes one made after the interval', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      pointerPress('Run');
+      expect(by('Cancel')).toHaveFocus();
+      pointerPress('Cancel');
+      expect(answers).toEqual([]);
+      expect(onPage('Run this command?')).toBe(true);
+
+      settle();
+      pointerPress('Run');
+      expect(by('Run')).toHaveFocus();
+      expect(answers).toEqual(['run']);
+    });
+
+    it('takes no press from user-event either, which presses the way a pointer does', async () => {
+      // The clock moves by itself here: the first press comes well inside the interval.
+      const user = realUser();
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      await user.click(by('Run'));
+      expect(answers).toEqual([]);
+      expect(by('Cancel')).toHaveFocus();
+      settle();
+      await user.click(by('Run'));
+      expect(answers).toEqual(['run']);
+    });
+
+    it('does not let an early press move the focus onto Run: the browser is told not to move it', () => {
+      show(<Approval onAnswer={() => undefined} />);
+      begin('Run');
+      // A mouse-down that is not default-prevented moves the focus to the button it lands on.
+      expect(fireEvent.mouseDown(by('Run'))).toBe(false);
+      end('Run');
+      expect(by('Cancel')).toHaveFocus();
+
+      settle();
+      begin('Run');
+      expect(fireEvent.mouseDown(by('Run'))).toBe(true);
+    });
+
+    it('starts nothing below it on an early press: no control hears the press begin', () => {
+      const onDown = vi.fn();
+      show(<Approval onAnswer={() => undefined}><Button onPointerDown={onDown} onMouseDown={onDown}>Choose a folder</Button></Approval>);
+      fireEvent.pointerDown(by('Choose a folder'));
+      fireEvent.mouseDown(by('Choose a folder'));
+      expect(onDown).not.toHaveBeenCalled();
+      settle();
+      fireEvent.pointerDown(by('Choose a folder'));
+      fireEvent.mouseDown(by('Choose a folder'));
+      expect(onDown).toHaveBeenCalledTimes(2);
+    });
+
+    it('never holds the keyboard: a key press inside the interval answers', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS / 2); });
+      fireEvent.click(by('Run'), { detail: 0 });
+      expect(answers).toEqual(['run']);
+    });
+
+    it('does not take a press that began inside the interval, however late it ends; the next press is the user\'s own', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS - 20); });
+      begin('Run');
+      act(() => { vi.advanceTimersByTime(70); });
+      end('Run');
+      expect(answers).toEqual([]);
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('marks its box for as long as it holds presses back, and reads one clock for the mark and for the press', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      const box = windowOf('Run this command?');
+      expect(box).toHaveAttribute('data-ds-settling', '');
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS - 1); });
+      expect(box).toHaveAttribute('data-ds-settling', '');
+      pointerPress('Run');
+      expect(answers).toEqual([]);
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(box).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('keeps the mark when its timer runs a few milliseconds early: the mark goes when the clock says so', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      const box = windowOf('Run this command?');
+      // From here on the clock the layer reads is 3 ms behind its timers.
+      const now = performance.now.bind(performance);
+      const clock = vi.spyOn(performance, 'now').mockImplementation(() => now() - 3);
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
+      expect(box).toHaveAttribute('data-ds-settling', '');
+      pointerPress('Run');
+      expect(answers).toEqual([]);
+      act(() => { vi.advanceTimersByTime(3); });
+      expect(box).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+      clock.mockRestore();
+    });
+
+    it('shows nothing as disabled while it holds pointer presses back', () => {
+      show(<Approval onAnswer={() => undefined} />);
+      for (const name of ['Cancel', 'Run']) {
+        expect(by(name)).toBeEnabled();
+        expect(by(name)).not.toHaveAttribute('aria-disabled');
+      }
+    });
+
+    it('becomes pressable after the interval whatever renders in between: the count is not started again', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval onAnswer={onAnswer} />);
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS - 1); });
+      for (let i = 0; i < 5; i += 1) view.rerender(<Approval onAnswer={onAnswer} />);
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(windowOf('Run this command?')).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('leaves no timer behind when it leaves the page inside the interval', () => {
+      const view = show(<Approval onAnswer={() => undefined} />);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      view.unmount();
+      // The focus hand-back of a layer that left runs on a timer of no delay.
+      tick();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('leaves no timer behind when it is answered inside the interval', () => {
+      function Page() {
+        const [shown, setShown] = useState(true);
+        return <Approval shown={shown} onAnswer={() => setShown(false)} />;
+      }
+      show(<Page />);
+      fireEvent.click(by('Cancel'), { detail: 0 });
+      tick();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('counts the interval again when the meaning of its buttons changes inside one window', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval settleKey={false} onAnswer={onAnswer} />);
+      later();
+      // The same button now grants for good.
+      view.rerender(<Approval settleKey confirmLabel="Confirm" onAnswer={onAnswer} />);
+      expect(windowOf('Run this command?')).toHaveAttribute('data-ds-settling', '');
+      begin('Confirm');
+      end('Confirm', 2);
+      expect(answers).toEqual([]);
+      settle();
+      pointerPress('Confirm');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('holds the next request of a queue the same way: a double press answers one request', () => {
+      const log: string[] = [];
+      function Queue() {
+        const [ids, setIds] = useState(['first', 'second']);
+        const id = ids[0];
+        if (!id) return null;
+        return <Approval key={id} title={`Run the ${id} command?`} onAnswer={(answer) => { log.push(`${id}:${answer}`); setIds((rest) => rest.slice(1)); }} />;
+      }
+      show(<Queue />);
+      settle();
+      pointerPress('Run');
+      begin('Run');
+      end('Run', 2);
+      expect(log).toEqual(['first:run']);
+      expect(onPage('Run the second command?')).toBe(true);
+      expect(by('Cancel')).toHaveFocus();
+      settle();
+      pointerPress('Run');
+      expect(log).toEqual(['first:run', 'second:run']);
+    });
+
+    it('counts the interval from the moment it is shown after waiting behind another approval, not from when it was asked', () => {
+      const answers: Answer[] = [];
+      const page = (first: boolean) => (
+        <>
+          <Approval shown={first} title="Allow this folder?" confirmLabel="Allow" onAnswer={() => undefined} />
+          <Approval onAnswer={(answer) => answers.push(answer)} />
+        </>
+      );
+      const view = show(page(true));
+      expect(onPage('Run this command?')).toBe(false);
+      later();
+      view.rerender(page(false));
+      expect(onPage('Run this command?')).toBe(true);
+      pointerPress('Run');
+      expect(answers).toEqual([]);
+      settle();
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('is held when it takes the place of a window that stepped aside with work in flight', () => {
+      const answers: Answer[] = [];
+      const page = (command: boolean) => (
+        <>
+          <Dialog open busy title="Install"><input aria-label="Name" /></Dialog>
+          <Approval shown={command} onAnswer={(answer) => answers.push(answer)} />
+        </>
+      );
+      const view = show(page(false));
+      later();
+      view.rerender(page(true));
+      expect(windowOf('Install')).toHaveAttribute('hidden');
+      pointerPress('Run');
+      expect(answers).toEqual([]);
+      expect(by('Cancel')).toHaveFocus();
+      settle();
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+  });
+
+  describe('an approval under another layer', () => {
+    it('takes no pointer press between the answer to a question over it and the moment that question has left, nor for the interval after', async () => {
+      const answers: Answer[] = [];
+      show(<><Approval onAnswer={(answer) => answers.push(answer)} /><Capture onReady={keepConfirm} /></>);
+      later();
+      const removed = askQuestion();
+      // Covered: a press that reaches it anyway is not taken.
+      const covered = windowOf('Run this command?').querySelector('button:not([data-approval-cancel])') as HTMLElement;
+      fireEvent.pointerDown(covered);
+      fireEvent.click(covered, { detail: 1 });
+      expect(answers).toEqual([]);
+      later();
+
+      pointerPress('Remove');
+      await flush();
+      expect(removed).toEqual([true]);
+      expect(document.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+      // The second press of a double press on 「Remove」: the question is gone from the page, and the
+      // timer on which it reports that has not run yet.
+      begin('Run');
+      end('Run', 2);
+      expect(answers).toEqual([]);
+
+      tick();
+      expect(windowOf('Run this command?')).toHaveAttribute('data-ds-settling', '');
+      pointerPress('Run');
+      expect(answers).toEqual([]);
+      expect(by('Cancel')).toHaveFocus();
+      settle();
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('starts the count once, when the last of two questions that followed each other over it has left', async () => {
+      const answers: Answer[] = [];
+      show(<><Approval onAnswer={(answer) => answers.push(answer)} /><Capture onReady={keepConfirm} /></>);
+      later();
+      const first = askQuestion('Remove this site?', 'Remove');
+      later();
+      const second = askQuestion('Block this site?', 'Block');
+      await flush();
+      tick();
+      expect(first).toEqual([false]);
+      // The first question has left; the second is still over the approval.
+      later();
+      const covered = windowOf('Run this command?').querySelector('button:not([data-approval-cancel])') as HTMLElement;
+      fireEvent.pointerDown(covered);
+      fireEvent.click(covered, { detail: 1 });
+      expect(answers).toEqual([]);
+
+      pointerPress('Block');
+      await flush();
+      tick();
+      expect(second).toEqual([true]);
+      pointerPress('Run');
+      expect(answers).toEqual([]);
+      settle();
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('lets a window opened inside it take presses at once, and counts its own interval again when that window has gone', () => {
+      const answers: Answer[] = [];
+      const onDone = vi.fn();
+      function Details() {
+        const [open, setOpen] = useState(false);
+        return (
+          <>
+            <Button onClick={() => setOpen(true)}>Site details</Button>
+            <Dialog open={open} onOpenChange={setOpen} title="Sites" footer={<Button onClick={() => { onDone(); setOpen(false); }}>Done</Button>} />
+          </>
+        );
+      }
+      show(<Approval role="dialog" outsidePress="close" onAnswer={(answer) => answers.push(answer)}><Details /></Approval>);
+      later();
+      pointerPress('Site details');
+      expect(onPage('Sites')).toBe(true);
+      // The inner window is an ordinary one: it is not held, and the approval's hold is not its hold.
+      pointerPress('Done');
+      expect(onDone).toHaveBeenCalledTimes(1);
+      expect(onPage('Sites')).toBe(false);
+
+      begin('Run');
+      end('Run', 2);
+      expect(answers).toEqual([]);
+      tick();
+      pointerPress('Run');
+      expect(answers).toEqual([]);
+      settle();
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('is pressable again after every covering: nothing is left held', async () => {
+      const answers: Answer[] = [];
+      show(<><Approval onAnswer={(answer) => answers.push(answer)} /><Capture onReady={keepConfirm} /></>);
+      for (let round = 0; round < 3; round += 1) {
+        later();
+        askQuestion();
+        later();
+        fireEvent.click(by('Cancel'), { detail: 0 });
+        await flush();
+        tick();
+      }
+      settle();
+      expect(windowOf('Run this command?')).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+  });
+
+  describe('a question', () => {
+    it('takes no pointer press when it has just been asked, and takes one made after the interval', async () => {
+      show(<Capture onReady={keepConfirm} />);
+      const removed = askQuestion();
+      expect(windowOf('Remove this site?')).toHaveAttribute('data-ds-settling', '');
+      pointerPress('Remove');
+      await flush();
+      expect(removed).toEqual([]);
+      expect(by('Cancel')).toHaveFocus();
+
+      settle();
+      pointerPress('Remove');
+      await flush();
+      expect(removed).toEqual([true]);
+    });
+
+    it('never holds the keyboard', async () => {
+      show(<Capture onReady={keepConfirm} />);
+      const removed = askQuestion();
+      fireEvent.click(by('Remove'), { detail: 0 });
+      await flush();
+      expect(removed).toEqual([true]);
+    });
+
+    it('is held as a window with the role of a question too, and again when it is asked again inside its own fade', () => {
+      const stay = keepClosingLayersOnScreen();
+      const onQuit = vi.fn();
+      const page = (open: boolean) => (
+        <Dialog open={open} role="alertdialog" title="Close the window?" footer={<><Button>Minimize</Button><Button variant="primary" onClick={onQuit}>Quit</Button></>} />
+      );
+      const view = show(page(true));
+      pointerPress('Quit');
+      expect(onQuit).not.toHaveBeenCalled();
+      later();
+
+      view.rerender(page(false));
+      const box = windowOf('Close the window?');
+      expect(box).toHaveAttribute('data-state', 'closed');
+      act(() => { vi.advanceTimersByTime(50); });
+      // Asked again while the first asking still fades: the same box is shown again.
+      view.rerender(page(true));
+      expect(windowOf('Close the window?')).toBe(box);
+      expect(box).toHaveAttribute('data-state', 'open');
+      pointerPress('Quit');
+      expect(onQuit).not.toHaveBeenCalled();
+      settle();
+      pointerPress('Quit');
+      expect(onQuit).toHaveBeenCalledTimes(1);
+      stay.mockRestore();
+    });
+
+    it('is held again when it returns after it stepped aside for an approval', () => {
+      const answers: Answer[] = [];
+      const onQuit = vi.fn();
+      const page = (command: boolean) => (
+        <>
+          <Dialog open role="alertdialog" title="Close the window?" footer={<><Button>Minimize</Button><Button variant="primary" onClick={onQuit}>Quit</Button></>} />
+          <Approval shown={command} onAnswer={(answer) => answers.push(answer)} />
+        </>
+      );
+      const view = show(page(false));
+      later();
+      view.rerender(page(true));
+      expect(windowOf('Close the window?')).toHaveAttribute('hidden');
+      later();
+      // The approval is answered by its owner; the question is back at the same spot.
+      view.rerender(page(false));
+      tick();
+      expect(windowOf('Close the window?')).not.toHaveAttribute('hidden');
+      begin('Quit');
+      end('Quit', 2);
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(by('Minimize')).toHaveFocus();
+      settle();
+      pointerPress('Quit');
+      expect(onQuit).toHaveBeenCalledTimes(1);
+      expect(answers).toEqual([]);
+    });
+  });
+
+  describe('the question about unsaved input', () => {
+    function FormAndApproval({ command, onForm, onAnswer }: { command: boolean; onForm: (open: boolean) => void; onAnswer: (answer: Answer) => void }) {
+      const [form, setForm] = useState(true);
+      return (
+        <>
+          <Dialog open={form} onOpenChange={(next) => { onForm(next); setForm(next); }} dirty title="Add a service">
+            <input aria-label="Address" defaultValue="https://example.invalid/v1" />
+          </Dialog>
+          <Approval shown={command} onAnswer={onAnswer} />
+        </>
+      );
+    }
+
+    it('takes no pointer press when an arriving approval has just raised it: nothing is discarded and the approval stays off the page', () => {
+      const onForm = vi.fn();
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<FormAndApproval command={false} onForm={onForm} onAnswer={onAnswer} />);
+      later();
+      view.rerender(<FormAndApproval command onForm={onForm} onAnswer={onAnswer} />);
+      const question = screen.getByRole('alertdialog', { name: 'Discard these changes?' });
+      expect(question).toHaveAttribute('data-ds-settling', '');
+      pointerPress('Discard');
+      expect(onForm).not.toHaveBeenCalled();
+      expect(onPage('Run this command?')).toBe(false);
+      expect(by('Keep editing')).toHaveFocus();
+
+      settle();
+      expect(question).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Discard');
+      expect(onForm.mock.calls).toEqual([[false]]);
+      expect(onPage('Run this command?')).toBe(true);
+      expect(answers).toEqual([]);
+    });
+
+    it('allows nothing with the second press of a double press on Discard: the approval that waited behind it is on the page, unanswered', () => {
+      const onForm = vi.fn();
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<FormAndApproval command={false} onForm={onForm} onAnswer={onAnswer} />);
+      view.rerender(<FormAndApproval command onForm={onForm} onAnswer={onAnswer} />);
+      expect(onPage('Run this command?')).toBe(false);
+      // The question has been on the page for a while.
+      later();
+      pointerPress('Discard');
+      expect(onForm.mock.calls).toEqual([[false]]);
+      expect(onPage('Run this command?')).toBe(true);
+      // The second press arrives at the same spot: Run is there now.
+      begin('Run');
+      end('Run', 2);
+      expect(answers).toEqual([]);
+      expect(onPage('Run this command?')).toBe(true);
+      expect(by('Cancel')).toHaveFocus();
+      settle();
+      pointerPress('Run');
+      expect(answers).toEqual(['run']);
+    });
+
+    it('is held when the user asks for it too, and a key on Keep editing answers at once', () => {
+      const onForm = vi.fn();
+      show(<FormAndApproval command={false} onForm={onForm} onAnswer={() => undefined} />);
+      later();
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toHaveAttribute('data-ds-settling', '');
+      pointerPress('Discard');
+      expect(onForm).not.toHaveBeenCalled();
+      expect(by('Keep editing')).toHaveFocus();
+      fireEvent.click(by('Keep editing'), { detail: 0 });
+      tick();
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(onForm).not.toHaveBeenCalled();
+      expect(onPage('Add a service')).toBe(true);
+    });
+
+    it('leaves no timer behind when it is answered inside the interval', () => {
+      const onForm = vi.fn();
+      const view = show(<FormAndApproval command={false} onForm={onForm} onAnswer={() => undefined} />);
+      view.rerender(<FormAndApproval command onForm={onForm} onAnswer={() => undefined} />);
+      fireEvent.click(by('Keep editing'), { detail: 0 });
+      tick();
+      view.unmount();
+      tick();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+});
+
+// A key that is held down repeats, and the browser presses the focused button for every Enter
+// key-down it is not told to leave alone. A layer that appears while a key is down, or that was
+// opened by that key, must not be answered by it.
+//
+// happy-dom makes no click from a key. `press` and `repeat` below do what Chromium does for a
+// button that has the focus: an Enter key-down whose default was not prevented clicks it, and the
+// click says detail 0. That Chromium makes no click from a prevented key-down, and none at the
+// key-up of a Space whose key-downs on that button were all prevented, is checked in the real shell.
+describe('keys held: a key that was down before a layer was shown', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  type Answer = 'cancel' | 'run' | 'refuse';
+  const cancelOf = (content: HTMLElement) => content.querySelector<HTMLElement>('[data-approval-cancel]');
+  function Approval({ shown = true, settleKey, onAnswer, children }: {
+    shown?: boolean;
+    settleKey?: unknown;
+    onAnswer: (answer: Answer) => void;
+    children?: ReactNode;
+  }) {
+    return (
+      <Dialog
+        open={shown}
+        onOpenChange={(next) => { if (!next) onAnswer('refuse'); }}
+        layer="approval"
+        role="alertdialog"
+        outsidePress="ignore"
+        title="Run this command?"
+        settleKey={settleKey}
+        initialFocus={cancelOf}
+        footer={(
+          <>
+            <Button data-approval-cancel="" onClick={() => onAnswer('cancel')}>Cancel</Button>
+            <Button variant="primary" onClick={() => onAnswer('run')}>Run</Button>
+          </>
+        )}
+      >
+        {children}
+      </Dialog>
+    );
+  }
+  function Capture({ onReady }: { onReady: (confirm: Confirm) => void }) {
+    const confirm = useConfirm();
+    useEffect(() => { onReady(confirm); }, [confirm, onReady]);
+    return null;
+  }
+  let confirmOf: Confirm | null = null;
+  const keepConfirm = (confirm: Confirm) => { confirmOf = confirm; };
+  function askQuestion(): boolean[] {
+    const heard: boolean[] = [];
+    const confirm = confirmOf;
+    if (!confirm) throw new Error('Capture did not render');
+    act(() => { void confirm({ title: 'Remove this site?', confirmLabel: 'Remove', tone: 'danger' }).then((answer) => { heard.push(answer); }); });
+    return heard;
+  }
+
+  const by = (name: string) => screen.getByRole('button', { name });
+  const focused = () => (document.activeElement instanceof HTMLElement ? document.activeElement : document.body);
+  // One key-down on what has the focus. Returns false when its default was prevented.
+  const keyDown = (key: string, repeat: boolean, code = key === ' ' ? 'Space' : key) => {
+    const target = focused();
+    const went = fireEvent.keyDown(target, { key, code, repeat });
+    if (went && key === 'Enter' && target instanceof HTMLButtonElement) fireEvent.click(target, { detail: 0 });
+    return went;
+  };
+  const press = (key: string, code?: string) => keyDown(key, false, code);
+  const repeat = (key: string, code?: string) => keyDown(key, true, code);
+  const release = (key: string, code = key === ' ' ? 'Space' : key) => fireEvent.keyUp(focused(), { key, code });
+  const later = () => act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS * 10); });
+  const tick = () => act(() => { vi.advanceTimersByTime(0); });
+  const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  const show = (ui: ReactNode) => render(ui, { wrapper: DesignSystemProvider });
+  const onPage = (title: string) => Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]'))
+    .some((element) => element.querySelector('h2')?.textContent === title && !element.hasAttribute('hidden'));
+
+  describe('what stays as it is', () => {
+    it('answers an approval with the first press of Enter on the focused Cancel, at the first moment', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      expect(by('Cancel')).toHaveFocus();
+      expect(press('Enter')).toBe(true);
+      expect(answers).toEqual(['cancel']);
+    });
+
+    it('refuses an approval with one press of Escape right after it appeared, at the first moment', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      expect(by('Cancel')).toHaveFocus();
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('closes a window with one press of Escape, and leaves one only its own buttons may close open', () => {
+      const onPlain = vi.fn();
+      const onKept = vi.fn();
+      const view = show(<Dialog open onOpenChange={onPlain} title="Rename task"><Button>Save</Button></Dialog>);
+      press('Escape');
+      expect(onPlain.mock.calls).toEqual([[false]]);
+      view.unmount();
+      show(<Dialog open onOpenChange={onKept} dismissible={false} title="Before you start"><Button>Agree</Button></Dialog>);
+      press('Escape');
+      release('Escape');
+      press('Escape');
+      expect(onKept).not.toHaveBeenCalled();
+    });
+
+    it('asks about unsaved input with one press of Escape, and takes the question back with the next press', () => {
+      const onForm = vi.fn();
+      show(<Dialog open onOpenChange={onForm} dirty title="Add a service"><input aria-label="Address" /></Dialog>);
+      press('Escape');
+      release('Escape');
+      expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+      press('Escape');
+      tick();
+      expect(screen.queryByRole('alertdialog', { name: 'Discard these changes?' })).toBeNull();
+      expect(onForm).not.toHaveBeenCalled();
+    });
+
+    it('answers a question with cancel on one press of Escape', async () => {
+      show(<Capture onReady={keepConfirm} />);
+      const heard = askQuestion();
+      press('Escape');
+      await flush();
+      expect(heard).toEqual([false]);
+    });
+
+    it('takes a click that comes with no key and no pointer (assistive technology) while a key is down from before', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Enter');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      fireEvent.click(by('Run'), { detail: 0 });
+      expect(answers).toEqual(['run']);
+    });
+
+    it('lets Backspace, Delete, an arrow, a letter and Tab pressed inside a window repeat', () => {
+      const heard: string[] = [];
+      show(<Dialog open title="Rename task"><input aria-label="Name" onKeyDown={(event) => heard.push(event.key)} /></Dialog>);
+      screen.getByRole('textbox', { name: 'Name' }).focus();
+      // The field hears each of them (the window itself turns a Tab round at its last control).
+      for (const key of ['Backspace', 'Delete', 'ArrowLeft', 'a', 'Tab']) {
+        const code = key === 'a' ? 'KeyA' : key;
+        press(key, code);
+        repeat(key, code);
+        repeat(key, code);
+        release(key, code);
+      }
+      expect(heard).toEqual(['Backspace', 'Delete', 'ArrowLeft', 'a', 'Tab'].flatMap((key) => [key, key, key]));
+      // A key the window does not use keeps its default: the field deletes, moves and types.
+      expect(press('Backspace')).toBe(true);
+      expect(repeat('Backspace')).toBe(true);
+      expect(press('a', 'KeyA')).toBe(true);
+      expect(repeat('a', 'KeyA')).toBe(true);
+    });
+
+    it('lets ArrowDown pressed inside a list opened in a window walk through the list (the list is a portal of its own)', async () => {
+      vi.useRealTimers();
+      const user = userEvent.setup();
+      show(
+        <Dialog open title="Settings">
+          <Select value="a" onValueChange={() => undefined} label="Language" options={[{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }, { value: 'c', label: 'Gamma' }]} />
+        </Dialog>,
+      );
+      screen.getByRole('combobox', { name: 'Language' }).focus();
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Alpha' })).toHaveFocus());
+      press('ArrowDown');
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Beta' })).toHaveFocus());
+      repeat('ArrowDown');
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Gamma' })).toHaveFocus());
+    });
+
+    it('closes the question about unsaved input with the first press of Enter on Keep editing', () => {
+      const onForm = vi.fn();
+      show(<Dialog open onOpenChange={onForm} dirty title="Add a service"><input aria-label="Address" /></Dialog>);
+      press('Escape');
+      expect(by('Keep editing')).toHaveFocus();
+      press('Enter');
+      tick();
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(onForm).not.toHaveBeenCalled();
+    });
+
+    it('answers a question with the first press of Enter on its Cancel', async () => {
+      show(<Capture onReady={keepConfirm} />);
+      const heard = askQuestion();
+      expect(by('Cancel')).toHaveFocus();
+      press('Enter');
+      await flush();
+      expect(heard).toEqual([false]);
+    });
+  });
+
+  describe('an approval', () => {
+    it('is not answered by an Enter that was down when it arrived; the key answers once it is released and pressed again', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Enter');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      expect(by('Cancel')).toHaveFocus();
+      for (let i = 0; i < 20; i += 1) expect(repeat('Enter')).toBe(false);
+      expect(answers).toEqual([]);
+      expect(onPage('Run this command?')).toBe(true);
+      expect(by('Cancel')).toHaveFocus();
+
+      release('Enter');
+      expect(answers).toEqual([]);
+      expect(press('Enter')).toBe(true);
+      expect(answers).toEqual(['cancel']);
+    });
+
+    it('is not answered by a Space that was down when it arrived', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press(' ');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      for (let i = 0; i < 5; i += 1) expect(repeat(' ')).toBe(false);
+      expect(answers).toEqual([]);
+    });
+
+    it('drops the repeats of any key that was down when it arrived, before a control inside hears them', () => {
+      const heard: string[] = [];
+      const page = (shown: boolean) => (
+        <Approval shown={shown} onAnswer={() => undefined}>
+          <input aria-label="Reason" onKeyDown={(event) => heard.push(event.key)} />
+        </Approval>
+      );
+      const view = show(page(false));
+      press('Tab');
+      press('ArrowDown');
+      press('a', 'KeyA');
+      view.rerender(page(true));
+      screen.getByRole('textbox', { name: 'Reason' }).focus();
+      expect(repeat('Tab')).toBe(false);
+      expect(repeat('ArrowDown')).toBe(false);
+      expect(repeat('a', 'KeyA')).toBe(false);
+      expect(heard).toEqual([]);
+      // Released and pressed again: the same keys work, and repeat.
+      release('ArrowDown');
+      expect(press('ArrowDown')).toBe(true);
+      expect(repeat('ArrowDown')).toBe(true);
+      expect(heard).toEqual(['ArrowDown', 'ArrowDown']);
+    });
+
+    it('takes the key again after a key-up it never heard: the next press is a first press', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Enter');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      expect(repeat('Enter')).toBe(false);
+      // Released while another application had the focus.
+      fireEvent.blur(window);
+      expect(press('Enter')).toBe(true);
+      expect(answers).toEqual(['cancel']);
+    });
+
+    it('is not answered by the repeats of an Enter or a Space whose first press the page never heard: its buttons drop them', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      expect(repeat('Enter')).toBe(false);
+      expect(repeat(' ')).toBe(false);
+      expect(answers).toEqual([]);
+    });
+
+    it('is not answered by the key that answered the approval before it', () => {
+      const answers: string[] = [];
+      const page = (first: boolean, second: boolean) => (
+        <>
+          <Dialog key="1" open={first} onOpenChange={() => undefined} layer="approval" role="alertdialog" outsidePress="ignore" title="First command" initialFocus={cancelOf}
+            footer={<Button data-approval-cancel="" onClick={() => answers.push('first: cancel')}>Cancel</Button>} />
+          <Dialog key="2" open={second} onOpenChange={() => undefined} layer="approval" role="alertdialog" outsidePress="ignore" title="Second command" initialFocus={cancelOf}
+            footer={<Button data-approval-cancel="" onClick={() => answers.push('second: cancel')}>Cancel</Button>} />
+        </>
+      );
+      const view = show(page(true, true));
+      later();
+      expect(onPage('First command')).toBe(true);
+      press('Enter');
+      expect(answers).toEqual(['first: cancel']);
+      view.rerender(page(false, true));
+      tick();
+      later();
+      expect(onPage('Second command')).toBe(true);
+      expect(by('Cancel')).toHaveFocus();
+      for (let i = 0; i < 5; i += 1) expect(repeat('Enter')).toBe(false);
+      expect(answers).toEqual(['first: cancel']);
+    });
+
+    it('drops, from the moment it is uncovered, the repeats of a key that was pressed while a question was over it', async () => {
+      const heard: string[] = [];
+      show(
+        <>
+          <Approval onAnswer={() => undefined}><input aria-label="Reason" onKeyDown={(event) => heard.push(event.key)} /></Approval>
+          <Capture onReady={keepConfirm} />
+        </>,
+      );
+      later();
+      askQuestion();
+      // Pressed on the question, and still down when the question has gone.
+      expect(press('ArrowDown')).toBe(true);
+      fireEvent.click(by('Remove'), { detail: 0 });
+      await flush();
+      tick();
+      screen.getByRole('textbox', { name: 'Reason' }).focus();
+      expect(repeat('ArrowDown')).toBe(false);
+      expect(heard).toEqual([]);
+    });
+
+    it('drops, from the moment the meaning of its buttons changes, the repeats of a key that was down then', () => {
+      const heard: string[] = [];
+      const page = (stage: number) => (
+        <Approval settleKey={stage} onAnswer={() => undefined}>
+          <input aria-label="Reason" onKeyDown={(event) => heard.push(event.key)} />
+        </Approval>
+      );
+      const view = show(page(0));
+      later();
+      screen.getByRole('textbox', { name: 'Reason' }).focus();
+      expect(press('ArrowDown')).toBe(true);
+      expect(repeat('ArrowDown')).toBe(true);
+      view.rerender(page(1));
+      expect(repeat('ArrowDown')).toBe(false);
+      expect(heard).toEqual(['ArrowDown', 'ArrowDown']);
+    });
+  });
+
+  describe('a window', () => {
+    it('is not acted on by the Enter that opened it', () => {
+      const onSave = vi.fn();
+      const heard: string[] = [];
+      function Page() {
+        const [open, setOpen] = useState(false);
+        return (
+          <>
+            <Button onClick={() => setOpen(true)}>Open</Button>
+            <Dialog open={open} onOpenChange={setOpen} title="Rename task">
+              <button type="button" onKeyDown={(event) => heard.push(event.key)} onClick={onSave}>Save</button>
+            </Dialog>
+          </>
+        );
+      }
+      show(<Page />);
+      by('Open').focus();
+      press('Enter');
+      expect(by('Save')).toHaveFocus();
+      for (let i = 0; i < 5; i += 1) expect(repeat('Enter')).toBe(false);
+      expect(onSave).not.toHaveBeenCalled();
+      expect(heard).toEqual([]);
+      release('Enter');
+      press('Enter');
+      expect(onSave).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops, when it returns after standing aside for an approval, the repeats of a key that was pressed on the approval', () => {
+      const heard: string[] = [];
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const page = (command: boolean) => (
+        <>
+          <Dialog open busy title="Install"><input aria-label="Name" onKeyDown={(event) => heard.push(event.key)} /></Dialog>
+          <Approval shown={command} onAnswer={onAnswer} />
+        </>
+      );
+      const view = show(page(false));
+      later();
+      screen.getByRole('textbox', { name: 'Name' }).focus();
+      view.rerender(page(true));
+      later();
+      expect(by('Cancel')).toHaveFocus();
+      // The press that answers the approval stays down.
+      press('Enter');
+      expect(answers).toEqual(['cancel']);
+      view.rerender(page(false));
+      tick();
+      later();
+      expect(onPage('Install')).toBe(true);
+      screen.getByRole('textbox', { name: 'Name' }).focus();
+      expect(repeat('Enter')).toBe(false);
+      expect(heard).toEqual([]);
+    });
+  });
+
+  describe('the question about unsaved input', () => {
+    const heard: string[] = [];
+    beforeEach(() => { heard.length = 0; });
+    function Form({ command }: { command: boolean }) {
+      return (
+        <>
+          <Dialog open onOpenChange={() => undefined} dirty title="Add a service">
+            <input aria-label="Address" defaultValue="https://example.invalid/v1" onKeyDown={(event) => heard.push(event.key)} />
+          </Dialog>
+          <Approval shown={command} onAnswer={() => undefined} />
+        </>
+      );
+    }
+
+    it('is not answered by a key that was down when an arriving approval raised it', () => {
+      const view = show(<Form command={false} />);
+      later();
+      screen.getByRole('textbox', { name: 'Address' }).focus();
+      press(' ');
+      view.rerender(<Form command />);
+      expect(by('Keep editing')).toHaveFocus();
+      for (let i = 0; i < 5; i += 1) expect(repeat(' ')).toBe(false);
+      expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+      release(' ');
+      press('Enter');
+      tick();
+      expect(screen.queryByRole('alertdialog', { name: 'Discard these changes?' })).toBeNull();
+    });
+
+    it('leaves the window alone once it is answered: the Enter that chose Keep editing does nothing in the field the focus returns to', () => {
+      show(<Form command={false} />);
+      later();
+      screen.getByRole('textbox', { name: 'Address' }).focus();
+      press('Escape');
+      release('Escape');
+      expect(by('Keep editing')).toHaveFocus();
+      press('Enter');
+      tick();
+      later();
+      screen.getByRole('textbox', { name: 'Address' }).focus();
+      expect(repeat('Enter')).toBe(false);
+      // The field heard the Escape that asked, and nothing since.
+      expect(heard).toEqual(['Escape']);
+    });
+  });
+
+  // Radix hears Escape on the document and asks the top layer. A held Escape repeats: each repeat
+  // would refuse, close or ask again. One press of Escape acts once; its repeats act on nothing.
+  describe('a held Escape', () => {
+    it('does not refuse an approval that arrives while it is down; released and pressed again, it refuses', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Escape');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      expect(by('Cancel')).toHaveFocus();
+      for (let i = 0; i < 20; i += 1) repeat('Escape');
+      expect(answers).toEqual([]);
+      expect(onPage('Run this command?')).toBe(true);
+      expect(by('Cancel')).toHaveFocus();
+
+      release('Escape');
+      expect(answers).toEqual([]);
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('refuses with the next press after a key-up the page never heard', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Escape');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      repeat('Escape');
+      expect(answers).toEqual([]);
+      // Released while another application had the focus.
+      fireEvent.blur(window);
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('refuses with the next press even when the window never reported losing the focus', () => {
+      const answers: Answer[] = [];
+      const onAnswer = (answer: Answer) => { answers.push(answer); };
+      const view = show(<Approval shown={false} onAnswer={onAnswer} />);
+      press('Escape');
+      view.rerender(<Approval onAnswer={onAnswer} />);
+      repeat('Escape');
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('does not refuse an approval with repeats whose first press the page never heard', () => {
+      const answers: Answer[] = [];
+      show(<Approval onAnswer={(answer) => answers.push(answer)} />);
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(answers).toEqual([]);
+    });
+
+    it('does not refuse the approval that follows the one it refused', () => {
+      const answers: string[] = [];
+      const page = (first: boolean, second: boolean) => (
+        <>
+          <Dialog key="1" open={first} onOpenChange={(next) => { if (!next) answers.push('first: refuse'); }} layer="approval" role="alertdialog" outsidePress="ignore" title="First command" initialFocus={cancelOf}
+            footer={<Button data-approval-cancel="">Cancel</Button>} />
+          <Dialog key="2" open={second} onOpenChange={(next) => { if (!next) answers.push('second: refuse'); }} layer="approval" role="alertdialog" outsidePress="ignore" title="Second command" initialFocus={cancelOf}
+            footer={<Button data-approval-cancel="">Cancel</Button>} />
+        </>
+      );
+      const view = show(page(true, true));
+      later();
+      expect(onPage('First command')).toBe(true);
+      press('Escape');
+      expect(answers).toEqual(['first: refuse']);
+      view.rerender(page(false, true));
+      // While the first one fades, and once the second one is on the page.
+      for (let i = 0; i < 3; i += 1) repeat('Escape');
+      tick();
+      later();
+      expect(onPage('Second command')).toBe(true);
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(answers).toEqual(['first: refuse']);
+      release('Escape');
+      press('Escape');
+      expect(answers).toEqual(['first: refuse', 'second: refuse']);
+    });
+
+    it('does not refuse the approval under the question it cancelled', async () => {
+      const answers: Answer[] = [];
+      show(
+        <>
+          <Approval onAnswer={(answer) => answers.push(answer)} />
+          <Capture onReady={keepConfirm} />
+        </>,
+      );
+      later();
+      const heard = askQuestion();
+      press('Escape');
+      await flush();
+      expect(heard).toEqual([false]);
+      // While the question fades, and once the approval is uncovered.
+      repeat('Escape');
+      tick();
+      later();
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(answers).toEqual([]);
+      release('Escape');
+      press('Escape');
+      expect(answers).toEqual(['refuse']);
+    });
+
+    it('does not close a window that opens while it is down, nor answer a question asked then', async () => {
+      const onWindow = vi.fn();
+      const page = (open: boolean) => (
+        <>
+          <Dialog open={open} onOpenChange={onWindow} title="Rename task"><Button>Save</Button></Dialog>
+          <Capture onReady={keepConfirm} />
+        </>
+      );
+      const view = show(page(false));
+      press('Escape');
+      view.rerender(page(true));
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(onWindow).not.toHaveBeenCalled();
+      const heard = askQuestion();
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      await flush();
+      expect(heard).toEqual([]);
+      expect(onWindow).not.toHaveBeenCalled();
+      release('Escape');
+      press('Escape');
+      await flush();
+      expect(heard).toEqual([false]);
+      expect(onWindow).not.toHaveBeenCalled();
+    });
+
+    it('closes one window per press: the window around the one it closed stays', () => {
+      const onOuter = vi.fn();
+      function Page() {
+        const [inner, setInner] = useState(true);
+        return (
+          <Dialog open onOpenChange={onOuter} title="Connector">
+            <Button>Edit</Button>
+            <Dialog open={inner} onOpenChange={setInner} title="Edit connector"><Button>Save</Button></Dialog>
+          </Dialog>
+        );
+      }
+      show(<Page />);
+      later();
+      expect(onPage('Edit connector')).toBe(true);
+      press('Escape');
+      // While the inner window fades, and once it has gone.
+      for (let i = 0; i < 3; i += 1) repeat('Escape');
+      tick();
+      later();
+      expect(onPage('Edit connector')).toBe(false);
+      for (let i = 0; i < 5; i += 1) repeat('Escape');
+      expect(onOuter).not.toHaveBeenCalled();
+      release('Escape');
+      press('Escape');
+      expect(onOuter.mock.calls).toEqual([[false]]);
+    });
+
+    it('asks about unsaved input once, and the question stays on the page', () => {
+      const onForm = vi.fn();
+      show(<Dialog open onOpenChange={onForm} dirty title="Add a service"><input aria-label="Address" /></Dialog>);
+      later();
+      press('Escape');
+      expect(by('Keep editing')).toHaveFocus();
+      // Each repeat used to take the question back, and the next one to ask it again.
+      for (let i = 0; i < 6; i += 1) {
+        repeat('Escape');
+        tick();
+        expect(screen.getByRole('alertdialog', { name: 'Discard these changes?' })).toBeInTheDocument();
+      }
+      expect(by('Keep editing')).toHaveFocus();
+      expect(onForm).not.toHaveBeenCalled();
+    });
+
+    it('does nothing more to a window only its own buttons may close', () => {
+      const onKept = vi.fn();
+      show(<Dialog open onOpenChange={onKept} dismissible={false} title="Before you start"><Button>Agree</Button></Dialog>);
+      press('Escape');
+      for (let i = 0; i < 3; i += 1) repeat('Escape');
+      expect(onKept).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a question', () => {
+    it('is not answered by the Enter that asked it', async () => {
+      const heard: boolean[] = [];
+      function Page() {
+        const confirm = useConfirm();
+        return <Button onClick={() => { void confirm({ title: 'Remove this site?', confirmLabel: 'Remove', tone: 'danger' }).then((answer) => { heard.push(answer); }); }}>Delete</Button>;
+      }
+      show(<Page />);
+      by('Delete').focus();
+      press('Enter');
+      await flush();
+      expect(by('Cancel')).toHaveFocus();
+      for (let i = 0; i < 5; i += 1) expect(repeat('Enter')).toBe(false);
+      await flush();
+      expect(heard).toEqual([]);
+      release('Enter');
+      press('Enter');
+      await flush();
+      expect(heard).toEqual([false]);
+    });
   });
 });

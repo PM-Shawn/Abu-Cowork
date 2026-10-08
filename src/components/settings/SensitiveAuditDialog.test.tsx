@@ -14,6 +14,7 @@ import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { passSettleInterval } from '@/test/dsWindows';
 import PersonalMemorySection from './sections/PersonalMemorySection';
 import SensitiveAuditDialog from './SensitiveAuditDialog';
 import SystemSettingsDialog from './SystemSettingsDialog';
@@ -93,7 +94,13 @@ function SettingsWindow() {
   );
 }
 const settingsWindow = () => document.querySelector('[data-settings-window]');
-const checkWindow = () => screen.findByText(TITLE);
+// The check is a question that appears by itself: it takes no pointer press for a moment after
+// that, and the keyboard is never held. By the time a case presses it, it has been read.
+const checkWindow = async () => {
+  const title = await screen.findByText(TITLE);
+  passSettleInterval();
+  return title;
+};
 const entry = (name: string) => screen.getByRole('checkbox', { name: new RegExp(name) });
 const later = () => screen.getByRole('button', { name: '稍后处理' });
 const markAll = () => screen.getByRole('button', { name: '全部设为私密' });
@@ -324,6 +331,7 @@ describe('SensitiveAuditDialog', () => {
       expect(check).toHaveAttribute('data-state', 'open');
       expect(settingsWindow()).toHaveAttribute('data-state', 'open');
 
+      passSettleInterval();
       await user.click(later());
       await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
       expect(settingsWindow()).toHaveAttribute('data-state', 'open');

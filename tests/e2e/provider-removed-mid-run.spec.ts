@@ -20,6 +20,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -343,7 +344,7 @@ test.describe('provider deleted mid-run', () => {
       // The question names the provider it is about to delete.
       const question = page.getByRole('alertdialog', { name: '确定要删除这个服务吗？', exact: true });
       await expect(question).toContainText(PROVIDER_A.name);
-      await question.getByRole('button', { name: '确认', exact: true }).click();
+      await pressWhenSettled(question.getByRole('button', { name: '确认', exact: true }));
       await expect(providerSwitch(dialog, PROVIDER_A.name)).toHaveCount(0);
       await expect(dialog.getByText(PROVIDER_A.name, { exact: true })).toHaveCount(0);
       await closeSettings(page);

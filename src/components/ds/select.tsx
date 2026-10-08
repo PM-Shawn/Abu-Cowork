@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-react';
 import { useId, useRef, type KeyboardEvent } from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './icon';
+import { dropsHeldEscape, dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
 import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
@@ -58,6 +59,9 @@ export function Select({ value, onValueChange, onReselect, options, label, place
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
   const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
+  // The key that opened the list picks nothing in it while it stays down, and one press of Enter
+  // or Space picks once.
+  const heldKeys = useHeldKeys(isOpen, 'enter-space');
   const level = useFloatingLevel();
   const descriptionBase = useId();
   const chosen = options.find((option) => option.value === value);
@@ -86,6 +90,10 @@ export function Select({ value, onValueChange, onReselect, options, label, place
         // A closed select never changes its value from a key press. Radix would otherwise pick the
         // option that starts with the typed character.
         onKeyDown={(event) => {
+          // The repeat of a held key opens nothing (Enter, Space, and the two arrows that open the
+          // list): a prevented key-down is one Radix leaves alone. Tab still repeats past it.
+          if (dropsHeldRepeat(event)) return;
+          if (event.repeat && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) event.preventDefault();
           if (event.key.length === 1 && event.key !== ' ' && !event.ctrlKey && !event.altKey && !event.metaKey) event.preventDefault();
         }}
         className={cn(fullWidth ? 'flex w-full' : 'inline-flex min-w-32', 'h-7 items-center justify-between gap-2 rounded-control border border-control-border bg-field px-2 text-ui text-label data-[placeholder]:text-label-placeholder', FOCUS_RING, DISABLED)}
@@ -102,9 +110,13 @@ export function Select({ value, onValueChange, onReselect, options, label, place
           with its full set of event listeners, alive for each select on the page. */}
       {isOpen && <SelectPrimitive.Portal container={container}>
         <SelectPrimitive.Content
+          {...heldKeys.handlers}
           position="popper"
           sideOffset={4}
           collisionPadding={EDGE_GAP}
+          // One press of Escape closes one thing: an Escape that was down when the list opened
+          // leaves it open, as in every other layer (heldKey.ts).
+          onEscapeKeyDown={(event) => { dropsHeldEscape(event); }}
           onCloseAutoFocus={(event) => {
             // The layer's handler first: it prevents the default when the registry closed this list.
             onCloseAutoFocus(event);

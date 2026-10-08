@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
-import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
+import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/chat/InlineSkillInput';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
 import VoiceInputControl from '@/components/chat/VoiceInputControl';
@@ -28,6 +28,7 @@ import {
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
+import { noteComposerDraft, noteComposerKey } from '@/components/chat/composerActivity';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
@@ -437,8 +438,8 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
   // As an absolutely-positioned child it was clipped by an overflow ancestor
   // whenever it grew past the chat area's top edge — the top ~40px (padding +
   // the first group header) simply were not painted, which read as "the card
-  // is cut off" (real-machine reports 2026-09-01 and 09-03). Same remedy as
-  // ui/search-select: escape the clipping tree, measure the anchor, re-measure
+  // is cut off" (real-machine reports 2026-09-01 and 09-03). The remedy:
+  // escape the clipping tree, measure the anchor, re-measure
   // on capture-phase scroll (dialog/chat bodies scroll, not the window) and on
   // resize. Height is clamped to the space above the anchor so the popup never
   // leaves the window either.
@@ -822,6 +823,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       selectedAgent,
     };
   }, [files, images, references, selectedAgent, selectedSkill, text]);
+
+  // The agent's question dock leaves the focus with a user who is writing a message: it is told
+  // whether this field holds a draft (composerActivity.ts).
+  const [composerOwner] = useState(() => ({}));
+  const holdsDraft = hasComposerContent({ text, images, files, references, selectedSkill, selectedAgent });
+  useLayoutEffect(() => {
+    noteComposerDraft(composerOwner, holdsDraft);
+    return () => noteComposerDraft(composerOwner, false);
+  }, [composerOwner, holdsDraft]);
 
   useLayoutEffect(() => {
     const pendingSelection = pendingSelectionRef.current;
@@ -1903,6 +1913,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // A key went down in the message field, a key of an input method included: the user is
+    // writing here, and a question that arrives now leaves them the focus (composerActivity.ts).
+    noteComposerKey();
     if (isImeComposing(e, composingRef.current)) return;
 
     if (showSuggestions && suggestions.length > 0) {
@@ -1918,6 +1931,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       }
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey)) {
         e.preventDefault();
+        // One pick per press of Enter: the repeat of a held Enter picks nothing.
+        if (e.key === 'Enter' && e.repeat) return;
         applySuggestion(suggestions[selectedIndex]);
         return;
       }
@@ -1947,6 +1962,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // stack, so it is deliberately the do-nothing branch.
       if (action === 'send') {
         e.preventDefault();
+        // One message per press: a held Enter repeats, and this field takes the focus by itself
+        // after actions whose key may still be down (start a conversation with an expert, pick a
+        // suggestion). The repeat sends nothing and, its default prevented, adds no line.
+        // Shift+Enter and Alt+Enter keep repeating: holding them adds lines.
+        if (e.repeat) return;
         handleSend();
       } else if (action === 'insert') {
         e.preventDefault();

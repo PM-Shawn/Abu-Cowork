@@ -8,6 +8,7 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ProviderInstance } from '@/types/provider';
+import { passSettleInterval } from '@/test/dsWindows';
 
 // The real icon button (it mounts a tooltip), with its renders counted by label: a service
 // card must stay still while another setting on the page changes.
@@ -288,6 +289,8 @@ describe('AIServicesSection clearing the saved keys', () => {
     renderSection();
 
     await user.click(screen.getByRole('button', { name: 'Clear all stored keys' }));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
 
     expect(screen.getByRole('alertdialog', { name: 'Clear all stored keys' })).toBeInTheDocument();
     expect(screen.getByText(/^This removes every provider and auxiliary-service API key/)).toBeInTheDocument();
@@ -305,6 +308,8 @@ describe('AIServicesSection clearing the saved keys', () => {
     renderSection();
 
     await user.click(screen.getByRole('button', { name: 'Clear all stored keys' }));
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await user.click(screen.getByRole('button', { name: 'Confirm' }));
 
     expect(clearAllStoredKeys).toHaveBeenCalledTimes(1);

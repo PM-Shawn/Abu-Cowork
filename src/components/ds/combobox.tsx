@@ -2,6 +2,7 @@ import { Command } from 'cmdk';
 import { Popover as PopoverPrimitive } from 'radix-ui';
 import { memo, useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { cn } from '@/lib/utils';
+import { dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
@@ -39,6 +40,8 @@ function ComboboxTrigger({ ref, label, open, disabled, text, placeholder }: {
         aria-expanded={open}
         aria-label={label}
         disabled={disabled}
+        // The repeat of a held Enter or Space opens nothing (heldKey.ts).
+        onKeyDown={dropsHeldRepeat}
         className={cn(TRIGGER, text ? 'text-label' : 'text-label-placeholder', FOCUS_RING, DISABLED)}
       >
         <span className="truncate">{text || placeholder}</span>
@@ -86,8 +89,9 @@ const ComboboxRow = memo(function ComboboxRow({ option, selected, multiple, onPi
 });
 
 // The floating list both comboboxes share: a search box over the options.
-function ComboboxPanel({ layer, triggerRef, onLeave, options, isSelected, onPick, label, searchPlaceholder, emptyText, multiple = false }: {
+function ComboboxPanel({ layer, open, triggerRef, onLeave, options, isSelected, onPick, label, searchPlaceholder, emptyText, multiple = false }: {
   layer: LayerHandle;
+  open: boolean;
   triggerRef: RefObject<HTMLButtonElement | null>;
   // Closes the list when Tab is pressed in it.
   onLeave: () => void;
@@ -101,9 +105,14 @@ function ComboboxPanel({ layer, triggerRef, onLeave, options, isSelected, onPick
 }) {
   const container = useLayerContainer();
   const level = useFloatingLevel();
+  // The list picks on the key-down of Enter: the Enter that opened it picks nothing while it stays
+  // down, and one press picks once (a multiple choice is not turned on and off by a held Enter).
+  // Space types into the search box and repeats.
+  const heldKeys = useHeldKeys(open, 'enter');
   return (
     <PopoverPrimitive.Portal container={container}>
       <PopoverPrimitive.Content
+        {...heldKeys.handlers}
         align="start"
         sideOffset={4}
         collisionPadding={EDGE_GAP}
@@ -175,6 +184,7 @@ export function Combobox({ value, onValueChange, options, label, placeholder, se
       <ComboboxTrigger ref={triggerRef} label={label} open={open} disabled={disabled} text={selected ? selected.label : ''} placeholder={placeholder} />
       <ComboboxPanel
         layer={layer}
+        open={open}
         triggerRef={triggerRef}
         onLeave={() => setOpen(false)}
         options={options}
@@ -223,6 +233,7 @@ export function MultiCombobox({ values, onValuesChange, options, label, placehol
       <ComboboxTrigger ref={triggerRef} label={label} open={open} disabled={disabled} text={selectedLabels.join('、')} placeholder={placeholder} />
       <ComboboxPanel
         layer={layer}
+        open={open}
         triggerRef={triggerRef}
         onLeave={() => setOpen(false)}
         options={options}

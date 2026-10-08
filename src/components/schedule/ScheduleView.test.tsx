@@ -8,6 +8,7 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n, initLanguage } from '@/i18n';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import type { ScheduledTask } from '@/types/schedule';
+import { passSettleInterval } from '@/test/dsWindows';
 import ScheduleView from './ScheduleView';
 
 vi.mock('@/core/scheduler/scheduler', () => ({
@@ -206,6 +207,8 @@ describe('ScheduleView', () => {
       // The middle card: its place is taken by the card after it.
       await user.click(card('b'));
       await user.click(screen.getByRole('button', { name: getI18n().schedule.delete }));
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: getI18n().common.confirm }));
       expect(Object.keys(useScheduleStore.getState().tasks)).toEqual(['a', 'c']);
       expect(card('a')).toHaveFocus();
@@ -213,6 +216,8 @@ describe('ScheduleView', () => {
       // The last card: the one before it.
       await user.click(card('a'));
       await user.click(screen.getByRole('button', { name: getI18n().schedule.delete }));
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: getI18n().common.confirm }));
       expect(Object.keys(useScheduleStore.getState().tasks)).toEqual(['c']);
       expect(card('c')).toHaveFocus();
@@ -230,6 +235,8 @@ describe('ScheduleView', () => {
 
       await user.click(card('a'));
       await user.click(screen.getByRole('button', { name: getI18n().schedule.delete }));
+      // The question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
       await user.click(screen.getByRole('button', { name: getI18n().common.confirm }));
 
       expect(useScheduleStore.getState().tasks).toEqual({});
@@ -247,6 +254,7 @@ describe('ScheduleView', () => {
         await user.click(screen.getByRole('button', { name: getI18n().schedule.delete }));
 
         act(() => useScheduleStore.getState().deleteTask('a'));
+        passSettleInterval();
         await user.click(screen.getByRole('button', { name: getI18n().common.cancel }));
 
         await waitFor(() => expect(card('b')).toHaveFocus());
@@ -260,6 +268,7 @@ describe('ScheduleView', () => {
         await user.click(screen.getByRole('button', { name: getI18n().schedule.delete }));
 
         act(() => useScheduleStore.getState().deleteTask('a'));
+        passSettleInterval();
         await user.click(screen.getByRole('button', { name: getI18n().common.confirm }));
 
         await waitFor(() => expect(card('b')).toHaveFocus());

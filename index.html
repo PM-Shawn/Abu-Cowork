@@ -6,21 +6,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Abu</title>
     <!-- Blocking theme script: must run before first paint to prevent FOUC.
-         Reads persisted theme from Zustand's 'abu-settings' key; defaults to light. -->
+         Paints what the settings store will hold once it has loaded: the persisted
+         theme from Zustand's 'abu-settings' key, else the store default (follow the system). -->
     <script>
       (function() {
+        var theme = 'system'; // match settingsStore default
         try {
           var stored = localStorage.getItem('abu-settings');
-          var theme = 'light'; // match settingsStore default
           if (stored) {
             var parsed = JSON.parse(stored);
             // Cache the parsed blob so the boot language script below can reuse it
             // instead of re-parsing this (potentially tens-of-KB) settings blob.
             window.__abuSettings = parsed;
-            if (parsed && parsed.state && parsed.state.theme) {
+            // Settings saved before version 54 are turned to 'system' when the store
+            // loads (settingsStore migrate, V54), so their stored theme is not painted.
+            var migrates = parsed && typeof parsed.version === 'number' && parsed.version < 54;
+            if (!migrates && parsed && parsed.state && parsed.state.theme) {
               theme = parsed.state.theme;
             }
           }
+        } catch(e) {}
+        try {
           var isDark = theme === 'dark' ||
             (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
           if (isDark) document.documentElement.classList.add('dark');

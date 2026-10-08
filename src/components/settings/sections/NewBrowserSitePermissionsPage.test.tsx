@@ -11,6 +11,7 @@ import { __resetBrowserConfigPersistenceForTests, useSettingsStore } from '@/sto
 import { useBrowserSaveStatusStore } from '@/stores/browserSaveStatus';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule, type BrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
 import { format, getI18n, initLanguage } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
 
 // The real select, with its renders counted by label: a website row must stay still while
 // the page around it re-renders.
@@ -636,11 +637,14 @@ describe('windows opened from the page', () => {
     await user.keyboard('{Escape}');
     const question = discardQuestion()!;
     expect(question).toHaveTextContent(getI18n().designSystem.discardMessage);
+    // The question takes no pointer press for a moment after it appears: it has been read.
+    passSettleInterval();
     await user.click(within(question).getByRole('button', { name: getI18n().designSystem.keepEditing }));
     expect(discardQuestion()).toBeNull();
     const dialog = screen.getByRole('dialog', { name: t().browserSiteAddTitle });
     expect(within(dialog).getByLabelText(t().browserSitePermsAddLabel)).toHaveValue(`${origin}/guide`);
     await user.keyboard('{Escape}');
+    passSettleInterval();
     await user.click(within(discardQuestion()!).getByRole('button', { name: getI18n().designSystem.discard }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(save).not.toHaveBeenCalled();
@@ -715,9 +719,11 @@ describe('windows opened from the page', () => {
     const addWindow = () => screen.queryByRole('dialog', { name: t().browserSiteAddTitle });
     await openAdd(`${origin}/guide`);
     await pressOutside();
+    passSettleInterval();
     await user.click(within(discardQuestion()!).getByRole('button', { name: getI18n().designSystem.keepEditing }));
     expect(within(addWindow()!).getByLabelText(t().browserSitePermsAddLabel)).toHaveValue(`${origin}/guide`);
     await pressOutside();
+    passSettleInterval();
     await user.click(within(discardQuestion()!).getByRole('button', { name: getI18n().designSystem.discard }));
     expect(addWindow()).toBeNull();
     expect(discardQuestion()).toBeNull();

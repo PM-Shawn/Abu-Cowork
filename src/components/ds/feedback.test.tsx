@@ -91,6 +91,21 @@ describe('feedback components', () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
+  it('LoadError busy keeps the retry button focusable and takes no press, by pointer or by key', async () => {
+    const user = setupUser();
+    const onRetry = vi.fn();
+    render(<LoadError reason="This task could not be read." onRetry={onRetry} busy />);
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    expect(retry).not.toBeDisabled();
+    await user.click(retry);
+    retry.focus();
+    expect(retry).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
   // The newest ones are on screen; the store keeps the time of the ones pushed out.
   it('Toaster shows at most three notifications, the newest three, newest first', () => {
     render(<ToasterHarness initial={[1, 2, 3, 4, 5].map((n) => toast(n))} />, { wrapper: DesignSystemProvider });
@@ -435,6 +450,85 @@ describe('feedback components', () => {
     expect(text).toHaveClass('max-h-13.5');
     expect(text).toHaveClass('overflow-y-auto');
     expect(text).toHaveClass('break-words');
+  });
+
+  // The keyboard has to reach a text that scrolls to scroll it.
+  describe('Toaster text that scrolls', () => {
+    // happy-dom lays nothing out: the text is as tall as the test says, in a box of the given height.
+    function tall(scrolling: (element: Element) => boolean) {
+      const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) { return scrolling(this) ? 234 : 18; });
+      const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return scrolling(this) ? 54 : 18; });
+      return () => { scroll.mockRestore(); client.mockRestore(); };
+    }
+    const title = 'The goal was not updated because '.repeat(12).trim();
+    const message = Array.from({ length: 40 }, (_, n) => `skills/fake/file-${n}.md: permission denied`).join('; ');
+
+    it('makes a title that scrolls a Tab stop, a group named by the title, with the focus ring', () => {
+      const restore = tall((element) => element.textContent === title);
+      try {
+        render(<ToasterHarness initial={[toast(1, { type: 'error', title })]} />, { wrapper: DesignSystemProvider });
+        const text = shown().getByText(title);
+        expect(text).toHaveAttribute('tabindex', '0');
+        expect(text).toHaveAttribute('role', 'group');
+        expect(text).toHaveAccessibleName(title);
+        expect(text).toHaveClass('focus-visible:ring-2');
+      } finally {
+        restore();
+      }
+    });
+
+    it('makes a message that scrolls a Tab stop named by the title of its notification, and leaves the title that fits alone', () => {
+      const restore = tall((element) => element.textContent === message);
+      try {
+        render(<ToasterHarness initial={[toast(1, { type: 'error', title: 'Revert failed', message })]} />, { wrapper: DesignSystemProvider });
+        const text = shown().getByText(message);
+        expect(text).toHaveAttribute('tabindex', '0');
+        expect(text).toHaveAttribute('role', 'group');
+        expect(text).toHaveAccessibleName('Revert failed');
+        const heading = shown().getByText('Revert failed');
+        expect(heading).not.toHaveAttribute('tabindex');
+        expect(heading).not.toHaveAttribute('role');
+      } finally {
+        restore();
+      }
+    });
+
+    it('adds no Tab stop for a title and a message that fit', () => {
+      render(<ToasterHarness initial={[toast(1, { type: 'error', title: 'Revert failed', message: 'One file' })]} />, { wrapper: DesignSystemProvider });
+      for (const text of [shown().getByText('Revert failed'), shown().getByText('One file')]) {
+        expect(text).not.toHaveAttribute('tabindex');
+        expect(text).not.toHaveAttribute('role');
+        expect(text).not.toHaveAttribute('aria-labelledby');
+      }
+    });
+
+    it('takes the stop away again when the words of the notification no longer scroll', () => {
+      const restore = tall((element) => element.textContent === title);
+      try {
+        const view = render(<Toaster toasts={[toast(1, { type: 'error', title })]} onDismiss={() => undefined} />, { wrapper: DesignSystemProvider });
+        expect(shown().getByText(title)).toHaveAttribute('tabindex', '0');
+        view.rerender(<Toaster toasts={[toast(1, { type: 'error', title: 'Short now' })]} onDismiss={() => undefined} />);
+        expect(shown().getByText('Short now')).not.toHaveAttribute('tabindex');
+      } finally {
+        restore();
+      }
+    });
+
+    it('gives the scrolling text no focus when the notification arrives or the one that held the focus leaves', async () => {
+      const restore = tall((element) => element.textContent === title);
+      try {
+        const user = setupUser();
+        render(<ToasterHarness initial={[toast(1, { type: 'error', title }), toast(2, { type: 'error', title: 'Upload failed' })]} />, { wrapper: DesignSystemProvider });
+        expect(document.body).toHaveFocus();
+        // Closed from the keyboard: the focus goes to the close button now at its place.
+        const close = screen.getAllByRole('button', { name: 'Close' })[0];
+        act(() => { close.focus(); });
+        await user.keyboard('{Enter}');
+        expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+      } finally {
+        restore();
+      }
+    });
   });
 
   it('Toaster closes a notification from its close button', async () => {

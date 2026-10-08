@@ -21,7 +21,13 @@ function Rows({ start, withCreate = true }: { start: string[]; withCreate?: bool
   return (
     <>
       {withCreate && <Button {...projectCreateProps}>Create a project</Button>}
-      {ids.map((id) => <Button key={id} {...projectRowProps(id)}>{id}</Button>)}
+      {ids.map((id) => (
+        // Beside each row the button that opens its menu, as the sidebar draws it.
+        <div key={id}>
+          <Button {...projectRowProps(id)}>{id}</Button>
+          <Button>{`More for ${id}`}</Button>
+        </div>
+      ))}
       <Button>Elsewhere</Button>
     </>
   );
@@ -93,6 +99,25 @@ describe('useProjectRowFocus', () => {
     act(() => leave('b'));
 
     expect(row('c')).toHaveFocus();
+  });
+
+  // The menu and the question opened from a row's own button give the focus back to that button.
+  it('moves the focus to the row that took its place when the row leaves under the focus on its menu button', () => {
+    render(<Rows start={['a', 'b', 'c']} />);
+    row('More for b').focus();
+
+    act(() => leave('b'));
+
+    expect(row('c')).toHaveFocus();
+  });
+
+  it('moves the focus to the row before it when the last row leaves under the focus on its menu button', () => {
+    render(<Rows start={['a', 'b']} />);
+    row('More for b').focus();
+
+    act(() => leave('b'));
+
+    expect(row('a')).toHaveFocus();
   });
 
   it('moves the focus to the create button when the only row leaves', () => {

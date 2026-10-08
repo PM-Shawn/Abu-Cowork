@@ -14,6 +14,7 @@ import {
   resolveCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
 import { initLanguage } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
 import CloseDialog from './CloseDialog';
 import CommandConfirmDialog from './CommandConfirmDialog';
 import PermissionDialog from './PermissionDialog';
@@ -171,6 +172,9 @@ describe.each(kinds)('the close-window question and $name', (kind) => {
       const window = await kind.find();
       await waitFor(() => expect(kind.refuse()).toHaveFocus());
       act(() => useQuestion.setState({ open: true }));
+      // The question takes no pointer press for a moment after it appears; the keyboard is never
+      // held. The cases below are about what each control answers once it has been read.
+      passSettleInterval();
       return window;
     }
 
@@ -234,6 +238,7 @@ describe.each(kinds)('the close-window question and $name', (kind) => {
       const user = userEvent.setup();
       renderPage();
       act(() => useQuestion.setState({ open: true }));
+      passSettleInterval();
       await user.click(screen.getByRole('checkbox', { name: '记住我的选择' }));
       const box = question();
 
@@ -246,6 +251,8 @@ describe.each(kinds)('the close-window question and $name', (kind) => {
       expect(answered).toEqual([]);
       expect(kind.answers()).toEqual([]);
 
+      // The approval has been on the page long enough to be read.
+      passSettleInterval();
       await user.click(kind.refuse());
       await waitFor(() => expect(kind.answers()).toEqual([kind.refused]));
       await waitFor(() => expect(window).not.toBeInTheDocument());

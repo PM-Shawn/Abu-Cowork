@@ -11,6 +11,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
+import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 import { Button, IconButton } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { AppIcons } from '@/components/ds/icons';
@@ -56,8 +57,9 @@ export interface CodeBlockRendererConfig {
    *  Returns SVG string of the rendered content, or null if capture failed. */
   captureImage?: (code: string, container: HTMLDivElement) => Promise<string | null>;
   /** Optional fullscreen content builder. If provided, a maximize button appears in the toolbar.
-   *  Should return an HTML string to render in the fullscreen iframe. */
-  buildFullscreenHtml?: (code: string) => string;
+   *  Should return an HTML string to render in the fullscreen iframe. `isDark` is the appearance
+   *  of the app at that moment; the frame is built again when it changes. */
+  buildFullscreenHtml?: (code: string, isDark: boolean) => string;
   /** Optional streaming preview. Called synchronously on every code change so the
    *  user sees content build up instead of a loading overlay. The function should
    *  be lightweight (e.g. postMessage, no heavy DOM work).
@@ -84,6 +86,19 @@ export interface CodeBlockRendererConfig {
 
 const WIDGET_CLOSE_BUTTON = { 'data-widget-close': '' } as const;
 const widgetCloseButtonOf = (content: HTMLElement) => content.querySelector<HTMLElement>('[data-widget-close]');
+
+// The frame of the enlarged widget. It exists only while its window is on the page, so only an
+// enlarged block follows the appearance of the app.
+function EnlargedFrame({ code, build }: { code: string; build: (code: string, isDark: boolean) => string }) {
+  const isDark = useEffectiveThemeIsDark();
+  return (
+    <iframe
+      srcDoc={build(code, isDark)}
+      sandbox="allow-scripts"
+      className="min-h-0 w-full flex-1 rounded-b-window border-none bg-page-canvas"
+    />
+  );
+}
 
 // Per-label caches (shared across component instances)
 const cacheMap = new Map<string, Map<string, string>>();
@@ -462,11 +477,7 @@ export default function RenderableCodeBlock({
     >
       {/* The frame starts below the close button, so the button covers none of the widget. */}
       <div className="flex min-h-0 flex-1 flex-col pt-13">
-        <iframe
-          srcDoc={config.buildFullscreenHtml(code)}
-          sandbox="allow-scripts"
-          className="min-h-0 w-full flex-1 rounded-b-window border-none bg-page-canvas"
-        />
+        <EnlargedFrame code={code} build={config.buildFullscreenHtml} />
       </div>
     </Dialog>
   );

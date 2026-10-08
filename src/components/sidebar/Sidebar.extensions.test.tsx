@@ -88,6 +88,7 @@ function resetChat(overrides: Record<string, unknown> = {}) {
   chat.state = {
     conversationIndex: {},
     conversations: {},
+    loadFailures: {},
     activeConversationId: null,
     startNewConversation: vi.fn(),
     switchConversation: vi.fn(),
@@ -603,6 +604,225 @@ describe('Sidebar — Recents row menu', () => {
     });
   });
 
+  // A record that is on disk and cannot be read has nothing an undo could bring back: the delete
+  // asks first, naming the task.
+  describe('deleting a task whose record cannot be read', () => {
+    const OTHER = { id: 'c2', title: 'Travel plan', createdAt: 2, messageCount: 1 };
+    const page = <><Sidebar /><ToasterMount /></>;
+    const renderSidebar = () => render(page, { wrapper: DesignSystemProvider });
+    const offer = () => within(screen.getByRole('region', { name: '通知' })).queryByText('会话已删除');
+    const question = () => screen.queryByRole('alertdialog', { name: '删除这个任务？' });
+    const rowOf = (title: string) => screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
+    const moreOf = (title: string) => within(rowOf(title)).getByRole('button', { name: '更多操作' });
+    const removesFromTheList = () => vi.fn((id: string) => {
+      const index = { ...(chat.state.conversationIndex as Record<string, unknown>) };
+      delete index[id];
+      chat.state = { ...chat.state, conversationIndex: index };
+    });
+    const unreadable = (overrides: Record<string, unknown> = {}) => resetChat({
+      conversationIndex: { c1: CONVERSATION, c2: OTHER },
+      loadFailures: { c1: true },
+      exportConversation: vi.fn(() => null),
+      ...overrides,
+    });
+    // The menu goes, hands the focus back to the row's button, and the question opens after that.
+    const menuGone = () => act(() => vi.advanceTimersByTimeAsync(10));
+    // A question takes no pointer press for a moment after it appeared.
+    const settled = () => act(() => vi.advanceTimersByTimeAsync(600));
+    async function chooseDelete(user: ReturnType<typeof userEvent.setup>, title: string) {
+      await user.click(moreOf(title));
+      await user.click(screen.getByRole('menuitem', { name: '删除会话' }));
+      await menuGone();
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.stubGlobal('jest', { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) });
+      for (const toast of useToastStore.getState().toasts) useToastStore.getState().removeToast(toast.id);
+      unreadable();
+    });
+    afterEach(() => {
+      act(() => { for (const toast of useToastStore.getState().toasts) useToastStore.getState().removeToast(toast.id); });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('asks first, naming the task, and deletes nothing while the question waits', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      await chooseDelete(user, 'Quarterly summary');
+
+      expect(chat.state.loadConversation).toHaveBeenCalledWith('c1');
+      const asked = question()!;
+      expect(asked).toHaveTextContent('「Quarterly summary」的记录目前读不出来，删除后无法恢复。');
+      expect(within(asked).getAllByRole('button').map((button) => button.textContent)).toEqual(['取消', '删除']);
+      expect(within(asked).getByRole('button', { name: '取消' })).toHaveFocus();
+      expect(chat.state.deleteConversation).not.toHaveBeenCalled();
+      expect(offer()).toBeNull();
+    });
+
+    it('asks in English as well', async () => {
+      initLanguage('en-US');
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(page, { wrapper: DesignSystemProvider });
+      await user.click(within(rowOf('Quarterly summary')).getByRole('button', { name: 'More actions' }));
+      await user.click(screen.getByRole('menuitem', { name: 'Delete conversation' }));
+      await menuGone();
+
+      const asked = screen.getByRole('alertdialog', { name: 'Delete this task?' });
+      expect(asked).toHaveTextContent('The record of "Quarterly summary" can\'t be read right now. Deleting it can\'t be undone.');
+      expect(within(asked).getAllByRole('button').map((button) => button.textContent)).toEqual(['Cancel', 'Delete']);
+    });
+
+    it('keeps the task on 取消 and on Escape, with the focus back on the row\'s button, and asks again the next time', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      await chooseDelete(user, 'Quarterly summary');
+      await settled();
+      await user.click(within(question()!).getByRole('button', { name: '取消' }));
+      await menuGone();
+
+      expect(question()).toBeNull();
+      expect(chat.state.deleteConversation).not.toHaveBeenCalled();
+      expect(moreOf('Quarterly summary')).toHaveFocus();
+
+      await chooseDelete(user, 'Quarterly summary');
+      expect(question()).not.toBeNull();
+      await user.keyboard('{Escape}');
+      await menuGone();
+
+      expect(question()).toBeNull();
+      expect(chat.state.deleteConversation).not.toHaveBeenCalled();
+      expect(moreOf('Quarterly summary')).toHaveFocus();
+    });
+
+    it('deletes once on 删除, offers no undo, and moves the focus to the row that took its place', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const deleteConversation = removesFromTheList();
+      unreadable({ conversationIndex: { c1: CONVERSATION, c2: OTHER, c3: { id: 'c3', title: 'Older notes', createdAt: 0, messageCount: 1 } }, deleteConversation });
+      const view = renderSidebar();
+      await chooseDelete(user, 'Quarterly summary');
+      await settled();
+      const confirmButton = within(question()!).getByRole('button', { name: '删除' });
+      await user.dblClick(confirmButton);
+      // The store here is a plain object: the test draws the sidebar again, as the store's change does in the app.
+      act(() => view.rerender(<><Sidebar /><ToasterMount /></>));
+      await menuGone();
+
+      expect(deleteConversation).toHaveBeenCalledExactlyOnceWith('c1');
+      expect(chat.state.exportConversation).toHaveBeenCalledWith('c1');
+      expect(offer()).toBeNull();
+      expect(screen.queryByText('Quarterly summary')).toBeNull();
+      // Newest first: Travel plan, Quarterly summary, Older notes. The row that took its place.
+      expect(rowOf('Older notes')).toHaveFocus();
+    });
+
+    it('is not answered by the repeats of the Enter that chose 删除会话: the question waits on 取消', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      act(() => moreOf('Quarterly summary').focus());
+      await user.keyboard('{Enter}');
+      const item = await screen.findByRole('menuitem', { name: '删除会话' });
+      act(() => item.focus());
+      fireEvent.keyDown(item, { key: 'Enter', code: 'Enter' });
+      await menuGone();
+      const cancel = within(question()!).getByRole('button', { name: '取消' });
+      expect(cancel).toHaveFocus();
+
+      for (let i = 0; i < 10; i += 1) {
+        // fireEvent returns false once the default was prevented: the browser makes no click.
+        expect(fireEvent.keyDown(document.activeElement!, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      }
+      await menuGone();
+
+      expect(question()).not.toBeNull();
+      expect(cancel).toHaveFocus();
+      expect(chat.state.deleteConversation).not.toHaveBeenCalled();
+    });
+
+    it('asks one question for one task, however often 删除会话 is chosen for it', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      let read!: () => void;
+      unreadable({ loadConversation: vi.fn(() => new Promise<void>((resolve) => { read = resolve; })) });
+      renderSidebar();
+      // Chosen twice while the first read is still in flight.
+      await chooseDelete(user, 'Quarterly summary');
+      await chooseDelete(user, 'Quarterly summary');
+      expect(chat.state.loadConversation).toHaveBeenCalledTimes(1);
+      await act(async () => { read(); });
+      await menuGone();
+
+      expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+      fireEvent.click(within(question()!).getByRole('button', { name: '删除' }));
+      await menuGone();
+      expect(chat.state.deleteConversation).toHaveBeenCalledExactlyOnceWith('c1');
+    });
+
+    it('leaves a task alone that has gone by the time the question is answered', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      await chooseDelete(user, 'Quarterly summary');
+      // Deleted from elsewhere while the question was on the page.
+      chat.state = { ...chat.state, conversationIndex: { c2: OTHER }, loadFailures: {} };
+      fireEvent.click(within(question()!).getByRole('button', { name: '删除' }));
+      await menuGone();
+
+      expect(chat.state.deleteConversation).not.toHaveBeenCalled();
+      expect(offer()).toBeNull();
+    });
+
+    it('deletes a task that could be read meanwhile like any other: with the offer to undo', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      await chooseDelete(user, 'Quarterly summary');
+      // 重试 on the task's page read the record while the question was on the page.
+      chat.state = {
+        ...chat.state,
+        loadFailures: {},
+        conversations: { c1: { id: 'c1', messages: [] } },
+        exportConversation: vi.fn((id: string) => `{"id":"${id}"}`),
+      };
+      fireEvent.click(within(question()!).getByRole('button', { name: '删除' }));
+      await menuGone();
+
+      expect(chat.state.deleteConversation).toHaveBeenCalledExactlyOnceWith('c1');
+      expect(offer()).not.toBeNull();
+    });
+
+    it('asks nothing for a task whose record can be read, and nothing when the task could be read by the time the menu has gone', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      unreadable({ loadFailures: {}, exportConversation: vi.fn((id: string) => `{"id":"${id}"}`) });
+      renderSidebar();
+      await chooseDelete(user, 'Quarterly summary');
+
+      expect(question()).toBeNull();
+      expect(chat.state.deleteConversation).toHaveBeenCalledExactlyOnceWith('c1');
+      expect(offer()).not.toBeNull();
+    });
+
+    it('drops a question that still waited for a menu which was opened again, and deletes nothing', async () => {
+      const fades = keepClosingLayersOnScreen();
+      renderSidebar();
+      const more = moreOf('Quarterly summary');
+      act(() => more.focus());
+      fireEvent.pointerDown(more, { button: 0 });
+      fireEvent.click(screen.getByRole('menuitem', { name: '删除会话' }));
+      // The record was read and cannot be: the question waits for the menu to go.
+      await act(async () => { await Promise.resolve(); });
+      expect(question()).toBeNull();
+
+      // Still on the page, fading: the row button opens it again.
+      fireEvent.pointerDown(more, { button: 0 });
+      fades.mockRestore();
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      await act(() => vi.runOnlyPendingTimersAsync());
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(question()).toBeNull();
+      expect(chat.state.deleteConversation).not.toHaveBeenCalled();
+    });
+  });
+
   it('opens the same menu on right-click', async () => {
     renderSidebar();
     fireEvent.contextMenu(screen.getByText('Quarterly summary'));
@@ -615,6 +835,42 @@ describe('Sidebar — Recents row menu', () => {
     renderSidebar();
     await user.click(screen.getByText('Quarterly summary'));
     expect(chat.state.switchConversation).toHaveBeenCalledWith('c1');
+  });
+
+  // Tab reaches a row; Enter and Space on the row open the task as a click does.
+  describe('from the keyboard', () => {
+    const row = () => screen.getByText('Quarterly summary').closest<HTMLElement>('[role="button"]')!;
+
+    it.each([['Enter', 'Enter'], [' ', 'Space']])('opens the task with %j pressed on the row, and the page does not scroll', (key, code) => {
+      renderSidebar();
+      expect(row().tabIndex).toBe(0);
+
+      // fireEvent returns false once the default was prevented.
+      expect(fireEvent.keyDown(row(), { key, code })).toBe(false);
+
+      expect(chat.state.switchConversation).toHaveBeenCalledExactlyOnceWith('c1');
+      expect(useSettingsStore.getState().viewMode).toBe('chat');
+    });
+
+    // The focus is handed to the neighbouring row after a delete; a key still down repeats there.
+    it('opens nothing on the repeats of a held Enter or Space', () => {
+      renderSidebar();
+
+      expect(fireEvent.keyDown(row(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      expect(fireEvent.keyDown(row(), { key: ' ', code: 'Space', repeat: true })).toBe(false);
+
+      expect(chat.state.switchConversation).not.toHaveBeenCalled();
+    });
+
+    it('leaves keys pressed on the row\'s 更多操作 to that button, and other keys alone', () => {
+      renderSidebar();
+
+      fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter', code: 'Enter' });
+      expect(fireEvent.keyDown(row(), { key: 'Tab', code: 'Tab' })).toBe(true);
+      expect(fireEvent.keyDown(row(), { key: 'ArrowDown', code: 'ArrowDown' })).toBe(true);
+
+      expect(chat.state.switchConversation).not.toHaveBeenCalled();
+    });
   });
 });
 

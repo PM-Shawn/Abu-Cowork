@@ -7,10 +7,10 @@
  * appears again. "查看完整说明" navigates directly to Settings → About.
  */
 
-import { X, TriangleAlert } from 'lucide-react';
 import { useI18n } from '@/i18n';
-import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { Button, IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Tag } from '@/components/ds/tag';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 export default function DisclaimerBanner() {
@@ -31,62 +31,33 @@ export default function DisclaimerBanner() {
   }
 
   return (
+    // On the fullscreen level and after the page in the document: over a preview that covers the
+    // window, under every floating layer.
     <div
-      className={cn(
-        'fixed bottom-6 right-6 z-50 w-80 rounded-xl border',
-        'border-[var(--abu-warning)] bg-[var(--abu-bg-muted)] shadow-xl',
-      )}
+      data-electron-no-drag
+      className="fixed bottom-6 right-6 z-fullscreen w-80 space-y-3 rounded-panel border border-separator bg-raised p-4 shadow-float"
     >
-      <div className="p-4 space-y-3">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            <TriangleAlert className="h-3.5 w-3.5 text-[var(--abu-warning)] shrink-0" />
-            <span className="text-minor font-semibold text-[var(--abu-warning)]">
-              {t.about.disclaimerTitle}
-            </span>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={handleDismiss}
-            className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0 -mt-0.5 -mr-1"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </div>
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2">
+        <Tag tone="warning">{t.about.disclaimerTitle}</Tag>
+        <IconButton icon={AppIcons.close} label={t.common.close} size="sm" onClick={handleDismiss} className="-mr-1 -mt-1" />
+      </div>
 
-        {/* 3-point list */}
-        <ul className="space-y-1.5">
-          {[t.disclaimerBanner.line1, t.disclaimerBanner.line2, t.disclaimerBanner.line3].map(
-            (line, i) => (
-              <li key={i} className="flex items-start gap-2 text-minor text-[var(--abu-text-secondary)]">
-                <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-[var(--abu-warning-solid)] shrink-0" />
-                {line}
-              </li>
-            ),
-          )}
-        </ul>
+      {/* 3-point list */}
+      <ul className="list-disc space-y-1 pl-4 text-ui-sm text-label-secondary marker:text-label-tertiary">
+        {[t.disclaimerBanner.line1, t.disclaimerBanner.line2, t.disclaimerBanner.line3].map(
+          (line, i) => <li key={i}>{line}</li>,
+        )}
+      </ul>
 
-        {/* Footer actions */}
-        <div className="flex items-center justify-between pt-1">
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={handleDismiss}
-            className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] px-0"
-          >
-            {t.disclaimerBanner.dismiss}
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={handleViewFull}
-            className="text-[var(--abu-clay)] hover:underline px-0"
-          >
-            {t.disclaimerBanner.viewFull}
-          </Button>
-        </div>
+      {/* Footer actions. The negative margin puts the words of the two buttons on the edges of the text above. */}
+      <div className="-mx-2 flex items-center justify-between pt-1">
+        <Button variant="plain" size="sm" onClick={handleDismiss}>
+          {t.disclaimerBanner.dismiss}
+        </Button>
+        <Button variant="plain" size="sm" onClick={handleViewFull}>
+          {t.disclaimerBanner.viewFull}
+        </Button>
       </div>
     </div>
   );

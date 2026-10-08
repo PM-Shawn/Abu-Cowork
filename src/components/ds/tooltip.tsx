@@ -36,7 +36,7 @@ export function Tooltip({ content, children, side = 'top' }: {
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [listening]);
   return (
-    // Set on the root: the app's legacy TooltipProvider (200 ms) is the nearest provider.
+    // Set on the root, so the delay is the same under whichever Radix provider is nearest.
     <TooltipPrimitive.Root delayDuration={500} open={open} onOpenChange={(next) => { if (next) setDropped(false); setOpen(next); }}>
       {/* After a pointer press, focus that arrives by code (a menu or window handing it back,
           a window's first control) shows no tooltip, like it shows no ring. */}

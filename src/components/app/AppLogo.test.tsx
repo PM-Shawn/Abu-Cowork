@@ -1,11 +1,53 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { useSettingsStore } from '@/stores/settingsStore';
 import AppLogo from './AppLogo';
 
+vi.mock('@/utils/pathUtils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/pathUtils')>()),
+  loadLocalImage: async (filePath: string) => `blob:${filePath}`,
+}));
+
 describe('AppLogo', () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    document.documentElement.classList.remove('dark');
+    useSettingsStore.setState({ theme: useSettingsStore.getInitialState().theme });
+  });
+
+  describe('the image variant follows the appearance on the page', () => {
+    const image = () => screen.getByTestId('app-logo').querySelector('img');
+
+    it('shows the dark variant while <html> is dark, whatever the stored setting says', async () => {
+      useSettingsStore.setState({ theme: 'light' });
+      document.documentElement.classList.add('dark');
+      render(<AppLogo name="Shop desk" logo="/pkg/light.png" logoDark="/pkg/dark.png" />);
+      await waitFor(() => expect(image()).toHaveAttribute('src', 'blob:/pkg/dark.png'));
+    });
+
+    it('shows the light variant while <html> is light, whatever the stored setting says', async () => {
+      useSettingsStore.setState({ theme: 'dark' });
+      render(<AppLogo name="Shop desk" logo="/pkg/light.png" logoDark="/pkg/dark.png" />);
+      await waitFor(() => expect(image()).toHaveAttribute('src', 'blob:/pkg/light.png'));
+    });
+
+    it('changes variant when the appearance changes while it is on the page', async () => {
+      render(<AppLogo name="Shop desk" logo="/pkg/light.png" logoDark="/pkg/dark.png" />);
+      await waitFor(() => expect(image()).toHaveAttribute('src', 'blob:/pkg/light.png'));
+      await act(async () => { document.documentElement.classList.add('dark'); });
+      await waitFor(() => expect(image()).toHaveAttribute('src', 'blob:/pkg/dark.png'));
+      await act(async () => { document.documentElement.classList.remove('dark'); });
+      await waitFor(() => expect(image()).toHaveAttribute('src', 'blob:/pkg/light.png'));
+    });
+
+    it('uses the only variant a package ships in either appearance', async () => {
+      document.documentElement.classList.add('dark');
+      render(<AppLogo name="Shop desk" logo="/pkg/light.png" />);
+      await waitFor(() => expect(image()).toHaveAttribute('src', 'blob:/pkg/light.png'));
+    });
+  });
 
   it('shows the first letter of the name, hidden from screen readers, when the package ships no image', () => {
     render(<AppLogo name="  Shop desk" />);

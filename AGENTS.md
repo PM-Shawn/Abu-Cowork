@@ -526,11 +526,11 @@ Rendering: pages that `App` re-renders per streamed piece (`ExtensionsView`, `Te
 with no props and read stores through selectors. Cards in long grids are `memo` and mount no
 Tooltip, Menu or Select root, so `IconButton` is not used on cards.
 
-Private repo: it renders `ToolCard`, `ToolGrid`, `ToolDetailModal`, `MarketplaceEntryRow`,
-`InstallDisclosureDialog` and `InstalledItemMenu`; their props only grow until batch 9
-(`EnterprisePluginTab` mounts one `InstalledItemMenu` per row — batch 9 moves it to one menu per
-list). Private code that renders these components (and its tests) does so inside
-`DesignSystemProvider`, as the app root does.
+Private repo: it renders `ToolCard`, `ToolGrid`, `ToolDetailModal`, `MarketplaceEntryRow` and
+`InstallDisclosureDialog`, and wraps its plugin grid in `sidebar/RowMenus`; `InstalledItemMenu`
+has no private user. Private code that renders these components (and its tests) does so inside
+`DesignSystemProvider`, as the app root does. `npm run typecheck:enterprise` compiles the private
+callers against their props (see the enterprise overlay below).
 
 Migration list: `src/components/toolbox/**` is on it; `customize/` and `common/` join file by file
 (unused legacy files there wait for batch 10).
@@ -736,6 +736,24 @@ Migration list: `common/ToasterMount`, the six windows in `common/`, `common/Def
 `DetailBlockView`, `RenderableCodeBlock` and `panel/PreviewPanel` are on it. The directory globs
 for `chat/`, `panel/` and `common/` wait for batch 10: those directories still hold unused legacy
 files.
+
+**Enterprise overlay (batch 9)**: the private repository's interface files use the same components
+and tokens, and are linted with the same rules. What this repository provides for that:
+`overlayLintConfig(migrated)`, a named export of `eslint.config.js`, returns the base block and,
+for a list that is not empty, the design-system rules on the globs of that list; the overlay keeps
+its own list and runs this repository's ESLint from its own directory, so the globs are relative to
+it. The default export is built from the same base block. `Tag` takes `title` and data attributes
+on its root. `AppIcons.offline` is the glyph for a service that cannot be reached. Every private
+test runs through a forwarding file under `enterprise-tests/`, one import line per test file; a
+private test without one is never run, so the forwarder is added together with the test, followed
+by `npm run test:inventory` (`TESTING.md` counts the directory). `vitest.enterprise.config.ts`
+resolves `@testing-library/react` and `@testing-library/user-event` for those tests from this
+repository's `node_modules`. `<PolicyConfirmModal />` at the app root sits inside
+`DesignSystemProvider`, as every private component that renders a ds component does (and its
+tests); it renders nothing in the OSS build. Four private files that nothing renders still import
+`@/components/ui/{button,input,select,scroll-area}`: those files of `ui/` stay until the private
+repository no longer imports them. The rules for the private interface are in that repository's
+own `AGENTS.md`.
 
 **Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
 `DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one

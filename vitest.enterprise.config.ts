@@ -24,6 +24,7 @@ const enterpriseConfig = mergeConfig(
         // Private component tests are authored in the enterprise repository but
         // intentionally execute with the public host's single React/test stack.
         '@testing-library/react': path.resolve(__dirname, 'node_modules/@testing-library/react/dist/index.js'),
+        '@testing-library/user-event': path.resolve(__dirname, 'node_modules/@testing-library/user-event/dist/esm/index.js'),
         'react/jsx-dev-runtime': path.resolve(__dirname, 'node_modules/react/jsx-dev-runtime.js'),
         'react/jsx-runtime': path.resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
         react: path.resolve(__dirname, 'node_modules/react/index.js'),

@@ -85,6 +85,14 @@ describe('basic components', () => {
     expect(neutral.querySelector('svg')).toBeNull();
   });
 
+  it('Tag puts a title and data attributes on its root', () => {
+    render(<Tag title="说明" data-testid="t">x</Tag>);
+    const root = screen.getByTestId('t');
+    expect(root).toHaveAttribute('title', '说明');
+    expect(root).toHaveClass('inline-flex');
+    expect(root).toHaveTextContent('x');
+  });
+
   it('Avatar falls back to the first character of the name on the brand color', () => {
     render(<Avatar name="shawn" />);
     const fallback = screen.getByRole('img', { name: 'shawn' });

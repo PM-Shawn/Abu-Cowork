@@ -43,8 +43,9 @@ export class ErrorBoundary extends Component<Props, State> {
       // The root boundary sits above DesignSystemProvider in App.tsx, and the provider can be what
       // threw. This page therefore renders only what needs nothing above it: plain elements and
       // `Button`, which reads no context. No IconButton or Tooltip, no Dialog, no useConfirm.
+      // The window behind it is see-through, so the page fills it with the opaque content surface.
       return (
-        <div className="flex flex-col items-center justify-center p-8 text-center">
+        <div className="flex h-full w-full flex-col items-center justify-center bg-surface p-8 text-center">
           <p className="mb-3 text-ui text-label-secondary">
             {t.errorBoundary.renderError}
           </p>

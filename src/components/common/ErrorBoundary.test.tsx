@@ -130,6 +130,15 @@ describe('ErrorBoundary', () => {
       const { container } = render(<ErrorBoundary><Child /></ErrorBoundary>);
       expect(container.innerHTML).not.toContain('--abu-');
     });
+
+    // The window behind the page is see-through; the page brings the opaque content surface.
+    it('puts the content surface behind its text, over the whole window', () => {
+      thrown = new Error('injected failure');
+      const { container } = render(<ErrorBoundary><Child /></ErrorBoundary>);
+      const page = container.firstElementChild as HTMLElement;
+      expect(page.contains(screen.getByText(t().errorBoundary.renderError))).toBe(true);
+      expect(page).toHaveClass('bg-surface', 'h-full', 'w-full');
+    });
   });
 });
 

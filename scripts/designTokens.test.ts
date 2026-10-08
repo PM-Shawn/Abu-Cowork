@@ -53,6 +53,11 @@ function layerLevels(source: string): Map<string, number> {
 //   - an assignment to an element: `el.style.zIndex = '12'`;
 //   - `style.setProperty('z-index', '12')`;
 //   - a computed arbitrary class: `z-[calc(…)]`;
+//   - a number given to a prop: `zIndex={9999}`;
+//   - a number in quotes: `zIndex: '9999'`;
+//   - a value built in a template: `z-[${level}]`, `zIndex: \`${level}\``;
+//   - a class that names a variable: `z-(--layer)`;
+//   - a negative inline number: `zIndex: -1`, `z-index: -1`;
 //   - a negative step (`-z-10`), which sits under the page and is left out on purpose.
 // What it reports without a value behind it: a type annotation `zIndex: number` reads as a
 // constant named `number` and comes back as NaN.

@@ -14,9 +14,8 @@ import { getI18n } from '@/i18n';
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 /**
- * The live `@` picker is ChatInput's own suggestion list — `AgentSelector` is
- * parked (its import is commented out), so provenance has to be visible here or
- * it is not visible at all.
+ * The `@` picker is ChatInput's own suggestion list, so provenance has to be
+ * visible here or it is not visible at all.
  */
 const AGENTS = [
   { name: 'weather', description: 'Forecasts', source: { kind: 'plugin' as const, plugin: 'weather@official' } },

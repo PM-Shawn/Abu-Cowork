@@ -438,8 +438,8 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
   // As an absolutely-positioned child it was clipped by an overflow ancestor
   // whenever it grew past the chat area's top edge — the top ~40px (padding +
   // the first group header) simply were not painted, which read as "the card
-  // is cut off" (real-machine reports 2026-09-01 and 09-03). Same remedy as
-  // ui/search-select: escape the clipping tree, measure the anchor, re-measure
+  // is cut off" (real-machine reports 2026-09-01 and 09-03). The remedy:
+  // escape the clipping tree, measure the anchor, re-measure
   // on capture-phase scroll (dialog/chat bodies scroll, not the window) and on
   // resize. Height is clamped to the space above the anchor so the popup never
   // leaves the window either.

@@ -269,7 +269,7 @@
 | 工具协议 | MCP (`@modelcontextprotocol/sdk`) |
 | 联网搜索 | Bing / Brave / Tavily / SearXNG |
 | 安全沙箱 | macOS Seatbelt + 路径/命令双重校验 |
-| UI 组件 | Radix UI + Lucide Icons + shadcn 风格 |
+| UI 组件 | 阿布自己的组件库（`src/components/ds/`），基于 Radix UI + Lucide Icons |
 | 测试 | Vitest + happy-dom（覆盖核心 store / agent / skill / memdir 等模块） |
 | 评测 | 自带 OpenAI 协议工具调用评测器（`npm run eval:tool-selection`） |
 
@@ -337,7 +337,7 @@ src/
 │   ├── trigger/      # 触发器（值班）管理视图
 │   ├── settings/     # 系统设置（16 个面板，详见 settings/sections/）
 │   ├── preview/      # 文件预览（PDF/Office/图片/Markdown）
-│   └── ui/           # 基础 UI 组件 (shadcn/Radix)
+│   └── ds/           # 设计系统组件库（只有这里导入 Radix 与 Lucide）
 ├── core/             # 核心引擎（非 UI）
 │   ├── agent/        # Agent 循环、后台 Agent、project rules
 │   ├── llm/          # LLM 适配层（Claude / OpenAI-compatible / Ollama）

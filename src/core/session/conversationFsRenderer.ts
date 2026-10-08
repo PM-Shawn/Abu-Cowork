@@ -52,14 +52,10 @@ async function appendText(filePath: string, data: string): Promise<void> {
     // entire file and destroy all existing messages — a catastrophic data loss bug.
     const dir = filePath.substring(0, filePath.lastIndexOf('/'));
     if (dir) await mkdir(dir, { recursive: true });
-    let existing = '';
-    try {
-      if (await exists(filePath)) {
-        existing = await readTextFile(filePath);
-      }
-    } catch {
-      // If we still can't read, at least don't destroy what's there — let it throw
-    }
+    // A file that exists and cannot be read ends the append here with the read
+    // error: the atomic write replaces the whole file, so only content that
+    // was actually read may go into it.
+    const existing = (await exists(filePath)) ? await readTextFile(filePath) : '';
     await atomicWrite(filePath, existing + data);
   }
 }

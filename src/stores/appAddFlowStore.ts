@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { homeDir } from '@tauri-apps/api/path';
 import type { AppDefinition } from '@/types/app';
+import { useAppStore } from '@/stores/appStore';
 import {
   cancelPluginSteps,
   confirmAddApp,
@@ -33,9 +34,18 @@ export type AppAddFlow =
   | { kind: 'repair'; app: AppDefinition; steps: AppPluginStep[]; resume: () => void }
   | { kind: 'error'; name: string; message: string };
 
+/**
+ * The confirmation is mounted in two places (`AppAddConfirmDialog`): inside
+ * the app market, and on the page. A flow is shown in the one it was started
+ * from, and moves to the page when the market's window leaves under it.
+ */
+export type AppAddFlowPlace = 'page' | 'market';
+
 interface AppAddFlowState {
   flow: AppAddFlow;
   running: boolean;
+  /** Which of the two confirmation windows shows the flow. */
+  shownIn: AppAddFlowPlace;
 }
 
 interface AppAddFlowActions {
@@ -49,12 +59,18 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Where a flow that starts now is shown: in the app market while it is open. */
+function startingPlace(): AppAddFlowPlace {
+  return useAppStore.getState().appMarketOpen ? 'market' : 'page';
+}
+
 export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()((set, get) => ({
   flow: { kind: 'closed' },
   running: false,
+  shownIn: 'page',
 
   start: async (source, name, purpose) => {
-    set({ flow: { kind: 'planning', name } });
+    set({ flow: { kind: 'planning', name }, shownIn: startingPlace() });
     let plan: AppAddPlan;
     try {
       plan = await planAddApp(source, await homeDir());
@@ -69,7 +85,7 @@ export const useAppAddFlowStore = create<AppAddFlowState & AppAddFlowActions>()(
   },
 
   repair: async (app, resume) => {
-    set({ flow: { kind: 'planning', name: app.name } });
+    set({ flow: { kind: 'planning', name: app.name }, shownIn: startingPlace() });
     let steps: AppPluginStep[];
     try {
       steps = await planPluginSteps(app, await homeDir());

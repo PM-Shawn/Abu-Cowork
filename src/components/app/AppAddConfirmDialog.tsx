@@ -10,8 +10,7 @@ import { Spinner } from '@/components/ds/spinner';
 import { PluginConfigurationFields, PluginDisclosureSections } from '@/components/toolbox/plugins/InstallDisclosureDialog';
 import { DETAIL_WINDOW_CONTENT_HEIGHT } from '@/components/toolbox/windowHeight';
 import AppLogo from '@/components/app/AppLogo';
-import { useAppAddFlowStore, type AppAddFlow } from '@/stores/appAddFlowStore';
-import { useAppStore } from '@/stores/appStore';
+import { useAppAddFlowStore, type AppAddFlow, type AppAddFlowPlace } from '@/stores/appAddFlowStore';
 import { pluginConfigFields } from '@/core/plugin/configuration';
 import { resolveText } from '@/core/app/appBinding';
 import { liveRefCatalog, resolveRun } from '@/core/app/appRefs';
@@ -81,27 +80,28 @@ function ScenePreview({ app }: { app: AppDefinition }) {
  * it — and the websites it opens inside Abu. A folder preview also shows the
  * home's scenes and who handles each. 「取消」 writes nothing.
  *
- * It is mounted twice, and a flow shows in one of them, decided when the flow
- * starts: inside the app market for a flow started there, so 「取消」 returns to
- * the list; on the page (`within="page"`) for a flow started anywhere else.
+ * It is mounted twice, and a flow shows in the one the store names
+ * (`shownIn`): inside the app market for a flow started there, so 「取消」
+ * returns to the list; on the page (`within="page"`) for a flow started
+ * anywhere else. The market's instance leaves the page with the market's
+ * window; a flow it still shows then goes on in the page's instance.
  */
-export default function AppAddConfirmDialog({ within }: { within: 'page' | 'market' }) {
+export default function AppAddConfirmDialog({ within }: { within: AppAddFlowPlace }) {
   const { t, format } = useI18n();
   const flowNow = useAppAddFlowStore((s) => s.flow);
   const running = useAppAddFlowStore((s) => s.running);
   const confirm = useAppAddFlowStore((s) => s.confirm);
   const cancel = useAppAddFlowStore((s) => s.cancel);
-  const marketOpen = useAppStore((s) => s.appMarketOpen);
+  const shownIn = useAppAddFlowStore((s) => s.shownIn);
 
-  const active = flowNow.kind !== 'closed';
-  // A flow found under way when this instance mounts belongs to the other one.
-  const [claim, setClaim] = useState({ active, mine: false });
-  let mine = claim.mine;
-  if (claim.active !== active) {
-    mine = active && (within === 'market') === marketOpen;
-    setClaim({ active, mine });
-  }
-  const open = active && mine;
+  const open = flowNow.kind !== 'closed' && shownIn === within;
+  useEffect(() => {
+    if (within !== 'market') return undefined;
+    return () => {
+      const { flow: left, shownIn: place } = useAppAddFlowStore.getState();
+      if (left.kind !== 'closed' && place === 'market') useAppAddFlowStore.setState({ shownIn: 'page' });
+    };
+  }, [within]);
 
   // The window stays on the page while it fades out: it keeps showing what it showed when it closed.
   const [held, setHeld] = useState<AppAddFlow>(flowNow);

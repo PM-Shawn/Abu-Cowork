@@ -21,7 +21,7 @@ vi.mock('@/core/app/appInstaller', async (importOriginal) => ({
   cancelPluginSteps: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { cancelPluginSteps, confirmAddApp, runPluginSteps, type AppAddPlan, type AppPluginStep } from '@/core/app/appInstaller';
+import { cancelPluginSteps, confirmAddApp, planAddApp, planPluginSteps, runPluginSteps, type AppAddPlan, type AppPluginStep } from '@/core/app/appInstaller';
 import type { InstallDisclosure } from '@/core/plugin/installer';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import { getI18n, format } from '@/i18n';
@@ -78,8 +78,8 @@ const plan = (more: Partial<AppAddPlan> = {}): AppAddPlan => ({
 });
 const ready = (purpose: 'add' | 'update' | 'preview' = 'add', more: Partial<AppAddPlan> = {}): AppAddFlow => ({ kind: 'ready', purpose, plan: plan(more) });
 
-/** Puts the flow in the store the way `start` and `repair` do, with the page showing. */
-const flowIs = (flow: AppAddFlow) => act(() => { useAppAddFlowStore.setState({ flow }); });
+/** Puts the flow in the store the way `start` and `repair` do from the page. */
+const flowIs = (flow: AppAddFlow) => act(() => { useAppAddFlowStore.setState({ flow, shownIn: 'page' }); });
 const dialog = () => screen.queryByTestId('app-add-dialog');
 const confirmButton = () => screen.getByTestId('app-add-confirm');
 function deferred(): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
@@ -93,7 +93,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(confirmAddApp).mockResolvedValue(undefined);
   vi.mocked(runPluginSteps).mockResolvedValue(undefined);
-  useAppAddFlowStore.setState({ flow: { kind: 'closed' }, running: false });
+  useAppAddFlowStore.setState({ flow: { kind: 'closed' }, running: false, shownIn: 'page' });
   useAppStore.setState({ appMarketOpen: false });
 });
 
@@ -103,17 +103,27 @@ describe('AppAddConfirmDialog', () => {
     expect(dialog()).toBeNull();
   });
 
+  // The app root and, while the app market's content is on the page, the market.
+  function Both({ market }: { market: boolean }) {
+    return <><AppAddConfirmDialog within="page" />{market && <div data-testid="in-market"><AppAddConfirmDialog within="market" /></div>}</>;
+  }
+  const startAdd = () => act(async () => { await useAppAddFlowStore.getState().start({ kind: 'folder', dir: '/Users/testuser/dev/shop-ops' }, '店铺运营', 'add'); });
+
   describe('which of the two shows a flow', () => {
-    it('the one on the page, for a flow started while the app market is closed', () => {
-      render(<><AppAddConfirmDialog within="page" /><div data-testid="in-market"><AppAddConfirmDialog within="market" /></div></>);
-      flowIs(ready());
+    beforeEach(() => { vi.mocked(planAddApp).mockResolvedValue(plan()); });
+
+    it('the one on the page, for a flow started while the app market is closed', async () => {
+      render(<Both market />);
+      await startAdd();
       expect(screen.getAllByTestId('app-add-dialog')).toHaveLength(1);
+      expect(useAppAddFlowStore.getState().shownIn).toBe('page');
     });
 
-    it('the one in the market, for a flow started while the app market is open, and it stays there when the market closes', () => {
+    it('the one in the market, for a flow started while the app market is open, and it stays there when the market closes', async () => {
       act(() => { useAppStore.setState({ appMarketOpen: true }); });
       const page = render(<AppAddConfirmDialog within="page" />);
-      flowIs(ready());
+      await startAdd();
+      expect(useAppAddFlowStore.getState().shownIn).toBe('market');
       expect(dialog()).toBeNull();
       // Entering the app closes the market a moment before the flow ends: the page's window does not open for it.
       act(() => { useAppStore.setState({ appMarketOpen: false }); });
@@ -123,14 +133,81 @@ describe('AppAddConfirmDialog', () => {
       useAppAddFlowStore.setState({ flow: { kind: 'closed' } });
       act(() => { useAppStore.setState({ appMarketOpen: true }); });
       render(<AppAddConfirmDialog within="market" />);
-      flowIs(ready());
+      await startAdd();
       expect(dialog()).not.toBeNull();
     });
 
-    it('neither takes over a flow it finds under way when it mounts', () => {
-      useAppAddFlowStore.setState({ flow: ready() });
-      render(<AppAddConfirmDialog within="page" />);
-      expect(dialog()).toBeNull();
+    it('a scene\'s repair started on the app home shows on the page', async () => {
+      vi.mocked(planPluginSteps).mockResolvedValue([step('install', 'shop-assistant')]);
+      render(<Both market />);
+      await act(async () => { await useAppAddFlowStore.getState().repair(shop, vi.fn()); });
+      expect(useAppAddFlowStore.getState().shownIn).toBe('page');
+      expect(screen.getAllByTestId('app-add-dialog')).toHaveLength(1);
+      expect(dialog()).toHaveAccessibleName(copy().needInstall);
+    });
+  });
+
+  describe('a flow whose window in the app market leaves the page', () => {
+    async function shownInTheMarket() {
+      vi.mocked(planAddApp).mockResolvedValue(plan());
+      act(() => { useAppStore.setState({ appMarketOpen: true }); });
+      const view = renderBare(<Both market />, { wrapper: DesignSystemProvider });
+      await startAdd();
+      expect(screen.getAllByTestId('app-add-dialog')).toHaveLength(1);
+      // The market is closed by code and its content, the window included, leaves the page.
+      const marketLeaves = () => {
+        act(() => { useAppStore.setState({ appMarketOpen: false }); });
+        view.rerender(<Both market={false} />);
+      };
+      return { marketLeaves };
+    }
+
+    it('while it adds: a failure shows on the page, Close ends the flow, and the next add shows its window', async () => {
+      const adding = deferred();
+      vi.mocked(confirmAddApp).mockReturnValue(adding.promise);
+      const { marketLeaves } = await shownInTheMarket();
+      fireEvent.click(confirmButton());
+      await flush();
+      expect(useAppAddFlowStore.getState().running).toBe(true);
+      marketLeaves();
+
+      await act(async () => { adding.reject(new Error('disk is full')); });
+      await waitFor(() => expect(screen.getByTestId('app-add-error')).toHaveTextContent('disk is full'));
+      expect(screen.getAllByTestId('app-add-dialog')).toHaveLength(1);
+      fireEvent.click(screen.getByRole('button', { name: common().close }));
+      await flush();
+      expect(useAppAddFlowStore.getState().flow.kind).toBe('closed');
+
+      await startAdd();
+      expect(dialog()).toHaveAccessibleName(format(copy().confirmAddTitle, { name: '店铺运营' }));
+      expect(confirmButton()).toBeEnabled();
+    });
+
+    it('while it waits for an answer: the page shows it, and one press on its confirming button adds once', async () => {
+      const { marketLeaves } = await shownInTheMarket();
+      marketLeaves();
+
+      expect(screen.getAllByTestId('app-add-dialog')).toHaveLength(1);
+      expect(dialog()).toHaveAccessibleName(format(copy().confirmAddTitle, { name: '店铺运营' }));
+      const adding = deferred();
+      vi.mocked(confirmAddApp).mockReturnValue(adding.promise);
+      const button = confirmButton();
+      // The repeats of an Enter held from elsewhere add nothing.
+      expect(fireEvent.keyDown(button, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      await flush();
+      expect(confirmAddApp).not.toHaveBeenCalled();
+
+      fireEvent.click(button);
+      fireEvent.click(button);
+      await flush();
+      expect(fireEvent.keyDown(confirmButton(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      fireEvent.click(confirmButton());
+      await flush();
+      expect(confirmAddApp).toHaveBeenCalledTimes(1);
+
+      await act(async () => { adding.resolve(); });
+      expect(useAppAddFlowStore.getState().flow.kind).toBe('closed');
+      expect(confirmAddApp).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -307,8 +384,7 @@ describe('AppAddConfirmDialog', () => {
         expect(screen.getByTestId('app-add-plugin')).toHaveAttribute('data-plugin', 'shop-assistant');
 
         // A flow that started meanwhile in the other window is not this window's to answer.
-        act(() => { useAppStore.setState({ appMarketOpen: true }); });
-        flowIs(ready('update'));
+        act(() => { useAppAddFlowStore.setState({ flow: ready('update'), shownIn: 'market' }); });
         fireEvent.click(screen.getByTestId('app-add-confirm'));
         fireEvent.click(screen.getByRole('button', { name: common().cancel, hidden: true }));
         await flush();

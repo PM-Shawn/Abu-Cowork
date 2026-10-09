@@ -228,6 +228,51 @@ test('a turn that writes a file and presents nothing shows no file card', async 
   await expect(page.getByRole('button', { name: '在文件夹中显示', exact: true })).toHaveCount(0);
 });
 
+test('a file the agent wrote and then removed in the same turn gets no card', async () => {
+  test.setTimeout(150_000);
+  const { page, workspace, mock: startedMock } = await launchInProject((folder) => [
+    writeFileCall('call-write-temp', path.join(folder, '临时.md'), '# 临时\n'),
+    presentFilesCall('call-present-temp', [{ path: '临时.md', description: '中间稿' }]),
+    {
+      kind: 'tool-call', toolCallId: 'call-delete-temp', toolName: 'delete_file',
+      arguments: { path: path.join(folder, '临时.md') },
+    },
+    finalReply(),
+  ]);
+
+  await runTurn(page);
+
+  // The file was presented while it existed, then left the folder before the turn ended.
+  const results = toolResultsOfLastRequest(startedMock);
+  expect(results).toHaveLength(3);
+  expect(results[1]).toBe(`Presented ${path.join(workspace, '临时.md')}`);
+  expect(fs.existsSync(path.join(workspace, '临时.md'))).toBe(false);
+  await expect(fileCards(page)).toHaveCount(0);
+  await expect(page.getByTitle('临时.md', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: '临时.md', exact: true })).toHaveCount(0);
+});
+
+test('a file renamed before it is presented gets one card, under its new name', async () => {
+  test.setTimeout(150_000);
+  const { page, workspace, mock: startedMock } = await launchInProject(
+    () => [
+      { kind: 'tool-call', toolCallId: 'call-rename', toolName: 'run_command', arguments: { command: 'mv 初稿.md 终稿.md' } },
+      presentFilesCall('call-present-final', [{ path: '终稿.md', description: '定稿' }]),
+      finalReply(),
+    ],
+    (folder) => fs.writeFileSync(path.join(folder, '初稿.md'), '# 方案\n'),
+  );
+
+  await runTurn(page);
+
+  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, '终稿.md')}`);
+  expect(fs.existsSync(path.join(workspace, '初稿.md'))).toBe(false);
+  expect(fs.existsSync(path.join(workspace, '终稿.md'))).toBe(true);
+  await expect(fileCards(page)).toHaveCount(1);
+  await expect(cardOf(page, '终稿.md')).toContainText('定稿');
+  await expect(page.getByTitle('初稿.md', { exact: true })).toHaveCount(0);
+});
+
 test('a card leaves when its file is moved away and returns when the file is back', async () => {
   test.setTimeout(150_000);
   const { page, workspace } = await launchInProject(reportTurn);

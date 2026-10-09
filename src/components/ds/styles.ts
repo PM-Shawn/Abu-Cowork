@@ -13,6 +13,10 @@ export const isWorking = (element: Element) => element.getAttribute('aria-disabl
 export const FIELD_BOX = 'w-full rounded-control border border-control-border bg-field px-2 text-ui text-label placeholder:text-label-placeholder aria-[invalid=true]:border-danger';
 export const FLOAT_SURFACE = 'rounded-panel bg-raised text-label shadow-float';
 export const MENU_ITEM = 'flex h-6 cursor-default select-none items-center gap-2 rounded-control px-2 text-ui text-label outline-none data-[highlighted]:bg-fill-selected';
+// The two fills of a segmented control: its track, and the selected segment painted over the
+// track. scripts/designTokens.test.ts reads both and holds the segment apart from its track.
+export const SEGMENT_TRACK = 'bg-fill';
+export const SEGMENT_SELECTED = 'data-[state=on]:bg-fill-selected';
 // Radix sets data-disabled only on disabled items.
 export const RADIX_ITEM_DISABLED = 'data-[disabled]:opacity-40';
 export const FLOAT_MOTION = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-97 data-[state=open]:duration-fast data-[state=open]:ease-enter data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-97 data-[state=closed]:duration-fast data-[state=closed]:ease-exit';

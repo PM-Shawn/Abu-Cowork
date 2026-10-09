@@ -21,6 +21,8 @@ import { trimOldScreenshots } from '../context/contextManager';
 import { resetCalibration } from '../context/tokenEstimator';
 import { resolveSubagentToolNames } from './subagentToolRoster';
 import { applyTeamLeaderRoute } from '../team/leaderRoute';
+import { collectPresentedFiles } from '../../utils/presentedFiles';
+import { collectTurnFilePaths } from '../../utils/turnFileMentions';
 import type { Message, ToolDefinition, ToolResultContent, SubagentDefinition, StreamEvent } from '../../types';
 import type { ToolInvoker } from './ports/toolInvoker';
 import {
@@ -1089,6 +1091,103 @@ describe('runAgentLoop expert execution', () => {
       expect(runSubagent).toHaveBeenCalledWith(expect.objectContaining({ agent: expert, task: '检查文档' }));
     } finally {
       runSubagent.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+    }
+  });
+
+  it('lets the expert of a delegate route present files and keeps its file calls on the reply', async () => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file', 'write_file'], filePath: '/agents/expert/AGENT.md' };
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const expertChat = vi.fn().mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'expert-read', name: 'read_file', input: { path: '/ws/source.md' } },
+      { type: 'tool_use', id: 'expert-write', name: 'write_file', input: { path: '/ws/report.md', content: '# Report' } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'expert-present', name: 'present_files', input: { files: [{ path: 'report.md', description: 'The report' }] } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementation(emit([{ type: 'text', text: 'The report is ready.' }, { type: 'done', stopReason: 'end_turn' }]));
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat: expertChat });
+    const tools: ToolDefinition[] = ['read_file', 'write_file', 'present_files', 'delegate_to_agent', 'ask_user_question'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok' }));
+    const executeAnyTool = vi.fn(async (name: string) => (name === 'present_files' ? 'Presented /ws/report.md' : 'ok'));
+    setToolInvoker({ getAllTools: () => tools, toolResultToString: String, executeAnyTool });
+    try {
+      const result = await runAgentLoop(conversationId, '@专家 写报告', { orchestration: {
+        route: { type: 'delegate', name: '专家', cleanInput: '写报告', delegateAgent: expert }, systemPromptSections: [],
+      } });
+      expect(result.reason).toBe('completed');
+
+      const offered = expertChat.mock.calls[0][1] as { tools: ToolDefinition[]; systemPrompt: string };
+      expect(offered.tools.map((tool) => tool.name)).toEqual(['read_file', 'write_file', 'present_files']);
+      expect(offered.systemPrompt).toContain('call present_files with it near the end of the turn');
+      expect(executeAnyTool.mock.calls.map(([name]) => name)).toEqual(['read_file', 'write_file', 'present_files']);
+
+      const reply = useChatStore.getState().conversations[conversationId].messages.findLast((message) => message.role === 'assistant')!;
+      expect(reply.content).toBe('The report is ready.');
+      expect(reply.fileCards).toBe('declared');
+      expect(reply.toolCalls).toEqual([
+        { id: expect.any(String), name: 'write_file', input: { path: '/ws/report.md' }, result: 'ok', hidden: true, fromSubagent: true },
+        {
+          id: expect.any(String), name: 'present_files',
+          input: { files: [{ path: 'report.md', description: 'The report' }] },
+          result: 'Presented /ws/report.md', hidden: true, fromSubagent: true,
+        },
+      ]);
+      expect(collectPresentedFiles(reply.toolCalls!)).toEqual([{ path: '/ws/report.md', description: 'The report' }]);
+      expect(collectTurnFilePaths(reply.toolCalls!, null)).toEqual(['/ws/report.md']);
+    } finally {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('offers a dispatched member neither present_files nor the instruction to call it', async () => {
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    const memberChat = vi.fn(async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      onEvent({ type: 'text', text: 'done' });
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat: memberChat });
+    const tools: ToolDefinition[] = ['read_file', 'write_file', 'present_files'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok' }));
+    try {
+      const member = { name: 'writer', description: 'writes', systemPrompt: 'write', filePath: '__preset__' };
+      await runSubagentLoop({
+        agent: member, task: 'write report',
+        toolInvoker: { getAllTools: () => tools, toolResultToString: String, executeAnyTool: vi.fn() },
+      });
+      const offered = memberChat.mock.calls[0][1] as { tools: ToolDefinition[]; systemPrompt: string };
+      expect(offered.tools.map((tool) => tool.name)).toEqual(['read_file', 'write_file']);
+      expect(offered.systemPrompt).not.toContain('present_files');
+    } finally {
+      selectAdapter.mockRestore();
       useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
     }
   });

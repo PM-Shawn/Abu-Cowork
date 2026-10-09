@@ -32,6 +32,44 @@ describe('resolveSubagentToolNames', () => {
     });
   });
 
+  describe('an expert that runs the user turn itself', () => {
+    const turnOwner = { ownsUserTurn: true };
+
+    it('is offered present_files, also when its role lists other tools only', () => {
+      expect(resolveSubagentToolNames(['read_file', 'present_files'], {}, undefined, undefined, turnOwner)).toEqual({
+        toolNames: ['read_file', 'present_files'],
+      });
+      expect(resolveSubagentToolNames(['read_file', 'write_file', 'present_files'], { tools: ['read_file'] }, undefined, undefined, turnOwner)).toEqual({
+        toolNames: ['read_file', 'present_files'],
+      });
+    });
+
+    it('loses present_files to its own deny list and to the restrictions of the run', () => {
+      const names = ['read_file', 'present_files'];
+      expect(resolveSubagentToolNames(names, { disallowedTools: ['present_files'] }, undefined, undefined, turnOwner).toolNames).toEqual(['read_file']);
+      expect(resolveSubagentToolNames(names, {}, ['read_*'], undefined, turnOwner).toolNames).toEqual(['read_file']);
+      expect(resolveSubagentToolNames(names, {}, undefined, ['present_files'], turnOwner).toolNames).toEqual(['read_file']);
+    });
+
+    it('keeps every other member exclusion', () => {
+      expect(resolveSubagentToolNames([...KNOWN_TOOLS, 'manage_goal', 'save_agent', 'present_files'], {}, undefined, undefined, turnOwner)).toEqual({
+        toolNames: ['read_file', 'write_file', 'abu-browser__screenshot', 'present_files'],
+      });
+    });
+
+    it('may call present_files past a role allowlist, and nothing else past it', () => {
+      const role = { tools: ['read_file'] };
+      expect(checkDispatchToolBoundary(role, undefined, 'present_files', { files: [] }, turnOwner)).toBeNull();
+      expect(checkDispatchToolBoundary(role, undefined, 'write_file', { path: '/a' }, turnOwner)).toContain('fixed tool boundary');
+      expect(checkDispatchToolBoundary(role, ['read_*'], 'present_files', { files: [] }, turnOwner)).toContain('not allowed for this agent run');
+      expect(checkDispatchToolBoundary({ disallowedTools: ['present_files'] }, undefined, 'present_files', { files: [] }, turnOwner)).toContain('fixed tool boundary');
+    });
+
+    it('leaves a member behind a role allowlist without present_files', () => {
+      expect(checkDispatchToolBoundary({ tools: ['read_file'] }, undefined, 'present_files', { files: [] })).toContain('fixed tool boundary');
+    });
+  });
+
   it('fails closed for malformed and blank declarations', () => {
     expect(resolveSubagentToolNames(KNOWN_TOOLS, { tools: ['   '] })).toEqual({
       toolNames: [],

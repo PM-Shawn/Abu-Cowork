@@ -275,6 +275,58 @@ test('a card leaves when its file is moved away and returns when the file is bac
   await expect(fileCards(reopened)).toHaveCount(1);
 });
 
+test('a turn the user hands to an expert shows the card of the file the expert presented', async () => {
+  test.setTimeout(180_000);
+  const expertPrompt = '@产品经理 请写一份调研结论';
+  const expertReply = '结论写在 `调研结论.md` 里。';
+  const { page, workspace, mock: startedMock } = await launchInProject((folder) => [
+    writeFileCall('call-expert-write', path.join(folder, '调研结论.md'), '# 调研结论\n\n用户更看重速度。\n'),
+    presentFilesCall('call-expert-present', [{ path: '调研结论.md', description: '给团队看的结论' }]),
+    finalReply(expertReply),
+  ]);
+
+  // The message field is found by its mark: once it holds text it shows no placeholder.
+  const composer = page.locator('[data-chat-composer]').first();
+  await composer.fill(expertPrompt);
+  await composer.press('Enter');
+  const mention = page.getByRole('button', { name: '在右侧预览 调研结论.md', exact: true });
+  await expect(mention).toBeVisible({ timeout: REPLY_TIMEOUT });
+
+  // The expert ran the turn: its model calls carried present_files, and the
+  // relative path was resolved against the project folder.
+  const firstRequest = taskRequests(startedMock)[0]?.body as {
+    messages?: { role?: string; content?: unknown }[];
+    tools?: { function?: { name?: string } }[];
+  };
+  const expertSystemPrompt = String(firstRequest.messages?.find((message) => message.role === 'system')?.content);
+  expect(expertSystemPrompt).toContain('## Handing Files to the User');
+  const offeredTools = (firstRequest.tools ?? []).map((tool) => tool.function?.name);
+  expect(offeredTools).toContain('present_files');
+  expect(offeredTools).not.toContain('delegate_to_agent');
+  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, '调研结论.md')}`);
+
+  await expect(fileCards(page)).toHaveCount(1);
+  const card = cardOf(page, '调研结论.md');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('给团队看的结论');
+  await expect(page.getByRole('tab', { name: '调研结论.md', exact: true })).toBeVisible();
+
+  // The card and the file name are read from the conversation record, so they
+  // are there again after a restart.
+  await closeAbuElectron(app!);
+  app = (await launchAbuElectron(dataRoot!)).app;
+  const reopened = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await waitForApp(reopened);
+  await reopened.getByRole('button', { name: '显示侧栏', exact: true }).click();
+  await reopened.getByRole('group', { name: PROJECT_NAME })
+    .getByRole('button', { name: PROJECT_NAME, exact: true })
+    .click();
+  await reopened.getByRole('button', { name: /请写一份调研结论/ }).click();
+  await expect(reopened.getByRole('button', { name: '在右侧预览 调研结论.md', exact: true })).toBeVisible();
+  await expect(cardOf(reopened, '调研结论.md')).toContainText('给团队看的结论');
+  await expect(fileCards(reopened)).toHaveCount(1);
+});
+
 test('six presented files show four cards until all of them are asked for', async () => {
   test.setTimeout(150_000);
   const names = [1, 2, 3, 4, 5, 6].map((index) => `chapter-${index}.md`);

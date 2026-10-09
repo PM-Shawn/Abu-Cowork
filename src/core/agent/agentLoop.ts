@@ -75,6 +75,7 @@ import {
 } from '../subagent/delegatedUserTurnMaterializer';
 import { createSubagentController } from './subagentAbort';
 import { ActiveToolResultAdmission } from './activeToolResultContent';
+import { replyEntryForTurnOwnerToolCall } from './turnOwnerToolCalls';
 import {
   allToolsUnparseable,
   MAX_NO_PROGRESS_TURNS,
@@ -1363,7 +1364,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Build onProgress to visualize subagent tools
     const childIdMap = new Map<string, string>();
     const childInputById = new Map<string, Record<string, unknown>>();
-    // Image-bearing subagent tool calls, collected for post-hoc persistence:
+    // Subagent tool calls the reply keeps — the image-bearing ones and the
+    // ones its file cards and file names read (turnOwnerToolCalls.ts) —
+    // collected for post-hoc persistence:
     // on THIS route the assistant message is only created AFTER the delegate
     // completes, so completeChildStep's own appendMessageToolCall (which
     // targets the loop's last assistant message) silently no-ops during the
@@ -1413,6 +1416,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 // pairing; only the budgeted rich payload is releasable.
                 delete pendingCall.resultContent;
               });
+            } else {
+              // The expert is the one answering the user on this route: the
+              // reply's file cards and file names read these calls back.
+              const replyEntry = replyEntryForTurnOwnerToolCall({
+                id: event.id, toolName: event.toolName, input: childInput, result: event.result, error: event.error,
+              });
+              if (replyEntry) pendingSubagentToolCalls.push(replyEntry);
             }
           }
         }
@@ -1472,6 +1482,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,
         persistParentToolImages: true,
+        // The expert runs the whole turn and its result is the reply.
+        ownsUserTurn: true,
         settingsReader: entrySettingsReader,
       }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through

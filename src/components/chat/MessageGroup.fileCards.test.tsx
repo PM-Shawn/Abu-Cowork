@@ -255,6 +255,36 @@ describe('MessageGroup file cards', () => {
       expect(exists.mock.calls).toEqual([['/ws/a.md']]);
     });
 
+    it('shows the cards and file names of a turn an expert ran, from the calls kept on its reply', async () => {
+      const kept = { hidden: true, fromSubagent: true } as const;
+      const messages: Message[] = [
+        { id: 'user', role: 'user', content: '@专家 写报告', timestamp: 1_000, loopId: 'loop', runState: 'completed', runEndedAt: 3_000 },
+        {
+          id: 'answer', role: 'assistant', content: 'See `report.md` and `notes.md`.', timestamp: 2_500, loopId: 'loop', fileCards: 'declared',
+          toolCalls: [
+            { id: 'expert-write-notes', name: TOOL_NAMES.WRITE_FILE, input: { path: '/ws/notes.md' }, result: 'ok', ...kept },
+            { id: 'expert-write-report', name: TOOL_NAMES.WRITE_FILE, input: { path: '/ws/report.md' }, result: 'ok', ...kept },
+            {
+              id: 'expert-present', name: TOOL_NAMES.PRESENT_FILES,
+              input: { files: [{ path: 'report.md', description: 'The report' }] },
+              result: 'Presented /ws/report.md', ...kept,
+            },
+          ],
+        },
+      ];
+      setConversation(messages);
+      const open = vi.spyOn(usePreviewStore.getState(), 'openPreview');
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+
+      await waitFor(() => expect(cardButtons()).toHaveLength(1));
+      expect(exists.mock.calls).toEqual([['/ws/report.md']]);
+      expect(screen.getByText('The report')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Preview notes.md' }));
+      expect(open).toHaveBeenCalledWith('/ws/notes.md', { line: undefined });
+    });
+
     it('shows an image produced by generate_image as an image card', async () => {
       const generate: ToolCall = {
         id: 'generate',

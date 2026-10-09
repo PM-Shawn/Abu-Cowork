@@ -241,6 +241,8 @@ export interface SubagentRunParams {
   initiatedBy?: import('./runInteractionMode').RunInitiator;
   /** Hand-off key so the member loop (wherever it runs) can take direct instructions. */
   dispatchKey?: string;
+  /** The run is the user turn itself, so the sidecar loop builds the same roster and prompt as the shell. */
+  ownsUserTurn?: boolean;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -539,6 +541,7 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     session.options.allowedTools,
     toolName,
     (params.input as Record<string, unknown>) ?? {},
+    { ownsUserTurn: session.options.ownsUserTurn === true },
   );
   if (boundaryError) throw new SidecarRequestError(-32602, boundaryError);
 
@@ -751,6 +754,7 @@ function buildSubagentRunParams(
     preloadedSkills: options.preloadedSkills,
     initiatedBy: options.initiatedBy,
     dispatchKey: options.dispatchKey,
+    ownsUserTurn: options.ownsUserTurn,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
@@ -1035,6 +1039,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         options.agent,
         options.allowedTools,
         options.blockedTools,
+        { ownsUserTurn: options.ownsUserTurn === true },
       ).map((tool) => tool.name),
     ),
     modelId: delegatedCapabilities.modelId,

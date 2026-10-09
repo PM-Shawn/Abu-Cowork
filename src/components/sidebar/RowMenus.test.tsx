@@ -43,7 +43,8 @@ const onOpenChange = vi.fn();
 const onCloseAutoFocus = vi.fn();
 
 // `more`: the row's button as a ds IconButton, as a plain element, or as one marked working.
-function List({ rows, more = 'ds' }: { rows: string[]; more?: 'ds' | 'native' | 'working' }) {
+// `press`: whether the rows hand their pointer presses to the list.
+function List({ rows, more = 'ds', press = true }: { rows: string[]; more?: 'ds' | 'native' | 'working'; press?: boolean }) {
   return (
     <RowMenus
       className="space-y-1"
@@ -65,6 +66,7 @@ function List({ rows, more = 'ds' }: { rows: string[]; more?: 'ds' | 'native' | 
           data-testid={rowId}
           onClick={() => onRowClick(rowId)}
           onContextMenu={(event) => menus.onRowContextMenu(event, rowId)}
+          onPointerDown={press ? (event) => menus.onRowPointerDown(event, rowId) : undefined}
         >
           {rowId}
           {more === 'native'
@@ -436,6 +438,150 @@ describe('RowMenus', () => {
       await act(() => vi.runOnlyPendingTimersAsync());
 
       expect(screen.getByTestId('b')).toHaveFocus();
+    });
+  });
+
+  // A touch or a pen that stays down opens the right-click menu after LONG_PRESS_MS, with no
+  // right-click event.
+  describe('a long press', () => {
+    const LONG_PRESS_MS = 700;
+
+    async function rightClickThenClose(rowId: string) {
+      fireEvent.contextMenu(screen.getByTestId(rowId));
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(screen.queryByRole('menu')).toBeNull();
+    }
+
+    function hold(target: HTMLElement, pointerType: string) {
+      fireEvent.pointerDown(target, { button: 0, pointerType });
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS); });
+    }
+
+    it.each(['touch', 'pen'])('opens the items of the pressed row after another row was right-clicked (%s)', async (pointerType) => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderList();
+      await rightClickThenClose('a');
+
+      hold(screen.getByTestId('b'), pointerType);
+
+      expect(menuItemNames()).toEqual(['Rename b', 'Delete b']);
+      expect(onOpenChange).toHaveBeenLastCalledWith(true);
+
+      await user.click(screen.getByRole('menuitem', { name: 'Rename b' }));
+      await act(() => vi.runOnlyPendingTimersAsync());
+
+      expect(onRename.mock.calls).toEqual([['b']]);
+    });
+
+    it('opens the items of the pressed row when no row was right-clicked before', () => {
+      renderList();
+
+      hold(screen.getByTestId('c'), 'touch');
+
+      expect(menuItemNames()).toEqual(['Rename c', 'Delete c']);
+    });
+
+    it('opens the items of the row whose "more actions" button is marked as working and was pressed', async () => {
+      renderList(['a', 'b', 'c'], 'working');
+      await rightClickThenClose('a');
+
+      hold(moreButton('b'), 'touch');
+
+      expect(menuItemNames()).toEqual(['Rename b', 'Delete b']);
+    });
+
+    it('opens nothing between the rows', async () => {
+      renderList();
+      const list = screen.getByTestId('a').parentElement as HTMLElement;
+      await rightClickThenClose('a');
+      onOpenChange.mockClear();
+
+      hold(list, 'touch');
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    });
+
+    it('opens nothing between the rows after a row was pressed and released', async () => {
+      renderList();
+      const list = screen.getByTestId('a').parentElement as HTMLElement;
+      fireEvent.pointerDown(screen.getByTestId('a'), { button: 0, pointerType: 'touch' });
+      fireEvent.pointerUp(screen.getByTestId('a'), { button: 0, pointerType: 'touch' });
+
+      hold(list, 'touch');
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    });
+
+    // A list whose rows report right-clicks only has no row for a press.
+    it('opens nothing on a row that does not hand its presses to the list', async () => {
+      render(<List rows={['a', 'b', 'c']} press={false} />, { wrapper: DesignSystemProvider });
+      await rightClickThenClose('a');
+      onOpenChange.mockClear();
+
+      hold(screen.getByTestId('b'), 'touch');
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(onOpenChange).not.toHaveBeenCalled();
+
+      fireEvent.contextMenu(screen.getByTestId('b'));
+
+      expect(menuItemNames()).toEqual(['Rename b', 'Delete b']);
+    });
+
+    it('opens the right-clicked row after a refused long press', async () => {
+      renderList();
+      const list = screen.getByTestId('a').parentElement as HTMLElement;
+      hold(list, 'touch');
+      expect(screen.queryByRole('menu')).toBeNull();
+
+      fireEvent.contextMenu(screen.getByTestId('c'));
+
+      expect(menuItemNames()).toEqual(['Rename c', 'Delete c']);
+      expect(onOpenChange.mock.calls).toEqual([[true]]);
+    });
+
+    it('opens nothing when the press ends before the time is up', () => {
+      renderList();
+      fireEvent.pointerDown(screen.getByTestId('b'), { button: 0, pointerType: 'touch' });
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS - 1); });
+      fireEvent.pointerUp(screen.getByTestId('b'), { button: 0, pointerType: 'touch' });
+
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS); });
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    });
+
+    it('opens nothing for a mouse button that stays down', () => {
+      renderList();
+
+      hold(screen.getByTestId('b'), 'mouse');
+
+      expect(screen.queryByRole('menu')).toBeNull();
+    });
+
+    it('keeps the items of the open menu while another row is pressed', () => {
+      renderList();
+      fireEvent.contextMenu(screen.getByTestId('a'));
+
+      fireEvent.pointerDown(screen.getByTestId('b'), { button: 0, pointerType: 'touch' });
+
+      expect(menuItemNames()).toEqual(['Rename a', 'Delete a']);
+    });
+
+    it('opens the row of the mouse right-click made while a touch is held on another row', () => {
+      renderList();
+      fireEvent.pointerDown(screen.getByTestId('b'), { button: 0, pointerType: 'touch' });
+
+      fireEvent.pointerDown(screen.getByTestId('c'), { button: 2, pointerType: 'mouse' });
+      fireEvent.contextMenu(screen.getByTestId('c'));
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS); });
+
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(menuItemNames()).toEqual(['Rename c', 'Delete c']);
     });
   });
 });

@@ -124,6 +124,14 @@ describe('collectPresentedFiles', () => {
       expect(collectPresentedFiles(calls)).toEqual([{ path: '/p/small.png' }]);
     });
 
+    it('ignores a process_image whose result announces no output, whatever output_path it asked for', () => {
+      const calls: ToolCall[] = [{
+        id: 'tc1', name: 'process_image', input: { action: 'resize', output_path: '/p/small.png' },
+        result: 'Error processing image: unsupported format',
+      }];
+      expect(collectPresentedFiles(calls)).toEqual([]);
+    });
+
     it('ignores a failed generate_image', () => {
       const calls: ToolCall[] = [{
         id: 'tc1', name: 'generate_image', input: { prompt: 'a cat' },

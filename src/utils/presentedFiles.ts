@@ -3,7 +3,7 @@ import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { parsePresentedFilesInput, parsePresentedResult } from '@/core/tools/definitions/presentTools';
 import { isToolResultNotRun } from '@/core/agent/toolResultMarkers';
 import { normalizeSeparators } from '@/utils/pathUtils';
-import { isToolResultError, mediaToolOutputPath } from '@/utils/workflowExtractor';
+import { isToolResultError, mediaToolAnnouncedPath } from '@/utils/workflowExtractor';
 
 export interface PresentedFile {
   /** Absolute path with `/` separators. */
@@ -48,7 +48,9 @@ export function collectPresentedFiles(toolCalls: readonly ToolCall[]): Presented
     }
 
     if (tc.name === TOOL_NAMES.GENERATE_IMAGE || tc.name === TOOL_NAMES.PROCESS_IMAGE) {
-      const outputPath = mediaToolOutputPath(tc);
+      // Only a path the tool announced counts; the requested output_path of a
+      // call that did not report success is not a deliverable.
+      const outputPath = mediaToolAnnouncedPath(tc);
       if (outputPath) add(outputPath);
     }
   }

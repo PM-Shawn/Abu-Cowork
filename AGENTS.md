@@ -446,6 +446,7 @@ Its hover and pressed looks are off: every class of a ds button that answers the
 - `Menu contentProps` and `MenuItem testId` carry the test ids E2E reads. The 「…」 trigger is the default `IconButton` size in every detail header.
 - `Menu` content stops clicks, also for `click` listeners on `document`: outside-press code listens for `pointerdown` / `mousedown`.
 - Menu buttons: a `Menu` trigger and the 「…」 of `RowMenus` open on a click with `detail` 0 (a screen reader, `element.click()`), only while the menu is closed; a pointer press opens on pointer-down and an opening key on key-down, once each. The repeats of Enter, Space and ArrowDown on a closed menu button open nothing. A trigger marked `aria-disabled` (a busy control, or one its owner marks) opens nothing from any kind of press.
+- The project file tree (`panel/WorkspaceFileTree`) keeps one `ContextMenu` around all its rows and binds it as `sidebar/RowMenus` does (see Sidebar rows): a row hands over its right-clicks and its touch or pen presses, the menu shows the row its opening gesture began on, and a gesture with no row (between the rows, on a folder's hint line, in a name field) opens nothing.
 - The boxes of `Popover`, `Combobox` and `MultiCombobox` have the role `dialog` and are no windows; they carry `data-ds-popover`, and code that looks for the top window excludes them by it (menus and select lists have roles of their own).
 
 **Notices**

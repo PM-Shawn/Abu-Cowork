@@ -187,6 +187,9 @@ export default function AppAddConfirmDialog({ within }: { within: AppAddFlowPlac
       onOpenChange={(next) => { if (!next && !running) void cancel(); }}
       // For an approval the window steps aside while it adds, and comes back.
       busy={running}
+      // 「确认」 is painted when the plan has been read, later than the press that opened the window.
+      settles
+      settleKey={flow}
       title={title}
       size="lg"
       // Without a plan the footer's one button is Close, so the corner button would be a second control of that name.

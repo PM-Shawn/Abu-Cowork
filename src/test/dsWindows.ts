@@ -8,9 +8,10 @@ import { Dialog } from '@/components/ds/dialog';
 import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import { getI18n } from '@/i18n';
 
-// An approval, a question and a window's question about unsaved input take no pointer press for
-// TOAST_SETTLE_MS after they appear, return or are uncovered (`data-ds-settling` on the box); the
-// keyboard is never held. A test that presses one with the pointer lets that time pass first, as
+// A box that settles (an approval, a question, a window's question about unsaved input, a
+// `Dialog settles` window, a `Settling` part of the page) takes no pointer press for
+// TOAST_SETTLE_MS after it appears, returns, is uncovered or changes its `settleKey`
+// (`data-ds-settling` on the box); the keyboard is never held. A test that presses one with the pointer lets that time pass first, as
 // a person does who reads before pressing. This moves the clock those layers read
 // (`performance.now()`) past the interval: the fake clock when the test runs on fake timers,
 // otherwise the page clock itself, which then stays ahead for the rest of the file (time only

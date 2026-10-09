@@ -19,6 +19,7 @@ import type { ReactElement } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { COMPOSER_TYPING_MS, userIsWritingAMessage } from './composerActivity';
+import { getI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -283,6 +284,29 @@ describe('ChatInput keyboard contract', () => {
         expect(fireEvent.keyDown(textarea, { key: 'ArrowUp', code: 'ArrowUp', repeat: true })).toBe(false);
         expect(highlighted()).toBe(0);
       });
+    });
+  });
+
+  // Send leaves under the focus once it has taken the message: it has nothing to send, or Stop
+  // takes its place. It hands the focus to the field first, where a send with Enter leaves it.
+  describe('the focus after a press on Send', () => {
+    it('is in the message field once Send has taken the message', () => {
+      const { onSend, textarea } = setup();
+      const send = screen.getByRole('button', { name: getI18n().chat.sendTooltipEnterSends });
+      act(() => send.focus());
+      expect(send).toHaveFocus();
+
+      fireEvent.click(send);
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(textarea).toHaveFocus();
+    });
+
+    it('stays where it is when the message was sent with Enter from the field', () => {
+      const { onSend, textarea } = setup();
+      act(() => textarea.focus());
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(textarea).toHaveFocus();
     });
   });
 

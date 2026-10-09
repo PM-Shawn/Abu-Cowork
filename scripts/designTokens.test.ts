@@ -6,6 +6,7 @@ import { blend, parse, wcagContrast, type Color } from 'culori';
 import { describe, it, expect } from 'vitest';
 import { APPEARANCE_ATTRIBUTES } from '../src/styles/appearance';
 import { MERMAID_THEME_VARIABLES } from '../src/components/chat/mermaidTheme';
+import { SEGMENT_SELECTED, SEGMENT_TRACK } from '../src/components/ds/styles';
 
 const TOKENS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/styles/tokens.css');
 
@@ -277,6 +278,9 @@ const STATUS = ['success', 'warning', 'danger', 'info'];
 const TAG_BASES = ['surface', 'raised'];
 const SYNTAX = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property'];
 const SELECTION_BASES = ['surface', 'code'];
+// The token a background class paints: `data-[state=on]:bg-fill-selected` → `fill-selected`.
+const fillOf = (className: string) => className.slice(className.lastIndexOf('bg-') + 'bg-'.length);
+const SEGMENT = { track: fillOf(SEGMENT_TRACK), selected: fillOf(SEGMENT_SELECTED) };
 
 describe('design tokens — completeness', () => {
   it('overrides every semantic light token in dark', () => {
@@ -376,6 +380,23 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
       expect(wcagContrast(color(values, text), over(values, 'fill', base))).toBeGreaterThanOrEqual(4.5);
     },
   );
+
+  // A segmented control sits on a page (`surface`) or in a dialog (`raised`) and paints its
+  // selected segment over its track (ds/styles.ts). The segment is a shape of its own: it keeps
+  // the 1.15:1 from its track that the first heatmap step keeps from an empty day.
+  it.each(TAG_BASES)('the selected segment stands out from its track over %s', (base) => {
+    const track = stack(values, base, SEGMENT.track);
+    const selected = stack(values, base, SEGMENT.track, SEGMENT.selected);
+    expect(wcagContrast(selected, track)).toBeGreaterThanOrEqual(1.15);
+  });
+
+  it.each(TAG_BASES)('label on the selected segment over %s is at least 4.5:1', (base) => {
+    expect(wcagContrast(color(values, 'label'), stack(values, base, SEGMENT.track, SEGMENT.selected))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(TAG_BASES)('label-secondary on the segmented track over %s is at least 4.5:1', (base) => {
+    expect(wcagContrast(color(values, 'label-secondary'), stack(values, base, SEGMENT.track))).toBeGreaterThanOrEqual(4.5);
+  });
 
   // Selected text in the terminal, the source editor and document previews sits on the panel
   // surface or on a code block. Selection is a transient state: primary text keeps 4.5:1, and

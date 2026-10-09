@@ -1,11 +1,22 @@
 import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
 
+// The message field is a text area, and an editable text box once the message holds a skill tag.
+// A text area keeps its caret by itself; the editable box names here how it takes the focus with
+// its caret back in place (`InlineSkillInput`).
+const fieldFocus = new WeakMap<HTMLElement, () => void>();
+
+export function setComposerFieldFocus(field: HTMLElement, focus: () => void): void {
+  fieldFocus.set(field, focus);
+}
+
 // Puts the focus in the message field of the chat page, for a page change that would otherwise
 // leave it on the window. Says whether a field took it.
 export function focusComposer(): boolean {
-  const field = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]:not(:disabled)');
+  const field = document.querySelector<HTMLElement>('[data-chat-composer]:not(:disabled, [aria-disabled="true"])');
   if (!field) return false;
-  field.focus();
+  const focus = fieldFocus.get(field);
+  if (focus) focus();
+  else field.focus();
   return document.activeElement === field;
 }
 

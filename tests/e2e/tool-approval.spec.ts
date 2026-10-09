@@ -510,6 +510,98 @@ test.describe.serial('Electron run_command approval E2E', () => {
     expect(mock.requests).toHaveLength(2);
   });
 
+  test('returns the focus to a message field that holds a skill tag when the approval is refused, and the Enter that refused it, still down, sends nothing', async () => {
+    const firstResponse = `abu-e2e-skill-tag-first-${randomUUID()}`;
+    const response = `abu-e2e-skill-tag-complete-${randomUUID()}`;
+    const toolCallId = `call-skill-tag-${randomUUID()}`;
+    dataRoot = createElectronDataRoot();
+    const skillDir = path.join(dataRoot.appDataDir, 'Home', '.abu', 'skills', 'e2e-focus-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: e2e-focus-skill\ndescription: Focus hand-off fixture\n---\nHelp with the draft.\n');
+    const sentinel = path.join(dataRoot.rootDir, `skill-tag-sentinel-${randomUUID()}.txt`);
+    fs.writeFileSync(sentinel, 'must remain: the command is cancelled');
+    const command = `rm -- ${quoteShellArgument(sentinel)}`;
+    mock = await startOpenAiMock([
+      { kind: 'complete', responseText: firstResponse },
+      // Late enough for the press on the page below to land before the approval arrives.
+      { kind: 'tool-call', arguments: { command }, delayMs: 2_000, toolCallId, toolName: 'run_command' },
+      { kind: 'complete', responseText: response },
+      // The summary the app asks for by itself after a second exchange.
+      { kind: 'complete', responseText: `abu-e2e-skill-tag-summary-${randomUUID()}` },
+    ]);
+    // The requests of the conversation itself carry the tools; the app's own summary carries none.
+    const turns = () => mock!.requests.filter((request) => {
+      const tools = (request.body as { tools?: unknown[] } | null)?.tools;
+      return Array.isArray(tools) && tools.length > 0;
+    });
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    // A first turn, so that the next message is sent from inside a conversation: there the tag
+    // stays in the field after the send.
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(`abu-e2e-skill-tag-${randomUUID()}`);
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+    await expect(page.getByText(firstResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+
+    const field = page.locator('[data-chat-composer]');
+    const tag = field.locator('[data-inline-skill]');
+    const send = page.getByRole('button', { name: /^(发送|Send)/ });
+    await expect(send).toBeVisible({ timeout: READY_TIMEOUT });
+    await page.getByTestId('composer-plus').click();
+    await page.getByTestId('composer-menu-skill').click();
+    await page.getByRole('textbox', { name: /^(搜索|Search)$/ }).fill('e2e-focus-skill');
+    await page.getByRole('option', { name: /e2e-focus-skill/ }).click();
+    await expect(tag).toBeVisible();
+    await expect(field).toHaveAttribute('role', 'textbox');
+    await page.keyboard.insertText('run it');
+
+    // A pointer press on Send: the tag stays, and the focus is in the field, as after Enter.
+    await send.click();
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(tag).toBeVisible();
+    await expect(field).toBeFocused();
+
+    // The user presses on the page: no control has the focus when the approval arrives.
+    await page.getByText(firstResponse, { exact: true }).click();
+    await expect.poll(() => page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    await expect(dialogTitle(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(cancelButton(page)).toBeFocused();
+
+    // Enter goes down on the cancelling button and stays down: the approval is refused, the
+    // field takes the focus, and the repeats that arrive in it send nothing.
+    const sentByRepeat = 'a repeat of the held Enter sent a message from the field';
+    await page.keyboard.down('Enter');
+    try {
+      await expect.poll(async () => {
+        await page.keyboard.down('Enter');
+        return field.evaluate((element) => element === document.activeElement);
+      }, { timeout: READY_TIMEOUT, intervals: [30] }).toBe(true);
+      for (let i = 0; i < 15; i += 1) await page.keyboard.down('Enter');
+    } finally {
+      await page.keyboard.up('Enter');
+    }
+    await expect(dialogTitle(page)).toBeHidden();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute('role', 'textbox');
+    await expect(tag).toBeVisible();
+    // The caret is in the field: what is typed next lands there.
+    expect(await field.evaluate((element) => element.contains(window.getSelection()?.anchorNode ?? null))).toBe(true);
+    await page.keyboard.insertText('next');
+    await expect(field).toContainText('next');
+
+    await expect.poll(() => turns().length, { timeout: READY_TIMEOUT }).toBe(3);
+    expectToolExchange(turns()[2].body, command, '[用户取消了此操作]');
+    await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await page.waitForTimeout(750);
+    expect(turns().length, sentByRepeat).toBe(3);
+    expect(fs.existsSync(sentinel)).toBe(true);
+  });
+
   test('cancels an approval-required command, returns the cancellation result, and does not execute or re-prompt', async () => {
     const response = `abu-e2e-cancelled-command-complete-${randomUUID()}`;
     const toolCallId = `call-cancelled-${randomUUID()}`;

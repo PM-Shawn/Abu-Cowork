@@ -3,6 +3,7 @@ import { useState, createRef } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Button } from '@/components/ds/button';
+import { focusComposer } from './composerFocus';
 import { InlineSkillInput, type InlineSkill, type InlineSkillInputHandle } from './InlineSkillInput';
 
 afterEach(cleanup);
@@ -244,5 +245,26 @@ describe('inline skill editor: the plain field', () => {
     setup('正文', { name: 'brief', description: '', offset: 0 }, { disabled: true });
     expect(box()).toHaveAttribute('aria-disabled', 'true');
     expect(box()).toHaveAttribute('contenteditable', 'false');
+  });
+  // A page hand-off (composerFocus.ts) finds the field in the page and has no handle to it.
+  it('takes the focus from a page hand-off while it holds a tag, with the caret where it was left', () => {
+    const { ref } = setup('前文后文', { name: 'brief', description: '', offset: 0 });
+    act(() => { ref.current!.focus(); ref.current!.setSelectionRange(4, 4); });
+    act(() => { box().blur(); window.getSelection()!.removeAllRanges(); });
+    expect(document.body).toHaveFocus();
+
+    let taken = false;
+    act(() => { taken = focusComposer(); });
+    expect(taken).toBe(true);
+    expect(box()).toHaveFocus();
+    const selected = window.getSelection()!;
+    expect(box().contains(selected.anchorNode)).toBe(true);
+    expect(selected.isCollapsed).toBe(true);
+    expect(ref.current!.selectionStart).toBe(4);
+  });
+  it('is passed over by a page hand-off while it holds a tag and takes no input', () => {
+    setup('正文', { name: 'brief', description: '', offset: 0 }, { disabled: true });
+    expect(focusComposer()).toBe(false);
+    expect(document.body).toHaveFocus();
   });
 });

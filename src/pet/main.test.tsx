@@ -114,6 +114,39 @@ describe('pet window root', () => {
     expect(root.hasAttribute('data-motion')).toBe(false)
   })
 
+  // The pet's words follow the interface language; <html> names that language before anything
+  // is rendered, and again after a switch.
+  it('names the interface language on <html> from the start, and follows a switch', async () => {
+    fakeMedia([])
+    const { getLanguageSetting, initLanguage, setLanguage } = await import('@/i18n')
+    const settingBefore = getLanguageSetting()
+    const root = document.documentElement
+    const langBefore = root.getAttribute('lang')
+    try {
+      initLanguage('zh-CN')
+      root.removeAttribute('lang')
+      const atRoot: (string | null)[] = []
+      vi.doMock('react-dom/client', () => ({
+        createRoot: () => {
+          atRoot.push(root.getAttribute('lang'))
+          return { render: () => undefined, unmount: () => undefined }
+        },
+      }))
+      await import('./main')
+      vi.doUnmock('react-dom/client')
+      expect(atRoot).toEqual(['zh-CN'])
+      setLanguage('en-US')
+      expect(root.getAttribute('lang')).toBe('en-US')
+      window.dispatchEvent(new Event('pagehide'))
+      setLanguage('zh-CN')
+      expect(root.getAttribute('lang')).toBe('en-US')
+    } finally {
+      initLanguage(settingBefore)
+      if (langBefore === null) root.removeAttribute('lang')
+      else root.setAttribute('lang', langBefore)
+    }
+  })
+
   it('stops listening when the page goes away', async () => {
     const media = fakeMedia([DARK])
     await import('./main')

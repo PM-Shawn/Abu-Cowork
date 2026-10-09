@@ -358,6 +358,64 @@ describe('ContextMenu', () => {
     expect(onCopy).toHaveBeenCalledOnce();
   });
 
+  describe('with an owner that is asked at every opening (canOpen)', () => {
+    function renderAsking(canOpen: () => boolean, onOpenChange: (open: boolean) => void) {
+      render(
+        <ContextMenu canOpen={canOpen} onOpenChange={onOpenChange} content={<MenuItem>Copy</MenuItem>}>
+          <div>Message body</div>
+        </ContextMenu>,
+        { wrapper: DesignSystemProvider },
+      );
+    }
+
+    it('stays closed at an opening the owner refuses, and opens at the next one it allows', () => {
+      const onOpenChange = vi.fn();
+      let allowed = false;
+      renderAsking(() => allowed, onOpenChange);
+
+      fireEvent.contextMenu(screen.getByText('Message body'));
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(onOpenChange).not.toHaveBeenCalled();
+
+      allowed = true;
+      fireEvent.contextMenu(screen.getByText('Message body'));
+
+      expect(screen.getByRole('menuitem', { name: 'Copy' })).toBeInTheDocument();
+      expect(onOpenChange.mock.calls).toEqual([[true]]);
+    });
+
+    it('leaves an open menu as it is at an opening the owner refuses', () => {
+      const onOpenChange = vi.fn();
+      let allowed = true;
+      renderAsking(() => allowed, onOpenChange);
+      fireEvent.contextMenu(screen.getByText('Message body'));
+
+      allowed = false;
+      fireEvent.contextMenu(screen.getByText('Message body'));
+
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(screen.getByRole('menuitem', { name: 'Copy' })).toBeInTheDocument();
+      expect(onOpenChange.mock.calls).toEqual([[true]]);
+    });
+
+    it('stays closed when the owner refuses an opening after the menu was closed', async () => {
+      const user = userEvent.setup();
+      const onOpenChange = vi.fn();
+      let allowed = true;
+      renderAsking(() => allowed, onOpenChange);
+      fireEvent.contextMenu(screen.getByText('Message body'));
+      await user.keyboard('{Escape}');
+      expect(onOpenChange.mock.calls).toEqual([[true], [false]]);
+
+      allowed = false;
+      fireEvent.contextMenu(screen.getByText('Message body'));
+
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(onOpenChange.mock.calls).toEqual([[true], [false]]);
+    });
+  });
+
   it('renders labels and separators like a dropdown menu', () => {
     render(<ContextMenuAndPopover popoverOpen={false} />, { wrapper: DesignSystemProvider });
     fireEvent.contextMenu(screen.getByText('Message body'));

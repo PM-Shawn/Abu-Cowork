@@ -9,9 +9,12 @@ import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE } from './styles';
 
 // onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
 // event.preventDefault() there to stop Radix restoring focus (e.g. to focus a field).
-export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus }: {
+// canOpen is asked at every opening, whatever began it (a right-click, the menu key, a touch
+// or a pen held down); false leaves the menu as it is, and onOpenChange hears nothing.
+export function ContextMenu({ children, content, canOpen, onOpenChange, onCloseAutoFocus }: {
   children: ReactNode;
   content: ReactNode;
+  canOpen?: () => boolean;
   onOpenChange?: (open: boolean) => void;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
@@ -42,6 +45,11 @@ export function ContextMenu({ children, content, onOpenChange, onCloseAutoFocus 
   // A key that was down when the menu opened chooses nothing in it until it is pressed again (see Menu).
   const heldKeys = useHeldKeys(false, 'enter-space');
   const handleOpenChange = (next: boolean) => {
+    if (next && canOpen && !canOpen()) {
+      // Radix counts the menu as open from here on; with no content there is none on the page.
+      if (!isOpen) setDismissed(true);
+      return;
+    }
     if (next) {
       heldKeys.mark();
       setDismissed(false);

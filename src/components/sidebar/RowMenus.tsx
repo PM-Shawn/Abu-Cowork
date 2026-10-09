@@ -1,4 +1,4 @@
-import { useCallback, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Menu } from '@/components/ds/menu';
 import { isWorking } from '@/components/ds/styles';
@@ -22,6 +22,8 @@ export interface RowMenuControls {
   isMoreOpen: (rowId: string) => boolean;
   /** For the row element: a right-click on it opens the list's menu for this row. */
   onRowContextMenu: (event: MouseEvent<HTMLElement>, rowId: string) => void;
+  /** For the row element: a touch or a pen held down on it opens the list's menu for this row. */
+  onRowPointerDown: (event: PointerEvent<HTMLElement>, rowId: string) => void;
   /** For the row's "more actions" button: opens the list's menu at that button. */
   moreButtonProps: (rowId: string) => {
     'aria-haspopup': 'menu';
@@ -34,6 +36,18 @@ export interface RowMenuControls {
 
 // Right-clicks that reached a row on their way up to the list.
 const rowRightClicks = new WeakSet<Event>();
+
+// Per list (its `data-row-menus` frame): the row under the gesture that can open the list's
+// right-click menu next. The menu opens from a right-click event, and from a touch or a pen
+// that stays down, which sends no event when its time is up: each opening shows the row its
+// own gesture began on.
+const gestureRows = new WeakMap<Element, string>();
+
+function frameOf(element: Element): Element {
+  const frame = element.closest('[data-row-menus]');
+  if (!frame) throw new Error('A row and its "more actions" button must sit inside their RowMenus');
+  return frame;
+}
 
 const NO_ANCHOR: AnchorBox = { top: 0, left: 0, width: 0, height: 0 };
 
@@ -55,14 +69,26 @@ export function RowMenus({ items, moreLabel, onOpenChange, onCloseAutoFocus, cla
   const [more, setMore] = useState<MoreMenu | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
 
+  const frame = useRef<HTMLDivElement>(null);
+
   const onRowContextMenu = useCallback((event: MouseEvent<HTMLElement>, rowId: string) => {
     rowRightClicks.add(event.nativeEvent);
-    setContextRow(rowId);
+    gestureRows.set(frameOf(event.currentTarget), rowId);
   }, []);
 
+  const onRowPointerDown = useCallback((event: PointerEvent<HTMLElement>, rowId: string) => {
+    if (event.pointerType !== 'mouse') gestureRows.set(frameOf(event.currentTarget), rowId);
+  }, []);
+
+  const gestureRow = () => (frame.current ? gestureRows.get(frame.current) ?? null : null);
+
+  const handleContextOpenChange = (open: boolean) => {
+    if (open) setContextRow(gestureRow());
+    onOpenChange?.(open);
+  };
+
   const openMoreAt = (rowId: string, button: HTMLElement) => {
-    const frame = button.closest('[data-row-menus]');
-    if (!frame) throw new Error('A "more actions" button must sit inside its RowMenus');
+    const frame = frameOf(button);
     const origin = frame.getBoundingClientRect();
     const box = button.getBoundingClientRect();
     setMore({
@@ -82,6 +108,7 @@ export function RowMenus({ items, moreLabel, onOpenChange, onCloseAutoFocus, cla
   const controls: RowMenuControls = {
     isMoreOpen: (rowId) => moreOpen && more?.rowId === rowId,
     onRowContextMenu,
+    onRowPointerDown,
     moreButtonProps: (rowId) => ({
       'aria-haspopup': 'menu',
       'aria-expanded': moreOpen && more?.rowId === rowId,
@@ -116,14 +143,18 @@ export function RowMenus({ items, moreLabel, onOpenChange, onCloseAutoFocus, cla
   };
 
   return (
-    <div data-row-menus className="relative">
+    <div ref={frame} data-row-menus className="relative">
       <ContextMenu
         content={contextRow ? items(contextRow) : null}
-        onOpenChange={onOpenChange}
+        // A long press between the rows, or on a row that reports no presses, has no row.
+        canOpen={() => gestureRow() !== null}
+        onOpenChange={handleContextOpenChange}
         onCloseAutoFocus={onCloseAutoFocus}
       >
         <div
           className={className}
+          // A new touch or pen press starts with no row; the row it lands on reports itself next.
+          onPointerDownCapture={(event) => { if (event.pointerType !== 'mouse') gestureRows.delete(frameOf(event.currentTarget)); }}
           // The menu writes its open state on its trigger, and a changed attribute here
           // makes the browser restyle every row below. Nothing reads it, so the list declines it.
           data-state={undefined}

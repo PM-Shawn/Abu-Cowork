@@ -10,7 +10,7 @@ import type { ReactElement } from 'react';
 import { act, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
-import { keepClosingLayersOnScreen } from '@/test/dsWindows';
+import { keepClosingLayersOnScreen, passSettleInterval } from '@/test/dsWindows';
 
 vi.mock('@/core/app/appInstaller', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/app/appInstaller')>()),
@@ -369,6 +369,79 @@ describe('AppAddConfirmDialog', () => {
       await flush();
       expect(resume).not.toHaveBeenCalled();
       expect(runPluginSteps).not.toHaveBeenCalled();
+    });
+  });
+
+  // 「确认」 is painted when the plan has been read, which is later than the press on 「使用」 that
+  // opened the window: the second press of a double press may find it under the pointer.
+  describe('a press on the confirming button that the plan has just painted', () => {
+    // A pointer press as the browser reports it; `fireEvent.click` alone says detail 0, a key press.
+    const pointerPress = (button: HTMLElement) => {
+      fireEvent.pointerDown(button);
+      fireEvent.mouseDown(button);
+      fireEvent.click(button, { detail: 1 });
+    };
+
+    for (const within of ['page', 'market'] as const) {
+      describe(`in the window ${within === 'page' ? 'on the page' : 'inside the app market'}`, () => {
+        beforeEach(() => {
+          render(<AppAddConfirmDialog within={within} />);
+          act(() => { useAppAddFlowStore.setState({ flow: { kind: 'planning', name: '店铺运营' }, shownIn: within }); });
+          // The window has been reading the plan for a while.
+          passSettleInterval();
+          act(() => { useAppAddFlowStore.setState({ flow: ready() }); });
+        });
+
+        it('adds nothing on a pointer press made before the button could be read, and adds once on a press after that', async () => {
+          pointerPress(confirmButton());
+          await flush();
+          expect(confirmAddApp).not.toHaveBeenCalled();
+          expect(useAppAddFlowStore.getState().flow.kind).toBe('ready');
+
+          passSettleInterval();
+          pointerPress(confirmButton());
+          await flush();
+          expect(confirmAddApp).toHaveBeenCalledTimes(1);
+        });
+
+        it('adds at once from the keyboard', async () => {
+          fireEvent.click(confirmButton(), { detail: 0 });
+          await flush();
+          expect(confirmAddApp).toHaveBeenCalledTimes(1);
+        });
+
+        it('adds nothing under the repeats of an Enter held since 「使用」', async () => {
+          confirmButton().focus();
+          for (let i = 0; i < 5; i += 1) {
+            expect(fireEvent.keyDown(confirmButton(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+          }
+          await flush();
+          expect(confirmAddApp).not.toHaveBeenCalled();
+        });
+
+        it('cancels on Escape at the first moment and writes nothing', async () => {
+          fireEvent.keyDown(confirmButton(), { key: 'Escape', code: 'Escape' });
+          await flush();
+          expect(useAppAddFlowStore.getState().flow.kind).toBe('closed');
+          expect(confirmAddApp).not.toHaveBeenCalled();
+        });
+      });
+    }
+
+    it('holds a repair the same way: the plugin a scene needs is not installed by a press made before 「确认」 could be read', async () => {
+      const resume = vi.fn();
+      render(<AppAddConfirmDialog within="page" />);
+      flowIs({ kind: 'planning', name: '店铺运营' });
+      passSettleInterval();
+      flowIs({ kind: 'repair', app: shop, steps: [step('install', 'shop-assistant')], resume });
+      pointerPress(confirmButton());
+      await flush();
+      expect(runPluginSteps).not.toHaveBeenCalled();
+
+      passSettleInterval();
+      pointerPress(confirmButton());
+      await waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+      expect(runPluginSteps).toHaveBeenCalledTimes(1);
     });
   });
 

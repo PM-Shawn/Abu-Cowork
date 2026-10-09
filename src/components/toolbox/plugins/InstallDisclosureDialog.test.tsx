@@ -11,6 +11,7 @@ import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
 import { PLUGIN_CONFIG_VALUE_LIMIT } from '@/core/plugin/configuration';
 import type { InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
 
 // The window is a design-system dialog, so it renders inside the provider like the app does.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
@@ -660,6 +661,87 @@ describe('InstallDisclosureDialog and an approval that arrives', () => {
     expect(props.onCancel).toHaveBeenCalledTimes(1);
     expect(props.onConfirm).not.toHaveBeenCalled();
     expect(onApprovalAnswer).not.toHaveBeenCalled();
+  });
+});
+
+// 「安装」 is painted when the package has been read, later than the press that opened the window:
+// the second press of a double press may find it under the pointer.
+describe('InstallDisclosureDialog: a press on the confirming button that the plan has just painted', () => {
+  const confirmButton = () => screen.getByTestId('plugin-install-confirm');
+  // A pointer press as the browser reports it; `fireEvent.click` alone says detail 0, a key press.
+  const pointerPress = (button: HTMLElement) => {
+    fireEvent.pointerDown(button);
+    fireEvent.mouseDown(button);
+    fireEvent.click(button, { detail: 1 });
+  };
+  function props(state: React.ComponentProps<typeof InstallDisclosureDialog>['state'], onConfirm: () => void, onCancel = vi.fn()) {
+    return { open: true, entryName: 'weather', state, installing: false, onConfirm, onCancel };
+  }
+  // The window reads the package for a while, then shows what it found.
+  function readThenReady(onConfirm: () => void, onCancel = vi.fn()) {
+    const view = render(<InstallDisclosureDialog {...props({ kind: 'loading' }, onConfirm, onCancel)} />);
+    passSettleInterval();
+    view.rerender(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure }, onConfirm, onCancel)} />);
+    return view;
+  }
+
+  it('installs nothing on a pointer press made before the button could be read, and installs once on a press after that', () => {
+    const onConfirm = vi.fn();
+    readThenReady(onConfirm);
+    pointerPress(confirmButton());
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    passSettleInterval();
+    pointerPress(confirmButton());
+    expect(onConfirm).toHaveBeenCalledExactlyOnceWith({});
+  });
+
+  it('takes a pointer press once the interval has passed, however often its owner renders it with an equal state', () => {
+    const onConfirm = vi.fn();
+    const view = readThenReady(onConfirm);
+    passSettleInterval();
+    // The owner builds the state object anew with every render.
+    for (let i = 0; i < 3; i += 1) view.rerender(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure }, onConfirm)} />);
+    pointerPress(confirmButton());
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds presses back again for another package shown in the same window', () => {
+    const onConfirm = vi.fn();
+    const view = render(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure: { ...disclosure, preparedToken: 'first' } }, onConfirm)} />);
+    passSettleInterval();
+    view.rerender(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure: { ...disclosure, preparedToken: 'second' } }, onConfirm)} />);
+    pointerPress(confirmButton());
+    expect(onConfirm).not.toHaveBeenCalled();
+    passSettleInterval();
+    pointerPress(confirmButton());
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs at once from the keyboard', () => {
+    const onConfirm = vi.fn();
+    readThenReady(onConfirm);
+    fireEvent.click(confirmButton(), { detail: 0 });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs nothing under the repeats of an Enter held since the button that opened the window', () => {
+    const onConfirm = vi.fn();
+    readThenReady(onConfirm);
+    confirmButton().focus();
+    for (let i = 0; i < 5; i += 1) {
+      expect(fireEvent.keyDown(confirmButton(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    }
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('cancels on Escape at the first moment', () => {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    readThenReady(onConfirm, onCancel);
+    fireEvent.keyDown(confirmButton(), { key: 'Escape', code: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 });
 

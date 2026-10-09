@@ -235,6 +235,10 @@ export default function InstallDisclosureDialog({
       onOpenChange={(next) => { if (!next && !installing) onCancel(); }}
       // For an approval the window steps aside while it installs, and comes back.
       busy={installing}
+      // The confirming button is painted when the package has been read, later than the press that
+      // opened the window; another package shown in the same window is read anew.
+      settles
+      settleKey={`${state.kind}:${preparation ?? ''}`}
       // A draft's preview takes the place of the draft's detail window: same width, a title row as
       // tall as that window's header and the same content height, so the window does not jump
       // when one replaces the other. The title is the window's one heading in both forms.

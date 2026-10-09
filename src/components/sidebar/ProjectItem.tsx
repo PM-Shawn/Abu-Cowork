@@ -300,6 +300,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   onClick={() => handleConvClick(conv.id)}
                   onKeyDown={opensOnKey(() => handleConvClick(conv.id))}
                   onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
+                  onPointerDown={(e) => menus.onRowPointerDown(e, conv.id)}
                   aria-current={selected ? 'true' : undefined}
                   {...conversationRowProps(conv.id)}
                   className={cn(

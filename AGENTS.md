@@ -513,9 +513,11 @@ Accessibility appearances: `src/styles/appearance.ts` sets `data-contrast="more"
 
 Window material: `electron/windowChrome.cjs` `windowMaterial()` decides what the OS draws behind the window (`vibrancy` on macOS, `mica` on Windows 11 22H2+, otherwise `none`), passes it to the page as `--abu-window-material`, and `src/styles/windowMaterial.ts` writes `data-window-material` on `<html>` before the first paint. With a material the window background is transparent and `bg-desk` is translucent; with `none` tokens.css makes `desk` opaque. Content cards (`bg-surface`) and every floating layer — menus, popovers, tooltips, notices and dialogs (`bg-raised`) — are always opaque, and the page never uses `backdrop-filter` (`backdrop-blur-*`): the window material is the only translucent layer.
 
+Page language: `i18n/pageLanguage.ts` `followPageLanguage()` keeps `lang` on `<html>` equal to the resolved interface locale (`zh-CN` or `en-US`) and follows the language setting. Each window's entry point (`main.tsx`, `pet/main.tsx`) calls it before it renders; `index.html` and `pet.html` name no language themselves, because no constant is right for both locales. A window follows its own i18n module: the pet window takes a changed setting when it loads next, in its words and in its `lang` alike.
+
 The root error page (`ErrorBoundary`, above `DesignSystemProvider`) fills the window with `bg-surface` and reads no context.
 
-The pet window (`pet.html`, `src/pet/`) is an entry point of its own and mounts `DesignSystemProvider` in `pet/main.tsx`. It follows the application's color scheme through the same `followSystemColorScheme()`; the host's `set_theme` makes the two windows agree in every setting, and `pet/main.tsx` also installs the accessibility attributes. The window is transparent and exactly as large as what it shows, so nothing in it draws outside its box: no shadow, no tooltip, no floating layer; its icon-only controls are named `Pressable`s. Its status dots are `bg-current` on a status token class (`pet/petStatusMeta.ts` `STATUS_TONE`). The pet's reply field ignores an Enter that belongs to an input method (`chat/composerKeys.ts`).
+The pet window (`pet.html`, `src/pet/`) is an entry point of its own and mounts `DesignSystemProvider` in `pet/main.tsx`. It follows the application's color scheme through the same `followSystemColorScheme()`; the host's `set_theme` makes the two windows agree in every setting, and `pet/main.tsx` also installs the accessibility attributes and the page language. The window is transparent and exactly as large as what it shows, so nothing in it draws outside its box: no shadow, no tooltip, no floating layer; its icon-only controls are named `Pressable`s. Its status dots are `bg-current` on a status token class (`pet/petStatusMeta.ts` `STATUS_TONE`). The pet's reply field ignores an Enter that belongs to an input method (`chat/composerKeys.ts`).
 
 **Enterprise overlay**
 
@@ -558,6 +560,7 @@ The private repository's interface files use the same components and tokens, and
 - **`TranslationDict` interface** in `src/i18n/types.ts` defines the complete type-safe shape. Both `zh-CN.ts` and `en-US.ts` must satisfy this interface.
 - **Adding new text**: Add the key to `TranslationDict` first, then add translations to both locale files.
 - **Outside React**: Use `getI18n()` for non-component code.
+- **Page language**: `<html lang>` is set by `followPageLanguage()` (`src/i18n/pageLanguage.ts`) from the resolved locale; nothing else writes it (§6.1 Appearance and window material).
 - **Interpolation**: `format(template, { key: value })` for `{placeholder}` patterns.
 
 ### 10. Type Definitions

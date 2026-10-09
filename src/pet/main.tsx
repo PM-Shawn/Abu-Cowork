@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import '../styles/index.css';
 import { installAppearanceAttributes } from '../styles/appearance';
 import { followSystemColorScheme } from '../styles/colorScheme';
+import { followPageLanguage } from '../i18n/pageLanguage';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import PetApp from './PetApp';
 
@@ -15,9 +16,12 @@ import PetApp from './PetApp';
 // nothing (a transparent, empty page), so no earlier script is needed there.
 const stopFollowingColorScheme = followSystemColorScheme();
 const stopAppearanceAttributes = installAppearanceAttributes();
+// Language: <html lang> carries the interface language this window's own i18n module resolves.
+const stopFollowingPageLanguage = followPageLanguage();
 window.addEventListener('pagehide', () => {
   stopFollowingColorScheme();
   stopAppearanceAttributes();
+  stopFollowingPageLanguage();
 }, { once: true });
 
 createRoot(document.getElementById('pet-root')!).render(

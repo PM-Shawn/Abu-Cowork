@@ -87,6 +87,9 @@ test.describe.serial('Electron shell — real app smoke', () => {
     // The system material shows through the page only while body paints nothing.
     expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
 
+    // <html> names the language the interface is written in; the suite launches in zh-CN.
+    await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+
     fs.mkdirSync(path.dirname(SCREENSHOT_PATH), { recursive: true });
     await page.screenshot({ path: SCREENSHOT_PATH });
   });

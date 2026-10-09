@@ -231,7 +231,11 @@ function countChildSteps(steps: readonly ExecutionStepSnapshot[] | undefined): n
   return (steps ?? []).reduce((n, step) => n + (step.childSteps?.length ?? 0), 0);
 }
 
-/** Shell-owned fields (executionSteps / plannedSteps) survive a sidecar-sourced message write. */
+/**
+ * Shell-owned fields (executionSteps / plannedSteps / fileCards) survive a
+ * sidecar-sourced message write. `fileCards` is put on an assistant message by
+ * the shell's `addMessage`; the sidecar's mirror copy does not carry it.
+ */
 export function preserveShellExecutionProjection(convId: string, message: Message): Message {
   const shellMsg = getConversationReader().getConversation(convId)?.messages.find((m) => m.id === message.id);
   if (!shellMsg) return message;
@@ -242,6 +246,9 @@ export function preserveShellExecutionProjection(convId: string, message: Messag
   }
   if (!message.plannedSteps?.length && shellMsg.plannedSteps?.length) {
     out = { ...out, plannedSteps: shellMsg.plannedSteps };
+  }
+  if (message.fileCards === undefined && shellMsg.fileCards !== undefined) {
+    out = { ...out, fileCards: shellMsg.fileCards };
   }
   return out;
 }

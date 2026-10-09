@@ -98,6 +98,9 @@ export default function PetApp() {
   const placementRef = useRef<Placement>({ mode: 'above', horizontal: 'right' })
   const bubbleWrapRef = useRef<HTMLDivElement>(null)
   const prevShowRef = useRef(false)
+  // Set once the menu has glued the avatar to the menu's corner; cleared when
+  // the cached placement's corner is applied again.
+  const menuCornerRef = useRef(false)
 
   // Single source of truth for the (non-menu) window frame: when a
   // notification should show, grow the window to fit it; otherwise shrink
@@ -113,9 +116,15 @@ export default function PetApp() {
       // the content re-render and the resize was the click-flicker on those
       // controls. The avatar stays glued to its corner regardless.
       if (justAppeared) {
-        const p = await getPlacement()
+        const detected = await getPlacement()
         if (cancelled) return
-        placementRef.current = p
+        placementRef.current = detected
+      }
+      const p = placementRef.current
+      // The menu glues the avatar to its own corner, so a bubble that is
+      // still showing when the menu closes needs its corner put back too.
+      if (justAppeared || (showNotif && menuCornerRef.current)) {
+        menuCornerRef.current = false
         flushSync(() => {
           setSideMode(p.mode === 'side')
           setExpandUp(p.mode === 'above')
@@ -123,7 +132,6 @@ export default function PetApp() {
         })
       }
       if (cancelled) return
-      const p = placementRef.current
       const side = p.mode === 'side'
       // Measure the bubble's natural height (it renders at a fixed 200px width
       // in both placements) so the window fits the content exactly instead of
@@ -152,6 +160,7 @@ export default function PetApp() {
     // Menu always sits below the avatar (avatar at top), but still needs the
     // horizontal check — same off-screen-clipping risk as the notification.
     const p = await getPlacement()
+    menuCornerRef.current = true
     flushSync(() => {
       setSideMode(false)
       setExpandUp(false) // avatar at top, menu below it

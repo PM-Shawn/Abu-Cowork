@@ -1,5 +1,6 @@
 import { useImperativeHandle, useLayoutEffect, useRef, useState, type Ref, type KeyboardEvent, type ClipboardEvent, type CompositionEvent } from 'react';
 import { TextArea } from '@/components/ds/text-area';
+import { setComposerFieldFocus } from './composerFocus';
 
 export interface InlineSkill {
   name: string;
@@ -147,6 +148,12 @@ export function InlineSkillInput({ ref, historyKey, imeActive, value, skill, onC
     selected?.removeAllRanges();
     selected?.addRange(range);
   }
+  function focus() {
+    const root = rich.current;
+    const restore = root && !root.contains(window.getSelection()?.anchorNode ?? null);
+    (plain.current ?? root)?.focus();
+    if (restore) place(caret.current.start, caret.current.end, caret.current.startBeforeSkill, caret.current.endBeforeSkill);
+  }
   function change(text: string, nextSkill: InlineSkill | null, nextCaret = selection()) {
     caret.current = nextCaret;
     pendingCaret.current = nextCaret;
@@ -183,15 +190,14 @@ export function InlineSkillInput({ ref, historyKey, imeActive, value, skill, onC
     get selectionEnd() { return selection().end; },
     get style() { return (plain.current ?? rich.current)!.style; },
     get scrollHeight() { return (plain.current ?? rich.current)!.scrollHeight; },
-    focus() {
-      const root = rich.current;
-      const restore = root && !root.contains(window.getSelection()?.anchorNode ?? null);
-      (plain.current ?? root)?.focus();
-      if (restore) place(caret.current.start, caret.current.end, caret.current.startBeforeSkill, caret.current.endBeforeSkill);
-    },
+    focus,
     setSelectionRange: place,
     insertText,
   }));
+
+  useLayoutEffect(() => {
+    if (rich.current) setComposerFieldFocus(rich.current, focus);
+  });
 
   useLayoutEffect(() => {
     if (previousHistoryKey.current !== historyKey) {

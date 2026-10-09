@@ -1,0 +1,29 @@
+{
+  "name": "wrong-ref",
+  "version": "1.0.0",
+  "minAbuVersion": "0.51.0",
+  "interface": { "displayName": "Wrong reference", "shortDescription": "names a team its plugin does not ship" },
+  "plugins": ["missing-min-version"],
+  "home": {
+    "modes": {
+      "items": [
+        {
+          "modeId": "only",
+          "title": "Only mode",
+          "scenes": [
+            {
+              "id": "scene",
+              "title": "Scene",
+              "run": { "team": "plugin:missing-min-version/ghost" },
+              "templates": [
+                { "id": "a", "title": "A", "prompt": "A" },
+                { "id": "b", "title": "B", "prompt": "B" },
+                { "id": "c", "title": "C", "prompt": "C" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

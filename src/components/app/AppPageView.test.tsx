@@ -24,13 +24,14 @@ vi.mock('@/core/app/appPageBridge', async (importOriginal) => ({
 vi.mock('@/hooks/useNativeViewOcclusion', () => ({ useNativeViewOcclusion: vi.fn(() => false) }));
 
 const t = () => getI18n();
-const PLUGIN = 'shop@org';
+const APP_ID = 'shop@org';
 
 const shop: AppDefinition = {
-  appId: PLUGIN,
+  appId: APP_ID,
   name: 'Shop desk',
-  pluginKey: PLUGIN,
-  pluginVersion: '1.0.0',
+  version: '1.0.0',
+  origin: { kind: 'market', market: 'org' },
+  plugins: [],
   config: {
     ...DEFAULT_APP_CONFIG,
     nav: {
@@ -61,7 +62,7 @@ type Listener = (event: { payload: AppPageStateEvent }) => void;
 const listeners = new Set<Listener>();
 function say(state: AppPageStateEvent['state'], more: Partial<AppPageStateEvent> = {}) {
   act(() => {
-    for (const listener of listeners) listener({ payload: { pluginKey: PLUGIN, navItemId: 'portal', state, ...more } });
+    for (const listener of listeners) listener({ payload: { appId: APP_ID, navItemId: 'portal', state, ...more } });
   });
 }
 
@@ -92,7 +93,7 @@ describe('AppPageView', () => {
     });
     vi.mocked(useNativeViewOcclusion).mockReturnValue(false);
     for (const call of [showAppPage, setAppPageBounds, hideAppPages, reloadAppPage]) vi.mocked(call).mockClear();
-    useAppStore.setState({ installedApps: [shop], selectedAppId: PLUGIN, activeAppPage: { appId: PLUGIN, navItemId: 'portal' } });
+    useAppStore.setState({ addedApps: [shop], selectedAppId: APP_ID, activeAppPage: { appId: APP_ID, navItemId: 'portal' } });
     useSettingsStore.setState({ viewMode: 'app-page' });
   });
 
@@ -102,14 +103,14 @@ describe('AppPageView', () => {
     vi.unstubAllGlobals();
     vi.mocked(listen).mockReset();
     vi.mocked(listen).mockResolvedValue(() => undefined);
-    useAppStore.setState({ installedApps: [], selectedAppId: '__general__', activeAppPage: null });
+    useAppStore.setState({ addedApps: [], selectedAppId: '__general__', activeAppPage: null });
     useSettingsStore.setState({ viewMode: 'chat' });
   });
 
   describe('the native page', () => {
     it('is shown in the rectangle of the placeholder under the header', () => {
       show();
-      expect(vi.mocked(showAppPage).mock.calls).toEqual([[PLUGIN, 'portal', boundsNow()]]);
+      expect(vi.mocked(showAppPage).mock.calls).toEqual([[APP_ID, 'portal', boundsNow()]]);
       expect(hideAppPages).not.toHaveBeenCalled();
       expect(setAppPageBounds).not.toHaveBeenCalled();
       expect(observers).toHaveLength(1);
@@ -123,10 +124,10 @@ describe('AppPageView', () => {
       show();
       rect = { left: 220, top: 52, width: 640, height: 480 };
       act(() => observers[0].callback());
-      expect(vi.mocked(setAppPageBounds).mock.calls).toEqual([[PLUGIN, 'portal', boundsNow()]]);
+      expect(vi.mocked(setAppPageBounds).mock.calls).toEqual([[APP_ID, 'portal', boundsNow()]]);
       rect = { left: 8, top: 52, width: 1000, height: 700 };
       fireEvent(window, new Event('resize'));
-      expect(vi.mocked(setAppPageBounds).mock.calls[1]).toEqual([PLUGIN, 'portal', boundsNow()]);
+      expect(vi.mocked(setAppPageBounds).mock.calls[1]).toEqual([APP_ID, 'portal', boundsNow()]);
       expect(showAppPage).toHaveBeenCalledTimes(1);
     });
 
@@ -149,7 +150,7 @@ describe('AppPageView', () => {
 
       vi.mocked(useNativeViewOcclusion).mockReturnValue(false);
       rerender(<AppPageView />);
-      expect(vi.mocked(showAppPage).mock.calls).toEqual([[PLUGIN, 'portal', boundsNow()]]);
+      expect(vi.mocked(showAppPage).mock.calls).toEqual([[APP_ID, 'portal', boundsNow()]]);
 
       vi.mocked(useNativeViewOcclusion).mockReturnValue(true);
       rerender(<AppPageView />);
@@ -179,7 +180,7 @@ describe('AppPageView', () => {
       show();
       expect(view()).toHaveAttribute('data-nav-item', 'portal');
       expect(screen.getByText('Order portal')).toBeInTheDocument();
-      act(() => useAppStore.setState({ activeAppPage: { appId: PLUGIN, navItemId: 'untitled' } }));
+      act(() => useAppStore.setState({ activeAppPage: { appId: APP_ID, navItemId: 'untitled' } }));
       expect(view()).toHaveAttribute('data-nav-item', 'untitled');
       expect(screen.getByText('Shop desk')).toBeInTheDocument();
     });
@@ -187,7 +188,7 @@ describe('AppPageView', () => {
     it('reloads the page from its retry button', () => {
       show();
       fireEvent.click(screen.getByRole('button', { name: t().common.retry }));
-      expect(vi.mocked(reloadAppPage).mock.calls).toEqual([[PLUGIN, 'portal']]);
+      expect(vi.mocked(reloadAppPage).mock.calls).toEqual([[APP_ID, 'portal']]);
     });
   });
 
@@ -199,7 +200,7 @@ describe('AppPageView', () => {
       const failed = within(screen.getByTestId('app-page-failed'));
       expect(failed.getByText('ERR_NAME_NOT_RESOLVED')).toBeInTheDocument();
       fireEvent.click(failed.getByRole('button', { name: t().common.retry }));
-      expect(vi.mocked(reloadAppPage).mock.calls).toEqual([[PLUGIN, 'portal']]);
+      expect(vi.mocked(reloadAppPage).mock.calls).toEqual([[APP_ID, 'portal']]);
     });
 
     it('clears the failure once the page loads', async () => {
@@ -212,7 +213,7 @@ describe('AppPageView', () => {
     it('ignores what is said about another page', async () => {
       await shown();
       say('failed', { navItemId: 'untitled', errorDescription: 'ERR_OTHER_PAGE' });
-      say('failed', { pluginKey: 'hr@org', errorDescription: 'ERR_OTHER_APP' });
+      say('failed', { appId: 'hr@org', errorDescription: 'ERR_OTHER_APP' });
       expect(screen.queryByTestId('app-page-failed')).toBeNull();
     });
 

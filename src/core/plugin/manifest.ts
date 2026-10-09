@@ -7,9 +7,8 @@
  */
 
 import { format, getI18n } from '@/i18n';
-import type { AppConfig } from '@/types/app';
 import { PluginManifestError } from '../../../electron/shared/pluginManifestError.mjs';
-import { assertMinAbuVersionDeclared, validateMinAbuVersion } from '../../../electron/shared/pluginAppSpec.mjs';
+import { validateMinAbuVersion } from '../../../electron/shared/pluginSpec.mjs';
 import { normalizePluginComponentPath } from './paths';
 import { pluginConfigFields } from './configuration';
 
@@ -54,28 +53,19 @@ export interface PluginManifest {
   skills?: string | string[];
   mcpServers?: string | Record<string, McpServerSpec>;
   interface?: PluginInterface;
-  /** Lowest Abu version that can use this package; required once `app` or `teams/` is used. */
+  /** Lowest Abu version that can use this package; required once `teams/` is used. */
   minAbuVersion?: string;
-  /**
-   * App configuration (developer spec §8), still unvalidated: only its
-   * presence is checked here. `ResolvedPluginManifest.app` is the parsed form,
-   * produced once the installer knows the package's teams, agents, skills and
-   * connectors to resolve references against.
-   */
-  app?: unknown;
   // 未知字段前向兼容保留，见 parsePluginManifest 尾部的字段回填。
   [key: string]: unknown;
 }
 
-/** MCP file references resolved within the package; `app` still raw. */
+/** MCP file references resolved within the package. */
 export interface ScannedManifest extends PluginManifest {
   mcpServers?: Record<string, McpServerSpec>;
 }
 
 /** Everything resolved and validated, as disclosed and installed. */
-export interface ResolvedPluginManifest extends ScannedManifest {
-  app?: AppConfig;
-}
+export type ResolvedPluginManifest = ScannedManifest;
 
 /**
  * 三候选清单相对路径，按序尝试：Abu 自有目录优先，找不到依次回退到 Claude
@@ -239,8 +229,6 @@ export function parsePluginManifest(raw: unknown): PluginManifest {
   }
   const iface = validateInterface(raw.interface);
   const minAbuVersion = validateMinAbuVersion(raw.minAbuVersion);
-  if (raw.app !== undefined && !isPlainObject(raw.app)) invalidField('app');
-  assertMinAbuVersionDeclared({ app: raw.app, minAbuVersion });
 
   return {
     // 先展开未知字段做前向兼容兜底，再用校验过的字段覆盖，确保类型正确的值优先。
@@ -249,6 +237,5 @@ export function parsePluginManifest(raw: unknown): PluginManifest {
     mcpServers,
     interface: iface,
     minAbuVersion,
-    app: raw.app,
   };
 }

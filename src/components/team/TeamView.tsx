@@ -3,9 +3,10 @@ import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { getVisibleTeams, isReadOnlyTeam, selectVisibleTeams, useTeamStore, type Team } from '@/stores/teamStore';
 import { pluginTeamOwner } from '@/core/team/pluginTeams';
-import { useSelectedApp } from '@/stores/appStore';
+import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { GENERAL_APP_ID } from '@/types/app';
-import { agentBelongsToApp, teamBelongsToApp } from '@/core/app/appScope';
+import { appMembers, appsUsing } from '@/core/app/appScope';
+import { refCatalogFrom } from '@/core/app/appRefs';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
 import SourceBadge from '@/components/toolbox/SourceBadge';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -732,18 +733,25 @@ function TeamView() {
     setManualCreateTrigger(0);
   }, [activeTeamTab]);
 
-  // Inside an app the page opens on 「本应用」: the app's own experts and teams
-  // plus the built-in ones its scenes hand work to (product spec §5.5).
+  // Inside an app the page opens on 「本应用」: the experts and teams the app's
+  // scenes hand work to (product spec §5.5).
   const selectedApp = useSelectedApp();
   const inApp = selectedApp.appId !== GENERAL_APP_ID;
   const [appScope, setAppScope] = useState<'app' | 'all'>('app');
   const scopedToApp = inApp && appScope === 'app';
   const visibleTeams = useMemo(() => selectVisibleTeams({ teams, managedTeamSources }), [teams, managedTeamSources]);
+  // The members are resolved against the live teams, experts and plugins, so
+  // they are recomputed whenever any of them changes.
+  const pluginActivations = usePluginStore((s) => s.activationByKey);
+  const discoveredSkills = useDiscoveryStore((s) => s.skills);
+  const members = useMemo(() => (scopedToApp
+    ? appMembers(selectedApp, refCatalogFrom({ installed: installedPlugins, activations: pluginActivations, teams, managedTeamSources, agents: discoveredAgents, skills: discoveredSkills }))
+    : undefined), [scopedToApp, selectedApp, installedPlugins, pluginActivations, teams, managedTeamSources, discoveredAgents, discoveredSkills]);
   const activeTeams = useMemo(
-    () => (scopedToApp ? visibleTeams.filter((team) => teamBelongsToApp(selectedApp, team.id)) : visibleTeams),
-    [visibleTeams, scopedToApp, selectedApp],
+    () => (members ? visibleTeams.filter((team) => members.teamIds.has(team.id)) : visibleTeams),
+    [visibleTeams, members],
   );
-  const agentFilter = useMemo(() => (scopedToApp ? (agent: SubagentDefinition) => agentBelongsToApp(selectedApp, agent) : undefined), [scopedToApp, selectedApp]);
+  const agentFilter = useMemo(() => (members ? (agent: SubagentDefinition) => members.agentNames.has(agent.name) : undefined), [members]);
   const scopeOptions = useMemo(() => [
     { value: 'app', label: t.team.appScopeThis },
     { value: 'all', label: t.team.appScopeAll },
@@ -819,9 +827,14 @@ function TeamView() {
   const requestDelete = async (team: Team) => {
     // The window stays on the page while it fades out; a choice made there asks nothing.
     if (detailRef.current !== team.id) return;
+    // An app scene can name one of the user's own teams; deleting it leaves that scene without an owner.
+    const usedBy = appsUsing(useAppStore.getState().addedApps, { kind: 'team', id: team.id });
     const confirmed = await confirm({
       title: t.team.deleteTeamTitle,
-      message: format(t.team.deleteTeamMessage, { name: team.name }),
+      message: [
+        format(t.team.deleteTeamMessage, { name: team.name }),
+        usedBy.length > 0 ? format(t.toolbox.usedByApps, { names: usedBy.map((app) => app.name).join('、') }) : '',
+      ].join(''),
       confirmLabel: t.team.deleteTeamAction,
       tone: 'danger',
     });

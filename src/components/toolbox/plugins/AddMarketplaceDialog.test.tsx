@@ -39,7 +39,7 @@ import AddMarketplaceDialog from './AddMarketplaceDialog';
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 const tb = () => getI18n().toolbox;
 const HOME = '/Users/tester';
-const demo: Marketplace = { name: 'demo-market', plugins: [] };
+const demo: Marketplace = { name: 'demo-market', plugins: [], apps: [] };
 
 const calls: string[] = [];
 const addMarketplace = vi.fn((name: string, dir: string) => { calls.push(`addMarketplace:${name}:${dir}`); });

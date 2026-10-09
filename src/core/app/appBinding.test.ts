@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { AppDefinition } from '@/types/app';
-import { GENERAL_APP_ID } from '@/types/app';
-import { buildAppBinding, effectiveRun, joinPromptAppend, pickMode, runExpertName, runTeamId } from './appBinding';
+import { buildAppBinding, effectiveRun, joinPromptAppend, pickMode } from './appBinding';
+import { generalApp } from './appRegistry';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 
 const app: AppDefinition = {
-  appId: 'shop@market', name: '店铺运营', pluginKey: 'shop@market', pluginVersion: '1.0.0', logo: '/pkg/assets/logo.png',
+  appId: 'shop-ops@market', name: '店铺运营', version: '1.0.0', origin: { kind: 'market', market: 'market' }, plugins: ['shop-assistant'], logo: '/apps/shop-ops@market/assets/logo.png',
   config: {
     version: 1,
-    defaultRun: { team: 'store-ops' },
+    defaultRun: { team: 'plugin:shop-assistant/store-ops' },
     promptAppend: '  app text  ',
     home: { modes: { defaultSelected: 'listing', items: [
       { modeId: 'sourcing', title: '选品', promptAppend: 'mode text', scenes: [
         { id: 'shortlist', title: '选品分析', templates: [] },
         { id: 'reply', title: '回复', run: { expert: 'builtin:数据分析师' }, promptAppend: 'scene text', templates: [] },
-        { id: 'write', title: '写', run: { skill: 'product-listing' }, templates: [] },
+        { id: 'write', title: '写', run: { skill: 'plugin:shop-assistant/product-listing' }, templates: [] },
       ] },
       { modeId: 'listing', title: '详情页', scenes: [{ id: 'x', title: 'X', templates: [] }] },
     ] } },
@@ -30,22 +30,12 @@ describe('pickMode', () => {
   });
 });
 
-describe('runs', () => {
+describe('effectiveRun', () => {
   const sourcing = app.config.home.modes.items[0];
   it('falls back to defaultRun for a scene without its own run', () => {
-    expect(effectiveRun(app, sourcing.scenes[0])).toEqual({ team: 'store-ops' });
+    expect(effectiveRun(app, sourcing.scenes[0])).toEqual({ team: 'plugin:shop-assistant/store-ops' });
     expect(effectiveRun(app, sourcing.scenes[1])).toEqual({ expert: 'builtin:数据分析师' });
-    expect(effectiveRun(app, undefined)).toEqual({ team: 'store-ops' });
-  });
-
-  it('maps team runs to team-store ids and expert runs to registry names', () => {
-    expect(runTeamId(app, { team: 'store-ops' })).toBe('plugin-team:shop@market/store-ops');
-    expect(runTeamId(app, { team: 'builtin-team:recruiting' })).toBe('builtin-team:recruiting');
-    expect(runTeamId(app, { expert: 'x' })).toBeUndefined();
-    expect(runTeamId({ ...app, pluginKey: null }, { team: 'store-ops' })).toBeUndefined();
-    expect(runExpertName({ expert: 'builtin:数据分析师' })).toBe('数据分析师');
-    expect(runExpertName({ expert: '店铺客服顾问' })).toBe('店铺客服顾问');
-    expect(runExpertName({ skill: 's' })).toBeUndefined();
+    expect(effectiveRun(app, undefined)).toEqual({ team: 'plugin:shop-assistant/store-ops' });
   });
 });
 
@@ -57,17 +47,17 @@ describe('buildAppBinding', () => {
     expect(joinPromptAppend({ ...app, config: { ...app.config, promptAppend: undefined } }, app.config.home.modes.items[1], undefined)).toBeUndefined();
   });
 
-  it('captures the app, mode, scene and effective run', () => {
+  it('captures the app, its version and origin, the mode, the scene and the effective run', () => {
     expect(buildAppBinding(app, sourcing, sourcing.scenes[2])).toEqual({
-      version: 1, appId: 'shop@market', pluginKey: 'shop@market', pluginVersion: '1.0.0', appName: '店铺运营',
-      appLogo: '/pkg/assets/logo.png', appLogoDark: undefined,
-      modeId: 'sourcing', sceneId: 'write', run: { skill: 'product-listing' }, promptAppend: 'app text\n\nmode text',
+      version: 2, appId: 'shop-ops@market', appVersion: '1.0.0', origin: 'market', appName: '店铺运营',
+      appLogo: '/apps/shop-ops@market/assets/logo.png', appLogoDark: undefined, appIcon: undefined,
+      modeId: 'sourcing', sceneId: 'write', run: { skill: 'plugin:shop-assistant/product-listing' }, promptAppend: 'app text\n\nmode text',
     });
-    expect(buildAppBinding(app, sourcing, undefined)?.run).toEqual({ team: 'store-ops' });
+    expect(buildAppBinding(app, sourcing, undefined)?.run).toEqual({ team: 'plugin:shop-assistant/store-ops' });
+    expect(buildAppBinding({ ...app, origin: { kind: 'enterprise' } }, sourcing, undefined)?.origin).toBe('enterprise');
   });
 
   it('binds nothing for the general shell', () => {
-    const general: AppDefinition = { appId: GENERAL_APP_ID, name: '通用', config: DEFAULT_APP_CONFIG, pluginKey: null, pluginVersion: null };
-    expect(buildAppBinding(general, DEFAULT_APP_CONFIG.home.modes.items[0], undefined)).toBeUndefined();
+    expect(buildAppBinding(generalApp('zh-CN'), DEFAULT_APP_CONFIG.home.modes.items[0], undefined)).toBeUndefined();
   });
 });

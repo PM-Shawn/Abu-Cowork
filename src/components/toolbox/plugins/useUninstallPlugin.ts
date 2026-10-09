@@ -22,6 +22,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useAppStore } from '@/stores/appStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
+import { appsUsing } from '@/core/app/appScope';
 
 /**
  * `onClose` runs once a question of this page has ended, whatever the answer: right before the
@@ -40,10 +41,11 @@ export function useUninstallPlugin(home: string, onClose: () => void): {
   const addToast = useToastStore((s) => s.addToast);
   // The install awaiting confirmation; `null` means nothing is being asked.
   const [target, setTarget] = useState<InstalledPlugin | null>(null);
-  // A package that brought an app or expert teams takes them away too, and the
-  // conversations started inside the app stay readable — the user decides with
-  // all three in front of them, not just the skill and connector counts.
-  const isApp = useAppStore((s) => target !== null && s.installedApps.some((app) => app.pluginKey === target.key));
+  // A package that brought expert teams takes them away too, and an app the
+  // user added may be handing scenes to what it brings — the user decides with
+  // those in front of them, not just the skill and connector counts.
+  const addedApps = useAppStore((s) => s.addedApps);
+  const usedBy = target === null ? [] : appsUsing(addedApps, { kind: 'plugin', name: target.name });
   const teamCount = target?.contributed.teams?.length ?? 0;
   const message = [
     format(tb.pluginsUninstallMessage, {
@@ -53,7 +55,7 @@ export function useUninstallPlugin(home: string, onClose: () => void): {
       agents: target?.contributed.agents.length ?? 0,
     }),
     teamCount > 0 ? format(tb.pluginsUninstallTeamsNote, { teams: teamCount }) : '',
-    isApp ? tb.pluginsUninstallAppNote : '',
+    usedBy.length > 0 ? format(tb.usedByApps, { names: usedBy.map((app) => app.name).join('、') }) : '',
   ].filter((part) => part !== '').join('');
 
   // Uninstall is not idempotent — the second call for a key finds the package

@@ -129,6 +129,7 @@ const remoteEntry: MarketplaceEntry = {
 const marketplace: Marketplace = {
   name: 'official',
   plugins: [localEntry, remoteEntry],
+  apps: [],
 };
 
 const disclosure: InstallDisclosure = {
@@ -546,7 +547,7 @@ describe('MarketplaceBrowser', () => {
       description: `Plugin number ${i}`,
       source: { kind: 'relative', path: `./plugins/plugin-${i}` },
     }));
-    vi.mocked(loadMarketplaceFromDir).mockResolvedValue({ name: 'official', plugins });
+    vi.mocked(loadMarketplaceFromDir).mockResolvedValue({ name: 'official', plugins, apps: [] });
 
     renderBrowser();
     const list = await screen.findByTestId('plugin-marketplace-list');
@@ -661,6 +662,7 @@ describe('MarketplaceBrowser', () => {
       other.resolve({
         name: 'other',
         plugins: [{ name: 'weather', version: '2.0.0', source: { kind: 'relative', path: './weather' } }],
+        apps: [],
       });
     });
     await waitFor(() =>
@@ -722,7 +724,7 @@ describe('MarketplaceBrowser: controls, messages and where the focus goes', () =
   });
 
   const twoMarkets = [{ name: 'official', dir: '/m/official' }, { name: 'second', dir: '/m/second' }];
-  const second: Marketplace = { name: 'second', plugins: [{ name: 'only-here', source: { kind: 'relative', path: './only-here' } }] };
+  const second: Marketplace = { name: 'second', plugins: [{ name: 'only-here', source: { kind: 'relative', path: './only-here' } }], apps: [] };
   const loadBoth = () => vi.mocked(loadMarketplaceFromDir).mockImplementation(async (dir) => (dir === '/m/second' ? second : marketplace));
   const removeButton = () => screen.getByRole('button', { name: tb().pluginsRemoveMarketplace });
   const refreshButton = () => screen.getByRole('button', { name: tb().pluginsRefreshMarketplace });
@@ -792,19 +794,14 @@ describe('MarketplaceBrowser: controls, messages and where the focus goes', () =
     expect(await screen.findByText(tb().pluginsNoMatches)).toHaveClass('text-title');
   });
 
-  it('with no marketplace, says so and offers to add one; the app market offers no button', () => {
+  it('with no marketplace, says so and offers to add one', () => {
     usePluginStore.setState({ marketplaces: [] });
     const onAdd = vi.fn();
-    const page = render(<MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={onAdd} />);
+    render(<MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={onAdd} />);
     expect(screen.getByText(tb().pluginsNoMarketplaces)).toHaveClass('text-title');
     expect(screen.getByText(tb().pluginsNoMarketplacesHint)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('plugin-add-marketplace-cta'));
     expect(onAdd).toHaveBeenCalledTimes(1);
-    page.unmount();
-
-    render(<MarketplaceBrowser home="/Users/tester" mode="apps" searchQuery="" onAddMarketplace={onAdd} />);
-    expect(screen.getByText(getI18n().appMarket.emptyTitle)).toBeInTheDocument();
-    expect(screen.queryByTestId('plugin-add-marketplace-cta')).toBeNull();
   });
 
   it('names the refresh and remove buttons, and keeps refresh focusable while the listing is read', async () => {
@@ -1011,24 +1008,6 @@ describe('MarketplaceBrowser: controls, messages and where the focus goes', () =
 
     expect(screen.getAllByTestId('plugin-orphan-row')).toHaveLength(1);
     expect(orphan('older')).toHaveFocus();
-  });
-
-  it('lists only apps in the app market, with 使用 for one that is not installed and 进入 for one that is', async () => {
-    const appEntry: MarketplaceEntry = { name: 'shop', displayName: '店铺运营', providesApp: true, source: { kind: 'relative', path: './shop' } };
-    vi.mocked(loadMarketplaceFromDir).mockResolvedValue({ name: 'official', plugins: [localEntry, appEntry] });
-    const apps = render(<MarketplaceBrowser home="/Users/tester" mode="apps" searchQuery="" onAddMarketplace={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(1));
-    expect(screen.getByRole('button', { name: `${tb().pluginsUse}: 店铺运营` })).toBeInTheDocument();
-    // Managing marketplaces belongs to the plugins page.
-    expect(screen.queryByRole('button', { name: tb().pluginsRemoveMarketplace })).toBeNull();
-    apps.unmount();
-
-    usePluginStore.setState({ installed: [{ ...installedWeather, key: 'shop@official', name: 'shop' }] });
-    render(<MarketplaceBrowser home="/Users/tester" mode="apps" searchQuery="" onAddMarketplace={vi.fn()} />);
-    const enter = await screen.findByTestId('plugin-enter-app');
-    expect(enter).toHaveAccessibleName(`${tb().pluginsEnter}: 店铺运营`);
-    expect(screen.queryByTestId('plugin-installed-badge')).toBeNull();
-    expect(screen.queryByRole('switch')).toBeNull();
   });
 });
 

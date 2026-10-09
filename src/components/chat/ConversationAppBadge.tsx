@@ -7,7 +7,7 @@ export default function ConversationAppBadge({ binding }: { binding: Conversatio
   return (
     <span data-testid="chat-title-app-badge" className="ml-2 inline-flex min-w-0 shrink-0" title={binding.appName}>
       <Tag>
-        <AppLogo name={binding.appName} logo={binding.appLogo} logoDark={binding.appLogoDark} size="sm" className="h-4 w-4 rounded-control" />
+        <AppLogo name={binding.appName} logo={binding.appLogo} logoDark={binding.appLogoDark} icon={binding.appIcon} size="sm" className="h-4 w-4 rounded-control" />
         <span className="max-w-40 truncate">{binding.appName}</span>
       </Tag>
     </span>

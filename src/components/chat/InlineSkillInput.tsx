@@ -227,11 +227,18 @@ export function InlineSkillInput({ ref, historyKey, imeActive, value, skill, onC
         after.dataset.skillBoundary = 'after';
         after.textContent = '\u200b';
         root.replaceChildren(document.createTextNode(value.slice(0, offset)), before, button, after, document.createTextNode(value.slice(offset)));
-        if (value.endsWith('\n')) {
-          const tail = document.createElement('br');
-          tail.dataset.editorTail = '';
-          root.append(tail);
-        }
+      }
+      // Chromium draws no line for a break that ends the box and types in
+      // front of it. The tail gives that break a line of its own, so it must
+      // follow every value ending in a break, including one the DOM already
+      // holds after an in-place edit.
+      const tail = root.querySelector('[data-editor-tail]');
+      const tailInPlace = tail !== null && tail === root.lastChild;
+      if (tail && !(value.endsWith('\n') && tailInPlace)) tail.remove();
+      if (value.endsWith('\n') && !tailInPlace) {
+        const next = document.createElement('br');
+        next.dataset.editorTail = '';
+        root.append(next);
       }
     }
     if (previousMode.current !== (Boolean(skill) || richComposing)) focusAfterRender.current = true;
@@ -278,6 +285,16 @@ export function InlineSkillInput({ ref, historyKey, imeActive, value, skill, onC
     if (rich.current && skill && !composing.current && (event.key === 'Backspace' || event.key === 'Delete')) {
       const selected = window.getSelection();
       const atom = rich.current.querySelector('[data-inline-skill]');
+      if (selected && !selected.isCollapsed && selected.rangeCount && atom && selected.getRangeAt(0).intersectsNode(atom)) {
+        // Chromium fills a box it has just emptied with a placeholder break,
+        // which would read back as text. Deleting everything is done here.
+        const { start, end } = selection();
+        if (start === 0 && end === value.length) {
+          event.preventDefault();
+          change('', null, { start: 0, end: 0 });
+          return;
+        }
+      }
       if (selected?.isCollapsed && selected.rangeCount && atom) {
         const current = selected.getRangeAt(0);
         const adjacent = document.createRange();

@@ -3063,6 +3063,99 @@ describe('approvals and questions: a pointer press begun before the layer could 
       expect(vi.getTimerCount()).toBe(0);
     });
   });
+
+  // A window that reads a plan after it has opened: its confirming button is painted by itself,
+  // later than the press that opened the window.
+  describe('a window whose confirming button appears after a step of its own (settles)', () => {
+    function Install({ step, onInstall, onClose = () => undefined }: { step: 'reading' | 'ready'; onInstall: () => void; onClose?: () => void }) {
+      return (
+        <Dialog
+          open
+          settles
+          settleKey={step}
+          title="Install the plugin"
+          footer={step === 'ready'
+            ? <><Button onClick={onClose}>Cancel</Button><Button variant="primary" onClick={onInstall}>Install</Button></>
+            : <Button onClick={onClose}>Close</Button>}
+        />
+      );
+    }
+
+    it('takes no pointer press when it has just appeared, and one press after the interval answers once', () => {
+      const onInstall = vi.fn();
+      show(<Install step="ready" onInstall={onInstall} />);
+      expect(windowOf('Install the plugin')).toHaveAttribute('data-ds-settling', '');
+      pointerPress('Install');
+      expect(onInstall).not.toHaveBeenCalled();
+      expect(by('Cancel')).toHaveFocus();
+
+      settle();
+      expect(windowOf('Install the plugin')).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Install');
+      expect(onInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts again when its step changes: the button painted under the pointer takes no press that began before it could be read', () => {
+      const onInstall = vi.fn();
+      const view = show(<Install step="reading" onInstall={onInstall} />);
+      // The window has been reading for a while.
+      later();
+      expect(windowOf('Install the plugin')).not.toHaveAttribute('data-ds-settling');
+      view.rerender(<Install step="ready" onInstall={onInstall} />);
+      expect(windowOf('Install the plugin')).toHaveAttribute('data-ds-settling', '');
+      begin('Install');
+      end('Install', 2);
+      expect(onInstall).not.toHaveBeenCalled();
+
+      act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS - 1); });
+      pointerPress('Install');
+      expect(onInstall).not.toHaveBeenCalled();
+      act(() => { vi.advanceTimersByTime(1); });
+      pointerPress('Install');
+      expect(onInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it('never holds the keyboard: a key on the confirming button answers at the first moment', () => {
+      const onInstall = vi.fn();
+      const view = show(<Install step="reading" onInstall={onInstall} />);
+      view.rerender(<Install step="ready" onInstall={onInstall} />);
+      fireEvent.click(by('Install'), { detail: 0 });
+      expect(onInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it('is not answered by the repeats of an Enter held since before its step changed', () => {
+      const onInstall = vi.fn();
+      const view = show(<Install step="reading" onInstall={onInstall} />);
+      fireEvent.keyDown(by('Close'), { key: 'Enter', code: 'Enter' });
+      view.rerender(<Install step="ready" onInstall={onInstall} />);
+      by('Install').focus();
+      for (let i = 0; i < 5; i += 1) {
+        expect(fireEvent.keyDown(by('Install'), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      }
+      expect(onInstall).not.toHaveBeenCalled();
+    });
+
+    it('closes on Escape at the first moment', () => {
+      const onClose = vi.fn();
+      function Page() {
+        const [open, setOpen] = useState(true);
+        return <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); setOpen(next); }} settles title="Install the plugin" footer={<Button>Install</Button>} />;
+      }
+      show(<Page />);
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a window that does not opt in as it is, whatever its settleKey', () => {
+      const onSave = vi.fn();
+      const page = (step: string) => <Dialog open settleKey={step} title="Rename task" footer={<Button onClick={onSave}>Save</Button>} />;
+      const view = show(page('a'));
+      view.rerender(page('b'));
+      expect(windowOf('Rename task')).not.toHaveAttribute('data-ds-settling');
+      pointerPress('Save');
+      expect(onSave).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 // A key that is held down repeats, and the browser presses the focused button for every Enter

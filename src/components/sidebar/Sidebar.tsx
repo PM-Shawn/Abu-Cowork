@@ -507,6 +507,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 onClick={open}
                 onKeyDown={opensOnKey(open)}
                 onContextMenu={(e) => menus.onRowContextMenu(e, conv.id)}
+                onPointerDown={(e) => menus.onRowPointerDown(e, conv.id)}
                 aria-current={selected ? 'true' : undefined}
                 className={cn(
                   'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-left text-ui text-label transition-colors duration-fast',

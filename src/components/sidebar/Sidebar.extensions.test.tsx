@@ -423,6 +423,27 @@ describe('Sidebar — Recents row menu', () => {
       expect(UNDO_OFFER_MS).toBe(5000);
     });
 
+    // A touch held on a row opens the right-click menu with no right-click event.
+    it('is made for the task a touch was held on, after another task was right-clicked', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderSidebar();
+      const rowOf = (title: string) => screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
+      fireEvent.contextMenu(rowOf('Quarterly summary'));
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      await act(() => vi.advanceTimersByTimeAsync(300));
+      expect(screen.queryByRole('menu')).toBeNull();
+
+      fireEvent.pointerDown(rowOf('Travel plan'), { button: 0, pointerType: 'touch' });
+      await act(() => vi.advanceTimersByTimeAsync(700));
+      await user.click(screen.getByRole('menuitem', { name: '删除会话' }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(chat.state.deleteConversation).toHaveBeenCalledTimes(1);
+      expect(chat.state.deleteConversation).toHaveBeenCalledWith('c2');
+      expect(chat.state.exportConversation).toHaveBeenCalledWith('c2');
+      expect(offer()).toHaveTextContent('会话已删除');
+    });
+
     async function deleteRow(user: ReturnType<typeof userEvent.setup>, title: string) {
       const row = screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
       await user.click(within(row).getByRole('button', { name: '更多操作' }));

@@ -6,7 +6,9 @@ import userEvent from '@testing-library/user-event';
 import { StrictMode, type ComponentProps } from 'react';
 import { Button } from '@/components/ds/button';
 import { DesignSystemProvider } from '@/components/ds/provider';
+import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import { TextArea } from '@/components/ds/text-area';
+import { passSettleInterval } from '@/test/dsWindows';
 import { COMPOSER_TYPING_MS, noteComposerDraft, noteComposerKey } from './composerActivity';
 import UserQuestionDock from './UserQuestionDock';
 import * as bridge from '@/core/agent/permissionBridge';
@@ -115,7 +117,8 @@ function Host({ tick }: { tick: number }) {
   );
 }
 
-function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
+// The dock at the moment its question arrives: it holds pointer presses back for a while.
+function renderDockJustAsked(payload: UserQuestionPayload, toolCallId = 'tc-1') {
   return render(
     <UserQuestionDock
       conversationId="conv-a"
@@ -125,6 +128,13 @@ function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
     />,
     { wrapper: DesignSystemProvider },
   );
+}
+
+// The dock once its question has been on the page long enough to be read.
+function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
+  const view = renderDockJustAsked(payload, toolCallId);
+  passSettleInterval();
+  return view;
 }
 
 describe('UserQuestionDock', () => {
@@ -266,6 +276,7 @@ describe('UserQuestionDock', () => {
     expect(screen.getByText('2 / 2')).toBeInTheDocument();
 
     // Answer question 2 (single-select, last page → auto submit).
+    passSettleInterval();
     await user.click(screen.getByText('C').closest('button')!);
 
     expect(resolveSpy).toHaveBeenCalledWith(
@@ -587,6 +598,7 @@ describe('UserQuestionDock', () => {
           const user = userEvent.setup();
           render(<Announced asked onArrival={() => undefined} payload={TWO_Q_PAYLOAD} />);
           expect(screen.getByRole('group', { name: '第一题？' })).toBe(dock());
+          passSettleInterval();
           await user.click(screen.getByText('A').closest('button')!);
           expect(screen.getByRole('group', { name: '第二题？' })).toBe(dock());
         });
@@ -614,9 +626,11 @@ describe('UserQuestionDock', () => {
         const option = screen.getByText('A').closest('button')!;
         expect(option.tabIndex).toBe(0);
         expect(dock().compareDocumentPosition(field()) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+        passSettleInterval();
         await user.click(option);
         expect(screen.getByText('2 / 2')).toBeInTheDocument();
         expect(dock()).toHaveFocus();
+        passSettleInterval();
         await user.click(screen.getByText('C').closest('button')!);
         expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-typing', answered(['A'], ['C']));
       });
@@ -635,6 +649,155 @@ describe('UserQuestionDock', () => {
       pressed('ArrowUp');
       pressed('Enter');
       expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-arrow', answered(['简洁']));
+    });
+  });
+
+  // The dock appears by itself above the message field, and a page turn puts the rows of the next
+  // question where the rows just pressed were.
+  describe('a pointer press that began before the question could be read', () => {
+    const dock = () => document.querySelector('[tabindex="-1"]') as HTMLElement;
+    const row = (label: string) => screen.getByText(label).closest('button')!;
+    const named = (name: string) => screen.getByRole('button', { name });
+    // A pointer press as the browser reports it; `fireEvent.click` alone says detail 0, a key press.
+    const pointerPress = (button: HTMLElement, detail = 1) => {
+      fireEvent.pointerDown(button);
+      fireEvent.mouseDown(button);
+      fireEvent.click(button, { detail });
+    };
+    const answered = (...selected: string[][]) => expect.objectContaining({
+      answers: selected.map((choice) => expect.objectContaining({ selected: choice })),
+    });
+    const SINGLE_THEN_MULTI: UserQuestionPayload = {
+      questions: [
+        { header: 'Q1', question: '第一题？', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] },
+        { header: 'Q2', question: '第二题？', multiSelect: true, options: [{ label: 'C' }, { label: 'D' }] },
+      ],
+    };
+
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('answers nothing on a press on an option of a question that has just appeared, and answers once on a press after the interval', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-early');
+      pointerPress(row('详细'));
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(mockSetAnswers).not.toHaveBeenCalled();
+      expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+
+      passSettleInterval();
+      pointerPress(row('详细'));
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-early', answered(['详细']));
+    });
+
+    it('skips, cancels and chooses nothing on an early press either', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(MULTI_PAYLOAD, 'tc-early-rest');
+      pointerPress(named('关闭'));
+      pointerPress(row('跳过'));
+      pointerPress(row('引言'));
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('提交').closest('button')).toBeDisabled();
+
+      passSettleInterval();
+      pointerPress(named('关闭'));
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-early-rest', null);
+    });
+
+    it('answers at once from the keyboard: a key on an option, and Enter on the dock', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-key-row');
+      fireEvent.click(row('简洁'), { detail: 0 });
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-key-row', answered(['简洁']));
+      cleanup();
+
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-key-dock');
+      fireEvent.keyDown(dock(), { key: 'Enter', code: 'Enter' });
+      expect(resolveSpy).toHaveBeenLastCalledWith('tc-key-dock', answered(['详细']));
+    });
+
+    it('cancels on Escape at the first moment', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-early-escape');
+      fireEvent.keyDown(dock(), { key: 'Escape', code: 'Escape' });
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-early-escape', null);
+    });
+
+    it('answers nothing under the repeats of a held Enter while it holds pointer presses back', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-early-held');
+      for (let i = 0; i < 5; i += 1) {
+        expect(fireEvent.keyDown(dock(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      }
+      expect(resolveSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not answer the next question with the second press of a double press on an option', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(TWO_Q_PAYLOAD, 'tc-double');
+      passSettleInterval();
+      pointerPress(row('A'));
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      // The second press arrives at the same spot: the first option of the next question is there now.
+      pointerPress(row('C'), 2);
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('第二题？')).toBeInTheDocument();
+
+      passSettleInterval();
+      pointerPress(row('C'));
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-double', answered(['A'], ['C']));
+    });
+
+    it('does not submit with the second press of a double press on 下一题, where 提交 is on the last page', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_THEN_MULTI, 'tc-double-footer');
+      passSettleInterval();
+      pointerPress(row('A'));
+      passSettleInterval();
+      pointerPress(row('C'));
+      pointerPress(named('上一题'));
+      passSettleInterval();
+      pointerPress(screen.getByText('下一题').closest('button')!);
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      const submit = screen.getByText('提交').closest('button')!;
+      expect(submit).toBeEnabled();
+      pointerPress(submit, 2);
+      expect(resolveSpy).not.toHaveBeenCalled();
+
+      passSettleInterval();
+      pointerPress(submit);
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-double-footer', answered(['A'], ['C']));
+    });
+
+    it('keeps the pager in use across a page turn: its buttons mean what they meant', () => {
+      renderDock(TWO_Q_PAYLOAD, 'tc-pager');
+      passSettleInterval();
+      pointerPress(row('A'));
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      pointerPress(named('上一题'));
+      expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    });
+
+    describe('the mark on what holds presses back', () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it('is on the whole dock while a question that has just appeared settles, and on the answers alone after a page turn', () => {
+        renderDockJustAsked(TWO_Q_PAYLOAD, 'tc-mark');
+        expect(dock()).toHaveAttribute('data-ds-settling', '');
+        act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS - 1); });
+        expect(dock()).toHaveAttribute('data-ds-settling', '');
+        act(() => { vi.advanceTimersByTime(1); });
+        expect(document.querySelector('[data-ds-settling]')).toBeNull();
+
+        pointerPress(row('A'));
+        expect(dock()).not.toHaveAttribute('data-ds-settling');
+        const held = document.querySelector('[data-ds-settling]');
+        expect(held).not.toBeNull();
+        expect(held).toContainElement(row('C'));
+        expect(held).not.toContainElement(named('上一题'));
+        act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
+        expect(document.querySelector('[data-ds-settling]')).toBeNull();
+      });
     });
   });
 });

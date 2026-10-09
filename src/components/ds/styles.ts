@@ -40,8 +40,9 @@ export const LAYER_FADE_MS = 200;
 // changed and hold back a press that is already on its way. A press that started before the move
 // lands inside this window and is dropped; one made after it was aimed at what is there.
 export const TOAST_SETTLE_MS = LAYER_FADE_MS + 300;
-// An approval, a question and a window's question about unsaved input hold pointer presses back
-// for the same interval after they appear (`data-ds-settling` on the box, see dialog.tsx). While
+// A box that settles (an approval, a question, a window's question about unsaved input, a
+// `Dialog settles` window, a `Settling` part of the page) holds pointer presses back for the
+// same interval after it appears (`data-ds-settling` on the box, see settle.ts). While
 // the box carries the mark, nothing inside it is the target of the pointer: a press lands on the
 // box itself, so no control in it hears the press begin. Important, like DIALOG_CLOSING.
 export const SETTLING_BOX = 'data-ds-settling:**:pointer-events-none!';

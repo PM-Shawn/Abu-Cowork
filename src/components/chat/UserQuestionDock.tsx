@@ -24,6 +24,7 @@ import { dropsHeldEscape, dropsHeldRepeat } from '@/components/ds/heldKey';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { Pressable } from '@/components/ds/pressable';
+import { Settling } from '@/components/ds/settling';
 import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
 import { cn } from '@/lib/utils';
@@ -328,7 +329,8 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
   const optionCount = q.options.length;
 
   return (
-    <div
+    // The dock appears by itself above the message field: it settles as a whole when it arrives.
+    <Settling
       ref={containerRef}
       tabIndex={-1}
       role="group"
@@ -361,6 +363,9 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
         </div>
       </div>
 
+      {/* A page turn puts the answers of the next question where the answers just pressed were:
+          they settle again with every page. The pager above keeps its meaning and stays in use. */}
+      <Settling settleKey={page}>
       {/* Options for the current question */}
       <div className="space-y-1 px-3 py-2">
         {q.options.map((opt, oIdx) => {
@@ -465,7 +470,8 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
           </Button>
         )}
       </div>
-    </div>
+      </Settling>
+    </Settling>
   );
 }
 

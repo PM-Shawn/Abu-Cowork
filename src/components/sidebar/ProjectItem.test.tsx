@@ -695,6 +695,43 @@ describe('ProjectItem — a menu opened again before its close hook ran', () => 
   });
 });
 
+// A touch held on a row opens the right-click menu with no right-click event.
+describe('ProjectItem — a touch held on a task row', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Testing Library moves a fake clock only through a global named `jest`.
+    vi.stubGlobal('jest', { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('opens the task menu of that row alone and deletes that task, after another task was right-clicked', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderItem([makeConv(0), makeConv(1)]);
+    const rowOf = (title: string) => screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
+    fireEvent.contextMenu(rowOf('对话0'));
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    fireEvent.pointerDown(rowOf('对话1'), { button: 0, pointerType: 'touch' });
+    await act(() => vi.advanceTimersByTimeAsync(700));
+
+    expect(screen.getAllByRole('menu')).toHaveLength(1);
+    expect(within(screen.getByRole('menu')).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      '重命名', '导出会话', '移出项目', '删除会话',
+    ]);
+
+    await user.click(screen.getByRole('menuitem', { name: '删除会话' }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+
+    expect(mocks.chat.deleteConversation).toHaveBeenCalledTimes(1);
+    expect(mocks.chat.deleteConversation).toHaveBeenCalledWith('c1');
+  });
+});
+
 describe('ProjectItem — task rows', () => {
   it('marks the open task and shows a spinner on a running one', () => {
     mocks.chat.activeConversationId = 'c0';

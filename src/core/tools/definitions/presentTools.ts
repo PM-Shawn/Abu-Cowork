@@ -1,8 +1,14 @@
-import type { ToolDefinition } from '../../../types';
+import type { ToolDefinition, ToolExecutionContext } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { exists, stat } from '../fsBridge';
-import { checkReadPath } from '../pathSafety';
+import {
+  checkReadPath,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  scopedAuthorizeWorkspace,
+  type AuthorizationScopeId,
+} from '../pathSafety';
 import { resolveExpectedFile } from '../../team/expectedFiles';
 import { normalizeLexicalPath } from '../../../utils/pathUtils';
 
@@ -57,6 +63,38 @@ function isAbsolutePath(file: string): boolean {
 }
 
 /**
+ * Which paths the run of `context` may read, decided by checkReadPath alone.
+ *
+ * A run with an authorization scope of its own is held to that scope. A run
+ * without one is checked against the shared grants, and a path those do not
+ * cover is checked against a scope that holds the run's workspace and nothing
+ * else: the shared table follows the conversation in view, so it stops
+ * listing this run's workspace once the user looks at another conversation.
+ * No path is ever granted here and nobody is asked; `release` drops the scope.
+ */
+function readAuthorizationOfRun(context: ToolExecutionContext | undefined): {
+  allows: (path: string) => Promise<boolean>;
+  release: () => void;
+} {
+  const runScopeId = context?.authorizationScopeId;
+  const workspacePath = context?.workspacePath;
+  let workspaceScopeId: AuthorizationScopeId | undefined;
+
+  return {
+    allows: async (path) => {
+      if ((await checkReadPath(path, runScopeId)).allowed === true) return true;
+      if (runScopeId !== undefined || !workspacePath) return false;
+      if (workspaceScopeId === undefined) {
+        workspaceScopeId = createAuthorizationScope();
+        scopedAuthorizeWorkspace(workspaceScopeId, workspacePath, ['read']);
+      }
+      return (await checkReadPath(path, workspaceScopeId)).allowed === true;
+    },
+    release: () => disposeAuthorizationScope(workspaceScopeId),
+  };
+}
+
+/**
  * present_files — the agent declares the files it hands to the user this turn.
  *
  * The declaration is the tool call itself: the chat reads the paths from the
@@ -98,30 +136,34 @@ export const presentFilesTool: ToolDefinition = {
 
     const accepted: string[] = [];
     const rejected: { path: string; reason: RejectionReason }[] = [];
+    const readAuthorization = readAuthorizationOfRun(context);
 
-    for (const file of files) {
-      const joined = resolveExpectedFile(file.path, context?.workspacePath);
-      if (file.path.startsWith('~') || !isAbsolutePath(joined)) {
-        rejected.push({ path: file.path, reason: 'needsAbsolutePath' });
-        continue;
+    try {
+      for (const file of files) {
+        const joined = resolveExpectedFile(file.path, context?.workspacePath);
+        if (file.path.startsWith('~') || !isAbsolutePath(joined)) {
+          rejected.push({ path: file.path, reason: 'needsAbsolutePath' });
+          continue;
+        }
+        const resolved = normalizeLexicalPath(joined);
+        // Authorization comes before any disk probe, so an unauthorized path
+        // reveals nothing about whether it exists.
+        if (!(await readAuthorization.allows(resolved))) {
+          rejected.push({ path: resolved, reason: 'notAuthorized' });
+          continue;
+        }
+        if (!(await exists(resolved))) {
+          rejected.push({ path: resolved, reason: 'notFound' });
+          continue;
+        }
+        if (!(await stat(resolved)).isFile) {
+          rejected.push({ path: resolved, reason: 'notAFile' });
+          continue;
+        }
+        accepted.push(resolved);
       }
-      const resolved = normalizeLexicalPath(joined);
-      // Authorization comes before any disk probe, so an unauthorized path
-      // reveals nothing about whether it exists.
-      const check = await checkReadPath(resolved, context?.authorizationScopeId);
-      if (check.allowed !== true) {
-        rejected.push({ path: resolved, reason: 'notAuthorized' });
-        continue;
-      }
-      if (!(await exists(resolved))) {
-        rejected.push({ path: resolved, reason: 'notFound' });
-        continue;
-      }
-      if (!(await stat(resolved)).isFile) {
-        rejected.push({ path: resolved, reason: 'notAFile' });
-        continue;
-      }
-      accepted.push(resolved);
+    } finally {
+      readAuthorization.release();
     }
 
     if (rejected.length > 0) {

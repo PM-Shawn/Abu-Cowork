@@ -17,7 +17,8 @@ vi.mock('../fsBridge', () => ({
 }));
 
 const mockCheckReadPath = vi.fn();
-vi.mock('../pathSafety', () => ({
+vi.mock('../pathSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pathSafety')>()),
   checkReadPath: (...args: unknown[]) => mockCheckReadPath(...args),
 }));
 

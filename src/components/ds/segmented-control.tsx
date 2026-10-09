@@ -3,7 +3,7 @@ import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './icon';
-import { FOCUS_RING } from './styles';
+import { FOCUS_RING, SEGMENT_SELECTED, SEGMENT_TRACK } from './styles';
 
 export interface SegmentOption {
   value: string;
@@ -27,13 +27,13 @@ export function SegmentedControl({ value, onValueChange, options, label, fullWid
       value={value}
       onValueChange={(next) => { if (next) onValueChange(next); }}
       aria-label={label}
-      className={cn('h-7 items-center gap-1 rounded-control bg-fill p-1', fullWidth ? 'flex w-full' : 'inline-flex')}
+      className={cn('h-7 items-center gap-1 rounded-control p-1', SEGMENT_TRACK, fullWidth ? 'flex w-full' : 'inline-flex')}
     >
       {options.map((option) => (
         <ToggleGroupPrimitive.Item
           key={option.value}
           value={option.value}
-          className={cn('inline-flex h-5 items-center gap-1 rounded-control px-3 text-ui text-label-secondary transition-colors duration-fast hover:text-label data-[state=on]:bg-raised data-[state=on]:text-label data-[state=on]:shadow-panel', fullWidth && 'min-w-0 flex-1 justify-center whitespace-nowrap px-1', FOCUS_RING)}
+          className={cn('inline-flex h-5 items-center gap-1 rounded-control px-3 text-ui text-label-secondary transition-colors duration-fast hover:text-label data-[state=on]:text-label', SEGMENT_SELECTED, fullWidth && 'min-w-0 flex-1 justify-center whitespace-nowrap px-1', FOCUS_RING)}
         >
           {option.icon && <Icon icon={option.icon} size="sm" />}
           {option.label}

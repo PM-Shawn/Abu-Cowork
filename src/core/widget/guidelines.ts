@@ -157,7 +157,7 @@ const MODULE_SECTIONS: Record<WidgetGuidelineModule, string> = {
 - Prefer inline SVG for simple charts (a handful of bars/points) — no library needed.
 - For anything data-heavy (multi-series, tooltips, legends), use Chart.js loaded from the CDN allowlist.
 - Chart.js needs a bounded container in the auto-sized widget frame: wrap the canvas in a dedicated \`<div style="position:relative;height:360px">\` (a fixed pixel height, the div containing only the canvas), and set \`maintainAspectRatio:false\`. Without a fixed-height container a responsive chart grows unbounded and renders blank.
-- Canvas cannot resolve CSS custom properties (\`var(--...)\`) — use hardcoded hex colors for canvas-drawn content. The design-system section below documents fixed hex values for exactly this (\`--w-primary\`/\`--w-series-2..4\`); reuse those (they're chosen mid-tone to stay legible on both light and dark hosts) instead of inventing new ones, and avoid pure black/white extremes for canvas text or axes.`,
+- Canvas cannot resolve CSS custom properties (\`var(--...)\`) — use hardcoded hex colors for canvas-drawn content. The design-system section below documents fixed hex values for exactly this (\`--w-series-1..4\`); reuse those (they're chosen mid-tone to stay legible on both light and dark hosts) instead of inventing new ones, and avoid pure black/white extremes for canvas text or axes.`,
   interactive: `## Interactive widgets
 - Wire real event handlers (click, input, change) directly on elements — no \`<form>\` submission flow.
 - Keep state in-memory (plain JS variables/closures); there is no persistent storage available.`,

@@ -1,5 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { memo, useEffect, useMemo, useState } from 'react';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { useRowFocus } from '@/components/common/useRowFocus';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useI18n, format } from '@/i18n';
@@ -9,7 +13,11 @@ import InboxItemRow from './InboxItem';
 
 type Tab = 'pending' | 'all';
 
-export default function InboxView() {
+/**
+ * The inbox page. `App` renders for every piece of a streamed reply, so the page takes no props
+ * and reads one store field at a time.
+ */
+const InboxView = memo(function InboxView() {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>('pending');
 
@@ -19,6 +27,8 @@ export default function InboxView() {
   const ignore = useInboxStore((s) => s.ignore);
   const markRead = useInboxStore((s) => s.markRead);
   const createTodo = useTodosStore((s) => s.createTodo);
+  // An answered item leaves the pending tab, or stays under All without its buttons.
+  const focus = useRowFocus('data-inbox-item');
 
   // Sort all items by createdAt desc; tab filters status === 'pending' when needed.
   // Subscribing to the raw record (stable identity) + useMemo prevents the
@@ -39,6 +49,7 @@ export default function InboxView() {
   }, [markAllRead]);
 
   const handleAccept = (id: string) => {
+    focus.note(id);
     const item = useInboxStore.getState().items[id];
     if (!item || item.type !== 'agent_proposed_todo') {
       accept(id);
@@ -56,47 +67,50 @@ export default function InboxView() {
     accept(id);
   };
 
+  const handleIgnore = (id: string) => {
+    focus.note(id);
+    ignore(id);
+  };
+
   return (
-    <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
-      <div {...windowDragRowProps()} className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
-        <h1 className="text-h-md font-semibold text-[var(--abu-text-primary)]">{t.inbox.title}</h1>
+    <div className="flex h-full flex-col bg-surface">
+      <div {...windowDragRowProps()} className="flex items-center justify-between border-b border-separator px-6 py-4">
+        <h1 className="text-title text-label">{t.inbox.title}</h1>
         <div className="flex items-center gap-2">
-          <div className="flex gap-1 text-body">
+          <div className="flex gap-1">
             {(['pending', 'all'] as Tab[]).map((k) => (
-              <button
+              <Pressable
                 key={k}
+                ref={tab === k ? focus.fallback : undefined}
+                aria-pressed={tab === k}
                 onClick={() => setTab(k)}
                 className={cn(
-                  'px-3 py-1.5 rounded-md',
-                  tab === k
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]',
+                  'h-7 rounded-control px-3 text-ui',
+                  tab === k ? 'bg-fill-selected text-label' : 'text-label-secondary hover:bg-fill-hover',
                 )}
               >
                 {k === 'pending' ? t.inboxTabs.pending : t.inboxTabs.all}
-              </button>
+              </Pressable>
             ))}
           </div>
           {pendingItems.length > 0 && (
-            <span className="text-body text-[var(--abu-text-muted)]">
+            <span className="text-ui-sm text-label-tertiary">
               {format(t.inbox.pendingCount, { count: pendingItems.length })}
             </span>
           )}
         </div>
       </div>
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-6 py-4 space-y-2">
+      <ScrollArea className="min-h-0 flex-1">
+        <div ref={focus.root} className="space-y-2 px-6 py-4">
           {list.length === 0 ? (
-            <div className="px-6 py-16 text-center text-[var(--abu-text-muted)] text-body">
-              {t.inbox.empty}
-            </div>
+            <EmptyState icon={AppIcons.inbox} title={t.inbox.empty} />
           ) : (
             list.map((item) => (
               <InboxItemRow
                 key={item.id}
                 item={item}
                 onAccept={() => handleAccept(item.id)}
-                onIgnore={() => ignore(item.id)}
+                onIgnore={() => handleIgnore(item.id)}
                 onView={() => markRead(item.id)}
               />
             ))
@@ -105,4 +119,6 @@ export default function InboxView() {
       </ScrollArea>
     </div>
   );
-}
+});
+
+export default InboxView;

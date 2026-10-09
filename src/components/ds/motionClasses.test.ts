@@ -7,7 +7,12 @@ import { describe, expect, it } from 'vitest';
 // wherever the bare class appears. Design-system files use state-scoped forms such as
 // `data-[state=open]:animate-in`, which compile to other class names.
 const COMPONENTS_DIR = path.resolve(__dirname, '..');
-const SCANNED_DIRS = [path.join(COMPONENTS_DIR, 'ds'), path.join(COMPONENTS_DIR, 'design-preview')];
+const SCANNED_DIRS = [
+  path.join(COMPONENTS_DIR, 'ds'),
+  path.join(COMPONENTS_DIR, 'design-preview'),
+  path.join(COMPONENTS_DIR, 'window'),
+  path.join(COMPONENTS_DIR, 'sidebar'),
+];
 
 function listSourceFiles(dir: string): string[] {
   const out: string[] = [];
@@ -31,7 +36,7 @@ describe('design-system motion classes', () => {
     expect(files.some((file) => file.endsWith('MotionSection.tsx'))).toBe(true);
   });
 
-  it('never uses the bare animate-in class that the legacy rule hijacks', () => {
+  it('never uses an unscoped enter-animation class that the legacy rule hijacks', () => {
     const offenders: string[] = [];
     for (const file of files) {
       fs.readFileSync(file, 'utf8').split('\n').forEach((line, index) => {

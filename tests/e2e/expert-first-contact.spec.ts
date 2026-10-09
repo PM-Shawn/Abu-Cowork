@@ -44,7 +44,9 @@ for (const team of [false, true]) {
     try {
       let page = await launched.app.firstWindow();
       await page.waitForLoadState('domcontentloaded');
-      await expect(page.getByRole('textbox').first()).toBeVisible({ timeout: 45_000 });
+      // The first-run guide is a modal window: while it shows, the page behind it is out of the
+      // accessibility tree, so the message field is found by its mark and not by its role.
+      await expect(page.locator('[data-chat-composer]').first()).toBeVisible({ timeout: 45_000 });
       await dismissFirstRunOverlays(page);
       await page.evaluate(() => {
         const previous = JSON.parse(localStorage.getItem('abu-team') ?? '{}');
@@ -64,7 +66,7 @@ for (const team of [false, true]) {
           await page.evaluate((enabled) => document.documentElement.classList.toggle('dark', enabled), dark);
           await expect.poll(() => prompts.first().evaluate((el) => {
             const probe = document.createElement('span');
-            probe.style.color = 'var(--abu-border-subtle)';
+            probe.style.color = 'var(--ds-separator)';
             el.append(probe);
             const expected = getComputedStyle(probe).color;
             probe.remove();

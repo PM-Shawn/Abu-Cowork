@@ -1,6 +1,8 @@
 import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
-import { useState, useSyncExternalStore } from 'react';
-import { CornerDownRight, X } from 'lucide-react';
+import { memo, useState, useSyncExternalStore } from 'react';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import {
   dequeueNextUserInput,
   subscribeToInputQueue,
@@ -15,7 +17,6 @@ import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
 
 /**
  * Staging strip for follow-up messages: queued inputs sit at the composer's
@@ -23,7 +24,7 @@ import { Button } from '@/components/ui/button';
  * finishes, each becomes an independent transcript turn; until then the ×
  * removes it without a trace.
  */
-export default function QueuedMessagesStrip({ conversationId }: { conversationId: string }) {
+function QueuedMessagesStrip({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
   const [isResuming, setIsResuming] = useState(false);
   const items = useSyncExternalStore(
@@ -70,28 +71,26 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
       {visible.map((qi) => (
         <div
           key={qi.id}
-          className="flex items-center gap-1.5 max-w-[75%] rounded-full bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] pl-2.5 pr-1 py-1"
+          className="flex max-w-3/4 items-center gap-1 rounded-control bg-fill py-1 pr-1 pl-2"
           title={t.queueStrip.queuedHint}
         >
-          <CornerDownRight className="h-3 w-3 text-[var(--abu-text-muted)] shrink-0" />
-          <span className="text-minor text-[var(--abu-text-muted)] truncate">{qi.text}</span>
-          <button
-            aria-label={t.queueStrip.cancel}
-            title={t.queueStrip.cancel}
+          <Icon icon={AppIcons.queued} size="sm" className="text-label-tertiary" />
+          <span className="truncate text-ui-sm text-label-secondary">{qi.text}</span>
+          <IconButton
+            size="sm"
+            icon={AppIcons.close}
+            label={t.queueStrip.cancel}
             onClick={() => {
               if (qi.teamConfirmationRetryId) useTeamConfirmationStore.getState().revoke(qi.teamConfirmationRetryId);
               removeQueuedInput(conversationId, qi.id);
             }}
-            className="btn-ghost shrink-0 rounded-full p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-          >
-            <X className="h-3 w-3" />
-          </button>
+          />
         </div>
       ))}
       {isPaused && (
-        <div className="flex items-center gap-2 text-caption text-[var(--abu-text-muted)]">
+        <div className="flex items-center gap-2 text-ui-sm text-label-tertiary">
           <span>{t.queueStrip.paused}</span>
-          <Button variant="ghost" size="xs" disabled={isResuming} onClick={handleResume}>
+          <Button variant="plain" size="sm" disabled={isResuming} onClick={handleResume}>
             {t.queueStrip.resume}
           </Button>
         </div>
@@ -99,3 +98,6 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
     </div>
   );
 }
+
+// ChatView re-renders on every streamed token, which is exactly when messages queue up.
+export default memo(QueuedMessagesStrip);

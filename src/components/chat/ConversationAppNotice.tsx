@@ -1,9 +1,9 @@
-import { PackageX } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { InlineMessage } from '@/components/ds/inline-message';
 import { useI18n } from '@/i18n';
 import type { ConversationAppBinding } from '@/types/app';
 import { useAppStore } from '@/stores/appStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-import { Button } from '@/components/ui/button';
 
 /**
  * Shown above the composer when a conversation's app is no longer available
@@ -28,10 +28,13 @@ export default function ConversationAppNotice({ binding }: { binding: Conversati
     : format(origin === 'created' ? t.appHome.removedCreatedNotice : t.appHome.removedNotice, { name: binding.appName });
   const canAddBack = origin === 'market' || origin === 'folder';
   return (
-    <div data-testid="conversation-app-removed" data-origin={origin} className="mb-2 flex items-center gap-3 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-2.5">
-      <PackageX className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" />
-      <p className="min-w-0 flex-1 text-minor text-[var(--abu-text-secondary)]">{message}</p>
-      {canAddBack && <Button size="sm" variant="outline" onClick={() => setAppMarketOpen(true)}>{t.appHome.removedAction}</Button>}
+    <div data-testid="conversation-app-removed" data-origin={origin} className="mb-2">
+      <InlineMessage
+        tone="info"
+        action={canAddBack ? <Button variant="secondary" size="sm" onClick={() => setAppMarketOpen(true)}>{t.appHome.removedAction}</Button> : undefined}
+      >
+        {message}
+      </InlineMessage>
     </div>
   );
 }

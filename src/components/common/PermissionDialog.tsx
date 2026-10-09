@@ -1,8 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, Shield, FolderOpen, Terminal, FileEdit, X } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { Pressable } from '@/components/ds/pressable';
+import { SegmentedControl } from '@/components/ds/segmented-control';
 import { useI18n } from '@/i18n';
-import { cn } from '@/lib/utils';
 import type { PermissionDuration } from '@/stores/permissionStore';
 
 export interface PermissionRequest {
@@ -20,178 +25,49 @@ interface PermissionDialogProps {
   onDeny: () => void;
   onChooseFolder?: () => void;  // For folder-select type
   onAuthorize?: () => void;     // For folder-select: directly authorize suggestedPath
+  // Where the focus goes once the window has left, when the control that had it is gone.
+  onFocusUnplaced?: () => void;
 }
 
+// The kind of grant shows as an icon; the title says it in words.
 const iconMap = {
-  workspace: FolderOpen,
-  shell: Terminal,
-  'file-write': FileEdit,
-  'file-read': FolderOpen,
-  'folder-select': FolderOpen,
+  workspace: AppIcons.folderOpen,
+  shell: AppIcons.terminal,
+  'file-write': AppIcons.fileEdit,
+  'file-read': AppIcons.folderOpen,
+  'folder-select': AppIcons.folderOpen,
 };
 
-const colorMap = {
-  workspace: { color: 'text-[var(--abu-warning)]', bgColor: 'bg-[var(--abu-warning-bg)]' },
-  shell: { color: 'text-[var(--abu-warning)]', bgColor: 'bg-[var(--abu-warning-bg)]' },
-  'file-write': { color: 'text-[var(--abu-info)]', bgColor: 'bg-[var(--abu-info-bg)]' },
-  'file-read': { color: 'text-[var(--abu-success)]', bgColor: 'bg-[var(--abu-success-bg)]' },
-  'folder-select': { color: 'text-[var(--abu-clay)]', bgColor: 'bg-[var(--abu-clay-bg)]' },
-};
+/**
+ * The window that asks for access to a path or a folder: a file read or write, a shell or a
+ * workspace grant with a duration, or a workspace request of a task.
+ *
+ * An approval layer: no other window closes it or covers it, and one approval is on the page at
+ * a time. It opens with the focus on Deny, so Enter and Space pressed as it appears deny.
+ * Escape and the corner button deny as well; a press outside does nothing. Only a press on the
+ * allowing button allows, and a grant for good takes a second press on purpose.
+ *
+ * Another path or another kind of grant is another window: it starts from the default
+ * duration, without the question about a grant for good, and with the focus on Deny. An owner
+ * that shows one request after another for the same path gives each a `key` of its own.
+ */
+export default function PermissionDialog(props: PermissionDialogProps) {
+  return <PermissionWindow key={`${props.request.type}\n${props.request.path ?? ''}`} {...props} />;
+}
 
-export default function PermissionDialog({ request, onAllow, onDeny, onChooseFolder, onAuthorize }: PermissionDialogProps) {
+function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthorize, onFocusUnplaced }: PermissionDialogProps) {
   const [selectedDuration, setSelectedDuration] = useState<PermissionDuration>('session');
   const [showAlwaysConfirm, setShowAlwaysConfirm] = useState(false);
   const { t } = useI18n();
 
-  // Close on Escape key
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      onDeny();
-    }
-  }, [onDeny]);
-
-  useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
-
-  const Icon = iconMap[request.type];
-  const colors = colorMap[request.type];
-
-  // Folder selection variant — two modes:
-  // 1. hasSuggestedPath: authorization-style dialog matching existing permission dialogs
-  // 2. no path: lightweight folder picker prompt
-  if (request.type === 'folder-select') {
-    const hasSuggestedPath = !!request.path;
-    const folderSelectT = t.permission.folderSelect;
-
-    // Authorization mode — matches existing permission dialog layout
-    if (hasSuggestedPath) {
-      return (
-        <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            {/* Header */}
-            <div className="relative px-6 pt-6 pb-4">
-              <button
-                onClick={onDeny}
-                className="absolute top-4 right-4 p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-              >
-                <X className="h-4 w-4" />
-              </button>
-
-              <div className="flex items-start gap-4">
-                <div className={`p-3 rounded-xl ${colors.bgColor}`}>
-                  <Icon className={`h-6 w-6 ${colors.color}`} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">{folderSelectT?.authorizeTitle ?? ''}</h2>
-                  <p className="text-body text-[var(--abu-text-tertiary)] mt-0.5">{folderSelectT?.authorizeDescription ?? ''}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Path display */}
-            <div className="mx-6 px-3 py-2 bg-[var(--abu-bg-muted)] rounded-lg border border-[var(--abu-border)]">
-              <p className="text-body text-[var(--abu-text-tertiary)] truncate font-mono">{request.path}</p>
-            </div>
-
-            {/* Capabilities */}
-            <div className="px-6 py-4">
-              <p className="text-body font-medium text-[var(--abu-text-primary)] mb-2">{t.permission.abuCanDo}</p>
-              <ul className="space-y-1.5">
-                {(folderSelectT?.authorizeCapabilities ?? []).map((cap, i) => (
-                  <li key={i} className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)]">
-                    <Shield className="h-3.5 w-3.5 text-[var(--abu-success)] shrink-0" />
-                    {cap}
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            {/* Warning */}
-            <div className="mx-6 mb-4 p-3 bg-[var(--abu-warning-bg)] border border-[var(--abu-warning)] rounded-lg">
-              <div className="flex gap-2">
-                <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)] shrink-0 mt-0.5" />
-                <p className="text-minor text-[var(--abu-warning)] leading-relaxed">{folderSelectT?.authorizeWarning ?? ''}</p>
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex gap-3 px-6 pb-4">
-              <Button
-                variant="outline"
-                onClick={onDeny}
-                className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
-              >
-                {t.permission.deny}
-              </Button>
-              <Button
-                onClick={onAuthorize}
-                className="flex-1 h-10 text-body text-white bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]"
-              >
-                {folderSelectT?.authorizeButton ?? ''}
-              </Button>
-            </div>
-
-            {/* Choose different folder link */}
-            <div className="px-6 pb-6">
-              <button
-                onClick={onChooseFolder}
-                className="w-full text-center text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] transition-colors underline underline-offset-2"
-              >
-                {folderSelectT?.chooseDifferent ?? ''}
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    // No suggested path — lightweight folder picker prompt
-    return (
-      <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div className="relative w-full max-w-sm mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-          {/* Close button */}
-          <button
-            onClick={onDeny}
-            className="absolute top-4 right-4 p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
-
-          {/* Centered content */}
-          <div className="text-center py-8 px-6">
-            <div className={`inline-flex p-4 rounded-2xl ${colors.bgColor} mb-4`}>
-              <FolderOpen className={`h-12 w-12 ${colors.color}`} />
-            </div>
-
-            <h3 className="text-h-md font-semibold text-[var(--abu-text-primary)] mb-2">
-              {folderSelectT?.title ?? ''}
-            </h3>
-
-            <p className="text-body text-[var(--abu-text-tertiary)] mb-4">
-              {folderSelectT?.description ?? ''}
-            </p>
-
-            <Button
-              size="lg"
-              onClick={onChooseFolder}
-              className="px-8 h-11 text-body bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] text-white"
-            >
-              {folderSelectT?.selectButton ?? ''}
-            </Button>
-          </div>
-
-          {/* Footer hint */}
-          <div className="px-6 pb-6">
-            <p className="text-minor text-[var(--abu-text-muted)] text-center">
-              {folderSelectT?.hint ?? ''}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // The question about a grant for good turns the allowing button, which was just pressed and
+  // has the focus, into the button that grants for good. The focus moves to the button that
+  // takes the question back, so a stray Enter or Space grants nothing.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!showAlwaysConfirm) return;
+    cancelRef.current?.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+  }, [showAlwaysConfirm]);
 
   // Get the appropriate permission config from translations
   const getPermissionConfig = () => {
@@ -211,11 +87,11 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
 
   const config = getPermissionConfig();
 
-  const durationOptions: Array<{ value: PermissionDuration; label: string; description: string }> = [
-    { value: 'once', label: t.permission.durationOnce, description: t.permission.forgetAfterSession },
-    { value: 'session', label: t.permission.durationSession, description: t.permission.forgetAfterSession },
-    { value: '24h', label: t.permission.duration24h, description: '' },
-    { value: 'always', label: t.permission.durationAlways, description: t.permission.rememberChoiceDescription },
+  const durationOptions: Array<{ value: PermissionDuration; label: string }> = [
+    { value: 'once', label: t.permission.durationOnce },
+    { value: 'session', label: t.permission.durationSession },
+    { value: '24h', label: t.permission.duration24h },
+    { value: 'always', label: t.permission.durationAlways },
   ];
 
   const getAllowButtonText = () => {
@@ -236,116 +112,153 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
     onAllow(selectedDuration);
   };
 
-  return (
-    <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-md mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-        {/* Header */}
-        <div className="relative px-6 pt-6 pb-4">
-          <button
-            onClick={onDeny}
-            className="absolute top-4 right-4 p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
+  // A workspace request of a task has two forms: one that names a folder to authorize, and one
+  // that only asks the user to pick a folder.
+  const folderSelectT = t.permission.folderSelect;
+  const isFolderSelect = request.type === 'folder-select';
+  const asksToPick = isFolderSelect && !request.path;
 
-          <div className="flex items-start gap-4">
-            <div className={`p-3 rounded-xl ${colors.bgColor}`}>
-              <Icon className={`h-6 w-6 ${colors.color}`} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">{config.title}</h2>
-              <p className="text-body text-[var(--abu-text-tertiary)] mt-0.5">{config.description}</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Path display */}
-        {request.path && (
-          <div className="mx-6 px-3 py-2 bg-[var(--abu-bg-muted)] rounded-lg border border-[var(--abu-border)]">
-            <p className="text-body text-[var(--abu-text-tertiary)] truncate font-mono">{request.path}</p>
-          </div>
-        )}
-
-        {/* Capabilities */}
-        <div className="px-6 py-4">
-          <p className="text-body font-medium text-[var(--abu-text-primary)] mb-2">{t.permission.abuCanDo}</p>
-          <ul className="space-y-1.5">
-            {config.capabilities.map((cap, i) => (
-              <li key={i} className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)]">
-                <Shield className="h-3.5 w-3.5 text-[var(--abu-success)] shrink-0" />
-                {cap}
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {/* Warning */}
-        <div className="mx-6 mb-4 p-3 bg-[var(--abu-warning-bg)] border border-[var(--abu-warning)] rounded-lg">
-          <div className="flex gap-2">
-            <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)] shrink-0 mt-0.5" />
-            <p className="text-minor text-[var(--abu-warning)] leading-relaxed">{config.warning}</p>
-          </div>
-        </div>
-
-        {/* Duration selector - segmented control */}
-        <div className="mx-6 mb-4">
-          <p className="text-minor text-[var(--abu-text-tertiary)] mb-2">{t.permission.durationLabel}</p>
-          <div className="flex items-center gap-1 p-1 bg-[var(--abu-bg-active)] rounded-lg">
-            {durationOptions.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => setSelectedDuration(option.value)}
-                className={cn(
-                  'flex-1 px-2 py-1.5 rounded-md text-minor font-medium transition-colors text-center',
-                  option.value === selectedDuration
-                    ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-white/50'
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Always-confirm inline warning */}
-        {showAlwaysConfirm && (
-          <div className="mx-6 mb-4 p-3 bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] rounded-lg">
-            <div className="flex gap-2">
-              <AlertTriangle className="h-4 w-4 text-[var(--abu-danger)] shrink-0 mt-0.5" />
-              <p className="text-minor text-[var(--abu-danger)] leading-relaxed">{t.permission.durationAlwaysConfirm}</p>
-            </div>
-          </div>
-        )}
-
-        {/* Actions */}
-        <div className="flex gap-3 px-6 pb-6">
-          <Button
-            variant="outline"
-            onClick={() => {
-              if (showAlwaysConfirm) {
-                setShowAlwaysConfirm(false);
-              } else {
-                onDeny();
-              }
-            }}
-            className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
-          >
-            {showAlwaysConfirm ? t.common.cancel : t.permission.deny}
-          </Button>
-          <Button
-            onClick={handleAllow}
-            className={cn(
-              'flex-1 h-10 text-body text-white',
-              showAlwaysConfirm
-                ? 'bg-[var(--abu-danger-solid)] hover:opacity-90'
-                : 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]'
-            )}
-          >
-            {showAlwaysConfirm ? t.common.confirm : getAllowButtonText()}
-          </Button>
-        </div>
-      </div>
+  const pathBlock = request.path && (
+    // The path, verbatim and whole: a long one wraps.
+    <div className="break-all rounded-control bg-code px-3 py-2 font-code text-ui-sm text-label">{request.path}</div>
+  );
+  const capabilityList = (capabilities: string[]) => (
+    <div>
+      <p className="mb-2 text-ui font-medium text-label">{t.permission.abuCanDo}</p>
+      <ul className="space-y-1">
+        {capabilities.map((cap, i) => (
+          <li key={i} className="flex items-center gap-2 text-ui text-label-secondary">
+            <Icon icon={AppIcons.done} size="sm" className="text-success" />
+            {cap}
+          </li>
+        ))}
+      </ul>
     </div>
+  );
+
+  let title: string;
+  let description: string | undefined;
+  let body: ReactNode;
+  let footer: ReactNode;
+  if (asksToPick) {
+    title = folderSelectT?.title ?? '';
+    // The explanation is the window's description, as in every other form of it.
+    description = folderSelectT?.description ?? '';
+    body = (
+      <div className="flex flex-col items-center gap-3 text-center">
+        {/* Pressing it only opens the system folder picker; the owner authorizes the folder
+            that picker returns. */}
+        <Button variant="primary" icon={AppIcons.folderOpen} onClick={onChooseFolder}>
+          {folderSelectT?.selectButton ?? ''}
+        </Button>
+        <p className="text-caption text-label-tertiary">{folderSelectT?.hint ?? ''}</p>
+      </div>
+    );
+  } else if (isFolderSelect) {
+    title = folderSelectT?.authorizeTitle ?? '';
+    description = folderSelectT?.authorizeDescription ?? '';
+    body = (
+      <div className="space-y-3">
+        {pathBlock}
+        {capabilityList(folderSelectT?.authorizeCapabilities ?? [])}
+        <InlineMessage tone="warning">{folderSelectT?.authorizeWarning ?? ''}</InlineMessage>
+      </div>
+    );
+    footer = (
+      <div className="flex w-full flex-col gap-2">
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" data-approval-cancel="" onClick={onDeny}>
+            {t.permission.deny}
+          </Button>
+          <Button variant="primary" onClick={onAuthorize}>
+            {folderSelectT?.authorizeButton ?? ''}
+          </Button>
+        </div>
+        <Pressable
+          className="w-full text-center text-ui-sm text-label-tertiary underline underline-offset-2 hover:text-label"
+          onClick={onChooseFolder}
+        >
+          {folderSelectT?.chooseDifferent ?? ''}
+        </Pressable>
+      </div>
+    );
+  } else {
+    title = config.title;
+    description = config.description;
+    body = (
+      <div className="space-y-3">
+        {pathBlock}
+        {capabilityList(config.capabilities)}
+        <InlineMessage tone="warning">{config.warning}</InlineMessage>
+        <div>
+          <p className="mb-2 text-ui-sm text-label-secondary">{t.permission.durationLabel}</p>
+          {/* Arrow keys move the focus among the four; Enter, Space or a press chooses one. */}
+          <SegmentedControl
+            fullWidth
+            label={t.permission.durationLabel}
+            value={selectedDuration}
+            onValueChange={(value) => {
+              const chosen = durationOptions.find((option) => option.value === value);
+              if (chosen) setSelectedDuration(chosen.value);
+            }}
+            options={durationOptions}
+          />
+        </div>
+        {showAlwaysConfirm && <InlineMessage tone="danger">{t.permission.durationAlwaysConfirm}</InlineMessage>}
+      </div>
+    );
+    footer = (
+      <>
+        <Button
+          ref={cancelRef}
+          variant="secondary"
+          data-approval-cancel=""
+          onClick={() => {
+            if (showAlwaysConfirm) {
+              setShowAlwaysConfirm(false);
+            } else {
+              onDeny();
+            }
+          }}
+        >
+          {showAlwaysConfirm ? t.common.cancel : t.permission.deny}
+        </Button>
+        <Button variant="primary" onClick={handleAllow}>
+          {showAlwaysConfirm ? t.common.confirm : getAllowButtonText()}
+        </Button>
+      </>
+    );
+  }
+
+  return (
+    <Dialog
+      open
+      layer="approval"
+      role="alertdialog"
+      size="md"
+      closeButton
+      outsidePress="ignore"
+      // A workspace request answers itself 60 seconds after it was asked: among the approvals
+      // that wait their turn it goes first.
+      urgent={isFolderSelect}
+      // The question about a grant for good turns the allowing button into the one that grants
+      // for good, at the same spot: the window holds pointer presses back again, as when it appeared.
+      settleKey={showAlwaysConfirm}
+      // Escape and the corner button. The layer registry never closes an approval.
+      onOpenChange={(next) => { if (!next) onDeny(); }}
+      title={title}
+      description={description}
+      // The form that only asks for a folder has no Deny: it opens on its one button.
+      initialFocus={(content) => content.querySelector<HTMLElement>('[data-approval-cancel]')}
+      onFocusUnplaced={onFocusUnplaced}
+      header={(
+        <div className={asksToPick ? 'flex justify-center' : 'flex items-start gap-3'}>
+          <Icon icon={iconMap[request.type]} size="lg" className="text-label-secondary" />
+        </div>
+      )}
+      footer={footer}
+    >
+      {body}
+    </Dialog>
   );
 }

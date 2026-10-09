@@ -1,9 +1,12 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { createRef } from 'react';
+import { useState } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { Menu, MenuItem } from '@/components/ds/menu';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ProviderInstance } from '@/types/provider';
@@ -16,10 +19,27 @@ vi.mock('@/core/llm/managedProviderRefresh', () => ({
 }));
 
 vi.mock('@/stores/chatStore', () => ({
-  useActiveConversation: () => undefined,
-  useChatStore: (selector: (state: { setConversationModel: () => void }) => unknown) =>
-    selector({ setConversationModel: () => {} }),
+  useChatStore: (selector: (state: {
+    activeConversationId: string | null;
+    conversations: Record<string, unknown>;
+    setConversationModel: () => void;
+  }) => unknown) => selector({ activeConversationId: null, conversations: {}, setConversationModel: () => {} }),
 }));
+
+const TRIGGER = 'Pick a model';
+
+// The composer's model button next to another toolbar menu, both inside the app's provider.
+function Toolbar({ initiallyOpen }: { initiallyOpen: boolean }) {
+  const [open, setOpen] = useState(initiallyOpen);
+  return (
+    <DesignSystemProvider>
+      <ModelSelector open={open} onOpenChange={setOpen} trigger={<Button>{TRIGGER}</Button>} />
+      <Menu trigger={<Button>Add</Button>}>
+        <MenuItem>Attach</MenuItem>
+      </Menu>
+    </DesignSystemProvider>
+  );
+}
 
 const personal: ProviderInstance = {
   id: 'deepseek',
@@ -59,7 +79,7 @@ function open(providers: ProviderInstance[]): void {
     recentModels: [],
     favoriteModels: [],
   });
-  render(<ModelSelector open onClose={() => {}} anchorRef={createRef<HTMLElement>()} />);
+  render(<Toolbar initiallyOpen />);
 }
 
 function isBefore(first: HTMLElement, second: HTMLElement): boolean {
@@ -133,5 +153,88 @@ describe('ModelSelector with a managed provider', () => {
 
     expect(screen.getByText('deepseek-v3')).toBeInTheDocument();
     expect(screen.queryByText('我的模型')).not.toBeInTheDocument();
+  });
+});
+
+describe('ModelSelector as a floating layer', () => {
+  beforeAll(() => {
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => undefined;
+    Element.prototype.scrollIntoView ??= () => undefined;
+  });
+
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    useSettingsStore.setState({
+      providers: [personal],
+      activeModel: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+      recentModels: [],
+      favoriteModels: [],
+    });
+  });
+  afterEach(cleanup);
+
+  it('puts the cursor in the search field when it opens', async () => {
+    const user = userEvent.setup();
+    render(<Toolbar initiallyOpen={false} />);
+
+    await user.click(screen.getByRole('button', { name: TRIGGER }));
+
+    expect(await screen.findByRole('textbox', { name: '搜索...' })).toHaveFocus();
+  });
+
+  it('closes when another menu on the page opens, so only one is ever open', async () => {
+    const user = userEvent.setup();
+    render(<Toolbar initiallyOpen={false} />);
+    await user.click(screen.getByRole('button', { name: TRIGGER }));
+    expect(await screen.findByText('DeepSeek Chat')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(await screen.findByRole('menuitem', { name: 'Attach' })).toBeInTheDocument();
+    expect(screen.queryByText('DeepSeek Chat')).not.toBeInTheDocument();
+  });
+
+  it('closes on Escape and puts focus back on its button', async () => {
+    const user = userEvent.setup();
+    render(<Toolbar initiallyOpen={false} />);
+    const trigger = screen.getByRole('button', { name: TRIGGER });
+    await user.click(trigger);
+    expect(await screen.findByText('DeepSeek Chat')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByText('DeepSeek Chat')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('marks the model in use as selected with a check', () => {
+    open([personal]);
+
+    const row = screen.getByText('DeepSeek Chat').closest('[role="button"]');
+    expect(row).toHaveClass('bg-fill-selected');
+    // The check, then the favorite star.
+    expect(row?.querySelectorAll('svg')).toHaveLength(2);
+  });
+
+  it('adds a model to favorites from its row without picking it', async () => {
+    const user = userEvent.setup();
+    open([personal]);
+
+    await user.click(screen.getByRole('button', { name: 'Favorite' }));
+
+    expect(useSettingsStore.getState().favoriteModels).toEqual([{ providerId: 'deepseek', modelId: 'deepseek-chat' }]);
+    expect(screen.getByText('Favorites')).toBeInTheDocument();
+    // A favorite shows as a filled star, not as a pressed toggle with the selected fill.
+    const stars = screen.getAllByRole('button', { name: 'Favorite', pressed: true });
+    expect(stars.length).toBeGreaterThan(0);
+    for (const star of stars) {
+      expect(star).not.toHaveClass('aria-pressed:bg-fill-selected');
+      expect(star).not.toHaveClass('aria-pressed:not-aria-disabled:hover:bg-fill-selected');
+      expect(star).not.toHaveClass('aria-pressed:text-label');
+      // The opt-out is the button's own prop: the row adds no pressed-state classes.
+      expect(star).not.toHaveClass('aria-pressed:bg-transparent');
+      expect(star).not.toHaveClass('aria-pressed:hover:bg-fill-hover');
+    }
   });
 });

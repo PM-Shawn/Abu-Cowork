@@ -1,10 +1,45 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, RotateCcw, RotateCw, Scan, ZoomIn, ZoomOut } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
 import { useI18n } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { cn } from '@/lib/utils';
 import { clampImageZoom, IMAGE_ZOOM_MAX, IMAGE_ZOOM_MIN, nextImageRotation } from './imagePreviewMath';
+
+// Panning a zoomed image re-renders the preview on every pointer move. The toolbar mounts a
+// tooltip per button, so it takes only the zoom, the copied flag and stable handlers.
+const ImageToolbar = memo(function ImageToolbar({ zoom, copied, onZoom, onRotate, onReset, onCopy }: {
+  zoom: number;
+  copied: boolean;
+  onZoom: (next: number) => void;
+  onRotate: (direction: -1 | 1) => void;
+  onReset: () => void;
+  onCopy: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-panel bg-raised p-1 shadow-float">
+      <IconButton size="sm" icon={AppIcons.zoomOut} label={t.panel.imageZoomOut} onClick={() => onZoom(zoom - 0.25)} disabled={zoom <= IMAGE_ZOOM_MIN} />
+      <span className="min-w-11 select-none text-center text-caption tabular-nums text-label-tertiary">
+        {Math.round(zoom * 100)}%
+      </span>
+      <IconButton size="sm" icon={AppIcons.zoomIn} label={t.panel.imageZoomIn} onClick={() => onZoom(zoom + 0.25)} disabled={zoom >= IMAGE_ZOOM_MAX} />
+      <div className="mx-1 h-4 w-px bg-separator" />
+      <IconButton size="sm" icon={AppIcons.rotateLeft} label={t.panel.imageRotateLeft} onClick={() => onRotate(-1)} />
+      <IconButton size="sm" icon={AppIcons.rotateRight} label={t.panel.imageRotateRight} onClick={() => onRotate(1)} />
+      <IconButton size="sm" icon={AppIcons.fitView} label={t.panel.imageResetView} onClick={onReset} />
+      <div className="mx-1 h-4 w-px bg-separator" />
+      <IconButton
+        size="sm"
+        icon={copied ? AppIcons.done : AppIcons.copy}
+        label={t.panel.imageCopy}
+        // The button's own hover color would replace the success color under the pointer.
+        className={copied ? 'text-success hover:text-success' : undefined}
+        onClick={onCopy}
+      />
+    </div>
+  );
+});
 
 export default function ImagePreview({ src, alt }: { src: string; alt: string }) {
   const { t } = useI18n();
@@ -23,19 +58,23 @@ export default function ImagePreview({ src, alt }: { src: string; alt: string })
     setCopied(false);
   }, [src]);
 
-  const resetView = () => {
+  const resetView = useCallback(() => {
     setZoom(1);
     setRotation(0);
     setOffset({ x: 0, y: 0 });
-  };
+  }, []);
 
-  const changeZoom = (next: number) => {
+  const changeZoom = useCallback((next: number) => {
     const clamped = clampImageZoom(next);
     setZoom(clamped);
     if (clamped <= 1) setOffset({ x: 0, y: 0 });
-  };
+  }, []);
 
-  const copyImage = async () => {
+  const rotate = useCallback((direction: -1 | 1) => {
+    setRotation((value) => nextImageRotation(value, direction));
+  }, []);
+
+  const copyImage = useCallback(async () => {
     try {
       const image = imageRef.current;
       if (!image || image.naturalWidth === 0 || typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) {
@@ -58,29 +97,35 @@ export default function ImagePreview({ src, alt }: { src: string; alt: string })
       console.error('[ImagePreview] Failed to copy image:', error);
       useToastStore.getState().addToast({ type: 'error', title: t.panel.imageCopyFailed });
     }
-  };
+  }, [t]);
+
+  const handleCopy = useCallback(() => {
+    void copyImage();
+  }, [copyImage]);
 
   return (
     <div
-      className="relative flex h-full min-h-0 items-center justify-center overflow-hidden bg-[var(--abu-bg-active)] outline-none"
-      onDoubleClick={resetView}
+      className="relative flex h-full min-h-0 items-center justify-center overflow-hidden bg-code outline-none"
       onWheel={(event) => {
         if (!event.metaKey && !event.ctrlKey) return;
         event.preventDefault();
         changeZoom(zoom + (event.deltaY < 0 ? 0.25 : -0.25));
       }}
-      title={t.panel.imageDoubleClickReset}
     >
       <div
         className="pointer-events-none absolute inset-0 opacity-40"
-        style={{ backgroundImage: 'radial-gradient(circle, var(--abu-border-hover) 0.7px, transparent 0.8px)', backgroundSize: '16px 16px' }}
+        style={{ backgroundImage: 'radial-gradient(circle, var(--ds-control-border) 0.7px, transparent 0.8px)', backgroundSize: '16px 16px' }}
       />
 
+      {/* The hint and the double-click reset sit on the stage, a sibling of the toolbar: the hint
+          never shows over a button's own tooltip, and two quick clicks on a button do not reset. */}
       <div
         className={cn(
           'relative flex h-full w-full items-center justify-center p-8',
           zoom > 1 ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default',
         )}
+        title={t.panel.imageDoubleClickReset}
+        onDoubleClick={resetView}
         onPointerDown={(event) => {
           if (zoom <= 1) return;
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -109,36 +154,12 @@ export default function ImagePreview({ src, alt }: { src: string; alt: string })
           src={src}
           alt={alt}
           draggable={false}
-          className="max-h-full max-w-full select-none object-contain shadow-[0_18px_45px_rgba(35,31,23,0.12)] transition-transform duration-150 ease-out"
+          className="max-h-full max-w-full select-none object-contain shadow-panel transition-transform duration-fast ease-enter"
           style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom}) rotate(${rotation}deg)` }}
         />
       </div>
 
-      <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] p-1 shadow-[0_10px_30px_rgba(35,31,23,0.13)]">
-        <Button variant="ghost" size="icon-xs" onClick={() => changeZoom(zoom - 0.25)} disabled={zoom <= IMAGE_ZOOM_MIN} title={t.panel.imageZoomOut}>
-          <ZoomOut className="size-3.5" strokeWidth={1.6} />
-        </Button>
-        <span className="min-w-11 select-none text-center text-caption tabular-nums text-[var(--abu-text-tertiary)]">
-          {Math.round(zoom * 100)}%
-        </span>
-        <Button variant="ghost" size="icon-xs" onClick={() => changeZoom(zoom + 0.25)} disabled={zoom >= IMAGE_ZOOM_MAX} title={t.panel.imageZoomIn}>
-          <ZoomIn className="size-3.5" strokeWidth={1.6} />
-        </Button>
-        <div className="mx-1 h-4 w-px bg-[var(--abu-border-subtle)]" />
-        <Button variant="ghost" size="icon-xs" onClick={() => setRotation((value) => nextImageRotation(value, -1))} title={t.panel.imageRotateLeft}>
-          <RotateCcw className="size-3.5" strokeWidth={1.6} />
-        </Button>
-        <Button variant="ghost" size="icon-xs" onClick={() => setRotation((value) => nextImageRotation(value, 1))} title={t.panel.imageRotateRight}>
-          <RotateCw className="size-3.5" strokeWidth={1.6} />
-        </Button>
-        <Button variant="ghost" size="icon-xs" onClick={resetView} title={t.panel.imageResetView}>
-          <Scan className="size-3.5" strokeWidth={1.6} />
-        </Button>
-        <div className="mx-1 h-4 w-px bg-[var(--abu-border-subtle)]" />
-        <Button variant="ghost" size="icon-xs" onClick={() => void copyImage()} title={t.panel.imageCopy}>
-          {copied ? <Check className="size-3.5 text-[var(--abu-success)]" strokeWidth={1.8} /> : <Copy className="size-3.5" strokeWidth={1.6} />}
-        </Button>
-      </div>
+      <ImageToolbar zoom={zoom} copied={copied} onZoom={changeZoom} onRotate={rotate} onReset={resetView} onCopy={handleCopy} />
     </div>
   );
 }

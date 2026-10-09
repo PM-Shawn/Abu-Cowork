@@ -1,13 +1,16 @@
-import { useEffect, useLayoutEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useId, useLayoutEffect, useState } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useI18n } from '@/i18n';
-import { Eye, EyeOff, Pencil, Trash2, Star, X } from 'lucide-react';
+import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select, type SelectOption } from '@/components/ui/select';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Select, type SelectOption } from '@/components/ds/select';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
+import SecretField from '@/components/settings/SecretField';
 import { isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from '@/core/llm/imageGen';
 import type { ImageGenBackend, ImageGenVendor } from '@/types/provider';
 
@@ -30,6 +33,9 @@ function isDraftValid(draft: BackendDraft): boolean {
   return draft.name.trim().length > 0 && draft.baseUrl.trim().length > 0 && draft.model.trim().length > 0;
 }
 
+const DRAFT_FIELDS = ['name', 'vendor', 'baseUrl', 'apiKey', 'model'] as const satisfies readonly (keyof BackendDraft)[];
+const FIELD_LABEL = 'block text-ui-sm font-medium text-label';
+
 /** Add/edit form fields for a single backend, including the vendor picker
  *  (F5 — lets a user on a corporate proxy/gateway domain that doesn't match
  *  the baseUrl-host heuristics in `vendorResolve.ts` force the right
@@ -44,7 +50,7 @@ function BackendForm({
   onChange: (patch: Partial<BackendDraft>) => void;
 }) {
   const { t } = useI18n();
-  const [showKey, setShowKey] = useState(false);
+  const fieldId = useId();
 
   const vendorOptions: SelectOption[] = [
     { value: 'custom', label: t.settings.imageGenVendorAuto },
@@ -57,24 +63,28 @@ function BackendForm({
   return (
     <div className="space-y-3">
       <div className="space-y-1">
-        <label className="text-minor font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenBackendName}</label>
-        <Input
+        <label htmlFor={`${fieldId}-name`} className={FIELD_LABEL}>{t.settings.imageGenBackendName}</label>
+        <TextField
+          id={`${fieldId}-name`}
           value={draft.name}
           onChange={(e) => onChange({ name: e.target.value })}
           placeholder={t.settings.imageGenBackendNamePlaceholder}
         />
       </div>
       <div className="space-y-1">
-        <label className="text-minor font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenVendor}</label>
+        <label className={FIELD_LABEL}>{t.settings.imageGenVendor}</label>
         <Select
+          fullWidth
+          label={t.settings.imageGenVendor}
           value={draft.vendor}
           options={vendorOptions}
-          onChange={(v) => onChange({ vendor: v as ImageGenVendor })}
+          onValueChange={(v) => onChange({ vendor: v as ImageGenVendor })}
         />
       </div>
       <div className="space-y-1">
-        <label className="text-minor font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenBaseUrl}</label>
-        <Input
+        <label htmlFor={`${fieldId}-address`} className={FIELD_LABEL}>{t.settings.imageGenBaseUrl}</label>
+        <TextField
+          id={`${fieldId}-address`}
           value={draft.baseUrl}
           onChange={(e) => onChange({ baseUrl: e.target.value })}
           placeholder={t.settings.imageGenBaseUrlPlaceholder}
@@ -83,48 +93,36 @@ function BackendForm({
             better (e.g. a gateway that proxies /api/coding/ to an image
             model), so this only warns about the known-broken V41 shape. */}
         {isVolcengineChatEndpoint(draft.baseUrl, draft.vendor) && (
-          <p className="text-minor text-[var(--abu-warning)]">
+          <InlineMessage tone="warning">
             {t.settings.imageGenChatEndpointWarning.replace('{url}', VOLCENGINE_IMAGE_BASE_URL)}
-          </p>
+          </InlineMessage>
         )}
       </div>
       <div className="space-y-1">
-        <label className="text-minor font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenApiKey}</label>
-        <div className="relative">
-          <Input
-            type={showKey ? 'text' : 'password'}
-            value={draft.apiKey}
-            onChange={(e) => onChange({ apiKey: e.target.value })}
-            placeholder={t.settings.imageGenApiKeyPlaceholder}
-            className="pr-9"
-          />
-          <button
-            type="button"
-            onClick={() => setShowKey((s) => !s)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] rounded"
-          >
-            {showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-          </button>
-        </div>
+        <label htmlFor={`${fieldId}-key`} className={FIELD_LABEL}>{t.settings.imageGenApiKey}</label>
+        <SecretField
+          id={`${fieldId}-key`}
+          value={draft.apiKey}
+          onChange={(apiKey) => onChange({ apiKey })}
+          placeholder={t.settings.imageGenApiKeyPlaceholder}
+        />
       </div>
       <div className="space-y-1">
-        <label className="text-minor font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenModel}</label>
-        <Input
+        <label htmlFor={`${fieldId}-model`} className={FIELD_LABEL}>{t.settings.imageGenModel}</label>
+        <TextField
+          id={`${fieldId}-model`}
           value={draft.model}
           onChange={(e) => onChange({ model: e.target.value })}
           placeholder={t.settings.imageGenModelPlaceholder}
-          className="font-mono"
+          className="font-code"
         />
       </div>
     </div>
   );
 }
 
-/** Add/edit modal — mirrors AddProviderModal's structural pattern (portal to
- *  <body>, backdrop that swallows mousedown but doesn't close-on-click,
- *  header with title + X, scrolling body, footer with cancel/save) so the
- *  image-gen backend flow matches the "add model" affordance elsewhere in
- *  Settings instead of the old inline-expanding row. */
+/** Add/edit form in a dialog. Escape, a click outside, Cancel and the close
+ *  button all close it; once something was typed they ask before discarding it. */
 export function ImageGenBackendModal({
   open,
   onClose,
@@ -138,6 +136,8 @@ export function ImageGenBackendModal({
   const addImageGenBackend = useSettingsStore((s) => s.addImageGenBackend);
   const updateImageGenBackend = useSettingsStore((s) => s.updateImageGenBackend);
   const [draft, setDraft] = useState<BackendDraft>(emptyDraft());
+  // What the form held when it opened; the user has something to lose once the draft differs.
+  const [opened, setOpened] = useState<BackendDraft>(draft);
 
   // Prefill/reset synchronously before paint, keyed on the edited backend's id
   // (not the object reference) so a background store update to the same
@@ -145,23 +145,16 @@ export function ImageGenBackendModal({
   // mirrors AddProviderModal's prefillFromEditProvider/resetFormState effect.
   useLayoutEffect(() => {
     if (!open) return;
-    setDraft(editBackend ? draftFromBackend(editBackend) : emptyDraft());
+    const next = editBackend ? draftFromBackend(editBackend) : emptyDraft();
+    setOpened(next);
+    setDraft(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editBackend?.id]);
 
-  useEffect(() => {
-    if (!open) return;
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   const canSave = isDraftValid(draft);
   const handleSave = () => {
+    // The window stays on screen while it fades out; a second click then must not save again.
+    if (!open) return;
     if (!canSave) return;
     if (editBackend) {
       updateImageGenBackend(editBackend.id, draft);
@@ -171,39 +164,24 @@ export function ImageGenBackendModal({
     onClose();
   };
 
-  return createPortal(
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50"
-      onMouseDown={(e) => { e.stopPropagation(); }}
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={editBackend ? t.settings.imageGenEditBackend : t.settings.imageGenAddBackend}
+      size="md"
+      closeButton
+      dirty={DRAFT_FIELDS.some((field) => draft[field] !== opened[field])}
+      footer={(
+        <>
+          {/* Cancel closes the way Escape does: typed input is asked about first. */}
+          <DialogClose asChild><Button variant="secondary">{t.common.cancel}</Button></DialogClose>
+          <Button variant="primary" onClick={handleSave} disabled={!canSave}>{t.common.save}</Button>
+        </>
+      )}
     >
-      <div
-        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-150"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
-          <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">
-            {editBackend ? t.settings.imageGenEditBackend : t.settings.imageGenAddBackend}
-          </h2>
-          <Button variant="ghost" size="icon-sm" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 pt-4 pb-5">
-          <BackendForm draft={draft} onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))} />
-        </div>
-
-        {/* Footer */}
-        <div className="shrink-0 px-6 py-4 border-t border-[var(--abu-border)] flex items-center justify-end gap-3">
-          <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
-          <Button onClick={handleSave} disabled={!canSave}>{t.common.save}</Button>
-        </div>
-      </div>
-    </div>,
-    document.body
+      <BackendForm draft={draft} onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))} />
+    </Dialog>
   );
 }
 
@@ -216,18 +194,30 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
   const imageGeneration = useSettingsStore((s) => s.imageGeneration);
   const removeImageGenBackend = useSettingsStore((s) => s.removeImageGenBackend);
   const setDefaultImageBackend = useSettingsStore((s) => s.setDefaultImageBackend);
-
-  const [deleteTarget, setDeleteTarget] = useState<ImageGenBackend | null>(null);
+  const confirm = useConfirm();
 
   const { backends, defaultId } = imageGeneration;
   const defaultBackend = backends.find((b) => b.id === defaultId) ?? backends[0] ?? null;
 
+  const deleteBackend = async (backend: ImageGenBackend) => {
+    const confirmed = await confirm({
+      title: t.settings.imageGenDeleteConfirmTitle,
+      message: format(t.settings.imageGenDeleteConfirmMessage, { name: backend.name }),
+      confirmLabel: t.common.delete,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    // The answer is about the backend as it is now: it may have gone while the question was open.
+    const current = useSettingsStore.getState().imageGeneration.backends.find((b) => b.id === backend.id);
+    if (current) removeImageGenBackend(current.id);
+  };
+
   return (
     <div className="space-y-3">
       {backends.length === 0 && (
-        <div className="text-center py-4">
-          <p className="text-body text-[var(--abu-text-muted)]">{t.settings.imageGenNoBackends}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-1">{t.settings.imageGenNoBackendsHint}</p>
+        <div className="py-4 text-center">
+          <p className="text-ui text-label-secondary">{t.settings.imageGenNoBackends}</p>
+          <p className="mt-1 text-ui-sm text-label-secondary">{t.settings.imageGenNoBackendsHint}</p>
         </div>
       )}
 
@@ -238,63 +228,38 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
             return (
               <div
                 key={backend.id}
-                className="flex items-center gap-2 rounded-lg border border-[var(--abu-border)] px-3 py-2"
+                className="flex items-center gap-2 rounded-control border border-separator px-3 py-2"
               >
-                <button
-                  type="button"
+                <IconButton
+                  size="sm"
+                  icon={AppIcons.favorite}
+                  label={t.settings.imageGenSetDefault}
+                  aria-pressed={isDefault}
+                  // The default is shown by the filled star alone.
+                  pressedFill={false}
+                  className={cn(isDefault && '[&_svg]:fill-current')}
                   onClick={() => setDefaultImageBackend(backend.id)}
-                  title={t.settings.imageGenSetDefault}
-                  className={cn(
-                    'shrink-0 p-0.5 rounded transition-colors',
-                    isDefault ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-warning)]',
-                  )}
-                >
-                  <Star className={cn('h-4 w-4', isDefault && 'fill-current')} />
-                </button>
+                />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-body text-[var(--abu-text-primary)] truncate">{backend.name}</span>
+                    <span className="truncate text-ui text-label">{backend.name}</span>
                     {isDefault && (
-                      <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]">
-                        {t.settings.imageGenDefaultBadge}
+                      <span className="inline-flex shrink-0">
+                        <Tag>{t.settings.imageGenDefaultBadge}</Tag>
                       </span>
                     )}
                   </div>
-                  <div className="text-minor text-[var(--abu-text-muted)] truncate">
+                  <div className="truncate text-ui-sm text-label-secondary">
                     {backend.model || backend.name}
                   </div>
                 </div>
-                <Button variant="ghost" size="icon-xs" onClick={() => onEdit(backend)} title={t.settings.imageGenEditBackend}>
-                  <Pencil className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  onClick={() => setDeleteTarget(backend)}
-                  className="text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
-                  title={t.common.delete}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+                <IconButton size="sm" icon={AppIcons.rename} label={t.settings.imageGenEditBackend} onClick={() => onEdit(backend)} />
+                <IconButton size="sm" icon={AppIcons.delete} label={t.common.delete} onClick={() => { void deleteBackend(backend); }} />
               </div>
             );
           })}
         </div>
       )}
-
-      <ConfirmDialog
-        open={!!deleteTarget}
-        title={t.settings.imageGenDeleteConfirmTitle}
-        message={t.settings.imageGenDeleteConfirmMessage.replace('{name}', deleteTarget?.name ?? '')}
-        confirmText={t.common.delete}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onConfirm={() => {
-          if (deleteTarget) removeImageGenBackend(deleteTarget.id);
-          setDeleteTarget(null);
-        }}
-        onCancel={() => setDeleteTarget(null)}
-      />
     </div>
   );
 }

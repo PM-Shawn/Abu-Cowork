@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle } from 'lucide-react';
 import type { ToolCall } from '@/types';
 import { useI18n } from '@/i18n';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
 import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';
 import HtmlWidgetBlock from './HtmlWidgetBlock';
@@ -42,24 +45,35 @@ function readLoadingMessages(input: Record<string, unknown> | undefined): string
   return raw.filter((m): m is string => typeof m === 'string');
 }
 
-/** Compact one-line muted status row — used for validation failures and
- *  cancelled/hook-blocked calls (the call is hidden from the generic tool
- *  list, so without this row a failed widget would vanish without a trace). */
-function WidgetStatusRow({ label, title }: { label: string; title?: string }) {
+/** One-line status row — used for validation failures and cancelled/hook-blocked
+ *  calls (the call is hidden from the generic tool list, so without this row a
+ *  failed widget would vanish without a trace). A failure is a danger message;
+ *  a cancelled call is a muted line, since nothing went wrong. */
+function WidgetStatusRow({ label, title, failed }: { label: string; title?: string; failed: boolean }) {
+  const text = (
+    <span className="block min-w-0 truncate">
+      {label}
+      {title ? ` · ${title}` : ''}
+    </span>
+  );
+  if (failed) {
+    return (
+      <div className="my-2">
+        <InlineMessage tone="danger">{text}</InlineMessage>
+      </div>
+    );
+  }
   return (
-    <div className="my-2 flex items-center gap-1.5 text-minor text-[var(--abu-text-muted)]">
-      <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 truncate">
-        {label}
-        {title ? ` · ${title}` : ''}
-      </span>
+    <div className="my-2 flex items-center gap-2 text-ui-sm text-label-tertiary">
+      <Icon icon={AppIcons.info} size="sm" />
+      {text}
     </div>
   );
 }
 
-/** Pulsing skeleton shown while show_widget executes. Cycles through the
- *  model-provided loading_messages (they're written for exactly this) every
- *  couple of seconds; a single message just stays put. */
+/** Shown while show_widget executes. Cycles through the model-provided
+ *  loading_messages (they're written for exactly this) every couple of
+ *  seconds; a single message just stays put. */
 function WidgetSkeleton({ messages, fallback }: { messages: string[]; fallback: string }) {
   const [idx, setIdx] = useState(0);
   useEffect(() => {
@@ -72,12 +86,8 @@ function WidgetSkeleton({ messages, fallback }: { messages: string[]; fallback: 
   }, [messages.length]);
 
   return (
-    <div className="my-3 rounded-lg bg-[var(--abu-bg-muted)] p-5 space-y-3 animate-pulse">
-      <div className="h-4 w-2/5 rounded bg-[var(--abu-bg-pressed)]" />
-      <div className="h-3 w-3/5 rounded bg-[var(--abu-bg-pressed)]" />
-      <div className="text-minor text-[var(--abu-text-muted)]">
-        {messages[idx] ?? fallback}
-      </div>
+    <div className="my-3 rounded-panel border border-separator bg-surface p-5">
+      <Spinner label={messages[idx] ?? fallback} />
     </div>
   );
 }
@@ -140,6 +150,7 @@ export default function ShowWidgetCard({ toolCall }: { toolCall: ToolCall }) {
       <WidgetStatusRow
         label={cancelled ? t.chat.widgetCardCancelled : t.chat.widgetCardError}
         title={title}
+        failed={!cancelled}
       />
     );
   }
@@ -147,7 +158,7 @@ export default function ShowWidgetCard({ toolCall }: { toolCall: ToolCall }) {
   // Positive result (or stale) — still gate on the same pure validation the
   // tool enforces before mounting the renderer.
   if (violation !== null) {
-    return <WidgetStatusRow label={t.chat.widgetCardError} title={title} />;
+    return <WidgetStatusRow label={t.chat.widgetCardError} title={title} failed />;
   }
 
   const renderCode = detectWidgetRenderMode(widgetCode) === 'svg' ? wrapSvgAsHtml(widgetCode) : widgetCode;

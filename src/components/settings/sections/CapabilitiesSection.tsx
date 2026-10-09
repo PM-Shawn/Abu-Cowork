@@ -1,15 +1,14 @@
 import { BrowserDownloadHistoryEntry, BrowserDownloadHistoryPage } from './BrowserDownloadHistoryPage';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ChevronRight,
-  Chrome,
-  Globe2,
-  MonitorCog,
-  RefreshCw,
-} from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { Disclosure } from '@/components/ds/disclosure';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { Pressable } from '@/components/ds/pressable';
+import { StatusIcon } from '@/components/ds/status-icon';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -111,46 +110,50 @@ function badgeToneFor(code: CapabilityStatusCode): StatusBadgeTone {
  * lives on the page this row opens.
  */
 function ChannelCard({
-  icon: Icon,
+  icon,
   title,
   subtitle,
   statusLabel,
   statusTone,
   checking = false,
+  entry,
   onOpen,
 }: {
-  icon: typeof Globe2;
+  icon: ComponentProps<typeof Icon>['icon'];
   title: string;
   subtitle: string;
   statusLabel: string;
   statusTone: StatusBadgeTone;
   checking?: boolean;
+  /** The page this card opens: the focus comes back here when that page is left. */
+  entry: NonNullable<CapabilityDetailView>;
   onOpen: () => void;
 }) {
   return (
-    <Button
-      variant="ghost"
+    <Pressable
       onClick={onOpen}
+      data-capability-entry={entry}
       // The status is the whole reason this row exists, so it belongs in the
       // accessible name — a screen reader hearing only "My Chrome" learns
       // nothing the page did not already imply.
       aria-label={`${title} · ${statusLabel}`}
-      className="h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4 text-left hover:bg-[var(--abu-bg-hover)]"
+      className="flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover"
     >
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-base)] text-[var(--abu-clay)]">
-        <Icon className="size-4.5" />
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-control bg-fill text-label-secondary">
+        <Icon icon={icon} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-2">
-          <span className="text-body font-semibold text-[var(--abu-text-primary)]">{title}</span>
+          <span className="text-ui font-medium text-label">{title}</span>
+          {/* Three cards can be checking at once, so a card never spins. */}
           <StatusBadge label={statusLabel} tone={statusTone} checking={checking} />
         </span>
-        <span className="mt-1 block text-minor font-normal leading-relaxed text-[var(--abu-text-muted)]">
+        <span className="mt-1 block text-ui-sm text-label-secondary">
           {subtitle}
         </span>
       </span>
-      <ChevronRight className="size-4 shrink-0 text-[var(--abu-text-muted)]" />
-    </Button>
+      <Icon icon={AppIcons.disclose} className="text-label-tertiary" />
+    </Pressable>
   );
 }
 
@@ -219,6 +222,26 @@ export default function CapabilitiesSection({
   // Which channel's detail page the site list was opened from, so "back" lands
   // where the user actually was rather than always on the built-in browser.
   const [sitesOrigin, setSitesOrigin] = useState<BrowserBackend>('builtin');
+  // The pages of this section replace each other under the keyboard. When the control that had
+  // the focus went away with its page, the focus goes to the entry of the page just left (on the
+  // way back), or to the new page's way back (on the way in). Focus that sits elsewhere stays.
+  const viewRoot = useRef<HTMLDivElement>(null);
+  const viewShown = useRef(setupView);
+  useLayoutEffect(() => {
+    const left = viewShown.current;
+    viewShown.current = setupView;
+    const root = viewRoot.current;
+    if (left === setupView || !root) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const entries = [left, left === 'sites' ? sitesOrigin : left === 'downloads' ? 'builtin' : null];
+    const target = entries
+      .map((entry) => (entry ? root.querySelector<HTMLElement>(`[data-capability-entry="${entry}"]`) : null))
+      .find((entry) => entry !== null)
+      ?? root.querySelector<HTMLElement>('[data-capability-back]');
+    target?.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
+  }, [setupView, sitesOrigin]);
+  const inViewRoot = (view: ReactNode) => <div ref={viewRoot} className="contents">{view}</div>;
   const [setupRequestedByTask, setSetupRequestedByTask] =
     useState(requestedByTask);
   const [chromeSetupWorking, setChromeSetupWorking] = useState(false);
@@ -579,6 +602,7 @@ export default function CapabilitiesSection({
 
   const browserStatus = statuses[CAPABILITY_IDS.builtinBrowser];
   const computerStatus = statuses[CAPABILITY_IDS.computerUse];
+  const computerModelTier = computerModelCapabilities.computerUseTier;
   const screenPermission = permissions?.screenRead;
   const controlPermission = permissions?.uiControl;
   const computerModelTierLabels = {
@@ -662,7 +686,7 @@ export default function CapabilitiesSection({
   };
 
   if (setupView === 'sites') {
-    return (
+    return inViewRoot(
       <BrowserSitePermissionsPage
         trail={sitesTrail}
         onNavigate={navigateTrail(sitesOrigin)}
@@ -670,16 +694,16 @@ export default function CapabilitiesSection({
     );
   }
 
-  if (setupView === 'downloads') return <BrowserDownloadHistoryPage
+  if (setupView === 'downloads') return inViewRoot(<BrowserDownloadHistoryPage
     trail={[...builtinTrail, t.settings.browserDownloadsTitle]}
     onNavigate={(index) => { if (index === 0) cancelSetup(); else setSetupView('builtin'); }}
-    query={browserDownloadsQuery} onQueryChange={setBrowserDownloadsQuery} />;
+    query={browserDownloadsQuery} onQueryChange={setBrowserDownloadsQuery} />);
 
   if (setupView === 'builtin') {
-    return (
-      <div className="space-y-7">
+    return inViewRoot(
+      <div className="space-y-6">
         <SetupHeader
-          icon={Globe2}
+          icon={AppIcons.webPage}
           title={t.settings.capabilityBuiltinBrowser}
           description={t.settings.capabilityBuiltinBrowserSubtitle}
           onBack={cancelSetup}
@@ -706,17 +730,18 @@ export default function CapabilitiesSection({
             checking={browserChecking}
             note={browserFaultNote}
             action={(
-              <button
-                type="button"
+              // The row's badge is the one spinner while this runs; the icon here stays still.
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={AppIcons.retry}
                 onClick={handleBrowserRetry}
                 disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
-                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
                 {browserStatus.code === 'connection-lost'
                   ? t.settings.capabilityRetry
                   : t.settings.capabilityCheckStatus}
-              </button>
+              </Button>
             )}
           />
         )}
@@ -731,7 +756,7 @@ export default function CapabilitiesSection({
   }
 
   if (setupView === 'chrome') {
-    return (
+    return inViewRoot(
       <ChromeSetupView
         capabilityEnabled={Boolean(chromeBridge && chromeBridgeEnabled)}
         requestedByTask={setupRequestedByTask}
@@ -752,7 +777,7 @@ export default function CapabilitiesSection({
   }
 
   if (setupView === 'computer') {
-    return (
+    return inViewRoot(
       <ComputerUseSetupView
         enabled={computerUseEnabled}
         requestedByTask={setupRequestedByTask}
@@ -794,35 +819,38 @@ export default function CapabilitiesSection({
           all, so it belongs beside the permissions it gates rather than on the
           overview, where it was a second status the card had to explain.
         */}
-        <details className="text-minor text-[var(--abu-text-muted)]"
-          open={computerModelCapabilities.computerUseTier === 'unsupported' || computerModelCapabilities.computerUseTier === 'unknown'}>
-          <summary className="cursor-pointer">{t.settings.capabilityComputerModel}</summary>
-          <div className="mt-3 pl-4 text-minor">
-            <span className="min-w-0 break-all text-[var(--abu-text-secondary)]">
-              {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
-              {' · '}{computerModelTierLabels[computerModelCapabilities.computerUseTier]}
-            </span>
-          </div>
-          <p className={cn('mt-1 pl-4 text-caption',
-            computerModelCapabilities.computerUseTier === 'unsupported' ? 'text-[var(--abu-danger)]'
-              : computerModelCapabilities.computerUseTier === 'unknown' ? 'text-[var(--abu-warning)]'
-                : 'text-[var(--abu-text-muted)]')}>
-            {computerModelTierNotes[computerModelCapabilities.computerUseTier]}
+        {/* Keyed by tier: a model that cannot be used opens the section when it is picked. */}
+        <Disclosure
+          key={computerModelTier}
+          title={t.settings.capabilityComputerModel}
+          defaultOpen={computerModelTier === 'unsupported' || computerModelTier === 'unknown'}
+        >
+          <p className="min-w-0 break-all text-ui-sm text-label-secondary">
+            {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
+            {' · '}{computerModelTierLabels[computerModelTier]}
           </p>
-        </details>
+          <p className={cn('mt-1 flex items-start gap-1 text-caption',
+            computerModelTier === 'unsupported' ? 'text-danger'
+              : computerModelTier === 'unknown' ? 'text-warning'
+                : 'text-label-tertiary')}>
+            {computerModelTier === 'unsupported' && <StatusIcon tone="danger" size="sm" />}
+            {computerModelTier === 'unknown' && <StatusIcon tone="warning" size="sm" />}
+            <span className="min-w-0">{computerModelTierNotes[computerModelTier]}</span>
+          </p>
+        </Disclosure>
       </ComputerUseSetupView>
     );
   }
 
-  return (
-    <div className="space-y-8">
+  return inViewRoot(
+    <div className="space-y-6">
       <SettingsSectionHeader
         title={t.settings.capabilityOverview}
         description={t.settings.capabilitiesDescription}
       />
 
       <section className="space-y-3">
-        <h4 className="text-body font-medium text-[var(--abu-text-secondary)]">
+        <h4 className="text-ui-sm font-medium text-label-tertiary">
           {t.settings.capabilityWebTitle}
         </h4>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
@@ -832,7 +860,7 @@ export default function CapabilitiesSection({
             way, and a problem is never hidden behind a marketing sentence.
           */}
           <ChannelCard
-            icon={Globe2}
+            icon={AppIcons.webPage}
             title={t.settings.capabilityBuiltinBrowser}
             subtitle={browserStatus.code === 'ready'
               ? t.settings.capabilityBuiltinBrowserSubtitle
@@ -842,27 +870,29 @@ export default function CapabilitiesSection({
               : statusLabels[browserStatus.code]}
             statusTone={badgeToneFor(browserStatus.code)}
             checking={browserChecking}
+            entry="builtin"
             onOpen={openBuiltinBrowser}
           />
 
           <ChannelCard
-            icon={Chrome}
+            icon={AppIcons.chrome}
             title={t.settings.capabilityMyChrome}
             subtitle={t.settings.capabilityMyChromeSubtitle}
             statusLabel={chromeStatusLabel}
             statusTone={chromeStatusTone}
             checking={chromeInstallation === undefined}
+            entry="chrome"
             onOpen={openChromeSetup}
           />
         </div>
       </section>
 
       <section className="space-y-3">
-        <h4 className="text-body font-medium text-[var(--abu-text-secondary)]">
+        <h4 className="text-ui-sm font-medium text-label-tertiary">
           {t.settings.capabilityComputerTitle}
         </h4>
         <ChannelCard
-          icon={MonitorCog}
+          icon={AppIcons.computerUse}
           title={t.settings.computerUse}
           subtitle={!computerUseEnabled || computerDisplayStatus.code === 'ready'
             ? t.settings.capabilityComputerSubtitle
@@ -870,6 +900,7 @@ export default function CapabilitiesSection({
           statusLabel={computerStatusLabel}
           statusTone={computerStatusTone}
           checking={computerChecking}
+          entry="computer"
           onOpen={openComputerSetup}
         />
       </section>

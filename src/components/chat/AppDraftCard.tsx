@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '@/i18n';
+import { cn } from '@/lib/utils';
 import type { TranslationDict } from '@/i18n/types';
 import type { AppLocale, AppScene } from '@/types/app';
 import { useAppDraftStore } from '@/stores/appDraftStore';
@@ -13,9 +13,14 @@ import { liveRefCatalog, resolveRun, type RefCatalog } from '@/core/app/appRefs'
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { describeSceneRun } from '@/components/app/runLabel';
 import AppLogo from '@/components/app/AppLogo';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
+import { focusComposerAfterPageChange } from './composerFocus';
 
 type Format = (template: string, values: Record<string, string | number>) => string;
+
+const CARD = 'my-2 rounded-panel border border-separator bg-surface p-3';
 
 /** Who a draft scene goes to: a new expert or team by its own name, anything else as the app home says it. */
 function sceneOwner(preview: AppDraftPreview, scene: AppScene, catalog: RefCatalog, t: TranslationDict, format: Format, locale: AppLocale): string {
@@ -40,6 +45,8 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
   const [loaded, setLoaded] = useState<{ preview: AppDraftPreview; catalog: RefCatalog } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // One add per draft at a time; `adding` only shows it.
+  const addingRef = useRef(false);
   const addedAppId = draft?.appId;
 
   useEffect(() => {
@@ -56,24 +63,25 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
   if (addedAppId !== undefined) {
     const app = apps.find((item) => item.appId === addedAppId);
     return (
-      <div data-testid="app-draft-card" className="my-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-3 text-body text-[var(--abu-text-secondary)]">
+      <div data-testid="app-draft-card" className={cn(CARD, 'text-ui text-label-secondary')}>
         {format(t.appDraft.added, { name: app?.name ?? addedAppId })}
       </div>
     );
   }
   if (error !== null) {
     return (
-      <div data-testid="app-draft-card" className="my-2 rounded-lg border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] p-3">
-        <p className="text-h-xs text-[var(--abu-danger)]">{t.appDraft.previewFailed}</p>
-        <p className="mt-1 break-words text-minor text-[var(--abu-text-secondary)]">{error}</p>
+      <div data-testid="app-draft-card" className="my-2">
+        <InlineMessage tone="danger">
+          <p className="font-medium">{t.appDraft.previewFailed}</p>
+          <p className="break-words text-ui-sm text-label-secondary">{error}</p>
+        </InlineMessage>
       </div>
     );
   }
   if (!loaded) {
     return (
-      <div data-testid="app-draft-card" className="my-2 flex items-center gap-2 rounded-lg border border-[var(--abu-border)] p-3 text-minor text-[var(--abu-text-tertiary)]">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        {t.appDraft.title}
+      <div data-testid="app-draft-card" className={CARD}>
+        <Spinner size="sm" label={t.appDraft.title} />
       </div>
     );
   }
@@ -81,34 +89,41 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
   const { preview, catalog } = loaded;
   const modes = preview.app.config.home.modes.items;
   const confirm = () => {
+    if (addingRef.current) return;
+    addingRef.current = true;
     setAdding(true);
     commitAppDraft(conversationId)
+      // The app is entered and its home replaces this conversation: the message field takes the focus the button had.
+      .then(() => focusComposerAfterPageChange())
       .catch((reason: unknown) => addToast({ type: 'error', title: t.appDraft.failed, message: String(reason) }))
-      .finally(() => setAdding(false));
+      .finally(() => {
+        addingRef.current = false;
+        setAdding(false);
+      });
   };
   const modify = () => useChatStore.getState().requestComposerFocus();
 
   return (
-    <div data-testid="app-draft-card" className="my-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] p-3">
-      <div className="text-caption font-medium text-[var(--abu-text-tertiary)]">{t.appDraft.title}</div>
-      <div className="mt-2 flex items-start gap-2.5">
+    <div data-testid="app-draft-card" className={CARD}>
+      <div className="text-caption font-medium text-label-tertiary">{t.appDraft.title}</div>
+      <div className="mt-2 flex items-start gap-3">
         <AppLogo name={preview.app.name} size="md" />
         <div className="min-w-0 flex-1">
-          <h4 className="truncate text-h-xs text-[var(--abu-text-primary)]">{preview.app.name}</h4>
-          <p className="text-minor text-[var(--abu-text-secondary)]">{preview.app.description}</p>
+          <h4 className="truncate text-ui font-medium text-label">{preview.app.name}</h4>
+          <p className="text-ui-sm text-label-secondary">{preview.app.description}</p>
         </div>
       </div>
 
       <section className="mt-3">
-        <h5 className="text-minor font-medium text-[var(--abu-text-secondary)]">{t.appDraft.home} · {appHomeTitle(preview.app, locale)}</h5>
+        <h5 className="text-ui-sm font-medium text-label-secondary">{t.appDraft.home} · {appHomeTitle(preview.app, locale)}</h5>
         {modes.map((mode) => (
-          <div key={mode.modeId} className="mt-1.5">
-            {modes.length > 1 && <div className="text-caption text-[var(--abu-text-tertiary)]">{resolveText(mode.title)}</div>}
-            <ul className="mt-0.5 space-y-0.5">
+          <div key={mode.modeId} className="mt-2">
+            {modes.length > 1 && <div className="text-caption text-label-tertiary">{resolveText(mode.title)}</div>}
+            <ul className="mt-1 space-y-1">
               {mode.scenes.map((scene) => (
-                <li key={scene.id} data-testid={`app-draft-scene-${scene.id}`} className="flex items-baseline gap-2 text-body">
-                  <span className="text-[var(--abu-text-primary)]">{resolveText(scene.title)}</span>
-                  <span className="min-w-0 truncate text-minor text-[var(--abu-text-tertiary)]">{sceneOwner(preview, scene, catalog, t, format, locale)}</span>
+                <li key={scene.id} data-testid={`app-draft-scene-${scene.id}`} className="flex items-baseline gap-2 text-ui">
+                  <span className="text-label">{resolveText(scene.title)}</span>
+                  <span className="min-w-0 truncate text-ui-sm text-label-tertiary">{sceneOwner(preview, scene, catalog, t, format, locale)}</span>
                 </li>
               ))}
             </ul>
@@ -118,12 +133,12 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
 
       {preview.experts.length > 0 && (
         <section className="mt-3" data-testid="app-draft-new-experts">
-          <h5 className="text-minor font-medium text-[var(--abu-text-secondary)]">{t.appDraft.newExperts}</h5>
-          <ul className="mt-1 space-y-0.5">
+          <h5 className="text-ui-sm font-medium text-label-secondary">{t.appDraft.newExperts}</h5>
+          <ul className="mt-1 space-y-1">
             {preview.experts.map((expert) => (
-              <li key={expert.name} className="text-body text-[var(--abu-text-primary)]">
+              <li key={expert.name} className="text-ui text-label">
                 {expert.name}
-                {expert.description && <span className="ml-2 text-minor text-[var(--abu-text-tertiary)]">{expert.description}</span>}
+                {expert.description && <span className="ml-2 text-ui-sm text-label-tertiary">{expert.description}</span>}
               </li>
             ))}
           </ul>
@@ -132,12 +147,12 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
 
       {preview.teams.length > 0 && (
         <section className="mt-3" data-testid="app-draft-new-teams">
-          <h5 className="text-minor font-medium text-[var(--abu-text-secondary)]">{t.appDraft.newTeams}</h5>
-          <ul className="mt-1 space-y-0.5">
+          <h5 className="text-ui-sm font-medium text-label-secondary">{t.appDraft.newTeams}</h5>
+          <ul className="mt-1 space-y-1">
             {preview.teams.map((team) => (
-              <li key={team.id} className="text-body text-[var(--abu-text-primary)]">
+              <li key={team.id} className="text-ui text-label">
                 {resolveText(team.name)}
-                <span className="ml-2 text-minor text-[var(--abu-text-tertiary)]">{resolveText(team.description)}</span>
+                <span className="ml-2 text-ui-sm text-label-tertiary">{resolveText(team.description)}</span>
               </li>
             ))}
           </ul>
@@ -145,8 +160,8 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
       )}
 
       <div className="mt-3 flex justify-end gap-2">
-        <Button variant="outline" size="sm" data-testid="app-draft-modify" disabled={adding} onClick={modify}>{t.appDraft.modify}</Button>
-        <Button size="sm" data-testid="app-draft-confirm" disabled={adding} onClick={confirm}>
+        <Button variant="secondary" size="sm" data-testid="app-draft-modify" disabled={adding} onClick={modify}>{t.appDraft.modify}</Button>
+        <Button variant="primary" size="sm" data-testid="app-draft-confirm" busy={adding} onClick={confirm}>
           {adding ? t.appDraft.adding : t.appDraft.confirm}
         </Button>
       </div>

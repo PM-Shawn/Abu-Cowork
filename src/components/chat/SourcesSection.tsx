@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Globe, ChevronDown, ChevronUp } from 'lucide-react';
 import type { SearchResult } from '@/types';
 import { useI18n } from '@/i18n';
+import { Pressable } from '@/components/ds/pressable';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import SourceCard from './SourceCard';
 
 interface SourcesSectionProps {
@@ -23,25 +25,22 @@ export default function SourcesSection({ results, highlightedIndex }: SourcesSec
   if (results.length === 0) return null;
 
   return (
-    <div className="my-1.5">
+    <div className="my-2">
       {/* Collapsible header — like Claude's "Searched the web" */}
-      <button
+      <Pressable
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1.5 px-1 py-1 text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] transition-colors"
+        className="flex items-center gap-1 rounded-control px-1 py-1 text-ui-sm text-label-tertiary transition-colors duration-fast hover:text-label-secondary"
       >
-        <Globe className="h-3 w-3" />
+        <Icon icon={AppIcons.webPage} size="sm" />
         <span>{t.chat.sources}</span>
-        <span className="text-[var(--abu-text-muted)]">{results.length}</span>
-        {expanded ? (
-          <ChevronUp className="h-3 w-3 ml-0.5" />
-        ) : (
-          <ChevronDown className="h-3 w-3 ml-0.5" />
-        )}
-      </button>
+        <span>{results.length}</span>
+        <Icon icon={expanded ? AppIcons.collapse : AppIcons.expand} size="sm" />
+      </Pressable>
 
       {/* Source list — compact rows, shown when expanded */}
       {expanded && (
-        <div className="mt-0.5 space-y-0">
+        <div className="mt-1">
           {results.map((result, index) => (
             <SourceCard key={result.url} result={result} index={index + 1} isHighlighted={highlightedIndex === index + 1} />
           ))}

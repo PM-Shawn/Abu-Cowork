@@ -1,6 +1,8 @@
 import { useState, useMemo, useRef } from 'react';
 import { useI18n, format } from '@/i18n';
+import { SegmentedControl } from '@/components/ds/segmented-control';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import { cn } from '@/lib/utils';
 import { localDateOf } from '@/core/llm/usageAccounting';
 import {
   getUsageSendFailures,
@@ -49,13 +51,7 @@ function formatRate(num: number, den: number): string {
   return `${Math.round((num / den) * 100)}%`;
 }
 
-const HEAT_COLORS = [
-  'bg-[var(--abu-border)]',
-  'bg-[#fde8d8]',
-  'bg-[#f9c4a0]',
-  'bg-[#f09060]',
-  'bg-[var(--abu-clay)]',
-] as const;
+const HEAT_COLORS = ['bg-fill', 'bg-heat-1', 'bg-heat-2', 'bg-heat-3', 'bg-heat-4'] as const;
 
 function heatLevel(tokens: number, maxTokens: number): number {
   if (tokens === 0 || maxTokens === 0) return 0;
@@ -70,11 +66,11 @@ function heatLevel(tokens: number, maxTokens: number): number {
 
 function KpiCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-card)] px-4 py-3 flex flex-col gap-1">
-      <span className="text-caption text-[var(--abu-text-tertiary)] leading-none">{label}</span>
-      <span className="text-h-md font-semibold text-[var(--abu-text-primary)] tabular-nums leading-tight">{value}</span>
+    <div className="flex flex-col gap-1 rounded-panel border border-separator px-4 py-3">
+      <span className="text-caption text-label-tertiary">{label}</span>
+      <span className="text-title-lg tabular-nums text-label">{value}</span>
       {/* 占位行，只为四张卡片高度一致，不放文字 */}
-      <span className="text-caption text-[var(--abu-text-muted)] leading-none min-h-[12px]">{' '}</span>
+      <span className="min-h-3 text-caption text-label-tertiary">{' '}</span>
     </div>
   );
 }
@@ -82,21 +78,23 @@ function KpiCard({ label, value }: { label: string; value: string }) {
 function BarRow({ label, tokens, maxTokens }: { label: string; tokens: number; maxTokens: number }) {
   const pct = maxTokens > 0 ? Math.max(2, Math.round((tokens / maxTokens) * 100)) : 0;
   return (
-    <div className="flex items-center gap-2 min-w-0">
-      <span className="w-28 shrink-0 text-minor text-[var(--abu-text-secondary)] truncate" title={label}>{label}</span>
-      <div className="flex-1 h-1.5 rounded-full bg-[var(--abu-border)] overflow-hidden">
-        <div className="h-full rounded-full bg-[var(--abu-clay-60)] transition-all duration-300" style={{ width: `${pct}%` }} />
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="w-28 shrink-0 truncate text-ui-sm text-label-secondary" title={label}>{label}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-fill">
+        <div className="h-full rounded-full bg-heat-3 transition-all duration-slow" style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-10 text-right shrink-0 text-caption text-[var(--abu-text-tertiary)] tabular-nums">{formatTokens(tokens)}</span>
+      <span className="w-10 shrink-0 text-right text-caption tabular-nums text-label-tertiary">{formatTokens(tokens)}</span>
     </div>
   );
 }
 
+// Follows the pointer inside its chart, so it is placed by hand. It sits inside the settings
+// window, above the chart only.
 function FloatingTooltip({ hover }: { hover: { text: string; top: number; left: number } | null }) {
   if (!hover) return null;
   return (
     <div
-      className="absolute z-50 px-2 py-1 text-caption bg-[#1f1d18] text-white rounded-md shadow-lg pointer-events-none whitespace-nowrap -translate-x-1/2 -translate-y-full"
+      className="pointer-events-none absolute z-sticky -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-control bg-raised px-2 py-1 text-caption text-label shadow-float"
       style={{ top: hover.top, left: hover.left }}
     >
       {hover.text}
@@ -143,32 +141,32 @@ function UsageHeatmap({ dateTokenMap }: { dateTokenMap: Map<string, number> }) {
     <div ref={containerRef} className="space-y-2 relative">
       <FloatingTooltip hover={hover} />
       <div className="flex items-center justify-between">
-        <h3 className="text-caption font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">
+        <h3 className="text-ui-sm font-medium text-label-tertiary">
           {t.usage.heatmapTitle}
         </h3>
         <div className="flex items-center gap-1">
-          <span className="text-caption text-[var(--abu-text-muted)]">{t.usage.heatmapLegendLess}</span>
+          <span className="text-caption text-label-tertiary">{t.usage.heatmapLegendLess}</span>
           {HEAT_COLORS.map((cls, i) => (
-            <div key={i} className={`h-2.5 w-2.5 rounded-[2px] ${cls}`} />
+            <div key={i} className={cn('size-2.5', cls)} />
           ))}
-          <span className="text-caption text-[var(--abu-text-muted)]">{t.usage.heatmapLegendMore}</span>
+          <span className="text-caption text-label-tertiary">{t.usage.heatmapLegendMore}</span>
         </div>
       </div>
-      <div className="flex gap-1 overflow-x-auto overlay-scroll">
+      <div className="flex gap-1 overflow-x-auto">
         {/* Weekday labels — same height as cells so they align */}
-        <div className="flex flex-col shrink-0" style={{ gap: '2px' }}>
+        <div className="flex shrink-0 flex-col" style={{ gap: '2px' }}>
           {weekdays.map((wd, i) => (
             <span
               key={wd}
-              className="flex items-center text-caption text-[var(--abu-text-muted)]"
+              className="flex items-center text-caption text-label-tertiary"
               style={{ height: `${CELL}px`, width: '12px', opacity: i % 2 === 0 ? 1 : 0 }}
             >{wd}</span>
           ))}
         </div>
         {/* 52 week columns — fixed CELL×CELL squares, not stretched */}
-        <div className="flex gap-[2px]">
+        <div className="flex" style={{ gap: '2px' }}>
           {Array.from({ length: 52 }, (_, col) => (
-            <div key={col} className="flex flex-col shrink-0" style={{ gap: '2px', width: `${CELL}px` }}>
+            <div key={col} className="flex shrink-0 flex-col" style={{ gap: '2px', width: `${CELL}px` }}>
               {Array.from({ length: 7 }, (_, row) => {
                 const cell = cells[col * 7 + row];
                 const tokens = cell.isFuture ? 0 : (dateTokenMap.get(cell.date) ?? 0);
@@ -197,7 +195,8 @@ function UsageHeatmap({ dateTokenMap }: { dateTokenMap: Map<string, number> }) {
                     }}
                     onMouseLeave={() => setHover(null)}
                     style={{ height: `${CELL}px`, width: `${CELL}px` }}
-                    className={`rounded-[2px] shrink-0 ${HEAT_COLORS[level]} ${cell.isFuture ? 'opacity-0' : ''}`}
+                    // A square this small keeps square corners.
+                    className={cn('shrink-0', HEAT_COLORS[level], cell.isFuture && 'opacity-0')}
                   />
                 );
               })}
@@ -228,12 +227,12 @@ function UsageDailyBar({ dateTokenMap }: { dateTokenMap: Map<string, number> }) 
   const maxTokens = Math.max(...days.map(d => d.tokens), 1);
 
   return (
-    <div ref={containerRef} className="space-y-1.5 relative">
+    <div ref={containerRef} className="relative space-y-2">
       <FloatingTooltip hover={hover} />
-      <h3 className="text-caption font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">
+      <h3 className="text-ui-sm font-medium text-label-tertiary">
         {t.usage.dailyTitle}
       </h3>
-      <div className="flex items-end gap-[3px] h-24">
+      <div className="flex h-24 items-end gap-1">
         {days.map(({ date, tokens }) => {
           const dotDate = date.replace(/-/g, '.');
           const tip = tokens > 0
@@ -256,13 +255,13 @@ function UsageDailyBar({ dateTokenMap }: { dateTokenMap: Map<string, number> }) 
                 });
               }}
               onMouseLeave={() => setHover(null)}
-              className="flex-1 rounded-t-[2px] bg-[var(--abu-clay-60)] opacity-70 hover:opacity-100 transition-opacity"
+              className="flex-1 bg-heat-3 hover:bg-heat-4"
               style={{ height: `${Math.max(tokens > 0 ? 6 : 1, Math.round((tokens / maxTokens) * 100))}%` }}
             />
           );
         })}
       </div>
-      <div className="flex justify-between text-caption text-[var(--abu-text-muted)]">
+      <div className="flex justify-between text-caption text-label-tertiary">
         <span>{days[0].date.slice(5).replace('-', '/')}</span>
         <span>{days[29].date.slice(5).replace('-', '/')}</span>
       </div>
@@ -302,7 +301,7 @@ function UsageLedgerNote({
   if (stale) parts.push(t.usage.stale);
 
   return (
-    <p className="text-caption text-[var(--abu-text-muted)]">{parts.join(' · ')}</p>
+    <p className="text-caption text-label-tertiary">{parts.join(' · ')}</p>
   );
 }
 
@@ -345,7 +344,7 @@ export default function UsageSection() {
   const EnterpriseUsageNote = getEnterpriseMount('usageNote');
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <SettingsSectionHeader title={t.usage.title} />
 
       <div className="space-y-1">
@@ -361,20 +360,13 @@ export default function UsageSection() {
       </div>
 
       {/* Period switcher */}
-      <div className="flex gap-1">
-        {periods.map(({ id, label }) => (
-          <button
-            key={id}
-            onClick={() => setPeriod(id)}
-            className={`px-3 py-1 rounded-md text-minor font-medium transition-colors focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${
-              period === id
-                ? 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] border border-[var(--abu-clay-20)]'
-                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      <div>
+        <SegmentedControl
+          label={t.usage.title}
+          value={period}
+          onValueChange={(value) => setPeriod(value as UsagePeriod)}
+          options={periods.map(({ id, label }) => ({ value: id, label }))}
+        />
       </div>
 
       {/* Row 1 — KPI cards (period-filtered) */}
@@ -405,16 +397,16 @@ export default function UsageSection() {
       {/* Row 4 — By Model + By Skill (period-filtered) */}
       <div className="grid grid-cols-2 gap-6">
         <div className="space-y-2">
-          <h3 className="text-caption font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">{t.usage.byModel}</h3>
+          <h3 className="text-ui-sm font-medium text-label-tertiary">{t.usage.byModel}</h3>
           {byModel.length === 0
-            ? <p className="text-minor text-[var(--abu-text-muted)] py-1">—</p>
+            ? <p className="py-1 text-ui-sm text-label-tertiary">—</p>
             : <div className="space-y-2">{byModel.slice(0, 10).map(item => <BarRow key={item.requestedModel} label={item.requestedModel} tokens={rowTokens(item)} maxTokens={maxModelTokens} />)}</div>
           }
         </div>
         <div className="space-y-2">
-          <h3 className="text-caption font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">{t.usage.bySkill}</h3>
+          <h3 className="text-ui-sm font-medium text-label-tertiary">{t.usage.bySkill}</h3>
           {bySkill.length === 0
-            ? <p className="text-minor text-[var(--abu-text-muted)] py-1">—</p>
+            ? <p className="py-1 text-ui-sm text-label-tertiary">—</p>
             : <div className="space-y-2">{bySkill.slice(0, 10).map(item => <BarRow key={item.skill} label={item.skill} tokens={rowTokens(item)} maxTokens={maxSkillTokens} />)}</div>
           }
         </div>

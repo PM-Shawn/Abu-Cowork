@@ -1,6 +1,7 @@
-import { Target } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import type { Message } from '@/types';
 
 /**
@@ -20,23 +21,23 @@ export default function GoalRoundMarker({ message }: { message: Message }) {
   if (!message.goalRound) return null;
   const time = new Date(message.timestamp).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
   const outcome = message.runState === 'interrupted'
-    ? { text: t.chat.goal.roundInterrupted, tone: 'text-[var(--abu-text-muted)]' }
+    ? { text: t.chat.goal.roundInterrupted, tone: 'text-label-tertiary' }
     : message.runState === 'failed' || message.runState === 'connection-failed'
-      ? { text: t.chat.goal.roundFailed, tone: 'text-[var(--abu-danger)]' }
+      ? { text: t.chat.goal.roundFailed, tone: 'text-danger' }
       : null;
 
   return (
-    <div className="flex items-center gap-2 my-3 px-2 text-[var(--abu-text-tertiary)]" data-testid="goal-round-marker">
-      <div className="flex-1 h-px bg-[var(--abu-border)]" />
-      <Target className="h-3.5 w-3.5 flex-shrink-0" />
-      <span className="text-minor select-none">{t.chat.goal.roundMarker}</span>
-      <span className="text-minor select-none text-[var(--abu-text-muted)]">{time}</span>
+    <div className="my-3 flex items-center gap-2 px-2 text-label-tertiary" data-testid="goal-round-marker">
+      <div className="h-px flex-1 bg-separator" />
+      <Icon icon={AppIcons.goal} size="sm" />
+      <span className="select-none text-ui-sm">{t.chat.goal.roundMarker}</span>
+      <span className="select-none text-ui-sm tabular-nums">{time}</span>
       {outcome && (
-        <span className={cn('text-minor select-none', outcome.tone)} data-testid="goal-round-outcome">
+        <span className={cn('select-none text-ui-sm', outcome.tone)} data-testid="goal-round-outcome">
           · {outcome.text}
         </span>
       )}
-      <div className="flex-1 h-px bg-[var(--abu-border)]" />
+      <div className="h-px flex-1 bg-separator" />
     </div>
   );
 }

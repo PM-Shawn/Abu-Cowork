@@ -160,6 +160,9 @@ async function seedUsage(page: Page, specs: SeedSpec[]): Promise<unknown[]> {
 }
 
 async function openUsagePage(page: Page): Promise<void> {
+  // 发出第一条消息会收起侧栏，「我」在侧栏里：和用户一样先点「显示侧栏」。
+  const showSidebar = page.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ });
+  if (await showSidebar.isVisible()) await showSidebar.click();
   // 用键盘打开菜单：进了会话之后输入区会盖住侧栏底部的这个按钮，指针点不到，
   // 而键盘操作在欢迎页和会话页都走得通。
   const me = page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first();

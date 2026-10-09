@@ -1,5 +1,6 @@
-import { Minimize2 } from 'lucide-react';
 import { useI18n } from '@/i18n';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import type { Message } from '@/types';
 
 /**
@@ -20,11 +21,11 @@ export default function CompactDivider({ message }: { message: Message }) {
       : t.chat.compactDivider.compacted;
 
   return (
-    <div className="flex items-center gap-2 my-3 px-2 text-[var(--abu-text-tertiary)]">
-      <div className="flex-1 h-px bg-[var(--abu-border)]" />
-      <Minimize2 className="h-3.5 w-3.5 flex-shrink-0" />
-      <span className="text-minor select-none">{label}</span>
-      <div className="flex-1 h-px bg-[var(--abu-border)]" />
+    <div className="my-3 flex items-center gap-2 px-2 text-label-tertiary">
+      <div className="h-px flex-1 bg-separator" />
+      <Icon icon={AppIcons.compact} size="sm" />
+      <span className="select-none text-ui-sm">{label}</span>
+      <div className="h-px flex-1 bg-separator" />
     </div>
   );
 }

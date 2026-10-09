@@ -9,7 +9,11 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
-import { RefreshCw, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
 import { getWeChatQRCode, pollWeChatQRStatus } from '@/core/im/adapters/wechat';
@@ -21,6 +25,7 @@ import type { WeChatCredentials } from '@/core/im/adapters/wechat';
  * NOT an image. We encode it into a QR code locally for the user to scan.
  */
 function QRImage({ payload, dimmed }: { payload: string; dimmed?: boolean }) {
+  const { t } = useI18n();
   const [dataUrl, setDataUrl] = useState('');
 
   useEffect(() => {
@@ -33,17 +38,18 @@ function QRImage({ payload, dimmed }: { payload: string; dimmed?: boolean }) {
 
   if (!dataUrl) {
     return (
-      <div className="h-40 w-40 rounded-lg border border-[var(--abu-border)] flex items-center justify-center bg-white">
-        <Loader2 className="h-6 w-6 text-[var(--abu-text-muted)] animate-spin" />
+      <div className="flex size-40 items-center justify-center rounded-control border border-separator">
+        <Spinner label={`${t.imChannel.wechatScanQR}…`} />
       </div>
     );
   }
 
+  // A QR code is scanned off a white ground, whatever the appearance.
   return (
     <img
       src={dataUrl}
       alt="WeChat QR Code"
-      className={`h-40 w-40 rounded-lg border border-[var(--abu-border)] bg-white transition-opacity ${dimmed ? 'opacity-30' : 'opacity-100'}`}
+      className={cn('size-40 rounded-control border border-separator bg-page-canvas transition-opacity duration-fast', dimmed ? 'opacity-30' : 'opacity-100')}
     />
   );
 }
@@ -135,29 +141,24 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
 
   // ── Render ──
 
-  const wrapCls = compact
-    ? 'rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4'
-    : 'rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-5';
+  const wrapCls = cn('rounded-panel border border-separator', compact ? 'p-4' : 'p-5');
 
   if (phase.id === 'idle') {
     return (
-      <div className={`${wrapCls} flex flex-col items-center gap-3 text-center`}>
-        <p className="text-body text-[var(--abu-text-tertiary)]">{t.imChannel.wechatBindHint}</p>
-        <button
-          onClick={fetchQR}
-          className="px-4 py-2 text-body font-medium text-white bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] rounded-lg transition-colors"
-        >
+      <div className={cn(wrapCls, 'flex flex-col items-center gap-3 text-center')}>
+        <p className="text-ui text-label-secondary">{t.imChannel.wechatBindHint}</p>
+        {/* The panel always sits in a place that has its own filled button. */}
+        <Button variant="secondary" onClick={fetchQR}>
           {t.imChannel.wechatScanQR}
-        </button>
+        </Button>
       </div>
     );
   }
 
   if (phase.id === 'loading') {
     return (
-      <div className={`${wrapCls} flex flex-col items-center gap-3`}>
-        <Loader2 className="h-8 w-8 text-[var(--abu-clay)] animate-spin" />
-        <p className="text-body text-[var(--abu-text-muted)]">{t.imChannel.wechatScanQR}…</p>
+      <div className={cn(wrapCls, 'flex flex-col items-center gap-3')}>
+        <Spinner label={`${t.imChannel.wechatScanQR}…`} />
       </div>
     );
   }
@@ -168,24 +169,27 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
     const secsLeft = phase.id === 'waiting' ? phase.secsLeft : undefined;
 
     return (
-      <div className={`${wrapCls} flex flex-col items-center gap-3`}>
+      <div className={cn(wrapCls, 'flex flex-col items-center gap-3')}>
         {/* QR code generated from payload, with overlay when scanned */}
         <div className="relative">
           <QRImage payload={payload} dimmed={isScanned} />
           {isScanned && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <CheckCircle className="h-12 w-12 text-[var(--abu-success)]" />
+              {/* On its own raised chip: the mark keeps its contrast over the white code. */}
+              <span className="flex rounded-control bg-raised p-1 shadow-float">
+                <StatusIcon tone="success" size="lg" />
+              </span>
             </div>
           )}
         </div>
 
-        {/* Status text */}
-        <div className="text-center space-y-1">
-          <p className="text-body font-medium text-[var(--abu-text-primary)]">
+        {/* Status text: the user is the one acting here, so nothing spins. */}
+        <div className="space-y-1 text-center">
+          <p className="text-ui font-medium text-label">
             {isScanned ? t.imChannel.wechatScanned : t.imChannel.wechatWaiting}
           </p>
           {secsLeft !== undefined && (
-            <p className="text-caption text-[var(--abu-text-muted)]">
+            <p className="text-caption text-label-tertiary">
               {format(t.imChannel.wechatExpireIn, { secs: String(secsLeft) })}
             </p>
           )}
@@ -196,24 +200,20 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
 
   if (phase.id === 'confirmed') {
     return (
-      <div className={`${wrapCls} flex flex-col items-center gap-2`}>
-        <CheckCircle className="h-8 w-8 text-[var(--abu-success)]" />
-        <p className="text-body font-medium text-[var(--abu-success)]">{t.imChannel.wechatSuccess}</p>
+      <div className={cn(wrapCls, 'flex flex-col items-center gap-2')}>
+        <StatusIcon tone="success" size="lg" />
+        <p className="text-ui font-medium text-success">{t.imChannel.wechatSuccess}</p>
       </div>
     );
   }
 
   if (phase.id === 'expired') {
     return (
-      <div className={`${wrapCls} flex flex-col items-center gap-3 text-center`}>
-        <p className="text-body text-[var(--abu-text-muted)]">{t.imChannel.wechatExpired}</p>
-        <button
-          onClick={fetchQR}
-          className="inline-flex items-center gap-1.5 px-4 py-2 text-body text-[var(--abu-clay)] border border-[var(--abu-clay-40)] rounded-lg hover:bg-[var(--abu-clay-5)] transition-colors"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
+      <div className={cn(wrapCls, 'flex flex-col items-center gap-3 text-center')}>
+        <p className="text-ui text-label-secondary">{t.imChannel.wechatExpired}</p>
+        <Button variant="secondary" icon={AppIcons.retry} onClick={fetchQR}>
           {t.imChannel.wechatRetry}
-        </button>
+        </Button>
       </div>
     );
   }
@@ -221,16 +221,12 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
   // error
   if (phase.id === 'error') {
     return (
-      <div className={`${wrapCls} flex flex-col items-center gap-3 text-center`}>
-        <AlertCircle className="h-7 w-7 text-[var(--abu-danger)]" />
-        <p className="text-minor text-[var(--abu-danger)] max-w-[280px]">{phase.message}</p>
-        <button
-          onClick={fetchQR}
-          className="inline-flex items-center gap-1.5 px-4 py-2 text-body text-[var(--abu-clay)] border border-[var(--abu-clay-40)] rounded-lg hover:bg-[var(--abu-clay-5)] transition-colors"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
+      <div className={cn(wrapCls, 'flex flex-col items-center gap-3 text-center')}>
+        <StatusIcon tone="danger" size="lg" />
+        <p className="max-w-70 text-ui-sm text-danger">{phase.message}</p>
+        <Button variant="secondary" icon={AppIcons.retry} onClick={fetchQR}>
           {t.imChannel.wechatRetry}
-        </button>
+        </Button>
       </div>
     );
   }

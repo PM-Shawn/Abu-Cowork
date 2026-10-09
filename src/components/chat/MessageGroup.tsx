@@ -1,5 +1,4 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import type { BatchIdentity, Message, MessageContent, ToolCall } from '@/types';
 import { makeBatchKey } from '@/types';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
@@ -28,8 +27,8 @@ import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { computeRewindImpact } from '@/utils/rewindImpact';
+import { useRewindQuestion } from './rewindQuestion';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
@@ -42,6 +41,9 @@ import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
+import { Pressable } from '@/components/ds/pressable';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -86,28 +88,26 @@ function SkillPatchSummaryRow({ skillName, calls }: { skillName: string; calls: 
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="my-1">
-      <button
+      <Pressable
+        aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-elevated)] transition-colors"
+        className="flex w-full items-center gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui-sm text-label-secondary transition-colors duration-fast hover:bg-fill-hover"
       >
-        <Sparkles className="h-3.5 w-3.5 text-[var(--abu-clay)] flex-shrink-0" />
+        <Icon icon={AppIcons.sparkles} size="sm" className="text-label-secondary" />
         <span className="flex-1 text-left">
           {t.toolbox.skillPatchGroupLabel}{' '}
-          <span className="font-medium text-[var(--abu-text-primary)]">{skillName}</span>
-          <span className="text-[var(--abu-text-muted)]">{format(t.toolbox.skillPatchGroupCount, { count: calls.length })}</span>
+          <span className="font-medium text-label">{skillName}</span>
+          <span className="text-label-tertiary">{format(t.toolbox.skillPatchGroupCount, { count: calls.length })}</span>
         </span>
-        {expanded
-          ? <ChevronDown className="h-3 w-3 flex-shrink-0" />
-          : <ChevronRight className="h-3 w-3 flex-shrink-0" />
-        }
-      </button>
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
+      </Pressable>
       {expanded && (
-        <div className="mt-0.5 ml-5 space-y-0.5">
+        <div className="ml-5 mt-1 space-y-1">
           {calls.map((tc) => {
             let msg = '';
             try { msg = (JSON.parse(tc.result ?? '{}') as { message?: string }).message ?? ''; } catch { /* empty */ }
             return msg ? (
-              <div key={tc.id} className="text-caption text-[var(--abu-text-muted)] px-2 py-0.5">
+              <div key={tc.id} className="px-2 py-1 text-caption text-label-tertiary">
                 {msg}
               </div>
             ) : null;
@@ -151,7 +151,7 @@ function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
 function RunStatusDivider({ label }: { label: string }) {
   return (
     <div className="block-expand block-expand-open block-expand-enter">
-      <div className="mb-2 text-body text-[var(--abu-text-muted)] tabular-nums">
+      <div className="mb-2 text-ui text-label-secondary tabular-nums">
         {label}
       </div>
     </div>
@@ -822,11 +822,11 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
   }, [isAgentDone, fileOutputs, openPreview, activeConv?.id, conversationId]);
 
-  // Rewind confirm state: handleRetry's deleteMessagesFrom truncates from
-  // this loop's first assistant message onward, discarding anything after —
-  // silently, if this isn't the conversation's last loop. See
-  // computeRewindImpact for the "later turns exist" check.
-  const [pendingRewind, setPendingRewind] = useState<{ laterTurnsCount: number; run: () => void } | null>(null);
+  // handleRetry's deleteMessagesFrom truncates from this loop's first assistant
+  // message onward, discarding anything after — so when this isn't the
+  // conversation's last loop it asks first. See computeRewindImpact for the
+  // "later turns exist" check.
+  const askBeforeRewind = useRewindQuestion();
 
   // Handle retry
   const handleRetry = async () => {
@@ -856,10 +856,13 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     };
 
     const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);
-    if (impact.hasLaterTurns) {
-      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-      return;
-    }
+    if (impact.hasLaterTurns && !(await askBeforeRewind({
+      conversationId: convId,
+      laterTurnsCount: impact.laterTurnsCount,
+      loopId,
+      fallbackMessageId: userMsg.id,
+      messageIds: firstAssistantInLoop ? [userMsg.id, firstAssistantInLoop.id] : [userMsg.id],
+    }))) return;
     await proceed();
   };
 
@@ -1038,7 +1041,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             </div>
           )}
           {cleanedText && (
-            <div className="text-[var(--abu-text-primary)] break-words mb-2 select-text">
+            <div className="mb-2 break-words text-label select-text">
               <MarkdownRenderer
                 content={cleanedText}
                 searchResults={searchResults.length > 0 ? searchResults : undefined}
@@ -1046,7 +1049,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               />
             </div>
           )}
-          {showCursor && <span className="streaming-cursor" />}
+          {showCursor && <span aria-hidden="true" className="ml-1 inline-block h-4 w-0.5 bg-label-secondary align-text-bottom" />}
         </div>
       );
     }
@@ -1167,28 +1170,13 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
         // transition-colors lives on the base class so the highlight fades both
         // in AND out (a conditional transition class vanishes with the bg and
         // makes the removal instant).
-        'message-group w-full rounded-lg transition-colors duration-700',
+        'message-group w-full rounded-panel transition-colors duration-slow',
         GROUP_CONTENT_GAP,
         highlightMessageId != null &&
           messages.some((m) => m.id === highlightMessageId) &&
-          'bg-[var(--abu-clay-bg-15)]',
+          'bg-fill-selected',
       )}
     >
-      <ConfirmDialog
-        open={!!pendingRewind}
-        title={t.chat.rewindConfirmTitle}
-        message={pendingRewind ? format(t.chat.rewindConfirmMessage, { count: String(pendingRewind.laterTurnsCount) }) : ''}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        onConfirm={() => {
-          const run = pendingRewind?.run;
-          setPendingRewind(null);
-          run?.();
-        }}
-        onCancel={() => setPendingRewind(null)}
-        variant="danger"
-      />
-
       {/* User message renders standalone */}
       {userMsg && <MessageErrorBoundary><MessageBubble message={userMsg} /></MessageErrorBoundary>}
 
@@ -1201,7 +1189,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
             {teamLeader && (
-              <div data-testid="team-leader-caption" className="mb-1 text-caption text-[var(--abu-text-tertiary)] truncate">
+              <div data-testid="team-leader-caption" className="mb-1 truncate text-ui text-label-secondary">
                 {teamLeader.leaderName} · {teamLeader.teamName}
               </div>
             )}
@@ -1209,7 +1197,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 Render it even when Stop arrived before the first model token
                 and the empty assistant placeholder was durably deleted. */}
             {isStopped && workFoldEnd == null && (
-              <div className="text-body text-[var(--abu-text-muted)] mb-2">
+              <div className="mb-2 text-ui text-label-secondary">
                 {stoppedLabel}
               </div>
             )}
@@ -1254,8 +1242,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               {workFoldEnd != null && (
                 /* Lightweight fold header — matches the thinking/step block
                     style (muted text + trailing chevron, no card background). */
-                <button
-                  type="button"
+                <Pressable
                   aria-expanded={workExpanded}
                   onClick={() => {
                     useWorkProcessFoldStore.getState().setMode(
@@ -1264,14 +1251,15 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                       workExpanded ? 'collapsed' : 'expanded',
                     );
                   }}
-                  className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm transition-colors mb-2"
+                  className="mb-2 flex items-center gap-1 rounded-control text-ui text-label-secondary transition-colors duration-fast hover:text-label"
                 >
                   <span>{foldHeaderLabel}</span>
-                  <ChevronDown
-                    aria-hidden="true"
-                    className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
+                  <Icon
+                    icon={AppIcons.expand}
+                    size="sm"
+                    className={cn('transition-transform duration-fast', !workExpanded && '-rotate-90')}
                   />
-                </button>
+                </Pressable>
               )}
               {workFoldEnd == null || workExpanded
                 ? segments.slice(0, workFoldEnd ?? segments.length).map((seg, i) => renderSegment(seg, i))

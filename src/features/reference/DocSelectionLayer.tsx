@@ -58,7 +58,7 @@ export function DocSelectionLayer({ filePath, children, active = true }: { fileP
   useEffect(() => { if (!sel) setEditing(false); }, [sel]);
 
   // Only while the comment editor is open: focusing its textarea collapses the
-  // native selection, so paint a standing highlight (same clay fill as ::selection)
+  // native selection, so paint a standing highlight (same fill as ::selection)
   // on the target sentence. Before editing, the native ::selection already shows
   // it — painting then would just double the fill and darken it.
   useEffect(() => {

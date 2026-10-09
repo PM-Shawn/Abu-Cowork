@@ -893,32 +893,73 @@ describe('settingsStore labs flags', () => {
     });
   });
 
-  describe('v42 migration (one-time theme reset to light)', () => {
+  describe('v42 migration (theme reset to light; the v54 step runs after it)', () => {
     const getMigrate = () =>
       (useSettingsStore as unknown as {
         persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
       }).persist.getOptions().migrate;
 
-    it('resets a persisted dark theme to light on upgrade from v41', () => {
-      // Pre-fix users had 'dark' persisted from the old default, even if they
-      // never opened theme settings — the whole point of this migration.
+    it('a dark theme stored before v42 ends on follow-the-system', () => {
       const migrated = getMigrate()({ theme: 'dark' }, 41);
-      expect(migrated.theme).toBe('light');
+      expect(migrated.theme).toBe('system');
     });
 
-    it('also resets an explicit system choice to light (accepted trade-off)', () => {
+    it('a system choice stored before v42 ends on follow-the-system', () => {
       const migrated = getMigrate()({ theme: 'system' }, 41);
-      expect(migrated.theme).toBe('light');
+      expect(migrated.theme).toBe('system');
     });
 
-    it('materializes theme to light even when the field was absent', () => {
+    it('a store from before v42 without the field ends on follow-the-system', () => {
       const migrated = getMigrate()({}, 41);
-      expect(migrated.theme).toBe('light');
+      expect(migrated.theme).toBe('system');
     });
 
-    it('does NOT re-run for users already at v42 (dark re-choice sticks)', () => {
+    it('a dark theme stored at v42 ends on follow-the-system', () => {
       const migrated = getMigrate()({ theme: 'dark' }, 42);
-      expect(migrated.theme).toBe('dark');
+      expect(migrated.theme).toBe('system');
+    });
+  });
+
+  describe('v54 migration (appearance follows the system once)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { version: number; migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('a new install follows the system', () => {
+      expect(useSettingsStore.getInitialState().theme).toBe('system');
+    });
+
+    // Every store from before v54 ends on follow-the-system, whatever it held: an earlier version
+    // wrote 'light' for everybody, so a stored value does not show a choice. The v42 step sets
+    // 'light' for stores older than 42 and runs before this one.
+    it.each([0, 41, 42, 52, 53])('a store at version %i ends on follow-the-system whatever it held', (version) => {
+      for (const stored of ['light', 'dark', 'system']) {
+        expect(getMigrate()({ theme: stored }, version).theme).toBe('system');
+      }
+      expect(getMigrate()({}, version).theme).toBe('system');
+    });
+
+    it.each(['light', 'dark', 'system'])('a store at version 54 keeps %s: the step runs once', (stored) => {
+      expect(getMigrate()({ theme: stored }, 54).theme).toBe(stored);
+    });
+
+    it('a store written by a later version is left as it is', () => {
+      expect(getMigrate()({ theme: 'light' }, 55).theme).toBe('light');
+    });
+
+    it('changes nothing else in a store at version 53', () => {
+      const stored = {
+        theme: 'light', language: 'zh-CN', permissionMode: 'smart', sandboxEnabled: false,
+        closeAction: 'minimize', composerEnterBehavior: 'modEnter', userNickname: 'e2e', guideShown: true,
+        labs: { pet: true }, disabledSkills: ['docx'], imChannel: { allowLanWebhook: true },
+        browserPermissionConfigV2: { schemaVersion: 1, marker: 'kept as stored' },
+        providers: [{ id: 'p1', apiKey: '', models: [{ id: 'm1' }] }], activeModel: { providerId: 'p1', modelId: 'm1' },
+      };
+      const { theme: _before, ...rest } = structuredClone(stored);
+      const { theme: _after, ...migratedRest } = getMigrate()(structuredClone(stored), 53);
+      void _before; void _after;
+      expect(migratedRest).toEqual(rest);
     });
   });
 

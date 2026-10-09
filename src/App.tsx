@@ -4,10 +4,12 @@ import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
+import { followSystemColorScheme } from '@/styles/colorScheme';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
 import Sidebar from '@/components/sidebar/Sidebar';
+import { SidebarColumn } from '@/components/sidebar/SidebarColumn';
 import ChatView from '@/components/chat/ChatView';
 import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
@@ -29,7 +31,8 @@ import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync
 import RightPanel from '@/components/panel/RightPanel';
 import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
-import ToastContainer from '@/components/common/ToastContainer';
+import ToasterMount from '@/components/common/ToasterMount';
+import { setToastPlacesForDecision } from '@/stores/toastStore';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { initPlatform } from '@/utils/platform';
@@ -58,7 +61,7 @@ const platformInitialization = initPlatform().then((detectedPlatform) => {
   return 'unknown';
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS, isWindows } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
@@ -99,8 +102,7 @@ import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
 import { checkForUpdate } from '@/core/updates/checker';
 import { usePingCadence } from '@/hooks/usePingCadence';
 import { fetchUnseenAnnouncements, markSeen, type AnnouncementItem } from '@/utils/consoleAnnouncement';
-import AnnouncementBanner from '@/components/common/AnnouncementBanner';
-import DisclaimerBanner from '@/components/common/DisclaimerBanner';
+import CornerBanners from '@/components/common/CornerBanners';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -258,12 +260,10 @@ function App() {
       root.classList.toggle('dark', dark);
     };
     if (theme === 'system') {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      apply(mq.matches);
+      // The same rule the pet window follows (styles/colorScheme.ts).
+      const stopFollowing = followSystemColorScheme(root);
       syncNativeTheme(null);
-      const handler = (e: MediaQueryListEvent) => apply(e.matches);
-      mq.addEventListener('change', handler);
-      return () => mq.removeEventListener('change', handler);
+      return stopFollowing;
     } else {
       apply(theme === 'dark');
       syncNativeTheme(theme === 'dark' ? 'dark' : 'light');
@@ -880,10 +880,11 @@ function App() {
 
   return (
     <ErrorBoundary onError={traceAppRootRenderError}>
-    <TooltipProvider delayDuration={200}>
+    {/* A dialog or question on screen hides the native browser view, which paints above the page. */}
+    <DesignSystemProvider onModalChange={usePreviewStore.getState().setDsModalOpen} onDecisionChange={setToastPlacesForDecision}>
       <div
         data-abu-app-shell
-        className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--abu-bg-canvas)]"
+        className="relative flex h-full w-full flex-col overflow-hidden bg-desk"
       >
         {/* Chromium builds the OS drag region by walking the layout tree in
             DOCUMENT order, unioning `drag` rects and subtracting `no-drag`
@@ -897,19 +898,11 @@ function App() {
 
         <div
           data-abu-app-layout
-          className="flex min-h-0 w-full flex-1 overflow-hidden bg-[var(--abu-bg-canvas)]"
+          className="flex min-h-0 w-full flex-1 overflow-hidden"
         >
-          {/* Sidebar - width changes are always instant (no slide animation). */}
-          <div
-            className="flex shrink-0 flex-col overflow-hidden"
-            style={{
-              width: sidebarCollapsed ? 0 : 260,
-            }}
-          >
-            <div className="min-h-0 flex-1">
-              <Sidebar windowsWorkspaceHeader={windowsWorkspaceHeader} />
-            </div>
-          </div>
+          <SidebarColumn collapsed={sidebarCollapsed}>
+            <Sidebar windowsWorkspaceHeader={windowsWorkspaceHeader} />
+          </SidebarColumn>
 
           <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             {/* Only the exposed canvas gutters are draggable. The raised cards
@@ -922,8 +915,8 @@ function App() {
               <main
                 data-electron-no-drag
                 className={cn(
-                  'relative bg-[var(--abu-bg-base)]',
-                  'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
+                  'relative bg-surface',
+                  'mt-2 mb-2 ml-2 rounded-panel shadow-panel overflow-hidden',
                   previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
                   // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
                   rightPanelBeside ? 'mr-1' : 'mr-2',
@@ -952,7 +945,7 @@ function App() {
 
         {mac && <WindowTitleBar {...windowTitleBarProps} />}
 
-        <ToastContainer />
+        <ToasterMount />
 
         <ImageLightbox />
 
@@ -960,8 +953,8 @@ function App() {
 
         {/* 应用市场 — one dialog for the whole shell, self-gates on appStore. */}
         <AppMarketDialog />
-        {/* The add / update / preview confirmation, shared by the market and the app home. */}
-        <AppAddConfirmDialog />
+        {/* The add / update / preview confirmation of a flow started outside the app market (the app home). */}
+        <AppAddConfirmDialog within="page" />
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />
@@ -986,28 +979,22 @@ function App() {
             hasRunSensitiveAudit_v015 settings flag. */}
         <SensitiveAuditDialog />
 
-        {/* First-launch disclaimer banner — shows once until dismissed.
-            Self-gates on hasAcknowledgedDisclaimer in settingsStore. */}
-        <DisclaimerBanner />
-
-        {/* Enterprise policy confirmation modal (z-[60], above all overlays).
-            Only appears when the tool dispatcher detects a require_confirmation policy. */}
+        {/* Enterprise policy confirmation: an approval layer since batch 9; renders nothing in the OSS build. */}
         <PolicyConfirmModal />
 
-        {/* Cloud announcement banner — shows the first unseen announcement */}
-        {pendingAnnouncements.length > 0 && pendingAnnouncements[0] && (
-          <AnnouncementBanner
-            item={pendingAnnouncements[0]}
-            onDismiss={() => {
-              const id = pendingAnnouncements[0]?.id;
-              if (id != null) markSeen(id);
-              setPendingAnnouncements((prev) => prev.slice(1));
-            }}
-          />
-        )}
+        {/* The corner banners, one at a time: the first-launch disclaimer until it is
+            acknowledged, then the first unseen cloud announcement. */}
+        <CornerBanners
+          announcement={pendingAnnouncements[0]}
+          onDismissAnnouncement={() => {
+            const id = pendingAnnouncements[0]?.id;
+            if (id != null) markSeen(id);
+            setPendingAnnouncements((prev) => prev.slice(1));
+          }}
+        />
 
       </div>
-    </TooltipProvider>
+    </DesignSystemProvider>
     </ErrorBoundary>
   );
 }

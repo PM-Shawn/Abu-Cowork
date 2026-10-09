@@ -978,11 +978,13 @@ const settingsStateStorage: StateStorage = {
           if (pending.length) repairBrowserConfig(pending, diskBeforeWrite);
           return;
         }
-        // A current-version blob already has the shape restore expects. Older
-        // blobs must fall back to the migrated baseline recorded at hydration;
-        // restoring their raw pre-migration fields would reintroduce invalid or
-        // absent values after a failed save.
-        confirmedBeforeWrite = diskBeforeWrite?.version === 53 ? diskBeforeWrite : null;
+        // A blob stored at V53 or later already has the shape restore expects.
+        // Older blobs must fall back to the migrated baseline recorded at
+        // hydration; restoring their raw pre-migration fields would reintroduce
+        // invalid or absent values after a failed save.
+        confirmedBeforeWrite = diskBeforeWrite !== null && typeof diskBeforeWrite.version === 'number' && diskBeforeWrite.version >= 53
+          ? diskBeforeWrite
+          : null;
         if (intended !== null) {
           // A counter orders cooperative writers, not authority. An ordinary
           // blob save must keep the valid permissions read under this lock,
@@ -1290,7 +1292,7 @@ export const useSettingsStore = create<SettingsStore>()(
       pendingImageGenSecretBridge: undefined,
 
       // ── General settings defaults ──
-      theme: 'light',
+      theme: 'system',
       showSettings: false,
       sidebarCollapsed: false,
       rightPanelCollapsed: false,
@@ -1999,7 +2001,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 53,
+      version: 54,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -2915,6 +2917,13 @@ export const useSettingsStore = create<SettingsStore>()(
 
         // V53: one conservative browser permission model, after existing migrations.
         if (version < 53) state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(state);
+
+        // V54: the appearance follows the system, once, for every existing store. The V42 step
+        // wrote 'light' into every store, so a stored value does not tell a choice from that
+        // write. A choice made after this step is kept: the step runs only below 54. It sits
+        // last because the V42 step above writes 'light' for stores older than 42. The blocking
+        // script in index.html paints by the same rule before this store has loaded.
+        if (version < 54) state.theme = 'system';
         return state;
       },
       partialize: (state) => ({

@@ -18,6 +18,7 @@ import {
   configureLocalMockProvider,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -229,11 +230,15 @@ test.describe.serial('apps', () => {
   test('the 专家 page opens on 本应用 and can widen to 全部', async () => {
     await showSidebar(page);
     await page.getByLabel('Main navigation').getByRole('button', { name: TEAM_NAV }).click();
-    await expect(page.getByTestId('team-app-scope-app')).toHaveAttribute('aria-selected', 'true');
+    // 本应用 | 全部 is one choice of two: each side is a radio, named by its words.
+    const scope = page.getByTestId('team-app-scope');
+    const thisApp = scope.getByRole('radio', { name: /^(本应用|This app)$/ });
+    const everything = scope.getByRole('radio', { name: /^(全部|All)$/ });
+    await expect(thisApp).toHaveAttribute('aria-checked', 'true');
     await page.getByTestId('team-source-mine').click();
     await expect(page.getByText('店铺客服顾问', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    await page.getByTestId('team-app-scope-all').click();
-    await expect(page.getByTestId('team-app-scope-all')).toHaveAttribute('aria-selected', 'true');
+    await everything.click();
+    await expect(everything).toHaveAttribute('aria-checked', 'true');
     await page.getByLabel('Main navigation').getByRole('button', { name: NEW_TASK }).click();
   });
 
@@ -279,7 +284,7 @@ test.describe.serial('apps', () => {
     const row = page.getByTestId('plugin-mine-row').filter({ hasText: PLUGIN_NAME });
     await row.getByRole('button', { name: /^(卸载|Uninstall): / }).click();
     await expect(page.getByText(`应用 ${APP_NAME} 用到它`)).toBeVisible();
-    await page.getByRole('button', { name: /^(卸载|Uninstall)$/ }).click();
+    await pressWhenSettled(page.getByRole('alertdialog').getByRole('button', { name: /^(卸载|Uninstall)$/ }));
     await expect(row).toHaveCount(0, { timeout: READY_TIMEOUT });
 
     // The app stays; the scene its team handles asks for the plugin back.
@@ -301,7 +306,8 @@ test.describe.serial('apps', () => {
   test('移除 takes only the app; its conversation stays readable and can add it back', async () => {
     await showSidebar(page);
     await openSwitcher(page);
-    await page.getByTestId(`app-switcher-item-${APP_ID}`).hover();
+    // 移除 is a list of its own in the switcher's menu; an app from a market is removed without a question.
+    await page.getByTestId('app-switcher-remove').click();
     await page.getByTestId(`app-switcher-remove-${APP_ID}`).click();
     await expect(page.getByTestId('app-switcher-current')).toHaveText(/发现应用|Discover apps/, { timeout: READY_TIMEOUT });
     await openSwitcher(page);

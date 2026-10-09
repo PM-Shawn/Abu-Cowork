@@ -1,6 +1,6 @@
 // src/features/reference/CommentEditor.tsx
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Textarea } from '@/components/ui/textarea';
+import { TextArea } from '@/components/ds/text-area';
 import { useI18n } from '@/i18n';
 
 const MAX = 500;
@@ -25,19 +25,18 @@ export function CommentEditor({ onSubmit, onCancel }: { onSubmit: (v: string) =>
 
   const over = value.length > MAX;
   return (
-    <div className="w-72 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] p-2 shadow-lg">
-      <Textarea
+    <div className="w-72 rounded-panel bg-raised p-2 shadow-float">
+      <TextArea
         ref={ref}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder={t.reference.commentPlaceholder}
         rows={2}
-        className="resize-none border-0 focus-visible:ring-0"
         aria-label={t.reference.commentPlaceholder}
       />
       {over && (
-        <div className="px-1 text-caption text-[var(--abu-danger)]">{value.length}/{MAX}</div>
+        <div className="px-1 text-caption text-danger">{value.length}/{MAX}</div>
       )}
     </div>
   );

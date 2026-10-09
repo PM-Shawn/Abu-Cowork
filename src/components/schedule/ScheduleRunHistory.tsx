@@ -1,8 +1,12 @@
+import { memo, useCallback } from 'react';
+import { focusComposerAfterPageChange } from '@/components/chat/composerFocus';
+import { IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useI18n } from '@/i18n';
-import { ExternalLink } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import type { ScheduledTaskRun } from '@/types/schedule';
 
 function formatDateTime(timestamp: number): string {
@@ -11,85 +15,86 @@ function formatDateTime(timestamp: number): string {
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// memo: a row with a conversation holds a tooltip root, and the list reads the chat store's
+// index, which changes whenever any conversation does.
+const RunRow = memo(function RunRow({ run, canView, onView }: {
+  run: ScheduledTaskRun;
+  // The conversation of this run still exists.
+  canView: boolean;
+  onView: (conversationId: string) => void;
+}) {
+  const { t } = useI18n();
+  const running = run.status === 'running';
+  return (
+    <div data-schedule-run={run.id} className="flex items-center gap-2 rounded-control px-2 py-1 hover:bg-fill-hover">
+      {/* The outcome as a shape; only a run in progress turns. */}
+      <span className="flex shrink-0 items-center">
+        {running
+          ? <Spinner size="sm" label={t.schedule.runStatusRunning} labelHidden />
+          : <StatusIcon tone={run.status === 'completed' ? 'success' : 'danger'} size="sm" />}
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-caption text-label-secondary">
+            {t.schedule.startedAtLabel} {formatDateTime(run.startedAt)}
+          </span>
+          {/* The spinner already says "running" to a screen reader. */}
+          <span aria-hidden={running || undefined} className="min-w-0 truncate text-caption text-label">
+            {running && t.schedule.runStatusRunning}
+            {run.status === 'completed' && t.schedule.runStatusCompleted}
+            {run.status === 'error' && (run.error ? run.error.slice(0, 30) : t.schedule.runStatusError)}
+          </span>
+        </div>
+        {run.completedAt && (
+          <div className="text-caption text-label-tertiary">
+            {t.schedule.completedAtLabel} {formatDateTime(run.completedAt)}
+          </div>
+        )}
+      </div>
+
+      {canView && (
+        <IconButton
+          size="sm"
+          icon={AppIcons.openExternal}
+          label={t.schedule.viewConversation}
+          onClick={() => onView(run.conversationId)}
+        />
+      )}
+    </div>
+  );
+});
+
 interface Props {
   runs: ScheduledTaskRun[];
 }
 
 export default function ScheduleRunHistory({ runs }: Props) {
   const { t } = useI18n();
-  const switchConversation = useChatStore((s) => s.switchConversation);
-  const setViewMode = useSettingsStore((s) => s.setViewMode);
   const conversationIndex = useChatStore((s) => s.conversationIndex);
 
-  const handleViewConversation = (conversationId: string) => {
-    if (conversationIndex[conversationId]) {
-      switchConversation(conversationId);
-      setViewMode('chat');
-    }
-  };
+  // One callback for the life of the list, so a row renders only when its own run changes.
+  const viewConversation = useCallback((conversationId: string) => {
+    const chat = useChatStore.getState();
+    if (!chat.conversationIndex[conversationId]) return;
+    chat.switchConversation(conversationId);
+    useSettingsStore.getState().setViewMode('chat');
+    // The button leaves with the automation page: the focus goes to the message field.
+    focusComposerAfterPageChange();
+  }, []);
 
   if (runs.length === 0) {
     return (
-      <div className="px-4 py-3 text-minor text-[var(--abu-text-tertiary)]">
+      <div className="px-4 py-3 text-ui-sm text-label-tertiary">
         {t.schedule.noRuns}
       </div>
     );
   }
 
   return (
-    <div className="space-y-1 px-2 pb-2">
+    <div className="space-y-1 p-2">
       {runs.map((run) => (
-        <div
-          key={run.id}
-          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-muted)] transition-colors"
-        >
-          {/* Status dot */}
-          <span
-            className={cn(
-              'w-1.5 h-1.5 rounded-full shrink-0',
-              run.status === 'running' && 'bg-[var(--abu-warning-solid)] animate-pulse',
-              run.status === 'completed' && 'bg-[var(--abu-success-solid)]',
-              run.status === 'error' && 'bg-[var(--abu-danger-solid)]'
-            )}
-          />
-
-          {/* Start / End times + status */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="text-caption text-[var(--abu-text-secondary)]">
-                {t.schedule.startedAtLabel} {formatDateTime(run.startedAt)}
-              </span>
-              <span
-                className={cn(
-                  'text-caption',
-                  run.status === 'running' && 'text-[var(--abu-warning)]',
-                  run.status === 'completed' && 'text-[var(--abu-success)]',
-                  run.status === 'error' && 'text-[var(--abu-danger)]'
-                )}
-              >
-                {run.status === 'running' && t.schedule.runStatusRunning}
-                {run.status === 'completed' && t.schedule.runStatusCompleted}
-                {run.status === 'error' && (run.error ? run.error.slice(0, 30) : t.schedule.runStatusError)}
-              </span>
-            </div>
-            {run.completedAt && (
-              <div className="text-caption text-[var(--abu-text-tertiary)]">
-                {t.schedule.completedAtLabel} {formatDateTime(run.completedAt)}
-              </div>
-            )}
-          </div>
-
-          {/* View conversation button */}
-          {conversationIndex[run.conversationId] && (
-            <button
-              onClick={() => handleViewConversation(run.conversationId)}
-              className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] p-0.5 shrink-0"
-              title={t.schedule.viewConversation}
-            >
-              <ExternalLink className="h-3 w-3" />
-            </button>
-          )}
-        </div>
+        <RunRow key={run.id} run={run} canView={Boolean(conversationIndex[run.conversationId])} onView={viewConversation} />
       ))}
     </div>
   );

@@ -3,6 +3,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import ChapterRail from './ChapterRail';
 import type { Chapter } from './chapters';
 
@@ -14,7 +15,24 @@ vi.mock('@/i18n', () => ({
     template.replace(/\{(\w+)\}/g, (_, key: string) => values[key] ?? ''),
 }));
 
-afterEach(cleanup);
+const tickRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the rail's ticks.
+vi.mock('@/components/ds/pressable', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/pressable')>();
+  return {
+    ...actual,
+    Pressable: (props: ComponentProps<typeof actual.Pressable>) => {
+      tickRenders();
+      return actual.Pressable(props);
+    },
+  };
+});
+
+afterEach(() => {
+  cleanup();
+  tickRenders.mockClear();
+});
 
 function chapter(index: number, title: string, summary = ''): Chapter {
   return { groupIndex: index, messageId: `m${index}`, title, summary };
@@ -106,31 +124,38 @@ describe('ChapterRail', () => {
     expect(spy).toHaveBeenCalledWith({ block: 'nearest' });
   });
 
-  it('swells the hovered tick and its neighbours by distance, colouring only the hovered one', () => {
+  it('draws resting ticks in the placeholder grey and the current one in the label colour', () => {
+    render(<ChapterRail chapters={TWO} currentIndex={1} onJump={() => {}} />);
+    const ticks = screen.getAllByRole('button');
+
+    expect(ticks[0]).toHaveClass('before:bg-label-placeholder');
+    expect(ticks[0]).not.toHaveClass('before:bg-label');
+    expect(ticks[1]).toHaveClass('before:bg-label');
+  });
+
+  it('swells the hovered tick and its neighbours by distance, darkening only the hovered one', () => {
     const many = Array.from({ length: 9 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
     render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
     const ticks = screen.getAllByRole('button');
 
     fireEvent.mouseEnter(ticks[4]);
 
-    // Hovered: longest, and the accent — never near-black, which read as a
-    // different kind of state next to the accent-coloured current chapter.
-    expect(ticks[4].className).toContain('before:w-[24px]');
-    expect(ticks[4].className).toContain('before:bg-[var(--abu-clay)]');
-    expect(ticks[4].className).not.toContain('var(--abu-text-primary)');
+    // Hovered: longest, and the label colour, like the chapter being read.
+    expect(ticks[4]).toHaveClass('before:w-[24px]');
+    expect(ticks[4]).toHaveClass('before:bg-label');
     // Neighbours fall off with distance, so the column reads as one wave — but
     // by LENGTH only. Colour stays exclusive to the tick under the pointer (and
     // to the current chapter), or the rail reads as three states at once.
     for (const [tick, width] of [[ticks[3], '16px'], [ticks[5], '16px'], [ticks[2], '10px']] as const) {
-      expect(tick.className).toContain(`before:w-[${width}]`);
-      expect(tick.className).toContain('before:bg-[var(--abu-text-placeholder)]');
-      expect(tick.className).not.toContain('before:bg-[var(--abu-clay)]');
+      expect(tick).toHaveClass(`before:w-[${width}]`);
+      expect(tick).toHaveClass('before:bg-label-placeholder');
+      expect(tick).not.toHaveClass('before:bg-label');
     }
     // Far enough away, nothing moves.
-    expect(ticks[0].className).not.toContain('before:w-[10px]');
+    expect(ticks[0]).not.toHaveClass('before:w-[10px]');
   });
 
-  it('keeps the current chapter in the accent colour while a neighbour is hovered', () => {
+  it('keeps the current chapter in the label colour while a neighbour is hovered', () => {
     const many = Array.from({ length: 5 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
     render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
     const ticks = screen.getAllByRole('button');
@@ -138,8 +163,22 @@ describe('ChapterRail', () => {
     fireEvent.mouseEnter(ticks[1]);
 
     // Ramped in size by proximity, but still the chapter being read.
-    expect(ticks[0].className).toContain('before:w-[16px]');
-    expect(ticks[0].className).toContain('before:bg-[var(--abu-clay)]');
+    expect(ticks[0]).toHaveClass('before:w-[16px]');
+    expect(ticks[0]).toHaveClass('before:bg-label');
+  });
+
+  it('does not re-render while the chat view derives an equal chapter list per streamed token', () => {
+    const onJump = () => {};
+    const { rerender } = render(<ChapterRail chapters={TWO} currentIndex={0} onJump={onJump} />);
+    const initial = tickRenders.mock.calls.length;
+    expect(initial).toBe(2);
+
+    rerender(<ChapterRail chapters={TWO.map((item) => ({ ...item }))} currentIndex={0} onJump={onJump} />);
+    rerender(<ChapterRail chapters={TWO.map((item) => ({ ...item }))} currentIndex={0} onJump={onJump} />);
+    expect(tickRenders).toHaveBeenCalledTimes(initial);
+
+    rerender(<ChapterRail chapters={[TWO[0], { ...TWO[1], summary: '刚刚回答' }]} currentIndex={0} onJump={onJump} />);
+    expect(tickRenders.mock.calls.length).toBeGreaterThan(initial);
   });
 
   it('condenses only the middle ticks once the rail gets long', () => {

@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatView from './ChatView';
 import { agentRegistry } from '@/core/agent/registry';
 import { useChatStore } from '@/stores/chatStore';
@@ -10,6 +12,8 @@ import type { SubagentDefinition } from '@/types';
 
 vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: vi.fn() }));
 vi.mock('./ScenarioGuide', () => ({ default: () => null }));
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const ICON_AVATAR = 'icon:code/blue';
 

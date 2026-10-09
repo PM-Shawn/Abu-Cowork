@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { ChevronDown, Compass, LayoutGrid, Wand2, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
@@ -10,17 +8,18 @@ import { useToastStore } from '@/stores/toastStore';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { removeApp } from '@/core/app/appSync';
 import AppLogo from '@/components/app/AppLogo';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 
 /**
  * The app switcher, beside Abu's own name in the sidebar's brand row (product
  * spec §5.1). The button reads 发现应用 in the general shell and carries the
  * app's logo and name inside an app; the menu lists 通用 / 最近使用 / 我的应用
- * and ends with 查看更多 (the app market) and 创建应用. Switching is one click
- * on a row, 通用 included — that row is how a user leaves an app.
- *
- * The menu is portalled to the body and positioned against the trigger, so the
- * sidebar's own width and painting order cannot clip it.
+ * and ends with 查看更多 (the app market), 创建应用 and 移除. Switching is one
+ * click on a row, 通用 included — that row is how a user leaves an app.
  *
  * Apps and plugins stay apart: 查看更多 opens the app market, which lists only
  * apps, and the plugin market lists only plugins.
@@ -29,12 +28,11 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
  * (`useEnterpriseAppPolicy`): the 通用 row then leaves the menu, while the
  * organization's other apps stay switchable.
  *
- * Every app the user added has 移除 on its row; removing takes only the app.
- * An app the user made in 创建应用 exists nowhere else, so removing it asks
- * first. Organization apps have no 移除: the organization decides them.
+ * 移除 is a nested list of the apps the user added; removing takes only the
+ * app. An app the user made in 创建应用 exists nowhere else, so removing it asks
+ * first. Organization apps are not in the list: the organization decides them.
  */
-/** An app row carries a logo, a name and a one-line description; the trigger is only a chip. */
-const MENU_WIDTH = 252;
+const removable = (app: AppDefinition) => app.origin !== null && app.origin.kind !== 'enterprise';
 
 export default function AppSwitcher({ className }: { className?: string }) {
   const { t, format } = useI18n();
@@ -45,182 +43,151 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const enterApp = useAppStore((s) => s.enterApp);
   const addToast = useToastStore((s) => s.addToast);
   const setAppMarketOpen = useAppStore((s) => s.setAppMarketOpen);
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState<AppDefinition | null>(null);
-  const [anchor, setAnchor] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
-  const root = useRef<HTMLDivElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-
-  const place = useCallback(() => {
-    const trigger = root.current;
-    if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    // Stay on screen when the window is narrow enough that the menu would
-    // otherwise run past its right edge.
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - MENU_WIDTH - 8));
-    setAnchor({ left, top: rect.bottom + 4 });
-  }, []);
-
-  useLayoutEffect(() => { if (open) place(); }, [open, place]);
-
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // 查看更多, 创建应用 and 移除 act once the menu has gone.
+  const afterMenuClose = useRef<(() => void) | null>(null);
+  // The apps being removed: one removal per app at a time.
+  const removing = useRef(new Set<string>());
+  const mounted = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (root.current?.contains(target) || menu.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
-    const reposition = () => place();
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    window.addEventListener('resize', reposition);
-    window.addEventListener('scroll', reposition, true);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('resize', reposition);
-      window.removeEventListener('scroll', reposition, true);
-    };
-  }, [open, place]);
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const installed = apps.filter((app) => app.appId !== GENERAL_APP_ID);
   const recent = recentAppIds.map((id) => installed.find((app) => app.appId === id)).filter((app): app is AppDefinition => app !== undefined);
   const rest = installed.filter((app) => !recentAppIds.includes(app.appId));
+  const removableApps = installed.filter(removable);
   const isGeneral = selected.appId === GENERAL_APP_ID;
 
   const enter = (appId: string) => {
-    setOpen(false);
     if (appId === selected.appId) return;
     enterApp(appId);
   };
   const createApp = () => {
-    setOpen(false);
     void createAppDraft().catch((error) => addToast({ type: 'error', title: t.appSwitcher.create, message: String(error) }));
   };
-  const remove = (app: AppDefinition) => {
-    void removeApp(app.appId).catch((error) => addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) }));
+  // The app as the store holds it now: what a removal acts on.
+  const addedNow = (appId: string) => useAppStore.getState().addedApps.find((app) => app.appId === appId);
+  const remove = async (appId: string) => {
+    if (removing.current.has(appId)) return;
+    removing.current.add(appId);
+    try {
+      const app = addedNow(appId);
+      if (!app) return;
+      if (app.origin?.kind === 'created') {
+        const confirmed = await confirm({
+          title: format(t.appSwitcher.removeCreatedTitle, { name: app.name }),
+          message: t.appSwitcher.removeCreatedMessage,
+          confirmLabel: t.appSwitcher.remove,
+          tone: 'danger',
+        });
+        // The answer acts on the app only while the switcher is on the page and the app is still added.
+        if (!confirmed || !mounted.current || !addedNow(appId)) return;
+      }
+      await removeApp(appId);
+    } catch (error) {
+      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) });
+    } finally {
+      removing.current.delete(appId);
+    }
   };
-  const requestRemove = (app: AppDefinition) => {
-    setOpen(false);
-    if (app.origin?.kind === 'created') setConfirmRemove(app);
-    else remove(app);
-  };
-  const removable = (app: AppDefinition) => app.origin !== null && app.origin.kind !== 'enterprise';
 
+  // An app row carries a logo, a name and a one-line description. The rows are one
+  // radio group, so the current app is checked (aria-checked); the others show 进入
+  // while highlighted.
   const row = (app: AppDefinition, current: boolean) => (
-    <div
-      key={app.appId}
-      role="menuitem"
-      tabIndex={0}
-      data-testid={`app-switcher-item-${app.appId}`}
-      aria-current={current ? 'true' : undefined}
-      onClick={() => enter(app.appId)}
-      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); enter(app.appId); } }}
-      className={cn('group flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left', current ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-hover)]')}
-    >
-      <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="md" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-body text-[var(--abu-text-primary)]">{app.name}</span>
-        {app.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{app.description}</span>}
-      </span>
-      {!current && (
-        <span
-          data-testid={`app-switcher-enter-${app.appId}`}
-          aria-hidden="true"
-          className="pointer-events-none hidden shrink-0 rounded-md bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)] group-hover:inline-flex"
-        >
-          {t.appSwitcher.enter}
+    <MenuRadioItem key={app.appId} value={app.appId}>
+      <span data-testid={`app-switcher-item-${app.appId}`} className="flex items-center gap-2">
+        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="sm" />
+        <span className="min-w-0 flex-1 truncate">
+          {app.name}
+          {app.description && <span className="ml-2 text-ui-sm text-label-tertiary">{app.description}</span>}
         </span>
-      )}
-      {removable(app) && (
-        <button
-          type="button"
-          data-testid={`app-switcher-remove-${app.appId}`}
-          aria-label={`${t.appSwitcher.remove}: ${app.name}`}
-          title={t.appSwitcher.remove}
-          onClick={(event) => { event.stopPropagation(); requestRemove(app); }}
-          className="hidden shrink-0 rounded-md p-1 text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)] group-hover:inline-flex focus-visible:inline-flex"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      )}
-    </div>
-  );
-  const heading = (label: string) => <div className="px-2 pt-2 pb-1 text-caption font-medium text-[var(--abu-text-tertiary)]">{label}</div>;
-
-  const menuBody = (
-    <div
-      ref={menu}
-      role="menu"
-      data-testid="app-switcher-menu"
-      style={{ left: anchor.left, top: anchor.top, width: MENU_WIDTH }}
-      className="fixed z-[70] max-h-[70vh] overflow-y-auto rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] p-1.5 shadow-lg"
-    >
-      {!isGeneral && allowExit && row(apps[0], false)}
-      {recent.length > 0 && (<>{heading(t.appSwitcher.recent)}{recent.map((app) => row(app, app.appId === selected.appId))}</>)}
-      {rest.length > 0 && (<>{heading(t.appSwitcher.mine)}{rest.map((app) => row(app, app.appId === selected.appId))}</>)}
-      <div className="mt-1 border-t border-[var(--abu-border)] pt-1">
-        <button
-          type="button"
-          role="menuitem"
-          data-testid="app-switcher-discover"
-          onClick={() => { setOpen(false); setAppMarketOpen(true); }}
-          className="btn-ghost flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-body text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-        >
-          <LayoutGrid className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-          {t.appSwitcher.viewMore}
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          data-testid="app-switcher-create"
-          onClick={createApp}
-          className="btn-ghost flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-body text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-        >
-          <Wand2 className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-          {t.appSwitcher.create}
-        </button>
-      </div>
-    </div>
+        {!current && (
+          <span
+            data-testid={`app-switcher-enter-${app.appId}`}
+            aria-hidden="true"
+            className="hidden shrink-0 text-ui-sm text-label-tertiary in-data-highlighted:inline"
+          >
+            {t.appSwitcher.enter}
+          </span>
+        )}
+      </span>
+    </MenuRadioItem>
   );
 
   return (
-    <div ref={root} className={cn('relative', className)} data-testid="app-switcher">
-      <button
-        type="button"
-        data-testid="app-switcher-trigger"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={t.appSwitcher.openLabel}
-        onClick={() => setOpen((value) => !value)}
-        className="btn-ghost flex w-full items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-1.5 py-1 text-left hover:bg-[var(--abu-bg-active)]"
-      >
-        {isGeneral
-          ? <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)]" />
-          : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" />}
-        <span
-          className={cn('min-w-0 flex-1 text-caption font-medium text-[var(--abu-text-primary)]', isGeneral ? 'whitespace-nowrap' : 'truncate')}
-          data-testid="app-switcher-current"
-        >
-          {isGeneral ? t.appSwitcher.discover : selected.name}
-        </span>
-        <ChevronDown className={cn('h-3 w-3 shrink-0 text-[var(--abu-text-tertiary)] transition-transform', open && 'rotate-180')} />
-      </button>
-      {open && createPortal(menuBody, document.body)}
-      <ConfirmDialog
-        open={confirmRemove !== null}
-        title={format(t.appSwitcher.removeCreatedTitle, { name: confirmRemove?.name ?? '' })}
-        message={t.appSwitcher.removeCreatedMessage}
-        confirmText={t.appSwitcher.remove}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onConfirm={() => {
-          if (confirmRemove) remove(confirmRemove);
-          setConfirmRemove(null);
+    <div className={cn('relative', className)} data-testid="app-switcher">
+      <Menu
+        open={open}
+        // A menu opened again while it fades never ran its close hook for the earlier choice: opening forgets it.
+        onOpenChange={(next) => { if (next) afterMenuClose.current = null; setOpen(next); }}
+        onCloseAutoFocus={(event) => {
+          const action = afterMenuClose.current;
+          if (!action) return;
+          afterMenuClose.current = null;
+          // The focus is on the switcher's button before the action runs: a window or a
+          // question the action opens returns the focus there.
+          event.preventDefault();
+          triggerRef.current?.focus();
+          action();
         }}
-        onCancel={() => setConfirmRemove(null)}
-      />
+        trigger={
+          <Button
+            ref={triggerRef}
+            size="sm"
+            data-testid="app-switcher-trigger"
+            aria-label={t.appSwitcher.openLabel}
+            className="w-full justify-start"
+          >
+            {isGeneral
+              ? <Icon icon={AppIcons.discoverApps} size="sm" className="text-label-secondary" />
+              : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" />}
+            <span
+              className={cn('min-w-0 flex-1 text-left', isGeneral ? 'whitespace-nowrap' : 'truncate')}
+              data-testid="app-switcher-current"
+            >
+              {isGeneral ? t.appSwitcher.discover : selected.name}
+            </span>
+            <Icon icon={AppIcons.expand} size="sm" className="text-label-tertiary" />
+          </Button>
+        }
+      >
+        <div data-testid="app-switcher-menu" className="w-60">
+          {/* A long app list scrolls inside the menu instead of running off the window. */}
+          <div className="max-h-96 overflow-y-auto">
+            <MenuRadioGroup value={selected.appId} onValueChange={enter}>
+              {!isGeneral && allowExit && row(apps[0], false)}
+              {recent.length > 0 && (<><MenuLabel>{t.appSwitcher.recent}</MenuLabel>{recent.map((app) => row(app, app.appId === selected.appId))}</>)}
+              {rest.length > 0 && (<><MenuLabel>{t.appSwitcher.mine}</MenuLabel>{rest.map((app) => row(app, app.appId === selected.appId))}</>)}
+            </MenuRadioGroup>
+          </div>
+          <MenuSeparator />
+          <MenuItem icon={AppIcons.appMarket} onSelect={() => { afterMenuClose.current = () => setAppMarketOpen(true); }}>
+            <span data-testid="app-switcher-discover">{t.appSwitcher.viewMore}</span>
+          </MenuItem>
+          <MenuItem icon={AppIcons.createApp} onSelect={() => { afterMenuClose.current = createApp; }}>
+            <span data-testid="app-switcher-create">{t.appSwitcher.create}</span>
+          </MenuItem>
+          {removableApps.length > 0 && (
+            <MenuSub icon={AppIcons.remove} label={<span data-testid="app-switcher-remove">{t.appSwitcher.remove}</span>}>
+              {removableApps.map((app) => (
+                <MenuItem
+                  key={app.appId}
+                  tone="danger"
+                  testId={`app-switcher-remove-${app.appId}`}
+                  onSelect={() => { afterMenuClose.current = () => { void remove(app.appId); }; }}
+                >
+                  {app.name}
+                </MenuItem>
+              ))}
+            </MenuSub>
+          )}
+        </div>
+      </Menu>
     </div>
   );
 }

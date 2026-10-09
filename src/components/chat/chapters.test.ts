@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@/types';
 import { COMPACT_BOUNDARY_ID_PREFIX } from '@/core/context/compactBoundary';
-import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter } from './chapters';
+import { activeChapterIndex, deriveChapters, sameChapters, shouldShowRail, topVisibleGroup, type Chapter } from './chapters';
 
 const FALLBACK = '会话开始';
 
@@ -258,5 +258,34 @@ describe('shouldShowRail', () => {
   it('appears from the third chapter on', () => {
     expect(shouldShowRail(chapters(3))).toBe(true);
     expect(shouldShowRail(chapters(40))).toBe(true);
+  });
+});
+
+describe('sameChapters', () => {
+  const base: Chapter[] = [
+    { groupIndex: 0, messageId: 'm0', title: 'First', summary: 'Reply' },
+    { groupIndex: 2, messageId: 'm2', title: 'Second', summary: '' },
+  ];
+
+  it('treats a freshly derived list with the same content as the same', () => {
+    expect(sameChapters(base, base.map((chapter) => ({ ...chapter })))).toBe(true);
+  });
+
+  it('notices a new chapter', () => {
+    expect(sameChapters(base, [...base, { groupIndex: 4, messageId: 'm4', title: 'Third', summary: '' }])).toBe(false);
+  });
+
+  it('notices a summary that grew while the reply streamed', () => {
+    expect(sameChapters(base, [base[0], { ...base[1], summary: 'Now answered' }])).toBe(false);
+  });
+
+  it('ignores the summary for a list that does not show it', () => {
+    expect(sameChapters(base, [base[0], { ...base[1], summary: 'Now answered' }], { summary: false })).toBe(true);
+    expect(sameChapters(base, [base[0], { ...base[1], title: 'Renamed' }], { summary: false })).toBe(false);
+  });
+
+  it('notices a moved group index or a new title', () => {
+    expect(sameChapters(base, [base[0], { ...base[1], groupIndex: 3 }])).toBe(false);
+    expect(sameChapters(base, [{ ...base[0], title: 'Renamed' }, base[1]])).toBe(false);
   });
 });

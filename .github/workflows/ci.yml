@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [dev, main]
+    # feat/design-system-next collects design-system batches 3–9 before they reach dev.
+    branches: [dev, main, feat/design-system-next]
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, feat/design-system-next]
     # Re-evaluate body/label-based gate exemptions when their inputs change.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 

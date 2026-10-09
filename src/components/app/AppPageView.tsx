@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Loader2, RotateCw } from 'lucide-react';
+import { IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { LoadError } from '@/components/ds/load-error';
+import { Spinner } from '@/components/ds/spinner';
 import { useI18n } from '@/i18n';
 import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useNativeViewOcclusion } from '@/hooks/useNativeViewOcclusion';
 import { APP_PAGE_STATE_EVENT, hideAppPages, reloadAppPage, setAppPageBounds, showAppPage, type AppPageStateEvent } from '@/core/app/appPageBridge';
 import { resolveText } from '@/core/app/appBinding';
-import { Button } from '@/components/ui/button';
 
 /**
  * The main-area host for an app's `url:` page. It owns a placeholder that
@@ -73,24 +75,25 @@ export default function AppPageView() {
 
   return (
     <div className="flex h-full flex-col" data-testid="app-page-view" data-nav-item={navItemId ?? undefined}>
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--abu-border)] px-4">
-        <span className="min-w-0 flex-1 truncate text-body font-medium text-[var(--abu-text-primary)]">
+      {/* h-11: the native page's rectangle starts right under this row. */}
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-separator px-4">
+        <span className="min-w-0 flex-1 truncate text-ui font-medium text-label">
           {navItem?.title === undefined ? app.name : resolveText(navItem.title)}
         </span>
-        {state?.state === 'loading' && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--abu-text-muted)]" />}
+        {state?.state === 'loading' && <Spinner size="sm" label={t.common.loading} labelHidden />}
         {appId && navItemId && (
-          <Button size="icon-sm" variant="ghost" aria-label={t.common.retry} onClick={() => { void reloadAppPage(appId, navItemId); }}>
-            <RotateCw className="h-3.5 w-3.5" />
-          </Button>
+          // The tooltip opens beside the button, inside this row: below it the native page is
+          // painted over everything the app draws, and above it the window ends.
+          <IconButton size="sm" icon={AppIcons.reload} label={t.common.retry} tooltipSide="left" onClick={() => { void reloadAppPage(appId, navItemId); }} />
         )}
       </div>
-      <div ref={containerRef} className="relative min-h-0 flex-1 bg-[var(--abu-bg-base)]">
+      <div ref={containerRef} className="relative min-h-0 flex-1 bg-surface">
         {state?.state === 'failed' && (
-          <div data-testid="app-page-failed" className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
-            <p className="text-body text-[var(--abu-text-secondary)]">{state.errorDescription}</p>
-            {appId && navItemId && (
-              <Button variant="outline" size="sm" onClick={() => { void reloadAppPage(appId, navItemId); }}>{t.common.retry}</Button>
-            )}
+          <div data-testid="app-page-failed" className="absolute inset-0 flex flex-col items-center justify-center">
+            {appId && navItemId
+              ? <LoadError reason={state.errorDescription} onRetry={() => { void reloadAppPage(appId, navItemId); }} />
+              // No page is selected any more: the reason stays, with nothing to retry.
+              : <p role="alert" className="max-w-96 px-6 text-center text-ui text-label">{state.errorDescription}</p>}
           </div>
         )}
       </div>

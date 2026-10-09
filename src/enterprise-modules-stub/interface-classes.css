@@ -1,0 +1,2 @@
+/* The personal build has no overlay interface files: nothing is added to Tailwind's class scan.
+   `src/styles/index.css` imports this file through the `@enterprise-modules` alias. */

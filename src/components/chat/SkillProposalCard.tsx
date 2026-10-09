@@ -17,7 +17,12 @@
  */
 
 import { useState } from 'react';
-import { Sparkles, Check, X, Ban, Clock, Trash2, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -27,6 +32,9 @@ import { writeMemory } from '@/core/memdir/write';
 import { cn } from '@/lib/utils';
 import MarkdownRenderer from './MarkdownRenderer';
 import type { InteractiveNoticeCard, NoticeCardAction } from '@/types';
+
+const NOTICE_CARD = 'my-2 flex items-start gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui-sm text-label-secondary';
+const SETTLED_CARD = 'my-2 flex flex-wrap items-center gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui-sm text-label-secondary';
 
 interface Props {
   conversationId: string;
@@ -82,13 +90,15 @@ export default function SkillProposalCard({
   if (card.type === 'skill-patched' && card.skillPatched) {
     const p = card.skillPatched;
     return (
-      <div className="my-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)] flex items-start gap-2">
-        <Sparkles className="h-3.5 w-3.5 text-[var(--abu-clay)] flex-shrink-0 mt-0.5" />
+      <div className={NOTICE_CARD}>
+        <span className="flex h-lh shrink-0 items-center">
+          <Icon icon={AppIcons.sparkles} size="sm" className="text-label-secondary" />
+        </span>
         <div className="min-w-0">
           <span>{t.toolbox.skillPatchedCardLabel} </span>
-          <span className="font-medium text-[var(--abu-text-primary)]">{p.skillName}</span>
+          <span className="font-medium text-label">{p.skillName}</span>
           {p.summary && (
-            <span className="text-[var(--abu-text-muted)]"> — {p.summary}</span>
+            <span className="text-label-tertiary"> — {p.summary}</span>
           )}
         </div>
       </div>
@@ -104,12 +114,14 @@ export default function SkillProposalCard({
   if (card.type === 'skill-deleted' && card.skillDeleted) {
     const d = card.skillDeleted;
     return (
-      <div className="my-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)] flex items-start gap-2">
-        <Trash2 className="h-3.5 w-3.5 text-[var(--abu-text-muted)] flex-shrink-0 mt-0.5" />
+      <div className={NOTICE_CARD}>
+        <span className="flex h-lh shrink-0 items-center">
+          <Icon icon={AppIcons.delete} size="sm" className="text-label-tertiary" />
+        </span>
         <div className="min-w-0">
           <span>{t.toolbox.skillDeletedCardLabel} </span>
-          <span className="font-medium text-[var(--abu-text-primary)]">{d.skillName}</span>
-          <span className="text-[var(--abu-text-muted)]">
+          <span className="font-medium text-label">{d.skillName}</span>
+          <span className="text-label-tertiary">
             {' '}— {d.rescuable ? t.toolbox.skillDeletedCardRescuable : t.toolbox.skillDeletedCardPermanent}
           </span>
         </div>
@@ -230,25 +242,25 @@ export default function SkillProposalCard({
       setExtensionsSearchQuery('skills', proposal.skillName);
     };
 
-    const baseClass = 'my-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)]';
     const content = (
       <>
-        <span className="font-medium">{proposal.skillName}</span> — {label}
+        <span className="font-medium text-label">{proposal.skillName}</span>
+        <Tag tone={isAccepted ? 'success' : 'neutral'}>{label}</Tag>
         {isAccepted && (
-          <span className="ml-2 text-[var(--abu-clay)]">{t.toolbox.skillProposalCardJump}</span>
+          <span className="text-link">{t.toolbox.skillProposalCardJump}</span>
         )}
       </>
     );
 
     return isAccepted ? (
-      <button
+      <Pressable
         onClick={handleJumpToExtensions}
-        className={`${baseClass} w-full text-left hover:bg-[var(--abu-bg-elevated)] hover:border-[var(--abu-clay-ring)] transition-colors cursor-pointer`}
+        className={cn(SETTLED_CARD, 'w-full text-left transition-colors duration-fast hover:bg-fill-hover')}
       >
         {content}
-      </button>
+      </Pressable>
     ) : (
-      <div className={baseClass}>{content}</div>
+      <div className={SETTLED_CARD}>{content}</div>
     );
   }
 
@@ -264,8 +276,8 @@ export default function SkillProposalCard({
   //    has populated) doesn't flash a false "missing" state. ──────────
   if (draftsInitialized && !draftsLoading && !draftExists) {
     return (
-      <div className="my-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)]">
-        <span className="font-medium">{proposal.skillName}</span> — {t.toolbox.skillProposalCardMissing}
+      <div className="my-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui-sm text-label-tertiary">
+        <span className="font-medium text-label-secondary">{proposal.skillName}</span> — {t.toolbox.skillProposalCardMissing}
       </div>
     );
   }
@@ -283,26 +295,23 @@ export default function SkillProposalCard({
       useSettingsStore.getState().openExtensions('skills', 'mine');
     };
     return (
-      <div className="my-2 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">
-        <div className="px-3 py-2.5">
-          <div className="text-minor font-semibold text-[var(--abu-text-primary)] flex items-center gap-1.5">
-            <Sparkles className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-            {proposal.skillName}
+      <div className="my-2 rounded-panel border border-separator bg-surface px-3 py-2">
+        <div className="flex items-center gap-2 text-ui font-medium text-label">
+          <Icon icon={AppIcons.sparkles} size="sm" className="text-label-secondary" />
+          {proposal.skillName}
+        </div>
+        {proposal.description && (
+          <div className="line-clamp-2 text-ui-sm text-label-tertiary">
+            {proposal.description}
           </div>
-          {proposal.description && (
-            <div className="text-caption text-[var(--abu-text-muted)] mt-0.5 leading-relaxed line-clamp-2">
-              {proposal.description}
-            </div>
-          )}
-          <div className="text-caption text-[var(--abu-text-tertiary)] mt-2 leading-relaxed">
-            {t.toolbox.skillProposalCardOnboardGate}
-          </div>
-          <button
-            onClick={handleOpenExtensions}
-            className="mt-2 px-2.5 py-1 rounded-md text-caption font-medium text-white bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] transition-colors"
-          >
+        )}
+        <div className="mt-2 text-ui-sm text-label-secondary">
+          {t.toolbox.skillProposalCardOnboardGate}
+        </div>
+        <div className="mt-2">
+          <Button variant="primary" size="sm" onClick={handleOpenExtensions}>
             {t.toolbox.skillProposalCardOnboardGateAction}
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -310,26 +319,26 @@ export default function SkillProposalCard({
 
   // ── Active state: buttons + collapsible preview ──────────────────────
   return (
-    <div className="my-2 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-elevated)] overflow-hidden">
-      <div className="px-3 py-2 border-b border-[var(--abu-border-subtle)] flex items-center gap-2">
-        <Sparkles className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-        <span className="text-minor font-semibold text-[var(--abu-text-primary)]">
+    <div className="my-2 overflow-hidden rounded-panel border border-separator bg-surface">
+      <div className="flex items-center gap-2 border-b border-separator px-3 py-2">
+        <Icon icon={AppIcons.sparkles} size="sm" className="text-label-secondary" />
+        <span className="text-ui font-medium text-label">
           {t.toolbox.skillProposalCardTitle}
         </span>
       </div>
 
-      <div className="px-3 py-2.5">
-        <div className="text-body font-semibold text-[var(--abu-text-primary)]">
+      <div className="px-3 py-2">
+        <div className="text-title text-label">
           {proposal.skillName}
         </div>
         {proposal.description && (
-          <div className="text-minor text-[var(--abu-text-tertiary)] mt-0.5 leading-relaxed">
+          <div className="text-ui-sm text-label-secondary">
             {proposal.description}
           </div>
         )}
         {proposal.triggerReason && (
-          <div className="text-caption text-[var(--abu-text-muted)] mt-1.5">
-            <span className="text-[var(--abu-text-tertiary)]">
+          <div className="mt-1 text-caption text-label-tertiary">
+            <span className="text-label-secondary">
               {t.toolbox.skillProposalCardWhy}：
             </span>
             {proposal.triggerReason}
@@ -337,74 +346,44 @@ export default function SkillProposalCard({
         )}
 
         {/* Expand / collapse trigger */}
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="mt-2 flex items-center gap-1 text-caption text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
-        >
-          {expanded ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronRight className="h-3 w-3" />
-          )}
-          <span>
+        <div className="mt-2">
+          <Button
+            variant="plain"
+            size="sm"
+            icon={expanded ? AppIcons.expand : AppIcons.disclose}
+            aria-expanded={expanded}
+            onClick={() => setExpanded(!expanded)}
+          >
             {expanded
               ? t.toolbox.skillProposalCardCollapse
               : t.toolbox.skillProposalCardExpand}
-          </span>
-        </button>
+          </Button>
+        </div>
 
         {expanded && (
-          <div className="mt-2 max-h-72 overflow-y-auto overlay-scroll rounded-md border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] px-3 py-2 text-minor leading-relaxed">
+          <div className="overlay-scroll mt-2 max-h-72 overflow-y-auto rounded-control border border-separator px-3 py-2">
             <MarkdownRenderer content={proposal.fullContent} />
           </div>
         )}
       </div>
 
-      <div className="px-3 py-2 border-t border-[var(--abu-border-subtle)] flex items-center gap-2 bg-[var(--abu-bg-base)]">
-        <button
-          onClick={handleAccept}
-          disabled={processing}
-          className={cn(
-            'px-3 py-1 rounded-md text-minor font-medium text-white transition-colors flex items-center gap-1',
-            'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] disabled:opacity-60',
-          )}
-        >
-          {processing ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <Check className="h-3 w-3" />
-          )}
+      <div className="flex items-center gap-2 border-t border-separator px-3 py-2">
+        <Button variant="primary" size="sm" icon={AppIcons.done} onClick={handleAccept} disabled={processing}>
           {t.toolbox.skillProposalCardAccept}
-        </button>
-        <button
-          onClick={handleReject}
-          disabled={processing}
-          className="px-3 py-1 rounded-md text-minor text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors flex items-center gap-1 disabled:opacity-60"
-        >
-          <X className="h-3 w-3" />
+        </Button>
+        <Button variant="secondary" size="sm" icon={AppIcons.close} onClick={handleReject} disabled={processing}>
           {t.toolbox.skillProposalCardReject}
-        </button>
-        <button
-          onClick={handleRejectCategory}
-          disabled={processing}
-          className="px-3 py-1 rounded-md text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors flex items-center gap-1 disabled:opacity-60"
-          title={t.toolbox.skillProposalCardRejectCategory}
-        >
-          <Ban className="h-3 w-3" />
+        </Button>
+        <Button variant="secondary" size="sm" icon={AppIcons.block} onClick={handleRejectCategory} disabled={processing}>
           {t.toolbox.skillProposalCardRejectCategory}
-        </button>
+        </Button>
+        {processing && <Spinner size="sm" label={t.task.processing} />}
         {/* Defer — pushed to the right edge via ml-auto so the three
             accept/reject actions stay visually grouped; "decide later"
             is a neutral escape hatch, not another commit. */}
-        <button
-          onClick={handleDefer}
-          disabled={processing}
-          className="ml-auto px-3 py-1 rounded-md text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors flex items-center gap-1 disabled:opacity-60"
-          title={t.toolbox.skillProposalCardDefer}
-        >
-          <Clock className="h-3 w-3" />
+        <Button variant="plain" size="sm" icon={AppIcons.clock} onClick={handleDefer} disabled={processing} className="ml-auto">
           {t.toolbox.skillProposalCardDefer}
-        </button>
+        </Button>
       </div>
     </div>
   );

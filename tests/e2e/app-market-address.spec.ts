@@ -25,6 +25,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -150,6 +151,13 @@ async function addMarket(page: Page, address: string): Promise<void> {
   await page.getByTestId('plugin-marketplace-submit').click();
 }
 
+/** 取消 with an address typed: the window asks before it drops what was typed. */
+async function cancelAddMarket(page: Page): Promise<void> {
+  await page.getByTestId('plugin-add-marketplace').getByRole('button', { name: /^(取消|Cancel)$/ }).click();
+  await pressWhenSettled(page.getByRole('button', { name: /^(放弃|Discard)$/ }));
+  await expect(page.getByTestId('plugin-add-marketplace')).toBeHidden();
+}
+
 test.describe.serial('app market by address', () => {
   let dataRoot: ElectronDataRoot;
   let app: ElectronApplication;
@@ -198,7 +206,7 @@ test.describe.serial('app market by address', () => {
     await page.getByTestId('plugin-marketplace-dir-input').fill(`${server.origin}/nothing.zip`);
     await page.getByTestId('plugin-marketplace-submit').click();
     await expect(error).toContainText('这个地址里没有市场', { timeout: READY_TIMEOUT });
-    await page.getByRole('button', { name: /^(取消|Cancel)$/ }).click();
+    await cancelAddMarket(page);
     await expect(page.getByTestId('app-market-markets')).toHaveCount(0);
   });
 
@@ -217,7 +225,7 @@ test.describe.serial('app market by address', () => {
   test('another address with the same market name is refused', async () => {
     await addMarket(page, `${server.origin}/impostor.zip`);
     await expect(page.getByTestId('plugin-marketplace-error')).toContainText('已经有一个同名的市场，请联系提供地址的人', { timeout: READY_TIMEOUT });
-    await page.getByRole('button', { name: /^(取消|Cancel)$/ }).click();
+    await cancelAddMarket(page);
     await expect(page.getByTestId('app-market-dialog').getByTestId('app-market-market')).toHaveCount(1);
   });
 
@@ -270,7 +278,7 @@ test.describe.serial('app market by address', () => {
     await openMarket(page);
     await page.getByTestId(`app-market-remove-market-${MARKET}`).click();
     await expect(page.getByText('从这个市场添加的应用以后不能更新')).toBeVisible();
-    await page.getByRole('button', { name: /^(移除|Remove)$/ }).last().click();
+    await pressWhenSettled(page.getByRole('alertdialog').getByRole('button', { name: /^(移除|Remove)$/ }));
     await expect(page.getByTestId('app-market-dialog').getByTestId('app-market-markets')).toHaveCount(0, { timeout: READY_TIMEOUT });
     await expect(page.getByTestId('app-market-dialog').locator(`[data-testid="app-market-entry"][data-app-id="${APP_ID}"]`)).toHaveCount(0);
     expect(fs.existsSync(path.join(dataRoot.appDataDir, 'Home', '.abu', 'markets', MARKET))).toBe(false);

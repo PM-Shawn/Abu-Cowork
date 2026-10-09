@@ -16,6 +16,7 @@ import {
   configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -326,7 +327,7 @@ async function openAutomationItem(page: Page, tabLabel: RegExp, itemName: string
   await page.getByRole('button', { name: tabLabel }).click();
   const item = page.getByText(itemName, { exact: true });
   if (!await item.isVisible({ timeout: 1_000 }).catch(() => false)) {
-    await page.locator('.border-b').getByRole('button').first().click();
+    await page.getByRole('button', { name: /^(返回列表|Back)$/ }).click();
   }
   await expect(item).toBeVisible({ timeout: READY_TIMEOUT });
   await item.click();
@@ -436,7 +437,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     await expectCurrentChatReady(page);
 
     await openAutomationItem(page, /^(定时任务|Scheduled Tasks)$/, scheduleName);
-    await page.getByTitle(/^(查看会话|View Conversation)$/).click();
+    await page.getByRole('button', { name: /^(查看会话|View Conversation)$/ }).click();
     await expect(page.getByText(/^(思考中|Thinking)(?:\s*\(\d+s\))?$/)).toBeVisible({ timeout: READY_TIMEOUT });
 
     handle.release(scheduleResponse);
@@ -535,7 +536,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     await expect(page.getByRole('heading', { name: /^(文件写入权限|File Write Permission)$/ })).toBeVisible({
       timeout: READY_TIMEOUT,
     });
-    await page.getByRole('button', { name: /^(拒绝|Deny)$/ }).click();
+    await pressWhenSettled(page.getByRole('button', { name: /^(拒绝|Deny)$/ }));
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
     expectToolResultMatches(taskRequests(mock)[3].body, 'write_file', /用户拒绝|denied/i);
     expect(fs.existsSync(afterFullTarget)).toBe(false);
@@ -546,8 +547,8 @@ test.describe.serial('Electron infra hygiene batch', () => {
     await expect(page.getByRole('heading', { name: /^(文件写入权限|File Write Permission)$/ })).toBeVisible({
       timeout: READY_TIMEOUT,
     });
-    await page.getByRole('button', { name: /^(本次会话|This session)$/ }).click();
-    await page.getByRole('button', { name: /^(允许本次会话|Allow for Session)$/ }).click();
+    await pressWhenSettled(page.getByRole('radio', { name: /^(本次会话|This session)$/ }));
+    await pressWhenSettled(page.getByRole('button', { name: /^(允许本次会话|Allow for Session)$/ }));
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(6);
     expectToolResultMatches(taskRequests(mock)[5].body, 'write_file', /Successfully wrote|成功/);
     await expect.poll(() => fs.existsSync(grantTarget), { timeout: READY_TIMEOUT }).toBe(true);
@@ -571,7 +572,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     // create cannot pick its own capability tier, not that the gate is absent.
     await expect(page.getByRole('heading', { name: /^(新增能力确认|Confirm new capability)$/ }))
       .toBeVisible({ timeout: READY_TIMEOUT });
-    await page.getByRole('button', { name: /^(确认执行|Confirm)$/ }).click();
+    await pressWhenSettled(page.getByRole('button', { name: /^(确认执行|Confirm)$/ }));
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(10);
     const manageTriggerResult = expectToolResultMatches(
       taskRequests(mock)[9].body,

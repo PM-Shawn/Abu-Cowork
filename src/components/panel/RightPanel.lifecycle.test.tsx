@@ -8,7 +8,7 @@ import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { getVisibleTabs, usePreviewStore, workspaceTabButtonId } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import type { Conversation } from '@/types';
 
 // Only BrowserTab stays real — this suite is about the native browser view's
@@ -90,9 +90,9 @@ function browserTabMounted(): boolean {
 
 async function renderPanel() {
   const result = render(
-    <TooltipProvider>
+    <DesignSystemProvider>
       <RightPanel />
-    </TooltipProvider>,
+    </DesignSystemProvider>,
   );
   // Auto-expand fires once per conversation on mount (workspace + messages).
   await waitFor(() => {
@@ -374,9 +374,9 @@ describe('RightPanel browser view lifecycle', () => {
       activeConversationId: 'a',
     });
     render(
-      <TooltipProvider>
+      <DesignSystemProvider>
         <RightPanel />
-      </TooltipProvider>,
+      </DesignSystemProvider>,
     );
     await act(async () => {
       useSettingsStore.setState({ rightPanelCollapsed: false, sidebarCollapsed: true });
@@ -418,9 +418,9 @@ describe('RightPanel browser view lifecycle', () => {
 
     it('stays mounted but hidden until the user opens it', async () => {
       render(
-        <TooltipProvider>
+        <DesignSystemProvider>
           <RightPanel />
-        </TooltipProvider>,
+        </DesignSystemProvider>,
       );
 
       // No workspace → the panel auto-collapses, so it is CLOSED...
@@ -436,9 +436,9 @@ describe('RightPanel browser view lifecycle', () => {
 
     it('becomes visible and opens the summary when the title-bar toggle expands it', async () => {
       render(
-        <TooltipProvider>
+        <DesignSystemProvider>
           <RightPanel />
-        </TooltipProvider>,
+        </DesignSystemProvider>,
       );
       await waitFor(() => {
         expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);

@@ -17,13 +17,14 @@
  * the user approved its disclosure.
  *
  * Uninstall is destructive, so it goes through the shared
- * {@link UninstallPluginDialog}, which owns the confirmation and the store call.
+ * {@link useUninstallPlugin}, which owns the confirmation and the store call.
  */
 
-import { useMemo, useState, type ReactNode } from 'react';
-import { Package, Trash2 } from 'lucide-react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
 import { usePluginStore } from '@/stores/pluginStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { partitionInstalled } from '@/core/plugin/enterpriseMarket';
@@ -31,7 +32,43 @@ import { isAuthoredInstall } from '@/core/plugin/authored';
 import InstalledPluginDetail, { InstalledPluginSummary } from './InstalledPluginDetail';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginCard from './InstalledPluginCard';
-import UninstallPluginDialog from './UninstallPluginDialog';
+import { useUninstallPlugin } from './useUninstallPlugin';
+import { cardIndex, cardOrNeighbour, cardProps, focusByTestId, focusIsOnWindow } from '../cardFocus';
+
+/**
+ * One card of the shelf. memo: a window opening over the shelf, or a card
+ * leaving it, renders no other card again. Its callbacks are the same for the
+ * life of the list.
+ */
+const MineCard = memo(function MineCard({ plugin, home, onOpen, onUninstall }: {
+  plugin: InstalledPlugin;
+  home: string;
+  onOpen: (key: string) => void;
+  onUninstall: (plugin: InstalledPlugin) => void;
+}) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  return (
+    <InstalledPluginCard
+      plugin={plugin}
+      home={home}
+      testId="plugin-mine-row"
+      description={<InstalledPluginSummary plugin={plugin} />}
+      onClick={() => onOpen(plugin.key)}
+      actions={
+        <Button
+          variant="danger"
+          size="sm"
+          icon={AppIcons.delete}
+          aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
+          onClick={(event) => { event.stopPropagation(); onUninstall(plugin); }}
+        >
+          {tb.pluginsUninstall}
+        </Button>
+      }
+    />
+  );
+});
 
 interface InstalledPluginListProps {
   home: string;
@@ -54,7 +91,6 @@ export default function InstalledPluginList({
   const { t } = useI18n();
   const tb = t.toolbox;
   const installed = usePluginStore((s) => s.installed);
-  const [pendingRemoval, setPendingRemoval] = useState<InstalledPlugin | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // Both the list and the empty state key off this partition, so a user whose
@@ -70,18 +106,42 @@ export default function InstalledPluginList({
 
   const selected = scoped.find((p) => p.key === selectedKey) ?? null;
 
-  const emptyState = (
-    <div className="flex flex-col items-center justify-center gap-3 px-8 py-16 text-center">
-      <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />
-      <p className="text-body text-[var(--abu-text-tertiary)]">{scoped.length === 0 ? tb.pluginsEmptyState : tb.pluginsNoMatches}</p>
-      {/* Two ways to fill the shelf, so the empty state names both. */}
-      {scoped.length === 0 && <p className="text-caption text-[var(--abu-text-tertiary)]">{tb.pluginsMineEmptyHint}</p>}
-      {scoped.length === 0 && onBrowseMarketplace && (
-        <Button variant="outline" onClick={onBrowseMarketplace}>
-          {tb.pluginsGoToMarketplace}
-        </Button>
-      )}
-    </div>
+  // The install the uninstall question is about, and where its card sits. When the question
+  // ends the focus goes back to that card; once the card has gone, to the card that took its
+  // place, else the one before it, else the shelf's own button, else the page's 「添加」.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const leaving = useRef<{ key: string; index: number } | null>(null);
+  const focusCardOrWhatReplacedIt = useCallback(() => {
+    const root = rootRef.current;
+    const gone = leaving.current;
+    // Only when no control has the focus: the user may have moved on while the uninstall ran.
+    if (!root || !gone || !focusIsOnWindow()) return;
+    const next = cardOrNeighbour(root, 'plugin-mine', gone.key, gone.index) ?? root.querySelector<HTMLElement>('button');
+    if (next) next.focus();
+    else focusByTestId('plugin-create-trigger');
+  }, []);
+  const { ask } = useUninstallPlugin(home, focusCardOrWhatReplacedIt);
+  const askToUninstall = useCallback((plugin: InstalledPlugin) => {
+    leaving.current = { key: plugin.key, index: cardIndex(rootRef.current, 'plugin-mine', plugin.key) };
+    ask(plugin);
+  }, [ask]);
+  useLayoutEffect(() => {
+    const gone = leaving.current;
+    if (!gone || installed.some((plugin) => plugin.key === gone.key)) return;
+    focusCardOrWhatReplacedIt();
+    leaving.current = null;
+  }, [installed, focusCardOrWhatReplacedIt]);
+
+  const emptyState = scoped.length === 0 ? (
+    // Two ways to fill the shelf, so the empty state names both.
+    <EmptyState
+      icon={AppIcons.bundle}
+      title={tb.pluginsEmptyState}
+      description={tb.pluginsMineEmptyHint}
+      action={onBrowseMarketplace && <Button variant="secondary" onClick={onBrowseMarketplace}>{tb.pluginsGoToMarketplace}</Button>}
+    />
+  ) : (
+    <EmptyState icon={AppIcons.bundle} title={tb.pluginsNoMatches} />
   );
 
   // The grid is mounted even while empty: what the user created here reports
@@ -91,32 +151,16 @@ export default function InstalledPluginList({
     {visible.length === 0 && childCount === 0 && emptyState}
     <ToolGrid>
       {visible.map((plugin) => (
-        <InstalledPluginCard
-          key={plugin.key}
-          plugin={plugin}
-          home={home}
-          testId="plugin-mine-row"
-          description={<InstalledPluginSummary plugin={plugin} />}
-          onClick={() => setSelectedKey(plugin.key)}
-          actions={
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
-              onClick={(event) => { event.stopPropagation(); setPendingRemoval(plugin); }}
-            >
-              <Trash2 className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
-              <span className="text-[var(--abu-danger)]">{tb.pluginsUninstall}</span>
-            </Button>
-          }
-        />
+        <div key={plugin.key} className="h-full" {...cardProps('plugin-mine', plugin.key)}>
+          <MineCard plugin={plugin} home={home} onOpen={setSelectedKey} onUninstall={askToUninstall} />
+        </div>
       ))}
       {children}
     </ToolGrid>
   </>;
 
   return (
-    <div className="px-8 py-3" data-testid="plugin-mine-group">
+    <div ref={rootRef} className="px-8 py-3" data-testid="plugin-mine-group">
       <div className="mx-auto max-w-5xl">
         {body}
       </div>
@@ -124,12 +168,7 @@ export default function InstalledPluginList({
         home={home}
         plugin={selected}
         onClose={() => setSelectedKey(null)}
-        onUninstall={(plugin) => { setSelectedKey(null); setPendingRemoval(plugin); }}
-      />
-      <UninstallPluginDialog
-        home={home}
-        target={pendingRemoval}
-        onClose={() => setPendingRemoval(null)}
+        onUninstall={(plugin) => { setSelectedKey(null); askToUninstall(plugin); }}
       />
     </div>
   );

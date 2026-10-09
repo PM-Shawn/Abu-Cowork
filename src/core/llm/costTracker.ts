@@ -3,7 +3,7 @@
  *
  * Maintains pricing tables for known models and computes costs
  * from token usage data. Costs are accumulated per conversation
- * and per day for display in the StatusBar.
+ * and per day for display.
  *
  * Unknown models (e.g., Ollama local) return 0 cost.
  */

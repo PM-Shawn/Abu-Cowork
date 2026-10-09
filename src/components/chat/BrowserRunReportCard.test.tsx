@@ -10,8 +10,10 @@
 // displayed during execution and went blank afterwards, because the snapshot
 // dropped a field). The card must be complete with the signal buffer empty.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { initLanguage } from '@/i18n';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import type { Message } from '@/types';
 import {
   buildBrowserRunReport,
@@ -39,6 +41,28 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
   openPath: vi.fn().mockResolvedValue(undefined),
   revealItemInDir: vi.fn().mockResolvedValue(undefined),
 }));
+
+const iconButtonRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the card's only floating-layer control (the reveal button's tooltip).
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
+      iconButtonRenders();
+      return actual.IconButton(props);
+    },
+  };
+});
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
+// Stands in for ChatView re-rendering every group while a later reply streams:
+// `tick` changes, the card's own props do not.
+function Group({ tick, children }: { tick: number; children: ReactNode }) {
+  return <DesignSystemProvider><span data-tick={tick} />{children}</DesignSystemProvider>;
+}
 
 const T0 = 1_700_000_000_000;
 const CONV = 'conv-report';
@@ -94,6 +118,44 @@ describe('BrowserRunReportCard', () => {
     expect(screen.getByText('Sites visited')).toBeInTheDocument();
     // A clean run has nothing to advise.
     expect(screen.queryByText('What you can do next')).not.toBeInTheDocument();
+  });
+
+  it('is a flat card whose verdict carries a status shape', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+    });
+
+    const { container } = render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    const card = screen.getByRole('region', { name: 'Browser task report' });
+    expect(card).toHaveClass('rounded-panel');
+    expect(card).toHaveClass('border-separator');
+    expect(card).toHaveClass('bg-surface');
+    expect(screen.getByText('Completed').querySelector('svg.lucide-circle-check')).toHaveClass('text-success');
+    expect(container.innerHTML).not.toContain('--abu-');
+  });
+
+  it.each([
+    ['completed-with-refusals', 'Completed with blocked actions'],
+    ['aborted-denials', 'Stopped after repeated refusals'],
+  ] as const)('marks a %s run with the warning shape', (outcome, label) => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+    }, outcome);
+
+    render(<BrowserRunReportCard message={messageFor({ ...report, outcome })} />);
+
+    expect(screen.getByText(label).querySelector('svg.lucide-triangle-alert')).toHaveClass('text-warning');
+  });
+
+  it('marks a failed run with the danger shape', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: false, durationMs: 12, errorClass: 'timeout', origin: 'https://intranet.example' });
+    }, 'error');
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    expect(screen.getByText('Stopped with an error').querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
   });
 
   /**
@@ -550,6 +612,26 @@ describe('BrowserRunReportCard', () => {
       } finally {
         usePreviewStore.setState({ openPreview: original });
       }
+    });
+
+    it('names the reveal button through its tooltip and uses the folder icon', () => {
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      const reveal = screen.getByRole('button', { name: '在文件夹中显示' });
+      expect(reveal).not.toHaveAttribute('title');
+      expect(reveal.querySelector('svg.lucide-folder-open')).not.toBeNull();
+    });
+
+    it('skips re-rendering while a later reply streams', () => {
+      const message = messageFor(downloadsSnapshot());
+      const { rerender } = renderBare(<Group tick={0}><BrowserRunReportCard message={message} /></Group>);
+      const settled = iconButtonRenders.mock.calls.length;
+      expect(settled).toBeGreaterThan(0);
+      rerender(<Group tick={1}><BrowserRunReportCard message={message} /></Group>);
+      rerender(<Group tick={2}><BrowserRunReportCard message={message} /></Group>);
+      expect(iconButtonRenders.mock.calls.length).toBe(settled);
     });
 
     /**

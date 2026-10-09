@@ -1,8 +1,15 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode, type ComponentProps } from 'react';
+import { Button } from '@/components/ds/button';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { TOAST_SETTLE_MS } from '@/components/ds/styles';
+import { TextArea } from '@/components/ds/text-area';
+import { passSettleInterval } from '@/test/dsWindows';
+import { COMPOSER_TYPING_MS, noteComposerDraft, noteComposerKey } from './composerActivity';
 import UserQuestionDock from './UserQuestionDock';
 import * as bridge from '@/core/agent/permissionBridge';
 import type { UserQuestionPayload } from '@/types';
@@ -83,7 +90,35 @@ const CONFIRM_PAYLOAD: UserQuestionPayload = {
   ],
 };
 
-function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
+const iconButtonRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the dock's floating-layer controls (the pager and close buttons' tooltips).
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
+      iconButtonRenders();
+      return actual.IconButton(props);
+    },
+  };
+});
+
+// Defined once, like ChatView's useCallback, so only `tick` changes between renders.
+const onSubmittedOnce = () => undefined;
+
+// Stands in for ChatView re-rendering on every streamed token: `tick` changes, the dock's props do not.
+function Host({ tick }: { tick: number }) {
+  return (
+    <DesignSystemProvider>
+      <span data-tick={tick} />
+      <UserQuestionDock conversationId="conv-a" messageId="msg-1" toolCallId="tc-host" payload={TWO_Q_PAYLOAD} onSubmitted={onSubmittedOnce} />
+    </DesignSystemProvider>
+  );
+}
+
+// The dock at the moment its question arrives: it holds pointer presses back for a while.
+function renderDockJustAsked(payload: UserQuestionPayload, toolCallId = 'tc-1') {
   return render(
     <UserQuestionDock
       conversationId="conv-a"
@@ -91,7 +126,15 @@ function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
       toolCallId={toolCallId}
       payload={payload}
     />,
+    { wrapper: DesignSystemProvider },
   );
+}
+
+// The dock once its question has been on the page long enough to be read.
+function renderDock(payload: UserQuestionPayload, toolCallId = 'tc-1') {
+  const view = renderDockJustAsked(payload, toolCallId);
+  passSettleInterval();
+  return view;
 }
 
 describe('UserQuestionDock', () => {
@@ -112,6 +155,33 @@ describe('UserQuestionDock', () => {
     expect(screen.getByText('简洁')).toBeInTheDocument();
     expect(screen.getByText('其他…')).toBeInTheDocument();
     expect(screen.getByText('跳过')).toBeInTheDocument();
+  });
+
+  it('makes the submit button the only filled button', () => {
+    renderDock(MULTI_PAYLOAD);
+    const submit = screen.getByRole('button', { name: '提交' });
+    const filled = screen.getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+    expect(filled).toEqual([submit]);
+    expect(screen.getByRole('button', { name: '跳过' })).not.toHaveClass('bg-emphasis');
+    expect(screen.getByRole('button', { name: '关闭' })).not.toHaveClass('bg-emphasis');
+  });
+
+  it('marks a chosen option with the selected fill', async () => {
+    const user = userEvent.setup();
+    renderDock(MULTI_PAYLOAD);
+    const option = screen.getByText('引言').closest('button')!;
+    expect(option).not.toHaveClass('bg-fill-selected');
+    await user.click(option);
+    expect(option).toHaveClass('bg-fill-selected');
+  });
+
+  it('does not re-render its pager tooltips while the chat view streams', () => {
+    const { rerender } = render(<Host tick={0} />);
+    const initial = iconButtonRenders.mock.calls.length;
+    expect(initial).toBeGreaterThan(0);
+    rerender(<Host tick={1} />);
+    rerender(<Host tick={2} />);
+    expect(iconButtonRenders).toHaveBeenCalledTimes(initial);
   });
 
   it('shows the pager counter', () => {
@@ -206,6 +276,7 @@ describe('UserQuestionDock', () => {
     expect(screen.getByText('2 / 2')).toBeInTheDocument();
 
     // Answer question 2 (single-select, last page → auto submit).
+    passSettleInterval();
     await user.click(screen.getByText('C').closest('button')!);
 
     expect(resolveSpy).toHaveBeenCalledWith(
@@ -284,5 +355,449 @@ describe('UserQuestionDock', () => {
       }),
     );
     resolveSpy.mockRestore();
+  });
+
+  // The dock takes the focus by itself when a question arrives, and Enter answers with the
+  // highlighted option. The Enter that sent the message may still be down at that moment: its
+  // repeats answer nothing. A held key is the first key-down followed by repeats.
+  describe('a key that is still down when the question appears', () => {
+    const dock = () => document.querySelector('[tabindex="-1"]') as HTMLElement;
+    const pressed = (key: string) => fireEvent.keyDown(dock(), { key, code: key });
+    const repeated = (key: string) => fireEvent.keyDown(dock(), { key, code: key, repeat: true });
+    const released = (key: string) => fireEvent.keyUp(dock(), { key, code: key });
+    const answered = (...selected: string[][]) => expect.objectContaining({
+      answers: selected.map((choice) => expect.objectContaining({ selected: choice })),
+    });
+
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('takes the focus when it appears, and the first press of Enter answers a single-choice question', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-first-press');
+      expect(dock()).toHaveFocus();
+
+      pressed('Enter');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-first-press', answered(['详细']));
+    });
+
+    it('leaves a single-choice question unanswered under the repeats of a held Enter; released and pressed again, Enter answers', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-held');
+
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(mockSetAnswers).not.toHaveBeenCalled();
+      expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+
+      released('Enter');
+      pressed('Enter');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held', answered(['详细']));
+    });
+
+    it('answers one question per press: the repeats of the Enter that answered the first do not answer the next', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(TWO_Q_PAYLOAD, 'tc-held-two');
+
+      pressed('Enter');
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('第二题？')).toBeInTheDocument();
+
+      released('Enter');
+      pressed('Enter');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-two', answered(['A'], ['C']));
+    });
+
+    it('confirm mode: the repeats of a held Enter neither choose an option nor confirm it', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(CONFIRM_PAYLOAD, 'tc-held-confirm');
+      const confirmButton = screen.getByText('确认执行').closest('button')!;
+
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+
+      expect(confirmButton).toBeDisabled();
+      expect(resolveSpy).not.toHaveBeenCalled();
+
+      // One press chooses; held on, it does not go on to confirm.
+      released('Enter');
+      pressed('Enter');
+      expect(confirmButton).not.toBeDisabled();
+      for (let i = 0; i < 5; i += 1) repeated('Enter');
+      expect(resolveSpy).not.toHaveBeenCalled();
+
+      released('Enter');
+      pressed('Enter');
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-confirm', answered(['批准执行']));
+    });
+
+    it('multiple choice: a held Enter ticks the option once', () => {
+      renderDock(MULTI_PAYLOAD, 'tc-held-multi');
+      const submit = screen.getByText('提交').closest('button')!;
+
+      pressed('Enter');
+      expect(submit).not.toBeDisabled();
+      for (let i = 0; i < 3; i += 1) repeated('Enter');
+
+      expect(submit).not.toBeDisabled();
+    });
+
+    it('prevents the default of a repeated Enter, and leaves a repeat inside the text field and on a button alone', async () => {
+      const user = userEvent.setup();
+      renderDock(MULTI_PAYLOAD, 'tc-held-inner');
+      // fireEvent returns false once the default was prevented.
+      expect(repeated('Enter')).toBe(false);
+
+      await user.click(screen.getByText('其他…').closest('button')!);
+      const field = screen.getByPlaceholderText('请输入自定义内容');
+      expect(fireEvent.keyDown(field, { key: 'a', code: 'KeyA', repeat: true })).toBe(true);
+      expect(fireEvent.keyDown(field, { key: 'Backspace', code: 'Backspace', repeat: true })).toBe(true);
+    });
+
+    it('cancels on one press of Escape, at the first moment', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-escape');
+
+      pressed('Escape');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-escape', null);
+    });
+
+    it('is not cancelled by the repeats of a held Escape; released and pressed again, Escape cancels', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-held-escape');
+
+      for (let i = 0; i < 5; i += 1) expect(repeated('Escape')).toBe(false);
+
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+
+      released('Escape');
+      pressed('Escape');
+
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-escape', null);
+    });
+
+    // The dock takes the focus so that the keyboard can answer. A user who is writing a message
+    // keeps it: an Enter meant for the message must not answer the question.
+    describe('and the user is writing a message', () => {
+      const owner = {};
+      // Stands in for ChatView: the dock above the message field.
+      function Page({ asked, toolCallId = 'tc-typing', payload = SINGLE_PAYLOAD }: { asked: boolean; toolCallId?: string; payload?: UserQuestionPayload }) {
+        return (
+          <DesignSystemProvider>
+            {asked && <UserQuestionDock conversationId="conv-a" messageId="msg-1" toolCallId={toolCallId} payload={payload} />}
+            <TextArea bare data-chat-composer="" aria-label="Message" />
+            <Button>Elsewhere</Button>
+          </DesignSystemProvider>
+        );
+      }
+      const field = () => screen.getByRole('textbox', { name: 'Message' });
+
+      // Each test's fake clock starts from nothing again, and the last key is remembered across
+      // tests: each test starts later than every test before it.
+      let start = 0;
+      beforeEach(() => {
+        // The clock the dock reads moves only when a test moves it.
+        vi.useFakeTimers();
+        start += 100_000;
+        vi.advanceTimersByTime(start);
+      });
+      afterEach(() => {
+        noteComposerDraft(owner, false);
+        vi.useRealTimers();
+      });
+
+      it('takes the focus, as before, from an empty message field that no key was pressed in', () => {
+        const view = render(<Page asked={false} />);
+        act(() => field().focus());
+        view.rerender(<Page asked />);
+        expect(dock()).toHaveFocus();
+      });
+
+      it('takes the focus, as before, when the draft is held and the focus is somewhere else', () => {
+        const view = render(<Page asked={false} />);
+        noteComposerDraft(owner, true);
+        act(() => screen.getByRole('button', { name: 'Elsewhere' }).focus());
+        view.rerender(<Page asked />);
+        expect(dock()).toHaveFocus();
+      });
+
+      it('shows without taking the focus from a message field that holds a draft; Enter there answers nothing', () => {
+        const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+        const view = render(<Page asked={false} />);
+        noteComposerDraft(owner, true);
+        act(() => field().focus());
+        view.rerender(<Page asked />);
+
+        expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+        expect(field()).toHaveFocus();
+        fireEvent.keyDown(field(), { key: 'Enter', code: 'Enter' });
+        fireEvent.keyDown(field(), { key: 'Escape', code: 'Escape' });
+        expect(resolveSpy).not.toHaveBeenCalled();
+        expect(mockSetAnswers).not.toHaveBeenCalled();
+      });
+
+      it('shows without taking the focus when a key went down in the message field within the last second, and takes it after that second', () => {
+        const view = render(<Page asked={false} />);
+        act(() => field().focus());
+        noteComposerKey();
+        vi.advanceTimersByTime(COMPOSER_TYPING_MS - 1);
+        view.rerender(<Page asked />);
+        expect(field()).toHaveFocus();
+
+        // The next question arrives after a pause.
+        view.rerender(<Page asked={false} />);
+        vi.advanceTimersByTime(1);
+        view.rerender(<Page asked toolCallId="tc-typing-2" />);
+        expect(dock()).toHaveFocus();
+      });
+
+      // A screen reader hears a focus move. A question that leaves the focus in the message field
+      // is told to its owner instead, which holds the page's live element.
+      describe('telling a screen reader that the question arrived', () => {
+        function Announced({ asked, onArrival, payload = SINGLE_PAYLOAD }: { asked: boolean; onArrival: (question: { header: string; question: string } | null) => void; payload?: UserQuestionPayload }) {
+          return (
+            <DesignSystemProvider>
+              {asked && <UserQuestionDock conversationId="conv-a" messageId="msg-1" toolCallId="tc-announced" payload={payload} onArrivedWithoutFocus={onArrival} />}
+              <TextArea bare data-chat-composer="" aria-label="Message" />
+            </DesignSystemProvider>
+          );
+        }
+
+        it('hands its header and its question to the owner when it leaves the focus in the message field, and takes them back when it leaves', () => {
+          const onArrival = vi.fn();
+          const view = render(<Announced asked={false} onArrival={onArrival} />);
+          noteComposerDraft(owner, true);
+          act(() => field().focus());
+          view.rerender(<Announced asked onArrival={onArrival} />);
+
+          expect(field()).toHaveFocus();
+          expect(onArrival.mock.calls).toEqual([[{ header: '格式', question: '你希望输出什么格式？' }]]);
+          view.rerender(<Announced asked={false} onArrival={onArrival} />);
+          expect(onArrival.mock.lastCall).toEqual([null]);
+        });
+
+        it('hands nothing over when it takes the focus: the focus move is what is heard', () => {
+          const onArrival = vi.fn();
+          const view = render(<Announced asked={false} onArrival={onArrival} />);
+          act(() => field().focus());
+          view.rerender(<Announced asked onArrival={onArrival} />);
+
+          expect(dock()).toHaveFocus();
+          expect(onArrival).not.toHaveBeenCalled();
+        });
+
+        it('is a group named by the question on the page it shows', async () => {
+          vi.useRealTimers();
+          const user = userEvent.setup();
+          render(<Announced asked onArrival={() => undefined} payload={TWO_Q_PAYLOAD} />);
+          expect(screen.getByRole('group', { name: '第一题？' })).toBe(dock());
+          passSettleInterval();
+          await user.click(screen.getByText('A').closest('button')!);
+          expect(screen.getByRole('group', { name: '第二题？' })).toBe(dock());
+        });
+      });
+
+      it('decides the same when React runs its effects twice (StrictMode)', () => {
+        const view = render(<StrictMode><Page asked={false} /></StrictMode>);
+        noteComposerDraft(owner, true);
+        act(() => field().focus());
+        view.rerender(<StrictMode><Page asked /></StrictMode>);
+        expect(field()).toHaveFocus();
+      });
+
+      it('stays within reach: its options are Tab stops, a press on one answers, and it takes the focus once the user turns its page', async () => {
+        vi.useRealTimers();
+        const user = userEvent.setup();
+        const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+        const view = render(<Page asked={false} />);
+        noteComposerDraft(owner, true);
+        act(() => field().focus());
+        view.rerender(<Page asked payload={TWO_Q_PAYLOAD} />);
+        expect(field()).toHaveFocus();
+
+        // The dock is before the message field in the page: Shift+Tab walks into it.
+        const option = screen.getByText('A').closest('button')!;
+        expect(option.tabIndex).toBe(0);
+        expect(dock().compareDocumentPosition(field()) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+        passSettleInterval();
+        await user.click(option);
+        expect(screen.getByText('2 / 2')).toBeInTheDocument();
+        expect(dock()).toHaveFocus();
+        passSettleInterval();
+        await user.click(screen.getByText('C').closest('button')!);
+        expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-typing', answered(['A'], ['C']));
+      });
+    });
+
+    it('keeps walking the options with a held arrow', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_PAYLOAD, 'tc-held-arrow');
+
+      pressed('ArrowDown');
+      repeated('ArrowDown');
+      repeated('ArrowDown');
+      released('ArrowDown');
+      // Three steps down from the first option end on 跳过; two steps up end on the second option.
+      pressed('ArrowUp');
+      pressed('ArrowUp');
+      pressed('Enter');
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-held-arrow', answered(['简洁']));
+    });
+  });
+
+  // The dock appears by itself above the message field, and a page turn puts the rows of the next
+  // question where the rows just pressed were.
+  describe('a pointer press that began before the question could be read', () => {
+    const dock = () => document.querySelector('[tabindex="-1"]') as HTMLElement;
+    const row = (label: string) => screen.getByText(label).closest('button')!;
+    const named = (name: string) => screen.getByRole('button', { name });
+    // A pointer press as the browser reports it; `fireEvent.click` alone says detail 0, a key press.
+    const pointerPress = (button: HTMLElement, detail = 1) => {
+      fireEvent.pointerDown(button);
+      fireEvent.mouseDown(button);
+      fireEvent.click(button, { detail });
+    };
+    const answered = (...selected: string[][]) => expect.objectContaining({
+      answers: selected.map((choice) => expect.objectContaining({ selected: choice })),
+    });
+    const SINGLE_THEN_MULTI: UserQuestionPayload = {
+      questions: [
+        { header: 'Q1', question: '第一题？', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] },
+        { header: 'Q2', question: '第二题？', multiSelect: true, options: [{ label: 'C' }, { label: 'D' }] },
+      ],
+    };
+
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('answers nothing on a press on an option of a question that has just appeared, and answers once on a press after the interval', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-early');
+      pointerPress(row('详细'));
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(mockSetAnswers).not.toHaveBeenCalled();
+      expect(screen.getByText('你希望输出什么格式？')).toBeInTheDocument();
+
+      passSettleInterval();
+      pointerPress(row('详细'));
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-early', answered(['详细']));
+    });
+
+    it('skips, cancels and chooses nothing on an early press either', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(MULTI_PAYLOAD, 'tc-early-rest');
+      pointerPress(named('关闭'));
+      pointerPress(row('跳过'));
+      pointerPress(row('引言'));
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('提交').closest('button')).toBeDisabled();
+
+      passSettleInterval();
+      pointerPress(named('关闭'));
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-early-rest', null);
+    });
+
+    it('answers at once from the keyboard: a key on an option, and Enter on the dock', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-key-row');
+      fireEvent.click(row('简洁'), { detail: 0 });
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-key-row', answered(['简洁']));
+      cleanup();
+
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-key-dock');
+      fireEvent.keyDown(dock(), { key: 'Enter', code: 'Enter' });
+      expect(resolveSpy).toHaveBeenLastCalledWith('tc-key-dock', answered(['详细']));
+    });
+
+    it('cancels on Escape at the first moment', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-early-escape');
+      fireEvent.keyDown(dock(), { key: 'Escape', code: 'Escape' });
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-early-escape', null);
+    });
+
+    it('answers nothing under the repeats of a held Enter while it holds pointer presses back', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDockJustAsked(SINGLE_PAYLOAD, 'tc-early-held');
+      for (let i = 0; i < 5; i += 1) {
+        expect(fireEvent.keyDown(dock(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+      }
+      expect(resolveSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not answer the next question with the second press of a double press on an option', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(TWO_Q_PAYLOAD, 'tc-double');
+      passSettleInterval();
+      pointerPress(row('A'));
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      // The second press arrives at the same spot: the first option of the next question is there now.
+      pointerPress(row('C'), 2);
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(screen.getByText('第二题？')).toBeInTheDocument();
+
+      passSettleInterval();
+      pointerPress(row('C'));
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-double', answered(['A'], ['C']));
+    });
+
+    it('does not submit with the second press of a double press on 下一题, where 提交 is on the last page', () => {
+      const resolveSpy = vi.spyOn(bridge, 'resolveUserQuestion');
+      renderDock(SINGLE_THEN_MULTI, 'tc-double-footer');
+      passSettleInterval();
+      pointerPress(row('A'));
+      passSettleInterval();
+      pointerPress(row('C'));
+      pointerPress(named('上一题'));
+      passSettleInterval();
+      pointerPress(screen.getByText('下一题').closest('button')!);
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      const submit = screen.getByText('提交').closest('button')!;
+      expect(submit).toBeEnabled();
+      pointerPress(submit, 2);
+      expect(resolveSpy).not.toHaveBeenCalled();
+
+      passSettleInterval();
+      pointerPress(submit);
+      expect(resolveSpy).toHaveBeenCalledExactlyOnceWith('tc-double-footer', answered(['A'], ['C']));
+    });
+
+    it('keeps the pager in use across a page turn: its buttons mean what they meant', () => {
+      renderDock(TWO_Q_PAYLOAD, 'tc-pager');
+      passSettleInterval();
+      pointerPress(row('A'));
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      pointerPress(named('上一题'));
+      expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    });
+
+    describe('the mark on what holds presses back', () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it('is on the whole dock while a question that has just appeared settles, and on the answers alone after a page turn', () => {
+        renderDockJustAsked(TWO_Q_PAYLOAD, 'tc-mark');
+        expect(dock()).toHaveAttribute('data-ds-settling', '');
+        act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS - 1); });
+        expect(dock()).toHaveAttribute('data-ds-settling', '');
+        act(() => { vi.advanceTimersByTime(1); });
+        expect(document.querySelector('[data-ds-settling]')).toBeNull();
+
+        pointerPress(row('A'));
+        expect(dock()).not.toHaveAttribute('data-ds-settling');
+        const held = document.querySelector('[data-ds-settling]');
+        expect(held).not.toBeNull();
+        expect(held).toContainElement(row('C'));
+        expect(held).not.toContainElement(named('上一题'));
+        act(() => { vi.advanceTimersByTime(TOAST_SETTLE_MS); });
+        expect(document.querySelector('[data-ds-settling]')).toBeNull();
+      });
+    });
   });
 });

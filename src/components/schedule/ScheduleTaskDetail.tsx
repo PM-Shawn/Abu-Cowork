@@ -1,24 +1,17 @@
 import { useState } from 'react';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { Tag } from '@/components/ds/tag';
+import { schedulerEngine } from '@/core/scheduler/scheduler';
+import { useI18n, format } from '@/i18n';
+import { cn } from '@/lib/utils';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useI18n, format } from '@/i18n';
-import { schedulerEngine } from '@/core/scheduler/scheduler';
-import {
-  ArrowLeft,
-  Pencil,
-  Play,
-  Pause,
-  Trash2,
-  RotateCw,
-  Clock,
-  ShieldCheck,
-} from 'lucide-react';
-import { cn } from '@/lib/utils';
 import type { ScheduleFrequency } from '@/types/schedule';
 import ScheduleRunHistory from './ScheduleRunHistory';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
-
-/** Keep the chip row one or two lines; the rest is a "+N more" trailer. */
 
 function getFrequencyLabel(
   freq: ScheduleFrequency,
@@ -34,22 +27,28 @@ function getFrequencyLabel(
   return map[freq];
 }
 
-export default function ScheduleTaskDetail() {
+// A flat box for one group of facts about the task.
+const SECTION = 'rounded-panel border border-separator p-4';
+const SECTION_TITLE = 'text-ui-sm text-label-tertiary';
+
+export default function ScheduleTaskDetail({ onQuestionClosed }: {
+  // Called once the delete question has gone, whatever the answer: the page may have left under it.
+  onQuestionClosed?: () => void;
+}) {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const {
     tasks,
     selectedTaskId,
     setSelectedTaskId,
     pauseTask,
     resumeTask,
-    deleteTask,
     openEditor,
   } = useScheduleStore();
 
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
 
   const [isRunning, setIsRunning] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const task = selectedTaskId ? tasks[selectedTaskId] : null;
 
@@ -66,13 +65,19 @@ export default function ScheduleTaskDetail() {
     }
   };
 
-  const handleDelete = () => {
-    setShowDeleteConfirm(true);
-  };
-
-  const confirmDelete = () => {
-    setShowDeleteConfirm(false);
-    deleteTask(task.id);
+  // Deleting cannot be taken back, so it is asked first, naming the task. The answer acts on
+  // the store as it is at that moment: nothing is deleted once the task has left it.
+  const handleDelete = async () => {
+    const id = task.id;
+    const confirmed = await confirm({
+      title: t.schedule.delete,
+      message: `${t.schedule.deleteConfirm}\n${task.name}`,
+      confirmLabel: t.common.confirm,
+      tone: 'danger',
+    });
+    const store = useScheduleStore.getState();
+    if (confirmed && store.tasks[id]) store.deleteTask(id);
+    onQuestionClosed?.();
   };
 
   const handleEdit = () => {
@@ -107,64 +112,39 @@ export default function ScheduleTaskDetail() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-[var(--abu-border)] bg-[var(--abu-bg-base)]">
-        <button
-          onClick={handleBack}
-          className="p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <h1 className="text-h-md font-semibold text-[var(--abu-text-primary)] flex-1 truncate">
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Header: the way back, the task's name, edit. */}
+      <div className="flex items-center gap-3 border-b border-separator px-6 py-4">
+        <IconButton icon={AppIcons.back} label={t.schedule.backToList} data-automation-back onClick={handleBack} />
+        <h1 className="min-w-0 flex-1 truncate text-title text-label">
           {task.name}
         </h1>
-        <button
-          onClick={handleEdit}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-        >
-          <Pencil className="h-3.5 w-3.5" />
+        <Button variant="secondary" size="sm" icon={AppIcons.rename} onClick={handleEdit}>
           {t.schedule.edit}
-        </button>
+        </Button>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-auto">
-        <div className="px-6 py-5 space-y-5">
-          {/* Info section */}
-          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4 space-y-3">
-            {/* Status */}
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="space-y-5 px-6 py-5">
+          <div data-schedule-section className={cn(SECTION, 'space-y-3')}>
             <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.schedule.status}</span>
-              <span className="flex items-center gap-1.5">
-                <span
-                  className={cn(
-                    'w-2 h-2 rounded-full',
-                    isPaused ? 'bg-neutral-300' : 'bg-[var(--abu-success-solid)]'
-                  )}
-                />
-                <span className={cn(
-                  'text-body font-medium',
-                  isPaused ? 'text-[var(--abu-text-tertiary)]' : 'text-[var(--abu-success)]'
-                )}>
-                  {isPaused ? t.schedule.statusPaused : t.schedule.statusActive}
-                </span>
-              </span>
+              <span className={SECTION_TITLE}>{t.schedule.status}</span>
+              {isPaused
+                ? <Tag>{t.schedule.statusPaused}</Tag>
+                : <Tag tone="success">{t.schedule.statusActive}</Tag>}
             </div>
 
-            {/* Schedule */}
             <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.schedule.schedule}</span>
-              <span className="flex items-center gap-1.5 text-body text-[var(--abu-text-primary)]">
-                <Clock className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
+              <span className={SECTION_TITLE}>{t.schedule.schedule}</span>
+              <span className="flex items-center gap-2 text-ui text-label">
+                <Icon icon={AppIcons.clock} size="sm" className="text-label-tertiary" />
                 {scheduleDesc}
               </span>
             </div>
 
-            {/* Total runs */}
             <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.schedule.runHistory}</span>
-              <span className="text-body text-[var(--abu-text-primary)]">
+              <span className={SECTION_TITLE}>{t.schedule.runHistory}</span>
+              <span className="text-ui text-label">
                 {format(t.schedule.totalRuns, { count: task.totalRuns })}
               </span>
             </div>
@@ -177,106 +157,69 @@ export default function ScheduleTaskDetail() {
               it. Shown here with the entry point to change it; the verdicts
               themselves stay owned by Settings (one place to revoke, not two
               that can disagree). */}
-          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4">
+          <div data-schedule-section className={SECTION}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-body text-[var(--abu-text-tertiary)]">
+                <div className={SECTION_TITLE}>
                   {t.schedule.browserAuthTitle}
                 </div>
-                <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+                <p className="mt-1 text-ui-sm text-label-secondary">
                   {t.settings.browserPermissionsSharedDesc}
                 </p>
               </div>
-              <button
-                onClick={() => openSystemSettings('capabilities')}
-                className="shrink-0 flex items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
-              >
-                <ShieldCheck className="h-3.5 w-3.5" />
+              <Button variant="secondary" size="sm" icon={AppIcons.capability} onClick={() => openSystemSettings('capabilities')}>
                 {t.schedule.browserAuthManage}
-              </button>
+              </Button>
             </div>
-
           </div>
 
-          {/* Description */}
           {task.description && (
-            <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4">
-              <div className="text-body text-[var(--abu-text-tertiary)] mb-1.5">{t.schedule.description}</div>
-              <p className="text-body text-[var(--abu-text-primary)] leading-relaxed whitespace-pre-wrap">
+            <div data-schedule-section className={SECTION}>
+              <div className={cn(SECTION_TITLE, 'mb-2')}>{t.schedule.description}</div>
+              <p className="whitespace-pre-wrap text-ui text-label">
                 {task.description}
               </p>
             </div>
           )}
 
-          {/* Prompt */}
-          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4">
-            <div className="text-body text-[var(--abu-text-tertiary)] mb-1.5">{t.schedule.prompt}</div>
-            <p className="text-[var(--abu-text-primary)] leading-relaxed whitespace-pre-wrap font-mono bg-[var(--abu-bg-base)] rounded-lg p-3 text-body">
+          <div data-schedule-section className={SECTION}>
+            <div className={cn(SECTION_TITLE, 'mb-2')}>{t.schedule.prompt}</div>
+            <p className="rounded-control bg-code p-3 font-code text-ui-sm text-label whitespace-pre-wrap break-words">
               {task.prompt}
             </p>
           </div>
 
-          {/* Action buttons */}
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleRunNow}
-              disabled={isRunning}
-              className={cn(
-                'flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium transition-colors',
-                isRunning
-                  ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] cursor-not-allowed'
-                  : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
-              )}
-            >
-              {isRunning ? (
-                <RotateCw className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Play className="h-3.5 w-3.5" />
-              )}
+            {/* Busy while the run it started goes on: the words say so and the focus stays here. */}
+            <Button variant="primary" icon={AppIcons.continue} busy={isRunning} onClick={() => { void handleRunNow(); }}>
               {isRunning ? t.schedule.running : t.schedule.runNow}
-            </button>
+            </Button>
 
-            <button
-              onClick={() => isPaused ? resumeTask(task.id) : pauseTask(task.id)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
+            <Button
+              variant="secondary"
+              icon={isPaused ? AppIcons.continue : AppIcons.pause}
+              onClick={() => (isPaused ? resumeTask(task.id) : pauseTask(task.id))}
             >
-              {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
               {isPaused ? t.schedule.resume : t.schedule.pause}
-            </button>
+            </Button>
 
             <div className="flex-1" />
 
-            <button
-              onClick={handleDelete}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
+            <Button variant="danger" icon={AppIcons.delete} onClick={() => { void handleDelete(); }}>
               {t.schedule.delete}
-            </button>
+            </Button>
           </div>
 
-          {/* Run history */}
-          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] overflow-hidden">
-            <div className="px-4 py-3 border-b border-[var(--abu-border)]">
-              <h3 className="text-h-sm font-medium text-[var(--abu-text-primary)]">
+          <div data-schedule-section className="overflow-hidden rounded-panel border border-separator">
+            <div className="border-b border-separator px-4 py-3">
+              <h3 className="text-ui font-medium text-label">
                 {t.schedule.runHistory}
               </h3>
             </div>
             <ScheduleRunHistory runs={task.runs} />
           </div>
         </div>
-      </div>
-
-      <ConfirmDialog
-        open={showDeleteConfirm}
-        title={t.schedule.delete}
-        message={t.schedule.deleteConfirm}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        onConfirm={confirmDelete}
-        onCancel={() => setShowDeleteConfirm(false)}
-        variant="danger"
-      />
+      </ScrollArea>
     </div>
   );
 }

@@ -12,6 +12,7 @@ import {
   configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
   type LocalMockProviderOptions,
@@ -484,7 +485,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     await expect(commandDialogTitle(page)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText(command, { exact: true })).toBeVisible();
     expect(fs.existsSync(sentinel)).toBe(true);
-    await page.getByRole('button', { name: /^(取消|Cancel)$/ }).click();
+    await pressWhenSettled(page.getByRole('button', { name: /^(取消|Cancel)$/ }));
 
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(commandDialogTitle(page)).toBeHidden();

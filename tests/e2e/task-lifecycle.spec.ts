@@ -221,7 +221,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(secondPage);
 
-    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    await secondPage.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ }).click();
     const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
     await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
     await recentConversation.click();
@@ -455,7 +455,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(secondPage);
 
-    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    await secondPage.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ }).click();
     const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
     await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
     await recentConversation.click();
@@ -528,7 +528,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(secondPage);
 
-    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    await secondPage.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ }).click();
     const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
     await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
     await recentConversation.click();

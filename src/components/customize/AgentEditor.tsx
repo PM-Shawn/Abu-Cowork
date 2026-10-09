@@ -1,12 +1,17 @@
-import { useState } from 'react';
-import { Save, Play } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useId, useState } from 'react';
+import { Button } from '@/components/ds/button';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Pressable } from '@/components/ds/pressable';
+import { Select } from '@/components/ds/select';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { TextArea } from '@/components/ds/text-area';
+import { TextField } from '@/components/ds/text-field';
 import { useI18n, format } from '@/i18n';
 import { serializeAgentMd, agentRegistry, getBuiltinAgentNames } from '@/core/agent/registry';
 import { getAllTools } from '@/core/tools/registry';
-import { Toggle } from '@/components/ui/toggle';
-import { Select } from '@/components/ui/select';
-import { Input } from '@/components/ui/input';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import { useSettingsStore, getActiveProvider } from '@/stores/settingsStore';
 import { navigateToChatWithInput } from '@/utils/navigation';
@@ -36,12 +41,78 @@ interface AgentEditorProps {
   agent: SubagentDefinition | null;  // null = creating new agent
   onClose: () => void;
   onSave: () => Promise<void>;
+  /** Whether the window is on the page. Left out, it is open for as long as the editor is mounted. */
+  open?: boolean;
+  /** Runs once the window has gone; `event.preventDefault()` there keeps the focus from returning to the control that opened it. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
-export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps) {
+/** What the form holds when it opens. The window asks before closing once a field differs from it. */
+interface Fields {
+  name: string;
+  description: string;
+  avatar: string;
+  model: string;
+  maxTurns: string;
+  toolsStr: string;
+  disallowedToolsStr: string;
+  skillsStr: string;
+  memory: 'session' | 'project' | 'user';
+  background: boolean;
+  intro: string;
+  expertiseStr: string;
+  samplePromptsStr: string;
+  category: string;
+  tagsStr: string;
+  systemPrompt: string;
+}
+
+function fieldsOf(agent: SubagentDefinition | null): Fields {
+  // A model the current provider does not offer shows as "follow the global setting": that is
+  // what it falls back to when the expert runs.
+  const providerModels = getActiveProvider(useSettingsStore.getState())?.models ?? [];
+  const model = agent?.model && agent.model !== 'inherit' && providerModels.some((m) => m.id === agent.model) ? agent.model : '';
+  return {
+    name: agent?.name ?? '',
+    description: agent?.description ?? '',
+    avatar: agent?.avatar ?? '',
+    model,
+    maxTurns: agent?.maxTurns?.toString() ?? '',
+    toolsStr: (agent?.tools ?? []).join(', '),
+    disallowedToolsStr: (agent?.disallowedTools ?? []).join(', '),
+    skillsStr: (agent?.skills ?? []).join(', '),
+    memory: agent?.memory ?? 'session',
+    background: agent?.background ?? false,
+    // Display-only fields rendered in the detail window and the chat welcome.
+    // All optional; users can leave them blank and the agent still works.
+    intro: agent?.intro ?? '',
+    expertiseStr: (agent?.expertise ?? []).join('\n'),
+    samplePromptsStr: (agent?.samplePrompts ?? []).join('\n'),
+    category: agent?.category ?? '',
+    tagsStr: (agent?.tags ?? []).join(', '),
+    systemPrompt: agent?.systemPrompt ?? '',
+  };
+}
+
+// The select's value for "follow the global setting": the word AGENT.md itself uses, so no model id can collide with it.
+const INHERIT_MODEL = 'inherit';
+
+const FIELD_LABEL = 'mb-1 block text-ui-sm font-medium text-label-secondary';
+const GROUP_TITLE = 'text-ui-sm font-medium text-label-tertiary';
+const HINT = 'mt-1 text-caption text-label-tertiary';
+const REFUSED = 'mt-1 flex items-center gap-1 text-caption text-danger';
+
+/**
+ * The window that creates an expert or edits one. It asks before it discards what was typed,
+ * and a save started from it runs once. The editor is mounted anew for each opening, so what
+ * the fields hold when it mounts is what the expert held.
+ */
+export default function AgentEditor({ agent, onClose, onSave, open = true, onCloseAutoFocus }: AgentEditorProps) {
   const { t } = useI18n();
+  const id = useId();
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [initial] = useState(() => fieldsOf(agent));
 
   // Name validation via shared hook. `mode: 'agent'` keeps unicode and letter
   // case, the rule `save_agent` and the built-in experts use — without it the
@@ -59,38 +130,35 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   // hand-edited frontmatter `name:` reaches the save as it is.
   const [invalidName, setInvalidName] = useState<string | null>(null);
   const nameRefusedAsInvalid = invalidName === name.trim();
-  // Any other save failure: shown under the Save button, cleared on retry.
+  // Any other save failure: shown above the buttons, cleared on retry.
   const [saveFailed, setSaveFailed] = useState(false);
-  const [description, setDescription] = useState(agent?.description ?? '');
-  const [avatar, setAvatar] = useState(agent?.avatar ?? '');
-  const [model, setModel] = useState(() => {
-    if (!agent?.model || agent.model === 'inherit') return '';
-    // If the agent has a specific model, check if it's available in current provider
-    const providerModels = getActiveProvider(useSettingsStore.getState())?.models ?? [];
-    if (providerModels.some((m) => m.id === agent.model)) return agent.model;
-    // Model not available in current provider → show as inherit (will fallback at runtime anyway)
-    return '';
-  });
-  const [maxTurns, setMaxTurns] = useState(agent?.maxTurns?.toString() ?? '');
-  const [toolsStr, setToolsStr] = useState((agent?.tools ?? []).join(', '));
-  const [disallowedToolsStr, setDisallowedToolsStr] = useState((agent?.disallowedTools ?? []).join(', '));
-  const [skillsStr, setSkillsStr] = useState((agent?.skills ?? []).join(', '));
-  const [memory, setMemory] = useState<'session' | 'project' | 'user'>(agent?.memory ?? 'session');
-  const [background, setBackground] = useState(agent?.background ?? false);
+  const [description, setDescription] = useState(initial.description);
+  const [avatar, setAvatar] = useState(initial.avatar);
+  const [model, setModel] = useState(initial.model);
+  const [maxTurns, setMaxTurns] = useState(initial.maxTurns);
+  const [toolsStr, setToolsStr] = useState(initial.toolsStr);
+  const [disallowedToolsStr, setDisallowedToolsStr] = useState(initial.disallowedToolsStr);
+  const [skillsStr, setSkillsStr] = useState(initial.skillsStr);
+  const [memory, setMemory] = useState(initial.memory);
+  const [background, setBackground] = useState(initial.background);
   const knownToolNames = getAllTools().map((tool) => tool.name);
   const unmatchedTools = getUnmatchedAgentToolPatterns(toolsStr, knownToolNames);
   const unmatchedDisallowedTools = getUnmatchedAgentToolPatterns(disallowedToolsStr, knownToolNames);
 
-  // Display-only fields rendered in toolbox detail panel + chat welcome.
-  // All optional; users can leave them blank and the agent still works.
-  const [intro, setIntro] = useState(agent?.intro ?? '');
-  const [expertiseStr, setExpertiseStr] = useState((agent?.expertise ?? []).join('\n'));
-  const [samplePromptsStr, setSamplePromptsStr] = useState((agent?.samplePrompts ?? []).join('\n'));
-  const [category, setCategory] = useState(agent?.category ?? '');
-  const [tagsStr, setTagsStr] = useState((agent?.tags ?? []).join(', '));
+  const [intro, setIntro] = useState(initial.intro);
+  const [expertiseStr, setExpertiseStr] = useState(initial.expertiseStr);
+  const [samplePromptsStr, setSamplePromptsStr] = useState(initial.samplePromptsStr);
+  const [category, setCategory] = useState(initial.category);
+  const [tagsStr, setTagsStr] = useState(initial.tagsStr);
 
   // Content state
-  const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '');
+  const [systemPrompt, setSystemPrompt] = useState(initial.systemPrompt);
+
+  const current: Fields = {
+    name, description, avatar, model, maxTurns, toolsStr, disallowedToolsStr, skillsStr, memory, background,
+    intro, expertiseStr, samplePromptsStr, category, tagsStr, systemPrompt,
+  };
+  const dirty = open && (Object.keys(initial) as (keyof Fields)[]).some((key) => current[key] !== initial[key]);
 
   const buildMetadata = (): Partial<SubagentMetadata> => {
     const tools = toolsStr.split(',').map((s) => s.trim()).filter(Boolean);
@@ -136,6 +204,8 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   };
 
   const handleSave = async (): Promise<boolean> => {
+    // The window stays on the page while it fades out; a key press there saves nothing.
+    if (!open) return false;
     if (!name.trim()) return false;
     // A plugin owns this AGENT.md — the next plugin update overwrites whatever
     // is saved here. The only entry point (AgentsSection's Edit) is disabled
@@ -193,63 +263,82 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   };
 
   const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid;
+  const nameRefused = Boolean(name.trim()) && (!nameValid || nameConflict || nameRefusedAsInvalid);
 
   return (
-    <div className="space-y-4">
-      {/* Body */}
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={agent ? t.toolbox.agentEditorTitleEdit : t.toolbox.agentEditorTitleNew}
+      size="lg"
+      closeButton
+      dirty={dirty}
+      // The window opens on the name, past the avatar button beside it.
+      initialFocus={(box) => box.querySelector<HTMLElement>('input')}
+      onCloseAutoFocus={onCloseAutoFocus}
+      footer={(
+        // The failure is said beside the buttons, where the save was pressed: the form above scrolls.
+        <div className="flex w-full flex-col gap-3">
+          {saveFailed && <InlineMessage tone="danger">{t.toolbox.itemSaveFailed}</InlineMessage>}
+          <div className="flex justify-end gap-2">
+            <DialogClose asChild><Button variant="plain">{t.common.cancel}</Button></DialogClose>
+            <Button variant="secondary" icon={AppIcons.continue} busy={saving} disabled={!isValid} onClick={() => { void handleSaveAndTest(); }}>
+              {t.toolbox.agentSaveAndTest}
+            </Button>
+            <Button variant="primary" icon={AppIcons.save} busy={saving} disabled={!isValid} onClick={() => { void handleSave(); }} data-testid="agent-editor-save">
+              {t.toolbox.agentSave}
+            </Button>
+          </div>
+        </div>
+      )}
+    >
       <div className="space-y-4">
         {/* Metadata Section */}
         <div className="space-y-3">
-          <h3 className="text-minor font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
-            {t.toolbox.agentEditorMetadata}
-          </h3>
+          <h3 className={GROUP_TITLE}>{t.toolbox.agentEditorMetadata}</h3>
 
           {/* Name and avatar */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorName}</label>
+            <label htmlFor={`${id}-name`} className={FIELD_LABEL}>{t.toolbox.agentEditorName}</label>
             <div className="flex items-center gap-2">
               <AvatarPicker value={avatar} onChange={setAvatar}>
                 <AgentAvatar agent={{ name: agent?.name ?? name, filePath: agent?.filePath, avatar }} size="lg" />
               </AvatarPicker>
-              <Input
-                type="text"
+              <TextField
+                id={`${id}-name`}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="my-agent"
-                className={cn(
-                  'min-w-0 flex-1',
-                  name.trim() && (!nameValid || nameConflict || nameRefusedAsInvalid) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
-                )}
+                invalid={nameRefused}
+                className="min-w-0 flex-1"
               />
             </div>
             {name.trim() && (!nameValid || nameRefusedAsInvalid) && (
-              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
+              <p className={REFUSED}><StatusIcon tone="danger" size="sm" />{t.toolbox.nameFormatHint}</p>
             )}
             {nameConflict && (
-              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.agentNameTakenHint}</p>
+              <p className={REFUSED}><StatusIcon tone="danger" size="sm" />{t.toolbox.agentNameTakenHint}</p>
             )}
           </div>
 
           {/* Description */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorDescription}</label>
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
-            />
+            <label htmlFor={`${id}-description`} className={FIELD_LABEL}>{t.toolbox.agentEditorDescription}</label>
+            <TextField id={`${id}-description`} value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
 
           {/* Model + Max Turns row */}
           <div className="flex gap-3">
-            <div className="flex-1">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentModel}</label>
+            <div className="min-w-0 flex-1">
+              {/* The select carries this text as its name. */}
+              <div className={FIELD_LABEL}>{t.toolbox.agentModel}</div>
               <Select
-                value={model}
-                onChange={setModel}
+                fullWidth
+                label={t.toolbox.agentModel}
+                value={model || INHERIT_MODEL}
+                onValueChange={(next) => setModel(next === INHERIT_MODEL ? '' : next)}
                 options={[
-                  { value: '', label: t.toolbox.agentModelInherit },
+                  { value: INHERIT_MODEL, label: t.toolbox.agentModelInherit },
                   ...(getActiveProvider(useSettingsStore.getState())?.models ?? []).map((m) => ({
                     value: m.id,
                     label: m.label,
@@ -258,8 +347,9 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               />
             </div>
             <div className="w-32">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentMaxTurns}</label>
-              <input
+              <label htmlFor={`${id}-max-turns`} className={FIELD_LABEL}>{t.toolbox.agentMaxTurns}</label>
+              <TextField
+                id={`${id}-max-turns`}
                 type="number"
                 min={1}
                 value={maxTurns}
@@ -270,66 +360,65 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                   if (!isNaN(v) && v >= 1) setMaxTurns(String(v));
                 }}
                 placeholder={t.toolbox.maxTurnsInheritGlobalHint}
-                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
               />
             </div>
           </div>
 
           {/* Tools */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentTools}</label>
-            <input
-              type="text"
+            <label htmlFor={`${id}-tools`} className={FIELD_LABEL}>{t.toolbox.agentTools}</label>
+            <TextField
+              id={`${id}-tools`}
               value={toolsStr}
               onChange={(e) => setToolsStr(e.target.value)}
               placeholder="web_search, read_file, abu-browser__*"
-              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
-            <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.toolbox.agentToolPatternsHint}</p>
+            <p className={HINT}>{t.toolbox.agentToolPatternsHint}</p>
             {unmatchedTools.length > 0 && (
-              <p className="text-caption text-[var(--abu-warning)] mt-1" role="alert">
-                {format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedTools.join(', ') })}
-              </p>
+              <div className="mt-2">
+                <InlineMessage tone="warning">{format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedTools.join(', ') })}</InlineMessage>
+              </div>
             )}
           </div>
 
           {/* Disallowed Tools */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentDisallowedTools}</label>
-            <input
-              type="text"
+            <label htmlFor={`${id}-disallowed-tools`} className={FIELD_LABEL}>{t.toolbox.agentDisallowedTools}</label>
+            <TextField
+              id={`${id}-disallowed-tools`}
               value={disallowedToolsStr}
               onChange={(e) => setDisallowedToolsStr(e.target.value)}
               placeholder="execute_command, abu-browser__*"
-              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
-            <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.toolbox.agentToolPatternsHint}</p>
+            <p className={HINT}>{t.toolbox.agentToolPatternsHint}</p>
             {unmatchedDisallowedTools.length > 0 && (
-              <p className="text-caption text-[var(--abu-warning)] mt-1" role="alert">
-                {format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedDisallowedTools.join(', ') })}
-              </p>
+              <div className="mt-2">
+                <InlineMessage tone="warning">{format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedDisallowedTools.join(', ') })}</InlineMessage>
+              </div>
             )}
           </div>
 
           {/* Skills */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentSkills}</label>
-            <input
-              type="text"
+            <label htmlFor={`${id}-skills`} className={FIELD_LABEL}>{t.toolbox.agentSkills}</label>
+            <TextField
+              id={`${id}-skills`}
               value={skillsStr}
               onChange={(e) => setSkillsStr(e.target.value)}
               placeholder="deep-research, code-review"
-              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
           </div>
 
           {/* Memory + Background row */}
-          <div className="flex gap-3 items-end">
-            <div className="flex-1">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentMemory}</label>
+          <div className="flex items-end gap-3">
+            <div className="min-w-0 flex-1">
+              {/* The select carries this text as its name. */}
+              <div className={FIELD_LABEL}>{t.toolbox.agentMemory}</div>
               <Select
+                fullWidth
+                label={t.toolbox.agentMemory}
                 value={memory}
-                onChange={(v) => setMemory(v as 'session' | 'project' | 'user')}
+                onValueChange={(v) => setMemory(v as 'session' | 'project' | 'user')}
                 options={[
                   { value: 'session', label: t.toolbox.agentMemorySession },
                   { value: 'project', label: t.toolbox.agentMemoryProject },
@@ -337,68 +426,66 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 ]}
               />
             </div>
-            <div className="flex items-center gap-2 pb-1">
-              <label className="text-minor font-medium text-[var(--abu-text-secondary)]">{t.toolbox.agentBackground}</label>
-              <Toggle checked={background} onChange={() => setBackground(!background)} size="md" />
+            <div className="flex h-7 items-center gap-2">
+              <label htmlFor={`${id}-background`} className="text-ui-sm font-medium text-label-secondary">{t.toolbox.agentBackground}</label>
+              <Switch id={`${id}-background`} checked={background} onCheckedChange={setBackground} />
             </div>
           </div>
 
           {/* Intro — shown on chat welcome screen and toolbox detail */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentIntro}</label>
-            <textarea
+            <label htmlFor={`${id}-intro`} className={FIELD_LABEL}>{t.toolbox.agentIntro}</label>
+            <TextArea
+              id={`${id}-intro`}
               value={intro}
               onChange={(e) => setIntro(e.target.value)}
               rows={2}
               placeholder={t.toolbox.agentIntroPlaceholder}
-              className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
             />
           </div>
 
           {/* Expertise — one item per line, rendered as bullets */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentExpertise}</label>
-            <textarea
+            <label htmlFor={`${id}-expertise`} className={FIELD_LABEL}>{t.toolbox.agentExpertise}</label>
+            <TextArea
+              id={`${id}-expertise`}
               value={expertiseStr}
               onChange={(e) => setExpertiseStr(e.target.value)}
               rows={3}
               placeholder={t.toolbox.agentExpertisePlaceholder}
-              className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
             />
           </div>
 
           {/* Sample Prompts — one per line, clickable in toolbox detail */}
           <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentSamplePrompts}</label>
-            <textarea
+            <label htmlFor={`${id}-sample-prompts`} className={FIELD_LABEL}>{t.toolbox.agentSamplePrompts}</label>
+            <TextArea
+              id={`${id}-sample-prompts`}
               value={samplePromptsStr}
               onChange={(e) => setSamplePromptsStr(e.target.value)}
               rows={3}
               placeholder={t.toolbox.agentSamplePromptsPlaceholder}
-              className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
             />
           </div>
 
           {/* Category + Tags row */}
           <div className="flex gap-3">
-            <div className="flex-1">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentCategoryField}</label>
-              <input
-                type="text"
+            <div className="min-w-0 flex-1">
+              <label htmlFor={`${id}-category`} className={FIELD_LABEL}>{t.toolbox.agentCategoryField}</label>
+              <TextField
+                id={`${id}-category`}
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
                 placeholder="tech-engineering"
-                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
               />
             </div>
-            <div className="flex-1">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentTagsField}</label>
-              <input
-                type="text"
+            <div className="min-w-0 flex-1">
+              <label htmlFor={`${id}-tags`} className={FIELD_LABEL}>{t.toolbox.agentTagsField}</label>
+              <TextField
+                id={`${id}-tags`}
                 value={tagsStr}
                 onChange={(e) => setTagsStr(e.target.value)}
                 placeholder={t.toolbox.agentTagsPlaceholder}
-                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
               />
             </div>
           </div>
@@ -407,51 +494,34 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
         {/* Content Section */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <h3 className="text-minor font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
-              {t.toolbox.agentEditorContent}
-            </h3>
-            <button
+            <h3 id={`${id}-content`} className={GROUP_TITLE}>{t.toolbox.agentEditorContent}</h3>
+            <Pressable
+              aria-pressed={showPreview}
               onClick={() => setShowPreview(!showPreview)}
-              className={`text-caption px-2 py-0.5 rounded-full transition-colors ${
-                showPreview
-                  ? 'bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)]'
-                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-border)]'
-              }`}
+              className={cn(
+                'h-5 rounded-control px-2 text-caption',
+                showPreview ? 'bg-fill-selected text-label' : 'text-label-tertiary hover:bg-fill-hover hover:text-label',
+              )}
             >
               {t.toolbox.agentEditorPreview}
-            </button>
+            </Pressable>
           </div>
 
           {showPreview ? (
-            <div className="border border-[var(--abu-border)] rounded-lg p-4 bg-[var(--abu-bg-base)] min-h-[200px] max-h-[400px] overflow-y-auto">
+            <div className="min-h-50 max-h-100 overflow-y-auto rounded-control border border-separator p-4">
               <MarkdownRenderer content={systemPrompt || '*No content yet*'} />
             </div>
           ) : (
-            <textarea
+            <TextArea
+              aria-labelledby={`${id}-content`}
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
               placeholder="Write agent system prompt in Markdown..."
-              className="w-full min-h-[200px] max-h-[400px] px-3 py-2 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] font-mono focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
+              className="min-h-50 max-h-100 font-code"
             />
           )}
         </div>
       </div>
-
-      {/* Footer — same row as the team dialog: cancel, then the actions. */}
-      <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-        {saveFailed && (
-          <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
-        )}
-        <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
-        <Button variant="tint" onClick={handleSaveAndTest} disabled={!isValid || saving}>
-          <Play className="h-3.5 w-3.5" />
-          {t.toolbox.agentSaveAndTest}
-        </Button>
-        <Button onClick={handleSave} disabled={!isValid || saving} data-testid="agent-editor-save">
-          <Save className="h-3.5 w-3.5" />
-          {t.toolbox.agentSave}
-        </Button>
-      </div>
-    </div>
+    </Dialog>
   );
 }

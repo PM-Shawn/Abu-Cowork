@@ -31,10 +31,15 @@ test('released skill cards keep switches, detail actions and creation', async ()
     await expect(detail.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
     await detail.getByRole('switch').click();
     await detail.getByTestId('skill-detail-menu').click();
-    await expect(detail.getByText('导出', { exact: false })).toBeVisible();
-    await expect(detail.getByText('查看历史', { exact: true })).toBeVisible();
+    // The menu is a layer of its own above the window, so it is read from the page.
+    await expect(page.getByRole('menuitem', { name: /导出/ })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: '查看历史', exact: true })).toBeVisible();
     await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-skills-detail.png' });
+    // The first Escape closes the menu, the second the window.
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('skill-detail')).toHaveCount(0);
     await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-skills-cards.png' });
     await page.getByTestId('skill-create-trigger').click();
     await page.getByText('手动创建', { exact: true }).click();
@@ -84,7 +89,7 @@ test('released connector cards keep template install and connection actions', as
     await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-connectors-market.png' });
     await page.getByRole('button', { name: '添加', exact: true }).first().click();
     await page.getByPlaceholder('服务器名称').fill('ui-layout-fixture');
-    await page.getByRole('button', { name: '远程服务 (HTTP)', exact: true }).click();
+    await page.getByRole('radio', { name: '远程服务 (HTTP)', exact: true }).click();
     await page.getByPlaceholder('http://localhost:3000/mcp').fill(`http://127.0.0.1:${address.port}/mcp`);
     await page.getByRole('button', { name: '添加', exact: true }).last().click();
     await expect(page.getByRole('heading', { name: 'ui-layout-fixture 连接器', exact: true })).toBeVisible();
@@ -107,6 +112,56 @@ test('released connector cards keep template install and connection actions', as
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '添加', exact: true }).first().click();
     await expect(page.getByPlaceholder('服务器名称')).toBeVisible();
+  } finally {
+    if (launched) {
+      await closeAbuElectron(launched.app);
+      removeElectronDataRoot(launched);
+    }
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('a connector card stays closed when its switch is pressed while it connects', async () => {
+  // A loopback endpoint that accepts the connection and never answers: the connector stays
+  // "connecting", so its switch on the card is busy for as long as the test needs.
+  const server = createServer(() => undefined);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('No fixture port');
+  let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
+  try {
+    launched = await launchAbuElectron();
+    const page = await launched.app.firstWindow();
+    await expect(page.getByPlaceholder('想让阿布帮你做点什么？')).toBeVisible({ timeout: 45_000 });
+    await dismissFirstRunOverlays(page);
+    await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
+    await page.getByRole('button', { name: '连接器', exact: true }).click();
+    await page.getByRole('button', { name: '添加', exact: true }).first().click();
+    await page.getByPlaceholder('服务器名称').fill('ui-busy-fixture');
+    await page.getByRole('radio', { name: '远程服务 (HTTP)', exact: true }).click();
+    await page.getByPlaceholder('http://localhost:3000/mcp').fill(`http://127.0.0.1:${address.port}/mcp`);
+    await page.getByRole('button', { name: '添加', exact: true }).last().click();
+    await expect(page.getByRole('heading', { name: 'ui-busy-fixture 连接器', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const busySwitch = page.getByRole('button', { name: /^ui-busy-fixture / }).getByRole('switch');
+    await expect(busySwitch).toHaveAttribute('aria-disabled', 'true');
+    const box = await busySwitch.boundingBox();
+    const at = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+    // The pointer lands on the busy switch itself, not on what is behind it.
+    expect(await busySwitch.evaluate((element, point) => element.contains(document.elementFromPoint(point.x, point.y)), at)).toBe(true);
+
+    await page.mouse.click(at.x, at.y);
+
+    // The press ends on the switch: the card's detail does not open, the focus is on the
+    // switch, and the connection attempt goes on.
+    await expect(busySwitch).toBeFocused();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(busySwitch).toHaveAttribute('aria-disabled', 'true');
+    await expect(busySwitch).toHaveAttribute('aria-checked', 'false');
   } finally {
     if (launched) {
       await closeAbuElectron(launched.app);

@@ -691,4 +691,112 @@ describe('createConversationWriter', () => {
       });
     });
   });
+
+  describe('a ledger that is on disk and cannot be read', () => {
+    const LEDGER = `${ROOT}/c1/messages.jsonl`;
+    const SNAPSHOT = `${ROOT}/c1/stream-snapshot.json`;
+    const line = (m: Record<string, unknown>): string => `${JSON.stringify(m)}\n`;
+    const RECORD = line({ id: 'm1', role: 'user', content: 'first', timestamp: 1 })
+      + line({ id: 'm2', role: 'assistant', content: 'second', timestamp: 2, pid: 'm1' });
+
+    /** A writer of a fresh process, a record on disk, and a switch that makes reading that record fail. */
+    function setup() {
+      const fs = createMemoryConversationFs();
+      void fs.mkdir(`${ROOT}/c1`);
+      fs.files.set(LEDGER, RECORD);
+      const read = fs.readTextFile.bind(fs);
+      const state = { unreadable: true };
+      fs.readTextFile = async (path) => {
+        if (path === LEDGER && state.unreadable) {
+          fs.calls.push(`readTextFile ${path}`);
+          throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' });
+        }
+        return read(path);
+      };
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      const writesTo = (path: string): string[] => fs.calls.filter((call) => call === `appendText ${path}` || call === `atomicWriteText ${path}`);
+      return { fs, writer, state, writesTo };
+    }
+
+    it('a strict read rejects with the host error; a tolerant read answers an empty list, as before', async () => {
+      const { writer } = setup();
+      await expect(writer.loadMessages('c1', { strictRead: true })).rejects.toMatchObject({ code: 'EACCES' });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await expect(writer.loadMessages('c1')).resolves.toEqual([]);
+      vi.restoreAllMocks();
+    });
+
+    it('a strict read of a record that is missing, empty, or has a damaged line answers as a tolerant read does', async () => {
+      const fs = createMemoryConversationFs();
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await expect(writer.loadMessages('c1', { strictRead: true })).resolves.toEqual([]);
+      fs.files.set(LEDGER, '');
+      await expect(writer.loadMessages('c1', { strictRead: true })).resolves.toEqual([]);
+      fs.files.set(LEDGER, RECORD.replace('\n', '\n{"id":"torn","role":"assis\n'));
+      expect((await writer.loadMessages('c1', { strictRead: true })).map((m) => m.id)).toEqual(['m1', 'm2']);
+      vi.restoreAllMocks();
+    });
+
+    it.each([
+      ['appendMessage', (writer: ReturnType<typeof createConversationWriter>) => writer.appendMessage('c1', msg('m3', 'third'))],
+      ['replaceMessageById', (writer: ReturnType<typeof createConversationWriter>) => writer.replaceMessageById('c1', msg('m2', 'revised'))],
+      ['replaceMessageByIdStrict', (writer: ReturnType<typeof createConversationWriter>) => writer.replaceMessageByIdStrict('c1', msg('m2', 'revised'))],
+      ['updateLastMessage', (writer: ReturnType<typeof createConversationWriter>) => writer.updateLastMessage('c1', msg('m2', 'revised'))],
+      ['appendTruncateEvent', (writer: ReturnType<typeof createConversationWriter>) => writer.appendTruncateEvent('c1', 'm2', { pid: 'm1', removedIds: ['m2'] })],
+      ['snapshotMessageRevision', (writer: ReturnType<typeof createConversationWriter>) => writer.snapshotMessageRevision('c1', msg('m2', 'partial'))],
+      ['promoteStreamSnapshots', (writer: ReturnType<typeof createConversationWriter>) => writer.promoteStreamSnapshots('c1')],
+    ])('after a strict read failed, %s rejects and writes nothing to the record', async (_name, write) => {
+      const { fs, writer, writesTo } = setup();
+      await expect(writer.loadMessages('c1', { strictRead: true })).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(write(writer)).rejects.toMatchObject({ code: 'EACCES' });
+      await writer.flushWrites();
+      expect(writesTo(LEDGER)).toEqual([]);
+      expect(writesTo(SNAPSHOT)).toEqual([]);
+      expect(fs.files.get(LEDGER)).toBe(RECORD);
+    });
+
+    it('once the record can be read again, the next write lands after what was there', async () => {
+      const { fs, writer, state } = setup();
+      await expect(writer.loadMessages('c1', { strictRead: true })).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(writer.appendMessage('c1', msg('m3', 'third'))).rejects.toMatchObject({ code: 'EACCES' });
+      state.unreadable = false;
+      await writer.appendMessage('c1', msg('m3', 'third'));
+      await writer.flushWrites();
+      expect(fs.files.get(LEDGER)!.startsWith(RECORD)).toBe(true);
+      const lines = fs.files.get(LEDGER)!.trim().split('\n').map((l) => JSON.parse(l) as { id: string; pid?: string });
+      expect(lines.map((l) => l.id)).toEqual(['m1', 'm2', 'm3']);
+      expect(lines[2].pid).toBe('m2');
+    });
+
+    it('a strict read that succeeds afterwards lifts the block', async () => {
+      const { fs, writer, state } = setup();
+      await expect(writer.loadMessages('c1', { strictRead: true })).rejects.toMatchObject({ code: 'EACCES' });
+      state.unreadable = false;
+      expect((await writer.loadMessages('c1', { strictRead: true })).map((m) => m.id)).toEqual(['m1', 'm2']);
+      const readsBefore = fs.calls.filter((c) => c === `readTextFile ${LEDGER}`).length;
+      await writer.appendMessage('c1', msg('m3', 'third'));
+      await writer.flushWrites();
+      expect(fs.calls.filter((c) => c === `readTextFile ${LEDGER}`).length).toBe(readsBefore);
+      expect(fs.files.get(LEDGER)!.startsWith(RECORD)).toBe(true);
+    });
+
+    it('leaves every other conversation writable', async () => {
+      const { fs, writer } = setup();
+      await expect(writer.loadMessages('c1', { strictRead: true })).rejects.toMatchObject({ code: 'EACCES' });
+      await writer.appendMessage('c2', msg('n1', 'other'));
+      await writer.flushWrites();
+      expect(fs.files.get(`${ROOT}/c2/messages.jsonl`)).toContain('"n1"');
+    });
+
+    it('deleting the conversation is still possible, and lifts the block with it', async () => {
+      const { fs, writer } = setup();
+      await expect(writer.loadMessages('c1', { strictRead: true })).rejects.toMatchObject({ code: 'EACCES' });
+      await writer.deleteConversationFiles('c1');
+      expect(fs.files.has(LEDGER)).toBe(false);
+      await writer.appendMessage('c1', msg('m9', 'a new record under the same id'));
+      await writer.flushWrites();
+      expect(fs.files.get(LEDGER)).toContain('"m9"');
+    });
+  });
 });

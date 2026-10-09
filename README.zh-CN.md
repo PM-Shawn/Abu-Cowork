@@ -63,8 +63,8 @@
 <td align="center"><b>桌宠 · 活动通知条</b><br/>桌面浮窗常驻，活动条实时显示阿布状态<br/><br/><img src="website/assets/screenshot-pet.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>主题切换 · 暗色</b><br/>精心打磨的暗色主题<br/><br/><img src="website/assets/screenshot-theme.png" width="100%" /></td>
-<td align="center"><b>主题切换 · 亮色</b><br/>亮色 / 暗色 / 跟随系统一键切换<br/><br/><img src="website/assets/screenshot-theme-light.png" width="100%" /></td>
+<td align="center"><b>主题切换 · 深色</b><br/>精心打磨的深色主题<br/><br/><img src="website/assets/screenshot-theme.png" width="100%" /></td>
+<td align="center"><b>主题切换 · 浅色</b><br/>浅色 / 深色 / 跟随系统一键切换<br/><br/><img src="website/assets/screenshot-theme-light.png" width="100%" /></td>
 </tr>
 <tr>
 <td align="center" colspan="2"><b>实验室（Labs）</b><br/>打磨中的新功能，默认关闭、按需开启（当前收录：桌宠）<br/><br/><img src="website/assets/screenshot-labs.png" width="60%" /></td>
@@ -112,7 +112,7 @@
 - **Projects 管理** — 工作区可升级成 Project，同一方向的对话自动聚合，每个项目独立配置图标、默认模型、技能集、MCP
 - **多 Agent 后台并行** — 支持同时运行多个后台 Agent（最多 5 个），各自独立执行任务，进度实时可见
 - **桌宠模式**（实验室）— 透明浮窗常驻桌面，跨 Spaces 跟随；左键唤起主窗口、右键菜单、可拖拽吸边隐藏；**活动通知条** 实时显示阿布状态（处理中 / 等待授权 / 完成），等待输入时可就地回复
-- **主题切换** — 亮色 / 暗色 / 跟随系统，设置 → 外观一键切换
+- **主题切换** — 浅色 / 深色 / 跟随系统，设置 → 外观一键切换
 - **实验室（Labs）** — 打磨中的新功能默认关闭、按需开启，可能随时调整或移除（当前收录：桌宠）
 - **对话分享 / 导出** — 一键把对话导出成 JSON 分享给同事；自动脱敏 API Key 与本地路径
 - **29 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、阿布内置浏览器、可选 Chrome 桥接、深度研究、Agent 自我反思（reflect）、工作流自动化等，一键安装，支持自定义
@@ -269,7 +269,7 @@
 | 工具协议 | MCP (`@modelcontextprotocol/sdk`) |
 | 联网搜索 | Bing / Brave / Tavily / SearXNG |
 | 安全沙箱 | macOS Seatbelt + 路径/命令双重校验 |
-| UI 组件 | Radix UI + Lucide Icons + shadcn 风格 |
+| UI 组件 | 阿布自己的组件库（`src/components/ds/`），基于 Radix UI + Lucide Icons |
 | 测试 | Vitest + happy-dom（覆盖核心 store / agent / skill / memdir 等模块） |
 | 评测 | 自带 OpenAI 协议工具调用评测器（`npm run eval:tool-selection`） |
 
@@ -332,12 +332,12 @@ src/
 │   ├── chat/         # 对话界面、消息气泡、模型选择器
 │   ├── sidebar/      # 侧边栏导航（含 Recents 折叠搜索）
 │   ├── panel/        # 右侧详情面板（工作区、项目记忆/指令）
-│   ├── customize/    # 自定义（技能、Agent、模型）
+│   ├── customize/    # 自定义（技能、Agent、MCP 连接器）
 │   ├── schedule/     # 定时任务视图
 │   ├── trigger/      # 触发器（值班）管理视图
 │   ├── settings/     # 系统设置（16 个面板，详见 settings/sections/）
 │   ├── preview/      # 文件预览（PDF/Office/图片/Markdown）
-│   └── ui/           # 基础 UI 组件 (shadcn/Radix)
+│   └── ds/           # 设计系统组件库（只有这里导入 Radix 与 Lucide）
 ├── core/             # 核心引擎（非 UI）
 │   ├── agent/        # Agent 循环、后台 Agent、project rules
 │   ├── llm/          # LLM 适配层（Claude / OpenAI-compatible / Ollama）

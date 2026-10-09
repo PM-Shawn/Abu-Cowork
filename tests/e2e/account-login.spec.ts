@@ -201,13 +201,9 @@ async function useSystemTheme(page: Page): Promise<void> {
   const settings = page.locator('[data-abu-settings-dialog]');
   await expect(settings).toBeVisible();
   await settings.getByRole('button', { name: '偏好', exact: true }).click();
-  const appearanceRow = settings.getByText('外观', { exact: true }).locator('..');
-  const themeSelect = appearanceRow.getByRole('button');
-  const menuId = await themeSelect.getAttribute('aria-controls');
-  if (!menuId) throw new Error('Appearance select did not expose its menu');
-  await themeSelect.click();
-  await page.locator(`[id="${menuId}"]`).locator('button[data-value="system"]').click();
-  await expect(themeSelect).toHaveText('跟随系统');
+  const followSystem = settings.getByRole('radio', { name: '跟随系统', exact: true });
+  await followSystem.click();
+  await expect(followSystem).toHaveAttribute('aria-checked', 'true');
   await settings.locator('[data-abu-settings-close]').click();
   await expect(settings).toBeHidden();
 }
@@ -258,14 +254,15 @@ test.describe.serial('personal account login UI', () => {
     const localMenu = page.getByRole('menu');
     await expect(localMenu.getByText('本地模式', { exact: true })).toBeVisible();
     await expect(localMenu.getByRole('menuitem').last()).toHaveAccessibleName('登录');
-    await expect(localMenu.getByRole('menuitem', { name: '编辑资料', exact: true })).toHaveCount(0);
-    const editProfileButton = localMenu.getByTitle('编辑资料');
+    // Profile editing is the first item, apart from the sign-in item at the end.
+    const editProfileButton = localMenu.getByRole('menuitem', { name: '编辑资料', exact: true });
+    await expect(localMenu.getByRole('menuitem').first()).toHaveAccessibleName('编辑资料');
     await captureLightAndDark(page, testInfo, '01-local-menu-signed-out');
     await captureHoveredLightAndDark(
       page,
       testInfo,
       '01b-profile-edit-hover',
-      editProfileButton.locator('..'),
+      editProfileButton,
       editProfileButton,
     );
     await editProfileButton.click();

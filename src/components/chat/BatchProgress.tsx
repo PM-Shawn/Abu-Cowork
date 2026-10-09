@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Check, ChevronRight, CircleStop, Clock, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBatchProgress } from '@/stores/batchProgressStore';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format, type TranslationDict } from '@/i18n';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
 import type { BatchIdentity, ToolCall } from '@/types';
 import { getToolLabel } from '@/utils/toolLabels';
 import {
@@ -26,23 +30,25 @@ interface BatchProgressProps {
   toolCall: ToolCall;
 }
 
-function StatusIcon({ status }: { status: BatchRowStatus }) {
+// The card is one place: its header holds the only spinner, so a running row
+// shows the same loading icon standing still.
+function RowStatusIcon({ status }: { status: BatchRowStatus }) {
   if (status === 'queued' || status === 'unknown') {
-    return <Clock aria-hidden="true" className="h-3 w-3 text-[var(--abu-text-muted)]" />;
+    return <Icon icon={AppIcons.clock} size="sm" className="text-label-tertiary" />;
   }
   if (status === 'running') {
-    return <Loader2 aria-hidden="true" className="h-3 w-3 text-[var(--abu-clay)] motion-safe:animate-spin" />;
+    return <Icon icon={AppIcons.loading} size="sm" className="text-label-tertiary" />;
   }
   if (status === 'succeeded') {
-    return <Check aria-hidden="true" className="h-3 w-3 text-[var(--abu-success)]" />;
+    return <StatusIcon tone="success" size="sm" />;
   }
   if (status === 'stopped') {
-    return <CircleStop aria-hidden="true" className="h-3 w-3 text-[var(--abu-text-muted)]" />;
+    return <Icon icon={AppIcons.stopped} size="sm" className="text-label-tertiary" />;
   }
   if (status === 'incomplete') {
-    return <AlertTriangle aria-hidden="true" className="h-3 w-3 text-[var(--abu-warning)]" />;
+    return <StatusIcon tone="warning" size="sm" />;
   }
-  return <X aria-hidden="true" className="h-3 w-3 text-[var(--abu-danger)]" />;
+  return <StatusIcon tone="danger" size="sm" />;
 }
 
 function formatElapsed(ms: number): string {
@@ -93,55 +99,53 @@ export default function BatchProgress({
   if (!rows) return null;
 
   return (
-    <section className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--abu-border-subtle)]">
-        {isAnyRunning && <Loader2 aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-clay)] motion-safe:animate-spin shrink-0" />}
+    <section className="my-2 overflow-hidden rounded-panel border border-separator bg-surface">
+      <header className="flex items-center gap-2 border-b border-separator px-3 py-2">
+        {isAnyRunning && <Spinner size="sm" labelHidden label={t.task.running} />}
         <span
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          className="text-minor font-medium text-[var(--abu-text-primary)] flex-1 min-w-0"
+          className="min-w-0 flex-1 text-ui font-medium text-label"
         >
           {summaryLabel(rows, t)}
         </span>
         {isAnyRunning && (
           <Button
-            size="xs"
-            variant="ghost"
+            size="sm"
+            variant="plain"
             onClick={(event) => {
               event.stopPropagation();
               useChatStore.getState().cancelStreaming(identity.conversationId);
             }}
-            className="h-5 px-2 text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] shrink-0"
           >
             {t.batch.stopButton}
           </Button>
         )}
-      </div>
+      </header>
 
-      <div className="divide-y divide-[var(--abu-border-subtle)]">
+      <div className="divide-y divide-separator">
         {rows.map((row) => {
           const lastToolLabel = row.lastToolName
             ? getToolLabel(row.lastToolName, {}, locale).label
             : undefined;
           return (
-            <button
+            <Pressable
               key={row.taskIndex}
-              type="button"
               onClick={() => openSubagent(identity, row.taskIndex, row.label)}
-              className="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] transition-colors"
+              className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors duration-fast hover:bg-fill-hover"
               aria-label={format(t.batch.openTaskLabel, { label: row.label, status: batchRowStatusLabel(row.status, t) })}
             >
-              <span className="mt-0.5 shrink-0"><StatusIcon status={row.status} /></span>
-              <span className="flex-1 min-w-0">
+              <span className="flex h-lh shrink-0 items-center text-ui"><RowStatusIcon status={row.status} /></span>
+              <span className="min-w-0 flex-1">
                 <span className={cn(
-                  'text-caption truncate block',
-                  row.status === 'running' ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)]',
-                  row.status === 'failed' && 'text-[var(--abu-danger)]',
+                  'block truncate text-ui',
+                  row.status === 'running' ? 'text-label' : 'text-label-secondary',
+                  row.status === 'failed' && 'text-danger',
                 )}>
                   {row.label}
                 </span>
-                <span className="text-caption text-[var(--abu-text-tertiary)] flex flex-wrap gap-x-1.5">
+                <span className="flex flex-wrap gap-x-2 text-ui-sm text-label-secondary">
                   <span>{batchRowStatusLabel(row.status, t)}</span>
                   {lastToolLabel && <span>{lastToolLabel}</span>}
                   {row.toolCallCount !== undefined && <span>{format(t.batch.toolCount, { n: row.toolCallCount })}</span>}
@@ -152,8 +156,10 @@ export default function BatchProgress({
                   )}
                 </span>
               </span>
-              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-[var(--abu-text-muted)]" />
-            </button>
+              <span className="flex h-lh shrink-0 items-center text-ui">
+                <Icon icon={AppIcons.disclose} size="sm" className="text-label-tertiary" />
+              </span>
+            </Pressable>
           );
         })}
       </div>

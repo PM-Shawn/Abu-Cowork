@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, Monitor } from 'lucide-react';
 import type { ComputerStepOutcome, ToolCall } from '@/types';
 import { useI18n, format } from '@/i18n';
-import { cn } from '@/lib/utils';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import type { StatusTone } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
 import { ToolResultImagePreview } from './ToolCallsGroup';
 
 /**
@@ -28,61 +31,60 @@ export default function ComputerUseRunReportCard({ steps, conversationId }: {
   const consequential = steps.filter((tc) => tc.computerStep && tc.computerStep.consequence !== 'none').length;
 
   return (
-    <div className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden" data-testid="cu-run-report">
-      <button
+    <div className="my-2 overflow-hidden rounded-panel border border-separator bg-surface" data-testid="cu-run-report">
+      <Pressable
         onClick={() => setExpanded((v) => !v)}
-        className="btn-ghost w-full flex items-center gap-1.5 px-3 py-2 text-left"
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors duration-fast hover:bg-fill-hover"
       >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        )}
-        <Monitor className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0" />
-        <span className="text-minor font-medium text-[var(--abu-text-primary)]">
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="text-label-tertiary" />
+        <Icon icon={AppIcons.monitor} size="sm" className="text-label-secondary" />
+        <span className="text-ui font-medium text-label">
           {apps.length > 0 ? format(r.titleWithApps, { apps: apps.join(' / ') }) : r.title}
         </span>
-        <span className="text-caption text-[var(--abu-text-muted)]">
+        <span className="text-ui-sm text-label-secondary">
           · {format(r.summary, { steps: steps.length, verified })}
           {consequential > 0 && ` · ${format(r.consequentialCount, { count: consequential })}`}
         </span>
         {last && (
-          <span className={cn('ml-auto text-caption px-1.5 py-0.5 rounded', outcomeClass(last.outcome))} data-testid="cu-run-final">
-            {outcomeLabel(last.outcome, r)}
+          <span className="ml-auto shrink-0" data-testid="cu-run-final">
+            <Tag tone={outcomeTone(last.outcome)}>{outcomeLabel(last.outcome, r)}</Tag>
           </span>
         )}
-      </button>
+      </Pressable>
       {expanded && (
-        <ol className="space-y-1.5 px-3 pb-2.5">
+        <ol className="space-y-2 px-3 pb-3">
           {steps.map((tc, i) => {
             const step = tc.computerStep!;
             const image = tc.resultContent?.find((block) => block.type === 'image');
             return (
-              <li key={tc.id} className="flex gap-2 text-minor leading-relaxed text-[var(--abu-text-secondary)]" data-testid="cu-run-step">
-                <span className="shrink-0 w-5 text-right text-[var(--abu-text-muted)] tabular-nums">{i + 1}.</span>
+              <li key={tc.id} className="flex gap-2 text-ui text-label" data-testid="cu-run-step">
+                <span className="w-5 shrink-0 text-right text-label-tertiary tabular-nums">{i + 1}.</span>
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span className="break-words">{describeAction(tc.input, r)}</span>
-                    <span className={cn('text-caption px-1.5 py-0.5 rounded', outcomeClass(step.outcome))}>
+                    <Tag tone={outcomeTone(step.outcome)}>
                       {outcomeLabel(step.outcome, r)}
                       {step.detail ? ` · ${step.detail}` : ''}
-                    </span>
+                    </Tag>
                     {step.consequence !== 'none' && (
-                      <span className="text-caption px-1.5 py-0.5 rounded bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]" data-testid="cu-run-consequence">
-                        {format(APPROVED_OUTCOMES.has(step.outcome) ? r.consequenceApproved : r.consequenceNotApproved, { category: step.consequence })}
+                      <span data-testid="cu-run-consequence">
+                        <Tag tone="danger">
+                          {format(APPROVED_OUTCOMES.has(step.outcome) ? r.consequenceApproved : r.consequenceNotApproved, { category: step.consequence })}
+                        </Tag>
                       </span>
                     )}
                   </div>
                   {step.consequence !== 'none' && step.consequenceDetail && (
-                    <div className="text-caption text-[var(--abu-text-muted)] break-words">{step.consequenceDetail}</div>
+                    <div className="break-words text-ui-sm text-label-secondary">{step.consequenceDetail}</div>
                   )}
                   {image && image.type === 'image' && !tc.hideScreenshot && (
                     <ToolResultImagePreview
                       block={image}
                       conversationId={conversationId}
                       alt={r.screenshotAlt}
-                      frameClassName="mt-1 rounded border border-white/20 max-w-[200px] max-h-[120px] min-w-[80px] min-h-[50px] overflow-hidden"
-                      thumbnailClassName="rounded max-w-[200px] max-h-[120px] object-contain"
+                      frameClassName="mt-1 rounded-control border border-separator max-w-[200px] max-h-[120px] min-w-[80px] min-h-[50px] overflow-hidden"
+                      thumbnailClassName="rounded-control max-w-[200px] max-h-[120px] object-contain"
                     />
                   )}
                 </div>
@@ -120,23 +122,23 @@ function outcomeLabel(outcome: ComputerStepOutcome, r: ReportStrings): string {
   }[outcome];
 }
 
-function outcomeClass(outcome: ComputerStepOutcome): string {
+function outcomeTone(outcome: ComputerStepOutcome): StatusTone {
   switch (outcome) {
     case 'verified-change':
     case 'done':
     case 'observed':
-      return 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]';
+      return 'success';
     case 'no-change':
     case 'ambiguous':
     case 'not-executed':
-      return 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]';
+      return 'info';
     case 'handoff':
     case 'boundary':
     case 'paused':
     case 'mismatch':
-      return 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]';
+      return 'warning';
     default:
-      return 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]';
+      return 'danger';
   }
 }
 

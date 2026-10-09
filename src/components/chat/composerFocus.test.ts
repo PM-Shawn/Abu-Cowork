@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { focusComposer, focusComposerAfterPageChange } from './composerFocus';
+import { focusComposer, focusComposerAfterPageChange, focusComposerFromWindow, setComposerFieldFocus } from './composerFocus';
 
 function composer(disabled = false) {
   const field = document.createElement('textarea');
@@ -10,11 +10,46 @@ function composer(disabled = false) {
   return field;
 }
 
+// The message field once it holds a skill tag: an editable text box.
+function editableComposer(disabled = false) {
+  const field = document.createElement('div');
+  field.setAttribute('role', 'textbox');
+  field.setAttribute('data-chat-composer', '');
+  field.setAttribute('contenteditable', String(!disabled));
+  if (disabled) field.setAttribute('aria-disabled', 'true');
+  document.body.append(field);
+  return field;
+}
+
 afterEach(() => {
   document.body.replaceChildren();
 });
 
 describe('focusComposer', () => {
+  it('puts the focus in a message field that holds a skill tag and says so', () => {
+    const field = editableComposer();
+
+    expect(focusComposer()).toBe(true);
+    expect(document.activeElement).toBe(field);
+  });
+
+  it('skips a message field with a skill tag that takes no input', () => {
+    editableComposer(true);
+
+    expect(focusComposer()).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('gives the focus through the way the field named for itself, which places its caret', () => {
+    const field = editableComposer();
+    const focus = vi.fn(() => field.focus());
+    setComposerFieldFocus(field, focus);
+
+    expect(focusComposer()).toBe(true);
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(field);
+  });
+
   it('puts the focus in the message field and says so', () => {
     const field = composer();
 
@@ -36,6 +71,25 @@ describe('focusComposer', () => {
 
     expect(focusComposer()).toBe(false);
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe('focusComposerFromWindow', () => {
+  it('puts the focus in a message field that holds a skill tag when no control has it', () => {
+    const field = editableComposer();
+
+    focusComposerFromWindow();
+    expect(document.activeElement).toBe(field);
+  });
+
+  it('takes the focus from no control that has it', () => {
+    editableComposer();
+    const other = document.createElement('button');
+    document.body.append(other);
+    other.focus();
+
+    focusComposerFromWindow();
+    expect(document.activeElement).toBe(other);
   });
 });
 
@@ -64,6 +118,15 @@ describe('focusComposerAfterPageChange', () => {
 
   it('puts the focus in the message field on the next frame, not before', () => {
     const field = composer();
+
+    focusComposerAfterPageChange();
+    expect(document.activeElement).toBe(document.body);
+    nextFrame();
+    expect(document.activeElement).toBe(field);
+  });
+
+  it('puts the focus in a message field that holds a skill tag on the next frame', () => {
+    const field = editableComposer();
 
     focusComposerAfterPageChange();
     expect(document.activeElement).toBe(document.body);

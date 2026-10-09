@@ -34,6 +34,7 @@ import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
 import { collectPresentedFiles } from '@/utils/presentedFiles';
+import { collectTurnFilePaths, resolveFileMention } from '@/utils/turnFileMentions';
 import { usePresentFilesOnDisk } from '@/hooks/usePresentFilesOnDisk';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
@@ -842,6 +843,20 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   const onDiskFiles = usePresentFilesOnDisk(declaredFiles, declaredMode && isGroupDone);
   const [allFilesShown, setAllFilesShown] = useState(false);
 
+  // Declared mode: file names and paths in the reply text that name a file this
+  // turn wrote or presented open it in the side preview. The serialized list
+  // keeps the resolver stable across renders, which MarkdownRenderer requires.
+  const turnFilePathsKey = useMemo(
+    () => JSON.stringify(declaredMode ? collectTurnFilePaths(allToolCalls, workspacePath) : []),
+    [declaredMode, allToolCalls, workspacePath],
+  );
+  const resolveTurnFileMention = useMemo(() => {
+    const turnFilePaths = JSON.parse(turnFilePathsKey) as string[];
+    return turnFilePaths.length > 0
+      ? (text: string) => resolveFileMention(text, turnFilePaths)
+      : undefined;
+  }, [turnFilePathsKey]);
+
   // Declared-mode auto-preview: once per mount, for the last group, the first
   // time the disk check lists a file after a run this mount watched has ended.
   // It opens the last presented non-image file, or the last image when every
@@ -1089,6 +1104,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 content={cleanedText}
                 searchResults={searchResults.length > 0 ? searchResults : undefined}
                 onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
+                resolveFileMention={resolveTurnFileMention}
               />
             </div>
           )}

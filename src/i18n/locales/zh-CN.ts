@@ -286,6 +286,7 @@ const zhCN: TranslationDict = {
     collapseSources: '收起',
     allFilesCount: '全部 {count} 个文件',
     collapseFiles: '收起',
+    openFileInPreview: '在右侧预览 {name}',
     userMessageShowMore: '显示更多',
     userMessageCollapse: '收起',
     runPending: '正在发送…',

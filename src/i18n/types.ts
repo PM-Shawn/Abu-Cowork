@@ -328,6 +328,8 @@ export interface TranslationDict {
     /** Button under the file cards of a turn that presented more than four files; `{count}` is the number of cards. */
     allFilesCount: string;
     collapseFiles: string;
+    /** Accessible name of a file name or path in a reply that opens the side preview; `{name}` is the file name. */
+    openFileInPreview: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;

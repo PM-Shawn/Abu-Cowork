@@ -68,7 +68,8 @@ function expandRightPanel(): void {
  */
 export type WorkspaceTab = (
   | { id: string; kind: 'summary' }
-  | { id: string; kind: 'preview'; filePath: string }
+  // `line` is the 1-based line the latest open request asked the source view to show.
+  | { id: string; kind: 'preview'; filePath: string; line?: number }
   // Agent views carry main's ownerKey; user-created tabs inherit the current conversation.
   | { id: string; kind: 'browser'; url: string }
   | { id: string; kind: 'terminal' }
@@ -209,7 +210,9 @@ interface PreviewState {
   openSummary: () => void;
   // Open (or activate an existing) preview tab for `filePath`. Call sites
   // (~11 across the app) are unchanged from the pre-tabs single-preview API.
-  openPreview: (filePath: string) => void;
+  // `options.line` asks the source view to show that line; the tab keeps the
+  // line of the latest request, so a request without one clears it.
+  openPreview: (filePath: string, options?: { line?: number }) => void;
   // Open (or activate an existing) browser tab for `url` (default ''). Main
   // may supply an id when adopting an agent-created Electron browser view, plus
   // the conversation that view belongs to (omitted for the legacy shared pool).
@@ -388,16 +391,23 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     commitTabs(nextTabs, id);
   },
 
-  openPreview: (filePath) => {
+  openPreview: (filePath, options) => {
     const { tabs } = get();
+    const line = options?.line;
     const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
-      commitTabs(tabs, existing.id);
+      const nextTabs = existing.kind === 'preview' && existing.line !== line
+        ? tabs.map((t): WorkspaceTab => (t.id === existing.id ? { ...existing, line } : t))
+        : tabs;
+      commitTabs(nextTabs, existing.id);
       expandRightPanel();
       return;
     }
     const id = genId();
-    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'preview', filePath, ...ownerScope() }];
+    const nextTabs: WorkspaceTab[] = [
+      ...tabs,
+      { id, kind: 'preview', filePath, ...(line !== undefined ? { line } : {}), ...ownerScope() },
+    ];
     commitTabs(nextTabs, id);
     expandRightPanel();
   },

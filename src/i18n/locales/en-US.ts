@@ -286,6 +286,7 @@ const enUS: TranslationDict = {
     collapseSources: 'Collapse',
     allFilesCount: 'All {count} files',
     collapseFiles: 'Collapse',
+    openFileInPreview: 'Preview {name}',
     userMessageShowMore: 'Show more',
     userMessageCollapse: 'Collapse',
     runPending: 'Sending…',

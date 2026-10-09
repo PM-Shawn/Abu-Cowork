@@ -294,7 +294,14 @@ export default function PreviewPanel({
   filePath: filePathProp,
   tabId,
   embedded = false,
-}: { filePath?: string; tabId?: string; embedded?: boolean } = {}) {
+  line,
+}: {
+  filePath?: string;
+  tabId?: string;
+  embedded?: boolean;
+  /** 1-based line the source view shows once the file is loaded. */
+  line?: number;
+} = {}) {
   // Back-compat: without a `filePath` prop (older call sites, before
   // workspace tabs existed), fall back to the store's single previewFilePath.
   const storePreviewFilePath = usePreviewStore((s) => s.previewFilePath);
@@ -924,7 +931,7 @@ export default function PreviewPanel({
               </DocSelectionLayer>
             </ScrollArea>
           ) : (
-            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} />
+            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} line={line} />
           )
         ) : rendererType === 'html' ? (
           viewMode === 'preview' ? (
@@ -948,14 +955,14 @@ export default function PreviewPanel({
               <LazyFallback />
             )
           ) : content !== null ? (
-            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} />
+            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} line={line} />
           ) : (
             <LazyFallback />
           )
         ) : rendererType === 'code' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} />
         ) : rendererType === 'text' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <EmptyState

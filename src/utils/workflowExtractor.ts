@@ -49,8 +49,8 @@ export interface SkillInfo {
 
 // Tool name to step type mapping
 const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
-const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, 'write', 'edit'];
-const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
+export const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, 'write', 'edit'];
+export const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
 const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
 const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
 

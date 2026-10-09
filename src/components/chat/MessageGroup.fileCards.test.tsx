@@ -286,6 +286,60 @@ describe('MessageGroup file cards', () => {
     });
   });
 
+  describe('file names in the reply text', () => {
+    it('opens a file the declared turn wrote but did not present, at the line the text names', async () => {
+      const messages = turn([writeCall('/ws/src/app.ts')], {
+        declared: true,
+        answer: 'I changed `app.ts`, see `/ws/src/app.ts:24`. `other.ts` is untouched.',
+      });
+      setConversation(messages);
+      const open = vi.spyOn(usePreviewStore.getState(), 'openPreview');
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+
+      const mentions = screen.getAllByRole('button', { name: 'Preview app.ts' });
+      expect(mentions.map((button) => button.textContent)).toEqual(['app.ts', '/ws/src/app.ts:24']);
+      expect(screen.getByText('other.ts').closest('button')).toBeNull();
+
+      fireEvent.click(mentions[1]);
+      expect(open).toHaveBeenCalledWith('/ws/src/app.ts', { line: 24 });
+      await act(async () => {});
+      expect(cardButtons()).toHaveLength(0);
+    });
+
+    it('opens a presented file named by a relative path the workspace resolves', () => {
+      const messages = turn([presentCall([{ path: 'out/report.md' }])], {
+        declared: true,
+        answer: 'The report is at `/ws/out/report.md`.',
+      });
+      useChatStore.setState({
+        activeConversationId: CONVERSATION_ID,
+        conversations: {
+          [CONVERSATION_ID]: {
+            id: CONVERSATION_ID, title: 'Files', messages, createdAt: 1_000, updatedAt: 3_000, status: 'idle', workspacePath: '/ws',
+          },
+        },
+        agentStates: new Map(),
+      });
+      const open = vi.spyOn(usePreviewStore.getState(), 'openPreview');
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Preview report.md' }));
+      expect(open).toHaveBeenCalledWith('/ws/out/report.md', { line: undefined });
+    });
+
+    it('leaves the text of a turn without the declared marker as plain code', () => {
+      const messages = turn([writeCall('/ws/src/app.ts')], { declared: false, answer: 'I changed `app.ts`.' });
+      setConversation(messages);
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+
+      expect(screen.queryByRole('button', { name: 'Preview app.ts' })).toBeNull();
+      expect(screen.getByText('app.ts').tagName).toBe('CODE');
+    });
+  });
+
   describe('automatic preview of a declared turn', () => {
     async function finishRun(conversation: Conversation) {
       await act(async () => {

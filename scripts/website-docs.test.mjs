@@ -146,6 +146,53 @@ test('homepage uses the same current terminology', () => {
   assert.ok(!en.includes('Grab the installer for your platform from GitHub Releases'));
 });
 
+test('homepage shows the user feedback wall between use cases and architecture', () => {
+  const pages = [
+    {
+      source: read('website/index.zh-CN.html'),
+      heading: '<h2>用户反馈</h2>',
+      quotes: [
+        '阿布很好用，已经用阿布做了个日历定制打印网站',
+        '轻量快速，使用起来很顺手',
+        '可以自己动手 DIY 改代码',
+        '阿布帮我们公司交付了好几个项目',
+        '我经常向客户推广阿布',
+        '软件开发的很不错！',
+        '感谢，工具做的很棒',
+        '一个人开发出阿布，太牛了',
+      ],
+    },
+    {
+      source: read('website/index.html'),
+      heading: '<h2>What Users Say</h2>',
+      quotes: [
+        "Abu works really well. I've already used it to build a custom calendar printing website",
+        'Lightweight and fast, and it feels smooth to use',
+        'I can get hands-on and change the code myself',
+        'Abu has helped our company deliver several projects',
+        'I often recommend Abu to my clients',
+        'The software is really well made!',
+        'Thank you, the tool is great',
+        'Building Abu single-handedly is amazing',
+      ],
+    },
+  ];
+
+  for (const { source, heading, quotes } of pages) {
+    const useCases = source.indexOf('<section class="use-cases" id="use-cases">');
+    const feedback = source.indexOf('<section class="feedback" id="feedback">');
+    const tech = source.indexOf('<section class="tech" id="tech">');
+    assert.ok(useCases < feedback && feedback < tech);
+
+    const section = source.slice(feedback, tech);
+    assert.ok(section.includes(heading));
+    assert.equal(section.split('<figure class="feedback-item">').length - 1, quotes.length);
+    for (const quote of quotes) {
+      assert.ok(section.includes(`<blockquote class="feedback-bubble">${quote}</blockquote>`), quote);
+    }
+  }
+});
+
 test('homepage architecture copy reflects the Electron product', () => {
   const zh = read('website/index.zh-CN.html');
   const en = read('website/index.html');

@@ -5126,6 +5126,27 @@ export interface TranslationDict {
       /** send_file hit the platform's transient rate limit (ret=-2). */
       sendFileRateLimited: string;
     };
+    // present_files (turn deliverables)
+    present: {
+      /** The list is empty or longer than the limit. {max} */
+      countOutOfRange: string;
+      /** First line of a rejected call. */
+      nothingPresented: string;
+      /** Rejection reason: relative path without a workspace, or a `~` path. */
+      needsAbsolutePath: string;
+      /** Rejection reason: the read-path check did not allow the path. */
+      notAuthorized: string;
+      /** Rejection reason: nothing exists at the path. */
+      notFound: string;
+      /** Rejection reason: the path is not a regular file. */
+      notAFile: string;
+      /** Header above the paths that passed in a rejected call. */
+      theseWereFine: string;
+      /** Last line of a rejected call. */
+      fixAndRetry: string;
+      /** One line per presented file. {path} */
+      presented: string;
+    };
     // show_widget / read_me — inline visualization tool
     widget: {
       /** Error: title cannot be empty. */

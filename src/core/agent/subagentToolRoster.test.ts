@@ -25,6 +25,13 @@ describe('resolveSubagentToolNames', () => {
     )).toEqual({ toolNames: ['read_file'] });
   });
 
+  it('never offers present_files to a member, even when its role names the tool', () => {
+    expect(resolveSubagentToolNames(['read_file', 'present_files'], {})).toEqual({ toolNames: ['read_file'] });
+    expect(resolveSubagentToolNames(['read_file', 'present_files'], { tools: ['present_files'] })).toEqual({
+      toolNames: [],
+    });
+  });
+
   it('fails closed for malformed and blank declarations', () => {
     expect(resolveSubagentToolNames(KNOWN_TOOLS, { tools: ['   '] })).toEqual({
       toolNames: [],

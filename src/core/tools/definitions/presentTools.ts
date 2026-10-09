@@ -1,0 +1,121 @@
+import type { ToolDefinition } from '../../../types';
+import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
+import { exists, stat } from '../fsBridge';
+import { checkReadPath } from '../pathSafety';
+import { resolveExpectedFile } from '../../team/expectedFiles';
+
+export const MAX_PRESENTED_FILES = 8;
+
+export interface PresentedFileInput {
+  path: string;
+  description?: string;
+}
+
+/** Model input → entries with a non-blank string path; description kept only when non-empty. */
+export function parsePresentedFilesInput(raw: unknown): PresentedFileInput[] {
+  if (!Array.isArray(raw)) return [];
+  const files: PresentedFileInput[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const { path, description } = entry as Record<string, unknown>;
+    if (typeof path !== 'string') continue;
+    const trimmed = path.trim();
+    if (!trimmed) continue;
+    files.push(
+      typeof description === 'string' && description !== ''
+        ? { path: trimmed, description }
+        : { path: trimmed },
+    );
+  }
+  return files;
+}
+
+type RejectionReason = 'needsAbsolutePath' | 'notAuthorized' | 'notFound' | 'notAFile';
+
+function isAbsolutePath(file: string): boolean {
+  return /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(file);
+}
+
+/**
+ * present_files — the agent declares the files it hands to the user this turn.
+ *
+ * The declaration is the tool call itself: the chat reads `input.files` of the
+ * calls that did not fail. A call is all-or-nothing, so one bad path fails the
+ * whole call and the model resends the full list.
+ */
+export const presentFilesTool: ToolDefinition = {
+  name: TOOL_NAMES.PRESENT_FILES,
+  description:
+    'Present finished files to the user as the deliverables of this turn. Call it once near the end, after the files exist on disk. List only what the user asked for or will keep — usually the 1-2 most important files; never scripts, drafts, logs or other intermediate files. Skip it when your final reply alone is enough. Each path must be an existing regular file (absolute, or relative to the workspace). The user opens the current file on disk; nothing is copied. Images produced by generate_image or process_image are presented automatically.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      files: {
+        type: 'array',
+        description: 'The files to present, most important first',
+        minItems: 1,
+        maxItems: MAX_PRESENTED_FILES,
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Path of the file (absolute, or relative to the workspace)' },
+            description: { type: 'string', description: 'One short sentence telling the user what this file is' },
+          },
+          required: ['path'],
+        },
+      },
+    },
+    required: ['files'],
+  },
+  execute: async (input, context) => {
+    const t = getI18n().toolResult.present;
+
+    const files = parsePresentedFilesInput(input.files);
+    if (files.length === 0 || files.length > MAX_PRESENTED_FILES) {
+      return `Error: ${format(t.countOutOfRange, { max: MAX_PRESENTED_FILES })}`;
+    }
+
+    const accepted: string[] = [];
+    const rejected: { path: string; reason: RejectionReason }[] = [];
+
+    for (const file of files) {
+      const resolved = resolveExpectedFile(file.path, context?.workspacePath);
+      if (file.path.startsWith('~') || !isAbsolutePath(resolved)) {
+        rejected.push({ path: file.path, reason: 'needsAbsolutePath' });
+        continue;
+      }
+      // Authorization comes before any disk probe, so an unauthorized path
+      // reveals nothing about whether it exists.
+      const check = await checkReadPath(resolved, context?.authorizationScopeId);
+      if (check.allowed !== true) {
+        rejected.push({ path: resolved, reason: 'notAuthorized' });
+        continue;
+      }
+      if (!(await exists(resolved))) {
+        rejected.push({ path: resolved, reason: 'notFound' });
+        continue;
+      }
+      if (!(await stat(resolved)).isFile) {
+        rejected.push({ path: resolved, reason: 'notAFile' });
+        continue;
+      }
+      accepted.push(resolved);
+    }
+
+    if (rejected.length > 0) {
+      const lines = [
+        `Error: ${t.nothingPresented}`,
+        ...rejected.map(({ path, reason }) => `- ${path}: ${t[reason]}`),
+      ];
+      if (accepted.length > 0) {
+        lines.push(t.theseWereFine, ...accepted.map((path) => `- ${path}`));
+      }
+      lines.push(t.fixAndRetry);
+      return lines.join('\n');
+    }
+
+    return accepted.map((path) => format(t.presented, { path })).join('\n');
+  },
+  isConcurrencySafe: true,
+};

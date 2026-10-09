@@ -4081,6 +4081,17 @@ const enUS: TranslationDict = {
       sendFileError: 'Failed to send file: {error}',
       sendFileRateLimited: 'Sending too frequently — the server is rate-limiting; please try again in a moment.',
     },
+    present: {
+      countOutOfRange: 'present_files accepts 1 to {max} files.',
+      nothingPresented: 'Nothing was presented.',
+      needsAbsolutePath: 'needs an absolute path (a relative path only resolves inside a workspace, and ~ is not expanded)',
+      notAuthorized: 'reading this path is not authorized',
+      notFound: 'file not found',
+      notAFile: 'not a regular file',
+      theseWereFine: 'These were fine:',
+      fixAndRetry: 'Fix the paths or create the missing files, then call present_files again with the full list.',
+      presented: 'Presented {path}',
+    },
     widget: {
       errTitleEmpty: 'Parameter error: title cannot be empty.',
       errWidgetCodeEmpty: 'Parameter error: widget_code cannot be empty.',

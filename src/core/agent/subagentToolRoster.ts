@@ -19,6 +19,9 @@ const ALWAYS_BLOCKED_SUBAGENT_TOOLS = new Set<string>([
   // Goal mode belongs to the conversation's own loop (the team leader in a
   // team conversation); a member must not re-scope or settle the user's goal.
   TOOL_NAMES.MANAGE_GOAL,
+  // File cards appear under the main conversation's reply, so presenting
+  // deliverables belongs to the agent that answers the user.
+  TOOL_NAMES.PRESENT_FILES,
   // System configuration. Everything below writes durable state that outlives
   // the single hand-off a member was dispatched for — an expert, team, skill,
   // plugin, scheduled task, trigger, file watch or connector server the user

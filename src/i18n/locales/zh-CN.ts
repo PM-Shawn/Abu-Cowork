@@ -4083,6 +4083,17 @@ const zhCN: TranslationDict = {
       sendFileError: '发送文件失败：{error}',
       sendFileRateLimited: '发送太频繁，服务端暂时限流了，请过一会儿再发。',
     },
+    present: {
+      countOutOfRange: 'present_files 一次接受 1 到 {max} 个文件。',
+      nothingPresented: '没有交付任何文件。',
+      needsAbsolutePath: '需要绝对路径（相对路径只能在工作区内解析，~ 不会被展开）',
+      notAuthorized: '没有读取这个路径的授权',
+      notFound: '找不到文件',
+      notAFile: '不是普通文件',
+      theseWereFine: '以下路径没有问题：',
+      fixAndRetry: '请修正路径或创建缺少的文件，然后带上完整清单再次调用 present_files。',
+      presented: '已交付 {path}',
+    },
     widget: {
       errTitleEmpty: '参数错误：title 不能为空。',
       errWidgetCodeEmpty: '参数错误：widget_code 不能为空。',

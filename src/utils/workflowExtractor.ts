@@ -2,6 +2,7 @@ import type { Message, ToolCall, AgentStatus } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { normalizeSeparators, joinPath, getBaseName } from '@/utils/pathUtils';
 import { parseArgs } from '@/utils/argsParser';
+import { presentedFileNames } from '@/utils/toolLabels';
 
 /**
  * Check if a tool result indicates a real tool execution error.
@@ -124,6 +125,13 @@ function getToolLabel(toolName: string, input: Record<string, unknown>): { label
       return {
         label: skillName ? `使用技能 ${skillName}` : '使用技能',
         detail: input.context as string | undefined,
+      };
+    }
+    case TOOL_NAMES.PRESENT_FILES: {
+      const names = presentedFileNames(input);
+      return {
+        label: `交付了 ${names.length} 个文件`,
+        detail: names.length > 0 ? names.join('、') : undefined,
       };
     }
     default:

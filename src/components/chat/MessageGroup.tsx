@@ -7,6 +7,8 @@ import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
 import SandboxRecoveryCard from './SandboxRecoveryCard';
+import AppDraftCard from './AppDraftCard';
+import { latestAppPreviewCallId } from './appPreviewCall';
 import ComputerUseRunReportCard from './ComputerUseRunReportCard';
 import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
@@ -21,6 +23,7 @@ import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from '.
 import SourcesSection from './SourcesSection';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
@@ -538,6 +541,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   const teamLeader = useConversationTeamLeader(conversationId);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).status);
   const home = useHomeDir();
+  const isAppDraftConversation = useAppDraftStore((s) => s.draftsByConversation[conversationId] !== undefined);
+  const appPreviewCallId = useChatStore((s) => (isAppDraftConversation ? latestAppPreviewCallId(s.conversations[conversationId]?.messages) : undefined));
 
   // Get loopId from messages (all messages in group share same loopId)
   const loopId = messages[0]?.loopId;
@@ -1337,6 +1342,10 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 modelContext={step.toolCall.modelContext}
               />
             ))}
+
+            {appPreviewCallId !== undefined && allToolCalls.some((tc) => tc.id === appPreviewCallId) && (
+              <AppDraftCard key={`app-draft-${appPreviewCallId}`} conversationId={conversationId} toolCallId={appPreviewCallId} />
+            )}
 
             {/* Grouped skill-patch summary — one collapsible fold-row per
                 skill, replacing the old per-patch floating pills. */}

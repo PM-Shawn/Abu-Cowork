@@ -1,6 +1,6 @@
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs';
 import { installedManifestPath , pluginInstallDir, normalizePluginComponentPath } from './paths';
-import { isPluginTeamFileId } from '../../../electron/shared/pluginAppSpec.mjs';
+import { isPluginTeamFileId } from '../../../electron/shared/pluginSpec.mjs';
 
 type RegistryAction = 'read' | 'validate' | 'upsert' | 'remove';
 type RegistryBridge = (action: RegistryAction, request: object) => Promise<unknown>;

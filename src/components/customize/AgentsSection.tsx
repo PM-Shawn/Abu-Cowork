@@ -34,6 +34,8 @@ import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import { cardOrNeighbour, cardPlace, cardProps, focusByTestId, focusIsOnWindow, type CardPlace } from '@/components/toolbox/cardFocus';
 import { useTeamStore } from '@/stores/teamStore';
+import { useAppStore } from '@/stores/appStore';
+import { appsUsing } from '@/core/app/appScope';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
 import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
@@ -180,7 +182,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
   const teams = useTeamStore((s) => s.teams);
   // Deleting an agent that a team lists leaves that team with a roleId no
-  // agent answers to. Ask first and say which teams — the user decides.
+  // agent answers to, and an app scene that names it with nobody to hand the
+  // work to. Ask first and say which teams and apps — the user decides.
   // `leads` is the subset it captains. Losing a member leaves a team one short;
   // losing the leader stops the team altogether, so the two say different things.
   const teamsReferencing = (agent: SubagentDefinition): { teams: string[]; leads: string[] } => {
@@ -388,11 +391,17 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     if (selectedRef.current !== agent.name || deleting.current) return;
     const stillThatExpert = () => agentRegistry.getAgent(agent.name, { includeDisabledPlugins: true })?.filePath === agent.filePath;
     const using = teamsReferencing(agent);
-    const confirmed = await confirm(using.teams.length > 0 ? {
+    const apps = appsUsing(useAppStore.getState().addedApps, { kind: 'expert', name: agent.name }).map((app) => app.name);
+    const confirmed = await confirm(using.teams.length > 0 || apps.length > 0 ? {
       title: format(t.toolbox.agentDeleteInTeamsTitle, { name: agent.name }),
-      message: using.leads.length
-        ? format(t.toolbox.agentDeleteLeaderInTeamsMessage, { count: String(using.leads.length), teams: using.leads.join('、') })
-        : format(t.toolbox.agentDeleteInTeamsMessage, { count: String(using.teams.length), teams: using.teams.join('、') }),
+      message: [
+        using.leads.length
+          ? format(t.toolbox.agentDeleteLeaderInTeamsMessage, { count: String(using.leads.length), teams: using.leads.join('、') })
+          : using.teams.length
+            ? format(t.toolbox.agentDeleteInTeamsMessage, { count: String(using.teams.length), teams: using.teams.join('、') })
+            : '',
+        apps.length ? format(t.toolbox.usedByApps, { names: apps.join('、') }) : '',
+      ].filter((part) => part !== '').join(''),
       confirmLabel: t.toolbox.agentDeleteAnyway,
       tone: 'danger',
     } : {

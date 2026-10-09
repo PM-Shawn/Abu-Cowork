@@ -1,18 +1,20 @@
 {
   "name": "abu-examples",
   "owner": { "name": "Abu" },
-  "description": "示例市场：一个带专家团、专家、技能、连接器和网页入口的完整应用包",
+  "description": "示例市场：一个带专家团、专家、技能和连接器的插件，以及一个用到它们、带网页入口的应用",
   "plugins": [
     {
-      "name": "abu-example-shop-ops",
-      "displayName": "店铺运营",
-      "description": "电商店铺运营：选品、详情页、评价回复",
+      "name": "shop-assistant",
+      "displayName": "店铺助手",
+      "description": "店铺运营的专家、专家团、详情页技能和店铺连接器",
       "version": "1.0.0",
       "author": { "name": "Abu" },
       "category": "ecommerce",
-      "providesApp": true,
       "minAbuVersion": "0.51.0",
-      "source": "./plugins/abu-example-shop-ops"
+      "source": "./plugins/shop-assistant"
     }
+  ],
+  "apps": [
+    { "name": "shop-ops", "source": "./apps/shop-ops" }
   ]
 }

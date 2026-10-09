@@ -19,7 +19,8 @@ import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
 import AppPageView from '@/components/app/AppPageView';
-import AppMarketDialog from '@/components/toolbox/plugins/AppMarketDialog';
+import AppMarketDialog from '@/components/app/AppMarketDialog';
+import AppAddConfirmDialog from '@/components/app/AppAddConfirmDialog';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
@@ -952,6 +953,8 @@ function App() {
 
         {/* 应用市场 — one dialog for the whole shell, self-gates on appStore. */}
         <AppMarketDialog />
+        {/* The add / update / preview confirmation of a flow started outside the app market (the app home). */}
+        <AppAddConfirmDialog within="page" />
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />

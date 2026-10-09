@@ -1,12 +1,16 @@
 /**
- * Add a local marketplace directory.
+ * 添加市场 — shared by the app market and 扩展 → 插件 (they keep one list of
+ * markets).
  *
- * The directory is validated by actually parsing its manifest before it is
- * stored — a pointer that does not resolve is worse than no pointer, because
- * the failure would then surface later, in the middle of browsing, with no
- * obvious cause.
+ * The input takes either an address someone gave the user (a git repository,
+ * a GitHub repository or a `.zip` download address, fetched by the main
+ * process into `~/.abu/markets/`) or a market folder on this computer. Either
+ * way the market is read before it is stored — a pointer that does not
+ * resolve is worse than no pointer, because the failure would then surface
+ * later, in the middle of browsing, with no obvious cause — and a failure is
+ * said the way the user can act on it.
  *
- * The marketplace's *own* declared name is what gets stored, never the folder
+ * The market's *own* declared name is what gets stored, never the folder
  * name: install keys are `${plugin}@${marketplace}`, so a user who renamed the
  * folder must not end up with a second identity for the same marketplace.
  */
@@ -22,6 +26,7 @@ import { TextField } from '@/components/ds/text-field';
 import { usePluginStore } from '@/stores/pluginStore';
 import { canonicalizeElectronPathForPolicy } from '@/utils/electronHost';
 import { expandHome, loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
+import { fetchMarket, isMarketAddress, marketAddFailure } from '@/core/plugin/marketSource';
 
 interface AddMarketplaceDialogProps {
   open: boolean;
@@ -42,7 +47,7 @@ export default function AddMarketplaceDialog({
 }: AddMarketplaceDialogProps) {
   const { t } = useI18n();
   const addMarketplace = usePluginStore((s) => s.addMarketplace);
-  const [dir, setDir] = useState('');
+  const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   // The authority for "a read is running": a second Enter can land before the next render.
   const reading = useRef(false);
@@ -53,7 +58,7 @@ export default function AddMarketplaceDialog({
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
-      setDir('');
+      setInput('');
       setError(null);
       setBusy(false);
     }
@@ -64,32 +69,57 @@ export default function AddMarketplaceDialog({
   const handleBrowse = async () => {
     try {
       const picked = await openDialog({ directory: true, multiple: false });
-      if (typeof picked === 'string') setDir(picked);
+      if (typeof picked === 'string') setInput(picked);
     } catch (err) {
       setError(String(err));
     }
   };
 
+  /** A local folder: read it where it is. */
+  const addFolder = async (value: string): Promise<string> => {
+    const expanded = expandHome(value, home);
+    const absolute = await canonicalizeElectronPathForPolicy(expanded) ?? expanded;
+    const marketplace = await loadMarketplaceFromDir(absolute);
+    const existing = usePluginStore.getState().marketplaces.find(item => item.name === marketplace.name);
+    const existingCanonical = existing ? await canonicalizeElectronPathForPolicy(expandHome(existing.dir, home)) : null;
+    // Re-adding an alias of the same existing directory just selects it.
+    if (!existing || existingCanonical !== absolute) addMarketplace(marketplace.name, absolute);
+    return marketplace.name;
+  };
+
+  /** An address: the main process fetches it, then it is read like a folder. */
+  const addAddress = async (value: string): Promise<string> => {
+    const fetched = await fetchMarket(value);
+    const marketplace = await loadMarketplaceFromDir(fetched.dir);
+    const existing = usePluginStore.getState().marketplaces.find(item => item.name === marketplace.name);
+    if (!existing) addMarketplace(marketplace.name, fetched.dir);
+    else if (existing.dir !== fetched.dir) throw new Error(tb.pluginsMarketplaceNameConflict);
+    return marketplace.name;
+  };
+
+  /** What the user reads when adding fails: what they can do, not what broke inside. */
+  const explain = (err: unknown): string => {
+    const failure = marketAddFailure(err);
+    if (failure === 'auth_required') return tb.pluginsMarketplaceAuthRequired;
+    if (failure === 'name_taken') return tb.pluginsMarketplaceNameConflict;
+    if (failure === 'not_a_market') return tb.pluginsMarketplaceNotFound;
+    return err instanceof Error ? err.message : String(err);
+  };
+
   const handleSubmit = async () => {
     // The window stays on the page while it fades out; a key press there adds nothing.
     if (!open) return;
-    const trimmed = dir.trim();
+    const trimmed = input.trim();
     if (!trimmed || reading.current) return;
     reading.current = true;
     setBusy(true);
     setError(null);
     try {
-      const expanded = expandHome(trimmed, home);
-      const absolute = await canonicalizeElectronPathForPolicy(expanded) ?? expanded;
-      const marketplace = await loadMarketplaceFromDir(absolute);
-      const existing = usePluginStore.getState().marketplaces.find(item => item.name === marketplace.name);
-      const existingCanonical = existing ? await canonicalizeElectronPathForPolicy(expandHome(existing.dir, home)) : null;
-      // Re-adding an alias of the same existing directory just selects it.
-      if (!existing || existingCanonical !== absolute) addMarketplace(marketplace.name, absolute);
-      onAdded?.(marketplace.name);
+      const name = isMarketAddress(trimmed) ? await addAddress(trimmed) : await addFolder(trimmed);
+      onAdded?.(name);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(explain(err));
     } finally {
       reading.current = false;
       setBusy(false);
@@ -99,7 +129,7 @@ export default function AddMarketplaceDialog({
   return (
     <Dialog
       open={open}
-      // Escape, a press outside and the close button ask to close; while the directory is being read the window stays.
+      // Escape, a press outside and the close button ask to close; while the market is being fetched or read the window stays.
       onOpenChange={(next) => { if (!next && !reading.current) onClose(); }}
       // For an approval the window steps aside while it reads, and comes back.
       busy={busy}
@@ -107,7 +137,7 @@ export default function AddMarketplaceDialog({
       size="md"
       closeButton
       contentProps={{ 'data-testid': 'plugin-add-marketplace' }}
-      dirty={!busy && dir.trim().length > 0}
+      dirty={!busy && input.trim().length > 0}
       onCloseAutoFocus={onCloseAutoFocus}
       footer={(
         <>
@@ -116,7 +146,7 @@ export default function AddMarketplaceDialog({
             variant="primary"
             data-testid="plugin-marketplace-submit"
             busy={busy}
-            disabled={dir.trim().length === 0}
+            disabled={input.trim().length === 0}
             onClick={() => void handleSubmit()}
           >
             {tb.pluginsAddMarketplace}
@@ -131,8 +161,8 @@ export default function AddMarketplaceDialog({
         <TextField
           id="plugin-marketplace-dir"
           data-testid="plugin-marketplace-dir-input"
-          value={dir}
-          onChange={(e) => setDir(e.target.value)}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') void handleSubmit();
           }}
@@ -147,7 +177,7 @@ export default function AddMarketplaceDialog({
       <p className="mt-2 text-ui-sm text-label-tertiary">{tb.pluginsMarketplaceDirHint}</p>
 
       {error && (
-        <div className="mt-3">
+        <div className="mt-3" data-testid="plugin-marketplace-error">
           <InlineMessage tone="danger">
             <p className="font-medium">{tb.pluginsMarketplaceReadFailed}</p>
             <p className="break-words text-ui-sm text-label-secondary">{error}</p>

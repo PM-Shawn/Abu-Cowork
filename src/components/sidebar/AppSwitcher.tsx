@@ -1,23 +1,25 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
-import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
+import { createAppDraft } from '@/core/app/appDraft';
 import { useToastStore } from '@/stores/toastStore';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
+import { removeApp } from '@/core/app/appSync';
 import AppLogo from '@/components/app/AppLogo';
 import { Button } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 
 /**
  * The app switcher, beside Abu's own name in the sidebar's brand row (product
  * spec §5.1). The button reads 发现应用 in the general shell and carries the
  * app's logo and name inside an app; the menu lists 通用 / 最近使用 / 我的应用
- * and ends with 查看更多 (the app market) and 创建应用. Switching is one click
- * on a row, 通用 included — that row is how a user leaves an app.
+ * and ends with 查看更多 (the app market), 创建应用 and 移除. Switching is one
+ * click on a row, 通用 included — that row is how a user leaves an app.
  *
  * Apps and plugins stay apart: 查看更多 opens the app market, which lists only
  * apps, and the plugin market lists only plugins.
@@ -25,9 +27,15 @@ import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator
  * An organization can keep its employees inside the app it provides
  * (`useEnterpriseAppPolicy`): the 通用 row then leaves the menu, while the
  * organization's other apps stay switchable.
+ *
+ * 移除 is a nested list of the apps the user added; removing takes only the
+ * app. An app the user made in 创建应用 exists nowhere else, so removing it asks
+ * first. Organization apps are not in the list: the organization decides them.
  */
+const removable = (app: AppDefinition) => app.origin !== null && app.origin.kind !== 'enterprise';
+
 export default function AppSwitcher({ className }: { className?: string }) {
-  const { t } = useI18n();
+  const { t, format } = useI18n();
   const apps = useAvailableApps();
   const selected = useSelectedApp();
   const { allowExit } = useEnterpriseAppPolicy();
@@ -35,13 +43,23 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const enterApp = useAppStore((s) => s.enterApp);
   const addToast = useToastStore((s) => s.addToast);
   const setAppMarketOpen = useAppStore((s) => s.setAppMarketOpen);
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
-  // 查看更多 and 创建应用 open dialogs of their own; they start once the menu has gone.
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // 查看更多, 创建应用 and 移除 act once the menu has gone.
   const afterMenuClose = useRef<(() => void) | null>(null);
+  // The apps being removed: one removal per app at a time.
+  const removing = useRef(new Set<string>());
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const installed = apps.filter((app) => app.appId !== GENERAL_APP_ID);
   const recent = recentAppIds.map((id) => installed.find((app) => app.appId === id)).filter((app): app is AppDefinition => app !== undefined);
   const rest = installed.filter((app) => !recentAppIds.includes(app.appId));
+  const removableApps = installed.filter(removable);
   const isGeneral = selected.appId === GENERAL_APP_ID;
 
   const enter = (appId: string) => {
@@ -49,7 +67,32 @@ export default function AppSwitcher({ className }: { className?: string }) {
     enterApp(appId);
   };
   const createApp = () => {
-    void usePluginAuthorStore.getState().create('app').catch((error) => addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) }));
+    void createAppDraft().catch((error) => addToast({ type: 'error', title: t.appSwitcher.create, message: String(error) }));
+  };
+  // The app as the store holds it now: what a removal acts on.
+  const addedNow = (appId: string) => useAppStore.getState().addedApps.find((app) => app.appId === appId);
+  const remove = async (appId: string) => {
+    if (removing.current.has(appId)) return;
+    removing.current.add(appId);
+    try {
+      const app = addedNow(appId);
+      if (!app) return;
+      if (app.origin?.kind === 'created') {
+        const confirmed = await confirm({
+          title: format(t.appSwitcher.removeCreatedTitle, { name: app.name }),
+          message: t.appSwitcher.removeCreatedMessage,
+          confirmLabel: t.appSwitcher.remove,
+          tone: 'danger',
+        });
+        // The answer acts on the app only while the switcher is on the page and the app is still added.
+        if (!confirmed || !mounted.current || !addedNow(appId)) return;
+      }
+      await removeApp(appId);
+    } catch (error) {
+      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) });
+    } finally {
+      removing.current.delete(appId);
+    }
   };
 
   // An app row carries a logo, a name and a one-line description. The rows are one
@@ -58,7 +101,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
   const row = (app: AppDefinition, current: boolean) => (
     <MenuRadioItem key={app.appId} value={app.appId}>
       <span data-testid={`app-switcher-item-${app.appId}`} className="flex items-center gap-2">
-        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} general={app.appId === GENERAL_APP_ID} size="sm" />
+        <AppLogo name={app.name} logo={app.logo} logoDark={app.logoDark} icon={app.icon} general={app.appId === GENERAL_APP_ID} size="sm" />
         <span className="min-w-0 flex-1 truncate">
           {app.name}
           {app.description && <span className="ml-2 text-ui-sm text-label-tertiary">{app.description}</span>}
@@ -80,18 +123,21 @@ export default function AppSwitcher({ className }: { className?: string }) {
     <div className={cn('relative', className)} data-testid="app-switcher">
       <Menu
         open={open}
-        onOpenChange={setOpen}
+        // A menu opened again while it fades never ran its close hook for the earlier choice: opening forgets it.
+        onOpenChange={(next) => { if (next) afterMenuClose.current = null; setOpen(next); }}
         onCloseAutoFocus={(event) => {
           const action = afterMenuClose.current;
           if (!action) return;
           afterMenuClose.current = null;
-          // These open legacy dialogs that take no focus themselves; keeping focus off
-          // the trigger stops Enter or Space from reopening the menu underneath them.
+          // The focus is on the switcher's button before the action runs: a window or a
+          // question the action opens returns the focus there.
           event.preventDefault();
+          triggerRef.current?.focus();
           action();
         }}
         trigger={
           <Button
+            ref={triggerRef}
             size="sm"
             data-testid="app-switcher-trigger"
             aria-label={t.appSwitcher.openLabel}
@@ -99,7 +145,7 @@ export default function AppSwitcher({ className }: { className?: string }) {
           >
             {isGeneral
               ? <Icon icon={AppIcons.discoverApps} size="sm" className="text-label-secondary" />
-              : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} size="sm" />}
+              : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" />}
             <span
               className={cn('min-w-0 flex-1 text-left', isGeneral ? 'whitespace-nowrap' : 'truncate')}
               data-testid="app-switcher-current"
@@ -126,6 +172,20 @@ export default function AppSwitcher({ className }: { className?: string }) {
           <MenuItem icon={AppIcons.createApp} onSelect={() => { afterMenuClose.current = createApp; }}>
             <span data-testid="app-switcher-create">{t.appSwitcher.create}</span>
           </MenuItem>
+          {removableApps.length > 0 && (
+            <MenuSub icon={AppIcons.remove} label={<span data-testid="app-switcher-remove">{t.appSwitcher.remove}</span>}>
+              {removableApps.map((app) => (
+                <MenuItem
+                  key={app.appId}
+                  tone="danger"
+                  testId={`app-switcher-remove-${app.appId}`}
+                  onSelect={() => { afterMenuClose.current = () => { void remove(app.appId); }; }}
+                >
+                  {app.name}
+                </MenuItem>
+              ))}
+            </MenuSub>
+          )}
         </div>
       </Menu>
     </div>

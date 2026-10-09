@@ -208,6 +208,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.0.8",
     "postcss": "^8.5.28",
+    "selfsigned": "^5.5.0",
     "shadcn": "^4.7.0",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",

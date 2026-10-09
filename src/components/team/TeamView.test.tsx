@@ -85,7 +85,7 @@ vi.mock('@/core/session/conversationStorage', () => ({ loadMessages: (id: string
 const dispatch = vi.fn();
 vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: (...args: unknown[]) => dispatch(...args) }));
 
-const discoveryState = { agents: [] as Array<{ name: string }>, refresh: vi.fn() };
+const discoveryState = { agents: [] as Array<{ name: string }>, skills: [] as Array<{ name: string }>, refresh: vi.fn() };
 vi.mock('@/stores/discoveryStore', () => ({
   useDiscoveryStore: (selector?: (state: Record<string, unknown>) => unknown) =>
     selector ? selector(discoveryState) : discoveryState,
@@ -1441,10 +1441,11 @@ describe('TeamView', () => {
 
     describe('inside an app', () => {
       const shop = {
-        appId: 'shop', name: '店铺运营', pluginKey: 'shop@market', pluginVersion: '1.0.0',
-        config: { version: 1, home: { modes: { items: [] } } },
+        appId: 'shop@market', name: '店铺运营', version: '1.0.0', origin: { kind: 'market', market: 'market' }, plugins: [],
+        // The app hands its work to one of the user's own teams: that team is what 本应用 shows.
+        config: { version: 1, defaultRun: { team: 'mine:team-shop' }, home: { modes: { items: [] } } },
       };
-      const shopTeam = { id: 'plugin-team:shop@market/crew', name: '店铺小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 3 };
+      const shopTeam = { id: 'team-shop', name: '店铺小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 3 };
 
       beforeEach(() => {
         appState.selected = shop;

@@ -315,4 +315,65 @@ test.describe('composer team chip journey', () => {
     }
   });
 
+  test('line breaks typed after a skill tag stay where they were typed', async () => {
+    test.setTimeout(180_000);
+    const dataRoot = createElectronDataRoot();
+    let app: Awaited<ReturnType<typeof launchAbuElectron>>['app'] | undefined;
+    try {
+      const dir = path.join(dataRoot.appDataDir, 'Home', '.abu', 'skills', 'e2e-draft-skill');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: e2e-draft-skill\ndescription: Draft preservation fixture\n---\nHelp with the draft.\n');
+      ({ app } = await launchAbuElectron(dataRoot));
+      const page = await app.firstWindow();
+      await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+      await dismissFirstRunOverlays(page);
+      const box = page.locator('[data-chat-composer]');
+      const atom = box.locator('[data-inline-skill]');
+      const readBody = () => box.evaluate((element) => {
+        if (element instanceof HTMLTextAreaElement) return element.value;
+        const copy = element.cloneNode(true) as HTMLElement;
+        copy.querySelectorAll('[data-inline-skill], [data-editor-tail]').forEach((node) => node.remove());
+        // The two caret markers are the only zero-width characters in this box.
+        return copy.textContent!.replaceAll(String.fromCharCode(0x200b), '');
+      });
+      await box.click();
+      await page.keyboard.type('/e2e-draft');
+      await page.getByRole('option', { name: /e2e-draft-skill/ }).click();
+      await expect(atom).toBeVisible();
+      await expect(box).toBeFocused();
+
+      // Real key presses: where a character lands after a break that ends the
+      // box is Chromium's caret placement, which no DOM emulation reproduces.
+      await page.keyboard.type('a');
+      await page.keyboard.press('Shift+Enter');
+      await expect.poll(readBody).toBe('a\n');
+      await page.keyboard.type('b');
+      await expect.poll(readBody).toBe('a\nb');
+      await page.keyboard.press('Shift+Enter');
+      await page.keyboard.type('c');
+      await expect.poll(readBody).toBe('a\nb\nc');
+
+      // The box grows for the empty line a trailing break opens, and Backspace
+      // takes that break back.
+      const threeLines = await box.evaluate((element) => element.clientHeight);
+      await page.keyboard.press('Shift+Enter');
+      await expect.poll(readBody).toBe('a\nb\nc\n');
+      await expect.poll(() => box.evaluate((element) => element.clientHeight)).toBeGreaterThan(threeLines);
+      await page.keyboard.press('Backspace');
+      await expect.poll(readBody).toBe('a\nb\nc');
+      await expect.poll(() => box.evaluate((element) => element.clientHeight)).toBe(threeLines);
+
+      // Clearing a box that holds a tag leaves nothing behind.
+      await page.keyboard.press('Meta+a');
+      await page.keyboard.press('Backspace');
+      await expect(atom).toHaveCount(0);
+      await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue('');
+      await page.keyboard.type('d');
+      await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue('d');
+    } finally {
+      if (app) await closeAbuElectron(app);
+      removeElectronDataRoot(dataRoot);
+    }
+  });
+
 });

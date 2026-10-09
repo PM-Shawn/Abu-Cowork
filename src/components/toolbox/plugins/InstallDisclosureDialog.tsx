@@ -18,7 +18,6 @@ import { useEffect, useId, useState, type ComponentProps, type ReactNode } from 
 import { useI18n, format } from '@/i18n';
 import { resolveText } from '@/core/app/appBinding';
 import { roleIdAgentName } from '@/core/team/roleIdentity';
-import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
 import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { Icon } from '@/components/ds/icon';
@@ -30,7 +29,6 @@ import { TextField } from '@/components/ds/text-field';
 import { PLUGIN_CONFIG_VALUE_LIMIT, pluginConfigFields } from '@/core/plugin/configuration';
 import { cn } from '@/lib/utils';
 import type { InstallDisclosure, PluginAgentDisclosure } from '@/core/plugin/installer';
-import type { ParsedPluginTeam } from '@/types/app';
 import type { PluginSource } from '@/core/plugin/marketplace';
 import { formatServerCommand } from './serverCommand';
 import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
@@ -97,18 +95,6 @@ function Section({
 }
 
 /**
- * The name to show for the team a scene runs on. A scene names either one of
- * Abu's own teams (`builtin-team:<id>`) or a team the package ships (its id in
- * `teams/`); the dialog shows what the user will see in 专家, never the id.
- */
-function runTeamName(teamId: string, teams: ParsedPluginTeam[] | undefined): string {
-  const builtin = BUILTIN_TEAMS.find((team) => team.id === teamId);
-  if (builtin) return builtin.name;
-  const packaged = teams?.find((team) => team.id === teamId);
-  return packaged ? resolveText(packaged.name) : teamId;
-}
-
-/**
  * The one short tag a skipped agent carries. `undefined` means the agent
  * installs — no tag, no grey.
  */
@@ -164,7 +150,6 @@ export default function InstallDisclosureDialog({
   // What was typed is forgotten when the window closes and when another package is previewed.
   useEffect(() => { setConfiguration({}); }, [open, preparation]);
   const fields = state.kind === 'ready' ? pluginConfigFields(state.disclosure.manifest.mcpServers) : [];
-  const fieldId = useId();
   const { t } = useI18n();
 
   const tb = t.toolbox;
@@ -213,182 +198,8 @@ export default function InstallDisclosureDialog({
               </div>
             )}
 
-            {fields.length > 0 && <Section icon={AppIcons.connector} title={tb.pluginsConfiguration}>
-              <p className="text-ui-sm text-label-tertiary">{tb.pluginsConfigurationHint}</p>
-              {fields.map(field => (
-                <div key={field}>
-                  <label htmlFor={`${fieldId}-${field}`} className="mb-1 block text-ui-sm font-medium text-label-secondary">{field}</label>
-                  {/* Masked only: the value goes to the caller on confirm and is shown nowhere. */}
-                  <TextField
-                    id={`${fieldId}-${field}`}
-                    type="password"
-                    maxLength={PLUGIN_CONFIG_VALUE_LIMIT}
-                    autoComplete="new-password"
-                    value={configuration[field] ?? ''}
-                    onChange={event => setConfiguration(current => ({ ...current, [field]: event.target.value }))}
-                  />
-                </div>
-              ))}
-            </Section>}
-            <Section icon={AppIcons.capability} title={tb.pluginsDisclosureSource}>
-              <p className="text-ui text-label-secondary">
-                {d.marketplace.startsWith('author-') ? tb.pluginsAuthoredSource : d.marketplace}
-                {d.version ? ` · v${d.version}` : ''}
-              </p>
-              <p className="break-all font-code text-ui-sm text-label-tertiary">
-                {d.sourceDir}
-              </p>
-            </Section>
-
-            {d.skills.length > 0 && <Section icon={AppIcons.sparkles} title={tb.pluginsDisclosureSkills}>
-                <ul className="space-y-1">
-                  {d.skills.map((skill) => (
-                    <li key={skill} className={cn(ITEM, 'text-ui text-label-secondary')}>
-                      {skill}
-                    </li>
-                  ))}
-                </ul>
-            </Section>}
-
-            {d.mcpServers.length > 0 && <Section icon={AppIcons.connector} title={tb.pluginsDisclosureServers}>
-                <>
-                  {/* The whole point of this screen: the literal command line,
-                      not a count. Never truncate it — wrap instead. */}
-                  <ul className="space-y-2">
-                    {d.mcpServers.map((server) => (
-                      <li
-                        key={server.name}
-                        data-testid="plugin-disclosure-server"
-                        className="rounded-control bg-fill px-2 py-2"
-                      >
-                        <p className="text-ui font-medium text-label">
-                          {server.name}
-                        </p>
-                        <p className="mt-1 break-all font-code text-ui-sm text-label-secondary">
-                          {formatServerCommand(server)}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="flex items-start gap-2 text-ui-sm text-label-secondary">
-                    <Icon icon={AppIcons.warning} size="sm" className="mt-0.5 text-warning" />
-                    {tb.pluginsDisclosureServersHint}
-                  </p>
-                </>
-            </Section>}
-
-            {d.agents.length > 0 && (
-              <Section icon={AppIcons.agent} title={tb.pluginsDisclosureAgents}>
-                <ul className="space-y-1">
-                  {d.agents.map((agent) => {
-                    // A conflicting entry is disclosed, not installed: it is
-                    // greyed and carries the one-line reason, so the user reads
-                    // "this one will not arrive" before confirming rather than
-                    // wondering afterwards where it went.
-                    const reason = skipReason(agent.conflict, tb);
-                    return (
-                      <li
-                        key={`${agent.name}:${agent.conflict ?? ''}`}
-                        data-testid="plugin-disclosure-agent"
-                        aria-disabled={reason ? true : undefined}
-                        className={cn(ITEM, reason ? 'text-label-tertiary' : 'text-label-secondary')}
-                      >
-                        <p className="text-ui">
-                          <span className="font-medium">{agent.name}</span>
-                          {reason && (
-                            <span className="ml-2 text-ui-sm text-label-tertiary">
-                              {reason}
-                            </span>
-                          )}
-                        </p>
-                        {agent.description && (
-                          <p className="mt-1 text-ui-sm text-label-tertiary">
-                            {agent.description}
-                          </p>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </Section>
-            )}
-
-            {(d.teams?.length ?? 0) > 0 && (
-              <Section icon={AppIcons.team} title={tb.pluginsDisclosureTeams}>
-                <ul className="space-y-1">
-                  {d.teams!.map((team) => (
-                    <li key={team.id} data-testid="plugin-disclosure-team" className={cn(ITEM, 'text-label-secondary')}>
-                      <p className="text-ui"><span className="font-medium">{resolveText(team.name)}</span></p>
-                      <p className="mt-1 text-ui-sm text-label-tertiary">{resolveText(team.description)}</p>
-                      <p className="mt-1 text-ui-sm text-label-tertiary">{team.memberRoleIds.map((roleId) => roleIdAgentName(roleId) ?? roleId).join('、')}</p>
-                    </li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-
-            {d.app && (
-              <Section icon={AppIcons.appMarket} title={tb.pluginsDisclosureApp}>
-                <div data-testid="plugin-disclosure-app" className="space-y-2 text-ui-sm text-label-secondary">
-                  {d.app.nav && (
-                    <p>{format(tb.pluginsDisclosureAppNav, { items: d.app.nav.items.map((item) => item.title === undefined ? item.target : resolveText(item.title)).join('、') })}</p>
-                  )}
-                  {(d.app.allowedOrigins?.length ?? 0) > 0 && (
-                    <p data-testid="plugin-disclosure-app-pages">{format(tb.pluginsDisclosureAppPages, { origins: d.app.allowedOrigins!.join('、') })}</p>
-                  )}
-                  <p className="text-label-tertiary">{tb.pluginsDisclosureAppScenes}</p>
-                  <ul className="space-y-1">
-                    {d.app.home.modes.items.flatMap((mode) => mode.scenes.map((scene) => {
-                      const run = scene.run ?? d.app!.defaultRun;
-                      const who = !run ? tb.pluginsDisclosureRunDefault
-                        : 'team' in run ? format(tb.pluginsDisclosureRunTeam, { name: runTeamName(run.team, d.teams) })
-                        : 'expert' in run ? format(tb.pluginsDisclosureRunExpert, { name: roleIdAgentName(run.expert) ?? run.expert })
-                        : format(tb.pluginsDisclosureRunSkill, { name: run.skill });
-                      return (
-                        <li key={`${mode.modeId}/${scene.id}`} className={cn(ITEM, 'flex items-baseline justify-between gap-3')}>
-                          <span className="truncate text-ui text-label-secondary">{resolveText(mode.title)} · {resolveText(scene.title)}</span>
-                          <span className="shrink-0 text-ui-sm text-label-tertiary">{who}</span>
-                        </li>
-                      );
-                    }))}
-                  </ul>
-                </div>
-              </Section>
-            )}
-
-            {d.capabilities && d.capabilities.length > 0 && (
-            <Section icon={AppIcons.capability} title={tb.pluginsDisclosureCapabilities}>
-                <div className="flex flex-wrap gap-2">
-                  {d.capabilities.map((cap) => <Tag key={cap}>{cap}</Tag>)}
-                </div>
-              </Section>
-            )}
-
-            {(d.skippedSymlinks?.length ?? 0) > 0 && (
-              <Section icon={AppIcons.warning} title={tb.pluginsDisclosureSymlinkTitle}>
-                <p
-                  data-testid="plugin-disclosure-symlinks"
-                  className="text-ui-sm text-label-tertiary"
-                >
-                  {format(tb.pluginsDisclosureSymlinkHint, {
-                    paths: (d.skippedSymlinks ?? []).join(tb.pluginsDisclosureSymlinkSeparator),
-                  })}
-                </p>
-              </Section>
-            )}
-
-            {d.ignoredPayloads.length > 0 && (
-              <Section icon={AppIcons.warning} title={tb.pluginsDisclosureIgnoredTitle}>
-                <p
-                  data-testid="plugin-disclosure-ignored"
-                  className="text-ui-sm text-label-tertiary"
-                >
-                  {format(tb.pluginsDisclosureIgnoredHint, {
-                    payloads: d.ignoredPayloads.join('、'),
-                  })}
-                </p>
-              </Section>
-            )}
+            <PluginConfigurationFields fields={fields} values={configuration} onChange={setConfiguration} />
+            <PluginDisclosureSections disclosure={d} />
           </div>
         );
       }
@@ -408,11 +219,7 @@ export default function InstallDisclosureDialog({
         // The window stays on the page while it fades out; a key press there confirms nothing.
         onClick={() => { if (open) onConfirm(configuration); }}
       >
-        {/* An app arrived here from 「使用」, and this dialog is what the
-            user is agreeing to, so the button answers it: 同意并使用. A
-            draft of one's own is being installed from a preview, which
-            reads as 安装并进入. */}
-        {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : state.kind === 'ready' && state.disclosure.app ? (authoring ? tb.pluginsInstallAndEnter : tb.pluginsAgreeAndUse) : tb.pluginsInstall}
+        {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : tb.pluginsInstall}
       </Button>
     </>
   ) : (
@@ -441,5 +248,188 @@ export default function InstallDisclosureDialog({
     >
       {authoring ? <div className={DETAIL_WINDOW_CONTENT_HEIGHT}>{body}</div> : body}
     </Dialog>
+  );
+}
+
+/**
+ * The values a plugin's connectors ask for (`${config.…}`), one masked field
+ * each. Shown before anything is installed; the confirm button stays disabled
+ * until every field has a value. The value goes to the caller on confirm and
+ * is shown nowhere.
+ */
+export function PluginConfigurationFields({ fields, values, onChange }: {
+  fields: string[];
+  values: Record<string, string>;
+  onChange: (next: (current: Record<string, string>) => Record<string, string>) => void;
+}) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  const fieldId = useId();
+  if (fields.length === 0) return null;
+  return (
+    <Section icon={AppIcons.connector} title={tb.pluginsConfiguration}>
+      <p className="text-ui-sm text-label-tertiary">{tb.pluginsConfigurationHint}</p>
+      {fields.map(field => (
+        <div key={field}>
+          <label htmlFor={`${fieldId}-${field}`} className="mb-1 block text-ui-sm font-medium text-label-secondary">{field}</label>
+          <TextField
+            id={`${fieldId}-${field}`}
+            type="password"
+            maxLength={PLUGIN_CONFIG_VALUE_LIMIT}
+            autoComplete="new-password"
+            value={values[field] ?? ''}
+            onChange={event => onChange(current => ({ ...current, [field]: event.target.value }))}
+          />
+        </div>
+      ))}
+    </Section>
+  );
+}
+
+/**
+ * Everything one plugin brings, as the user must see it before installing:
+ * where it comes from, its skills, the literal command line of every
+ * connector, its experts (with the ones that will be skipped), its teams, what
+ * it says it can do, and what it ships that Abu will not use. The plugin
+ * install dialog and the app confirmation page both render this.
+ */
+export function PluginDisclosureSections({ disclosure: d }: { disclosure: InstallDisclosure }) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  return (
+    <>
+      <Section icon={AppIcons.capability} title={tb.pluginsDisclosureSource}>
+        <p className="text-ui text-label-secondary">
+          {d.marketplace.startsWith('author-') ? tb.pluginsAuthoredSource : d.marketplace}
+          {d.version ? ` · v${d.version}` : ''}
+        </p>
+        <p className="break-all font-code text-ui-sm text-label-tertiary">
+          {d.sourceDir}
+        </p>
+      </Section>
+
+      {d.skills.length > 0 && (
+        <Section icon={AppIcons.sparkles} title={tb.pluginsDisclosureSkills}>
+          <ul className="space-y-1">
+            {d.skills.map((skill) => (
+              <li key={skill} className={cn(ITEM, 'text-ui text-label-secondary')}>
+                {skill}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {d.mcpServers.length > 0 && (
+        <Section icon={AppIcons.connector} title={tb.pluginsDisclosureServers}>
+          {/* The whole point of this screen: the literal command line,
+              not a count. Never truncate it — wrap instead. */}
+          <ul className="space-y-2">
+            {d.mcpServers.map((server) => (
+              <li
+                key={server.name}
+                data-testid="plugin-disclosure-server"
+                className="rounded-control bg-fill px-2 py-2"
+              >
+                <p className="text-ui font-medium text-label">
+                  {server.name}
+                </p>
+                <p className="mt-1 break-all font-code text-ui-sm text-label-secondary">
+                  {formatServerCommand(server)}
+                </p>
+              </li>
+            ))}
+          </ul>
+          <p className="flex items-start gap-2 text-ui-sm text-label-secondary">
+            <Icon icon={AppIcons.warning} size="sm" className="mt-0.5 text-warning" />
+            {tb.pluginsDisclosureServersHint}
+          </p>
+        </Section>
+      )}
+
+      {d.agents.length > 0 && (
+        <Section icon={AppIcons.agent} title={tb.pluginsDisclosureAgents}>
+          <ul className="space-y-1">
+            {d.agents.map((agent) => {
+              // A conflicting entry is disclosed, not installed: it is
+              // greyed and carries the one-line reason, so the user reads
+              // "this one will not arrive" before confirming rather than
+              // wondering afterwards where it went.
+              const reason = skipReason(agent.conflict, tb);
+              return (
+                <li
+                  key={`${agent.name}:${agent.conflict ?? ''}`}
+                  data-testid="plugin-disclosure-agent"
+                  aria-disabled={reason ? true : undefined}
+                  className={cn(ITEM, reason ? 'text-label-tertiary' : 'text-label-secondary')}
+                >
+                  <p className="text-ui">
+                    <span className="font-medium">{agent.name}</span>
+                    {reason && (
+                      <span className="ml-2 text-ui-sm text-label-tertiary">
+                        {reason}
+                      </span>
+                    )}
+                  </p>
+                  {agent.description && (
+                    <p className="mt-1 text-ui-sm text-label-tertiary">
+                      {agent.description}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
+
+      {(d.teams?.length ?? 0) > 0 && (
+        <Section icon={AppIcons.team} title={tb.pluginsDisclosureTeams}>
+          <ul className="space-y-1">
+            {d.teams!.map((team) => (
+              <li key={team.id} data-testid="plugin-disclosure-team" className={cn(ITEM, 'text-label-secondary')}>
+                <p className="text-ui"><span className="font-medium">{resolveText(team.name)}</span></p>
+                <p className="mt-1 text-ui-sm text-label-tertiary">{resolveText(team.description)}</p>
+                <p className="mt-1 text-ui-sm text-label-tertiary">{team.memberRoleIds.map((roleId) => roleIdAgentName(roleId) ?? roleId).join('、')}</p>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {d.capabilities && d.capabilities.length > 0 && (
+        <Section icon={AppIcons.capability} title={tb.pluginsDisclosureCapabilities}>
+          <div className="flex flex-wrap gap-2">
+            {d.capabilities.map((cap) => <Tag key={cap}>{cap}</Tag>)}
+          </div>
+        </Section>
+      )}
+
+      {(d.skippedSymlinks?.length ?? 0) > 0 && (
+        <Section icon={AppIcons.warning} title={tb.pluginsDisclosureSymlinkTitle}>
+          <p
+            data-testid="plugin-disclosure-symlinks"
+            className="text-ui-sm text-label-tertiary"
+          >
+            {format(tb.pluginsDisclosureSymlinkHint, {
+              paths: (d.skippedSymlinks ?? []).join(tb.pluginsDisclosureSymlinkSeparator),
+            })}
+          </p>
+        </Section>
+      )}
+
+      {d.ignoredPayloads.length > 0 && (
+        <Section icon={AppIcons.warning} title={tb.pluginsDisclosureIgnoredTitle}>
+          <p
+            data-testid="plugin-disclosure-ignored"
+            className="text-ui-sm text-label-tertiary"
+          >
+            {format(tb.pluginsDisclosureIgnoredHint, {
+              payloads: d.ignoredPayloads.join('、'),
+            })}
+          </p>
+        </Section>
+      )}
+    </>
   );
 }

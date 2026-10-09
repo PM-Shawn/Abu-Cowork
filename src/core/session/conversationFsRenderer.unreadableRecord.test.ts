@@ -67,15 +67,27 @@ describe('renderer file access: a record that is on disk and cannot be read', ()
     expect(writesToLedger()).toEqual([]);
   });
 
-  // NOT this task's code. This case states what `appendText` does today when it is called
-  // directly for such a record: the native append rejects, the rewrite cannot read what is
-  // there, and the retry writes the new line alone as the whole file. The task "Stop appendText
-  // fallback overwriting an unreadable record" changes `appendText` so that it rejects and
-  // writes nothing; that change turns this case around (expect a rejection and no
-  // `atomic_write_text`). It stays here so the exposure is visible until then.
-  it('exposure owned by the appendText-fallback task: a direct append replaces the record with the new line', async () => {
-    await expect(rendererConversationFs.appendText(LEDGER, '{"id":"late"}\n')).resolves.toBeUndefined();
-    expect(writesToLedger().filter((entry) => entry.command === 'atomic_write_text'))
-      .toEqual([{ command: 'atomic_write_text', path: LEDGER, body: '{"id":"late"}\n' }]);
+  // The guarantee underneath the writer's: an append that reaches the file access for such a
+  // record (a record that stopped being readable after it was loaded) rejects with the read
+  // error. The native append is the only host command it sent, and the record is never rewritten.
+  it('a direct append rejects with the read error and rewrites nothing', async () => {
+    await expect(rendererConversationFs.appendText(LEDGER, '{"id":"late"}\n')).rejects.toThrow('EACCES');
+    expect(writesToLedger().map((entry) => entry.command)).toEqual(['append_file_text']);
+  });
+
+  // The two guarantees together, for a record that was read and then stopped being readable:
+  // the writer hands the append to the file access, which rejects it, and the record stays.
+  it('a record that stops being readable after it was loaded keeps what it holds when a message is appended', async () => {
+    host.unreadable = false;
+    const writer = createConversationWriter({
+      fs: rendererConversationFs,
+      env,
+      capabilities: { versionSweep: false, dailyBackup: false, indexWriter: false },
+    });
+    await expect(writer.loadMessages('c1', { strictRead: true })).resolves.toEqual([]);
+    host.unreadable = true;
+    await expect(writer.appendMessage('c1', message('late'))).rejects.toThrow('EACCES');
+    await writer.flushWrites();
+    expect(writesToLedger().filter((entry) => entry.command === 'atomic_write_text')).toEqual([]);
   });
 });

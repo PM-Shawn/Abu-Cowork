@@ -1,8 +1,9 @@
-import { useState, useCallback } from 'react';
+import { memo, useState, useCallback } from 'react';
 import { useI18n } from '@/i18n';
-import { Check, Copy } from 'lucide-react';
+import { IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
 
-export default function ConvIdBadge({ conversationId }: { conversationId: string }) {
+function ConvIdBadge({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const short = conversationId.slice(0, 8);
@@ -18,22 +19,18 @@ export default function ConvIdBadge({ conversationId }: { conversationId: string
   }, [conversationId]);
 
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      title={t.chat.copyConvIdTooltip}
-      className="inline-flex items-center gap-1 text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] transition-colors font-mono tabular-nums"
-      aria-label={t.chat.copyConvIdTooltip}
-    >
-      <span>#{short}</span>
-      {copied ? (
-        <>
-          <Check className="h-3 w-3" />
-          <span className="font-sans">{t.chat.copyConvIdCopied}</span>
-        </>
-      ) : (
-        <Copy className="h-3 w-3 opacity-60" />
-      )}
-    </button>
+    <span className="inline-flex items-center gap-1">
+      <span className="font-code text-caption text-label-tertiary tabular-nums">#{short}</span>
+      <IconButton
+        size="sm"
+        icon={copied ? AppIcons.done : AppIcons.copy}
+        label={copied ? t.chat.copyConvIdCopied : t.chat.copyConvIdTooltip}
+        onClick={handleCopy}
+      />
+      {copied && <span className="text-caption text-label-tertiary">{t.chat.copyConvIdCopied}</span>}
+    </span>
   );
 }
+
+// Sits under the composer; ChatView re-renders on every streamed token, the badge only when its conversation changes.
+export default memo(ConvIdBadge);

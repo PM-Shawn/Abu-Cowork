@@ -14,7 +14,9 @@
  */
 
 import { useState } from 'react';
-import { Lightbulb } from 'lucide-react';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import { useProjectStore } from '@/stores/projectStore';
 import { useProjectHintStore } from '@/stores/projectHintStore';
 import { getBaseName } from '@/utils/pathUtils';
@@ -36,42 +38,34 @@ export default function PromoteToProjectHint({ workspacePath }: PromoteToProject
     workspacePath ? s.dismissedWorkspaces.includes(workspacePath) : false,
   );
   const dismiss = useProjectHintStore((s) => s.dismiss);
+  // The folder the window was opened for. The hint goes the moment that folder is a project;
+  // the window is closed then, never taken off the page, and keeps showing this folder while
+  // it fades out.
+  const [windowFolder, setWindowFolder] = useState<string | null>(null);
 
-  if (!workspacePath) return null;
-  if (existingProject) return null;
-  if (isDismissed) return null;
-
-  const folderName = getBaseName(workspacePath);
+  const shown = !!workspacePath && !existingProject && !isDismissed;
 
   return (
     <>
-      <div className="mt-2 mx-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--abu-clay-ring)] bg-[var(--abu-clay-bg)] text-minor">
-        <Lightbulb className="h-3.5 w-3.5 shrink-0 text-[var(--abu-clay)]" />
-        <span className="flex-1 truncate text-[var(--abu-text-secondary)]">
-          {format(t.project.hintPromote, { name: folderName })}
-        </span>
-        <button
-          type="button"
-          onClick={() => setDialogOpen(true)}
-          className="text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] font-semibold px-1.5 py-0.5 rounded hover:bg-white/50 transition-colors"
-        >
-          {t.project.hintPromoteAction}
-        </button>
-        <button
-          type="button"
-          onClick={() => dismiss(workspacePath)}
-          className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] px-1.5 py-0.5 rounded hover:bg-white/50 transition-colors"
-        >
-          {t.project.hintPromoteDismiss}
-        </button>
-      </div>
+      {shown && (
+        <div className="mx-1 mt-2 flex items-center gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui">
+          <Icon icon={AppIcons.hint} size="sm" className="text-label-secondary" />
+          <span className="flex-1 truncate text-label-secondary">
+            {format(t.project.hintPromote, { name: getBaseName(workspacePath) })}
+          </span>
+          <Button variant="secondary" size="sm" onClick={() => { setWindowFolder(workspacePath); setDialogOpen(true); }}>
+            {t.project.hintPromoteAction}
+          </Button>
+          <IconButton size="sm" icon={AppIcons.close} label={t.project.hintPromoteDismiss} onClick={() => dismiss(workspacePath)} />
+        </div>
+      )}
 
       <CreateProjectDialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         presetMode="existing-folder"
-        presetFolder={workspacePath}
-        presetName={folderName}
+        presetFolder={windowFolder ?? undefined}
+        presetName={windowFolder === null ? undefined : getBaseName(windowFolder)}
       />
     </>
   );

@@ -7,20 +7,29 @@
  * hits — zero-hit cases (including fresh installs with no memories) are
  * silently marked done so the user is never bothered unnecessarily.
  *
- * `hasRunSensitiveAudit_v015` flips to true after any completed scan
- * (regardless of hits), so the audit never runs again.
+ * `hasRunSensitiveAudit_v015` flips to true once the scan found nothing or the
+ * user answered with one of the two buttons, so the audit never runs again.
+ *
+ * The dialog is a question asked over the settings window. When the scan ends
+ * after the settings window has closed, or the settings window goes away while
+ * the question is open, nothing is marked done: the panel asks again the next
+ * time it opens.
  */
 
-import { useEffect, useState, useCallback } from 'react';
-import { createPortal } from 'react-dom';
-import { Lock, ShieldAlert } from 'lucide-react';
+import { useEffect, useId, useState } from 'react';
+import { Button } from '@/components/ds/button';
+import { Checkbox } from '@/components/ds/checkbox';
+import { Dialog } from '@/components/ds/dialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Tag } from '@/components/ds/tag';
 import { useI18n, format } from '@/i18n';
+import { cn } from '@/lib/utils';
 import { scanMemoryFiles } from '@/core/memdir/scan';
 import { auditMemories, type SensitiveAuditResult, type SensitivePatternId } from '@/core/memdir/sensitiveScan';
 import { setMemoryPrivate } from '@/core/memdir/write';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
-import { Button } from '@/components/ui/button';
 
 interface AuditEntry {
   result: SensitiveAuditResult;
@@ -45,6 +54,7 @@ export default function SensitiveAuditDialog() {
   const shouldRun = useSettingsStore((s) => s.shouldRunMemoryAudit);
   const setShouldRun = useSettingsStore((s) => s.setShouldRunMemoryAudit);
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);
+  const rowId = useId();
 
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -86,6 +96,9 @@ export default function SensitiveAuditDialog() {
           setHasRun(true);
           return;
         }
+        // The question belongs over the settings window (which also keeps a native web
+        // view out of its way). With that window gone, the panel asks again next time.
+        if (!useSettingsStore.getState().systemSettingsOpen) return;
         setEntries(flagged);
         setOpen(true);
       } finally {
@@ -100,13 +113,25 @@ export default function SensitiveAuditDialog() {
     };
   }, [shouldRun, hasRun, recentPaths, setShouldRun, setHasRun]);
 
-  const handleClose = useCallback(() => {
+  // The question follows the settings window: when that window closes, the question is taken
+  // back unanswered, whether or not the layer registry knew the two belonged together.
+  const settingsOpen = useSettingsStore((s) => s.systemSettingsOpen);
+  if (open && !settingsOpen) setOpen(false);
+  const shown = open && settingsOpen && !loading && !hasRun;
+
+  const finish = () => {
     setOpen(false);
     setHasRun(true);
-  }, [setHasRun]);
+  };
 
-  const handleMarkAll = useCallback(async () => {
-    if (applying) return;
+  // The dialog stays on the page while it fades out; its buttons do nothing by then.
+  const handleClose = () => {
+    if (!shown) return;
+    finish();
+  };
+
+  const handleMarkAll = async () => {
+    if (applying || !shown) return;
     setApplying(true);
     try {
       const targets = entries.filter((e) => e.selected);
@@ -119,11 +144,12 @@ export default function SensitiveAuditDialog() {
       }
     } finally {
       setApplying(false);
-      handleClose();
+      finish();
     }
-  }, [applying, entries, handleClose]);
+  };
 
   const toggleEntry = (filename: string, workspacePath: string | null) => {
+    if (!shown) return;
     setEntries((prev) =>
       prev.map((e) =>
         e.result.header.filename === filename && e.workspacePath === workspacePath
@@ -133,100 +159,85 @@ export default function SensitiveAuditDialog() {
     );
   };
 
-  if (loading || !open || hasRun) return null;
-
   const selectedCount = entries.filter((e) => e.selected).length;
   const isEmpty = entries.length === 0;
 
-  return createPortal(
-    // No backdrop-click dismiss: this is a one-shot privacy onboarding;
-    // accidentally clicking outside would silently skip the audit and the
-    // user wouldn't see the dialog again. Force them to read and click a
-    // button. Same reasoning for not handling ESC.
-    <div data-electron-no-drag className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150">
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
-        <div className="px-6 pt-6 pb-3 border-b border-[var(--abu-bg-muted)]">
-          <div className="flex items-center gap-2 mb-2">
-            <ShieldAlert className="h-5 w-5 text-[var(--abu-warning)]" />
-            <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-              {t.memory.auditTitle}
-            </h3>
-          </div>
-          <p className="text-body text-[var(--abu-text-tertiary)] leading-relaxed">
-            {isEmpty
-              ? t.memory.auditEmpty
-              : format(t.memory.auditIntro, { count: String(entries.length) })}
-          </p>
-        </div>
-
-        {!isEmpty && (
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2">
-            {entries.map((entry) => {
-              const h = entry.result.header;
-              const key = `${entry.workspacePath ?? 'g'}:${h.filename}`;
-              return (
-                <label
-                  key={key}
-                  className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                    entry.selected
-                      ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
-                      : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={entry.selected}
-                    onChange={() => toggleEntry(h.filename, entry.workspacePath)}
-                    className="mt-0.5 h-3.5 w-3.5 accent-[var(--abu-clay)] cursor-pointer"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-body text-[var(--abu-text-primary)] truncate">
-                      {h.name}
-                    </div>
-                    <div className="text-caption text-[var(--abu-text-placeholder)] mt-0.5">
-                      {h.filename}
-                    </div>
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {entry.result.matches.map((m) => (
-                        <span
-                          key={m.patternId}
-                          className="text-caption bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] px-1.5 py-0.5 rounded"
-                        >
-                          {patternLabel(m.patternId, t)}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-        )}
-
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--abu-bg-muted)]">
+  return (
+    // Only the two buttons close it: this is a one-shot privacy onboarding, and a stray
+    // Escape or press outside would silently skip the audit for good. The layer registry
+    // closes it when the settings window under it goes away; that marks nothing done.
+    <Dialog
+      open={shown}
+      onOpenChange={(next) => { if (!next) setOpen(false); }}
+      role="alertdialog"
+      dismissible={false}
+      title={(
+        <span className="flex items-center gap-2">
+          <Icon icon={AppIcons.shield} className="text-warning" />
+          {t.memory.auditTitle}
+        </span>
+      )}
+      description={isEmpty
+        ? t.memory.auditEmpty
+        : format(t.memory.auditIntro, { count: String(entries.length) })}
+      footer={(
+        <>
           {!isEmpty && (
-            <span className="text-caption text-[var(--abu-text-placeholder)] mr-auto">
+            <span className="mr-auto self-center text-ui-sm text-label-tertiary">
               {format(t.memory.bulkSelected, { count: String(selectedCount) })}
             </span>
           )}
-          <Button variant="ghost" size="sm" onClick={handleClose} disabled={applying}>
+          <Button variant="plain" onClick={handleClose} disabled={applying}>
             {isEmpty ? t.common.confirm : t.memory.auditCancel}
           </Button>
           {!isEmpty && (
             <Button
-              variant="default"
-              size="sm"
+              variant="primary"
+              icon={AppIcons.private}
               onClick={handleMarkAll}
               disabled={applying || selectedCount === 0}
-              className="gap-1.5"
             >
-              <Lock className="h-3.5 w-3.5" />
               {t.memory.auditMarkAll}
             </Button>
           )}
+        </>
+      )}
+    >
+      {!isEmpty && (
+        <div className="space-y-2">
+          {entries.map((entry) => {
+            const h = entry.result.header;
+            const key = `${entry.workspacePath ?? 'g'}:${h.filename}`;
+            const boxId = `${rowId}-${key}`;
+            return (
+              // The whole row ticks its box: the row is the box's label.
+              <label
+                key={key}
+                htmlFor={boxId}
+                className={cn(
+                  'flex items-start gap-3 rounded-control border p-3',
+                  entry.selected ? 'border-control-border bg-fill-selected' : 'border-separator',
+                )}
+              >
+                <Checkbox
+                  id={boxId}
+                  checked={entry.selected}
+                  onCheckedChange={() => toggleEntry(h.filename, entry.workspacePath)}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-ui text-label">{h.name}</span>
+                  <span className="mt-1 block truncate font-code text-ui-sm text-label-tertiary">{h.filename}</span>
+                  <span className="mt-2 flex flex-wrap gap-1">
+                    {entry.result.matches.map((m) => (
+                      <Tag key={m.patternId} tone="warning">{patternLabel(m.patternId, t)}</Tag>
+                    ))}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
         </div>
-      </div>
-    </div>,
-    document.body,
+      )}
+    </Dialog>
   );
 }

@@ -1,4 +1,7 @@
-import { useEffect } from 'react';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
 import { useI18n } from '@/i18n';
 
 interface GuideModalProps {
@@ -10,17 +13,6 @@ interface GuideModalProps {
 export default function GuideModal({ open, onClose, onNavigateToAIServices }: GuideModalProps) {
   const { t } = useI18n();
 
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   const steps = [
     { title: t.guide.step1Title, desc: t.guide.step1Desc },
     { title: t.guide.step2Title, desc: t.guide.step2Desc },
@@ -28,57 +20,51 @@ export default function GuideModal({ open, onClose, onNavigateToAIServices }: Gu
     { title: t.guide.step4Title, desc: t.guide.step4Desc },
   ];
 
-  return (
-    <div
-      data-electron-no-drag
-      data-abu-guide-modal="true"
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[420px] p-6 animate-in zoom-in-95 duration-150">
-        <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-5">
-          {t.guide.title}
-        </h3>
+  // The window keeps rendering while it fades out: its buttons do nothing more then.
+  const dismiss = () => {
+    if (!open) return;
+    onClose();
+  };
+  const goToAIServices = () => {
+    if (!open || !onNavigateToAIServices) return;
+    onClose();
+    onNavigateToAIServices();
+  };
 
-        <div className="space-y-4 mb-6">
-          {steps.map((step, i) => (
-            <div key={i} className="flex items-start gap-3">
-              <span className="w-7 h-7 rounded-full bg-[var(--abu-clay)] text-white text-h-xs font-semibold flex items-center justify-center shrink-0 mt-0.5">
-                {i + 1}
-              </span>
-              <div>
-                <div className="text-h-sm font-medium text-[var(--abu-text-primary)]">{step.title}</div>
-                <div className="text-body text-[var(--abu-text-tertiary)] mt-0.5">
-                  {step.desc}
-                  {i === 0 && onNavigateToAIServices && (
-                    <>
-                      {'，'}
-                      <button
-                        onClick={() => {
-                          onClose();
-                          onNavigateToAIServices();
-                        }}
-                        className="text-[#3b82f6] hover:text-[#2563eb] hover:underline cursor-pointer"
-                      >
-                        {t.guide.step1Link}
-                      </button>
-                    </>
-                  )}
-                </div>
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={t.guide.title}
+      size="md"
+      closeButton
+      // The first-run helpers find the window by this mark.
+      contentProps={{ 'data-abu-guide-modal': 'true' }}
+      // It opens by itself on the first run: the first focus is on the button that only dismisses it.
+      initialFocus={(content) => content.querySelector<HTMLElement>('[data-guide-dismiss]')}
+      footer={<Button variant="primary" data-guide-dismiss onClick={dismiss}>{t.guide.dismiss}</Button>}
+    >
+      <div className="flex flex-col gap-4">
+        {steps.map((step, i) => (
+          <div key={step.title} className="flex items-start gap-3">
+            <Tag>{i + 1}</Tag>
+            <div className="min-w-0 flex-1">
+              <div className="text-ui font-medium text-label">{step.title}</div>
+              <div className="mt-1 text-ui-sm text-label-secondary">
+                {step.desc}
+                {i === 0 && onNavigateToAIServices && (
+                  <>
+                    {'，'}
+                    <Pressable onClick={goToAIServices} className="rounded-control text-link hover:underline">
+                      {t.guide.step1Link}
+                    </Pressable>
+                  </>
+                )}
               </div>
             </div>
-          ))}
-        </div>
-
-        <button
-          onClick={onClose}
-          className="w-full py-2.5 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors"
-        >
-          {t.guide.dismiss}
-        </button>
+          </div>
+        ))}
       </div>
-    </div>
+    </Dialog>
   );
 }

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Pressable } from '@/components/ds/pressable';
 import { useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ProduceResult } from '@/core/diagnostic/bundle';
@@ -38,15 +39,14 @@ export default function FeedbackSection() {
 
       {/* The author moved to their own page; keep a way there from here, because
           someone on the feedback page is often someone with a problem. */}
-      <p className="pt-2 border-t border-[var(--abu-border)] text-center text-minor text-[var(--abu-text-muted)]">
+      <p className="border-t border-separator pt-2 text-center text-ui-sm text-label-tertiary">
         {t.author.feedbackLink}
-        <button
-          type="button"
+        <Pressable
           onClick={() => openSystemSettings('author')}
-          className="ml-1 text-[var(--abu-clay)] font-medium hover:underline"
+          className="ml-1 inline-flex items-center gap-1 rounded-control text-ui-sm text-link hover:underline"
         >
           {t.author.feedbackLinkAction} →
-        </button>
+        </Pressable>
       </p>
     </div>
   );

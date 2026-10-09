@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { loadLocalImage } from '@/utils/pathUtils';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 import abuAvatar from '@/assets/abu-avatar.png';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import type { AvatarSize } from '@/components/common/AgentAvatar';
 
-const SIZE = { sm: 'h-5 w-5 text-caption', md: 'h-7 w-7 text-minor', lg: 'h-10 w-10 text-h-sm', xl: 'h-20 w-20 text-h-xl' } as const;
+const SIZE = { sm: 'h-5 w-5 text-caption', md: 'h-7 w-7 text-ui-sm', lg: 'h-10 w-10 text-title', xl: 'h-20 w-20 text-title-lg' } as const;
 const ICON_SIZE: Record<keyof typeof SIZE, AvatarSize> = { sm: 'sm', md: 'md', lg: 'xl', xl: '2xl' };
 
 /**
@@ -26,8 +26,7 @@ export default function AppLogo({ name, logo, logoDark, icon, general = false, s
   size?: keyof typeof SIZE;
   className?: string;
 }) {
-  const theme = useSettingsStore((s) => s.theme);
-  const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const dark = useEffectiveThemeIsDark();
   const path = (dark ? logoDark : undefined) ?? logo ?? logoDark;
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
@@ -44,7 +43,8 @@ export default function AppLogo({ name, logo, logoDark, icon, general = false, s
       if (url) URL.revokeObjectURL(url);
     };
   }, [path]);
-  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--abu-bg-active)] font-semibold text-[var(--abu-text-secondary)] select-none', SIZE[size], className);
+  // The letter mark takes its size from SIZE; font-medium also overrides the weight a title size brings.
+  const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control bg-fill font-medium text-label select-none', SIZE[size], className);
   if (general) return <span className={box} data-testid="app-logo" data-app-logo="general"><img src={abuAvatar} alt="" className="h-full w-full object-cover" /></span>;
   if (src) return <span className={box} data-testid="app-logo" data-app-logo="image"><img src={src} alt="" className="h-full w-full object-cover" /></span>;
   if (icon) return <TeamAvatar avatar={icon} size={ICON_SIZE[size]} className={cn(size === 'xl' && 'h-20 w-20', className)} />;

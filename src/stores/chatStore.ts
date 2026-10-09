@@ -62,6 +62,7 @@ import { usePreviewStore } from './previewStore';
 import { clearBrowserReclaim, disposeOwnedBrowserViews } from '../core/browser/browserViewLifecycle';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
+import { redactFailureText } from '../core/diagnostic/scrub';
 import {
   ACTIVE_RUN_STATES,
   RUN_FAILURE_STATES,
@@ -583,6 +584,10 @@ interface ChatState {
   /** Active/loaded conversations with full messages — NOT persisted.
    *  Only contains the active conversation + LRU cache of recent ones (~5). */
   conversations: Record<string, Conversation>;
+  /** Conversations whose record is on disk and could not be read — NOT persisted.
+   *  Such a conversation is held in `conversations` under no form: an unread
+   *  record is unknown, never empty. A read that succeeds removes the entry. */
+  loadFailures: Record<string, true>;
   activeConversationId: string | null;
   /** Per-conversation live agent state. Ephemeral; never persisted. */
   agentStates: Map<string, ConversationAgentState>;
@@ -846,6 +851,9 @@ interface ChatActions {
 
   // Persistence — load conversation from disk on demand
   loadConversation: (convId: string) => Promise<void>;
+  /** Read again a conversation whose record could not be read. Calls made while
+   *  a read is in flight share that read. */
+  retryLoadConversation: (convId: string) => Promise<void>;
   unloadOldConversations: () => void;
 }
 
@@ -854,11 +862,15 @@ export type ChatStore = ChatState & ChatActions;
 // Monotonic counter to discard stale switchConversation results on rapid clicks
 let switchSeq = 0;
 
+/** Retry reads in flight, one per conversation: the re-entry check of `retryLoadConversation`. */
+const loadRetries = new Map<string, Promise<void>>();
+
 export const useChatStore = create<ChatStore>()(
   persist(
     immer((set, get) => ({
       conversationIndex: {} as Record<string, ConversationMeta>,
       conversations: {},
+      loadFailures: {},
       activeConversationId: null,
       agentStates: new Map(),
       currentUsage: null,
@@ -1256,6 +1268,7 @@ export const useChatStore = create<ChatStore>()(
         const nextAgentStates = removeConversationAgentState(get().agentStates, id);
         set((state) => {
           delete state.conversations[id];
+          delete state.loadFailures[id];
           delete state.stagedExpertContacts[id];
           delete state.conversationIndex[id];
           state.agentStates = nextAgentStates;
@@ -1335,6 +1348,11 @@ export const useChatStore = create<ChatStore>()(
       },
 
       addMessage: (convId, message) => {
+        // The record of this conversation is on disk and could not be read.
+        // Nothing is added to it, in memory or on disk, until a read succeeds:
+        // a line written now would follow, or take the place of, a history
+        // this process has never seen.
+        if (get().loadFailures[convId]) return;
         let newTitle: string | undefined;
         let welcome: Message | undefined;
         let persistedMessage = message;
@@ -2772,7 +2790,10 @@ export const useChatStore = create<ChatStore>()(
 
         try {
           const { loadMessages, replaceMessageById } = await import('../core/session/conversationStorage');
-          const loadedMessages = await loadMessages(convId);
+          // Strict: a record that is on disk and cannot be read rejects. A
+          // record that is not on disk is an empty conversation and a damaged
+          // line is skipped, as in a tolerant read.
+          const loadedMessages = await loadMessages(convId, { strictRead: true });
           const messages = sanitizeLoadedMessages(loadedMessages);
           const meta = get().conversationIndex[convId];
           if (!meta) return;
@@ -2783,6 +2804,7 @@ export const useChatStore = create<ChatStore>()(
             && ACTIVE_RUN_STATES.has(loadedMessages[index]?.runState)
           ));
           set((state) => {
+            delete state.loadFailures[convId];
             state.conversations[convId] = {
               id: meta.id,
               title: meta.title,
@@ -2814,37 +2836,36 @@ export const useChatStore = create<ChatStore>()(
           await Promise.allSettled(
             recoveredMessages.map((message) => replaceMessageById(convId, message)),
           );
-        } catch {
-          // Load failed — create an empty conversation so the chat view still
-          // renders (instead of falling through to the welcome page)
-          const meta = get().conversationIndex[convId];
-          if (meta) {
+        } catch (err) {
+          // The record is on disk and could not be read. No conversation is
+          // put in memory for it: an empty one would say "this conversation
+          // has no messages", and every later write would act on that. The
+          // chat page shows the failure with a retry (`loadFailures`).
+          // The host's text can carry a path and whatever a server put in an
+          // error, so it goes to the log only, as redacted text.
+          console.warn(
+            '[chatStore] loadConversation failed:',
+            redactFailureText(err instanceof Error ? err.message : String(err)),
+          );
+          // A conversation deleted while the read was in flight, or read by a
+          // concurrent call meanwhile, has no failure to show.
+          if (get().conversationIndex[convId] && !get().conversations[convId]) {
             set((state) => {
-              state.conversations[convId] = {
-                id: meta.id,
-                title: meta.title,
-                createdAt: meta.createdAt,
-                updatedAt: meta.updatedAt,
-                messages: [],
-                status: 'idle',
-                workspacePath: meta.workspacePath,
-                model: meta.model,
-                imChannelId: meta.imChannelId,
-                imPlatform: meta.imPlatform,
-                scheduledTaskId: meta.scheduledTaskId,
-                triggerId: meta.triggerId,
-                teamId: meta.teamId,
-                ...restoredGoal(meta),
-                appBinding: meta.appBinding,
-                projectId: meta.projectId,
-                readOnly: meta.readOnly,
-                importedFrom: meta.importedFrom,
-                ...restoredPermissionMode(meta),
-              };
+              state.loadFailures[convId] = true;
             });
           }
         }
 
+      },
+
+      retryLoadConversation: (convId: string) => {
+        const inFlight = loadRetries.get(convId);
+        if (inFlight) return inFlight;
+        const running = get().loadConversation(convId).finally(() => {
+          if (loadRetries.get(convId) === running) loadRetries.delete(convId);
+        });
+        loadRetries.set(convId, running);
+        return running;
       },
 
       unloadOldConversations: () => {

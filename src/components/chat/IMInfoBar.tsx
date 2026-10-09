@@ -5,12 +5,18 @@
  * Menu: capability, start time, rounds, chat name, end session
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { memo, useEffect, useRef, type ReactNode } from 'react';
+import { IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons, type AppIconName } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuSeparator } from '@/components/ds/menu';
+import { Tag } from '@/components/ds/tag';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useI18n } from '@/i18n';
+import { cn } from '@/lib/utils';
 import type { Conversation } from '@/types';
 import type { IMCapabilityLevel } from '@/types/imChannel';
-import { MoreHorizontal, Clock, MessageSquare, Shield, Hash, XCircle } from 'lucide-react';
 import { getPlatformShortLabel, getPlatformDisplayName } from '@/core/im/platformLabels';
 
 function formatTime(ts: number): string {
@@ -25,20 +31,6 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   const { t } = useI18n();
   const platform = conversation.imPlatform ?? '';
   const channelId = conversation.imChannelId;
-  const [showMenu, setShowMenu] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!showMenu) return;
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setShowMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [showMenu]);
 
   // Get session info from store
   const sessions = useIMChannelStore((s) => s.sessions);
@@ -63,89 +55,121 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   // Title: same as sidebar (conversation.title), fallback to platform label
   const title = conversation.title || platformLabel;
 
-  const handleEndSession = () => {
-    if (!session || !confirm(t.imChannel.infoBarEndConfirm)) return;
-    useIMChannelStore.getState().removeSession(session.key);
-    setShowMenu(false);
-  };
-
   return (
-    <div className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-[var(--abu-bg-base)]/60 border-b border-[var(--abu-border)] text-body">
+    <div className="flex shrink-0 items-center gap-2 border-b border-separator px-6 py-1 text-ui md:px-10">
       {/* Platform icon + title */}
-      <div className="flex items-center gap-1.5 min-w-0">
-        <span className="shrink-0 h-4 w-4 rounded text-caption font-bold leading-4 text-center bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-control bg-fill text-caption font-medium text-label-secondary">
           {getPlatformShortLabel(platform)}
         </span>
-        <span className="font-medium text-[var(--abu-text-primary)] truncate">{title}</span>
-        <span className="text-[var(--abu-text-placeholder)]">·</span>
-        <span className="text-[var(--abu-text-tertiary)] shrink-0">{platformLabel}</span>
+        <span className="truncate font-medium text-label">{title}</span>
+        <span className="text-label-placeholder">·</span>
+        <span className="shrink-0 text-label-tertiary">{platformLabel}</span>
       </div>
 
       {/* Rounds badge */}
-      <span className="shrink-0 px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-caption text-[var(--abu-text-tertiary)]">
-        {rounds} {t.imChannel.infoBarRounds}
+      <span className="flex shrink-0">
+        <Tag>{rounds} {t.imChannel.infoBarRounds}</Tag>
       </span>
 
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Three-dot menu */}
-      <div className="relative shrink-0" ref={menuRef}>
-        <button
-          onClick={() => setShowMenu(!showMenu)}
-          className="flex items-center justify-center w-6 h-6 rounded text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </button>
+      <IMInfoMenu
+        capabilityLabel={capabilityLabels[capability]}
+        startTime={startTime}
+        rounds={rounds}
+        chatName={chatName}
+        sessionKey={session?.key}
+        conversationId={conversation.id}
+        title={title}
+      />
+    </div>
+  );
+}
 
-        {showMenu && (
-          <div className="absolute top-full right-0 mt-1 w-60 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1.5 z-50">
-            {/* Capability */}
-            <div className="flex items-center gap-2 px-3 py-1.5 text-minor">
-              <Shield className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-              <span className="text-[var(--abu-text-muted)] shrink-0">{t.imChannel.infoBarCapability}</span>
-              <span className="text-[var(--abu-text-primary)] ml-auto text-right">{capabilityLabels[capability]}</span>
-            </div>
+// The bar's conversation prop changes on every streamed token; the menu only takes
+// the values it shows, so it re-renders when one of them changes.
+const IMInfoMenu = memo(function IMInfoMenu({ capabilityLabel, startTime, rounds, chatName, sessionKey, conversationId, title }: {
+  capabilityLabel: string;
+  startTime: number;
+  rounds: number;
+  chatName?: string;
+  sessionKey?: string;
+  conversationId: string;
+  // The name the bar shows for this conversation; the question names the session by it.
+  title: string;
+}) {
+  const { t } = useI18n();
+  const confirm = useConfirm();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // What the menu item chose; it runs once the menu has gone.
+  const pendingRef = useRef<'end' | null>(null);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
-            {/* Start time */}
-            <div className="flex items-center gap-2 px-3 py-1.5 text-minor">
-              <Clock className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-              <span className="text-[var(--abu-text-muted)]">{t.imChannel.infoBarStarted}</span>
-              <span className="text-[var(--abu-text-primary)] ml-auto">{formatTime(startTime)}</span>
-            </div>
+  const endSession = async () => {
+    if (!sessionKey) return;
+    const confirmed = await confirm({
+      title: t.imChannel.infoBarEndSession,
+      message: `${t.imChannel.infoBarEndConfirm}\n${title}`,
+      confirmLabel: t.imChannel.infoBarEndSession,
+      tone: 'danger',
+    });
+    // The bar has left the page (a conversation that is no IM conversation is in view): this
+    // answer ends nothing. The chat page keeps one bar for every IM conversation, so a switch
+    // between two of them leaves it mounted; the answer then still acts on the session the
+    // question named, through the key and the conversation it was asked with.
+    if (!confirmed || !mounted.current) return;
+    // The session as it is now: ended meanwhile, or its key taken by a later conversation of the same chat.
+    const store = useIMChannelStore.getState();
+    if (store.sessions[sessionKey]?.conversationId !== conversationId) return;
+    store.removeSession(sessionKey);
+  };
 
-            {/* Rounds */}
-            <div className="flex items-center gap-2 px-3 py-1.5 text-minor">
-              <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-              <span className="text-[var(--abu-text-muted)]">{t.imChannel.infoBarRounds}</span>
-              <span className="text-[var(--abu-text-primary)] ml-auto">{rounds}</span>
-            </div>
-
-            {/* Chat name (if group) */}
-            {chatName && (
-              <div className="flex items-center gap-2 px-3 py-1.5 text-minor">
-                <Hash className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-                <span className="text-[var(--abu-text-muted)] shrink-0">{t.imChannel.infoBarGroup}</span>
-                <span className="text-[var(--abu-text-primary)] ml-auto truncate max-w-[120px]">{chatName}</span>
-              </div>
-            )}
-
-            {/* Divider + End session */}
-            {session && (
-              <>
-                <div className="my-1 border-t border-[var(--abu-border)]" />
-                <button
-                  onClick={handleEndSession}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-                >
-                  <XCircle className="h-3.5 w-3.5 shrink-0" />
-                  {t.imChannel.infoBarEndSession}
-                </button>
-              </>
-            )}
-          </div>
+  return (
+    <Menu
+      align="end"
+      // A menu reopened during its exit animation stays mounted and its close hook never
+      // ran for the earlier choice: opening forgets it.
+      onOpenChange={(open) => { if (open) pendingRef.current = null; }}
+      onCloseAutoFocus={(event) => {
+        if (pendingRef.current !== 'end') return;
+        pendingRef.current = null;
+        event.preventDefault();
+        // The question remembers the trigger and returns the focus to it.
+        triggerRef.current?.focus();
+        void endSession();
+      }}
+      trigger={<IconButton ref={triggerRef} size="sm" icon={AppIcons.more} label={t.sidebar.moreActions} />}
+    >
+      <div className="w-60">
+        <InfoRow icon="capability" label={t.imChannel.infoBarCapability} value={capabilityLabel} />
+        <InfoRow icon="clock" label={t.imChannel.infoBarStarted} value={formatTime(startTime)} />
+        <InfoRow icon="conversation" label={t.imChannel.infoBarRounds} value={rounds} />
+        {chatName && <InfoRow icon="channel" label={t.imChannel.infoBarGroup} value={chatName} truncate />}
+        {sessionKey && (
+          <>
+            <MenuSeparator />
+            <MenuItem tone="danger" icon={AppIcons.error} onSelect={() => { pendingRef.current = 'end'; }}>
+              {t.imChannel.infoBarEndSession}
+            </MenuItem>
+          </>
         )}
       </div>
+    </Menu>
+  );
+});
+
+function InfoRow({ icon, label, value, truncate = false }: { icon: AppIconName; label: string; value: ReactNode; truncate?: boolean }) {
+  return (
+    <div className="flex items-center gap-2 px-2 py-1 text-ui">
+      <Icon icon={AppIcons[icon]} size="sm" className="text-label-tertiary" />
+      <span className="shrink-0 text-label-secondary">{label}</span>
+      <span className={cn('ml-auto min-w-0 text-right text-label', truncate && 'max-w-30 truncate')}>{value}</span>
     </div>
   );
 }

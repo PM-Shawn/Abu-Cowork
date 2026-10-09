@@ -156,7 +156,10 @@ function fromStep(
       key: `${step.toolCallId}:${taskIndex}`,
       agent: entry.agent,
       kind: 'batch',
-      identity,
+      // A live step does not name its assistant message, while the progress entry is
+      // stored under the identity the batch tool was called with. Tabs, view leases and
+      // the member's progress are all looked up by that identity.
+      identity: batch.live?.identity ?? identity,
       taskIndex,
       label: entry.label,
       status: taskStatus(taskIndex, entry.anyError),

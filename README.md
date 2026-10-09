@@ -280,7 +280,7 @@ Create a weekly report PPT for this week
 | Tool Protocol | MCP (`@modelcontextprotocol/sdk`) |
 | Web Search | Bing / Brave / Tavily / SearXNG |
 | Sandbox | macOS Seatbelt + path/command dual validation |
-| UI Components | Radix UI + Lucide Icons + shadcn-style |
+| UI Components | Abu's own component library (`src/components/ds/`) on Radix UI + Lucide Icons |
 | Testing | Vitest + happy-dom (covers core store / agent / skill / memdir modules) |
 | Evaluation | Built-in OpenAI-protocol tool-selection eval runner (`npm run eval:tool-selection`) |
 
@@ -344,12 +344,12 @@ src/
 │   ├── chat/         # Chat interface, messages, model selector
 │   ├── sidebar/      # Sidebar navigation (with collapsed Recents search)
 │   ├── panel/        # Right-side detail panel (workspace, project memory/instructions)
-│   ├── customize/    # Customization (skills, agents, models)
+│   ├── customize/    # Customization (skills, agents, MCP connectors)
 │   ├── schedule/     # Scheduled task views
 │   ├── trigger/      # Trigger ("on-call") management views
 │   ├── settings/     # System settings (16 panels, see settings/sections/)
 │   ├── preview/      # File preview (PDF/Office/image/Markdown)
-│   └── ui/           # Base UI components (shadcn/Radix)
+│   └── ds/           # Design-system component library (the only place that imports Radix and Lucide)
 ├── core/             # Core engine (non-UI)
 │   ├── agent/        # Agent loop, background agents, project rules
 │   ├── llm/          # LLM adapter layer (Claude / OpenAI-compatible / Ollama)

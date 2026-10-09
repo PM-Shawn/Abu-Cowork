@@ -280,6 +280,8 @@ export function cancelCommandConfirmation(requestId: string): void {
 // ── File Permission Request Infrastructure ──
 
 export interface FilePermissionRequest {
+  /** Identifies this request among those that follow it in the queue (a window per request). */
+  id: string;
   path: string;
   capability: 'read' | 'write';
   toolName: string;
@@ -381,6 +383,7 @@ export async function requestFilePermission(request: Parameters<FilePermissionCa
 // ── Workspace Request Infrastructure ──
 
 export interface WorkspaceRequest {
+  /** Identifies this request against a newer one that takes its place (a window per request). */
   id: string;
   reason: string;
   conversationId: string;

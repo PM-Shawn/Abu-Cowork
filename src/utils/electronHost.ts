@@ -7,6 +7,8 @@ import type { MediaRef } from '@/core/subagent/delegatedUserTurn';
 
 interface AbuShellBridge {
   mainSupervisesSidecar?: boolean;
+  /** The system material the shell draws behind the window: 'vibrancy', 'mica' or 'none'. */
+  windowMaterial?: string;
   canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
@@ -156,6 +158,11 @@ export function hasElectronCommandHost(): boolean {
  */
 export function hasElectronRawBodyInvoke(): boolean {
   return getRuntime().__ABU_SHELL__?.mainSupervisesSidecar === true;
+}
+
+/** The window material the Electron shell reports; undefined outside the shell. */
+export function getElectronWindowMaterial(): string | undefined {
+  return getRuntime().__ABU_SHELL__?.windowMaterial;
 }
 
 /** Resolve the native path of a user-provided Electron File object. */

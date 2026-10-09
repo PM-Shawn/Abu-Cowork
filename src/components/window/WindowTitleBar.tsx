@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { PanelLeft, PanelRight, Plus, Search } from 'lucide-react';
+import { Button, IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
 import { cn } from '@/lib/utils';
 import abuAvatar from '@/assets/abu-avatar.png';
 
@@ -35,8 +36,8 @@ interface WindowTitleBarProps {
   };
 }
 
-const CONTROL_CLASS =
-  'btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto';
+// The overlays that hold the controls ignore the pointer; each control takes it back.
+const CONTROL_CLASS = 'pointer-events-auto';
 
 /**
  * macOS keeps the controls in the original 44px overlay so the raised content
@@ -45,6 +46,7 @@ const CONTROL_CLASS =
  * Windows keeps native Window Controls Overlay buttons while the renderer owns
  * the compact title-bar visuals. Business controls sit inside the workspace
  * header plane instead of consuming a second full-width toolbar row.
+ * The bar paints no background of its own, so the window's desk shows through.
  */
 export default function WindowTitleBar({
   platform,
@@ -65,6 +67,8 @@ export default function WindowTitleBar({
   const windowMenuButtons = useRef<Partial<Record<WindowMenuGroup, HTMLButtonElement | null>>>({});
   const mac = platform === 'macos';
   const windows = platform === 'windows';
+  const sidebarLabel = sidebarCollapsed ? labels.showSidebar : labels.hideSidebar;
+  const rightPanelLabel = rightPanelCollapsed ? labels.showPanel : labels.hidePanel;
 
   // Match the access-key hints shown in the Chinese labels. The legacy native
   // menu handled Alt+E/W/H automatically; once the bar is renderer-owned we
@@ -93,68 +97,60 @@ export default function WindowTitleBar({
         <div
           data-abu-macos-drag-strip
           data-tauri-drag-region
-          className="fixed inset-x-0 top-0 z-40 h-2"
+          className="fixed inset-x-0 top-0 z-sticky h-2"
         />
         <div
           data-abu-macos-titlebar
-          className="pointer-events-none fixed inset-x-0 top-0 z-40 h-11 select-none"
+          className="pointer-events-none fixed inset-x-0 top-0 z-sticky h-11 select-none"
         >
-          <button
-            type="button"
+          <IconButton
+            size="sm"
+            icon={AppIcons.sidebar}
+            label={sidebarLabel}
             data-electron-no-drag
             data-window-control="sidebar"
             onClick={onToggleSidebar}
-            className={cn(CONTROL_CLASS, 'absolute transition-[left] duration-200')}
+            className={cn(CONTROL_CLASS, 'absolute')}
             style={{ top, left: sidebarCollapsed ? 96 : 200 }}
-            title={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-            aria-label={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-          >
-            <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
-          </button>
+          />
 
           {showSearch && (
-            <button
-              type="button"
+            <IconButton
+              size="sm"
+              icon={AppIcons.search}
+              label={labels.search}
               data-electron-no-drag
               data-window-control="search"
               onClick={onOpenSearch}
-              className={cn(CONTROL_CLASS, 'absolute transition-[left] duration-200')}
+              className={cn(CONTROL_CLASS, 'absolute')}
               style={{ top, left: sidebarCollapsed ? 126 : 230 }}
-              title={labels.search}
-              aria-label={labels.search}
-            >
-              <Search className="h-3.5 w-[18px]" strokeWidth={1.5} />
-            </button>
+            />
           )}
 
           {showNewTask && (
-            <button
-              type="button"
+            <IconButton
+              size="sm"
+              icon={AppIcons.add}
+              label={labels.newTask}
               data-electron-no-drag
               data-window-control="new-task"
               onClick={onNewTask}
               className={cn(CONTROL_CLASS, 'absolute')}
               style={{ top, left: 156 }}
-              title={labels.newTask}
-              aria-label={labels.newTask}
-            >
-              <Plus className="h-3.5 w-[18px]" strokeWidth={2} />
-            </button>
+            />
           )}
 
           {showRightPanelToggle && (
-            <button
-              type="button"
+            <IconButton
+              size="sm"
+              icon={AppIcons.rightPanel}
+              label={rightPanelLabel}
               data-electron-no-drag
               data-window-control="right-panel"
               onClick={onToggleRightPanel}
               className={cn(CONTROL_CLASS, 'absolute right-4')}
               style={{ top }}
-              title={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-              aria-label={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-            >
-              <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
-            </button>
+            />
           )}
         </div>
       </>
@@ -167,58 +163,50 @@ export default function WindowTitleBar({
       data-electron-no-drag
       className="flex h-full shrink-0 items-center gap-1"
     >
-      <button
-        type="button"
+      <IconButton
+        size="sm"
+        icon={AppIcons.sidebar}
+        label={sidebarLabel}
         data-electron-no-drag
         data-window-control="sidebar"
         onClick={onToggleSidebar}
         className={CONTROL_CLASS}
-        title={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-        aria-label={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-      >
-        <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
-      </button>
+      />
       {showSearch && (
-        <button
-          type="button"
+        <IconButton
+          size="sm"
+          icon={AppIcons.search}
+          label={labels.search}
           data-electron-no-drag
           data-window-control="search"
           onClick={onOpenSearch}
           className={CONTROL_CLASS}
-          title={labels.search}
-          aria-label={labels.search}
-        >
-          <Search className="h-3.5 w-[18px]" strokeWidth={1.5} />
-        </button>
+        />
       )}
       {showNewTask && (
-        <button
-          type="button"
+        <IconButton
+          size="sm"
+          icon={AppIcons.add}
+          label={labels.newTask}
           data-electron-no-drag
           data-window-control="new-task"
           onClick={onNewTask}
           className={CONTROL_CLASS}
-          title={labels.newTask}
-          aria-label={labels.newTask}
-        >
-          <Plus className="h-3.5 w-[18px]" strokeWidth={2} />
-        </button>
+        />
       )}
     </div>
   );
 
   const rightControl = showRightPanelToggle ? (
-    <button
-      type="button"
+    <IconButton
+      size="sm"
+      icon={AppIcons.rightPanel}
+      label={rightPanelLabel}
       data-electron-no-drag
       data-window-control="right-panel"
       onClick={onToggleRightPanel}
       className={CONTROL_CLASS}
-      title={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-      aria-label={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-    >
-      <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
-    </button>
+    />
   ) : null;
 
   if (windows) {
@@ -241,7 +229,7 @@ export default function WindowTitleBar({
         <>
           <div
             data-abu-windows-native-titlebar
-            className="relative h-[30px] shrink-0 select-none bg-[var(--abu-bg-canvas)]"
+            className="relative h-[30px] shrink-0 select-none"
           >
             <div
               data-abu-windows-titlebar-safe-area
@@ -263,8 +251,8 @@ export default function WindowTitleBar({
               <div
                 className="relative flex h-full items-center gap-1.5 pl-2 pr-1.5"
               >
-                <img src={abuAvatar} alt="" className="h-4 w-4 rounded-[4px]" draggable={false} />
-                <span className="text-minor font-medium text-[var(--abu-text-primary)]">
+                <img src={abuAvatar} alt="" className="h-4 w-4 rounded-control" draggable={false} />
+                <span className="text-ui-sm font-medium text-label-secondary">
                   {labels.appName}
                 </span>
               </div>
@@ -278,76 +266,73 @@ export default function WindowTitleBar({
                   ['window', labels.windowMenu],
                   ['help', labels.helpMenu],
                 ] as const).map(([group, label]) => (
-                  <button
+                  <Button
                     key={group}
-                    ref={(button) => { windowMenuButtons.current[group] = button; }}
-                    type="button"
+                    ref={(button: HTMLButtonElement | null) => { windowMenuButtons.current[group] = button; }}
+                    variant="plain"
+                    size="sm"
                     data-electron-no-drag
                     data-window-menu={group}
                     aria-haspopup="menu"
                     aria-expanded={activeMenu === group}
                     onClick={(event) => openMenu(group, event.currentTarget)}
                     className={cn(
-                      'h-7 rounded px-2 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]',
-                      activeMenu === group && 'bg-[var(--abu-bg-hover)]',
+                      'font-normal text-label-secondary',
+                      activeMenu === group && 'bg-fill-hover',
                     )}
                   >
                     {label}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
           </div>
 
+          {/* A zero-height band on the window's top edge that anchors the workspace
+              controls; it ignores the pointer, only its controls take clicks. */}
           <div
             data-abu-windows-workspace-controls
-            className="pointer-events-none fixed inset-0 z-40"
+            className="pointer-events-none fixed inset-x-0 top-0 z-sticky"
           >
             <div
               data-abu-titlebar-control-group="left"
               data-electron-no-drag
-              className="pointer-events-auto absolute flex items-center gap-1 transition-[left] duration-200"
+              className="pointer-events-auto absolute flex items-center gap-1 transition-[left] duration-base"
               style={{ top: workspaceControlTop, left: workspaceControlLeft }}
             >
-              <button
-                type="button"
+              <IconButton
+                size="sm"
+                icon={AppIcons.sidebar}
+                label={sidebarLabel}
                 data-electron-no-drag
                 data-window-control="sidebar"
                 onClick={onToggleSidebar}
                 className={CONTROL_CLASS}
-                title={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-                aria-label={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-              >
-                <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
-              </button>
+              />
               {showSearch && (
-                <button
-                  type="button"
+                <IconButton
+                  size="sm"
+                  icon={AppIcons.search}
+                  label={labels.search}
                   data-electron-no-drag
                   data-window-control="search"
                   onClick={onOpenSearch}
                   className={CONTROL_CLASS}
-                  title={labels.search}
-                  aria-label={labels.search}
-                >
-                  <Search className="h-3.5 w-[18px]" strokeWidth={1.5} />
-                </button>
+                />
               )}
             </div>
 
             {showRightPanelToggle && (
-              <button
-                type="button"
+              <IconButton
+                size="sm"
+                icon={AppIcons.rightPanel}
+                label={rightPanelLabel}
                 data-electron-no-drag
                 data-window-control="right-panel"
                 onClick={onToggleRightPanel}
-                className={cn(CONTROL_CLASS, 'absolute right-4 pointer-events-auto')}
+                className={cn(CONTROL_CLASS, 'absolute right-4')}
                 style={{ top: workspaceControlTop }}
-                title={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-                aria-label={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-              >
-                <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
-              </button>
+              />
             )}
           </div>
         </>
@@ -357,7 +342,7 @@ export default function WindowTitleBar({
     return (
         <div
           data-abu-windows-toolbar
-          className="flex h-9 shrink-0 items-center border-b border-[var(--abu-border)] bg-[var(--abu-bg-canvas)] px-2"
+          className="flex h-9 shrink-0 items-center border-b border-separator px-2"
         >
           {leftControls}
           <div
@@ -373,58 +358,50 @@ export default function WindowTitleBar({
 
   return (
     <>
-      <button
-        type="button"
+      <IconButton
+        size="sm"
+        icon={AppIcons.sidebar}
+        label={sidebarLabel}
         data-electron-no-drag
         data-window-control="sidebar"
         onClick={onToggleSidebar}
-        className={cn(CONTROL_CLASS, 'fixed left-2 top-1.5 z-50')}
-        title={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-        aria-label={sidebarCollapsed ? labels.showSidebar : labels.hideSidebar}
-      >
-        <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
-      </button>
+        className={cn(CONTROL_CLASS, 'fixed left-2 top-1.5 z-sticky')}
+      />
 
       {showSearch && (
-        <button
-          type="button"
+        <IconButton
+          size="sm"
+          icon={AppIcons.search}
+          label={labels.search}
           data-electron-no-drag
           data-window-control="search"
           onClick={onOpenSearch}
-          className={cn(CONTROL_CLASS, 'fixed left-10 top-1.5 z-50')}
-          title={labels.search}
-          aria-label={labels.search}
-        >
-          <Search className="h-3.5 w-[18px]" strokeWidth={1.5} />
-        </button>
+          className={cn(CONTROL_CLASS, 'fixed left-10 top-1.5 z-sticky')}
+        />
       )}
 
       {showNewTask && (
-        <button
-          type="button"
+        <IconButton
+          size="sm"
+          icon={AppIcons.add}
+          label={labels.newTask}
           data-electron-no-drag
           data-window-control="new-task"
           onClick={onNewTask}
-          className={cn(CONTROL_CLASS, 'fixed left-[72px] top-1.5 z-50')}
-          title={labels.newTask}
-          aria-label={labels.newTask}
-        >
-          <Plus className="h-3.5 w-[18px]" strokeWidth={2} />
-        </button>
+          className={cn(CONTROL_CLASS, 'fixed left-[72px] top-1.5 z-sticky')}
+        />
       )}
 
       {showRightPanelToggle && (
-        <button
-          type="button"
+        <IconButton
+          size="sm"
+          icon={AppIcons.rightPanel}
+          label={rightPanelLabel}
           data-electron-no-drag
           data-window-control="right-panel"
           onClick={onToggleRightPanel}
-          className={cn(CONTROL_CLASS, 'fixed right-2 top-1.5 z-50')}
-          title={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-          aria-label={rightPanelCollapsed ? labels.showPanel : labels.hidePanel}
-        >
-          <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
-        </button>
+          className={cn(CONTROL_CLASS, 'fixed right-2 top-1.5 z-sticky')}
+        />
       )}
     </>
   );

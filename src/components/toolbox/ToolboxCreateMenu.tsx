@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Plus, Wand2, PenLine, Upload } from 'lucide-react';
+import { useRef } from 'react';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem } from '@/components/ds/menu';
 import { useI18n } from '@/i18n';
 
 interface ToolboxCreateMenuProps {
@@ -19,78 +21,46 @@ interface ToolboxCreateMenuProps {
 }
 
 /**
- * Content-area header "+ 添加" control shared by the Agents/Skills/MCP toolbox
- * tabs (see ToolboxModal). Filled clay button; in menu mode it opens a small
- * dropdown replicating the create-menu that used to live inside each section
- * (AI-create / manual-create / upload), closing on outside click or on
- * selecting an entry.
+ * Content-area header "+ 添加" control shared by the extensions and experts pages:
+ * the page's primary button. In menu mode it opens a menu (create with Abu, create
+ * manually, upload, or the caller's own items). The chosen entry runs once the menu
+ * has gone, with the focus back on the button: a window the entry opens remembers
+ * the button and returns the focus to it.
  */
 export default function ToolboxCreateMenu({
   items, onClick, onAICreate, onManualCreate, onUploadFile, uploadLabel, triggerTestId, menuTestId,
 }: ToolboxCreateMenuProps) {
-  const [open, setOpen] = useState(false);
   const { t } = useI18n();
-  const isMenuMode = !onClick;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const pendingRef = useRef<(() => void) | null>(null);
 
-  // Close the dropdown on outside click (menu mode only).
-  useEffect(() => {
-    if (!isMenuMode || !open) return;
-    const handleClick = () => setOpen(false);
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
-  }, [isMenuMode, open]);
-
-  const handleTriggerClick = (e: React.MouseEvent) => {
-    if (onClick) { onClick(); return; }
-    e.stopPropagation();
-    setOpen((v) => !v);
-  };
+  if (onClick) {
+    return <Button variant="primary" icon={AppIcons.add} data-testid={triggerTestId} onClick={onClick}>{t.settings.add}</Button>;
+  }
 
   return (
-    <div className="relative shrink-0">
-      <button
-        data-testid={triggerTestId}
-        onClick={handleTriggerClick}
-        className="flex items-center gap-1.5 px-3 h-8 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors shrink-0"
-      >
-        <Plus className="h-3.5 w-3.5" />
-        <span>{t.settings.add}</span>
-      </button>
-      {isMenuMode && open && (
-        <div
-          data-testid={menuTestId}
-          className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1"
-        >
-          {items?.map(item => <button key={item.label} disabled={item.disabled} onClick={() => { setOpen(false); item.onSelect(); }} className="disabled:opacity-50 disabled:cursor-not-allowed w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)]"><Plus className="h-3.5 w-3.5" />{item.label}</button>)}
-          {onAICreate && (
-            <button
-              onClick={() => { setOpen(false); onAICreate(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-            >
-              <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-              <span>{t.toolbox.createWithAbu}</span>
-            </button>
-          )}
-          {onManualCreate && (
-            <button
-              onClick={() => { setOpen(false); onManualCreate(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-            >
-              <PenLine className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-              <span>{t.toolbox.createManually}</span>
-            </button>
-          )}
-          {onUploadFile && (
-            <button
-              onClick={() => { setOpen(false); onUploadFile(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-            >
-              <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-              <span>{uploadLabel}</span>
-            </button>
-          )}
-        </div>
-      )}
-    </div>
+    <Menu
+      align="end"
+      contentProps={menuTestId ? { 'data-testid': menuTestId } : undefined}
+      // A menu reopened during its exit animation stays mounted and its close hook never
+      // ran for the earlier choice: opening forgets it.
+      onOpenChange={(open) => { if (open) pendingRef.current = null; }}
+      onCloseAutoFocus={(event) => {
+        const pending = pendingRef.current;
+        pendingRef.current = null;
+        if (!pending) return;
+        event.preventDefault();
+        triggerRef.current?.focus();
+        pending();
+      }}
+      trigger={<Button ref={triggerRef} variant="primary" icon={AppIcons.add} data-testid={triggerTestId}>{t.settings.add}</Button>}
+    >
+      {items?.map((item) => (
+        <MenuItem key={item.label} icon={AppIcons.add} disabled={item.disabled} onSelect={() => { pendingRef.current = item.onSelect; }}>{item.label}</MenuItem>
+      ))}
+      {onAICreate && <MenuItem icon={AppIcons.askAbu} onSelect={() => { pendingRef.current = onAICreate; }}>{t.toolbox.createWithAbu}</MenuItem>}
+      {onManualCreate && <MenuItem icon={AppIcons.write} onSelect={() => { pendingRef.current = onManualCreate; }}>{t.toolbox.createManually}</MenuItem>}
+      {onUploadFile && <MenuItem icon={AppIcons.upload} onSelect={() => { pendingRef.current = onUploadFile; }}>{uploadLabel}</MenuItem>}
+    </Menu>
   );
 }

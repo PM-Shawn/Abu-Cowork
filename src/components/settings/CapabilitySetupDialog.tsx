@@ -1,5 +1,5 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
-import { X } from 'lucide-react';
+import { useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { Dialog } from '@/components/ds/dialog';
 import { useI18n } from '@/i18n';
 import {
   getPendingCapabilitySetup,
@@ -17,9 +17,9 @@ import {
 import { routedComputerUseTaskSummary } from '@/core/capabilityPlugins/computerUseResume';
 import { useChatStore } from '@/stores/chatStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { focusComposer } from '@/components/chat/composerFocus';
 import { ensureConversationModelUsable } from '@/components/chat/sendModelGuard';
 import { rehydrateImageData } from '@/core/llm/imageRehydration';
-import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 
 /**
  * Task-local capability onboarding. The originating tool call remains
@@ -31,46 +31,39 @@ export default function CapabilitySetupDialog() {
     getPendingCapabilitySetup,
   );
   const { t } = useI18n();
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocus = useRef<Element | null>(null);
+  const hadRequest = useRef(false);
 
-  useEffect(() => {
-    if (!request) return;
-    const requestId = request.id;
-    const previousFocus = document.activeElement;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        // The visible, full-window lightbox owns Escape while it is open. A
-        // capability request may arrive asynchronously underneath it; never
-        // turn that same keypress into a hidden permission denial.
-        if (useImageLightboxStore.getState().isOpen) {
-          useImageLightboxStore.getState().close();
-          return;
-        }
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        resolveCapabilitySetup(requestId, false);
-      }
-    };
-    document.addEventListener('keydown', onKeyDown, true);
-    closeButtonRef.current?.focus();
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true);
-      if (
-        previousFocus instanceof HTMLElement
-        && previousFocus !== document.body
-        && previousFocus !== document.documentElement
-        && previousFocus.isConnected
-      ) {
-        previousFocus.focus();
-        if (document.activeElement === previousFocus) return;
-      }
-      document.querySelector<HTMLTextAreaElement>(
-        'textarea[data-chat-composer]:not(:disabled)',
-      )?.focus();
-    };
+  // What had focus when the first of a run of requests arrived; a later request of the run
+  // arrives with focus already lost to the window before it. A layout effect, so it runs
+  // before the window opens and takes the focus.
+  useLayoutEffect(() => {
+    if (request && !hadRequest.current) previousFocus.current = document.activeElement;
+    hadRequest.current = request !== null;
   }, [request]);
 
   if (!request) return null;
+
+  // Runs once the window has gone. Focus returns to where it was when the request arrived,
+  // or to the composer when that element is gone or cannot take it.
+  const restoreFocus = (event: Event) => {
+    // Another dialog took this window's place and holds the focus: leave it there.
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    // The next waiting request has opened its own window.
+    if (getPendingCapabilitySetup() !== null) return;
+    const previous = previousFocus.current;
+    if (
+      previous instanceof HTMLElement
+      && previous !== document.body
+      && previous !== document.documentElement
+      && previous.isConnected
+    ) {
+      previous.focus();
+      if (document.activeElement === previous) return;
+    }
+    focusComposer();
+  };
 
   const cancel = () => resolveCapabilitySetup(request.id, false);
   const complete = () => resolveCapabilitySetup(request.id, true);
@@ -130,42 +123,37 @@ export default function CapabilitySetupDialog() {
     }
   };
 
+  // Escape, the scrim and the corner button arrive as a close, and a close is always a
+  // refusal. Only the page reporting that setup is complete answers yes. The window is an
+  // approval layer and is on the page for as long as its request waits: no other window closes
+  // it, a window that opens while it is on screen is turned away, it waits its turn behind an
+  // approval that is already on the page, and the close-window question stacks over it. Escape
+  // acts on the top layer, so the window keeps no key listener of its own. One dialog per
+  // request: the next waiting request opens as a new dialog.
   return (
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/32 p-6 backdrop-blur-[2px]"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) cancel();
-      }}
+    <Dialog
+      key={request.id}
+      layer="approval"
+      open
+      onOpenChange={(next) => { if (!next) resolveCapabilitySetup(request.id, false); }}
+      title={request.target === 'computer'
+        ? t.settings.capabilityComputerSetupTitle
+        : t.settings.capabilityChromeSetupTitle}
+      titleHidden
+      size="xl"
+      closeButton
+      onCloseAutoFocus={restoreFocus}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={request.target === 'computer'
-          ? t.settings.capabilityComputerSetupTitle
-          : t.settings.capabilityChromeSetupTitle}
-        className="relative max-h-[min(820px,90vh)] w-[min(780px,92vw)] overflow-y-auto rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] p-7 shadow-2xl overlay-scroll"
-      >
-        <button
-          ref={closeButtonRef}
-          type="button"
-          onClick={cancel}
-          aria-label={t.common.close}
-          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md text-[var(--abu-text-tertiary)] transition-colors hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
-        >
-          <X className="h-[18px] w-[18px]" strokeWidth={1.7} />
-        </button>
-        <CapabilitiesSection
-          key={request.id}
-          setupTarget={request.target}
-          requestedByTask
-          computerUseRequirements={request.computerUseRequirements}
-          setupOnly
-          onSetupComplete={request.source === 'relaunch' ? resumeAfterRelaunch : complete}
-          onSetupCancel={cancel}
-          onSetupRelaunch={request.target === 'computer' ? relaunch : undefined}
-        />
-      </div>
-    </div>
+      <CapabilitiesSection
+        key={request.id}
+        setupTarget={request.target}
+        requestedByTask
+        computerUseRequirements={request.computerUseRequirements}
+        setupOnly
+        onSetupComplete={request.source === 'relaunch' ? resumeAfterRelaunch : complete}
+        onSetupCancel={cancel}
+        onSetupRelaunch={request.target === 'computer' ? relaunch : undefined}
+      />
+    </Dialog>
   );
 }

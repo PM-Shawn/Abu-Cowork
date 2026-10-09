@@ -30,7 +30,7 @@ const DURATION_MS = 280;
  *   virtualized scrolling must not dance.
  * - Small (≤ threshold) changes are untouched: height stays `auto`, streaming
  *   text follows instantly.
- * - Honors prefers-reduced-motion; no-ops entirely without ResizeObserver
+ * - Honors the app's reduced motion (<html data-motion="reduced">); no-ops entirely without ResizeObserver
  *   (jsdom).
  */
 export default function SmoothHeight({
@@ -59,7 +59,9 @@ export default function SmoothHeight({
     const outer = outerRef.current;
     const inner = innerRef.current;
     if (!outer || !inner || typeof ResizeObserver === 'undefined') return;
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    // appearance.ts writes the app's reduce-motion choice here (the design
+    // preview can force it too), so the chat follows one switch app-wide.
+    const reduceMotion = () => document.documentElement.dataset.motion === 'reduced';
 
     const settle = () => {
       animatingRef.current = false;
@@ -75,7 +77,7 @@ export default function SmoothHeight({
       lastHeightRef.current = newHeight;
       // First measure = mount; never animate (virtualized remounts of old rows).
       if (prev == null) return;
-      if (reduceMotion?.matches) return;
+      if (reduceMotion()) return;
       // While an animation is in flight every change retargets it (the content
       // may still be settling); otherwise only large jumps start one.
       if (!animatingRef.current && Math.abs(newHeight - prev) <= THRESHOLD_PX) return;
@@ -104,7 +106,7 @@ export default function SmoothHeight({
       // Commit the start height before enabling the transition, or the browser
       // coalesces both writes and nothing animates.
       void outer.offsetHeight;
-      outer.style.transition = `height ${DURATION_MS}ms ease-out`;
+      outer.style.transition = `height ${DURATION_MS}ms var(--ease-enter)`;
       outer.style.height = `${newHeight}px`;
       // Timer instead of transitionend: 'transitionend' is swallowed when the
       // transition is retargeted or the element is display-toggled mid-flight,

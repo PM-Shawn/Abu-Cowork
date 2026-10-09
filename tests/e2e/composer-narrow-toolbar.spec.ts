@@ -128,8 +128,8 @@ test.describe('composer toolbar in a narrow pane', () => {
       await expect(teamChip).toBeVisible();
 
       const toolbar = page.getByTestId('composer-toolbar');
-      const card = page.locator('[data-chat-composer]')
-        .locator('xpath=ancestor::div[contains(@class,"rounded-2xl")][1]');
+      // The composer card is the toolbar's parent.
+      const card = toolbar.locator('xpath=..');
 
       async function resizeTo(width: number): Promise<void> {
         await launched.app.evaluate(({ BrowserWindow }, w) => {
@@ -234,8 +234,8 @@ test.describe('composer toolbar in a narrow pane', () => {
       await page.locator('[data-window-control="right-panel"]').click();
 
       const toolbar = page.getByTestId('composer-toolbar');
-      const card = page.locator('[data-chat-composer]')
-        .locator('xpath=ancestor::div[contains(@class,"rounded-2xl")][1]');
+      // The composer card is the toolbar's parent.
+      const card = toolbar.locator('xpath=..');
       const permissionLabel = toolbar.locator('.\\@max-\\[420px\\]\\:hidden').first();
       await expect(permissionLabel).toBeVisible();
 

@@ -78,4 +78,10 @@ describe('AdvancedCapabilitiesFields', () => {
     expect(screen.getByText('能看图')).toBeInTheDocument();
     expect(screen.getByText('模型能识别图片和屏幕截图')).toBeInTheDocument();
   });
+
+  it('ties the explanation to the 能看图 checkbox, and to no other checkbox', () => {
+    render(<Harness estimated={32768} />);
+    expect(screen.getByRole('checkbox', { name: '能看图' })).toHaveAccessibleDescription('模型能识别图片和屏幕截图');
+    expect(screen.getByRole('checkbox', { name: '工具调用' })).not.toHaveAttribute('aria-describedby');
+  });
 });

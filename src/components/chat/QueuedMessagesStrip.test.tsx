@@ -6,8 +6,10 @@
  * task has reached a terminal state.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render as renderBare, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ComponentProps, ReactElement, ReactNode } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import {
@@ -35,6 +37,27 @@ vi.mock('@/i18n', () => ({
     },
   }),
 }));
+
+const iconButtonRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the pills' only floating-layer control (the cancel button's tooltip).
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
+      iconButtonRenders();
+      return actual.IconButton(props);
+    },
+  };
+});
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
+// Stands in for ChatView re-rendering on every streamed token: `tick` changes, the strip's props do not.
+function Host({ tick, children }: { tick: number; children: ReactNode }) {
+  return <DesignSystemProvider><span data-tick={tick} />{children}</DesignSystemProvider>;
+}
 
 const CONV = 'conv-strip';
 
@@ -76,6 +99,26 @@ describe('QueuedMessagesStrip', () => {
 
     expect(screen.queryByText('取消我')).not.toBeInTheDocument();
     expect(getQueuedInputs(CONV)).toHaveLength(0);
+  });
+
+  it('draws each queued message as a filled block whose cancel button is named, without a native title', () => {
+    enqueueUserInput(CONV, '排队中');
+    render(<QueuedMessagesStrip conversationId={CONV} />);
+    const cancel = screen.getByRole('button', { name: '取消排队' });
+    expect(cancel).not.toHaveAttribute('title');
+    const block = cancel.parentElement!;
+    expect(block).toHaveClass('rounded-control');
+    expect(block).toHaveClass('bg-fill');
+  });
+
+  it('does not re-render the cancel buttons while the chat view streams', () => {
+    enqueueUserInput(CONV, '第一条');
+    const { rerender } = renderBare(<Host tick={0}><QueuedMessagesStrip conversationId={CONV} /></Host>);
+    const initial = iconButtonRenders.mock.calls.length;
+    expect(initial).toBeGreaterThan(0);
+    rerender(<Host tick={1}><QueuedMessagesStrip conversationId={CONV} /></Host>);
+    rerender(<Host tick={2}><QueuedMessagesStrip conversationId={CONV} /></Host>);
+    expect(iconButtonRenders).toHaveBeenCalledTimes(initial);
   });
 
   it('shows a paused terminal after Stop and resumes the oldest item as a new run', async () => {

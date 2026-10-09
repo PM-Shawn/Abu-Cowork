@@ -15,6 +15,7 @@ import {
   FULLSCREEN_EXIT_COOLDOWN_MS,
   FULLSCREEN_GESTURE_REQUIRED_MESSAGE,
   FULLSCREEN_GESTURE_WINDOW_MS,
+  FULLSCREEN_OCCUPIED_MESSAGE,
   TOO_MANY_RESOURCE_READS_MESSAGE,
   MAX_AUDIT_ROWS,
   appendAuditRow,
@@ -605,6 +606,84 @@ describe('ui/request-display-mode', () => {
       isError: true,
       summary: FULLSCREEN_GESTURE_REQUIRED_MESSAGE,
     }]);
+  });
+
+  describe('while the user has a window, a question or an approval open', () => {
+    it('refuses fullscreen even with a fresh gesture, and records the refusal', async () => {
+      const state = { occupied: true, gesture: undefined as number | undefined };
+      const h = harness({ pageOccupied: () => state.occupied, lastUserGestureAt: () => state.gesture });
+      state.gesture = h.clock.value;
+
+      const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+
+      expect(error.code).toBe(-32000);
+      expect(error.message).toBe(FULLSCREEN_OCCUPIED_MESSAGE);
+      expect(h.spies.setDisplayMode).not.toHaveBeenCalled();
+      expect(h.audit).toMatchObject([{
+        kind: 'display-mode',
+        tool: 'ui/request-display-mode',
+        args: { mode: 'fullscreen' },
+        outcome: 'denied',
+        isError: true,
+        summary: FULLSCREEN_OCCUPIED_MESSAGE,
+      }]);
+    });
+
+    it('spends no grace: the first unprompted request after the page is free is honoured', async () => {
+      const state = { occupied: true };
+      const h = harness({ pageOccupied: () => state.occupied });
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+
+      state.occupied = false;
+      await expect(h.handlers.onrequestdisplaymode({ mode: 'fullscreen' })).resolves.toEqual({ mode: 'fullscreen' });
+      expect(h.spies.setDisplayMode).toHaveBeenCalledTimes(1);
+      // That one was the grace: the next unprompted request needs a gesture.
+      const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      expect(error.message).toBe(FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
+    });
+
+    it('starts no cool-down: a gesture right after the page is free is enough', async () => {
+      const state = { occupied: false, gesture: undefined as number | undefined };
+      const h = harness({ pageOccupied: () => state.occupied, lastUserGestureAt: () => state.gesture });
+      // Burn the grace so the gesture is doing the work.
+      await h.handlers.onrequestdisplaymode({ mode: 'fullscreen' });
+      await h.handlers.onrequestdisplaymode({ mode: 'inline' });
+
+      state.occupied = true;
+      state.gesture = h.clock.value;
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+
+      state.occupied = false;
+      h.clock.value += 1;
+      await expect(h.handlers.onrequestdisplaymode({ mode: 'fullscreen' })).resolves.toEqual({ mode: 'fullscreen' });
+    });
+
+    it('is checked after the cool-down of a user exit, and before the gesture and the grace', async () => {
+      const state = { occupied: true, exit: undefined as number | undefined, gesture: undefined as number | undefined };
+      const reads: string[] = [];
+      const h = harness({
+        lastUserExitAt: () => { reads.push('exit'); return state.exit; },
+        pageOccupied: () => { reads.push('occupied'); return state.occupied; },
+        lastUserGestureAt: () => { reads.push('gesture'); return state.gesture; },
+      });
+
+      // Occupied, no exit: the page is asked and the gesture is not even read.
+      await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      expect(reads).toEqual(['exit', 'occupied']);
+
+      // Inside the cool-down the cool-down answers, whatever the page holds.
+      reads.length = 0;
+      state.exit = h.clock.value;
+      const cooling = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+      expect(cooling.message).toBe(FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
+      expect(reads).toEqual(['exit']);
+    });
+
+    it('still lets the app go back to inline', async () => {
+      const h = harness({ pageOccupied: () => true });
+      await expect(h.handlers.onrequestdisplaymode({ mode: 'inline' })).resolves.toEqual({ mode: 'inline' });
+    });
   });
 
   it('shares the per-minute action budget with tools/call', async () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { BatchTerminalSummary, Message, ToolCall } from '@/types';
+import { makeBatchKey, type BatchIdentity, type BatchTerminalSummary, type Message, type ToolCall } from '@/types';
 import type { ExecutionStep, TaskExecution } from '@/types/execution';
-import type { BatchEntry } from '@/stores/batchProgressStore';
+import { useBatchProgressStore, type BatchEntry } from '@/stores/batchProgressStore';
 import { collectMemberDispatches, findRunningDispatch, parseMemberAddress, summarizeByMember, type MemberDispatch } from './teamDispatches';
 
 function step(over: Partial<ExecutionStep>): ExecutionStep {
@@ -97,6 +97,34 @@ describe('collectMemberDispatches', () => {
       ['zz取数员', 'batch', 0, 'completed', 0, '做个自我介绍'],
       ['zz撰写员', 'batch', 1, 'running', 0, '做个自我介绍'],
     ]);
+  });
+
+  // The batch tool stores its progress under the identity it was called with,
+  // which names the dispatching assistant message. A live step does not carry
+  // that message id, so the hand-off takes the identity from the entry itself.
+  it('gives a live batch hand-off the identity its progress entry is stored under', () => {
+    const stored: BatchIdentity = { conversationId: 'c1', assistantMessageId: 'a1', batchToolCallId: 'tc-b' };
+    const store = useBatchProgressStore.getState();
+    store.initBatch(stored, ['任务A', '任务B']);
+    store.setTaskRunning(stored, 0);
+    store.setTaskRunning(stored, 1);
+    store.setTaskTerminal(stored, 0, { status: 'stopped', reason: 'aborted' });
+    const exec = {
+      id: 'e1', conversationId: 'c1', loopId: 'l1', status: 'running', startTime: 10, plannedSteps: [], planParsed: false,
+      steps: [step({ id: 'b1', type: 'delegate', toolName: 'run_agent_batch', toolCallId: 'tc-b', status: 'running',
+        toolInput: { tasks: [{ agent_name: 'zz取数员', task: '任务A' }, { agent_name: 'zz撰写员', task: '任务B' }] }, childSteps: [] })],
+    } as TaskExecution;
+    try {
+      const batches = useBatchProgressStore.getState().batches;
+      const result = collectMemberDispatches({ conversationId: 'c1', executions: [exec], messages: [], batches: Object.values(batches) });
+      expect(result.map((d) => [d.agent, d.status])).toEqual([['zz取数员', 'interrupted'], ['zz撰写员', 'running']]);
+      for (const d of result) {
+        expect(makeBatchKey(d.identity)).toBe(makeBatchKey(stored));
+        expect(batches[makeBatchKey(d.identity)]?.tasks[d.taskIndex].label).toBe(d.label);
+      }
+    } finally {
+      store.clearBatch(stored);
+    }
   });
 
   it('does not count a batch that never started (rejected before any task ran)', () => {

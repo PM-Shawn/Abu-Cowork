@@ -1,7 +1,13 @@
 // @vitest-environment happy-dom
+/// <reference types="@testing-library/jest-dom" />
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Button } from '@/components/ds/button';
+import { Switch } from '@/components/ds/switch';
+import { pointerTargetOf } from '@/test/pointerTarget';
+import SourceBadge from './SourceBadge';
 import ToolCard from './ToolCard';
 
 /**
@@ -38,7 +44,7 @@ describe('ToolCard name row width priority', () => {
   it('makes the badge the item that yields, and never the action', () => {
     render(
       <ToolCard
-        item={{ ...item, badge: <span>未签名</span>, toggle: <button>安装</button> }}
+        item={{ ...item, badge: <span>未签名</span>, toggle: <Button>安装</Button> }}
       />,
     );
 
@@ -80,5 +86,157 @@ describe('ToolCard name row width priority', () => {
     screen.getByTestId('switch').focus();
     await userEvent.keyboard('{Enter}');
     expect(onClick).toHaveBeenCalledTimes(2);
+
+    // Space opens it as well, like any button.
+    card.focus();
+    await userEvent.keyboard(' ');
+    expect(onClick).toHaveBeenCalledTimes(3);
+  });
+
+  // The focus is handed to a card after an editor closes or a neighbour is deleted; a key that
+  // is still down then repeats on it.
+  it('opens once per press: the repeats of a held Enter or Space open nothing', () => {
+    const onClick = vi.fn();
+    render(<ToolCard item={item} onClick={onClick} />);
+    const card = screen.getByRole('button', { name: /abu-prd-doctor/ });
+    card.focus();
+
+    // fireEvent returns false once the default was prevented.
+    expect(fireEvent.keyDown(card, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    expect(fireEvent.keyDown(card, { key: 'Enter', code: 'NumpadEnter', repeat: true })).toBe(false);
+    expect(fireEvent.keyDown(card, { key: ' ', code: 'Space', repeat: true })).toBe(false);
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.keyUp(card, { key: 'Enter', code: 'Enter' });
+    expect(fireEvent.keyDown(card, { key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(fireEvent.keyDown(card, { key: ' ', code: 'Space' })).toBe(false);
+    expect(onClick).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves the repeats of other keys, and of keys pressed in a nested control, alone', () => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: <span data-testid="switch" tabIndex={0} /> }} onClick={onClick} />);
+    const card = screen.getByRole('button', { name: /abu-prd-doctor/ });
+
+    expect(fireEvent.keyDown(card, { key: 'Tab', code: 'Tab', repeat: true })).toBe(true);
+    expect(fireEvent.keyDown(card, { key: 'ArrowDown', code: 'ArrowDown', repeat: true })).toBe(true);
+    expect(fireEvent.keyDown(screen.getByTestId('switch'), { key: 'Enter', code: 'Enter', repeat: true })).toBe(true);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});
+
+// A card's action that is running takes the press itself. `pointerTargetOf` gives the element
+// the pointer lands on.
+describe('ToolCard with a busy control on it', () => {
+  const item = { id: 'p', name: 'abu-prd-doctor', description: 'd' };
+  const BUSY: [string, () => ReactElement, () => HTMLElement][] = [
+    ['Button', () => <Button busy size="sm" onClick={() => { throw new Error('a busy button ran its handler'); }}>安装</Button>, () => screen.getByRole('button', { name: '安装' })],
+    ['Switch', () => <Switch busy checked={false} aria-label="Connect" onCheckedChange={() => { throw new Error('a busy switch changed'); }} />, () => screen.getByRole('switch', { name: 'Connect' })],
+  ];
+
+  it.each(BUSY)('does not open on a pointer press on its busy %s, and the focus stays on that control', async (_name, control, find) => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: control() }} onClick={onClick} />);
+    find().focus();
+
+    await userEvent.click(pointerTargetOf(find()));
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(find()).toHaveFocus();
+    expect(find()).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it.each(BUSY)('does not open on Enter, Space or a click made by code on its busy %s', async (_name, control, find) => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: control() }} onClick={onClick} />);
+    find().focus();
+
+    await userEvent.keyboard('{Enter}');
+    await userEvent.keyboard(' ');
+    fireEvent.click(find());
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(find()).toHaveFocus();
+  });
+
+  it.each(BUSY)('neither opens nor takes the focus when its busy %s is pressed with the focus elsewhere', async (_name, control, find) => {
+    const onClick = vi.fn();
+    render(<ToolCard item={{ ...item, toggle: control() }} onClick={onClick} />);
+    const card = screen.getByRole('button', { name: /abu-prd-doctor/ });
+
+    await userEvent.click(pointerTargetOf(find()));
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(card).not.toHaveFocus();
+  });
+});
+
+describe('ToolCard shell', () => {
+  const item = { id: 'p', name: 'abu-prd-doctor', description: 'd', testId: 'card' };
+  const classes = (el: HTMLElement) => el.className.split(/\s+/);
+
+  it('is a flat card: panel corners, a separator line, the surface fill, one fixed height', () => {
+    render(<ToolCard item={item} />);
+    const card = screen.getByTestId('card');
+    expect(classes(card)).toContain('rounded-panel');
+    expect(classes(card)).toContain('border-separator');
+    expect(classes(card)).toContain('bg-surface');
+    expect(classes(card)).toContain('h-30');
+    expect(card.className).not.toContain('clay');
+  });
+
+  it('is a keyboard target with a focus ring and a hover fill when it opens something', () => {
+    render(<ToolCard item={item} onClick={vi.fn()} />);
+    const card = screen.getByTestId('card');
+    expect(card).toHaveAttribute('role', 'button');
+    expect(card).toHaveAttribute('tabindex', '0');
+    expect(card.tagName).toBe('DIV');
+    expect(classes(card)).toContain('rounded-panel');
+    expect(classes(card)).toContain('focus-visible:ring-focus');
+    expect(classes(card)).toContain('hover:bg-fill-hover');
+  });
+
+  it('has no role, no tab stop and no hover fill when it opens nothing', () => {
+    render(<ToolCard item={item} />);
+    const card = screen.getByTestId('card');
+    expect(card).not.toHaveAttribute('role');
+    expect(card).not.toHaveAttribute('tabindex');
+    expect(classes(card)).not.toContain('hover:bg-fill-hover');
+  });
+
+  it('grows with a footer and keeps the footer at the bottom', () => {
+    render(<ToolCard item={{ ...item, footer: <span>Footer line</span> }} />);
+    const card = screen.getByTestId('card');
+    expect(classes(card)).toContain('min-h-30');
+    expect(classes(card)).not.toContain('h-30');
+    expect(classes(screen.getByText('Footer line').parentElement!)).toContain('mt-auto');
+  });
+
+  it('shows the default mark when the caller gives no avatar', () => {
+    render(<ToolCard item={item} />);
+    expect(screen.getByTestId('card')).toHaveTextContent('🤖');
+  });
+});
+
+describe('SourceBadge', () => {
+  it('shows a plugin source as a neutral tag whose full text is readable on hover', () => {
+    render(<SourceBadge source={{ kind: 'plugin', plugin: 'Weather Pack' }} />);
+    const badge = screen.getByTestId('source-badge');
+    expect(badge).toHaveAttribute('data-source-kind', 'plugin');
+    const text = badge.querySelector('[title]')!;
+    expect(text.getAttribute('title')).toBe(badge.textContent);
+    expect(badge.textContent).toContain('Weather Pack');
+    expect(text.className.split(/\s+/)).toContain('truncate');
+    // The design-system tag: neutral fill, control corners.
+    expect(text.parentElement!.className.split(/\s+/)).toContain('bg-fill');
+    expect(text.parentElement!.className.split(/\s+/)).toContain('rounded-control');
+  });
+
+  it('labels the organization source and draws nothing for the user\'s own items', () => {
+    const { rerender } = render(<SourceBadge source={{ kind: 'enterprise' }} />);
+    expect(screen.getByTestId('source-badge')).toHaveAttribute('data-source-kind', 'enterprise');
+    rerender(<SourceBadge source={{ kind: 'user' }} />);
+    expect(screen.queryByTestId('source-badge')).toBeNull();
   });
 });

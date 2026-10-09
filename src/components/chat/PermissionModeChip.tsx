@@ -1,37 +1,59 @@
-import { useState, useRef, useEffect } from 'react';
-import { Hand, ScanEye, AlertTriangle } from 'lucide-react';
+import { memo, useState, type ComponentProps } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ds/button';
+import { AppIcons, type AppIconName } from '@/components/ds/icons';
+import { Menu, MenuRadioGroup, MenuRadioItem } from '@/components/ds/menu';
+import { Tooltip } from '@/components/ds/tooltip';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
 
-interface ModeOption {
-  mode: PermissionMode;
-  Icon: React.FC<{ className?: string }>;
-}
+const MODES: PermissionMode[] = ['standard', 'smart', 'autonomous'];
 
-const MODE_OPTIONS: ModeOption[] = [
-  { mode: 'standard', Icon: Hand },
-  { mode: 'smart', Icon: ScanEye },
-  { mode: 'autonomous', Icon: AlertTriangle },
-];
-
-// Collapsed chip color per mode (icon follows text via currentColor): risk ramp
-// gray → clay → red. Dropdown list items stay neutral.
-const MODE_CHIP_COLOR: Record<PermissionMode, string> = {
-  standard: 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]',
-  smart: 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)]',
-  autonomous: 'text-[var(--abu-danger)]',
+const MODE_ICON: Record<PermissionMode, AppIconName> = {
+  standard: 'permissionAsk',
+  smart: 'permissionReview',
+  autonomous: 'warning',
 };
 
-interface Props {
-  conversationId: string | null;
+// The Menu hands its trigger props (open state, click, ref) to this component; spreading
+// them onto the button lets the Tooltip wrap it.
+function ModeTrigger({ mode, label, hint, className, ...props }: ComponentProps<'button'> & {
+  mode: PermissionMode;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <Tooltip content={hint}>
+      <Button
+        variant="plain"
+        size="sm"
+        icon={AppIcons[MODE_ICON[mode]]}
+        /* Just the mode, matching the visible label — NOT the hint's
+           "默认权限模式: …" phrasing, which is the settings dialog control's
+           accessible name and would make `getByRole` ambiguous across the two
+           (tests/e2e/security-settings.spec.ts locates it by exactly that).
+           The point of spelling it out is that the label goes display:none at
+           narrow widths, which would otherwise take the name with it. */
+        aria-label={label}
+        // Full autonomy is a risk, so it reads as a warning: color plus the warning shape.
+        className={cn(mode === 'autonomous' ? 'text-warning' : 'text-label-secondary', className)}
+        {...props}
+      >
+        {/* Second rung of the composer toolbar's degradation ladder: in a
+            narrow pane the mode reads well enough from its icon, and the full
+            label stays in the tooltip and `aria-label`. The query resolves
+            against the composer toolbar's `@container`; anywhere without one
+            it never matches, so the label simply always shows. */}
+        <span className="whitespace-nowrap @max-[420px]:hidden">{label}</span>
+      </Button>
+    </Tooltip>
+  );
 }
 
-export default function PermissionModeChip({ conversationId }: Props) {
+function PermissionModeChip({ conversationId }: { conversationId: string | null }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
 
   const convMode = useChatStore(
@@ -49,90 +71,43 @@ export default function PermissionModeChip({ conversationId }: Props) {
     autonomous: { label: t.settings.permissionModeAutonomous, description: t.settings.permissionModeAutonomousDesc },
   };
 
-  const currentLabel = modeLabels[effectiveMode]?.label ?? t.settings.permissionModeStandard;
-  const CurrentIcon = MODE_OPTIONS.find((o) => o.mode === effectiveMode)?.Icon ?? Hand;
+  const currentMode: PermissionMode = MODES.includes(effectiveMode) ? effectiveMode : 'standard';
+  const currentLabel = modeLabels[currentMode].label;
 
-  useEffect(() => {
-    if (!open) return;
-    function handleOutsideClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, [open]);
-
-  function handleSelect(mode: PermissionMode) {
+  function handleSelect(value: string) {
+    const mode = value as PermissionMode;
     if (conversationId) {
       setConversationPermissionMode(conversationId, mode);
     } else {
       setPendingPermissionMode(mode);
     }
-    setOpen(false);
   }
 
+  // Arrow keys only move the highlight; a mode applies on click, Enter or Space.
   return (
-    <div ref={ref} className="relative shrink-0">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title={`${t.settings.permissionMode}: ${currentLabel}`}
-        /* Just the mode, matching the visible label — NOT the title's
-           "默认权限模式: …" phrasing, which is the settings dialog control's
-           accessible name and would make `getByRole` ambiguous across the two
-           (tests/e2e/security-settings.spec.ts locates it by exactly that).
-           The name here is unchanged from when it came from the label text;
-           the point of spelling it out is that the label goes display:none at
-           narrow widths, which would otherwise take the name with it. */
-        aria-label={currentLabel}
-        className={cn(
-          'btn-ghost flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors hover:bg-[var(--abu-bg-hover)]',
-          MODE_CHIP_COLOR[effectiveMode] ?? MODE_CHIP_COLOR.standard
-        )}
-      >
-        <CurrentIcon className="h-3.5 w-3.5 shrink-0" />
-        {/* Second rung of the composer toolbar's degradation ladder: in a
-            narrow pane the mode reads well enough from its icon (the risk ramp
-            is also colored gray → clay → red), and the full label stays in the
-            tooltip and `aria-label`. The query resolves against the composer
-            toolbar's `@container`; anywhere without one it never matches, so
-            the label simply always shows. */}
-        <span className="whitespace-nowrap @max-[420px]:hidden">{currentLabel}</span>
-      </button>
-
-      {open && (
-        <div
-          className={cn(
-            'absolute bottom-full left-0 mb-1.5 z-50',
-            'w-64 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)]',
-            'shadow-lg shadow-black/10 p-2 flex flex-col gap-1'
-          )}
-        >
-          {MODE_OPTIONS.map(({ mode, Icon }) => {
-            const info = modeLabels[mode];
-            return (
-              <button
-                key={mode}
-                onClick={() => handleSelect(mode)}
-                className={cn(
-                  'flex items-start gap-2.5 w-full text-left px-3 py-2.5 rounded-lg transition-colors',
-                  mode === effectiveMode
-                    ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]'
-                )}
-              >
-                <Icon className="h-4 w-4 mt-0.5 shrink-0" />
-                <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="text-body font-medium">{info.label}</span>
-                  <span className="text-caption text-[var(--abu-text-muted)] leading-snug">
-                    {info.description}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+    <Menu
+      open={open}
+      onOpenChange={setOpen}
+      side="top"
+      align="start"
+      trigger={(
+        <ModeTrigger
+          mode={currentMode}
+          label={currentLabel}
+          hint={`${t.settings.permissionMode}: ${currentLabel}`}
+        />
       )}
-    </div>
+    >
+      <MenuRadioGroup value={currentMode} onValueChange={handleSelect}>
+        {MODES.map((mode) => (
+          <MenuRadioItem key={mode} value={mode} description={modeLabels[mode].description}>
+            {modeLabels[mode].label}
+          </MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
+    </Menu>
   );
 }
+
+// The composer re-renders on every streamed token; the chip only changes with its mode.
+export default memo(PermissionModeChip);

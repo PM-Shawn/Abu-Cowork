@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { CONDENSE_THRESHOLD, type Chapter } from './chapters';
+import { Pressable } from '@/components/ds/pressable';
+import { CONDENSE_THRESHOLD, sameChapters, type Chapter } from './chapters';
 
 /**
  * The conversation chapter rail — a column of tick marks in the transcript's
@@ -22,11 +23,10 @@ import { CONDENSE_THRESHOLD, type Chapter } from './chapters';
  *  rail reads as an even scale rather than a ragged bar chart. State is carried
  *  by colour (current) and weight (hover) instead. */
 const TICK_BASE =
-  'relative block w-[28px] h-[10px] border-0 p-0 bg-transparent cursor-pointer ' +
+  'relative block w-[28px] h-[10px] cursor-pointer ' +
   "before:content-[''] before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 " +
-  'before:w-[5px] before:h-[2px] before:rounded-[1px] before:bg-[var(--abu-text-placeholder)] ' +
-  'before:opacity-75 before:transition-all before:duration-150 before:ease-out ' +
-  'focus-visible:outline-2 focus-visible:outline-[var(--abu-clay)] focus-visible:outline-offset-2';
+  'before:w-[5px] before:h-[2px] before:rounded-full before:bg-label-placeholder ' +
+  'before:opacity-75 before:transition-all before:duration-fast before:ease-enter';
 
 /** Condensed rows tighten the pitch only — the tick keeps its length, so a long
  *  conversation still reads as the same scale, just a denser one. */
@@ -42,10 +42,10 @@ const TICK_CONDENSED = 'h-[6px]';
  * the cursor onto the right one. The transition on every tick is what makes the
  * whole column read as one soft wave rather than five independent flickers.
  *
- * Only the tick under the pointer takes colour. Tinting the neighbours too
- * reads as three separate states rather than one target with a run-up, and it
- * competes with the accent that means "the chapter you are reading". The
- * neighbours carry the wave through length alone.
+ * Only the tick under the pointer takes the full label colour. Darkening the
+ * neighbours too reads as three separate states rather than one target with a
+ * run-up, and it competes with the colour that means "the chapter you are
+ * reading". The neighbours carry the wave through length alone.
  *
  * The resting 5px is deliberately tiny — the rail has to sit beside the text
  * without competing with it. That makes the swell do double duty: it is both
@@ -56,19 +56,19 @@ const TICK_CONDENSED = 'h-[6px]';
  * Distances past the end of this ramp keep the resting size.
  */
 const TICK_RAMP = [
-  'before:w-[24px] before:h-[3px] before:bg-[var(--abu-clay)] before:opacity-100',
+  'before:w-[24px] before:h-[3px] before:bg-label before:opacity-100',
   'before:w-[16px]',
   'before:w-[10px]',
 ];
 
 /** The chapter being read. Colour only — the ramp above owns the sizes, so a
  *  current tick under the pointer still swells like any other. */
-const TICK_CURRENT = 'before:bg-[var(--abu-clay)] before:opacity-100';
+const TICK_CURRENT = 'before:bg-label before:opacity-100';
 
 /** Breathing room kept between the preview card and the window edge. */
 const VIEWPORT_GUTTER = 16;
 
-export default function ChapterRail({
+function ChapterRail({
   chapters,
   currentIndex,
   onJump,
@@ -129,7 +129,7 @@ export default function ChapterRail({
     // same trick the scroll-to-bottom button in ChatView already relies on —
     // and `top-1/2` parks it halfway down rather than under the header, so the
     // scale reads as centred on the conversation instead of hanging from it.
-    <div className="sticky top-1/2 h-0 z-10">
+    <div className="sticky top-1/2 z-sticky h-0">
       {/* Mirrors the message column's own `max-w-4xl mx-auto` box so the rail
           tracks the TEXT, not the window. Anchoring it to the scroll container
           instead put it (containerWidth - 896) / 2 pixels away from the column
@@ -139,7 +139,7 @@ export default function ChapterRail({
       <div className="w-full max-w-4xl mx-auto relative">
         <nav
           aria-label={t.chat.chapters.railLabel}
-          className="absolute left-1 -translate-y-1/2 py-1.5 px-1"
+          className="absolute left-1 -translate-y-1/2 px-1 py-2"
           onMouseLeave={() => setPeeked(null)}
         >
           {/* The rail's height is 10px per chapter (6px condensed), so it grows
@@ -156,10 +156,9 @@ export default function ChapterRail({
                        [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {chapters.map((chapter, index) => (
-              <button
+              <Pressable
                 key={chapter.messageId}
                 ref={(el) => { tickRefs.current[index] = el; }}
-                type="button"
                 aria-label={format(t.chat.chapters.jumpTo, { title: chapter.title })}
                 aria-current={index === currentIndex}
                 className={cn(
@@ -184,13 +183,12 @@ export default function ChapterRail({
           {preview && peeked && (
             <div
               ref={peekRef}
-              className="absolute left-[calc(100%+10px)] w-[300px] flex flex-col gap-1 px-3 py-2.5 pointer-events-none
-                         rounded-xl bg-[var(--abu-bg-base)] border border-[var(--abu-border)] shadow-lg"
+              className="pointer-events-none absolute left-[calc(100%+10px)] flex w-[300px] flex-col gap-1 rounded-panel bg-raised px-3 py-2 shadow-float"
               style={{ top: peeked.top - peekShift }}
             >
-              <span className="text-h-xs text-[var(--abu-text-primary)] truncate">{preview.title}</span>
+              <span className="truncate text-ui font-medium text-label">{preview.title}</span>
               {preview.summary && (
-                <span className="text-minor text-[var(--abu-text-muted)] line-clamp-3">{preview.summary}</span>
+                <span className="line-clamp-3 text-ui-sm text-label-secondary">{preview.summary}</span>
               )}
             </div>
           )}
@@ -199,3 +197,10 @@ export default function ChapterRail({
     </div>
   );
 }
+
+// ChatView re-renders on every streamed token and derives a new chapter array
+// each time; the rail only re-renders when a chapter or the current one changed.
+export default memo(ChapterRail, (prev, next) =>
+  prev.currentIndex === next.currentIndex
+  && prev.onJump === next.onJump
+  && sameChapters(prev.chapters, next.chapters));

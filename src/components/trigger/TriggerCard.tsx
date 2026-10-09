@@ -1,7 +1,12 @@
-import { useTriggerStore } from '@/stores/triggerStore';
+import { memo } from 'react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
+import ToolCard, { type ToolItem } from '@/components/toolbox/ToolCard';
+import { cardProps } from '@/components/toolbox/cardFocus';
 import { useI18n } from '@/i18n';
-import { Zap, Send } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { useTriggerStore } from '@/stores/triggerStore';
 import type { Trigger } from '@/types/trigger';
 import type { TranslationDict } from '@/i18n/types';
 
@@ -33,71 +38,59 @@ interface Props {
   trigger: Trigger;
 }
 
-export default function TriggerCard({ trigger }: Props) {
+/**
+ * One event listener in the list: the shared card with what the listener matches, whether it
+ * pushes its result on, when it last fired, and the switch that pauses or resumes it. The card
+ * opens the listener's page.
+ */
+const TriggerCard = memo(function TriggerCard({ trigger }: Props) {
   const { t } = useI18n();
-  const { setTriggerStatus, setSelectedTriggerId } = useTriggerStore();
-
   const isPaused = trigger.status === 'paused';
 
-  const handleToggle = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setTriggerStatus(trigger.id, isPaused ? 'active' : 'paused');
-  };
-
-  const handleCardClick = () => {
-    setSelectedTriggerId(trigger.id);
+  const item: ToolItem = {
+    id: trigger.id,
+    name: trigger.name,
+    avatar: <Icon icon={AppIcons.trigger} size="lg" className="text-label-tertiary" />,
+    // Two lines at most, inside the card's fixed height: a card with a second line is as tall
+    // as one without.
+    description: (
+      <>
+        <span className="block truncate">{getFilterDescription(trigger, t.trigger)}</span>
+        {(trigger.output?.enabled || trigger.lastTriggeredAt) && (
+          <span className="flex min-w-0 items-center gap-2">
+            {trigger.output?.enabled && (
+              <span className="flex shrink-0">
+                <Tag><Icon icon={AppIcons.deliver} size="sm" />{t.trigger.outputEnabled}</Tag>
+              </span>
+            )}
+            {trigger.lastTriggeredAt && (
+              <span className="min-w-0 truncate">
+                {t.trigger.lastTriggered}: {formatTimeAgo(trigger.lastTriggeredAt, t.trigger)}
+              </span>
+            )}
+          </span>
+        )}
+      </>
+    ),
+    toggle: (
+      // A press on the switch pauses or resumes; it does not also open the listener.
+      <span onClick={(event) => event.stopPropagation()}>
+        <Switch
+          checked={!isPaused}
+          onCheckedChange={() => useTriggerStore.getState().setTriggerStatus(trigger.id, isPaused ? 'active' : 'paused')}
+          aria-label={trigger.name}
+        />
+      </span>
+    ),
+    testId: `trigger-card-${trigger.id}`,
   };
 
   return (
-    <div
-      onClick={handleCardClick}
-      className={cn(
-        'group flex flex-col gap-2 w-full h-[120px] overflow-hidden rounded-xl p-4 cursor-pointer',
-        'bg-[var(--abu-bg-subtle)] border border-[var(--abu-border)]',
-        'hover:border-[var(--abu-clay)] hover:shadow-sm transition-all duration-150'
-      )}
-    >
-      {/* Row 1: event avatar + name + on/off toggle (mirrors the toolbox card shell) */}
-      <div className="flex items-center gap-3 w-full shrink-0">
-        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[var(--abu-bg-active)] shrink-0">
-          <Zap className="h-5 w-5 text-[var(--abu-text-muted)]" />
-        </div>
-        <span className="flex-1 min-w-0 text-body font-semibold leading-snug truncate text-[var(--abu-text-primary)]">
-          {trigger.name}
-        </span>
-        <button
-          onClick={handleToggle}
-          className={cn(
-            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-            isPaused ? 'bg-neutral-200' : 'bg-[var(--abu-success-solid)]'
-          )}
-        >
-          <span
-            className={cn(
-              'inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform',
-              isPaused ? 'translate-x-[3px]' : 'translate-x-[19px]'
-            )}
-          />
-        </button>
-      </div>
-
-      {/* Row 2: filter + output + last-triggered meta */}
-      <div className="flex-1 min-h-0 flex flex-col gap-0.5 text-minor text-[var(--abu-text-tertiary)]">
-        <span className="truncate">{getFilterDescription(trigger, t.trigger)}</span>
-        <div className="flex items-center gap-3 min-w-0">
-          {trigger.output?.enabled && (
-            <span className="flex items-center gap-0.5 text-[var(--abu-clay)] shrink-0">
-              <Send className="h-3 w-3" />
-              {t.trigger.outputEnabled}
-            </span>
-          )}
-          {trigger.lastTriggeredAt && (
-            <span className="truncate">
-              {t.trigger.lastTriggered}: {formatTimeAgo(trigger.lastTriggeredAt, t.trigger)}
-            </span>
-          )}
-        </div>
-      </div>
+    // The wrapper is how the list finds this card again when the listener's page is left.
+    <div {...cardProps('automation', trigger.id)}>
+      <ToolCard item={item} onClick={() => useTriggerStore.getState().setSelectedTriggerId(trigger.id)} />
     </div>
   );
-}
+});
+
+export default TriggerCard;

@@ -6,9 +6,14 @@
  * point cannot launder a plugin agent into a user-authored one.
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import type { SubagentDefinition } from '@/types';
+
+// The editor's avatar picker is a design-system popover, so it renders inside the provider.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/utils/itemStorage', () => ({
   ITEM_EXISTS_CODE: 'ITEM_EXISTS',

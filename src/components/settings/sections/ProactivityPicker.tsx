@@ -12,6 +12,7 @@
 
 import { useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { Pressable } from '@/components/ds/pressable';
 import { cn } from '@/lib/utils';
 
 type Level = 'shy' | 'companion' | 'butler';
@@ -35,12 +36,12 @@ export default function ProactivityPicker() {
   const setProactivity = useSettingsStore((s) => s.setProactivity);
 
   return (
-    <div className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-elevated)] p-4">
+    <div className="rounded-panel border border-separator p-4">
       <div>
-        <h4 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
+        <h4 className="text-ui font-medium text-label">
           {t.soul.proactivityTitle}
         </h4>
-        <p className="text-minor text-[var(--abu-text-muted)] mt-1 leading-relaxed">
+        <p className="mt-1 text-ui-sm text-label-secondary">
           {t.soul.proactivityDesc}
         </p>
       </div>
@@ -48,26 +49,26 @@ export default function ProactivityPicker() {
         {OPTIONS.map((opt) => {
           const selected = current === opt.id;
           return (
-            <button
+            // A plain button: arrow keys do nothing, the choice takes a press, Enter or Space.
+            <Pressable
               key={opt.id}
+              aria-pressed={selected}
               onClick={() => setProactivity(opt.id)}
               className={cn(
-                'flex flex-col items-start gap-1 px-3 py-2.5 rounded-lg text-left transition-colors border',
-                selected
-                  ? 'bg-[var(--abu-clay-tint)] border-[var(--abu-clay-ring)]'
-                  : 'border-[var(--abu-border-subtle)] hover:bg-[var(--abu-bg-active)]',
+                'flex flex-col items-start gap-1 rounded-control border px-3 py-2 text-left',
+                selected ? 'border-control-border bg-fill-selected' : 'border-separator hover:bg-fill-hover',
               )}
             >
-              <div className="flex items-center gap-1.5">
-                <span className="text-h-sm leading-none">{opt.emoji}</span>
-                <span className="text-minor font-semibold text-[var(--abu-text-primary)]">
+              <span className="flex items-center gap-2">
+                <span className="text-title">{opt.emoji}</span>
+                <span className="text-ui-sm font-medium text-label">
                   {t.toolbox[opt.titleKey]}
                 </span>
-              </div>
-              <p className="text-caption text-[var(--abu-text-muted)] leading-snug">
+              </span>
+              <span className="text-caption text-label-secondary">
                 {t.toolbox[opt.descKey]}
-              </p>
-            </button>
+              </span>
+            </Pressable>
           );
         })}
       </div>

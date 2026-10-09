@@ -649,9 +649,25 @@ function readDeepLinkScheme() {
   return value === 'abu-dev' || value === 'abu' ? value : 'abu';
 }
 
+// Which system material main gave this window ('vibrancy' | 'mica' | 'none').
+// The preload-surface tests evaluate this file without `process`; no flag there
+// means no material, which is also what a plain browser page has.
+function readWindowMaterial() {
+  const flag = '--abu-window-material=';
+  const argv = typeof process === 'undefined' ? [] : process.argv;
+  const arg = argv.find(a => a.startsWith(flag));
+  if (!arg) return 'none';
+  const value = arg.slice(flag.length);
+  if (value !== 'vibrancy' && value !== 'mica' && value !== 'none') {
+    throw new Error(`Unknown window material: ${value}`);
+  }
+  return value;
+}
+
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   mainSupervisesSidecar: true,
   deepLinkScheme: readDeepLinkScheme(),
+  windowMaterial: readWindowMaterial(),
   pluginAuthor: (action, request) => ipcRenderer.invoke('abu:plugin-author', { action, request }),
   // App pages: the renderer names an app and a nav item, never a URL (appPageHost.cjs).
   appPage: (action, request) => ipcRenderer.invoke('abu:app-page', { action, request }),

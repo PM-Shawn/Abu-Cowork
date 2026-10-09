@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { createRef } from 'react';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { getLanguageSetting, initLanguage, type LanguageSetting } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ProviderInstance } from '@/types/provider';
@@ -47,7 +48,11 @@ describe('ModelSelector 能看图 tag', () => {
       recentModels: [],
       favoriteModels: [],
     });
-    render(<ModelSelector open onClose={() => {}} anchorRef={createRef<HTMLElement>()} />);
+    render(
+      <DesignSystemProvider>
+        <ModelSelector open onOpenChange={() => {}} trigger={<Button>Model</Button>} />
+      </DesignSystemProvider>,
+    );
   });
 
   afterEach(() => {

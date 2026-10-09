@@ -1,7 +1,10 @@
-import { Building2, CircleAlert, LoaderCircle, LogOut, UserRound } from 'lucide-react';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
 import { useI18n } from '@/i18n';
-import { Button } from '@/components/ui/button';
 
 export type LoginPageStatus =
   | 'signed_out'
@@ -56,54 +59,50 @@ export default function LoginPage({
   const failure = failureMessage(error, t.account);
 
   return (
-    <section className="w-full px-6 pb-6 pt-2">
+    <section className="w-full">
       {waiting ? (
         <div className="flex flex-col items-center gap-5 py-5 text-center">
-          <LoaderCircle
-            aria-hidden="true"
-            className="h-7 w-7 animate-spin text-[var(--abu-clay)]"
-            strokeWidth={1.8}
-          />
-          <p className="text-body text-[var(--abu-text-secondary)]">
-            {status === 'exchanging' ? t.account.completingLogin : t.account.waitingBrowser}
-          </p>
-          <Button className="w-full" variant="subtle" onClick={onCancel}>
-            {t.common.cancel}
-          </Button>
+          {/* One box for both sentences, so Cancel stays where it is when one follows the other. */}
+          <div className="flex h-14 flex-col items-center justify-center gap-3">
+            {status === 'exchanging' ? (
+              <Spinner label={t.account.completingLogin} />
+            ) : (
+              // Waiting for the user to act in the browser: a still icon, nothing spins.
+              <>
+                <Icon icon={AppIcons.loading} size="lg" className="text-label-secondary" />
+                <p className="text-ui text-label-secondary">{t.account.waitingBrowser}</p>
+              </>
+            )}
+          </div>
+          <div className="w-full">
+            <Button className="w-full" variant="secondary" onClick={onCancel}>
+              {t.common.cancel}
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
-          {failure && (
-            <div
-              role="status"
-              className="flex items-start gap-2 rounded-xl bg-[var(--abu-danger-bg)] px-3 py-2.5 text-minor leading-relaxed text-[var(--abu-danger)]"
-            >
-              <CircleAlert aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{failure}</span>
+          {failure && <InlineMessage tone="danger">{failure}</InlineMessage>}
+          <div>
+            <Button className="w-full" variant="primary" icon={AppIcons.account} onClick={onPersonalLogin}>
+              {status === 'expired' ? t.account.retry : t.account.personalLogin}
+            </Button>
+          </div>
+          {IS_ENTERPRISE_BUILD && (
+            <div>
+              <Button className="w-full" variant="secondary" icon={AppIcons.enterprise} onClick={onEnterpriseLogin}>
+                {t.account.enterpriseLogin}
+              </Button>
             </div>
           )}
-          <Button className="w-full" size="lg" onClick={onPersonalLogin}>
-            <UserRound aria-hidden="true" />
-            {status === 'expired' ? t.account.retry : t.account.personalLogin}
-          </Button>
-          {IS_ENTERPRISE_BUILD && (
-            <Button
-              className="w-full"
-              size="lg"
-              variant="subtle"
-              onClick={onEnterpriseLogin}
-            >
-              <Building2 aria-hidden="true" />
-              {t.account.enterpriseLogin}
-            </Button>
-          )}
           {hasAccount && (
-            <Button className="w-full" variant="subtle" onClick={onSignOut}>
-              <LogOut aria-hidden="true" />
-              {t.account.signOut}
-            </Button>
+            <div>
+              <Button className="w-full" variant="secondary" icon={AppIcons.signOut} onClick={onSignOut}>
+                {t.account.signOut}
+              </Button>
+            </div>
           )}
-          <p className="pt-2 text-center text-minor leading-relaxed text-[var(--abu-text-tertiary)]">
+          <p className="pt-2 text-center text-ui-sm text-label-tertiary">
             {t.account.localWithoutLogin}
           </p>
         </div>

@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
@@ -68,9 +68,9 @@ function resetStores() {
 
 function renderPanel() {
   return render(
-    <TooltipProvider>
+    <DesignSystemProvider>
       <WorkspacePanel />
-    </TooltipProvider>,
+    </DesignSystemProvider>,
   );
 }
 
@@ -123,5 +123,22 @@ describe('WorkspacePanel', () => {
       workspaceTabButtonId(subagentTab.id),
     );
     expect(screen.getByText('Running')).toBeInTheDocument();
+  });
+
+  it('offers the three things the panel can open when every tab is closed', () => {
+    renderPanel();
+
+    expect(screen.getByText('Start from here')).toBeInTheDocument();
+    expect(screen.queryByRole('tabpanel')).toBeNull();
+    const launchers = ['Task Summary', 'Browser', 'Terminal'].map((name) => (
+      screen.getByRole('button', { name: new RegExp(`^${name}`) })
+    ));
+    expect(launchers).toHaveLength(3);
+
+    fireEvent.click(launchers[2]);
+
+    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['terminal']);
+    expect(screen.queryByText('Start from here')).toBeNull();
+    expect(screen.getByText(/^Terminal /)).toBeInTheDocument();
   });
 });

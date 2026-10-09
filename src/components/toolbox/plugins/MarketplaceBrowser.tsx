@@ -3,13 +3,17 @@
  * Every install consumes an immutable preview after explicit confirmation.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import { Loader2, Package, Plus, RefreshCw, Trash2, AlertTriangle } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
-import { Button } from '@/components/ui/button';
-import { Select } from '@/components/ui/select';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { EmptyState } from '@/components/ds/empty-state';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Select } from '@/components/ds/select';
+import { Spinner } from '@/components/ds/spinner';
+import { cn } from '@/lib/utils';
 import { useToastStore } from '@/stores/toastStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
 import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
@@ -32,8 +36,19 @@ import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginDetail from './InstalledPluginDetail';
-import UninstallPluginDialog from './UninstallPluginDialog';
+import { useUninstallPlugin } from './useUninstallPlugin';
+import { cardIndex, cardOrNeighbour, cardProps, focusIsOnWindow } from '../cardFocus';
 
+type PluginCardKind = 'plugin-market' | 'plugin-orphan';
+
+/** The centred content column, the width the 「我的」 shelf has. `gutter` is the page's side padding. */
+function Column({ gutter, className, children }: { gutter: string; className?: string; children: ReactNode }) {
+  return (
+    <div className={cn(gutter, className)}>
+      <div className="mx-auto w-full max-w-5xl">{children}</div>
+    </div>
+  );
+}
 
 /**
  * The whole install-disclosure flow as one value. `pendingEntry` (is the dialog
@@ -75,6 +90,48 @@ function entryLabel(entry: MarketplaceEntry): string {
   return entry.displayName ?? entry.name;
 }
 
+/**
+ * One card of a marketplace. memo: a window opening over the list, or another
+ * card changing, renders no card again. Its callbacks are the same for the life
+ * of the browser.
+ */
+const MarketCard = memo(function MarketCard({ entry, record, hasUpdate, ready, home, onPlan, onManage }: {
+  entry: MarketplaceEntry;
+  /** The install of this entry, when there is one. */
+  record: InstalledPlugin | undefined;
+  hasUpdate: boolean;
+  /** The marketplace has been read: installing and updating are offered. */
+  ready: boolean;
+  home: string;
+  onPlan: (entry: MarketplaceEntry) => void;
+  onManage: (entry: MarketplaceEntry, record: InstalledPlugin) => void;
+}) {
+  const { t } = useI18n();
+  const tb = t.toolbox;
+  if (record) return <InstalledPluginCard
+    plugin={record}
+    home={home}
+    control="installed"
+    name={entryLabel(entry)}
+    description={entry.description}
+    testId="plugin-marketplace-entry"
+    onClick={() => onManage(entry, record)}
+    actions={hasUpdate ? <Button variant="secondary" size="sm" data-testid="plugin-update-button" disabled={!ready} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); onPlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
+  />;
+  const installLabel = tb.pluginsInstall;
+  return (
+    <div className="h-full">
+      <MarketplaceEntryRow
+        testId="plugin-marketplace-entry"
+        name={entryLabel(entry)}
+        description={entry.description}
+        onClick={() => onPlan(entry)}
+        actions={<Button variant="secondary" size="sm" disabled={!ready} onClick={event => { event.stopPropagation(); onPlan(entry); }} aria-label={`${installLabel}: ${entryLabel(entry)}`}>{installLabel}</Button>}
+      />
+    </div>
+  );
+});
+
 function matchesQuery(entry: MarketplaceEntry, query: string): boolean {
   if (!query) return true;
   const haystack = [
@@ -100,6 +157,7 @@ export default function MarketplaceBrowser({
 }: MarketplaceBrowserProps) {
   const { t } = useI18n();
   const tb = t.toolbox;
+  const ask = useConfirm();
   const marketplaces = usePluginStore((s) => s.marketplaces);
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
@@ -115,9 +173,55 @@ export default function MarketplaceBrowser({
   const [entriesState, setEntriesState] = useState<EntriesState>({ kind: 'idle' });
   const [flow, setFlow] = useState<InstallFlow>({ kind: 'closed' });
   const [installing, setInstalling] = useState(false);
-  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [managing, setManaging] = useState<InstalledPlugin | null>(null);
-  const [uninstallTarget, setUninstallTarget] = useState<InstalledPlugin | null>(null);
+
+  // Keyboard focus. The card a window was opened from, and for a card that can leave the page
+  // (an install whose marketplace is gone) where it sat. An install or an uninstall replaces the
+  // card and what was on it, so the control that had the focus may be gone when the window
+  // closes: the focus then goes to the card, to what took its place, or to the toolbar.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const opener = useRef<{ kind: PluginCardKind; id: string; index: number } | null>(null);
+  const openedFrom = useRef<Element | null>(null);
+  const noteOpener = useCallback((kind: PluginCardKind, id: string) => {
+    opener.current = { kind, id, index: cardIndex(rootRef.current, kind, id) };
+    openedFrom.current = document.activeElement;
+  }, []);
+  const focusToolbar = useCallback(() => {
+    rootRef.current?.querySelector<HTMLElement>('[data-marketplace-toolbar] button, [data-testid="plugin-add-marketplace-cta"]')?.focus();
+  }, []);
+  const focusOpener = useCallback(() => {
+    const root = rootRef.current;
+    const from = opener.current;
+    if (!root || !from) return;
+    const card = cardOrNeighbour(root, from.kind, from.id, from.kind === 'plugin-orphan' ? from.index : -1);
+    if (card) card.focus();
+    else focusToolbar();
+  }, [focusToolbar]);
+  // The uninstall question. The window it came from is gone: once it has ended the focus goes
+  // back to the card that window was opened from.
+  const { ask: askToUninstall, asking: uninstallAsked } = useUninstallPlugin(home, () => { if (focusIsOnWindow()) focusOpener(); });
+  const windowOpen = useRef(false);
+  useLayoutEffect(() => { windowOpen.current = flow.kind !== 'closed' || managing !== null || uninstallAsked; });
+  // Set when an uninstall is asked for: once the record has gone, its card has been replaced.
+  const uninstalling = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const key = uninstalling.current;
+    if (key === null || installed.some((plugin) => plugin.key === key)) return;
+    uninstalling.current = null;
+    if (!windowOpen.current && focusIsOnWindow()) focusOpener();
+  }, [installed, focusOpener]);
+  // Set when a marketplace was removed: its Remove button went with it.
+  const removedMarketplace = useRef(false);
+  useLayoutEffect(() => {
+    if (!removedMarketplace.current) return;
+    removedMarketplace.current = false;
+    focusToolbar();
+  }, [marketplaces, focusToolbar]);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   /**
    * Bumped on every new plan request and on every close. A `planInstall` that
@@ -256,6 +360,7 @@ export default function MarketplaceBrowser({
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
       if (!selected || entriesState.kind !== 'ready') return;
+      noteOpener('plugin-market', entry.name);
       releasePreparation();
       const epoch = (planEpochRef.current += 1);
       setFlow({ kind: 'planning', entry });
@@ -302,7 +407,7 @@ export default function MarketplaceBrowser({
         });
       }
     },
-    [selected, entriesState.kind, home, tb, releasePreparation],
+    [selected, entriesState.kind, home, tb, releasePreparation, noteOpener],
   );
 
   const handleConfirmInstall = useCallback(async (configuration: Record<string, string>) => {
@@ -361,14 +466,17 @@ export default function MarketplaceBrowser({
     }
   }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow, releasePreparation]);
 
-  const dialogState: InstallPlanState =
+  // One object per flow value: the window compares what it is handed with what it shows, and a
+  // new object on every render of this page would make it render twice each time.
+  const dialogState = useMemo<InstallPlanState>(() => (
     flow.kind === 'ready'
       ? { kind: 'ready', disclosure: flow.disclosure }
       : flow.kind === 'unsupported'
         ? { kind: 'unsupported', sourceKind: flow.sourceKind }
         : flow.kind === 'error'
           ? { kind: 'error', message: flow.message }
-          : { kind: 'loading' };
+          : { kind: 'loading' }
+  ), [flow]);
 
   const showList = marketplace !== null && visibleEntries.length > 0;
 
@@ -390,165 +498,191 @@ export default function MarketplaceBrowser({
     (_, index) => visibleEntries.slice(index * columns, (index + 1) * columns),
   ), [visibleEntries, columns]);
 
+  // The cards are memo: what they call stays the same while the browser renders.
+  const planLatest = useRef(handlePlan);
+  useLayoutEffect(() => { planLatest.current = handlePlan; });
+  const planEntry = useCallback((entry: MarketplaceEntry) => { void planLatest.current(entry); }, []);
+  const manageEntry = useCallback((entry: MarketplaceEntry, record: InstalledPlugin) => {
+    noteOpener('plugin-market', entry.name);
+    setManaging(record);
+  }, [noteOpener]);
+  const ready = entriesState.kind === 'ready';
+
   // Plugin cards reuse the released toolbox geometry; the grid owns spacing.
-  const renderEntry = (entry: MarketplaceEntry) => {
-    // "Installed" is read from the record map, not a separate name set: the
-    // row's menu acts on that exact record, so a row that claims to be
-    // installed without one would offer 管理/卸载 that quietly do nothing.
-    const installedRecord = installedByName.get(entry.name);
-    // Read from the store rather than scored here: one source of truth for the
-    // badge count and this button (see the recompute effect above).
-    const hasUpdate = !!selected && updateKeySet.has(pluginKey(entry.name, selected.name));
-    if (installedRecord) return <InstalledPluginCard
-      plugin={installedRecord}
+  const renderEntry = (entry: MarketplaceEntry) => (
+    <MarketCard
+      entry={entry}
+      // "Installed" is read from the record map, not a separate name set: the
+      // row's menu acts on that exact record, so a row that claims to be
+      // installed without one would offer 管理/卸载 that quietly do nothing.
+      record={installedByName.get(entry.name)}
+      // Read from the store rather than scored here: one source of truth for the
+      // badge count and this button (see the recompute effect above).
+      hasUpdate={!!selected && updateKeySet.has(pluginKey(entry.name, selected.name))}
+      ready={ready}
       home={home}
-      control="installed"
-      name={entryLabel(entry)}
-      description={entry.description}
-      testId="plugin-marketplace-entry"
-      onClick={() => setManaging(installedRecord)}
-      actions={hasUpdate ? <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
-    />;
-    const installLabel = tb.pluginsInstall;
-    return (
-      <div className="h-full">
-        <MarketplaceEntryRow
-          testId="plugin-marketplace-entry"
-          name={entryLabel(entry)}
-          description={entry.description}
-          onClick={() => void handlePlan(entry)}
-          actions={<Button variant="tint" size="xs" className="h-7 px-2.5" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${installLabel}: ${entryLabel(entry)}`}>{installLabel}</Button>}
-        />
-      </div>
-    );
+      onPlan={planEntry}
+      onManage={manageEntry}
+    />
+  );
+
+  // Removing a marketplace is asked first, by name. The answer acts on what is in the list at
+  // that moment: a marketplace that has gone meanwhile is not removed again.
+  const askToRemoveMarketplace = async (name: string) => {
+    const confirmed = await ask({
+      title: tb.pluginsRemoveMarketplaceTitle,
+      message: format(tb.pluginsRemoveMarketplaceMessage, { name }),
+      confirmLabel: tb.pluginsRemoveMarketplace,
+      tone: 'danger',
+    });
+    if (!confirmed || !mounted.current) return;
+    if (!usePluginStore.getState().marketplaces.some((m) => m.name === name)) return;
+    removedMarketplace.current = true;
+    // The market leaves the list at once; a copy fetched by address is deleted after it.
+    void removeMarket(name, home);
   };
+
+  // The page's side padding.
+  const gutter = 'px-8';
 
   if (marketplaces.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-        <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />
-        <p className="text-h-sm text-[var(--abu-text-primary)]">{tb.pluginsNoMarketplaces}</p>
-        <p className="max-w-md text-body text-[var(--abu-text-tertiary)]">
-          {tb.pluginsNoMarketplacesHint}
-        </p>
-        <Button className="mt-1" onClick={onAddMarketplace} data-testid="plugin-add-marketplace-cta">
-          <Plus className="h-3.5 w-3.5" />
-          {tb.pluginsAddMarketplace}
-        </Button>
+      <div ref={rootRef} className={cn('flex h-full flex-col items-center justify-center', gutter)}>
+        <EmptyState
+          icon={AppIcons.bundle}
+          title={tb.pluginsNoMarketplaces}
+          description={tb.pluginsNoMarketplacesHint}
+          action={(
+            <Button variant="secondary" icon={AppIcons.add} onClick={onAddMarketplace} data-testid="plugin-add-marketplace-cta">
+              {tb.pluginsAddMarketplace}
+            </Button>
+          )}
+        />
       </div>
     );
   }
 
+  const loading = entriesState.kind === 'loading';
+
   return (
-    <div className={scrollParent ? "flex flex-col" : "flex h-full flex-col"}>
-      <div className="flex shrink-0 flex-wrap items-center gap-2 px-8 py-3 w-full max-w-[1088px] mx-auto">
-        {marketplaces.length > 1 ? (
-          <Select
-            variant="inline"
-            value={selectedName ?? ''}
-            onChange={setSelectedName}
-            ariaLabel={tb.pluginsMarketplaceTab}
-            options={marketplaces.map((m) => ({ value: m.name, label: m.name }))}
-            className="w-56"
-          />
-        ) : (
-          <span className="text-h-xs text-[var(--abu-text-primary)]">{selectedName}</span>
-        )}
-
-        {marketplace && (
-          <span className="text-minor text-[var(--abu-text-muted)]">
-            {format(tb.pluginsEntryCount, { count: visibleEntries.length })}
-          </span>
-        )}
-
-        <div className="ml-auto flex items-center gap-1.5">
-          {selectedName && <Button size="icon-sm" variant="ghost" aria-label={tb.pluginsRefreshMarketplace} disabled={entriesState.kind === 'loading'} onClick={() => setReload(value => value + 1)}><RefreshCw className="h-3.5 w-3.5" /></Button>}
-          {/* The built-in market cannot be removed (the store short-circuits it),
-              so it gets no Remove control rather than one that silently no-ops. */}
-          {selectedName && !selected?.builtin && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={tb.pluginsRemoveMarketplace}
-              title={tb.pluginsRemoveMarketplace}
-              onClick={() => setRemoveTarget(selectedName)}
-            >
-              <Trash2 className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-            </Button>
+    <div ref={rootRef} className={scrollParent ? "flex flex-col" : "flex h-full flex-col"}>
+      <Column gutter={gutter} className="shrink-0 py-3">
+        <div data-marketplace-toolbar className="flex flex-wrap items-center gap-2">
+          {marketplaces.length > 1 ? (
+            <div className="w-56">
+              <Select
+                fullWidth
+                label={tb.pluginsMarketplaceTab}
+                value={selectedName ?? ''}
+                onValueChange={setSelectedName}
+                options={marketplaces.map((m) => ({ value: m.name, label: m.name }))}
+              />
+            </div>
+          ) : (
+            <span className="text-ui font-medium text-label">{selectedName}</span>
           )}
-        </div>
-      </div>
 
-      {entriesState.kind === 'error' && marketplace && <div role="alert" className="mx-8 mb-3 rounded-lg bg-[var(--abu-danger-bg)] p-3 text-minor text-[var(--abu-danger)]"><p>{entriesState.message}</p><p>{tb.pluginsCachedMarketplace}</p></div>}
+          {marketplace && (
+            <span className="text-ui-sm text-label-tertiary">
+              {format(tb.pluginsEntryCount, { count: visibleEntries.length })}
+            </span>
+          )}
+
+          <div className="ml-auto flex items-center gap-2">
+            {/* While the list is being read the button takes no press; it stays focusable, so the
+                focus stays on it when it was pressed from the keyboard. */}
+            {selectedName && (
+              <IconButton
+                size="sm"
+                icon={AppIcons.retry}
+                label={tb.pluginsRefreshMarketplace}
+                busy={loading}
+                onClick={() => { if (!loading) setReload(value => value + 1); }}
+              />
+            )}
+            {/* The built-in market cannot be removed (the store short-circuits it),
+                so it gets no Remove control rather than one that silently no-ops.
+                Keyed by the market: the button of a removed market is gone, not
+                handed to the next one. */}
+            {selectedName && !selected?.builtin && (
+              <IconButton
+                key={selectedName}
+                size="sm"
+                icon={AppIcons.delete}
+                label={tb.pluginsRemoveMarketplace}
+                onClick={() => { void askToRemoveMarketplace(selectedName); }}
+              />
+            )}
+          </div>
+        </div>
+      </Column>
+
+      {entriesState.kind === 'error' && marketplace && (
+        <Column gutter={gutter} className="mb-3">
+          <InlineMessage tone="danger"><p>{entriesState.message}</p><p>{tb.pluginsCachedMarketplace}</p></InlineMessage>
+        </Column>
+      )}
       {showList ? (
         // The ready-state list is virtualized: the official marketplace alone
         // has ~291 entries and organization catalogs grow, so only the rows in
         // view are mounted. Virtuoso owns scrolling here, which is why this
         // wrapper has no `overflow-y-auto` of its own.
-        <div ref={gridViewport} className="min-h-0 flex-1 px-8 pb-6 w-full max-w-[1088px] mx-auto">
-          <Virtuoso
-            className={scrollParent ? undefined : "h-full"}
-            customScrollParent={scrollParent}
-            data-testid="plugin-marketplace-list"
-            data={entryRows}
-            computeItemKey={(_, row) => row[0].name}
-            itemContent={(_, row) => <div className="pb-4"><ToolGrid>{row.map(entry => <div key={entry.name} className="h-full">{renderEntry(entry)}</div>)}</ToolGrid></div>}
-          />
+        <div className={cn('min-h-0 flex-1 pb-6', gutter)}>
+          <div ref={gridViewport} className="mx-auto h-full w-full max-w-5xl">
+            <Virtuoso
+              className={scrollParent ? undefined : "h-full"}
+              customScrollParent={scrollParent}
+              data-testid="plugin-marketplace-list"
+              data={entryRows}
+              computeItemKey={(_, row) => row[0].name}
+              itemContent={(_, row) => <div className="pb-4"><ToolGrid>{row.map(entry => <div key={entry.name} className="h-full" {...cardProps('plugin-market', entry.name)}>{renderEntry(entry)}</div>)}</ToolGrid></div>}
+            />
+          </div>
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-6">
-          {entriesState.kind === 'loading' && (
-            <p className="flex items-center gap-2 py-8 text-body text-[var(--abu-text-tertiary)]">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {t.common.loading}
-            </p>
-          )}
+        <Column gutter={gutter} className="min-h-0 flex-1 overflow-y-auto pb-6">
+          {loading && <div className="py-8"><Spinner label={t.common.loading} /></div>}
 
           {entriesState.kind === 'error' && (
-            <div className="mt-4 flex items-start gap-2.5 rounded-lg bg-[var(--abu-danger-bg)] p-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-danger)]" />
-              <div className="min-w-0">
-                <p className="text-h-xs text-[var(--abu-text-primary)]">
-                  {tb.pluginsMarketplaceReadFailed}
-                </p>
-                <p className="mt-1 break-words text-minor text-[var(--abu-text-tertiary)]">
+            <div className="mt-4">
+              <InlineMessage tone="danger">
+                <p className="font-medium">{tb.pluginsMarketplaceReadFailed}</p>
+                <p className="break-words text-ui-sm text-label-secondary">
                   {entriesState.message}
                   {marketplace && <span className="block">{tb.pluginsCachedMarketplace}</span>}
                 </p>
-              </div>
+              </InlineMessage>
             </div>
           )}
 
-          {entriesState.kind === 'ready' && visibleEntries.length === 0 && (
-            <p className="py-8 text-center text-body text-[var(--abu-text-tertiary)]">
-              {tb.pluginsNoMatches}
-            </p>
-          )}
-        </div>
+          {entriesState.kind === 'ready' && visibleEntries.length === 0 && <EmptyState title={tb.pluginsNoMatches} />}
+        </Column>
       )}
 
       {orphans.length > 0 && (
         <section
           data-testid="plugin-orphan-group"
-          className="shrink-0 border-t border-[var(--abu-border)] py-3"
+          className="shrink-0 border-t border-separator py-3"
         >
-          {/* Same centred column as the grid above — padding INSIDE the
-              max-width, as there — or this block sits 32px left of the cards. */}
-          <div className="mx-auto w-full max-w-[1088px] px-8">
-            <h4 className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsOrphanGroup}</h4>
-            <p className="text-minor text-[var(--abu-text-tertiary)]">{tb.pluginsOrphanHint}</p>
-            <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
-              {orphans.map((plugin) => (
-                <MarketplaceEntryRow
-                  key={plugin.key}
-                  testId="plugin-orphan-row"
-                  name={plugin.name}
-                  description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
-                  onClick={() => setManaging(plugin)}
-                />
-              ))}
+          {/* Same centred column as the grid above, or this block sits to the left of the cards. */}
+          <Column gutter={gutter}>
+            <h4 className="text-ui font-medium text-label">{tb.pluginsOrphanGroup}</h4>
+            <p className="text-ui-sm text-label-tertiary">{tb.pluginsOrphanHint}</p>
+            <div className="mt-2">
+              <ToolGrid>
+                {orphans.map((plugin) => (
+                  <div key={plugin.key} className="h-full" {...cardProps('plugin-orphan', plugin.key)}>
+                    <MarketplaceEntryRow
+                      testId="plugin-orphan-row"
+                      name={plugin.name}
+                      description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
+                      onClick={() => { noteOpener('plugin-orphan', plugin.key); setManaging(plugin); }}
+                    />
+                  </div>
+                ))}
+              </ToolGrid>
             </div>
-          </div>
+          </Column>
         </section>
       )}
 
@@ -559,14 +693,9 @@ export default function MarketplaceBrowser({
         onClose={() => setManaging(null)}
         onUninstall={(plugin) => {
           setManaging(null);
-          setUninstallTarget(plugin);
+          uninstalling.current = plugin.key;
+          askToUninstall(plugin);
         }}
-      />
-
-      <UninstallPluginDialog
-        home={home}
-        target={uninstallTarget}
-        onClose={() => setUninstallTarget(null)}
       />
 
       <InstallDisclosureDialog
@@ -576,20 +705,14 @@ export default function MarketplaceBrowser({
         installing={installing}
         onConfirm={configuration => void handleConfirmInstall(configuration)}
         onCancel={closeFlow}
-      />
-
-      <ConfirmDialog
-        open={removeTarget !== null}
-        title={tb.pluginsRemoveMarketplaceTitle}
-        message={format(tb.pluginsRemoveMarketplaceMessage, { name: removeTarget ?? '' })}
-        confirmText={tb.pluginsRemoveMarketplace}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onConfirm={() => {
-          if (removeTarget) void removeMarket(removeTarget, home);
-          setRemoveTarget(null);
+        onCloseAutoFocus={(event) => {
+          const from = openedFrom.current;
+          // Another layer took the focus, or the button the window opened from is still there
+          // and gets it back. After an install that button is gone: the card takes the focus.
+          if (event.defaultPrevented || (from !== null && from !== document.body && from.isConnected)) return;
+          event.preventDefault();
+          focusOpener();
         }}
-        onCancel={() => setRemoveTarget(null)}
       />
     </div>
   );

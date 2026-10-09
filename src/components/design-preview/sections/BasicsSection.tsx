@@ -3,12 +3,13 @@ import { Button, IconButton } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
 import { Kbd } from '@/components/ds/kbd';
 import { Link } from '@/components/ds/link';
+import { Pressable } from '@/components/ds/pressable';
 import { Separator } from '@/components/ds/separator';
 import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon, type StatusTone } from '@/components/ds/status-icon';
 import { Tag } from '@/components/ds/tag';
 import { Section } from './Section';
-import { PREVIEW_AVATAR_IMAGE } from './specimen';
+import { CJK_SPECIMEN, PREVIEW_AVATAR_IMAGE } from './specimen';
 
 const VARIANTS = ['primary', 'secondary', 'plain', 'danger'] as const;
 const TONES: StatusTone[] = ['success', 'warning', 'danger', 'info'];
@@ -24,6 +25,8 @@ export function BasicsSection() {
             <Button size={size} disabled>Disabled</Button>
             <IconButton size={size} icon={AppIcons.more} label="Show more actions" />
             <IconButton size={size} variant="secondary" icon={AppIcons.copy} label="Copy code" />
+            <IconButton size={size} variant="primary" icon={AppIcons.add} label="Send message" />
+            <IconButton size={size} icon={AppIcons.retry} label="Reload the list" busy />
           </div>
         ))}
         <div className="flex items-center gap-4">
@@ -39,9 +42,16 @@ export function BasicsSection() {
           <Avatar name="Shawn" size="lg" />
           <Avatar name="Photo avatar" src={PREVIEW_AVATAR_IMAGE} size="lg" />
         </div>
+        <div className="flex items-center gap-2">
+          {/* Pressable: a prompt card whose look is its own content */}
+          <Pressable className="rounded-panel border border-separator bg-surface px-3 py-2 text-ui text-label hover:bg-fill-hover">
+            {CJK_SPECIMEN}
+          </Pressable>
+        </div>
         <Separator decorative={false} />
         <div className="flex h-6 items-center gap-4">
           <Spinner label="Saving" size="sm" />
+          <Spinner label="Checking for updates" size="sm" labelSize="ui" />
           <Spinner label="Reading 9 files" />
           <Spinner label="Loading the task" size="lg" />
           <Spinner label="Syncing" labelHidden />

@@ -1,8 +1,6 @@
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId } from 'react';
+import { memo, useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, ArrowUp, Square, X, ChevronDown, FileText, Paperclip, Users, Sparkles } from 'lucide-react';
-import { Input } from '@/components/ui/input';
-import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
+import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/chat/InlineSkillInput';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
 import VoiceInputControl from '@/components/chat/VoiceInputControl';
@@ -12,7 +10,6 @@ import { isSpeechAvailable } from '@/core/speech/speechBridge';
 import { ManagedProviderOfflineBar } from '@/components/chat/ManagedProviderOfflineBar';
 import { useManagedProviderLiveness } from '@/components/chat/useManagedProviderLiveness';
 import { subscribeModelPickerRequest } from '@/components/chat/modelPickerRequest';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -31,6 +28,7 @@ import {
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
+import { noteComposerDraft, noteComposerKey } from '@/components/chat/composerActivity';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
@@ -53,7 +51,14 @@ import { useToastStore } from '@/stores/toastStore';
 import { getModelUnavailableReason, getModelDisplayLabel } from '@/utils/settingsSelectors';
 import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
 import { useVisibleTeams } from '@/core/team/useVisibleTeams';
-import { Button } from '@/components/ui/button';
+import { Button as DsButton, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem } from '@/components/ds/menu';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
+import { Tooltip } from '@/components/ds/tooltip';
 import { cn } from '@/lib/utils';
 import { fileReferenceForPath, InvalidAttachmentPathError } from '@/utils/fileReference';
 import type { ImageAttachment } from '@/types';
@@ -388,6 +393,23 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
   }
 }
 
+// The model picker's button. The Popover hands its props (open state, click, ref) to this
+// component; spreading them onto the button lets the Tooltip wrap it. The hover text is
+// the full name, since the button truncates it.
+function ModelPickerTrigger({ label, unavailable, className, ...props }: ComponentProps<'button'> & {
+  label: string | undefined;
+  unavailable: boolean;
+}) {
+  return (
+    <Tooltip content={label}>
+      <DsButton variant="plain" size="sm" className={cn('max-w-full', unavailable && 'text-link', className)} {...props}>
+        <span className="min-w-0 truncate">{label}</span>
+        <Icon icon={AppIcons.expand} size="sm" />
+      </DsButton>
+    </Tooltip>
+  );
+}
+
 /**
  * Composer suggestion popup — grouped like Codex's composer (user feedback
  * 2026-09-01): small section headers (团队 / 队员 / 技能), names only (no
@@ -416,8 +438,8 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
   // As an absolutely-positioned child it was clipped by an overflow ancestor
   // whenever it grew past the chat area's top edge — the top ~40px (padding +
   // the first group header) simply were not painted, which read as "the card
-  // is cut off" (real-machine reports 2026-09-01 and 09-03). Same remedy as
-  // ui/search-select: escape the clipping tree, measure the anchor, re-measure
+  // is cut off" (real-machine reports 2026-09-01 and 09-03). The remedy:
+  // escape the clipping tree, measure the anchor, re-measure
   // on capture-phase scroll (dialog/chat bodies scroll, not the window) and on
   // resize. Height is clamped to the space above the anchor so the popup never
   // leaves the window either.
@@ -478,21 +500,23 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
       // the drag lane (src/styles/index.css) — this one can now overlap it.
       data-electron-no-drag
       data-composer-suggestions
-      className="bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto py-1.5 z-[10001]"
+      className="z-popover overflow-y-auto overflow-x-hidden rounded-panel bg-raised p-1 text-label shadow-float"
     >
-      {search && <div className="flex items-center gap-2 px-3 py-2">
-        <Input autoFocus value={search.query} aria-label={search.label} placeholder={search.label}
+      {search && <div className="flex items-center gap-2 px-2 py-2">
+        <TextField autoFocus value={search.query} aria-label={search.label} placeholder={search.label}
           aria-controls={listboxId} aria-autocomplete="list"
           aria-activedescendant={suggestions[selectedIndex] ? optionId(selectedIndex) : undefined}
           onChange={(event) => search.onChange(event.target.value)} onKeyDown={search.onKeyDown} />
-        <button type="button" onClick={search.onClose} aria-label={search.closeLabel} className="btn-ghost p-1"><X className="h-4 w-4" /></button>
+        <IconButton size="sm" icon={AppIcons.close} label={search.closeLabel} onClick={search.onClose} />
       </div>}
       <div id={listboxId} role="listbox" aria-label={ariaLabel}>
       {sections.filter((section) => section.items.length > 0).map((section) => (
         <div key={section.label} role="group" aria-label={section.label}>
-          <div className="px-4 pt-2 pb-1 text-minor text-[var(--abu-text-tertiary)] select-none">{section.label}</div>
+          <div className="select-none px-3 pb-1 pt-2 text-ui-sm font-medium text-label-tertiary">{section.label}</div>
+          {/* Options never take focus: the text field keeps it and points at the
+              current one through aria-activedescendant. */}
           {section.items.map(({ item, idx }) => (
-            <button
+            <div
               key={item.name}
               id={optionId(idx)}
               role="option"
@@ -500,15 +524,15 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
               onClick={() => onApply(item)}
               onMouseDown={(event) => event.preventDefault()}
               className={cn(
-                'btn-ghost w-full flex items-center gap-3 px-4 py-2 text-body text-left',
-                idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
+                'flex h-7 cursor-default items-center gap-3 rounded-control px-3 text-ui',
+                idx === selectedIndex ? 'bg-fill-selected' : 'hover:bg-fill-hover'
               )}
             >
               <span className={cn(
-                'w-5 text-center shrink-0',
+                'w-5 shrink-0 text-center',
                 // Type classes belong to the 「/」 mark only — the agent branch
                 // renders an avatar, which no text style reaches.
-                suggestionType !== 'agent' && 'font-mono text-minor text-[var(--abu-text-tertiary)]'
+                suggestionType !== 'agent' && 'font-code text-ui-sm text-label-tertiary'
               )}>
                 {suggestionType === 'agent'
                   ? (item.team
@@ -516,16 +540,13 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
                       : <AgentAvatar agent={{ name: item.name, avatar: item.avatar }} size="xs" round className="mx-auto" />)
                   : '/'}
               </span>
-              <span className="font-medium text-[var(--abu-text-primary)] truncate">{item.name}</span>
+              <span className="truncate font-medium text-label">{item.name}</span>
               {item.fromPlugin && (
-                <span
-                  data-testid="agent-source-plugin"
-                  className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
-                >
-                  {pluginTagLabel}
+                <span data-testid="agent-source-plugin" className="flex shrink-0">
+                  <Tag>{pluginTagLabel}</Tag>
                 </span>
               )}
-            </button>
+            </div>
           ))}
         </div>
       ))}
@@ -534,6 +555,172 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
     document.body,
   );
 }
+
+// The parts below are memoized: the composer re-renders on every keystroke and every
+// streamed token, and their hover tips and menu must not re-render with it.
+
+// WorkBuddy-style `+` menu (design §2.1): 添加文件 / 专家·专家团 / 技能. Arrow keys move the
+// highlight; Enter or a click applies.
+const PlusMenu = memo(function PlusMenu({ open, onOpenChange, onCloseAutoFocus, onAddFile, onTeamOrMember, onSkill }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus: (event: Event) => void;
+  onAddFile: () => void;
+  onTeamOrMember: () => void;
+  onSkill: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Menu
+      side="top"
+      align="start"
+      open={open}
+      onOpenChange={onOpenChange}
+      onCloseAutoFocus={onCloseAutoFocus}
+      trigger={<IconButton icon={AppIcons.add} label={t.chat.composerMenu.open} data-testid="composer-plus" />}
+    >
+      <MenuItem icon={AppIcons.attach} onSelect={onAddFile}>
+        <span data-testid="composer-menu-add-file">{t.chat.composerMenu.addFile}</span>
+      </MenuItem>
+      <MenuItem icon={AppIcons.team} onSelect={onTeamOrMember}>
+        <span data-testid="composer-menu-team">{t.chat.composerMenu.teamOrMember}</span>
+      </MenuItem>
+      <MenuItem icon={AppIcons.skill} onSelect={onSkill}>
+        <span data-testid="composer-menu-skill">{t.chat.composerMenu.skill}</span>
+      </MenuItem>
+    </Menu>
+  );
+});
+
+// A team pin or an @expert. Rest: avatar + name; hover: the avatar becomes ✕ (WorkBuddy).
+const ComposerChip = memo(function ComposerChip({ kind, testId, name, avatar, ariaLabel, closeLabel, onClear }: {
+  kind: 'team' | 'agent';
+  testId?: string;
+  name: string;
+  avatar?: string;
+  ariaLabel: string;
+  closeLabel: string;
+  onClear: () => void;
+}) {
+  return (
+    <Tooltip content={closeLabel}>
+      <Pressable
+        onClick={onClear}
+        data-testid={testId}
+        aria-label={ariaLabel}
+        className="group inline-flex h-6 min-w-0 max-w-55 shrink items-center gap-1 rounded-control bg-fill px-2 text-ui-sm text-label hover:bg-fill-hover"
+      >
+        <span aria-hidden="true" className="flex shrink-0 group-hover:hidden">
+          {kind === 'team'
+            ? <TeamAvatar avatar={avatar} size="xs" round />
+            : <AgentAvatar agent={{ name, avatar }} size="xs" round />}
+        </span>
+        <span aria-hidden="true" className="hidden shrink-0 text-label-secondary group-hover:flex">
+          <Icon icon={AppIcons.close} size="sm" />
+        </span>
+        {/* Last stop of the toolbar's degradation ladder: the avatar alone
+            still says which team is pinned, and `aria-label` keeps the name
+            for assistive tech. Only the team chip collapses its name this
+            far — the `@expert` chip keeps its name at every width. */}
+        <span className={cn('truncate', kind === 'team' && '@max-[330px]:hidden')}>{name}</span>
+      </Pressable>
+    </Tooltip>
+  );
+});
+
+// The one filled button of the composer.
+const SendButton = memo(function SendButton({ label, disabled, onSend }: { label: string; disabled: boolean; onSend: () => void }) {
+  return <IconButton variant="primary" icon={AppIcons.send} label={label} disabled={disabled} onClick={onSend} />;
+});
+
+const StopButton = memo(function StopButton({ label, onStop }: { label: string; onStop: () => void }) {
+  return <IconButton variant="secondary" icon={AppIcons.stop} label={label} onClick={onStop} />;
+});
+
+const AttachmentStrip = memo(function AttachmentStrip({ images, files, references, isWelcome, conversationId, workspacePath, onRemoveImage, onRemoveFile, onRemoveReference }: {
+  images: ImageAttachment[];
+  files: FileAttachmentItem[];
+  references: ChatReference[];
+  isWelcome: boolean;
+  conversationId: string | undefined;
+  workspacePath: string | null | undefined;
+  onRemoveImage: (id: string) => void;
+  onRemoveFile: (id: string) => void;
+  onRemoveReference: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  const chipClass = 'flex shrink-0 items-center gap-1 rounded-control bg-fill px-2 py-1 text-ui-sm text-label';
+  return (
+    <div className={cn('flex items-center gap-2 overflow-x-auto', isWelcome ? 'pl-5 pt-3 pb-1' : 'pl-4 pt-3 pb-1')}>
+      {images.map((img, index) => (
+        <div key={img.id} className="group/img relative shrink-0">
+          <Pressable
+            className="block overflow-hidden rounded-control border border-separator hover:border-control-border"
+            onClick={(event) => {
+              useImageLightboxStore.getState().open(
+                images.map((image) => ({
+                  id: image.id,
+                  data: image.data,
+                  mediaType: image.mediaType,
+                  filePath: image.filePath,
+                  conversationId,
+                  workspacePath: workspacePath ?? undefined,
+                })),
+                index,
+                event.currentTarget,
+              );
+            }}
+            title={t.chat.clickToViewFull}
+            aria-label={t.chat.clickToViewFull}
+          >
+            <img src={`data:${img.mediaType};base64,${img.data}`} alt="" className="h-12 w-12 object-cover" />
+          </Pressable>
+          {/* Shown on hover or keyboard focus. The opaque backing keeps the button
+              readable over any picture (the secondary fill is translucent). */}
+          <span className="absolute -right-1 -top-1 flex rounded-control bg-raised opacity-0 shadow-float group-hover/img:opacity-100 focus-within:opacity-100">
+            <IconButton
+              size="sm"
+              variant="secondary"
+              icon={AppIcons.close}
+              label={t.chat.removeImage}
+              onClick={() => onRemoveImage(img.id)}
+            />
+          </span>
+        </div>
+      ))}
+      {files.map((f) => (
+        <div key={f.id} className={chipClass}>
+          <Icon icon={AppIcons.file} size="sm" className="text-label-secondary" />
+          <span className="max-w-40 truncate">{f.name}</span>
+          <IconButton size="sm" icon={AppIcons.close} label={t.toolbox.menuRemove} onClick={() => onRemoveFile(f.id)} />
+        </div>
+      ))}
+      {references.map((r) => (
+        <div
+          key={r.id}
+          className={chipClass}
+          title={`${r.source.name}\n${r.selection.text}${r.comment ? `\n${r.comment}` : ''}`}
+        >
+          <Icon icon={AppIcons.file} size="sm" className="text-label-secondary" />
+          <span className="max-w-50 truncate">
+            {/* dom-element: r.selection.text is the raw outerHTML (tag
+                soup) — show the readable label createDomElementReference
+                already computed into source.name instead (e.g.
+                "div#hero.card"). doc-selection keeps showing the quoted
+                selected text. The title on the chip still shows the
+                fuller detail on hover. */}
+            {referenceChipLabel(r)}
+            {r.comment && <span className="text-label-tertiary"> · {r.comment}</span>}
+          </span>
+          <IconButton size="sm" icon={AppIcons.close} label={t.toolbox.menuRemove} onClick={() => onRemoveReference(r.id)} />
+        </div>
+      ))}
+      {/* A real flex item keeps the trailing inset scrollable in Chromium;
+          padding-right alone disappears when the row overflows. */}
+      <div aria-hidden="true" className={cn('shrink-0 self-stretch', isWelcome ? 'w-3' : 'w-2')} />
+    </div>
+  );
+});
 
 export default function ChatInput({ variant, onSend, disabled, scenarioPlaceholder, onInputChange }: ChatInputProps) {
   const isWelcome = variant === 'welcome';
@@ -570,6 +757,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<InlineSkillInputHandle>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
+  // What takes focus once the + menu has gone: a picker, or the text field.
+  const afterPlusMenuRef = useRef<'skill' | 'agent' | 'field' | null>(null);
   const voiceInputEnabled = useVoiceInputStore((s) => s.enabled);
   const [voiceInputAvailable] = useState(isSpeechAvailable);
 
@@ -634,6 +823,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       selectedAgent,
     };
   }, [files, images, references, selectedAgent, selectedSkill, text]);
+
+  // The agent's question dock leaves the focus with a user who is writing a message: it is told
+  // whether this field holds a draft (composerActivity.ts).
+  const [composerOwner] = useState(() => ({}));
+  const holdsDraft = hasComposerContent({ text, images, files, references, selectedSkill, selectedAgent });
+  useLayoutEffect(() => {
+    noteComposerDraft(composerOwner, holdsDraft);
+    return () => noteComposerDraft(composerOwner, false);
+  }, [composerOwner, holdsDraft]);
 
   useLayoutEffect(() => {
     const pendingSelection = pendingSelectionRef.current;
@@ -721,7 +919,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       ? currentModel
       : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const modelPickerRef = useRef<HTMLDivElement>(null);
+  // Built once per name: the composer re-renders on every streamed token, the picker must not.
+  const modelPickerTrigger = useMemo(
+    () => <ModelPickerTrigger label={modelDisplay} unavailable={!hasActiveProvider} />,
+    [modelDisplay, hasActiveProvider],
+  );
   useManagedProviderLiveness(effProvider, isRunning);
   // A send guard elsewhere may ask for the picker (a model the organization withdrew).
   useEffect(() => subscribeModelPickerRequest(() => setShowModelPicker(true)), []);
@@ -749,18 +951,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return { ...draft, files: result.files };
     });
   }, []);
-
-  // Close model picker on click outside
-  useEffect(() => {
-    if (!showModelPicker) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
-        setShowModelPicker(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showModelPicker]);
 
   // Handle pasting from clipboard.
   //
@@ -1160,11 +1350,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     showAttachmentAdmissionFailed,
   ]);
 
-  const handleStop = () => {
-    if (activeConv?.id) {
-      cancelStreaming(activeConv.id, { source: 'chat-input-stop-button' });
+  const handleStop = useCallback(() => {
+    if (activeConvId) {
+      cancelStreaming(activeConvId, { source: 'chat-input-stop-button' });
     }
-  };
+  }, [activeConvId, cancelStreaming]);
 
   // File drag & drop (always called; works for both variants)
   const handleFileDrop = useCallback(async (paths: string[]) => {
@@ -1470,11 +1660,16 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     textareaRef.current?.focus();
   };
 
-  const removeAgent = () => {
+  const removeAgent = useCallback(() => {
     setSelectedAgent(null);
     if (!activeConvId) useChatStore.getState().setPendingAgent(null);
     textareaRef.current?.focus();
-  };
+  }, [activeConvId]);
+
+  const removeReference = useCallback((id: string) => {
+    setReferences((prev) => prev.filter((x) => x.id !== id));
+    highlightRegistry.remove(id);
+  }, []);
 
   const resetInput = () => {
     const keepSelectors = activeConvId !== null;
@@ -1723,6 +1918,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // A key went down in the message field, a key of an input method included: the user is
+    // writing here, and a question that arrives now leaves them the focus (composerActivity.ts).
+    noteComposerKey();
     if (isImeComposing(e, composingRef.current)) return;
 
     if (showSuggestions && suggestions.length > 0) {
@@ -1738,6 +1936,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       }
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey)) {
         e.preventDefault();
+        // One pick per press of Enter: the repeat of a held Enter picks nothing.
+        if (e.key === 'Enter' && e.repeat) return;
         applySuggestion(suggestions[selectedIndex]);
         return;
       }
@@ -1767,6 +1967,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // stack, so it is deliberately the do-nothing branch.
       if (action === 'send') {
         e.preventDefault();
+        // One message per press: a held Enter repeats, and this field takes the focus by itself
+        // after actions whose key may still be down (start a conversation with an expert, pick a
+        // suggestion). The repeat sends nothing and, its default prevented, adds no line.
+        // Shift+Enter and Alt+Enter keep repeating: holding them adds lines.
+        if (e.repeat) return;
         handleSend();
       } else if (action === 'insert') {
         e.preventDefault();
@@ -1835,85 +2040,82 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleAttachClick = hasElectronUserAttachmentSelectHost() ? handleAttachElectron : handleAttach;
 
-  // Opening a picker is a read-only action on the draft. Commit only on selection.
-  const openMentionPicker = () => setMenuPicker({ type: 'agent', query: '' });
-  const openSkillPicker = () => setMenuPicker({ type: 'skill', query: '' });
   const closeMenuPicker = () => {
     setMenuPicker(null);
     textareaRef.current?.focus();
   };
 
-  // Explicit handlers (not a mapped handler table): the React Compiler must
-  // see that the ref-reading pickers are only called from event handlers.
-  const pickAddFile = () => { setShowPlusMenu(false); handleAttachClick(); };
-  const pickTeamOrMember = () => { setShowPlusMenu(false); openMentionPicker(); };
-  const pickSkill = () => { setShowPlusMenu(false); openSkillPicker(); };
-  const clearTeamPin = () => { pinTeam(undefined); textareaRef.current?.focus(); };
-  const plusMenuItemClass = 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-body text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:bg-[var(--abu-bg-hover)]';
-  const plusMenuIconClass = 'h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)]';
+  // The + menu, the chips and the send button are memoized (the composer re-renders on
+  // every keystroke and streamed token), so they call the latest handlers through a ref.
+  const latestHandlersRef = useRef({ attach: handleAttachClick, send: handleSend });
+  useLayoutEffect(() => {
+    latestHandlersRef.current = { attach: handleAttachClick, send: handleSend };
+  });
+  // After 添加文件 the text field takes focus back (the files are context for what the
+  // user types next), not the + button.
+  const pickAddFile = useCallback(() => {
+    afterPlusMenuRef.current = 'field';
+    void latestHandlersRef.current.attach();
+  }, []);
+  // Opening a picker is a read-only action on the draft. Commit only on selection.
+  // The picker opens once the + menu has gone: while the menu is on screen it keeps
+  // focus inside itself, so the picker's search field could not take it.
+  const pickTeamOrMember = useCallback(() => { afterPlusMenuRef.current = 'agent'; }, []);
+  const pickSkill = useCallback(() => { afterPlusMenuRef.current = 'skill'; }, []);
+  const handlePlusMenuCloseAutoFocus = useCallback((event: Event) => {
+    const next = afterPlusMenuRef.current;
+    if (!next) return;
+    afterPlusMenuRef.current = null;
+    event.preventDefault();
+    if (next === 'field') textareaRef.current?.focus();
+    else setMenuPicker({ type: next, query: '' });
+  }, [setMenuPicker]);
+  // Reopening + during its exit animation keeps the menu mounted, so the close handler
+  // never runs for the earlier choice. Drop it here, or the next Escape would open it.
+  const handlePlusMenuOpenChange = useCallback((open: boolean) => {
+    if (open) afterPlusMenuRef.current = null;
+    setShowPlusMenu(open);
+  }, [setShowPlusMenu]);
+  const sendFromButton = useCallback(() => latestHandlersRef.current.send(), []);
+  const clearTeamPin = useCallback(() => { pinTeam(undefined); textareaRef.current?.focus(); }, [pinTeam]);
 
-  // WorkBuddy-style `+` menu (design §2.1): 添加文件 / 队员·团队 / 技能.
-  const plusMenu = (
-    <Popover open={showPlusMenu} onOpenChange={setShowPlusMenu}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={t.chat.composerMenu.open}
-          aria-haspopup="menu"
-          data-testid="composer-plus"
-          className="btn-ghost h-7 w-7 shrink-0 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
-        >
-          <Plus className="h-4 w-4" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent onCloseAutoFocus={(event) => { if (menuPicker) event.preventDefault(); }} side="top" align="start" className="w-48 p-1.5" role="menu" aria-label={t.chat.composerMenu.open} data-electron-no-drag>
-        <button type="button" role="menuitem" data-testid="composer-menu-add-file" onClick={pickAddFile} className={plusMenuItemClass}>
-          <Paperclip className={plusMenuIconClass} />
-          <span className="truncate">{t.chat.composerMenu.addFile}</span>
-        </button>
-        <button type="button" role="menuitem" data-testid="composer-menu-team" onClick={pickTeamOrMember} className={plusMenuItemClass}>
-          <Users className={plusMenuIconClass} />
-          <span className="truncate">{t.chat.composerMenu.teamOrMember}</span>
-        </button>
-        <button type="button" role="menuitem" data-testid="composer-menu-skill" onClick={pickSkill} className={plusMenuItemClass}>
-          <Sparkles className={plusMenuIconClass} />
-          <span className="truncate">{t.chat.composerMenu.skill}</span>
-        </button>
-      </PopoverContent>
-    </Popover>
-  );
-
-  // Who takes the next message: the team pin, an @agent, or a /skill. Lives in
-  // the bottom row next to `+` (WorkBuddy chip bar): neutral pill with an ✕,
-  // click = clear.
-  const chipClass = 'group inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full px-2 py-0.5 text-minor font-medium text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors cursor-pointer';
-  // Rest: kind mark + name. Hover: the mark becomes ✕ and the pill gets a background (WorkBuddy).
-  const chipMarkClass = 'shrink-0 text-[var(--abu-text-tertiary)] group-hover:hidden';
-  const chipCloseClass = 'hidden h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)] group-hover:block';
+  // Who takes the next message: the team pin or an @expert. Lives in the bottom
+  // row next to `+` (WorkBuddy chip bar); click = clear.
   const composerChips = (
     <>
       {pinnedTeam && (
-        <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close} aria-label={`👥${pinnedTeam.name}`}>
-          <span aria-hidden="true" className={chipMarkClass}><TeamAvatar avatar={pinnedTeam.avatar} size="xs" round /></span>
-          <X aria-hidden="true" className={chipCloseClass} />
-          {/* Last stop of the toolbar's degradation ladder: the avatar alone
-              still says which team is pinned, and `aria-label` keeps the name
-              for assistive tech. Only the team chip collapses its name this
-              far — the `@expert` chip carries an avatar too but keeps its name
-              at every width (this batch does not touch narrow behavior). */}
-          <span className="truncate @max-[330px]:hidden">{pinnedTeam.name}</span>
-        </button>
+        <ComposerChip
+          kind="team"
+          testId="composer-team-chip"
+          name={pinnedTeam.name}
+          avatar={pinnedTeam.avatar}
+          ariaLabel={`👥${pinnedTeam.name}`}
+          closeLabel={t.common.close}
+          onClear={clearTeamPin}
+        />
       )}
       {selectedAgent && (
-        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close} aria-label={`@${selectedAgent.name}`}>
-          <span aria-hidden="true" className={chipMarkClass}><AgentAvatar agent={{ name: selectedAgent.name, avatar: selectedAgent.avatar }} size="xs" round /></span>
-          <X aria-hidden="true" className={chipCloseClass} />
-          <span className="truncate">{selectedAgent.name}</span>
-        </button>
+        <ComposerChip
+          kind="agent"
+          name={selectedAgent.name}
+          avatar={selectedAgent.avatar}
+          ariaLabel={`@${selectedAgent.name}`}
+          closeLabel={t.common.close}
+          onClear={removeAgent}
+        />
       )}
-
     </>
+  );
+
+  const plusMenu = (
+    <PlusMenu
+      open={showPlusMenu}
+      onOpenChange={handlePlusMenuOpenChange}
+      onCloseAutoFocus={handlePlusMenuCloseAutoFocus}
+      onAddFile={pickAddFile}
+      onTeamOrMember={pickTeamOrMember}
+      onSkill={pickSkill}
+    />
   );
 
   const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
@@ -1989,104 +2191,23 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         <div
           {...dropTargetProps}
           className={cn(
-            'relative bg-[var(--abu-bg-base)] rounded-2xl border transition-all',
-            !isWelcome && isDragging
-              ? 'border-[var(--abu-clay)] ring-2 ring-[var(--abu-clay-ring)]'
-              : 'border-[var(--abu-border-subtle)] focus-within:border-[var(--abu-border-hover)]'
+            'relative rounded-panel border border-separator bg-field shadow-composer',
+            !isWelcome && isDragging ? 'ring-2 ring-focus' : 'focus-within:border-control-border'
           )}
         >
-          {/* Chat-only: Drag overlay */}
-          {!isWelcome && isDragging && (
-            <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-[var(--abu-clay-bg)] z-10">
-              <span className="text-body text-[var(--abu-clay)] font-medium">{t.chat.dropFilesHere}</span>
-            </div>
-          )}
-
           {/* Attachment Strip (images + file badges) */}
           {hasAttachments && (
-            <div className={cn('flex items-center gap-2 overflow-x-auto', isWelcome ? 'pl-5 pt-3 pb-1' : 'pl-4 pt-3 pb-1')}>
-              {images.map((img, index) => (
-                <div key={img.id} className="relative group/img shrink-0">
-                  <button
-                    type="button"
-                    className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
-                    onClick={(event) => {
-                      useImageLightboxStore.getState().open(
-                        images.map((image) => ({
-                          id: image.id,
-                          data: image.data,
-                          mediaType: image.mediaType,
-                          filePath: image.filePath,
-                          conversationId: activeConv?.id,
-                          workspacePath: activeConv?.workspacePath,
-                        })),
-                        index,
-                        event.currentTarget,
-                      );
-                    }}
-                    title={t.chat.clickToViewFull}
-                    aria-label={t.chat.clickToViewFull}
-                  >
-                    <img
-                      src={`data:${img.mediaType};base64,${img.data}`}
-                      alt=""
-                      className="w-12 h-12 rounded-lg object-cover border border-[var(--abu-border-subtle)] hover:border-[var(--abu-border-hover)] transition-colors"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => removeImage(img.id)}
-                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[var(--abu-text-primary)] text-white flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"
-                    title={t.chat.removeImage}
-                  >
-                    <X className="h-2.5 w-2.5" />
-                  </button>
-                </div>
-              ))}
-              {files.map((f) => (
-                <div
-                  key={f.id}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] shrink-0 group/file"
-                >
-                  <FileText className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-                  <span className="text-minor text-[var(--abu-text-primary)] max-w-[160px] truncate">{f.name}</span>
-                  <button
-                    onClick={() => removeFile(f.id)}
-                    className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-              {references.map((r) => (
-                <div
-                  key={r.id}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] shrink-0"
-                  title={`${r.source.name}\n${r.selection.text}${r.comment ? `\n${r.comment}` : ''}`}
-                >
-                  <FileText className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-                  <span className="text-minor text-[var(--abu-text-primary)] max-w-[200px] truncate">
-                    {/* dom-element: r.selection.text is the raw outerHTML (tag
-                        soup) — show the readable label createDomElementReference
-                        already computed into source.name instead (e.g.
-                        "div#hero.card"). doc-selection keeps showing the quoted
-                        selected text. The title tooltip below still shows the
-                        fuller detail on hover. */}
-                    {referenceChipLabel(r)}
-                    {r.comment && <span className="text-[var(--abu-text-tertiary)]"> · {r.comment}</span>}
-                  </span>
-                  <button
-                    onClick={() => { setReferences((prev) => prev.filter((x) => x.id !== r.id)); highlightRegistry.remove(r.id); }}
-                    className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-              {/* A real flex item keeps the trailing inset scrollable in Chromium;
-                  padding-right alone disappears when the row overflows. */}
-              <div aria-hidden="true" className={cn('shrink-0 self-stretch', isWelcome ? 'w-3' : 'w-2')} />
-            </div>
+            <AttachmentStrip
+              images={images}
+              files={files}
+              references={references}
+              isWelcome={isWelcome}
+              conversationId={activeConv?.id}
+              workspacePath={activeConv?.workspacePath}
+              onRemoveImage={removeImage}
+              onRemoveFile={removeFile}
+              onRemoveReference={removeReference}
+            />
           )}
 
           {/* Textarea Row with inline command prefix */}
@@ -2094,7 +2215,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             'flex items-start gap-0',
             isWelcome
               ? hasAttachments ? 'px-5 pt-1 pb-1' : 'px-5 pt-4 pb-1'
-              : hasAttachments ? 'px-4 pt-1 pb-1' : 'px-4 pt-3.5 pb-1'
+              : hasAttachments ? 'px-4 pt-1 pb-1' : 'px-4 pt-3 pb-1'
           )}>
             <InlineSkillInput
               historyKey={editorHistoryKey}
@@ -2147,10 +2268,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               disabled={disabled}
               rows={isWelcome ? 2 : 1}
               className={cn(
-                'flex-1 bg-transparent resize-none outline-none text-[var(--abu-text-primary)] leading-relaxed',
+                'flex-1 resize-none bg-transparent text-body text-label outline-none placeholder:text-label-placeholder',
                 isWelcome
-                  ? 'min-h-[52px] max-h-[180px] text-body'
-                  : 'min-h-[24px] max-h-[160px] py-0.5 text-body disabled:opacity-40'
+                  ? 'min-h-[52px] max-h-[180px]'
+                  : 'min-h-[24px] max-h-[160px] py-1 disabled:opacity-40'
               )}
             />
           </div>
@@ -2161,7 +2282,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                stays a single, calm row even in a narrow center pane — same
                degradation ladder as the chat variant below, minus the context
                ring (there is no conversation yet to measure). */
-            <div data-testid="composer-toolbar" className="@container flex items-center gap-2 px-5 pb-3.5">
+            <div data-testid="composer-toolbar" className="@container flex items-center gap-2 px-5 pb-3">
               <div className="flex min-w-0 flex-1 items-center gap-1">
                 {plusMenu}
                 {composerChips}
@@ -2170,44 +2291,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               {/* Model picker — right-aligned, before Start button */}
               <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={null} />
-                <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
-                  <button
-                    onClick={() => setShowModelPicker(!showModelPicker)}
-                    title={modelDisplay}
-                    className={cn(
-                      'btn-ghost flex min-w-0 max-w-[180px] items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors',
-                      hasActiveProvider
-                        ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                        : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
-                    )}
-                  >
-                    <span className="min-w-0 truncate whitespace-nowrap">{modelDisplay}</span>
-                    <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
-                  </button>
-                  <ModelSelector
-                    open={showModelPicker}
-                    onClose={() => setShowModelPicker(false)}
-                    anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
-                  />
+                <div className="flex min-w-0 max-w-45">
+                  <ModelSelector open={showModelPicker} onOpenChange={setShowModelPicker} trigger={modelPickerTrigger} />
                 </div>
 
                 {voiceControl}
 
-                <Button
-                  size="icon"
-                  onClick={handleSend}
-                  disabled={!hasContent}
-                  title={sendTooltip}
-                  aria-label={sendTooltip}
-                  className={cn(
-                    'h-7 w-7 shrink-0 rounded-lg transition-colors',
-                    hasContent
-                      ? 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] text-white shadow-sm'
-                      : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed hover:bg-[var(--abu-bg-hover)]'
-                  )}
-                >
-                  <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
-                </Button>
+                <SendButton label={sendTooltip} disabled={!hasContent} onSend={sendFromButton} />
               </div>
             </div>
           ) : (
@@ -2232,7 +2322,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                hides → the chip goes avatar-only. `+` and send/stop never move.
                Widths are queried on this toolbar (`@container`), not the
                window: this pane narrows while the window itself stays wide. */
-            <div data-testid="composer-toolbar" className="@container flex items-center gap-x-2 px-4 pb-2.5 pt-0.5">
+            <div data-testid="composer-toolbar" className="@container flex items-center gap-x-2 px-4 pb-2 pt-1">
               {/* Left Actions — `flex-1` on a zero basis, so the chips absorb
                   every bit of slack and give it back first. Load-bearing: see
                   the note above before "simplifying" it back to `flex`. */}
@@ -2245,25 +2335,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
-                <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
-                  <button
-                    onClick={() => setShowModelPicker(!showModelPicker)}
-                    title={modelDisplay}
-                    className={cn(
-                      'btn-ghost flex min-w-0 max-w-[180px] items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors',
-                      hasActiveProvider
-                        ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                        : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
-                    )}
-                  >
-                    <span className="min-w-0 truncate whitespace-nowrap">{modelDisplay}</span>
-                    <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
-                  </button>
-                  <ModelSelector
-                    open={showModelPicker}
-                    onClose={() => setShowModelPicker(false)}
-                    anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
-                  />
+                <div className="flex min-w-0 max-w-45">
+                  <ModelSelector open={showModelPicker} onOpenChange={setShowModelPicker} trigger={modelPickerTrigger} />
                 </div>
 
                 {/* Context usage ring — between model picker and send button.
@@ -2279,33 +2352,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 {voiceControl}
 
                 {isStreaming ? (
-                  <Button
-                    size="icon"
-                    onClick={handleStop}
-                    aria-label={t.chat.stop}
-                    className="h-7 w-7 rounded-lg border border-[var(--abu-border)] bg-transparent text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] hover:border-[var(--abu-border-hover)] transition-colors"
-                    title={t.chat.stop}
-                  >
-                    <Square className="h-3 w-3" fill="currentColor" />
-                  </Button>
+                  <StopButton label={t.chat.stop} onStop={handleStop} />
                 ) : (
-                  <Button
-                    size="icon"
-                    onClick={handleSend}
-                    disabled={!hasContent || disabled}
-                    title={sendTooltip}
-                    aria-label={sendTooltip}
-                    className={cn(
-                      'h-7 w-7 rounded-lg transition-colors',
-                      hasContent && !disabled
-                        ? 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] text-white shadow-sm'
-                        : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed hover:bg-[var(--abu-bg-hover)]'
-                    )}
-                  >
-                    <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
-                  </Button>
+                  <SendButton label={sendTooltip} disabled={!hasContent || !!disabled} onSend={sendFromButton} />
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Chat-only drag overlay. Last in the card, so it paints over every
+              positioned control above it without a z-index. */}
+          {!isWelcome && isDragging && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-panel bg-fill-selected text-ui text-label">
+              {t.chat.dropFilesHere}
             </div>
           )}
         </div>
@@ -2316,7 +2375,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         {showWorkspaceContextBar && (
           <div
             data-abu-workspace-context
-            className="mt-2 flex min-h-10 items-center rounded-xl bg-[var(--abu-bg-muted)] px-2 py-1"
+            className="mt-2 flex min-h-10 items-center rounded-panel bg-fill px-2 py-1"
           >
             <FolderSelector
               currentPath={localWorkspace}

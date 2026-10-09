@@ -1,16 +1,19 @@
 import { Checkbox as CheckboxPrimitive } from 'radix-ui';
 import { useId, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { dropsHeldRepeat } from './heldKey';
 import { Icon } from './icon';
 import { AppIcons } from './icons';
 import { DISABLED, FOCUS_RING } from './styles';
 
-export function Checkbox({ checked, onCheckedChange, label, disabled, id }: {
+export function Checkbox({ checked, onCheckedChange, label, disabled, id, 'aria-describedby': describedBy }: {
   checked: boolean | 'indeterminate';
   onCheckedChange: (checked: boolean) => void;
   label?: ReactNode;
   disabled?: boolean;
   id?: string;
+  // The id of the text that explains the box, when the page shows one beside it.
+  'aria-describedby'?: string;
 }) {
   const autoId = useId();
   const boxId = id ?? autoId;
@@ -20,7 +23,10 @@ export function Checkbox({ checked, onCheckedChange, label, disabled, id }: {
         id={boxId}
         checked={checked}
         disabled={disabled}
+        aria-describedby={describedBy}
         onCheckedChange={(next) => onCheckedChange(next === true)}
+        // One change per press: the repeats of a held Space are dropped (heldKey.ts).
+        onKeyDown={dropsHeldRepeat}
         className={cn(
           'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-control border border-control-border bg-field text-on-emphasis data-[state=checked]:border-emphasis data-[state=checked]:bg-emphasis data-[state=indeterminate]:border-emphasis data-[state=indeterminate]:bg-emphasis',
           FOCUS_RING,

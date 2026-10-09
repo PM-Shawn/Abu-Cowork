@@ -1,10 +1,18 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, cleanup } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import LabsSection from './LabsSection';
 import { useSettingsStore } from '@/stores/settingsStore';
+
+function renderSection() {
+  return render(<LabsSection />, { wrapper: DesignSystemProvider });
+}
+
+// The experiment's switch, named after its row title.
+const petSwitch = () => screen.getByRole('switch', { name: 'Desktop Pet' });
 
 // Local proxy so each test controls resolve/reject independently.
 const invoke = vi.fn();
@@ -43,11 +51,9 @@ describe('LabsSection', () => {
     it('sets labs.pet=true and does NOT invoke pet_show', async () => {
       useSettingsStore.setState({ labs: { pet: false }, petOpen: false });
       const user = userEvent.setup();
-      render(<LabsSection />);
+      renderSection();
 
-      const card = screen.getByText('Desktop Pet').closest('div[class*="rounded-xl"]') as HTMLElement;
-      const toggle = within(card).getByRole('switch');
-      await user.click(toggle);
+      await user.click(petSwitch());
 
       expect(useSettingsStore.getState().labs['pet']).toBe(true);
       expect(invoke).not.toHaveBeenCalledWith('pet_show');
@@ -58,11 +64,9 @@ describe('LabsSection', () => {
     it('calls pet_hide, clears petOpen, and sets labs.pet=false', async () => {
       useSettingsStore.setState({ labs: { pet: true }, petOpen: true });
       const user = userEvent.setup();
-      render(<LabsSection />);
+      renderSection();
 
-      const card = screen.getByText('Desktop Pet').closest('div[class*="rounded-xl"]') as HTMLElement;
-      const toggle = within(card).getByRole('switch');
-      await user.click(toggle);
+      await user.click(petSwitch());
 
       expect(invoke).toHaveBeenCalledWith('pet_hide');
       expect(useSettingsStore.getState().petOpen).toBe(false);
@@ -75,11 +79,9 @@ describe('LabsSection', () => {
       useSettingsStore.setState({ labs: { pet: true }, petOpen: true });
       invoke.mockRejectedValueOnce(new Error('window gone'));
       const user = userEvent.setup();
-      render(<LabsSection />);
+      renderSection();
 
-      const card = screen.getByText('Desktop Pet').closest('div[class*="rounded-xl"]') as HTMLElement;
-      const toggle = within(card).getByRole('switch');
-      await user.click(toggle);
+      await user.click(petSwitch());
 
       expect(invoke).toHaveBeenCalledWith('pet_hide');
       // hide failed → the flag must NOT flip off (user can retry via the tab)

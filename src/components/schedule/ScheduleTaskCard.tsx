@@ -1,7 +1,11 @@
-import { useScheduleStore } from '@/stores/scheduleStore';
+import { memo } from 'react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Switch } from '@/components/ds/switch';
+import ToolCard, { type ToolItem } from '@/components/toolbox/ToolCard';
+import { cardProps } from '@/components/toolbox/cardFocus';
 import { useI18n } from '@/i18n';
-import { Clock } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { useScheduleStore } from '@/stores/scheduleStore';
 import type { ScheduledTask, ScheduleFrequency } from '@/types/schedule';
 
 function formatTimeAgo(timestamp: number, agoTemplate: string): string {
@@ -61,68 +65,53 @@ interface Props {
   task: ScheduledTask;
 }
 
-export default function ScheduleTaskCard({ task }: Props) {
+/**
+ * One scheduled task in the list: the shared card with a clock, when the task runs, when it last
+ * ran, and the switch that pauses or resumes it. The card opens the task's page.
+ */
+const ScheduleTaskCard = memo(function ScheduleTaskCard({ task }: Props) {
   const { t } = useI18n();
-  const { pauseTask, resumeTask, setSelectedTaskId } = useScheduleStore();
-
   const isPaused = task.status === 'paused';
-  const scheduleDesc = getScheduleDescription(task, t);
 
-  const handleToggle = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (isPaused) {
-      resumeTask(task.id);
-    } else {
-      pauseTask(task.id);
-    }
-  };
-
-  const handleCardClick = () => {
-    setSelectedTaskId(task.id);
-  };
-
-  return (
-    <div
-      onClick={handleCardClick}
-      className={cn(
-        'group flex flex-col gap-2 w-full h-[120px] overflow-hidden rounded-xl p-4 cursor-pointer',
-        'bg-[var(--abu-bg-subtle)] border border-[var(--abu-border)]',
-        'hover:border-[var(--abu-clay)] hover:shadow-sm transition-all duration-150'
-      )}
-    >
-      {/* Row 1: clock avatar + name + on/off toggle (mirrors the toolbox card shell) */}
-      <div className="flex items-center gap-3 w-full shrink-0">
-        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[var(--abu-bg-active)] shrink-0">
-          <Clock className="h-5 w-5 text-[var(--abu-text-muted)]" />
-        </div>
-        <span className="flex-1 min-w-0 text-body font-semibold leading-snug truncate text-[var(--abu-text-primary)]">
-          {task.name}
-        </span>
-        <button
-          onClick={handleToggle}
-          className={cn(
-            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-            isPaused ? 'bg-neutral-200' : 'bg-[var(--abu-success-solid)]'
-          )}
-        >
-          <span
-            className={cn(
-              'inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform',
-              isPaused ? 'translate-x-[3px]' : 'translate-x-[19px]'
-            )}
-          />
-        </button>
-      </div>
-
-      {/* Row 2: schedule + last-run meta */}
-      <div className="flex-1 min-h-0 flex flex-col gap-0.5 text-minor text-[var(--abu-text-tertiary)]">
-        <span className="truncate">{scheduleDesc}</span>
+  const item: ToolItem = {
+    id: task.id,
+    name: task.name,
+    avatar: <Icon icon={AppIcons.clock} size="lg" className="text-label-tertiary" />,
+    // Two lines at most, inside the card's fixed height: a card that has run is as tall as one
+    // that has not.
+    description: (
+      <>
+        <span className="block truncate">{getScheduleDescription(task, t)}</span>
         {task.lastRunAt && (
-          <span className="truncate">
+          <span className="block truncate">
             {t.schedule.lastRun}: {formatTimeAgo(task.lastRunAt, t.schedule.ago)}
           </span>
         )}
-      </div>
+      </>
+    ),
+    toggle: (
+      // A press on the switch pauses or resumes; it does not also open the task.
+      <span onClick={(event) => event.stopPropagation()}>
+        <Switch
+          checked={!isPaused}
+          onCheckedChange={() => {
+            const { pauseTask, resumeTask } = useScheduleStore.getState();
+            if (isPaused) resumeTask(task.id);
+            else pauseTask(task.id);
+          }}
+          aria-label={task.name}
+        />
+      </span>
+    ),
+    testId: `schedule-card-${task.id}`,
+  };
+
+  return (
+    // The wrapper is how the list finds this card again when the task's page is left.
+    <div {...cardProps('automation', task.id)}>
+      <ToolCard item={item} onClick={() => useScheduleStore.getState().setSelectedTaskId(task.id)} />
     </div>
   );
-}
+});
+
+export default ScheduleTaskCard;

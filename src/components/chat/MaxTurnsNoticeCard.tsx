@@ -1,5 +1,10 @@
 import { useState, useSyncExternalStore } from 'react';
-import { AlertTriangle, Check, Loader2, Play, Settings } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
 import type { Message } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -8,7 +13,6 @@ import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
 import { isGoalArmed, subscribeGoalActivation } from '@/core/goal/goalActivation';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
-import { cn } from '@/lib/utils';
 import { format, useI18n } from '@/i18n';
 
 const RESUME_STOP_TIMEOUT_MS = 5_000;
@@ -78,8 +82,8 @@ export default function MaxTurnsNoticeCard({
 
   if (notice.action === 'continued') {
     return (
-      <div className="my-2 flex items-center gap-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] px-3 py-2 text-minor text-[var(--abu-text-tertiary)]">
-        <Check className="h-4 w-4 shrink-0 text-[var(--abu-success)]" />
+      <div className="my-2 flex items-center gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui text-label-secondary">
+        <StatusIcon tone="success" size="sm" />
         <span>{t.chat.maxTurns.continued}</span>
       </div>
     );
@@ -124,65 +128,47 @@ export default function MaxTurnsNoticeCard({
     }
   };
 
+  // The action that leads is the card's one filled button.
   const continueButton = (
-    <button
-      type="button"
+    <Button
+      variant={again ? 'secondary' : 'primary'}
+      size="sm"
+      icon={AppIcons.continue}
       onClick={() => void continueRun()}
       disabled={processing}
-      className={cn(
-        'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-minor font-medium transition-colors disabled:cursor-default disabled:opacity-60',
-        again
-          ? 'border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-          : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]',
-      )}
     >
-      {processing
-        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        : <Play className="h-3.5 w-3.5" />}
-      {processing ? t.chat.maxTurns.continuing : t.chat.maxTurns.continueAction}
-    </button>
+      {t.chat.maxTurns.continueAction}
+    </Button>
   );
 
   const adjustButton = (
-    <button
-      type="button"
+    <Button
+      variant={again ? 'primary' : 'secondary'}
+      size="sm"
+      icon={AppIcons.settings}
       onClick={() => openSystemSettings('general')}
       disabled={processing}
-      className={cn(
-        'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-minor font-medium transition-colors disabled:cursor-default disabled:opacity-60',
-        again
-          ? 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
-          : 'border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]',
-      )}
     >
-      <Settings className="h-3.5 w-3.5" />
       {t.chat.maxTurns.adjustAction}
-    </button>
+    </Button>
   );
 
   return (
-    <div className="my-2 rounded-lg border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] p-3">
-      <div className="flex items-start gap-2.5">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--abu-bg-base)]">
-          <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)]" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h4 className="text-h-xs text-[var(--abu-text-primary)]">
-            {format(again ? t.chat.maxTurns.titleAgain : t.chat.maxTurns.title, {
-              n: notice.limit,
-            })}
-          </h4>
-          <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
-            {again ? t.chat.maxTurns.bodyAgain : t.chat.maxTurns.body}
-          </p>
-        </div>
+    <div className="my-2 rounded-panel border border-separator bg-surface p-3">
+      <h4 className="text-ui font-medium text-label">
+        {format(again ? t.chat.maxTurns.titleAgain : t.chat.maxTurns.title, {
+          n: notice.limit,
+        })}
+      </h4>
+      <div className="mt-2">
+        <InlineMessage tone="warning">{again ? t.chat.maxTurns.bodyAgain : t.chat.maxTurns.body}</InlineMessage>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {goalDrivesRounds ? (
           <>
-            <span className="inline-flex items-center gap-1.5 text-minor text-[var(--abu-text-secondary)]">
-              <Play className="h-3.5 w-3.5" />
+            <span className="inline-flex items-center gap-1.5 text-ui-sm text-label-secondary">
+              <Icon icon={AppIcons.continue} size="sm" />
               {t.chat.goal.maxTurnsAutoContinue}
             </span>
             {adjustButton}
@@ -193,6 +179,7 @@ export default function MaxTurnsNoticeCard({
             {again ? continueButton : adjustButton}
           </>
         )}
+        {processing && <Spinner size="sm" label={t.chat.maxTurns.continuing} />}
       </div>
     </div>
   );

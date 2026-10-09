@@ -1,17 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
-import { Clock } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuItem, MenuLabel } from '@/components/ds/menu';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
 import { listVersions, REVERT_LABEL, type VersionMeta } from '@/utils/canvasVersions';
 import { useToastStore } from '@/stores/toastStore';
 import { useI18n } from '@/i18n';
-import { cn } from '@/lib/utils';
 
 interface VersionHistoryMenuProps {
   /** Absolute path of the file this history belongs to. */
   filePath: string;
   open: boolean;
-  onClose: () => void;
-  /** Wrapping element (trigger button's container) — used for outside-click detection. */
-  anchorRef: React.RefObject<HTMLElement | null>;
+  onOpenChange: (open: boolean) => void;
+  /** The button that opens the menu. */
+  trigger: ReactNode;
   /**
    * Perform the revert. Owned by the parent (PreviewPanel) because reverting
    * must be authoritative over the live editor buffer — it writes disk AND
@@ -46,16 +48,16 @@ function formatVersionTime(ts: number): string {
 }
 
 /**
- * Lightweight dropdown listing per-file version snapshots (see
- * `@/utils/canvasVersions`), with one-click revert. Mirrors the
- * open/close/outside-click/Escape conventions of `ModelSelector`.
+ * Menu listing per-file version snapshots (see `@/utils/canvasVersions`).
+ * Choosing a version reverts the file to it: the arrow keys only move the
+ * highlight, Enter or a click reverts. Each row is the time, with what the
+ * version is and its size on a second line.
  */
-export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRevert }: VersionHistoryMenuProps) {
+export function VersionHistoryMenu({ filePath, open, onOpenChange, trigger, onRevert }: VersionHistoryMenuProps) {
   const { t } = useI18n();
   const [versions, setVersions] = useState<VersionMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [revertingId, setRevertingId] = useState<string | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
 
   // Load the version list every time the menu opens.
   useEffect(() => {
@@ -85,44 +87,6 @@ export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRever
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable from i18n singleton
   }, [open, filePath]);
 
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleKey, true);
-    return () => document.removeEventListener('keydown', handleKey, true);
-  }, [open, onClose]);
-
-  // Close on click outside
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e: MouseEvent) => {
-      const panel = panelRef.current;
-      const anchor = anchorRef.current;
-      if (
-        panel &&
-        !panel.contains(e.target as Node) &&
-        anchor &&
-        !anchor.contains(e.target as Node)
-      ) {
-        onClose();
-      }
-    };
-    // setTimeout avoids catching the same click that opened the panel
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handleClick);
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('mousedown', handleClick);
-    };
-  }, [open, onClose, anchorRef]);
-
   const handleRevert = async (id: string) => {
     if (revertingId) return;
     setRevertingId(id);
@@ -136,7 +100,9 @@ export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRever
         type: 'success',
         title: t.panel.versionHistoryReverted,
       });
-      onClose();
+      // The menu closed when the version was chosen; if it was opened again
+      // meanwhile, its list no longer matches the file.
+      onOpenChange(false);
     } catch (err) {
       console.error('[VersionHistoryMenu] Revert failed:', filePath, id, err);
       useToastStore.getState().addToast({
@@ -149,68 +115,45 @@ export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRever
     }
   };
 
-  if (!open) return null;
-
   return (
-    <div
-      ref={panelRef}
-      className={cn(
-        'absolute top-full right-0 mt-1.5 z-50',
-        'w-64 max-h-80 rounded-lg shadow-lg',
-        'bg-[var(--abu-bg-base)] border border-[var(--abu-border)]',
-        'flex flex-col overflow-hidden'
-      )}
-    >
-      <div className="px-3 py-2 border-b border-[var(--abu-bg-pressed)] text-minor font-medium text-[var(--abu-text-primary)] shrink-0">
-        {t.panel.versionHistory}
-      </div>
-      <div className="overflow-y-auto flex-1 p-1">
-        {loading ? (
-          <div className="px-3 py-4 text-center text-minor text-[var(--abu-text-muted)]">…</div>
-        ) : versions.length === 0 ? (
-          <div className="px-3 py-4 text-center text-minor text-[var(--abu-text-muted)]">
-            {t.panel.versionHistoryEmpty}
-          </div>
-        ) : (
-          versions.map((v) => {
-            const label =
-              v.label === REVERT_LABEL ? t.panel.versionRevertPoint : v.label;
-            const isAi = v.source === 'ai';
+    <Menu align="end" open={open} onOpenChange={onOpenChange} trigger={trigger}>
+      <MenuLabel>{t.panel.versionHistory}</MenuLabel>
+      {loading ? (
+        <div className="flex justify-center px-2 py-3">
+          <Spinner size="sm" label={t.common.loading} />
+        </div>
+      ) : versions.length === 0 ? (
+        <p className="px-2 py-3 text-center text-ui-sm text-label-tertiary">{t.panel.versionHistoryEmpty}</p>
+      ) : (
+        // A file can hold 31 versions: the list keeps a compact height and scrolls under the title.
+        <div className="max-h-80 overflow-y-auto">
+          {versions.map((v) => {
+            const label = v.label === REVERT_LABEL ? t.panel.versionRevertPoint : v.label;
             return (
-              <button
+              <MenuItem
                 key={v.id}
-                type="button"
-                disabled={revertingId !== null}
-                onClick={() => handleRevert(v.id)}
+                icon={AppIcons.clock}
                 title={t.panel.versionHistoryRevert}
-                className={cn(
-                  'w-full flex items-start gap-2 px-3 py-1.5 rounded-md text-left',
-                  'text-minor transition-colors',
-                  'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]',
-                  'disabled:opacity-60 disabled:cursor-not-allowed',
-                  revertingId === v.id && 'opacity-60'
+                disabled={revertingId !== null}
+                description={(
+                  // One line: a long label is cut short, the size always stays in view.
+                  <span className="flex">
+                    {label && <span className="min-w-0 truncate">{label}</span>}
+                    <span className="shrink-0 whitespace-pre">{label ? ' · ' : ''}{formatBytes(v.byteSize)}</span>
+                  </span>
                 )}
+                onSelect={() => { void handleRevert(v.id); }}
               >
-                <Clock className="h-3 w-3 shrink-0 mt-0.5 text-[var(--abu-text-muted)]" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate tabular-nums">{formatVersionTime(v.ts)}</span>
-                    {isAi && (
-                      <span className="shrink-0 px-1 rounded text-caption bg-[var(--abu-info-bg)] text-[var(--abu-info)]">
-                        {t.panel.versionSourceAi}
-                      </span>
-                    )}
-                  </div>
-                  {label && (
-                    <div className="truncate text-caption text-[var(--abu-text-muted)]">{label}</div>
-                  )}
-                </div>
-                <span className="text-[var(--abu-text-muted)] shrink-0">{formatBytes(v.byteSize)}</span>
-              </button>
+                {/* The tag's height on every row, so rows with and without it are equally tall. */}
+                <span className="flex h-5 items-center gap-2">
+                  <span className="tabular-nums">{formatVersionTime(v.ts)}</span>
+                  {v.source === 'ai' && <Tag tone="info">{t.panel.versionSourceAi}</Tag>}
+                </span>
+              </MenuItem>
             );
-          })
-        )}
-      </div>
-    </div>
+          })}
+        </div>
+      )}
+    </Menu>
   );
 }

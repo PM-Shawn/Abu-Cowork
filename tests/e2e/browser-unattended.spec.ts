@@ -1119,7 +1119,7 @@ async function openScheduledTask(page: Page, taskName: string): Promise<void> {
   await tab.click();
   const item = page.getByText(taskName, { exact: true });
   if (!await item.isVisible({ timeout: 1_000 }).catch(() => false)) {
-    await page.locator('.border-b').getByRole('button').first().click();
+    await page.getByRole('button', { name: /^(返回列表|Back)$/ }).click();
   }
   await expect(item).toBeVisible({ timeout: READY_TIMEOUT });
   await item.click();
@@ -1133,7 +1133,7 @@ async function runScheduledTaskNow(page: Page, taskName: string): Promise<void> 
 /** Open the conversation the scheduled run created, where the report card lives. */
 async function openScheduledRunConversation(page: Page, taskName: string): Promise<void> {
   await openScheduledTask(page, taskName);
-  const viewConversation = page.getByTitle(/^(查看会话|View Conversation)$/).first();
+  const viewConversation = page.getByRole('button', { name: /^(查看会话|View Conversation)$/ }).first();
   await expect(viewConversation).toBeVisible({ timeout: READY_TIMEOUT });
   await viewConversation.click();
 }

@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { navigateToChatWithInput } from '@/utils/navigation';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
@@ -12,6 +14,8 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useTeamStore } from '@/stores/teamStore';
 import type { ImageAttachment, Skill } from '@/types';
 import { clearInputQueue, getQueuedInputs } from '@/core/agent/userInputQueue';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const AGENTS = [
   { name: 'publisher', description: 'Draft and edit public posts' },
@@ -57,6 +61,14 @@ function expectAgentPicker(open: boolean): void {
   } else {
     expect(screen.queryByRole('option', { name: /publisher/ })).toBeNull();
   }
+}
+
+/** Picks 专家·专家团 or 技能 from `+`. The `+` button opens a ds Menu (Radix opens it on
+ *  pointerdown); the picker opens once the menu has gone, with focus in its search field. */
+async function pickFromPlusMenu(testId: 'composer-menu-team' | 'composer-menu-skill'): Promise<void> {
+  fireEvent.pointerDown(screen.getByTestId('composer-plus'), { button: 0 });
+  fireEvent.click(screen.getByTestId(testId));
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search' })).toHaveFocus());
 }
 
 describe('ChatInput inline @mention boundaries', () => {
@@ -117,7 +129,9 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(textarea).toHaveAttribute('aria-controls', listbox.id);
     expect(textarea).toHaveAttribute('aria-activedescendant', option.id);
     expect(option).toHaveAttribute('aria-selected', 'true');
-    expect(option.tagName).toBe('BUTTON');
+    // Options never take focus: the text field keeps it.
+    expect(option.tagName).toBe('DIV');
+    expect(option).not.toHaveAttribute('tabindex');
   });
 
   it('lists an expert that is off the auto-dispatch pool', () => {
@@ -558,41 +572,37 @@ describe('ChatInput inline @mention boundaries', () => {
     fireEvent.click(screen.getByRole('option', { name: /brief/ }));
     expect(composerBody()).toBe('first line\nsecond line');
   });
-  it('audit: skill menu searches independently of existing prose', () => {
+  it('audit: skill menu searches independently of existing prose', async () => {
     useDiscoveryStore.setState({ skills: SKILLS });
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
     typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, 'existing prose');
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    await pickFromPlusMenu('composer-menu-skill');
     expect(screen.queryByRole('option', { name: /brief/ })).not.toBeNull();
   });
-  it('audit: skill menu works with an existing expert', () => {
+  it('audit: skill menu works with an existing expert', async () => {
     useDiscoveryStore.setState({ skills: SKILLS });
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
     typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '@pub');
     fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    await pickFromPlusMenu('composer-menu-skill');
     expect(screen.queryByRole('option', { name: /brief/ })).not.toBeNull();
   });
-  it('audit: cancelling expert picker preserves the previous choice and prose', () => {
+  it('audit: cancelling expert picker preserves the previous choice and prose', async () => {
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
     const box = screen.getByRole('textbox') as HTMLTextAreaElement;
     typeAtCaret(box, '@pub');
     fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
     typeAtCaret(box, 'existing prose');
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-team'));
+    await pickFromPlusMenu('composer-menu-team');
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search' }), { key: 'Escape' });
     expect(screen.queryByRole('button', { name: '@publisher' })).not.toBeNull();
     expect(composerBody()).toBe('existing prose');
   });
-  it('audit: expert menu works at the start of existing prose', () => {
+  it('audit: expert menu works at the start of existing prose', async () => {
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
     const box = screen.getByRole('textbox') as HTMLTextAreaElement;
     typeAtCaret(box, 'existing prose', 0);
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-team'));
+    await pickFromPlusMenu('composer-menu-team');
     expect(screen.queryByRole('option', { name: /publisher/ })).not.toBeNull();
   });
   it('audit: new-task prefill preserves an existing welcome draft', () => {
@@ -620,23 +630,21 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(composerBody()).toBe('existing prose\nwidget followup');
   });
 
-  it('selects a skill from the menu without losing multiline prose or the previous expert on cancel', () => {
+  it('selects a skill from the menu without losing multiline prose or the previous expert on cancel', async () => {
     useDiscoveryStore.setState({ skills: SKILLS });
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
     const box = screen.getByRole('textbox') as HTMLTextAreaElement;
     typeAtCaret(box, '@pub');
     fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
     typeAtCaret(box, 'first\n  second', 0);
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    await pickFromPlusMenu('composer-menu-skill');
     const search = screen.getByRole('textbox', { name: 'Search' });
     fireEvent.change(search, { target: { value: 'not-found' } });
     expect(screen.queryByRole('option')).toBeNull();
     expect(composerBody()).toBe('first\n  second');
     fireEvent.keyDown(search, { key: 'Escape' });
     expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    await pickFromPlusMenu('composer-menu-skill');
     fireEvent.change(screen.getByRole('textbox', { name: 'Search' }), { target: { value: 'bri' } });
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search' }), { key: 'Enter' });
     expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
@@ -706,13 +714,12 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(composerBody()).toBe('original task\ncreate a schedule');
     expect(screen.queryByRole('button', { name: '/brief' })).toBeNull();
   });
-  it.each([0, 2, 4])('menu insertion at offset %i preserves text and serializes the skill once', (offset) => {
+  it.each([0, 2, 4])('menu insertion at offset %i preserves text and serializes the skill once', async (offset) => {
     useDiscoveryStore.setState({ skills: SKILLS });
     const send = vi.fn();
     render(<ChatInput variant="welcome" onSend={send} />);
     typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '前文后文', offset);
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    await pickFromPlusMenu('composer-menu-skill');
     fireEvent.click(screen.getByRole('option', { name: /brief/ }));
     const atom = screen.getByRole('button', { name: '/brief' });
     expect(beforeSkillText(atom)).toBe('前文后文'.slice(0, offset));
@@ -757,14 +764,13 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(composerBody()).toBe('text');
   });
 
-  it('undoing a skill removal cannot leave an expert silently overriding that skill', () => {
+  it('undoing a skill removal cannot leave an expert silently overriding that skill', async () => {
     useDiscoveryStore.setState({ skills: SKILLS });
     const send = vi.fn();
     render(<ChatInput variant="welcome" onSend={send} />);
     typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '/br body');
     fireEvent.click(screen.getByRole('option', { name: /brief/ }));
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-team'));
+    await pickFromPlusMenu('composer-menu-team');
     fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'z', ctrlKey: true });
     expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
@@ -778,8 +784,7 @@ describe('ChatInput inline @mention boundaries', () => {
     const send = vi.fn().mockResolvedValue(false);
     render(<ChatInput variant="chat" onSend={send} />);
     typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '前文后文', 2);
-    fireEvent.click(screen.getByTestId('composer-plus'));
-    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    await pickFromPlusMenu('composer-menu-skill');
     fireEvent.click(screen.getByRole('option', { name: /brief/ }));
     await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' }); });
     expect(composerBody()).toBe('前文后文');

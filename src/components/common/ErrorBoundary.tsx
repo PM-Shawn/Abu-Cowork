@@ -9,6 +9,7 @@
 import { Component } from 'react';
 import type { ReactNode, ErrorInfo } from 'react';
 import { getI18n } from '@/i18n';
+import { Button } from '@/components/ds/button';
 import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 
 interface Props {
@@ -39,20 +40,21 @@ export class ErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) return this.props.fallback;
 
       const t = getI18n();
+      // The root boundary sits above DesignSystemProvider in App.tsx, and the provider can be what
+      // threw. This page therefore renders only what needs nothing above it: plain elements and
+      // `Button`, which reads no context. No IconButton or Tooltip, no Dialog, no useConfirm.
+      // The window behind it is see-through, so the page fills it with the opaque content surface.
       return (
-        <div className="flex flex-col items-center justify-center p-8 text-center">
-          <p className="text-body text-[var(--abu-text-tertiary)] mb-3">
+        <div className="flex h-full w-full flex-col items-center justify-center bg-surface p-8 text-center">
+          <p className="mb-3 text-ui text-label-secondary">
             {t.errorBoundary.renderError}
           </p>
-          <p className="text-minor text-[var(--abu-text-placeholder)] mb-4 max-w-[300px]">
+          <p className="mb-4 max-w-80 text-ui-sm text-label-tertiary">
             {this.state.error?.message?.slice(0, 100) ?? t.errorBoundary.unknownError}
           </p>
-          <button
-            onClick={() => this.setState({ hasError: false, error: null })}
-            className="px-4 py-2 text-body rounded-lg bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-          >
+          <Button variant="secondary" size="sm" onClick={() => this.setState({ hasError: false, error: null })}>
             {t.common.retry}
-          </button>
+          </Button>
         </div>
       );
     }
@@ -80,14 +82,11 @@ export class MessageErrorBoundary extends Component<{ children: ReactNode }, { h
     if (this.state.hasError) {
       const t = getI18n();
       return (
-        <div className="px-3 py-2 text-minor text-[var(--abu-text-placeholder)] bg-[var(--abu-bg-muted)] rounded-lg border border-[var(--abu-bg-active)]">
-          {t.errorBoundary.messageError}
-          <button
-            onClick={() => this.setState({ hasError: false })}
-            className="ml-2 text-[var(--abu-clay)] hover:underline"
-          >
+        <div className="flex items-center gap-2 rounded-control border border-separator bg-fill px-3 py-1 text-ui-sm text-label-secondary">
+          <span>{t.errorBoundary.messageError}</span>
+          <Button variant="plain" size="sm" onClick={() => this.setState({ hasError: false })}>
             {t.common.retry}
-          </button>
+          </Button>
         </div>
       );
     }

@@ -1,6 +1,7 @@
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Toggle } from '@/components/ui/toggle';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { Switch } from '@/components/ds/switch';
 import { setPetVisible } from '@/core/pet/petVisibility';
 
 export default function PetSection() {
@@ -18,14 +19,10 @@ export default function PetSection() {
   };
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{t.settings.petEnable}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.petEnableDesc}</p>
-        </div>
-        <Toggle checked={petOpen} onChange={handleTogglePet} size="lg" />
-      </div>
-    </div>
+    <SettingGroup>
+      <SettingRow title={t.settings.petEnable} description={t.settings.petEnableDesc} htmlFor="setting-pet-enable">
+        <Switch id="setting-pet-enable" checked={petOpen} onCheckedChange={handleTogglePet} />
+      </SettingRow>
+    </SettingGroup>
   );
 }

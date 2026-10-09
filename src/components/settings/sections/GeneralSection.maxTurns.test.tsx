@@ -1,15 +1,15 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 /**
- * The 「最大轮次」 row only. The rest of the General section has no test file,
- * and this deliberately doesn't grow into one — what is worth pinning here is
- * that the control saves finite and unlimited choices, and that the row
- * lines up with the other controls in the column.
+ * The 「最大轮次」 row only (the rest of the page is in GeneralSection.test.tsx):
+ * the control saves finite and unlimited choices, and the row lines up with
+ * the other controls in the column.
  */
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initLanguage } from '@/i18n';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { getI18n, initLanguage } from '@/i18n';
 import GeneralSection from './GeneralSection';
 
 const mockSetAgentMaxTurns = vi.fn();
@@ -53,27 +53,29 @@ vi.mock('@/core/agent/behaviorSensor', () => ({
   testWindowPermission: vi.fn().mockResolvedValue(true),
 }));
 
-/**
- * The row's trigger — the only control on the page showing a 「N 轮」 value.
- * While the menu is open its items are buttons too (Select renders plain
- * buttons, not `option` roles), and the portaled menu comes after the trigger
- * in DOM order — so the trigger is always the first match.
- */
-function capButtons() {
-  return screen.getAllByRole('button')
-    .filter((b) => /轮$|不限制/.test(b.textContent ?? ''));
+function renderSection() {
+  return render(<GeneralSection />, { wrapper: DesignSystemProvider });
 }
 
+/** The row's select, named after the row. */
 function trigger() {
-  return capButtons()[0];
+  return screen.getByRole('combobox', { name: getI18n().settings.agentMaxTurns });
 }
 
-/** The open menu's items, i.e. everything after the trigger. */
+/** The open list's options. */
 function menuItems() {
-  return capButtons().slice(1);
+  return screen.getAllByRole('option');
 }
 
 describe('GeneralSection · 最大轮次', () => {
+  beforeAll(() => {
+    // happy-dom lacks the pointer-capture and scroll calls Radix Select makes while opening.
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.setPointerCapture ??= () => undefined;
+    Element.prototype.releasePointerCapture ??= () => undefined;
+    Element.prototype.scrollIntoView ??= () => undefined;
+  });
+
   beforeEach(() => {
     initLanguage('zh-CN');
     vi.clearAllMocks();
@@ -85,20 +87,20 @@ describe('GeneralSection · 最大轮次', () => {
   });
 
   it('shows the built-in default when nothing has been set', () => {
-    render(<GeneralSection />);
+    renderSection();
 
     expect(trigger()).toHaveTextContent('200 轮');
   });
 
   it('shows the saved value once one exists', () => {
     settingsState.agentMaxTurns = 500;
-    render(<GeneralSection />);
+    renderSection();
 
     expect(trigger()).toHaveTextContent('500 轮');
   });
 
   it('saves the picked value', async () => {
-    render(<GeneralSection />);
+    renderSection();
 
     await userEvent.click(trigger());
     await userEvent.click(menuItems().find((b) => b.textContent === '500 轮')!);
@@ -107,7 +109,7 @@ describe('GeneralSection · 最大轮次', () => {
   });
 
   it('offers unlimited after the finite presets', async () => {
-    render(<GeneralSection />);
+    renderSection();
 
     await userEvent.click(trigger());
     const offered = menuItems().map((o) => o.textContent);
@@ -119,17 +121,16 @@ describe('GeneralSection · 最大轮次', () => {
 
   it('shows the saved unlimited choice', async () => {
     settingsState.agentMaxTurns = 0;
-    render(<GeneralSection />);
+    renderSection();
 
     expect(trigger()).toHaveTextContent('不限制');
   });
 
   it('lines the control up with the other rows in the column', () => {
-    render(<GeneralSection />);
+    renderSection();
 
-    // Every settings row's control shares one wrapper width, so the column of
-    // controls is flush rather than ragged (each Select is `w-full` inside it).
-    const wrappers = document.querySelectorAll('.w-40.shrink-0');
-    expect(wrappers.length).toBe(5);
+    // Every select on the page shares one wrapper width, so the column of controls is
+    // flush (each select fills its wrapper). Appearance is a segmented control, not a select.
+    expect(document.querySelectorAll('.w-40').length).toBe(4);
   });
 });

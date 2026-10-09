@@ -6,9 +6,14 @@
  * build it allows every name.
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import type { Skill } from '@/types';
+
+// The editor's controls are design-system components, so it renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/utils/itemStorage', () => ({
   ITEM_EXISTS_CODE: 'ITEM_EXISTS',

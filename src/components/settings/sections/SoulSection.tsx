@@ -1,19 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useI18n } from '@/i18n';
 import { loadSoul, saveSoul, getDefaultSoulTemplate } from '@/core/agent/soulConfig';
-import { Textarea } from '@/components/ui/textarea';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Spinner } from '@/components/ds/spinner';
+import { TextArea } from '@/components/ds/text-area';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import { cn } from '@/lib/utils';
 import ProactivityPicker from './ProactivityPicker';
 
 type SaveStatus = 'idle' | 'saving' | 'saved';
 
 export default function SoulSection() {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const defaultTemplate = getDefaultSoulTemplate();
   const [content, setContent] = useState(defaultTemplate);
   const [loading, setLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -71,7 +75,13 @@ export default function SoulSection() {
   };
 
   const handleRestore = async () => {
-    setShowRestoreConfirm(false);
+    const confirmed = await confirm({
+      title: t.soul.restoreConfirmTitle,
+      message: t.soul.restoreConfirmMessage,
+      confirmLabel: t.common.confirm,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     setContent(defaultTemplate);
     setSaveStatus('saving');
@@ -96,21 +106,14 @@ export default function SoulSection() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
-        <div className="w-5 h-5 border-2 border-[var(--abu-clay)] border-t-transparent rounded-full animate-spin" />
+        <Spinner label={t.common.loading} />
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      <div>
-        <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-          {t.soul.title}
-        </h3>
-        <p className="text-body text-[var(--abu-text-muted)] mt-1">
-          {t.soul.subtitle}
-        </p>
-      </div>
+      <SettingsSectionHeader title={t.soul.title} description={t.soul.subtitle} />
 
       {/* Proactivity preset — permanent home for the shy / companion /
           butler selector. SkillDraftsPanel has a one-time onboarding
@@ -119,49 +122,31 @@ export default function SoulSection() {
 
       <div className="space-y-3">
         <div className="relative">
-          <Textarea
+          <TextArea
             value={content}
             onChange={(e) => handleChange(e.target.value)}
-            className="font-mono text-body leading-relaxed min-h-[300px] resize-y"
+            className="min-h-75 resize-y font-code"
             placeholder={t.soul.placeholder}
           />
-          <div className="absolute bottom-2 right-3 flex items-center gap-2 text-caption">
-            {statusLabel && (
-              <span className="text-[var(--abu-text-placeholder)] transition-opacity duration-200">
-                {statusLabel}
-              </span>
-            )}
-            <span className={content.length > 2000 ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-placeholder)]'}>
+          <div className="absolute bottom-2 right-3 flex items-center gap-2 text-ui-sm text-label-tertiary">
+            {statusLabel && <span>{statusLabel}</span>}
+            <span className={cn(content.length > 2000 && 'text-danger')}>
               {content.length} / 2000
             </span>
           </div>
         </div>
 
-        <div className="flex items-center justify-between">
-          <p className="text-caption text-[var(--abu-text-placeholder)]">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-caption text-label-tertiary">
             {t.soul.filePath}
           </p>
           {isModified && (
-            <button
-              onClick={() => setShowRestoreConfirm(true)}
-              className="text-minor text-[var(--abu-text-placeholder)] hover:text-[var(--abu-text-tertiary)] underline underline-offset-2 transition-colors"
-            >
+            <Button variant="plain" size="sm" onClick={() => { void handleRestore(); }}>
               {t.soul.restore}
-            </button>
+            </Button>
           )}
         </div>
       </div>
-
-      <ConfirmDialog
-        open={showRestoreConfirm}
-        title={t.soul.restoreConfirmTitle}
-        message={t.soul.restoreConfirmMessage}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        onConfirm={handleRestore}
-        onCancel={() => setShowRestoreConfirm(false)}
-        variant="danger"
-      />
     </div>
   );
 }

@@ -1,4 +1,5 @@
-import { UsersRound } from 'lucide-react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import { cn } from '@/lib/utils';
 import { AVATAR_SIZE, avatarRadius, type AvatarSize } from '@/components/common/AgentAvatar';
 import { AVATAR_ICON_MAP, AVATAR_TINT_MAP, parseAvatarValue } from '@/core/team/avatarPresets';
@@ -15,7 +16,8 @@ export default function TeamAvatar({ avatar, size = 'md', round = false, classNa
   className?: string;
 }) {
   const parsed = parseAvatarValue(avatar ?? undefined);
-  const AvatarIcon = parsed.kind === 'icon' ? AVATAR_ICON_MAP[parsed.icon] : UsersRound;
+  const avatarIcon = parsed.kind === 'icon' ? AVATAR_ICON_MAP[parsed.icon] : AppIcons.team;
+  // The tint is the team's identity colour (data, like the brand mark), not a status colour.
   const tint = parsed.kind === 'icon' ? AVATAR_TINT_MAP[parsed.tint] : undefined;
   return (
     <span
@@ -23,9 +25,9 @@ export default function TeamAvatar({ avatar, size = 'md', round = false, classNa
       data-testid="team-avatar"
       data-avatar-kind={parsed.kind}
       style={tint ? { backgroundColor: tint.bg, color: tint.fg } : undefined}
-      className={cn(BOX[size], round ? 'rounded-full' : avatarRadius(size), 'inline-flex shrink-0 items-center justify-center bg-[var(--abu-bg-muted)] leading-none select-none', className)}
+      className={cn(BOX[size], round ? 'rounded-full' : avatarRadius(size), 'inline-flex shrink-0 select-none items-center justify-center bg-fill leading-none', className)}
     >
-      {parsed.kind === 'emoji' ? <span className={EMOJI[size]}>{parsed.emoji}</span> : <AvatarIcon className={cn(ICON[size], !tint && 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />}
+      {parsed.kind === 'emoji' ? <span className={EMOJI[size]}>{parsed.emoji}</span> : <Icon icon={avatarIcon} size={ICON[size]} className={tint ? undefined : 'text-label-tertiary'} />}
     </span>
   );
 }

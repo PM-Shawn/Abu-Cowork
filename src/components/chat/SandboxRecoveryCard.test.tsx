@@ -90,6 +90,25 @@ describe('SandboxRecoveryCard', () => {
     expect(screen.getByRole('button', { name: /Stop task/i })).toBeInTheDocument();
   });
 
+  it('makes continuing with Computer Use the only filled button and states the risk as a warning', async () => {
+    const user = userEvent.setup();
+    renderCard();
+
+    expect(screen.getByRole('status')).toHaveTextContent(/Notes/);
+    await user.click(screen.getByRole('button', { name: /Advanced/i }));
+    const continueButton = screen.getByRole('button', { name: /Continue with Computer Use/i });
+    const filled = screen.getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+    expect(filled).toEqual([continueButton]);
+    expect(screen.getByRole('button', { name: /Stop task/i })).toHaveClass('bg-fill');
+    expect(screen.getByRole('button', { name: /Open security settings/i })).toHaveClass('bg-fill');
+  });
+
+  it('shows one spinner with its sentence while the recovery is under way', () => {
+    renderCard('started');
+    expect(screen.getByRole('status')).toHaveTextContent('Continuing this task with Computer Use…');
+    expect(screen.getAllByText('Continuing this task with Computer Use…')).toHaveLength(1);
+  });
+
   it('continues the same conversation with a Computer Use-only instruction', async () => {
     const user = userEvent.setup();
     renderCard();

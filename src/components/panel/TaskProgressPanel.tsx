@@ -1,19 +1,28 @@
 import { useState } from 'react';
-import {
-  ChevronDown,
-  Check,
-  Loader2,
-  Circle,
-  ListChecks,
-  AlertCircle,
-} from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { Steps, type Step, type StepStatus } from '@/components/ds/steps';
+import { Tag } from '@/components/ds/tag';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import type { PlannedStep } from '@/types/execution';
 
 const EMPTY_STEPS: PlannedStep[] = [];
+
+// plannedSteps snapshots are persisted onto chat messages, so a history
+// conversation can carry a status from before the union was narrowed
+// ('running', 'error'). Those keep their meaning here; anything unknown reads
+// as not started.
+function toStepStatus(status: string): StepStatus {
+  if (status === 'completed') return 'done';
+  if (status === 'in_progress' || status === 'running') return 'current';
+  if (status === 'error') return 'error';
+  return 'pending';
+}
 
 /**
  * TaskProgressPanel - Displays AI-reported task plan
@@ -77,147 +86,72 @@ export default function TaskProgressPanel() {
   const hasPlannedSteps = plannedSteps.length > 0;
   // The plan is "live" only while the owning execution is actually running.
   // A stopped/completed execution lingers in the store (not evicted on abort),
-  // so gate on status 'running' — not mere presence. When not live, an
-  // in_progress step renders as a static marker (no spinner) so a stopped
-  // mid-flight step reads as "in progress, paused" rather than spinning forever.
+  // so gate on status 'running' — not mere presence. The title row spins only
+  // while live; the step in flight always carries the still "current" marker,
+  // so a stopped mid-flight step reads as "in progress, paused".
   const isLive = inMemoryPlannedSteps.length > 0 && activeStatus === 'running';
   const { t } = useI18n();
 
+  const steps: Step[] = plannedSteps.map((step) => ({
+    status: toStepStatus(step.status),
+    title: (
+      <>
+        {step.description}
+        {step.owner && (
+          <span data-testid="plan-step-owner" className="ml-2 inline-flex align-middle">
+            <Tag>@{step.owner}</Tag>
+          </span>
+        )}
+      </>
+    ),
+  }));
+
   return (
-    <div className="task-progress-panel pb-5 border-b border-[var(--abu-border)]">
-      {/* Header */}
-      <button
+    <div className="border-b border-separator pb-5">
+      {/* Header: the one spinner of the progress area sits here while the run is live */}
+      <Pressable
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center justify-between w-full text-left group"
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between text-left"
       >
-        <div className="flex items-center gap-2">
-          <ListChecks className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-          <span className="text-body font-medium text-[var(--abu-text-primary)]">{t.panel.progress}</span>
+        <span className="flex items-center gap-2">
+          <Icon icon={AppIcons.plan} className="text-label-secondary" />
+          <span className="text-ui font-medium text-label">{t.panel.progress}</span>
           {hasPlannedSteps && (
-            <span className="text-caption text-[var(--abu-text-muted)]">
+            <span className="text-caption text-label-tertiary">
               {plannedSteps.filter((s) => s.status === 'completed').length}/{plannedSteps.length}
             </span>
           )}
-        </div>
-        <ChevronDown
-          className={cn(
-            'h-4 w-4 text-[var(--abu-text-muted)] transition-transform',
-            !expanded && '-rotate-90'
-          )}
+          {isLive && <Spinner size="sm" labelHidden label={t.task.running} />}
+        </span>
+        <Icon
+          icon={AppIcons.expand}
+          size="sm"
+          className={cn('text-label-tertiary transition-transform duration-fast', !expanded && '-rotate-90')}
         />
-      </button>
+      </Pressable>
 
       {/* Content */}
       {expanded && (
         <div className="mt-3">
           {hasPlannedSteps ? (
-            // Steps list
-            <div className="space-y-2">
-              {plannedSteps.map((step) => (
-                <ProgressStepRow key={step.index} step={step} isLive={isLive} />
-              ))}
-            </div>
+            <Steps label={t.panel.progress} steps={steps} />
           ) : (
-            // Empty state - Claude Cowork style
             <div className="flex flex-col items-center py-4 text-center">
-              <div className="flex items-center gap-1.5 mb-2">
-                <Circle className="h-3 w-3 text-[var(--abu-bg-pressed)]" />
-                <div className="w-4 h-px bg-[var(--abu-bg-pressed)]" />
-                <Circle className="h-3 w-3 text-[var(--abu-bg-pressed)]" />
-                <div className="w-4 h-px bg-[var(--abu-bg-pressed)]" />
-                <Circle className="h-3 w-3 text-[var(--abu-bg-pressed)]" />
+              <div className="mb-2 flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full border border-control-border" />
+                <span className="h-px w-4 bg-separator" />
+                <span className="h-2 w-2 rounded-full border border-control-border" />
+                <span className="h-px w-4 bg-separator" />
+                <span className="h-2 w-2 rounded-full border border-control-border" />
               </div>
-              <p className="text-minor text-[var(--abu-text-muted)]">
+              <p className="text-ui-sm text-label-tertiary">
                 {t.panel.progressEmptyHint}
               </p>
             </div>
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-// --- Progress Step Row (Claude Cowork style) ---
-
-interface ProgressStepRowProps {
-  step: PlannedStep;
-  /** True only while a running execution still owns the plan. When false the
-   * loop has stopped, so an in_progress step is shown static (no spinner). */
-  isLive: boolean;
-}
-
-function ProgressStepRow({ step, isLive }: ProgressStepRowProps) {
-  // Defensive/display-only normalization: plannedSteps snapshots get
-  // persisted onto chat messages, so a history conversation can carry a
-  // pre-narrowing status value ('running'/'error') that falls outside the
-  // current PlannedStep['status'] union. Without this, those values hit the
-  // switch's default branch and silently render as an empty "not started"
-  // circle, losing whether the step was actually in-flight or failed. This
-  // does NOT change the type — only how legacy/out-of-union values render.
-  const rawStatus = step.status as string;
-  const status = rawStatus === 'running' ? 'in_progress' : rawStatus;
-
-  const renderStatusIcon = () => {
-    switch (status) {
-      case 'completed':
-        return (
-          <div className="w-5 h-5 rounded-full bg-[var(--abu-clay)] flex items-center justify-center">
-            <Check className="h-3 w-3 text-white" strokeWidth={3} />
-          </div>
-        );
-      case 'in_progress':
-        // Spinner only while the run is live (active feedback). Once stopped,
-        // a static clay dot — the step stays "in progress" but no longer implies
-        // motion (mirrors TRAE's static in-progress marker).
-        return (
-          <div className="w-5 h-5 rounded-full border-2 border-[var(--abu-clay)] flex items-center justify-center">
-            {isLive ? (
-              <Loader2 className="h-3 w-3 text-[var(--abu-clay)] animate-spin" />
-            ) : (
-              <div className="h-2 w-2 rounded-full bg-[var(--abu-clay)]" />
-            )}
-          </div>
-        );
-      case 'error':
-        // Legacy status, no longer produced going forward — kept only to
-        // render historical snapshots that predate the status narrowing.
-        return (
-          <div className="w-5 h-5 rounded-full border-2 border-[var(--abu-danger)] flex items-center justify-center">
-            <AlertCircle className="h-3 w-3 text-[var(--abu-danger)]" />
-          </div>
-        );
-      default:
-        return (
-          <div className="w-5 h-5 rounded-full border-2 border-[var(--abu-bg-pressed)] flex items-center justify-center">
-            <Circle className="h-2 w-2 text-[var(--abu-bg-pressed)]" />
-          </div>
-        );
-    }
-  };
-
-  return (
-    <div className="flex items-start gap-3">
-      <div className="shrink-0 mt-0.5">{renderStatusIcon()}</div>
-      <span
-        className={cn(
-          'text-body leading-6',
-          status === 'completed' && 'text-[var(--abu-text-tertiary)]',
-          status === 'in_progress' && 'text-[var(--abu-text-primary)]',
-          status === 'error' && 'text-[var(--abu-danger)]',
-          status === 'pending' && 'text-[var(--abu-text-muted)]'
-        )}
-      >
-        {step.description}
-        {step.owner && (
-          <span
-            data-testid="plan-step-owner"
-            className="ml-2 inline-flex items-center rounded-md bg-[var(--abu-bg-hover)] px-1.5 py-0.5 align-middle text-caption font-medium text-[var(--abu-text-tertiary)]"
-          >
-            @{step.owner}
-          </span>
-        )}
-      </span>
     </div>
   );
 }

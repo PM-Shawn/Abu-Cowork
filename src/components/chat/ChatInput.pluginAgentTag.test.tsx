@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -9,10 +11,11 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { getI18n } from '@/i18n';
 
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
 /**
- * The live `@` picker is ChatInput's own suggestion list — `AgentSelector` is
- * parked (its import is commented out), so provenance has to be visible here or
- * it is not visible at all.
+ * The `@` picker is ChatInput's own suggestion list, so provenance has to be
+ * visible here or it is not visible at all.
  */
 const AGENTS = [
   { name: 'weather', description: 'Forecasts', source: { kind: 'plugin' as const, plugin: 'weather@official' } },

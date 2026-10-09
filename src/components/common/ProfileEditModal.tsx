@@ -1,8 +1,16 @@
-import { useState, useEffect, useRef } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type ChangeEvent, type MouseEvent } from 'react';
+import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
+import { Button } from '@/components/ds/button';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { HiddenFileInput } from '@/components/ds/file-input';
+import { Icon } from '@/components/ds/icon';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { TextField } from '@/components/ds/text-field';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { Camera } from 'lucide-react';
-import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 
 interface ProfileEditModalProps {
   open: boolean;
@@ -19,138 +27,132 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
   const [nickname, setNickname] = useState(userNickname);
   const [avatar, setAvatar] = useState(userAvatar);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const nicknameId = useId();
+  // The picture file that is being read for this opening. A read takes a moment, and its
+  // result belongs to the opening it was started in: closing the window drops it.
+  const reading = useRef<FileReader | null>(null);
+  const [isReading, setIsReading] = useState(false);
 
-  useEffect(() => {
+  // The form is filled with the saved values each time the window opens, and keeps what it
+  // showed while it fades out.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) {
       setNickname(userNickname);
       setAvatar(userAvatar);
+    } else {
+      setIsReading(false);
     }
-  }, [open, userNickname, userAvatar]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
-
-  if (!open) return null;
+  }
+  useLayoutEffect(() => {
+    if (!open) reading.current = null;
+  }, [open]);
 
   const handleSave = () => {
+    // The window keeps rendering while it fades out: nothing is saved then.
+    if (!open) return;
     setUserNickname(nickname.trim());
     setUserAvatar(avatar);
     onClose();
   };
 
-  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setAvatar(reader.result);
-      }
+    reading.current = reader;
+    setIsReading(true);
+    // True for the read that is under way; false for an earlier opening's read, or one a newer
+    // choice has replaced. The read is over either way it ends.
+    const end = () => {
+      if (reading.current !== reader) return false;
+      reading.current = null;
+      setIsReading(false);
+      return true;
     };
+    reader.onload = () => {
+      if (end() && typeof reader.result === 'string') setAvatar(reader.result);
+    };
+    // A picture that could not be read leaves the picture as it was.
+    reader.onerror = () => { end(); };
+    reader.onabort = () => { end(); };
     reader.readAsDataURL(file);
   };
 
   const isModified = avatar !== '' || nickname !== '';
 
-  const handleReset = () => {
+  const handleReset = (event: MouseEvent<HTMLButtonElement>) => {
+    // The button leaves the window with what it restores. The focus it holds goes to the
+    // nickname field first, so it does not drop onto the window's box.
+    if (document.activeElement === event.currentTarget) {
+      document.getElementById(nicknameId)?.focus(lastInputWasPointer() ? { focusVisible: false } : undefined);
+    }
     setAvatar('');
     setNickname('');
   };
 
-  return (
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[360px] p-6 animate-in zoom-in-95 duration-150">
-        <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-5">
-          {t.sidebar.editProfile}
-        </h3>
+  const chooseFile = () => fileInputRef.current?.click();
 
-        {/* Avatar */}
-        <div className="flex flex-col items-center mb-5">
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="relative group"
-          >
-            <div className="w-16 h-16 rounded-full overflow-hidden">
-              {avatar ? (
-                <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
-              ) : (
-                <DefaultUserAvatar />
-              )}
-            </div>
-            <div className="absolute inset-0 rounded-full bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-              <Camera className="h-5 w-5 text-white" />
-            </div>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={handleAvatarChange}
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="text-minor text-[var(--abu-clay)] mt-2 hover:underline"
-          >
-            {t.sidebar.changeAvatar}
-          </button>
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={t.sidebar.editProfile}
+      size="sm"
+      closeButton
+      dirty={nickname !== userNickname || avatar !== userAvatar}
+      // Closing the window would drop the picture that is being read.
+      busy={isReading}
+      footer={(
+        <>
+          <DialogClose asChild><Button variant="plain">{t.common.cancel}</Button></DialogClose>
+          <Button variant="primary" onClick={handleSave}>{t.common.save}</Button>
+        </>
+      )}
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col items-center gap-2">
+          <Tooltip content={t.sidebar.changeAvatar}>
+            <Pressable aria-label={t.sidebar.changeAvatar} onClick={chooseFile} className="relative rounded-full">
+              <span className="block size-16 overflow-hidden rounded-full">
+                {avatar ? (
+                  <img src={avatar} alt="Avatar" className="size-full object-cover" />
+                ) : (
+                  <DefaultUserAvatar />
+                )}
+              </span>
+              <span className="absolute bottom-0 right-0 flex rounded-full bg-raised p-1 text-label-secondary shadow-float">
+                <Icon icon={AppIcons.camera} size="sm" />
+              </span>
+            </Pressable>
+          </Tooltip>
+          <HiddenFileInput ref={fileInputRef} accept="image/*" onChange={handleAvatarChange} />
+          <Button variant="plain" size="sm" onClick={chooseFile}>{t.sidebar.changeAvatar}</Button>
         </div>
 
-        {/* Nickname */}
-        <div className="mb-5">
-          <label className="text-body font-medium text-[var(--abu-text-secondary)] mb-1.5 block">
+        <div>
+          <label htmlFor={nicknameId} className="mb-1 block text-ui-sm font-medium text-label-secondary">
             {t.sidebar.nickname}
           </label>
-          <input
+          <TextField
+            id={nicknameId}
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
             placeholder={t.sidebar.nicknamePlaceholder}
             maxLength={20}
-            className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:border-[var(--abu-clay)] transition-colors"
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleSave();
             }}
           />
         </div>
 
-        {/* Reset link */}
         {isModified && (
-          <button
-            onClick={handleReset}
-            className="text-minor text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] mb-4 transition-colors"
-          >
-            {t.sidebar.resetProfile}
-          </button>
+          <div>
+            <Button variant="plain" size="sm" onClick={handleReset}>{t.sidebar.resetProfile}</Button>
+          </div>
         )}
-
-        {/* Buttons */}
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 py-2.5 rounded-lg text-body font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-          >
-            {t.common.cancel}
-          </button>
-          <button
-            onClick={handleSave}
-            className="flex-1 py-2.5 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors"
-          >
-            {t.common.save}
-          </button>
-        </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

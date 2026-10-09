@@ -4,36 +4,50 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { useActiveConversation, useChatStore } from '@/stores/chatStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useI18n, format, getI18n } from '@/i18n';
 import { createLogger } from '@/core/logging/logger';
-import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
+import { useTokenRevision } from '@/hooks/useTokenRevision';
 import { isMacOS } from '@/utils/platform';
+import { ContextMenu } from '@/components/ds/context-menu';
+import { MenuItem } from '@/components/ds/menu';
 import { SelectionToolbar } from '@/features/reference/SelectionToolbar';
 import { createDocReference } from '@/types/chatReference';
 
 const terminalLogger = createLogger('terminal');
 
+function readToken(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// xterm lifts any cell whose text falls under this contrast against its own background
+// (the terminal background, a program-set background, or the selection).
+const TERMINAL_MINIMUM_CONTRAST = 4.5;
+
 /**
- * Terminal colors from the app's own `--abu-*` tokens instead of a fixed
- * "VS Code dark+" palette — the old hardcoded `#1e1e1e` background read as a
- * jarring black box against Abu's warm light theme (the default since the
- * v0.42 migration). `--abu-bg-base` matches the surrounding workspace panel
- * card, so the terminal blends into it instead of looking bolted on.
+ * Terminal colors from the design tokens. xterm takes concrete color values only,
+ * so the `--ds-*` variables are read here and read again whenever the appearance
+ * changes (`useTokenRevision`). `--ds-surface` is the workspace panel card the
+ * terminal sits on, so the terminal blends into it.
  *
  * `selectionBackground` MUST be set explicitly: xterm's built-in default is
- * `rgba(255,255,255,0.3)` (white), which is invisible on the light theme's
- * near-white background — users dragged to select and saw nothing, and
- * concluded copying was broken. The clay fill matches the app's ::selection.
+ * `rgba(255,255,255,0.3)` (white), which is invisible on a white background —
+ * users dragged to select and saw nothing, and concluded copying was broken.
+ *
+ * `cursorAccent` is the character under the block cursor. xterm's default is black,
+ * which disappears into a cursor drawn in the label color; the terminal background
+ * always contrasts with the label.
+ *
+ * The 16 ANSI colors stay xterm's defaults: they are the program's output. xterm keeps
+ * each cell readable through `minimumContrastRatio` (see TERMINAL_MINIMUM_CONTRAST).
  */
 function resolveTerminalTheme(): ITheme {
-  const styles = getComputedStyle(document.documentElement);
-  const read = (name: string) => styles.getPropertyValue(name).trim();
   return {
-    background: read('--abu-bg-base'),
-    foreground: read('--abu-text-primary'),
-    cursor: read('--abu-clay'),
-    selectionBackground: read('--abu-clay-20'),
+    background: readToken('--ds-surface'),
+    foreground: readToken('--ds-label'),
+    cursor: readToken('--ds-label'),
+    cursorAccent: readToken('--ds-surface'),
+    selectionBackground: readToken('--ds-selection'),
   };
 }
 
@@ -89,11 +103,7 @@ export function handleTerminalCopyPasteKeys(term: Terminal, e: KeyboardEvent): b
   return true;
 }
 
-interface TerminalContextMenuState {
-  x: number;
-  y: number;
-  hasSelection: boolean;
-}
+type TerminalMenuAction = 'copy' | 'paste' | 'selectAll';
 
 interface TerminalSelectionState {
   text: string;
@@ -110,10 +120,17 @@ interface TerminalSelectionState {
 export default function TerminalTab({ tabId }: { tabId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const conversation = useActiveConversation();
+  // Only the workspace path: the conversation object is replaced on every streamed
+  // token, and subscribing to it would re-render the terminal and its menu each time.
+  const workspacePath = useChatStore((s) => (
+    s.activeConversationId ? s.conversations[s.activeConversationId]?.workspacePath : undefined
+  ));
   const { t } = useI18n();
-  const isDark = useEffectiveThemeIsDark();
-  const [contextMenu, setContextMenu] = useState<TerminalContextMenuState | null>(null);
+  const tokenRevision = useTokenRevision();
+  // Whether Copy applies, read from xterm each time the menu opens.
+  const [hasSelection, setHasSelection] = useState(false);
+  // What the menu will do once it has closed (see handleMenuCloseAutoFocus).
+  const pendingActionRef = useRef<TerminalMenuAction | null>(null);
   // Selection → "add to chat" toolbar (same reference flow as the doc preview's
   // DocSelectionLayer). xterm keeps its own selection model — window.getSelection()
   // never sees it — so the toolbar is driven by xterm's selection API instead.
@@ -129,17 +146,19 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
   // workspace dir if resolvable, else undefined (Rust falls back to the
   // shell's own default — typically $HOME). A pty session's cwd is fixed for
   // its lifetime, so later conversation switches must not move it.
-  const cwdRef = useRef<string | undefined>(conversation?.workspacePath ?? undefined);
+  const cwdRef = useRef<string | undefined>(workspacePath ?? undefined);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const term = new Terminal({
+      // 13px is the code size of the design system (`--text-mono`).
       fontSize: 13,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
+      fontFamily: readToken('--ds-font-mono'),
       cursorBlink: true,
       convertEol: false,
+      minimumContrastRatio: TERMINAL_MINIMUM_CONTRAST,
       theme: resolveTerminalTheme(),
     });
     termRef.current = term;
@@ -276,52 +295,38 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
       term.dispose();
       termRef.current = null;
       setSel(null);
-      setContextMenu(null);
     };
   // t is stable from the i18n singleton; cwdRef is a ref (identity-stable).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId]);
 
-  // Live-recolor on theme toggle, without touching the pty session above:
-  // xterm supports swapping `options.theme` on an existing instance, so a
-  // light/dark switch just repaints instead of tearing down the terminal.
+  // Live-recolor when the appearance changes (light/dark, increased contrast),
+  // without touching the pty session above: xterm supports swapping `options.theme`
+  // on an existing instance, so the terminal repaints and keeps its buffer.
   useEffect(() => {
     if (termRef.current) termRef.current.options.theme = resolveTerminalTheme();
-  }, [isDark]);
+  }, [tokenRevision]);
 
-  // Context menu: dismiss on any outside mousedown or Escape (same lifecycle
-  // as TabStrip's tab context menu).
-  useEffect(() => {
-    if (!contextMenu) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if ((e.target as HTMLElement | null)?.closest?.('[data-terminal-context-menu]')) return;
-      setContextMenu(null);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setContextMenu(null);
-    };
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [contextMenu]);
-
-  const openContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const term = termRef.current;
-    if (!term) return;
-    setContextMenu({ x: e.clientX, y: e.clientY, hasSelection: term.hasSelection() });
+  const handleMenuOpenChange = useCallback((open: boolean) => {
+    if (!open) return;
+    pendingActionRef.current = null;
+    setHasSelection(termRef.current?.hasSelection() ?? false);
   }, []);
 
-  const menuAction = useCallback((action: 'copy' | 'paste' | 'selectAll') => {
+  // The menu holds the keyboard while it is open. Its items only record what to do;
+  // the action runs here, after the menu has gone, and the terminal takes the keyboard
+  // back so typing continues.
+  const handleMenuCloseAutoFocus = useCallback((event: Event) => {
+    const action = pendingActionRef.current;
+    pendingActionRef.current = null;
+    // Another layer took the menu's place and holds the keyboard now.
+    if (event.defaultPrevented) return;
+    event.preventDefault();
     const term = termRef.current;
-    setContextMenu(null);
     if (!term) return;
     if (action === 'copy') copyTerminalSelection(term);
     else if (action === 'paste') void pasteClipboardIntoTerminal(term);
-    else term.selectAll();
+    else if (action === 'selectAll') term.selectAll();
     term.focus();
   }, []);
 
@@ -345,41 +350,27 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
     [sel, tabId],
   );
 
-  const menuItemClass =
-    'w-full text-left px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] disabled:opacity-40 disabled:hover:bg-transparent';
-
   return (
     <div className="relative h-full w-full">
-      <div
-        ref={containerRef}
-        className="h-full w-full overflow-hidden px-2 py-1"
-        onContextMenu={openContextMenu}
-      />
-      {contextMenu && (
-        <div
-          data-terminal-context-menu
-          className="fixed z-[60] min-w-[150px] rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-md py-1"
-          style={{
-            top: Math.min(contextMenu.y, window.innerHeight - 120),
-            left: Math.min(contextMenu.x, window.innerWidth - 158),
-          }}
-        >
-          <button
-            type="button"
-            className={menuItemClass}
-            disabled={!contextMenu.hasSelection}
-            onClick={() => menuAction('copy')}
-          >
-            {t.workspace.terminalCopy}
-          </button>
-          <button type="button" className={menuItemClass} onClick={() => menuAction('paste')}>
-            {t.workspace.terminalPaste}
-          </button>
-          <button type="button" className={menuItemClass} onClick={() => menuAction('selectAll')}>
-            {t.workspace.terminalSelectAll}
-          </button>
-        </div>
-      )}
+      <ContextMenu
+        onOpenChange={handleMenuOpenChange}
+        onCloseAutoFocus={handleMenuCloseAutoFocus}
+        content={(
+          <>
+            <MenuItem disabled={!hasSelection} onSelect={() => { pendingActionRef.current = 'copy'; }}>
+              {t.workspace.terminalCopy}
+            </MenuItem>
+            <MenuItem onSelect={() => { pendingActionRef.current = 'paste'; }}>
+              {t.workspace.terminalPaste}
+            </MenuItem>
+            <MenuItem onSelect={() => { pendingActionRef.current = 'selectAll'; }}>
+              {t.workspace.terminalSelectAll}
+            </MenuItem>
+          </>
+        )}
+      >
+        <div ref={containerRef} className="h-full w-full overflow-hidden px-2 py-1" />
+      </ContextMenu>
       {sel && (
         <SelectionToolbar
           rect={sel.rect}

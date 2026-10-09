@@ -2585,7 +2585,7 @@ async function main() {
     // regression manifests as Playwright's click being intercepted, which is
     // exactly the RC25 macOS and early Windows failure mode.
     const sidebarControl = window.locator('[data-window-control="sidebar"]');
-    const initialSidebarTitle = await sidebarControl.getAttribute('title');
+    const initialSidebarTitle = await sidebarControl.getAttribute('aria-label');
     if (!initialSidebarTitle) throw new Error('sidebar control label is missing');
     checks.packagedDesktopToolbarNativeHitTesting = await window.evaluate(() => {
       const controls = [...document.querySelectorAll('[data-window-control]')];
@@ -2616,7 +2616,7 @@ async function main() {
     if (!(await newTaskControl.isVisible())) {
       await sidebarControl.click();
       await waitUntil(
-        async () => (await sidebarControl.getAttribute('title')) !== initialSidebarTitle,
+        async () => (await sidebarControl.getAttribute('aria-label')) !== initialSidebarTitle,
         'the packaged sidebar control to toggle',
       );
       await newTaskControl.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
@@ -2625,7 +2625,7 @@ async function main() {
     await newTaskControl.click();
 
     const searchControl = window.locator('[data-window-control="search"]');
-    const searchTitle = await searchControl.getAttribute('title');
+    const searchTitle = await searchControl.getAttribute('aria-label');
     if (!searchTitle) throw new Error('search control label is missing');
     await searchControl.click();
     const searchInput = window.getByPlaceholder(searchTitle);
@@ -2636,7 +2636,7 @@ async function main() {
     if (sidebarChangedForNewTask) {
       await sidebarControl.click();
       await waitUntil(
-        async () => (await sidebarControl.getAttribute('title')) === initialSidebarTitle,
+        async () => (await sidebarControl.getAttribute('aria-label')) === initialSidebarTitle,
         'the packaged sidebar control to restore',
       );
     }
@@ -3322,7 +3322,7 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         state: 'visible',
         timeout: READY_TIMEOUT,
       });
-      const showSidebar = window.getByTitle(/显示侧栏|Show sidebar/);
+      const showSidebar = window.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ });
       if (await showSidebar.count()) {
         await showSidebar.click();
       }

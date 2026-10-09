@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@enterprise-modules/components/KbBrowser', () => ({}));
-vi.mock('@enterprise-modules/components/PersonalKbView', () => ({}));
 vi.mock('@enterprise-modules/components/EnterpriseSkillTab', () => ({}));
 vi.mock('@enterprise-modules/components/EnterpriseMcpTab', () => ({}));
 vi.mock('@enterprise-modules/components/EnterprisePluginTab', () => ({}));

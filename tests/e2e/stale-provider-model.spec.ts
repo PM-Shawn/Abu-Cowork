@@ -15,6 +15,7 @@ import {
   createElectronDataRoot,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -140,7 +141,7 @@ function messagesWith(page: Page, text: string): Locator {
 }
 
 function composerModelButton(page: Page, label: string): Locator {
-  return page.getByTestId('composer-toolbar').locator(`button[title="${label}"]`);
+  return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
 /** Add provider B next to the configured provider A and reload. */
@@ -170,7 +171,7 @@ async function addProviderB(page: Page, baseUrl: string): Promise<void> {
 }
 
 function providerCard(dialog: Locator, name: string): Locator {
-  return dialog.locator('div.group', { hasText: name }).first();
+  return dialog.getByTestId('provider-card').filter({ hasText: name }).first();
 }
 
 async function openModelSettings(page: Page): Promise<Locator> {
@@ -208,7 +209,9 @@ async function expectBlockedSend(
   await input.fill(marker);
   await input.press('Enter');
 
-  await expect(page.getByRole('status').getByText(toast, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(
+    page.getByRole('region', { name: /^(通知|Notifications)$/ }).getByText(toast, { exact: true }),
+  ).toBeVisible({ timeout: READY_TIMEOUT });
   await expect(input).toHaveValue(marker);
   await expect(messagesWith(page, marker)).toHaveCount(0);
   await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0);
@@ -312,9 +315,9 @@ test.describe('stale provider pin', () => {
       const dialog = await openModelSettings(page);
       const card = providerCard(dialog, PROVIDER_A.name);
       await card.hover();
-      await card.getByTitle('删除', { exact: true }).click();
-      await page.getByRole('button', { name: '确认', exact: true }).last().click();
-      await expect(dialog.locator('div.group', { hasText: PROVIDER_A.name })).toHaveCount(0);
+      await card.getByRole('button', { name: '删除', exact: true }).click();
+      await pressWhenSettled(page.getByRole('button', { name: '确认', exact: true }).last());
+      await expect(dialog.getByTestId('provider-card').filter({ hasText: PROVIDER_A.name })).toHaveCount(0);
       await closeSettings(page);
 
       // With the provider gone the label falls back to the model id.

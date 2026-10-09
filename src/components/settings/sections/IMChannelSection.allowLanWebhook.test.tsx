@@ -13,6 +13,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import IMChannelSection from './IMChannelSection';
 
@@ -69,7 +70,7 @@ describe('IMChannelSection — LAN callback opt-in', () => {
   afterEach(cleanup);
 
   it('shows the row off by default and writes the opt-in when switched on', async () => {
-    render(<IMChannelSection />);
+    render(<IMChannelSection />, { wrapper: DesignSystemProvider });
     expect(screen.getByText('允许局域网回调')).toBeInTheDocument();
     expect(theSwitch()).toHaveAttribute('aria-checked', 'false');
 
@@ -77,9 +78,17 @@ describe('IMChannelSection — LAN callback opt-in', () => {
     expect(mockSetIMAllowLanWebhook).toHaveBeenCalledExactlyOnceWith(true);
   });
 
+  it('names the switch by the row title, so pressing the title switches it too', async () => {
+    render(<IMChannelSection />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('switch', { name: '允许局域网回调' })).toBe(theSwitch());
+
+    await userEvent.click(screen.getByText('允许局域网回调'));
+    expect(mockSetIMAllowLanWebhook).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
   it('writes false again when switched back off', async () => {
     settingsState.imChannel = { allowLanWebhook: true };
-    render(<IMChannelSection />);
+    render(<IMChannelSection />, { wrapper: DesignSystemProvider });
     expect(theSwitch()).toHaveAttribute('aria-checked', 'true');
 
     await userEvent.click(theSwitch());
@@ -88,24 +97,24 @@ describe('IMChannelSection — LAN callback opt-in', () => {
 
   it('mentions the plugin only when one needs the LAN listener and the switch is off', () => {
     heartbeatInstalled = true;
-    render(<IMChannelSection />);
+    render(<IMChannelSection />, { wrapper: DesignSystemProvider });
     expect(screen.getByText(/需要局域网回调的插件/)).toBeInTheDocument();
   });
 
   it('says nothing about a plugin when none is installed', () => {
-    render(<IMChannelSection />);
+    render(<IMChannelSection />, { wrapper: DesignSystemProvider });
     expect(screen.queryByText(/需要局域网回调的插件/)).not.toBeInTheDocument();
   });
 
   it('says nothing about a plugin once the switch is already on', () => {
     heartbeatInstalled = true;
     settingsState.imChannel = { allowLanWebhook: true };
-    render(<IMChannelSection />);
+    render(<IMChannelSection />, { wrapper: DesignSystemProvider });
     expect(screen.queryByText(/需要局域网回调的插件/)).not.toBeInTheDocument();
   });
 
   it('holds back the restart note until the value is actually changed', async () => {
-    render(<IMChannelSection />);
+    render(<IMChannelSection />, { wrapper: DesignSystemProvider });
     expect(screen.queryByText(/完全退出并重新打开阿布/)).not.toBeInTheDocument();
 
     await userEvent.click(theSwitch());

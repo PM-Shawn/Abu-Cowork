@@ -8,16 +8,18 @@ import { readRootVariable, useComputedValue } from './useComputedValue';
 
 const TEXT_TOKENS = ['label', 'label-secondary', 'label-tertiary', 'label-placeholder', 'link', 'success', 'warning', 'danger', 'info'];
 const SOFT_TOKENS = ['success-soft', 'warning-soft', 'danger-soft', 'info-soft'];
-const TYPE_TOKENS = ['text-title-lg', 'text-title', 'text-ui', 'text-ui-sm', 'text-caption', 'text-body', 'text-h1', 'text-h2', 'text-h3', 'text-mono'];
+const TYPE_TOKENS = ['text-title-lg', 'text-title', 'text-ui', 'text-ui-sm', 'text-caption', 'text-body', 'text-h1', 'text-h2', 'text-h3', 'text-mono', 'text-code-inline'];
 const RADIUS_TOKENS = ['rounded-window', 'rounded-panel', 'rounded-control'];
-const SHADOW_TOKENS = ['shadow-panel', 'shadow-float', 'shadow-dialog'];
+const SHADOW_TOKENS = ['shadow-panel', 'shadow-float', 'shadow-dialog', 'shadow-composer'];
 const ICON_SIZES = ['sm', 'md', 'lg'] as const;
+// Code highlighting colors have no Tailwind class; the swatch paints the variable directly.
+const SYNTAX_TOKENS = ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property'];
 
 // Every color token of tokens.css, as a swatch. Class names must be complete literals so
 // Tailwind can generate them.
 const COLOR_CLASS: Record<string, string> = {
-  desk: 'bg-desk', 'desk-solid': 'bg-desk-solid', surface: 'bg-surface', raised: 'bg-raised', material: 'bg-material',
-  code: 'bg-code', field: 'bg-field', fill: 'bg-fill', 'fill-hover': 'bg-fill-hover', 'fill-selected': 'bg-fill-selected',
+  desk: 'bg-desk', 'desk-solid': 'bg-desk-solid', surface: 'bg-surface', raised: 'bg-raised',
+  code: 'bg-code', 'diagram-canvas': 'bg-diagram-canvas', 'page-canvas': 'bg-page-canvas', field: 'bg-field', fill: 'bg-fill', 'fill-hover': 'bg-fill-hover', 'fill-selected': 'bg-fill-selected',
   'fill-pressed': 'bg-fill-pressed', emphasis: 'bg-emphasis', 'on-emphasis': 'bg-on-emphasis', scrim: 'bg-scrim',
   brand: 'bg-brand', 'brand-ink': 'bg-brand-ink',
   label: 'bg-label', 'label-secondary': 'bg-label-secondary', 'label-tertiary': 'bg-label-tertiary',
@@ -25,6 +27,7 @@ const COLOR_CLASS: Record<string, string> = {
   separator: 'bg-separator', 'control-border': 'bg-control-border', focus: 'bg-focus',
   success: 'bg-success', 'success-soft': 'bg-success-soft', warning: 'bg-warning', 'warning-soft': 'bg-warning-soft',
   danger: 'bg-danger', 'danger-soft': 'bg-danger-soft', info: 'bg-info', 'info-soft': 'bg-info-soft',
+  'heat-1': 'bg-heat-1', 'heat-2': 'bg-heat-2', 'heat-3': 'bg-heat-3', 'heat-4': 'bg-heat-4',
 };
 const TEXT_CLASS: Record<string, string> = {
   label: 'text-label', 'label-secondary': 'text-label-secondary', 'label-tertiary': 'text-label-tertiary',
@@ -39,6 +42,7 @@ const SOFT_CLASS: Record<string, string> = {
 // Non-color scales, measured from a sample element that carries the class.
 const SCALES: { name: string; className: string; property: string }[] = [
   { name: 'z-sticky', className: 'relative z-sticky', property: 'z-index' },
+  { name: 'z-fullscreen', className: 'relative z-fullscreen', property: 'z-index' },
   { name: 'z-popover', className: 'relative z-popover', property: 'z-index' },
   { name: 'z-dialog', className: 'relative z-dialog', property: 'z-index' },
   { name: 'z-toast', className: 'relative z-toast', property: 'z-index' },
@@ -54,6 +58,7 @@ const SCALES: { name: string; className: string; property: string }[] = [
   { name: 'shadow-panel', className: 'shadow-panel', property: 'box-shadow' },
   { name: 'shadow-float', className: 'shadow-float', property: 'box-shadow' },
   { name: 'shadow-dialog', className: 'shadow-dialog', property: 'box-shadow' },
+  { name: 'shadow-composer', className: 'shadow-composer', property: 'box-shadow' },
 ];
 
 function ColorSwatch({ name }: { name: string }) {
@@ -61,6 +66,41 @@ function ColorSwatch({ name }: { name: string }) {
   return (
     <div data-token={name} className="overflow-hidden rounded-panel shadow-panel">
       <div className={`h-12 ${COLOR_CLASS[name]}`} />
+      <div className="px-2 py-1">
+        <div className="font-code text-ui-sm text-label">{name}</div>
+        <div data-token-value className="font-code text-caption text-label-secondary">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function SyntaxSwatch({ name }: { name: string }) {
+  const value = useComputedValue(() => readRootVariable(`--ds-${name}`));
+  return (
+    <div data-token={name} className="overflow-hidden rounded-panel bg-code shadow-panel">
+      <div className="h-12" style={{ backgroundColor: `var(--ds-${name})` }} />
+      <div className="px-2 py-1">
+        <div className="font-code text-ui-sm" style={{ color: `var(--ds-${name})` }}>{name}</div>
+        <div data-token-value className="font-code text-caption text-label-secondary">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+// Selection colors have no Tailwind class; each is painted over the background it sits on.
+// The class names are complete literals so Tailwind can generate them.
+const SELECTION_TOKENS = [
+  { name: 'selection', baseClass: 'bg-surface' },
+  { name: 'page-selection', baseClass: 'bg-page-canvas' },
+];
+
+function SelectionSwatch({ name, baseClass }: { name: string; baseClass: string }) {
+  const value = useComputedValue(() => readRootVariable(`--ds-${name}`));
+  return (
+    <div data-token={name} className="overflow-hidden rounded-panel bg-surface shadow-panel">
+      <div className={baseClass}>
+        <div className="h-12" style={{ backgroundColor: `var(--ds-${name})` }} />
+      </div>
       <div className="px-2 py-1">
         <div className="font-code text-ui-sm text-label">{name}</div>
         <div data-token-value className="font-code text-caption text-label-secondary">{value}</div>
@@ -94,6 +134,18 @@ export function TokenSection() {
       <div className="grid grid-cols-4 gap-3">
         {Object.keys(COLOR_CLASS).map((name) => <ColorSwatch key={name} name={name} />)}
       </div>
+      <div data-preview-syntax className="mt-4">
+        <p className="text-ui-sm font-medium text-label-tertiary">Code syntax</p>
+        <div className="mt-2 grid grid-cols-6 gap-3">
+          {SYNTAX_TOKENS.map((name) => <SyntaxSwatch key={name} name={name} />)}
+        </div>
+      </div>
+      <div data-preview-selection className="mt-4">
+        <p className="text-ui-sm font-medium text-label-tertiary">Selection</p>
+        <div className="mt-2 grid grid-cols-6 gap-3">
+          {SELECTION_TOKENS.map((token) => <SelectionSwatch key={token.name} {...token} />)}
+        </div>
+      </div>
       <div className="mt-4">
         {TEXT_TOKENS.map((name) => (
           <p key={name} className={`text-body ${TEXT_CLASS[name]}`}>{`${name} — ${CJK_SPECIMEN}`}</p>
@@ -106,7 +158,7 @@ export function TokenSection() {
       </div>
       <div className="mt-4">
         {TYPE_TOKENS.map((name) => (
-          <p key={name} className={`${name} text-label ${name === 'text-mono' ? 'font-code' : ''}`}>{`${name} — ${CJK_SPECIMEN} · Design system 13 / 14`}</p>
+          <p key={name} className={`${name} text-label ${name === 'text-mono' || name === 'text-code-inline' ? 'font-code' : ''}`}>{`${name} — ${CJK_SPECIMEN} · Design system 13 / 14`}</p>
         ))}
       </div>
       <div className="mt-4 flex gap-4">

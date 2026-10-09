@@ -175,7 +175,7 @@ test.describe('composer team chip journey', () => {
       await search.press('Enter');
       await expect(page.getByRole('button', { name: '/e2e-draft-skill', exact: true })).toBeVisible();
       await expectBody(body);
-      await page.screenshot({ path: '/private/tmp/abu-composer-preserved-electron.png' });
+      await page.screenshot({ path: test.info().outputPath('composer-preserved.png') });
 
       // Detail trial updates the skill without overwriting the same welcome draft.
       await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
@@ -289,7 +289,7 @@ test.describe('composer team chip journey', () => {
       await cdp.send('Input.imeSetComposition', { text: '中文', selectionStart: 2, selectionEnd: 2 });
       await cdp.send('Input.insertText', { text: '中文' });
       await expect.poll(beforeAtom).toBe('前文 粘贴\n继续中文');
-      await page.screenshot({ path: '/private/tmp/abu-composer-inline-skill-electron.png' });
+      await page.screenshot({ path: test.info().outputPath('composer-inline-skill.png') });
       const preserved = await readBody();
       await atom.evaluate((element) => {
         const range = document.createRange();

@@ -33,6 +33,8 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
+import { collectPresentedFiles } from '@/utils/presentedFiles';
+import { usePresentFilesOnDisk } from '@/hooks/usePresentFilesOnDisk';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
@@ -222,6 +224,9 @@ function extractMarkdownImages(text: string): string[] {
 function stripMarkdownImages(text: string): string {
   return text.replace(/!\[[^\]]*\]\([^)]+\)\n?/g, '').trim();
 }
+
+// File cards a declared-mode group shows before its "all files" button is pressed.
+const MAX_FILE_CARDS_SHOWN = 4;
 
 const LEGACY_STOP_MARKER = /\s*\*\[已停止\]\*\s*$/;
 
@@ -682,7 +687,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // text — fallback for paths the LLM announces in prose ("已保存到 X") but
   // never appear in toolCall.input.path (e.g. python subprocess writing files
   // not visible to the agent loop).
+  //
+  // Groups whose assistant messages carry `fileCards: 'declared'` take their
+  // cards from what the agent presented (declaredFiles below) and infer nothing.
+  const declaredMode = assistantMsgs.some((m) => m.fileCards === 'declared');
   const fileOutputs = useMemo(() => {
+    if (declaredMode) return [];
     const files = extractFileOutputs(allToolCalls, {
       mode: 'deliverables',
       // Drop cards for files cp/mv'd outside the workspace boundary — those are
@@ -716,7 +726,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       }
     }
     return files;
-  }, [allToolCalls, assistantMsgs, home]);
+  }, [allToolCalls, assistantMsgs, home, declaredMode]);
 
   /**
    * Which MCP servers are connected right now, as one stable string.
@@ -821,6 +831,39 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
   }, [isAgentDone, fileOutputs, openPreview, activeConv?.id, conversationId]);
+
+  // Declared mode: the cards are the presented files that are on disk. The
+  // check starts once the group is done, so no card shows before it answers.
+  const workspacePath = useChatStore((s) => s.conversations[conversationId]?.workspacePath ?? null);
+  const declaredFiles = useMemo(
+    () => (declaredMode ? collectPresentedFiles(allToolCalls, workspacePath) : []),
+    [declaredMode, allToolCalls, workspacePath],
+  );
+  const onDiskFiles = usePresentFilesOnDisk(declaredFiles, declaredMode && isGroupDone);
+  const [allFilesShown, setAllFilesShown] = useState(false);
+
+  // Declared-mode auto-preview: once per mount, for the last group, the first
+  // time the disk check lists a file after a run this mount watched has ended.
+  // It opens the last presented non-image file, or the last image when every
+  // file is an image.
+  const sawRunInProgressRef = useRef(false);
+  const declaredPreviewOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!declaredMode || !isLastGroupProp) return;
+    if (!isAgentDone) {
+      sawRunInProgressRef.current = true;
+      return;
+    }
+    if (!sawRunInProgressRef.current || declaredPreviewOpenedRef.current) return;
+    if (onDiskFiles === null || onDiskFiles.length === 0) return;
+    declaredPreviewOpenedRef.current = true;
+    const nonImageFiles = onDiskFiles.filter((file) => !isImageFile(file.path));
+    const target = nonImageFiles[nonImageFiles.length - 1] ?? onDiskFiles[onDiskFiles.length - 1];
+    const chat = useChatStore.getState();
+    if (chat.conversations[conversationId]
+      && chat.activeConversationId === conversationId
+      && usePreviewStore.getState().currentConversationId === conversationId) openPreview(target.path);
+  }, [declaredMode, isLastGroupProp, isAgentDone, onDiskFiles, conversationId, openPreview]);
 
   // handleRetry's deleteMessagesFrom truncates from this loop's first assistant
   // message onward, discarding anything after — so when this isn't the
@@ -1018,7 +1061,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       // have unique timestamped names. Non-output images (web URLs, pre-existing
       // files) still render as thumbnails.
       const baseOf = (p: string) => (p.split(/[/\\]/).pop() || p).trim();
-      const outputBasenames = new Set(fileOutputs.map((f) => baseOf(f.path)));
+      const outputBasenames = new Set((declaredMode ? onDiskFiles ?? [] : fileOutputs).map((f) => baseOf(f.path)));
       const mdImages = allMdImages.filter((src) => !outputBasenames.has(baseOf(src)));
       // Always strip ALL markdown images from the rendered text (MarkdownRenderer
       // drops <img> anyway); the ones we keep are shown as ImageThumbnail below.
@@ -1392,6 +1435,29 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 </>
               );
             })()}
+
+            {/* Presented files that are on disk, in the order they were presented:
+                the first four, and the rest behind one button. */}
+            {declaredMode && onDiskFiles !== null && onDiskFiles.length > 0 && (
+              <>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {(allFilesShown ? onDiskFiles : onDiskFiles.slice(0, MAX_FILE_CARDS_SHOWN)).map((file) => (
+                    isImageFile(file.path)
+                      ? <ImagePreviewCard key={file.path} filePath={file.path} />
+                      : <FileAttachment key={file.path} filePath={file.path} description={file.description} declared />
+                  ))}
+                </div>
+                {onDiskFiles.length > MAX_FILE_CARDS_SHOWN && (
+                  <Pressable
+                    aria-expanded={allFilesShown}
+                    onClick={() => setAllFilesShown((shown) => !shown)}
+                    className="mt-2 flex items-center gap-1 rounded-control text-ui text-label-secondary transition-colors duration-fast hover:text-label"
+                  >
+                    {allFilesShown ? t.chat.collapseFiles : format(t.chat.allFilesCount, { count: onDiskFiles.length })}
+                  </Pressable>
+                )}
+              </>
+            )}
 
             {/* Sources section - below file attachments */}
             {searchResults.length > 0 && !isStreaming && (

@@ -325,6 +325,9 @@ export interface TranslationDict {
     sources: string;
     showAllSources: string;
     collapseSources: string;
+    /** Button under the file cards of a turn that presented more than four files; `{count}` is the number of cards. */
+    allFilesCount: string;
+    collapseFiles: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;

@@ -59,6 +59,39 @@ describe('ImagePreviewCard', () => {
   });
 });
 
+describe('FileAttachment for a presented file', () => {
+  it('reads the given path without looking for a snapshot', async () => {
+    const { resolveFileSource } = await import('@/core/session/outputSnapshots');
+    vi.mocked(resolveFileSource).mockClear();
+
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" description="Quarterly report" declared /></Group>);
+
+    expect(screen.getByTitle('report.docx')).toHaveTextContent('report');
+    expect(screen.getByText('Quarterly report')).toBeInTheDocument();
+    expect(screen.queryByText('Document · DOCX')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open with Word' })).toBeInTheDocument();
+    expect(resolveFileSource).not.toHaveBeenCalled();
+  });
+
+  it('shows the file type when the agent gave no description', () => {
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" declared /></Group>);
+
+    expect(screen.getByText('Document · DOCX')).toBeInTheDocument();
+  });
+});
+
+describe('FileAttachment without the declared flag', () => {
+  it('resolves the file through the snapshot lookup and shows the file type', async () => {
+    const { resolveFileSource } = await import('@/core/session/outputSnapshots');
+    vi.mocked(resolveFileSource).mockClear();
+
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" /></Group>);
+
+    expect(await screen.findByText('Document · DOCX')).toBeInTheDocument();
+    expect(resolveFileSource).toHaveBeenCalledWith(undefined, '/workspace/report.docx', null);
+  });
+});
+
 describe('FileAttachment image card', () => {
   it('is named by the file name once', async () => {
     render(<Group tick={0}><FileAttachment filePath="/workspace/chart.png" /></Group>);

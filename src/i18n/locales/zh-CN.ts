@@ -284,6 +284,8 @@ const zhCN: TranslationDict = {
     sources: '来源',
     showAllSources: '显示全部',
     collapseSources: '收起',
+    allFilesCount: '全部 {count} 个文件',
+    collapseFiles: '收起',
     userMessageShowMore: '显示更多',
     userMessageCollapse: '收起',
     runPending: '正在发送…',

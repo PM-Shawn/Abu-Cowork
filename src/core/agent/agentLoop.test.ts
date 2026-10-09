@@ -724,7 +724,7 @@ describe('getCapabilityPrompt — visual-output variant selection', () => {
     // not promise it ALWAYS auto-opens.
     expect(prompt).toContain('can then be opened in the side preview panel');
     expect(prompt).not.toContain('opens automatically');
-    expect(prompt).toContain("let Abu's side preview/file card handle it");
+    expect(prompt).toContain('To satisfy "open/preview", write the file and call present_files with it — Abu\'s file card and side preview take it from there;');
     expect(prompt).toContain('do NOT run a system-shell `open`/`start` command');
   });
 

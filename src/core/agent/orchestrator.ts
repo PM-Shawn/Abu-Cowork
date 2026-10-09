@@ -113,7 +113,7 @@ When performing operations, prefer efficient tools — avoid inefficient approac
 - Search for files → find_files or search_files, not computer screenshots
 - Fetch web information → web_search or http_fetch, not opening a browser and screenshotting
 - System settings → run_command (osascript/defaults), not screenshotting system settings
-- Preview a generated file inside Abu → finish the file tool call and let Abu's side preview/file card handle it. Do not run macOS \`open\`, Windows \`start\`/\`Start-Process\`, or launch a system browser unless the user explicitly asks for an external/system browser
+- Hand a finished file to the user → call present_files with it near the end of the turn; Abu shows it as a file card under your reply and opens the side preview. Do not run macOS \`open\`, Windows \`start\`/\`Start-Process\`, or launch a system browser unless the user explicitly asks for an external/system browser
 - Use computer only when you must view the screen or interact with a GUI
 
 The last step of a multi-step task should be verification (e.g. list_directory to confirm file operations) — do not rely solely on execution output.

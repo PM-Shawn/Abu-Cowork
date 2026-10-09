@@ -160,6 +160,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push(`12. Stalls: a member with no new step for ${STALL_STOP_MINUTES} minutes is stopped automatically and its result says so. Re-dispatch that step once with a smaller scope or a different approach; if it stalls again, mark it blocked.`);
   lines.push('13. Restart: when a message says the app restarted mid-run, first read this conversation and the existing output files to see which steps already completed; never redo them. Dispatch only what is missing, then report.');
   lines.push('14. Mid-run instructions: the user can address a running member directly; the member sees it as "你的追加指令" in its process and may mention it in its result. Such an instruction is genuine and takes precedence over the original task — never tell the member to ignore it, never treat it as noise, and fold its outcome into your report.');
+  lines.push('15. Members cannot present files. When members finish, call present_files yourself with the finished deliverables they wrote (not their notes or drafts).');
   return lines.join('\n');
 }
 

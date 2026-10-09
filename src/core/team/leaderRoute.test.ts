@@ -200,6 +200,12 @@ describe('roster guard + prompt blocks', () => {
     expect(block).toContain('never tell the member to ignore it');
   });
 
+  it('role block tells the leader to present the files its members wrote', () => {
+    const block = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')] });
+    expect(block).toContain('15. Members cannot present files. When members finish, call present_files yourself with the finished deliverables they wrote (not their notes or drafts).');
+    expect(block.trimEnd().endsWith('(not their notes or drafts).')).toBe(true);
+  });
+
   it('role block tells the leader how many members could not be resolved, and stays silent when all resolve', () => {
     const withGap = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')], unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
     expect(withGap).toContain('2 members of this team could not be resolved');

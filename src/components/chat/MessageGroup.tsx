@@ -857,21 +857,23 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       : undefined;
   }, [turnFilePathsKey]);
 
-  // Declared-mode auto-preview: once per mount, for the last group, the first
-  // time the disk check lists a file after a run this mount watched has ended.
-  // It opens the last presented non-image file, or the last image when every
-  // file is an image.
+  // Declared-mode auto-preview: decided once per mount, for the last group, by
+  // the first answer of the disk check after a run this mount watched has
+  // ended. It opens the last presented non-image file, or the last image when
+  // every file is an image; an empty answer opens nothing, also when a file
+  // reaches the disk later.
   const sawRunInProgressRef = useRef(false);
-  const declaredPreviewOpenedRef = useRef(false);
+  const declaredPreviewDecidedRef = useRef(false);
   useEffect(() => {
     if (!declaredMode || !isLastGroupProp) return;
     if (!isAgentDone) {
       sawRunInProgressRef.current = true;
       return;
     }
-    if (!sawRunInProgressRef.current || declaredPreviewOpenedRef.current) return;
-    if (onDiskFiles === null || onDiskFiles.length === 0) return;
-    declaredPreviewOpenedRef.current = true;
+    if (!sawRunInProgressRef.current || declaredPreviewDecidedRef.current) return;
+    if (onDiskFiles === null) return;
+    declaredPreviewDecidedRef.current = true;
+    if (onDiskFiles.length === 0) return;
     const nonImageFiles = onDiskFiles.filter((file) => !isImageFile(file.path));
     const target = nonImageFiles[nonImageFiles.length - 1] ?? onDiskFiles[onDiskFiles.length - 1];
     const chat = useChatStore.getState();

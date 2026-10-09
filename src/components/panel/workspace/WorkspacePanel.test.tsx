@@ -18,8 +18,8 @@ import type { BatchIdentity } from '@/types';
 import WorkspacePanel from './WorkspacePanel';
 
 vi.mock('../PreviewPanel', () => ({
-  default: ({ filePath, line }: { filePath: string; line?: number }) => (
-    <div data-line={line}>Preview {filePath}</div>
+  default: ({ filePath, line, lineRequest }: { filePath: string; line?: number; lineRequest?: number }) => (
+    <div data-line={line} data-line-request={lineRequest}>Preview {filePath}</div>
   ),
 }));
 vi.mock('./TerminalTab', () => ({
@@ -104,10 +104,10 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Preview /tmp/a.md')).toBeInTheDocument();
   });
 
-  it('hands a preview tab its requested line', () => {
+  it('hands a preview tab its requested line and the count of the requests', () => {
     usePreviewStore.setState({
       tabs: [
-        { id: 'with-line', kind: 'preview', filePath: '/tmp/a.ts', line: 24 },
+        { id: 'with-line', kind: 'preview', filePath: '/tmp/a.ts', line: 24, lineRequest: 2 },
         { id: 'without-line', kind: 'preview', filePath: '/tmp/b.ts' },
       ],
       activeTabId: 'with-line',
@@ -117,7 +117,9 @@ describe('WorkspacePanel', () => {
     renderPanel();
 
     expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line', '24');
+    expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line-request', '2');
     expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line');
+    expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line-request');
   });
 
   it('renders a subagent workspace panel from explicit identity and task index', () => {

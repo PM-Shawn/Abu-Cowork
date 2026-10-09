@@ -391,6 +391,26 @@ describe('MessageGroup file cards', () => {
       await waitFor(() => expect(open).toHaveBeenCalledWith('/ws/report.docx'));
     });
 
+    it('opens nothing for a file that reaches the disk after the first check of the finished run', async () => {
+      let present = false;
+      onDisk = () => present;
+      const messages = turn([presentCall(numberedFiles(1))]);
+      const conversation = setConversation(messages, 'running');
+      const open = vi.spyOn(usePreviewStore.getState(), 'openPreview');
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+      await finishRun(conversation);
+      await waitFor(() => expect(exists).toHaveBeenCalledTimes(1));
+      await act(async () => {});
+      expect(cardButtons()).toHaveLength(0);
+
+      present = true;
+      act(() => { window.dispatchEvent(new Event('focus')); });
+      await waitFor(() => expect(cardButtons()).toHaveLength(1));
+
+      expect(open).not.toHaveBeenCalled();
+    });
+
     it('opens nothing when the turn presented no file', async () => {
       const messages = turn([writeCall('/ws/draft.md')]);
       const conversation = setConversation(messages, 'running');

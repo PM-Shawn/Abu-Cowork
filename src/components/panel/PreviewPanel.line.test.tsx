@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, readTextFile } from '@tauri-apps/plugin-fs';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -64,5 +64,45 @@ describe('PreviewPanel line', () => {
     renderPanel();
 
     await waitFor(() => expect(activeLineText()).toBe('const a = 1;'));
+  });
+
+  describe('Markdown file', () => {
+    const MARKDOWN = '# Report\n\nFirst paragraph.\n\nSecond paragraph.\n';
+
+    function renderMarkdown(line?: number, lineRequest?: number) {
+      return (
+        <DesignSystemProvider>
+          <PreviewPanel filePath="/w/report.md" tabId="t1" embedded line={line} lineRequest={lineRequest} />
+        </DesignSystemProvider>
+      );
+    }
+
+    beforeEach(() => {
+      vi.mocked(readTextFile).mockResolvedValue(MARKDOWN);
+    });
+
+    it('shows the source at the requested line', async () => {
+      render(renderMarkdown(5, 1));
+
+      await waitFor(() => expect(activeLineText()).toBe('Second paragraph.'));
+      expect(screen.queryByRole('heading', { name: 'Report' })).toBeNull();
+    });
+
+    it('shows the rendered document when no line is requested', async () => {
+      render(renderMarkdown());
+
+      expect(await screen.findByRole('heading', { name: 'Report' })).toBeInTheDocument();
+      expect(document.querySelector('.cm-editor')).toBeNull();
+    });
+
+    it('turns the rendered document into the source when a line is requested for it', async () => {
+      const view = render(renderMarkdown());
+      await screen.findByRole('heading', { name: 'Report' });
+
+      view.rerender(renderMarkdown(3, 1));
+
+      await waitFor(() => expect(activeLineText()).toBe('First paragraph.'));
+      expect(screen.queryByRole('heading', { name: 'Report' })).toBeNull();
+    });
   });
 });

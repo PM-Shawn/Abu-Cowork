@@ -68,8 +68,10 @@ function expandRightPanel(): void {
  */
 export type WorkspaceTab = (
   | { id: string; kind: 'summary' }
-  // `line` is the 1-based line the latest open request asked the source view to show.
-  | { id: string; kind: 'preview'; filePath: string; line?: number }
+  // `line` is the 1-based line the latest open request asked the source view to show;
+  // `lineRequest` counts the requests that named a line, so the same line asked for
+  // again is a new request.
+  | { id: string; kind: 'preview'; filePath: string; line?: number; lineRequest?: number }
   // Agent views carry main's ownerKey; user-created tabs inherit the current conversation.
   | { id: string; kind: 'browser'; url: string }
   | { id: string; kind: 'terminal' }
@@ -396,9 +398,14 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const line = options?.line;
     const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
-      const nextTabs = existing.kind === 'preview' && existing.line !== line
-        ? tabs.map((t): WorkspaceTab => (t.id === existing.id ? { ...existing, line } : t))
-        : tabs;
+      let nextTabs = tabs;
+      if (existing.kind === 'preview' && line !== undefined) {
+        const moved: WorkspaceTab = { ...existing, line, lineRequest: (existing.lineRequest ?? 0) + 1 };
+        nextTabs = tabs.map((t) => (t.id === existing.id ? moved : t));
+      } else if (existing.kind === 'preview' && existing.line !== undefined) {
+        const cleared: WorkspaceTab = { ...existing, line: undefined };
+        nextTabs = tabs.map((t) => (t.id === existing.id ? cleared : t));
+      }
       commitTabs(nextTabs, existing.id);
       expandRightPanel();
       return;
@@ -406,7 +413,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const id = genId();
     const nextTabs: WorkspaceTab[] = [
       ...tabs,
-      { id, kind: 'preview', filePath, ...(line !== undefined ? { line } : {}), ...ownerScope() },
+      { id, kind: 'preview', filePath, ...(line !== undefined ? { line, lineRequest: 1 } : {}), ...ownerScope() },
     ];
     commitTabs(nextTabs, id);
     expandRightPanel();

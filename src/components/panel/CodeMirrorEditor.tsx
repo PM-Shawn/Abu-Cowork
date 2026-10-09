@@ -46,6 +46,7 @@ export default function CodeMirrorEditor({
   onChange,
   readOnly = false,
   line,
+  lineRequest,
 }: {
   value: string;
   language: string;
@@ -53,12 +54,14 @@ export default function CodeMirrorEditor({
   readOnly?: boolean;
   /** 1-based line to show: the editor scrolls to it and puts the cursor at its start. */
   line?: number;
+  /** Count of the requests for a line; a new count shows `line` again. */
+  lineRequest?: number;
 }) {
   const extensions = useMemo(() => [...CODE_EDITOR_THEME, ...resolveLanguageExtensions(language)], [language]);
   const [view, setView] = useState<EditorView | null>(null);
 
-  // Runs when the editor exists (it is created with the loaded text) and each
-  // time another line is asked for; typing does not bring the cursor back.
+  // Runs when the editor exists (it is created with the loaded text) and with
+  // each request for a line; typing does not bring the cursor back.
   useEffect(() => {
     if (!view || line === undefined) return;
     const { doc } = view.state;
@@ -67,7 +70,7 @@ export default function CodeMirrorEditor({
       selection: { anchor: target.from },
       effects: EditorView.scrollIntoView(target.from, { y: 'center' }),
     });
-  }, [view, line]);
+  }, [view, line, lineRequest]);
 
   return (
     <CodeMirror

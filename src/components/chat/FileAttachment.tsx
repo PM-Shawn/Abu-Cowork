@@ -191,6 +191,12 @@ export default function FileAttachment({ filePath, description, declared = false
     }
   };
 
+  const handleShowInFolder = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+    await revealItemInDir(filePath);
+  };
+
   // Loading placeholder — match the standard card shape so the layout doesn't jump
   if (!resolved) {
     return (
@@ -301,6 +307,15 @@ export default function FileAttachment({ filePath, description, declared = false
       <Button variant="secondary" size="sm" icon={openWithIcon} onClick={handleOpenWithDefaultApp} className="whitespace-nowrap">
         {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
       </Button>
+      {declared && (
+        <IconButton
+          icon={AppIcons.folderOpen}
+          label={t.browserRunReport.artifactReveal}
+          variant="secondary"
+          size="sm"
+          onClick={handleShowInFolder}
+        />
+      )}
     </div>
   );
 }

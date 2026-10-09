@@ -122,6 +122,21 @@ describe('previewStore', () => {
       expect(s.activeTabId).toBe(s.tabs[0].id);
     });
 
+    it('counts each request for a line, so asking for the same line again is a new request', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({ line: 3, lineRequest: 1 });
+
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(1);
+      expect(s.tabs[0]).toMatchObject({ line: 3, lineRequest: 2 });
+    });
+
+    it('creates a tab without a request count when no line is requested', () => {
+      usePreviewStore.getState().openPreview('/a.ts');
+      expect(usePreviewStore.getState().tabs[0]).not.toHaveProperty('lineRequest');
+    });
+
     it('clears the line of an open tab when it is opened again without one', () => {
       usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
       const id = usePreviewStore.getState().tabs[0].id;

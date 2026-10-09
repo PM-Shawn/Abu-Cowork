@@ -295,12 +295,15 @@ export default function PreviewPanel({
   tabId,
   embedded = false,
   line,
+  lineRequest,
 }: {
   filePath?: string;
   tabId?: string;
   embedded?: boolean;
   /** 1-based line the source view shows once the file is loaded. */
   line?: number;
+  /** Count of the requests for a line; each one shows the source view at `line`. */
+  lineRequest?: number;
 } = {}) {
   // Back-compat: without a `filePath` prop (older call sites, before
   // workspace tabs existed), fall back to the store's single previewFilePath.
@@ -326,7 +329,7 @@ export default function PreviewPanel({
   // Preview/source toggle — applies to html (iframe vs editable source) and
   // markdown (rendered vs editable source). code/text have no rendered form
   // and are always shown via the editable source view regardless of this.
-  const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
+  const [viewMode, setViewMode] = useState<'preview' | 'source'>(line === undefined ? 'preview' : 'source');
   // Version history (P4) menu — controlled here so a file switch closes it.
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   // App-fullscreen toggle (Task 6) — expands the panel to a fixed overlay
@@ -537,6 +540,12 @@ export default function PreviewPanel({
   // previewFilePath only — a same-file watch reload (reloadNonce) must not
   // flip the user out of source mode while they're editing.
   useEffect(() => { setViewMode('preview'); }, [previewFilePath]);
+
+  // A request for a line shows the source view, where lines exist. It sits
+  // after the reset above so that a file opened at a line starts in source.
+  useEffect(() => {
+    if (line !== undefined) setViewMode('source');
+  }, [previewFilePath, line, lineRequest]);
 
   // Close the version history dropdown on file switch — it's scoped to
   // whatever file was previously open, not the newly selected one.
@@ -931,7 +940,7 @@ export default function PreviewPanel({
               </DocSelectionLayer>
             </ScrollArea>
           ) : (
-            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} line={line} />
+            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} line={line} lineRequest={lineRequest} />
           )
         ) : rendererType === 'html' ? (
           viewMode === 'preview' ? (
@@ -955,14 +964,14 @@ export default function PreviewPanel({
               <LazyFallback />
             )
           ) : content !== null ? (
-            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} line={line} />
+            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} line={line} lineRequest={lineRequest} />
           ) : (
             <LazyFallback />
           )
         ) : rendererType === 'code' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} lineRequest={lineRequest} />
         ) : rendererType === 'text' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} lineRequest={lineRequest} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <EmptyState

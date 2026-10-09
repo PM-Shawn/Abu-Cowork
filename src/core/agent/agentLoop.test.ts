@@ -202,6 +202,42 @@ describe('resolveTools · per-run restrictions', () => {
       .toEqual(resolveSubagentToolNames(roleTools, { tools: ['read_*', 'notes__*'], disallowedTools: ['notes__write', 'run_agent_batch'] }).toolNames);
   });
 
+  describe('present_files', () => {
+    const withPresent = [...roleTools, 'present_files'];
+    const presentInvoker: ToolInvoker = { getAllTools: () => withPresent.map(makeTool), executeAnyTool: async () => 'ok', toolResultToString: String };
+    const offered = (resolved: { tools: ToolDefinition[]; deferredTools: ToolDefinition[] }) =>
+      [...resolved.tools, ...resolved.deferredTools].map((tool) => tool.name);
+
+    it('stays with a team leader whose role lists other tools only', () => {
+      const resolved = resolveTools(presentInvoker, roleRoute({ tools: ['read_file', 'write_file'] }), false, undefined, prefetch);
+      expect(offered(resolved)).toEqual(['read_file', 'write_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch', 'present_files']);
+    });
+
+    it('leaves a team leader whose deny list names it', () => {
+      const resolved = resolveTools(presentInvoker, roleRoute({ tools: ['read_file'], disallowedTools: ['present_files'] }), false, undefined, prefetch);
+      expect(offered(resolved)).toEqual(['read_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch']);
+    });
+
+    it('is narrowed away by a skill allowed-tools list, as report_plan is', () => {
+      const skillRoute = {
+        type: 'skill' as const, name: 'init', cleanInput: '',
+        skill: { name: 'init', description: '', allowedTools: ['read_file', 'write_file'] },
+      } as unknown as Parameters<typeof resolveTools>[1];
+      const resolved = resolveTools(presentInvoker, skillRoute, false, undefined, prefetch);
+      expect(offered(resolved)).toEqual(['read_file', 'write_file']);
+    });
+
+    it.each([
+      ['a run allowlist that leaves it out', ['read_file', 'write_file'], undefined],
+      ['a run block list that names it', undefined, ['present_files']],
+    ])('is not offered under %s', (_label, allowedTools, blockedTools) => {
+      const general = { type: 'general' as const, name: 'abu', cleanInput: 'hello' };
+      const resolved = resolveTools(presentInvoker, general, false, blockedTools, prefetch, allowedTools);
+      expect(offered(resolved)).not.toContain('present_files');
+      expect(offered(resolved)).toContain('read_file');
+    });
+  });
+
   it.each([undefined, []])('keeps deferred discovery with inherited role tools %j while removing denied core and deferred tools', (tools) => {
     const resolved = resolveTools(roleInvoker, roleRoute({ tools, disallowedTools: ['write_*', 'notes__*'] }), false, undefined, prefetch);
     const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
@@ -726,7 +762,7 @@ describe('getCapabilityPrompt — visual-output variant selection', () => {
     // not promise it ALWAYS auto-opens.
     expect(prompt).toContain('can then be opened in the side preview panel');
     expect(prompt).not.toContain('opens automatically');
-    expect(prompt).toContain('To satisfy "open/preview", write the file and call present_files with it — Abu\'s file card and side preview take it from there;');
+    expect(prompt).toContain('To satisfy "open/preview", write the file and, when the present_files tool is available, call it with the file — Abu\'s file card and side preview take it from there;');
     expect(prompt).toContain('do NOT run a system-shell `open`/`start` command');
   });
 

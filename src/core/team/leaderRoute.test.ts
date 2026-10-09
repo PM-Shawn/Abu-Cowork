@@ -200,10 +200,24 @@ describe('roster guard + prompt blocks', () => {
     expect(block).toContain('never tell the member to ignore it');
   });
 
-  it('role block tells the leader to present the files its members wrote', () => {
+  it('role block tells the leader to present the files its members wrote, when the tool is offered', () => {
+    const rule = '15. Members cannot present files. When members finish and the present_files tool is available to you, call it yourself with the finished deliverables they wrote (not their notes or drafts).';
     const block = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')] });
-    expect(block).toContain('15. Members cannot present files. When members finish, call present_files yourself with the finished deliverables they wrote (not their notes or drafts).');
+    expect(block).toContain(rule);
     expect(block.trimEnd().endsWith('(not their notes or drafts).')).toBe(true);
+
+    const allowlisted = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: { ...def('lead'), tools: ['read_file', 'write_file'] }, members: [def('a')] });
+    expect(allowlisted).toContain(rule);
+  });
+
+  it.each([
+    ['its deny list names the tool', { disallowedTools: ['present_files'] }],
+    ['its deny list covers the tool with a pattern', { disallowedTools: ['present_*'] }],
+    ['its tool declaration is malformed', { tools: 'read_file' as unknown as string[] }],
+  ])('role block says nothing about present_files to a leader that cannot hold it: %s', (_label, roleTools) => {
+    const block = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: { ...def('lead'), ...roleTools }, members: [def('a')] });
+    expect(block).not.toContain('present_files');
+    expect(block).toContain('14. Mid-run instructions');
   });
 
   it('role block tells the leader how many members could not be resolved, and stays silent when all resolve', () => {

@@ -8,7 +8,7 @@ describe('agentToolPolicy', () => {
     const definition = { name: 'expert', tools: ['read_file'], disallowedTools: ['run_agent_batch'] } as never;
     const route = { type: 'agent' as const, name: 'expert', cleanInput: 'task', definition };
     expect(agentToolPolicyForRoute(route)).toEqual({ tools: ['read_file'], disallowedTools: ['run_agent_batch'], protocolTools: [] });
-    expect(agentToolPolicyForRoute({ ...route, team: {} as never })?.protocolTools).toEqual(['report_plan', 'delegate_to_agent', 'run_agent_batch', 'manage_goal']);
+    expect(agentToolPolicyForRoute({ ...route, team: {} as never })?.protocolTools).toEqual(['report_plan', 'delegate_to_agent', 'run_agent_batch', 'manage_goal', 'present_files']);
     for (const type of ['general', 'skill', 'delegate'] as const) {
       expect(agentToolPolicyForRoute({ ...route, type, team: {} as never })).toBeUndefined();
     }
@@ -83,6 +83,25 @@ describe('agentToolPolicy', () => {
     expect(checkAgentToolCall(policy, 'run_agent_batch', {})).not.toBeNull();
     // A policy cannot create a schema missing from the runtime registry.
     expect(resolveAgentToolNames(['read_file'], policy)).toEqual({ toolNames: ['read_file'] });
+  });
+
+  it('lets a team leader with a role allowlist present files, unless its own deny list names the tool', () => {
+    const leader = { name: 'lead', tools: ['read_file', 'write_file'] } as never;
+    const teamRoute = { type: 'agent' as const, name: 'lead', cleanInput: 'task', definition: leader, team: {} as never };
+    const policy = agentToolPolicyForRoute(teamRoute)!;
+    expect(resolveAgentToolNames(['read_file', 'write_file', 'run_command', 'present_files'], policy)).toEqual({
+      toolNames: ['read_file', 'write_file', 'present_files'],
+    });
+    expect(checkAgentToolCall(policy, 'present_files', { files: [{ path: '/ws/a.md' }] })).toBeNull();
+
+    const denying = agentToolPolicyForRoute({
+      ...teamRoute, definition: { name: 'lead', tools: ['read_file'], disallowedTools: ['present_files'] } as never,
+    })!;
+    expect(resolveAgentToolNames(['read_file', 'present_files'], denying)).toEqual({ toolNames: ['read_file'] });
+    expect(checkAgentToolCall(denying, 'present_files', {})).not.toBeNull();
+
+    const soloExpert = agentToolPolicyForRoute({ type: 'agent' as const, name: 'lead', cleanInput: 'task', definition: leader })!;
+    expect(resolveAgentToolNames(['read_file', 'present_files'], soloExpert)).toEqual({ toolNames: ['read_file'] });
   });
 
   it('matches protocol names exactly and applies wildcard deny to them', () => {

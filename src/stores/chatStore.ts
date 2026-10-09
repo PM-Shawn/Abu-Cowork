@@ -1355,7 +1355,9 @@ export const useChatStore = create<ChatStore>()(
         if (get().loadFailures[convId]) return;
         let newTitle: string | undefined;
         let welcome: Message | undefined;
-        let persistedMessage = message;
+        let persistedMessage: Message = message.role === 'assistant' && message.fileCards === undefined
+          ? { ...message, fileCards: 'declared' }
+          : message;
         set((state) => {
           // Clear expert intro banner once the conversation has any real
           // content — welcome screen is gone, banner has nothing to render on.

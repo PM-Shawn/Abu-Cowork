@@ -676,6 +676,24 @@ export function extractFilePathsFromText(text: string): string[] {
 }
 
 /**
+ * Output path of a finished generate_image / process_image call, read from
+ * its result text; process_image falls back to `input.output_path`.
+ */
+export function mediaToolOutputPath(tc: ToolCall): string | null {
+  if (!tc.result) return null;
+  if (tc.name === TOOL_NAMES.GENERATE_IMAGE) {
+    const match = tc.result.match(/(?:图片已保存到|Image saved to): (.+?)(?:\n|$)/);
+    return match ? match[1].trim() : null;
+  }
+  if (tc.name === TOOL_NAMES.PROCESS_IMAGE) {
+    const match = tc.result.match(/(?:Image processed successfully|图片处理成功): (.+?)(?:\n|$)/);
+    if (match) return match[1].trim();
+    return tc.input.output_path ? String(tc.input.output_path) : null;
+  }
+  return null;
+}
+
+/**
  * Extract file outputs from tool calls.
  *
  * Two semantic modes (see ExtractMode docs):
@@ -777,21 +795,10 @@ export function extractFileOutputs(
       continue;
     }
 
-    // 4. generate_image — extract path from result
-    if (tc.name === TOOL_NAMES.GENERATE_IMAGE && tc.result) {
-      const match = tc.result.match(/(?:图片已保存到|Image saved to): (.+?)(?:\n|$)/);
-      if (match) addFile(match[1].trim(), 'create');
-      continue;
-    }
-
-    // 5. process_image — result regex + fallback to input.output_path
-    if (tc.name === TOOL_NAMES.PROCESS_IMAGE && tc.result) {
-      const match = tc.result.match(/(?:Image processed successfully|图片处理成功): (.+?)(?:\n|$)/);
-      if (match) {
-        addFile(match[1].trim(), 'create');
-      } else if (input.output_path) {
-        addFile(String(input.output_path), 'create');
-      }
+    // 4-5. generate_image / process_image — output path announced in the result
+    if ((tc.name === TOOL_NAMES.GENERATE_IMAGE || tc.name === TOOL_NAMES.PROCESS_IMAGE) && tc.result) {
+      const outputPath = mediaToolOutputPath(tc);
+      if (outputPath) addFile(outputPath, 'create');
       continue;
     }
 

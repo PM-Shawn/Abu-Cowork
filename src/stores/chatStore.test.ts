@@ -787,6 +787,28 @@ describe('chatStore', () => {
       expect(conv.messages[0].content).toBe('Hello');
     });
 
+    it('marks a new assistant message so its file cards read declarations', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'msg1', role: 'user', content: 'Write the report', timestamp: FIXED_TIMESTAMP,
+      });
+      useChatStore.getState().addMessage(id, {
+        id: 'msg2', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP,
+      });
+      const [userMessage, assistantMessage] = useChatStore.getState().conversations[id].messages;
+      expect(assistantMessage.fileCards).toBe('declared');
+      expect(userMessage).not.toHaveProperty('fileCards');
+    });
+
+    it('keeps the file card mark an assistant message already carries', () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'msg1', role: 'assistant', content: 'Done', timestamp: FIXED_TIMESTAMP, fileCards: 'declared',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      expect(useChatStore.getState().conversations[id].messages[0]).toEqual(message);
+    });
+
     it('persists Reliable Run Protocol lifecycle and route metadata on the existing user message', async () => {
       const id = useChatStore.getState().createConversation();
       const message = {

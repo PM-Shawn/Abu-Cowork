@@ -43,7 +43,9 @@ vi.mock('react-virtuoso', async () => {
 });
 vi.mock('./MessageGroup', () => ({ default: () => null }));
 // Stands in for the composer: the message field, and a Send button that the Stop button takes
-// the place of once a message is sent (two elements, as in the composer).
+// the place of once a message is sent (two elements, as in the composer). The field is a text
+// area, and an editable text box once the message holds a skill tag.
+const composerStandIn = vi.hoisted(() => ({ holdsSkillTag: false }));
 vi.mock('./ChatInput', async () => {
   const { useState } = await import('react');
   const { Button } = await import('@/components/ds/button');
@@ -52,7 +54,9 @@ vi.mock('./ChatInput', async () => {
     const [running, setRunning] = useState(false);
     return (
       <>
-        <TextArea data-chat-composer="" aria-label="Message" />
+        {composerStandIn.holdsSkillTag
+          ? <div role="textbox" aria-multiline="true" aria-label="Message" data-chat-composer="" contentEditable suppressContentEditableWarning>/brief</div>
+          : <TextArea data-chat-composer="" aria-label="Message" />}
         {running ? <Button key="stop">Stop</Button> : <Button key="send" onClick={() => setRunning(true)}>Send</Button>}
       </>
     );
@@ -162,6 +166,7 @@ describe('ChatView approvals', () => {
     usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {} });
     useWorkspaceStore.setState({ currentPath: null, recentPaths: [] });
     vi.mocked(openDialog).mockReset().mockResolvedValue(null);
+    composerStandIn.holdsSkillTag = false;
   });
 
   afterEach(() => {
@@ -297,6 +302,49 @@ describe('ChatView approvals', () => {
       expect(answers).toEqual([false]);
       expect(messageField()).toHaveFocus();
       expect(screen.getByRole('button', { name: 'Stop' })).not.toHaveFocus();
+    });
+
+    it('goes to the message field when the command approval is refused with Escape while the field holds a skill tag', async () => {
+      composerStandIn.holdsSkillTag = true;
+      const id = conversation();
+      render(<ChatView />);
+      expect(messageField().tagName).toBe('DIV');
+      const send = screen.getByRole('button', { name: 'Send' });
+      send.focus();
+      fireEvent.click(send);
+      const answers = askCommand(id);
+      await settle();
+      expect(screen.getByRole('button', { name: t().commandConfirm.cancel })).toHaveFocus();
+
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      await settle();
+      left();
+      expect(answers).toEqual([false]);
+      expect(messageField()).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Stop' })).not.toHaveFocus();
+    });
+
+    it('goes to a message field that holds a skill tag after a file grant is denied and after a workspace request is denied, when no control had the focus', async () => {
+      composerStandIn.holdsSkillTag = true;
+      const id = conversation();
+      render(<ChatView />);
+      const file = askFile(id);
+      await settle();
+      press(t().permission.deny);
+      await settle();
+      left();
+      expect(file).toEqual([false]);
+      expect(messageField()).toHaveFocus();
+
+      act(() => { messageField().blur(); });
+      expect(document.body).toHaveFocus();
+      const workspace = askWorkspace(id);
+      await settle();
+      press(t().permission.deny);
+      await settle();
+      left();
+      expect(workspace).toEqual([null]);
+      expect(messageField()).toHaveFocus();
     });
 
     it('goes to the message field after a file grant is denied and after a workspace request is denied, when no control had the focus', async () => {

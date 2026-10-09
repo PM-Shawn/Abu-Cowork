@@ -12,6 +12,7 @@ import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '
 import type { ReactElement } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
+import { focusComposerFromWindow } from './composerFocus';
 import { getI18n } from '@/i18n';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -322,6 +323,25 @@ describe('ChatInput with a skill tag', () => {
       expect(notPrevented).toBe(false);
       expect(send).not.toHaveBeenCalled();
       expect(body()).toBe('');
+    });
+
+    // A window that leaves hands the focus to the field (an approval refused with the key
+    // still down): the field is then the editable box, and the key repeats in it.
+    it('a held Enter that comes with the focus from a window that left sends nothing and adds no line', async () => {
+      useChatStore.getState().createConversation();
+      const send = vi.fn();
+      render(<ChatInput variant="chat" onSend={send} />);
+      await pickTagInto('draft');
+      act(() => { field().blur(); });
+      expect(document.body).toHaveFocus();
+
+      act(() => { focusComposerFromWindow(); });
+      expect(field()).toHaveFocus();
+      const notPrevented = fireEvent.keyDown(field(), { key: 'Enter', code: 'Enter', repeat: true });
+      expect(notPrevented).toBe(false);
+      expect(send).not.toHaveBeenCalled();
+      expect(body()).toBe('draft');
+      expect(tag()).not.toBeNull();
     });
 
     it.each([

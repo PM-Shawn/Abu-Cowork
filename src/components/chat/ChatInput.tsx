@@ -1,4 +1,4 @@
-import { memo, useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, type ComponentProps } from 'react';
+import { memo, useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, type ComponentProps, type Ref } from 'react';
 import { createPortal } from 'react-dom';
 import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/chat/InlineSkillInput';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
@@ -629,8 +629,8 @@ const ComposerChip = memo(function ComposerChip({ kind, testId, name, avatar, ar
 });
 
 // The one filled button of the composer.
-const SendButton = memo(function SendButton({ label, disabled, onSend }: { label: string; disabled: boolean; onSend: () => void }) {
-  return <IconButton variant="primary" icon={AppIcons.send} label={label} disabled={disabled} onClick={onSend} />;
+const SendButton = memo(function SendButton({ ref, label, disabled, onSend }: { ref: Ref<HTMLButtonElement>; label: string; disabled: boolean; onSend: () => void }) {
+  return <IconButton ref={ref} variant="primary" icon={AppIcons.send} label={label} disabled={disabled} onClick={onSend} />;
 });
 
 const StopButton = memo(function StopButton({ label, onStop }: { label: string; onStop: () => void }) {
@@ -756,6 +756,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   });
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<InlineSkillInputHandle>(null);
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
   // What takes focus once the + menu has gone: a picker, or the text field.
   const afterPlusMenuRef = useRef<'skill' | 'agent' | 'field' | null>(null);
@@ -1705,6 +1706,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     }
     setDismissedSuggestionKey(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    // Send leaves under the focus once it has taken the message: it has nothing left to send,
+    // or Stop takes its place. It hands the focus to the field first.
+    if (sendButtonRef.current && document.activeElement === sendButtonRef.current) textareaRef.current?.focus();
   };
 
   /**
@@ -2297,7 +2301,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
                 {voiceControl}
 
-                <SendButton label={sendTooltip} disabled={!hasContent} onSend={sendFromButton} />
+                <SendButton ref={sendButtonRef} label={sendTooltip} disabled={!hasContent} onSend={sendFromButton} />
               </div>
             </div>
           ) : (
@@ -2354,7 +2358,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 {isStreaming ? (
                   <StopButton label={t.chat.stop} onStop={handleStop} />
                 ) : (
-                  <SendButton label={sendTooltip} disabled={!hasContent || !!disabled} onSend={sendFromButton} />
+                  <SendButton ref={sendButtonRef} label={sendTooltip} disabled={!hasContent || !!disabled} onSend={sendFromButton} />
                 )}
               </div>
             </div>

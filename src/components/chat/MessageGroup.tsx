@@ -837,8 +837,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // check starts once the group is done, so no card shows before it answers.
   const workspacePath = useChatStore((s) => s.conversations[conversationId]?.workspacePath ?? null);
   const declaredFiles = useMemo(
-    () => (declaredMode ? collectPresentedFiles(allToolCalls, workspacePath) : []),
-    [declaredMode, allToolCalls, workspacePath],
+    () => (declaredMode ? collectPresentedFiles(allToolCalls) : []),
+    [declaredMode, allToolCalls],
   );
   const onDiskFiles = usePresentFilesOnDisk(declaredFiles, declaredMode && isGroupDone);
   const [allFilesShown, setAllFilesShown] = useState(false);

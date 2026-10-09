@@ -4095,7 +4095,6 @@ const zhCN: TranslationDict = {
       notAFile: '不是普通文件',
       theseWereFine: '以下路径没有问题：',
       fixAndRetry: '请修正路径或创建缺少的文件，然后带上完整清单再次调用 present_files。',
-      presented: '已交付 {path}',
     },
     widget: {
       errTitleEmpty: '参数错误：title 不能为空。',

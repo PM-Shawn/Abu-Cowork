@@ -5149,8 +5149,6 @@ export interface TranslationDict {
       theseWereFine: string;
       /** Last line of a rejected call. */
       fixAndRetry: string;
-      /** One line per presented file. {path} */
-      presented: string;
     };
     // show_widget / read_me — inline visualization tool
     widget: {

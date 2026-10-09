@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { collectTurnFilePaths, resolveFileMention } from './turnFileMentions';
 import type { ToolCall } from '@/types';
+import {
+  TOOL_RESULT_CANCELLED_MARKER,
+  TOOL_RESULT_HOOK_BLOCKED_MARKER,
+} from '@/core/agent/toolResultMarkers';
+import zhCN from '@/i18n/locales/zh-CN';
+import enUS from '@/i18n/locales/en-US';
 
 function call(id: string, name: string, input: Record<string, unknown>, result?: string, extra?: Partial<ToolCall>): ToolCall {
   return { id, name, input, result, ...extra };
@@ -30,6 +36,35 @@ describe('collectTurnFilePaths', () => {
       call('p', 'present_files', { files: [{ path: '/ws/missing.md' }] }, 'Error: Nothing was presented.'),
     ];
     expect(collectTurnFilePaths(calls, '/ws')).toEqual([]);
+  });
+
+  it.each([
+    ['stopped by the user (zh-CN)', zhCN.task.cancelled],
+    ['stopped by the user (en-US)', enUS.task.cancelled],
+    ['aborted before it started', TOOL_RESULT_CANCELLED_MARKER],
+    ['blocked by a hook', TOOL_RESULT_HOOK_BLOCKED_MARKER],
+  ])('leaves out write, create and present calls that were %s', (_label, result) => {
+    const calls = [
+      call('w', 'write_file', { path: '/ws/report.md', content: 'x' }, result),
+      call('c', 'create_file', { file_path: '/ws/new.md' }, result),
+      call('p', 'present_files', { files: [{ path: '/ws/slides.pptx' }] }, result),
+    ];
+    expect(collectTurnFilePaths(calls, '/ws')).toEqual([]);
+  });
+
+  it('lists a file once when it was written by a relative path and presented by an absolute one', () => {
+    const calls = [
+      call('w', 'write_file', { path: './out/../a.md', content: 'x' }, 'ok'),
+      call('p', 'present_files', { files: [{ path: './a.md' }] }, 'Presented /ws/a.md'),
+    ];
+    const paths = collectTurnFilePaths(calls, '/ws');
+    expect(paths).toEqual(['/ws/a.md']);
+    expect(resolveFileMention('a.md', paths)).toEqual({ path: '/ws/a.md' });
+  });
+
+  it('takes a presented path from the result of the call, whatever the workspace is now', () => {
+    const calls = [call('p', 'present_files', { files: [{ path: 'report.md' }] }, 'Presented /first/report.md')];
+    expect(collectTurnFilePaths(calls, '/second')).toEqual(['/first/report.md']);
   });
 
   it('leaves out files that were only read, and tools that take no file', () => {

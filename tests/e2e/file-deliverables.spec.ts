@@ -174,7 +174,7 @@ test('a presented file gets a card with its description, and a file that was onl
   expect(fs.existsSync(path.join(workspace, 'report.md'))).toBe(true);
   expect(fs.existsSync(path.join(workspace, 'build.py'))).toBe(true);
   // The relative path was resolved against the project folder and accepted.
-  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`已交付 ${path.join(workspace, 'report.md')}`);
+  expect(toolResultsOfLastRequest(startedMock).at(-1)).toBe(`Presented ${path.join(workspace, 'report.md')}`);
 
   await expect(fileCards(page)).toHaveCount(1);
   const card = cardOf(page, 'report.md');

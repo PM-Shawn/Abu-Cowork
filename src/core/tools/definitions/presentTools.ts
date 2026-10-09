@@ -4,6 +4,7 @@ import { getI18n, format } from '../../../i18n';
 import { exists, stat } from '../fsBridge';
 import { checkReadPath } from '../pathSafety';
 import { resolveExpectedFile } from '../../team/expectedFiles';
+import { normalizeLexicalPath } from '../../../utils/pathUtils';
 
 export const MAX_PRESENTED_FILES = 8;
 
@@ -31,6 +32,24 @@ export function parsePresentedFilesInput(raw: unknown): PresentedFileInput[] {
   return files;
 }
 
+/**
+ * A successful call answers with one line per file, `Presented <absolute path>`,
+ * in the order of its input. The text is the same in every interface language,
+ * because the chat reads the presented paths back from it.
+ */
+export const PRESENTED_RESULT_PREFIX = 'Presented ';
+
+/** The paths a result lists when each of its non-empty lines is a presented line; otherwise null. */
+export function parsePresentedResult(result: string): string[] | null {
+  const paths: string[] = [];
+  for (const line of result.split('\n')) {
+    if (line.trim() === '') continue;
+    if (!line.startsWith(PRESENTED_RESULT_PREFIX)) return null;
+    paths.push(line.slice(PRESENTED_RESULT_PREFIX.length));
+  }
+  return paths;
+}
+
 type RejectionReason = 'needsAbsolutePath' | 'notAuthorized' | 'notFound' | 'notAFile';
 
 function isAbsolutePath(file: string): boolean {
@@ -40,9 +59,10 @@ function isAbsolutePath(file: string): boolean {
 /**
  * present_files — the agent declares the files it hands to the user this turn.
  *
- * The declaration is the tool call itself: the chat reads `input.files` of the
- * calls that did not fail. A call is all-or-nothing, so one bad path fails the
- * whole call and the model resends the full list.
+ * The declaration is the tool call itself: the chat reads the paths from the
+ * result of a call that listed every file it was given, and the descriptions
+ * from its input. A call is all-or-nothing, so one bad path fails the whole
+ * call and the model resends the full list.
  */
 export const presentFilesTool: ToolDefinition = {
   name: TOOL_NAMES.PRESENT_FILES,
@@ -80,11 +100,12 @@ export const presentFilesTool: ToolDefinition = {
     const rejected: { path: string; reason: RejectionReason }[] = [];
 
     for (const file of files) {
-      const resolved = resolveExpectedFile(file.path, context?.workspacePath);
-      if (file.path.startsWith('~') || !isAbsolutePath(resolved)) {
+      const joined = resolveExpectedFile(file.path, context?.workspacePath);
+      if (file.path.startsWith('~') || !isAbsolutePath(joined)) {
         rejected.push({ path: file.path, reason: 'needsAbsolutePath' });
         continue;
       }
+      const resolved = normalizeLexicalPath(joined);
       // Authorization comes before any disk probe, so an unauthorized path
       // reveals nothing about whether it exists.
       const check = await checkReadPath(resolved, context?.authorizationScopeId);
@@ -115,7 +136,7 @@ export const presentFilesTool: ToolDefinition = {
       return lines.join('\n');
     }
 
-    return accepted.map((path) => format(t.presented, { path })).join('\n');
+    return accepted.map((path) => `${PRESENTED_RESULT_PREFIX}${path}`).join('\n');
   },
   isConcurrencySafe: true,
 };

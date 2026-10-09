@@ -1,7 +1,8 @@
 import type { ToolCall } from '@/types';
 import { resolveExpectedFile } from '@/core/team/expectedFiles';
 import { collectPresentedFiles } from '@/utils/presentedFiles';
-import { getBaseName, normalizeSeparators } from '@/utils/pathUtils';
+import { isToolResultNotRun } from '@/core/agent/toolResultMarkers';
+import { getBaseName, normalizeLexicalPath, normalizeSeparators } from '@/utils/pathUtils';
 import { FILE_CREATE_TOOLS, FILE_WRITE_TOOLS, isToolResultError } from '@/utils/workflowExtractor';
 
 export interface FileMention {
@@ -12,7 +13,8 @@ export interface FileMention {
 
 /**
  * Absolute paths of the files a turn wrote, created or presented, each once,
- * with `/` separators. Failed and unfinished tool calls contribute nothing.
+ * with `/` separators and no `.` or `..` segment. Tool calls that failed, were
+ * stopped or blocked before they ran, or have not finished contribute nothing.
  */
 export function collectTurnFilePaths(
   toolCalls: readonly ToolCall[],
@@ -22,13 +24,14 @@ export function collectTurnFilePaths(
 
   for (const tc of toolCalls) {
     if (!FILE_WRITE_TOOLS.includes(tc.name) && !FILE_CREATE_TOOLS.includes(tc.name)) continue;
-    if (tc.result === undefined || tc.isError === true || isToolResultError(tc.result)) continue;
+    if (tc.result === undefined || tc.isError === true) continue;
+    if (isToolResultError(tc.result) || isToolResultNotRun(tc.result)) continue;
     const input = tc.input as Record<string, unknown>;
     const inputPath = String(input.path || input.file_path || input.filePath || '').trim();
-    if (inputPath) paths.add(normalizeSeparators(resolveExpectedFile(inputPath, workspacePath)));
+    if (inputPath) paths.add(normalizeLexicalPath(resolveExpectedFile(inputPath, workspacePath)));
   }
 
-  for (const file of collectPresentedFiles(toolCalls, workspacePath)) paths.add(file.path);
+  for (const file of collectPresentedFiles(toolCalls)) paths.add(file.path);
 
   return Array.from(paths);
 }

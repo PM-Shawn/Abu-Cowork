@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { MAX_PRESENTED_FILES, parsePresentedFilesInput, presentFilesTool } from './presentTools';
+import {
+  MAX_PRESENTED_FILES,
+  PRESENTED_RESULT_PREFIX,
+  parsePresentedFilesInput,
+  parsePresentedResult,
+  presentFilesTool,
+} from './presentTools';
+import { getLanguageSetting, setLanguage } from '../../../i18n';
 import type { ToolExecutionContext } from '../../../types';
 
 const mockExists = vi.fn();
@@ -37,6 +44,33 @@ describe('presentFilesTool', () => {
       const out = await run({ files: [{ path: 'report.md' }] }, { workspacePath: '/ws' });
       expect(mockExists).toHaveBeenCalledWith('/ws/report.md');
       expect(out).toBe('Presented /ws/report.md');
+    });
+
+    it('checks, probes and reports the path with `.` and `..` segments resolved', async () => {
+      const out = await run(
+        { files: [{ path: './report.md' }, { path: '/ws/sub/../notes.md' }, { path: 'C:\\out\\.\\a.docx' }] },
+        { workspacePath: '/ws', authorizationScopeId: 'scope-1' },
+      );
+      expect(mockCheckReadPath.mock.calls).toEqual([
+        ['/ws/report.md', 'scope-1'],
+        ['/ws/notes.md', 'scope-1'],
+        ['C:/out/a.docx', 'scope-1'],
+      ]);
+      expect(mockExists.mock.calls).toEqual([['/ws/report.md'], ['/ws/notes.md'], ['C:/out/a.docx']]);
+      expect(mockStat.mock.calls).toEqual([['/ws/report.md'], ['/ws/notes.md'], ['C:/out/a.docx']]);
+      expect(out).toBe('Presented /ws/report.md\nPresented /ws/notes.md\nPresented C:/out/a.docx');
+    });
+
+    it('writes the same result text in every interface language', async () => {
+      const previous = getLanguageSetting();
+      setLanguage('zh-CN');
+      try {
+        const out = await run({ files: [{ path: '/out/report.md' }] });
+        expect(out).toBe('Presented /out/report.md');
+        expect(parsePresentedResult(out)).toEqual(['/out/report.md']);
+      } finally {
+        setLanguage(previous);
+      }
     });
 
     it('rejects a relative path when there is no workspace', async () => {
@@ -111,6 +145,28 @@ describe('presentFilesTool', () => {
       expect(presentFilesTool.inputSchema.properties.files.maxItems).toBe(MAX_PRESENTED_FILES);
       expect(presentFilesTool.inputSchema.required).toEqual(['files']);
     });
+  });
+});
+
+describe('parsePresentedResult', () => {
+  it('reads one path per line', () => {
+    expect(PRESENTED_RESULT_PREFIX).toBe('Presented ');
+    expect(parsePresentedResult('Presented /out/report.md\nPresented C:/out/a b.docx')).toEqual([
+      '/out/report.md',
+      'C:/out/a b.docx',
+    ]);
+  });
+
+  it('skips blank lines', () => {
+    expect(parsePresentedResult('Presented /out/report.md\n\n')).toEqual(['/out/report.md']);
+  });
+
+  it('returns null when any line is something else', () => {
+    expect(parsePresentedResult('Presented /out/report.md\nThese were fine:')).toBeNull();
+    expect(parsePresentedResult('Error: Nothing was presented.')).toBeNull();
+    expect(parsePresentedResult('[已取消]')).toBeNull();
+    expect(parsePresentedResult('[Cancelled]')).toBeNull();
+    expect(parsePresentedResult('[被 hook 拦截]')).toBeNull();
   });
 });
 

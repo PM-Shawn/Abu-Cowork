@@ -217,6 +217,44 @@ describe('MessageGroup file cards', () => {
       expect(exists).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['[已取消]'],
+      ['[Cancelled]'],
+      ['[被 hook 拦截]'],
+    ])('shows no card and no file button for a present_files call that ended with %s', async (result) => {
+      const stopped: ToolCall = {
+        id: 'present-stopped',
+        name: TOOL_NAMES.PRESENT_FILES,
+        input: { files: [{ path: '/ws/report.md' }] },
+        result,
+      };
+      const messages = turn([stopped], { declared: true, answer: 'See `report.md`.' });
+      setConversation(messages);
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+
+      await act(async () => {});
+      expect(cardButtons()).toHaveLength(0);
+      expect(exists).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: 'Preview report.md' })).toBeNull();
+    });
+
+    it('shows one card for a file presented by a relative and by an absolute path', async () => {
+      const relative: ToolCall = {
+        id: 'present-relative',
+        name: TOOL_NAMES.PRESENT_FILES,
+        input: { files: [{ path: './a.md' }] },
+        result: 'Presented /ws/a.md',
+      };
+      const messages = turn([relative, presentCall([{ path: '/ws/a.md' }], 'present-absolute')]);
+      setConversation(messages);
+
+      render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
+
+      await waitFor(() => expect(cardButtons()).toHaveLength(1));
+      expect(exists.mock.calls).toEqual([['/ws/a.md']]);
+    });
+
     it('shows an image produced by generate_image as an image card', async () => {
       const generate: ToolCall = {
         id: 'generate',
@@ -307,16 +345,22 @@ describe('MessageGroup file cards', () => {
       expect(cardButtons()).toHaveLength(0);
     });
 
-    it('opens a presented file named by a relative path the workspace resolves', () => {
-      const messages = turn([presentCall([{ path: 'out/report.md' }])], {
+    it('keeps a file presented by a relative path where its call found it after the workspace changes', async () => {
+      const presented: ToolCall = {
+        id: 'present',
+        name: TOOL_NAMES.PRESENT_FILES,
+        input: { files: [{ path: 'out/report.md', description: 'The report' }] },
+        result: 'Presented /first/out/report.md',
+      };
+      const messages = turn([presented], {
         declared: true,
-        answer: 'The report is at `/ws/out/report.md`.',
+        answer: 'The report is at `/first/out/report.md`.',
       });
       useChatStore.setState({
         activeConversationId: CONVERSATION_ID,
         conversations: {
           [CONVERSATION_ID]: {
-            id: CONVERSATION_ID, title: 'Files', messages, createdAt: 1_000, updatedAt: 3_000, status: 'idle', workspacePath: '/ws',
+            id: CONVERSATION_ID, title: 'Files', messages, createdAt: 1_000, updatedAt: 3_000, status: 'idle', workspacePath: '/second',
           },
         },
         agentStates: new Map(),
@@ -325,8 +369,12 @@ describe('MessageGroup file cards', () => {
 
       render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
 
+      await waitFor(() => expect(cardButtons()).toHaveLength(1));
+      expect(exists.mock.calls).toEqual([['/first/out/report.md']]);
+      expect(screen.getByText('The report')).toBeInTheDocument();
+
       fireEvent.click(screen.getByRole('button', { name: 'Preview report.md' }));
-      expect(open).toHaveBeenCalledWith('/ws/out/report.md', { line: undefined });
+      expect(open).toHaveBeenCalledWith('/first/out/report.md', { line: undefined });
     });
 
     it('leaves the text of a turn without the declared marker as plain code', () => {

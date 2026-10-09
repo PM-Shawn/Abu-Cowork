@@ -4093,7 +4093,6 @@ const enUS: TranslationDict = {
       notAFile: 'not a regular file',
       theseWereFine: 'These were fine:',
       fixAndRetry: 'Fix the paths or create the missing files, then call present_files again with the full list.',
-      presented: 'Presented {path}',
     },
     widget: {
       errTitleEmpty: 'Parameter error: title cannot be empty.',

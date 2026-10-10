@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   normalizeSeparators,
+  normalizeLexicalPath,
   getBaseName,
   getParentDir,
   joinPath,
@@ -117,6 +118,38 @@ describe('pathUtils', () => {
 
     it('returns "user" for empty input', () => {
       expect(extractUsername('')).toBe('user');
+    });
+  });
+
+  // ── normalizeLexicalPath ──
+  describe('normalizeLexicalPath', () => {
+    it('removes `.` segments and duplicate separators', () => {
+      expect(normalizeLexicalPath('/ws/./out//report.md')).toBe('/ws/out/report.md');
+    });
+
+    it('resolves `..` segments', () => {
+      expect(normalizeLexicalPath('/ws/sub/../report.md')).toBe('/ws/report.md');
+    });
+
+    it('does not climb above the root of an absolute path', () => {
+      expect(normalizeLexicalPath('/../../etc/hosts')).toBe('/etc/hosts');
+    });
+
+    it('keeps a Windows drive letter as written', () => {
+      expect(normalizeLexicalPath('c:\\ws\\.\\sub\\..\\a.docx')).toBe('c:/ws/a.docx');
+      expect(normalizeLexicalPath('C:/../a.docx')).toBe('C:/a.docx');
+    });
+
+    it('keeps a UNC prefix', () => {
+      expect(normalizeLexicalPath('\\\\server\\share\\.\\a.docx')).toBe('//server/share/a.docx');
+    });
+
+    it('keeps the leading `..` segments of a relative path', () => {
+      expect(normalizeLexicalPath('../a/./b')).toBe('../a/b');
+    });
+
+    it('leaves a clean path unchanged', () => {
+      expect(normalizeLexicalPath('/ws/报告 终稿.md')).toBe('/ws/报告 终稿.md');
     });
   });
 });

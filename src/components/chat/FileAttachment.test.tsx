@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup, screen } from '@testing-library/react';
+import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { initLanguage } from '@/i18n';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -23,6 +23,13 @@ vi.mock('@/utils/pathUtils', async (importOriginal) => ({
 
 vi.mock('@/core/session/outputSnapshots', () => ({
   resolveFileSource: vi.fn(async (_conversationId: unknown, filePath: string) => ({ status: 'available', path: filePath })),
+}));
+
+// The global setup mock of the opener has no `revealItemInDir`.
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  openUrl: vi.fn().mockResolvedValue(undefined),
+  openPath: vi.fn().mockResolvedValue(undefined),
+  revealItemInDir: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { default: FileAttachment, ImagePreviewCard } = await import('./FileAttachment');
@@ -56,6 +63,58 @@ describe('ImagePreviewCard', () => {
     const reveal = screen.getByRole('button', { name: 'Show in File Manager' });
     expect(reveal.querySelector('svg.lucide-folder-open')).not.toBeNull();
     expect(container.querySelector('svg.lucide-external-link')).toBeNull();
+  });
+});
+
+describe('FileAttachment for a presented file', () => {
+  it('reads the given path without looking for a snapshot', async () => {
+    const { resolveFileSource } = await import('@/core/session/outputSnapshots');
+    vi.mocked(resolveFileSource).mockClear();
+
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" description="Quarterly report" declared /></Group>);
+
+    expect(screen.getByTitle('report.docx')).toHaveTextContent('report');
+    expect(screen.getByText('Quarterly report')).toBeInTheDocument();
+    expect(screen.queryByText('Document · DOCX')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open with Word' })).toBeInTheDocument();
+    expect(resolveFileSource).not.toHaveBeenCalled();
+  });
+
+  it('shows the file type when the agent gave no description', () => {
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" declared /></Group>);
+
+    expect(screen.getByText('Document · DOCX')).toBeInTheDocument();
+  });
+
+  it('shows the file in its folder from the button beside the open button', async () => {
+    const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+    vi.mocked(revealItemInDir).mockClear();
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" declared /></Group>);
+
+    const reveal = screen.getByRole('button', { name: 'Show in folder' });
+    expect(reveal.querySelector('svg.lucide-folder-open')).not.toBeNull();
+    fireEvent.click(reveal);
+
+    await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith('/workspace/report.docx'));
+  });
+});
+
+describe('FileAttachment without the declared flag', () => {
+  it('has no button that shows the file in its folder', async () => {
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" /></Group>);
+
+    await screen.findByText('Document · DOCX');
+    expect(screen.queryByRole('button', { name: 'Show in folder' })).toBeNull();
+  });
+
+  it('resolves the file through the snapshot lookup and shows the file type', async () => {
+    const { resolveFileSource } = await import('@/core/session/outputSnapshots');
+    vi.mocked(resolveFileSource).mockClear();
+
+    render(<Group tick={0}><FileAttachment filePath="/workspace/report.docx" /></Group>);
+
+    expect(await screen.findByText('Document · DOCX')).toBeInTheDocument();
+    expect(resolveFileSource).toHaveBeenCalledWith(undefined, '/workspace/report.docx', null);
   });
 });
 

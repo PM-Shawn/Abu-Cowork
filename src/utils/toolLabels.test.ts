@@ -26,6 +26,20 @@ describe('getToolLabel', () => {
       expect(getToolLabel('use_skill', { skill_name: '/pdf' }, 'zh-CN').label).toBe('使用 /pdf 技能');
     });
 
+    it('present_files → count of files, with the file names as detail', () => {
+      const input = { files: [{ path: '/out/report.md', description: 'Report' }, { path: 'C:\\out\\chart.png' }, { path: 7 }] };
+      expect(getToolLabel('present_files', input, 'zh-CN')).toEqual({
+        label: '交付了 2 个文件',
+        detail: 'report.md、chart.png',
+      });
+      expect(getToolLabel('present_files', input, 'en-US')).toEqual({
+        label: 'Presented 2 files',
+        detail: 'report.md, chart.png',
+      });
+      expect(getToolLabel('present_files', { files: [{ path: '/out/report.md' }] }, 'en-US').label).toBe('Presented 1 file');
+      expect(getToolLabel('present_files', {}, 'zh-CN')).toEqual({ label: '交付了 0 个文件', detail: undefined });
+    });
+
     it('unknown tool falls back to Call/调用 in the right locale', () => {
       expect(getToolLabel('some_tool', {}, 'en-US').label).toBe('Call some_tool');
       expect(getToolLabel('some_tool', {}, 'zh-CN').label).toBe('调用 some_tool');

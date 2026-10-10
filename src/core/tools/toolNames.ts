@@ -68,6 +68,9 @@ export const TOOL_NAMES = {
   // IM outbound (only usable inside an IM channel session)
   SEND_FILE: 'send_file',
 
+  // Turn deliverables shown as file cards under the reply
+  PRESENT_FILES: 'present_files',
+
   // Computer use
   COMPUTER: 'computer',
 

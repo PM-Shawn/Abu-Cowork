@@ -12,6 +12,31 @@ function thinkingStep(duration?: number): UnifiedStep {
   return { id: 't1', type: 'thinking', label: '思考中...', status: 'completed', duration } as UnifiedStep;
 }
 
+describe('generateSummary — presenting files', () => {
+  const t = getI18n();
+  const locale = getLocale();
+
+  function toolStep(id: string, toolName: string, type: UnifiedStep['type']): UnifiedStep {
+    return { id, type, label: toolName, status: 'completed', toolName } as UnifiedStep;
+  }
+
+  it('names the present_files step as presenting files, apart from other tool calls', () => {
+    const steps = [
+      toolStep('s1', 'write_file', 'file-create'),
+      toolStep('s2', 'present_files', 'tool'),
+    ];
+    const summary = generateSummary(steps, t, locale, false);
+    expect(summary).toContain(t.task.presentedFiles);
+    expect(summary).toContain(t.task.createdFile);
+    expect(summary).not.toContain(t.task.calledTool);
+  });
+
+  it('keeps the tool-call wording for a group without present_files', () => {
+    const summary = generateSummary([toolStep('s1', 'report_plan', 'tool')], t, locale, false);
+    expect(summary).toBe(t.task.calledTool);
+  });
+});
+
 describe('generateSummary — thinking-only block', () => {
   const t = getI18n();
   const locale = getLocale();

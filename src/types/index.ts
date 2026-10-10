@@ -445,6 +445,8 @@ export interface Message {
   /** Why a run failed before the sidecar accepted it (#549); drives the failed-row UI. */
   runErrorKind?: 'payload_too_large' | 'sidecar_unavailable' | 'dispatch_failed';
   toolCalls?: ToolCall[];
+  /** Set on assistant messages created after present_files shipped; file cards read declarations instead of inferring from tool calls. */
+  fileCards?: 'declared';
   // Extended thinking content
   thinking?: string;
   // Thinking duration in seconds

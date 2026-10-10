@@ -99,6 +99,52 @@ describe('previewStore', () => {
       usePreviewStore.getState().openPreview('/a/3.md');
       expect(usePreviewStore.getState().tabs).toHaveLength(3);
     });
+
+    it('creates the tab with the requested line', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(1);
+      expect(s.tabs[0]).toMatchObject({ kind: 'preview', filePath: '/a.ts', line: 3 });
+    });
+
+    it('creates a tab without a line field when no line is requested', () => {
+      usePreviewStore.getState().openPreview('/a.ts');
+      expect(usePreviewStore.getState().tabs[0]).not.toHaveProperty('line');
+    });
+
+    it('moves an open tab to the newly requested line without adding a tab', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      usePreviewStore.getState().openPreview('/b.ts');
+      usePreviewStore.getState().openPreview('/a.ts', { line: 9 });
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(2);
+      expect(s.tabs[0]).toMatchObject({ filePath: '/a.ts', line: 9 });
+      expect(s.activeTabId).toBe(s.tabs[0].id);
+    });
+
+    it('counts each request for a line, so asking for the same line again is a new request', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({ line: 3, lineRequest: 1 });
+
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(1);
+      expect(s.tabs[0]).toMatchObject({ line: 3, lineRequest: 2 });
+    });
+
+    it('creates a tab without a request count when no line is requested', () => {
+      usePreviewStore.getState().openPreview('/a.ts');
+      expect(usePreviewStore.getState().tabs[0]).not.toHaveProperty('lineRequest');
+    });
+
+    it('clears the line of an open tab when it is opened again without one', () => {
+      usePreviewStore.getState().openPreview('/a.ts', { line: 3 });
+      const id = usePreviewStore.getState().tabs[0].id;
+      usePreviewStore.getState().openPreview('/a.ts');
+      const tab = usePreviewStore.getState().tabs[0];
+      expect(tab.id).toBe(id);
+      expect(tab.kind === 'preview' ? tab.line : 'not-a-preview').toBeUndefined();
+    });
   });
 
   describe('openSummary', () => {

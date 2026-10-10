@@ -125,10 +125,12 @@ export function generateSummary(
   let createCount = 0;
   let commandCount = 0;
   let otherCount = 0;
+  let presentedCount = 0;
 
   for (const step of steps) {
     if (step.type === 'thinking' || step.type === 'skill') continue;
-    if (step.type === 'file-read') readCount++;
+    if (step.toolName === TOOL_NAMES.PRESENT_FILES) presentedCount++;
+    else if (step.type === 'file-read') readCount++;
     else if (step.type === 'file-write') writeCount++;
     else if (step.type === 'file-create') createCount++;
     else if (step.type === 'command') commandCount++;
@@ -142,7 +144,7 @@ export function generateSummary(
   // stripped by the active header before its animated dots); "思考过程" is only
   // for settled blocks whose duration got lost (old persisted history).
   const thinkingStep = steps.find((s) => s.type === 'thinking');
-  const onlyThinking = thinkingStep && readCount + writeCount + createCount + commandCount + otherCount === 0 && !skillStep;
+  const onlyThinking = thinkingStep && readCount + writeCount + createCount + commandCount + otherCount + presentedCount === 0 && !skillStep;
   if (onlyThinking) {
     actions.push(
       thinkingStep.duration != null
@@ -152,11 +154,14 @@ export function generateSummary(
   }
 
   if (skillStep) {
-    const toolCount = readCount + writeCount + createCount + commandCount + otherCount;
+    const toolCount = readCount + writeCount + createCount + commandCount + otherCount + presentedCount;
     if (toolCount > 0) {
       actions.push(format(t.task.executedOperations, { count: toolCount }));
     }
   } else {
+    if (presentedCount > 0) {
+      actions.push(t.task.presentedFiles);
+    }
     if (createCount > 0) {
       actions.push(createCount === 1 ? t.task.createdFile : format(t.task.createdFiles, { count: createCount }));
     }

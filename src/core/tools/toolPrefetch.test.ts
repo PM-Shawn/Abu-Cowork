@@ -13,8 +13,12 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 17 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(17);
+    it('should contain 18 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(18);
+    });
+
+    it('offers present_files on every turn, since it is called when a turn ends', () => {
+      expect(CORE_TOOL_NAMES.has('present_files')).toBe(true);
     });
 
     it('offers report_plan on every turn, so a plan can still be moved on late in a long task', () => {

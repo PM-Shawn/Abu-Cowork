@@ -273,7 +273,7 @@ describe('buildSystemPrompt - structure', () => {
 
   it('keeps generated previews inside Abu unless the user explicitly requests an external browser', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    expect(prompt).toContain("let Abu's side preview/file card handle it");
+    expect(prompt).toContain('- Hand a finished file to the user → when the present_files tool is available, call it with the file near the end of the turn; Abu shows it as a file card under your reply and opens the side preview. Do not run macOS `open`');
     expect(prompt).toContain('Do not run macOS `open`');
     expect(prompt).toContain('explicitly asks for an external/system browser');
   });

@@ -161,6 +161,7 @@ describe('subagentHost', () => {
         'preloadedSkills',
         'initiatedBy',
         'dispatchKey',
+        'ownsUserTurn',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -188,6 +189,7 @@ describe('subagentHost', () => {
         runPermissionCeiling: { version: 1, source: 'im', capability: 'custom' },
       }],
       ['unknown wire field', { ...baseParams(), injectedByRenderer: true }],
+      ['ownsUserTurn not a boolean', { ...baseParams(), ownsUserTurn: 'yes' }],
       ['preloadedSkills not an object', { ...baseParams(), preloadedSkills: 'section' }],
       ['preloadedSkills without text', { ...baseParams(), preloadedSkills: { resolved: [], missing: [], truncated: [] } }],
       ['preloadedSkills with a non-string name list', {

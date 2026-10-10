@@ -106,6 +106,7 @@ export interface SubagentHostRunParams {
   preloadedSkills?: SubagentLoopOptions['preloadedSkills'];
   initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
   dispatchKey?: string;
+  ownsUserTurn?: boolean;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -288,6 +289,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   }
   if (params.dispatchKey !== undefined && typeof params.dispatchKey !== 'string') {
     throw new RpcError(-32602, 'Invalid params: dispatchKey must be a string');
+  }
+  if (params.ownsUserTurn !== undefined && typeof params.ownsUserTurn !== 'boolean') {
+    throw new RpcError(-32602, 'Invalid params: ownsUserTurn must be a boolean');
   }
   if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
     throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
@@ -609,6 +613,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     preloadedSkills: params.preloadedSkills,
     initiatedBy: params.initiatedBy,
     dispatchKey: params.dispatchKey,
+    ownsUserTurn: params.ownsUserTurn,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;
 

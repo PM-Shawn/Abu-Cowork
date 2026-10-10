@@ -23,11 +23,13 @@ import { WIDGET_CDN_HOSTS, getWidgetHardBanBriefList } from '../../widget/guidel
  * - Tools supported (default): visualization goes through the explicit
  *   show_widget tool (P1 widget system, aligned with WorkBuddy/ChatGPT/TRAE),
  *   and a "save as a real webpage" intent escalates to write_file. A written
- *   .html CAN open in the side preview panel — MessageGroup.tsx's openPreview
- *   effect auto-opens the LAST non-image deliverable of the turn, so the
- *   prompt is worded "can be opened" (not "always auto-opens"): if the model
- *   writes another file after the page, that one wins the auto-open. No new
- *   tool needed either way.
+ *   .html CAN open in the side preview panel once the model presents it with
+ *   present_files — MessageGroup.tsx auto-opens the LAST non-image presented
+ *   file of the turn, so the prompt is worded "can be opened" (not "always
+ *   auto-opens"): if the model presents another file after the page, that one
+ *   wins the auto-open. This prompt is built from the model's tool support
+ *   alone, before the run's tool roster exists, so it names present_files
+ *   under the condition that the tool is available.
  * - Tools NOT supported (`supportsTools === false`): the model gets tools=[]
  *   (see the `noTools` gate in the turn loop) — no show_widget, no
  *   write_file, nothing. These models keep the previous ```html-fence
@@ -73,7 +75,7 @@ const VISUAL_CDN_ALLOWED_LINE = `**Allowed**: CDN libraries (Chart.js, D3, etc.)
 
 const VISUAL_OUTPUT_TOOL_VARIANT = `${VISUAL_TRIGGER_TIERS}
 
-**Routing — the deciding question is "is this a file the user wants to keep?"** Ephemeral, part of this reply → **call the show_widget tool**, right where you need it — this is the default (call read_me once before your first call each conversation, don't narrate it). A page the user wants to **save, export, download, or keep as a real file** → write_file a COMPLETE self-contained \`.html\` document (doctype + html/head/body; inline CSS/JS or the CDN allowlist below) — it can then be opened in the side preview panel. To satisfy "open/preview", finish the file tool call and let Abu's side preview/file card handle it; do NOT run a system-shell \`open\`/\`start\` command unless the user explicitly asks for an external/system browser. Only escalate to write_file on an explicit save/export intent.
+**Routing — the deciding question is "is this a file the user wants to keep?"** Ephemeral, part of this reply → **call the show_widget tool**, right where you need it — this is the default (call read_me once before your first call each conversation, don't narrate it). A page the user wants to **save, export, download, or keep as a real file** → write_file a COMPLETE self-contained \`.html\` document (doctype + html/head/body; inline CSS/JS or the CDN allowlist below) — it can then be opened in the side preview panel. To satisfy "open/preview", write the file and, when the present_files tool is available, call it with the file — Abu's file card and side preview take it from there; do NOT run a system-shell \`open\`/\`start\` command unless the user explicitly asks for an external/system browser. Only escalate to write_file on an explicit save/export intent.
 
 **Static structure diagrams — carve-out**: when labeled nodes and edges fully explain a STATIC structure — flowchart, tree, sequence diagram, state machine, org chart, node/edge graph, ER diagram, Gantt chart (project scheduling — tasks with start/end dates) — output a \`\`\`mermaid code block instead (rendered by the built-in Mermaid engine, no sandbox). A reading-oriented timeline of milestones/history ("大事记", dated events for a reader) is not a structure graph — use show_widget (poster-style timeline). (Project-scheduling Gantt charts still use Mermaid, above.) This narrows, not replaces, the show_widget default above: show_widget stays the default for everything dynamic, interactive, data-driven, or chart-like.
 

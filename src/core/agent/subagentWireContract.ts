@@ -28,6 +28,7 @@ export const SUBAGENT_RUN_WIRE_FIELDS = [
   'preloadedSkills',
   'initiatedBy',
   'dispatchKey',
+  'ownsUserTurn',
   'locale',
   'uiStrings',
   'settingsSnapshot',

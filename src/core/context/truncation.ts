@@ -20,6 +20,10 @@ const TRUNCATION_RULES: Record<string, TruncationRule> = {
   [TOOL_NAMES.SEARCH_FILES]: { headLines: 50, tailLines: 0, maxChars: 8000 },
   [TOOL_NAMES.FIND_FILES]: { headLines: 100, tailLines: 0, maxChars: 8000 },
   [TOOL_NAMES.WEB_SEARCH]: { headLines: 0, tailLines: 0, maxChars: 8000 },
+  // The chat reads the presented paths back out of this result line by line,
+  // so it has to arrive whole. The tool caps it at 8 paths; the budget covers
+  // 8 maximum-length paths even at the strongest context-pressure scale.
+  [TOOL_NAMES.PRESENT_FILES]: { headLines: 0, tailLines: 0, maxChars: 200000 },
 };
 
 const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };

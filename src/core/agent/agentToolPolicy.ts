@@ -9,15 +9,25 @@ export interface AgentToolPolicy {
   protocolTools: readonly string[];
 }
 
+/**
+ * The harness tools a team leader holds past its role allowlist: planning,
+ * dispatching, the goal, and handing the team's finished files to the user.
+ */
+export const TEAM_LEADER_PROTOCOL_TOOLS: readonly string[] = [
+  TOOL_NAMES.REPORT_PLAN,
+  TOOL_NAMES.DELEGATE_TO_AGENT,
+  TOOL_NAMES.RUN_AGENT_BATCH,
+  TOOL_NAMES.MANAGE_GOAL,
+  TOOL_NAMES.PRESENT_FILES,
+];
+
 /** Only a trusted root team route receives orchestration protocol exceptions. */
 export function agentToolPolicyForRoute(route: RouteResult): AgentToolPolicy | undefined {
   if (route.type !== 'agent' || !route.definition) return undefined;
   return {
     tools: route.definition.tools,
     disallowedTools: route.definition.disallowedTools,
-    protocolTools: route.team
-      ? [TOOL_NAMES.REPORT_PLAN, TOOL_NAMES.DELEGATE_TO_AGENT, TOOL_NAMES.RUN_AGENT_BATCH, TOOL_NAMES.MANAGE_GOAL]
-      : [],
+    protocolTools: route.team ? TEAM_LEADER_PROTOCOL_TOOLS : [],
   };
 }
 

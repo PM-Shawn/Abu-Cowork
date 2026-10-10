@@ -325,6 +325,11 @@ export interface TranslationDict {
     sources: string;
     showAllSources: string;
     collapseSources: string;
+    /** Button under the file cards of a turn that presented more than four files; `{count}` is the number of cards. */
+    allFilesCount: string;
+    collapseFiles: string;
+    /** Accessible name of a file name or path in a reply that opens the side preview; `{name}` is the file name. */
+    openFileInPreview: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
     runPending: string;
@@ -824,6 +829,7 @@ export interface TranslationDict {
     executedCommands: string;
     calledTool: string;
     calledTools: string;
+    presentedFiles: string;
     executedOperations: string;
     thoughtFor: string;
     executedIn: string;
@@ -5125,6 +5131,25 @@ export interface TranslationDict {
       sendFileError: string;
       /** send_file hit the platform's transient rate limit (ret=-2). */
       sendFileRateLimited: string;
+    };
+    // present_files (turn deliverables)
+    present: {
+      /** The list is empty or longer than the limit. {max} */
+      countOutOfRange: string;
+      /** First line of a rejected call. */
+      nothingPresented: string;
+      /** Rejection reason: relative path without a workspace, or a `~` path. */
+      needsAbsolutePath: string;
+      /** Rejection reason: the read-path check did not allow the path. */
+      notAuthorized: string;
+      /** Rejection reason: nothing exists at the path. */
+      notFound: string;
+      /** Rejection reason: the path is not a regular file. */
+      notAFile: string;
+      /** Header above the paths that passed in a rejected call. */
+      theseWereFine: string;
+      /** Last line of a rejected call. */
+      fixAndRetry: string;
     };
     // show_widget / read_me — inline visualization tool
     widget: {

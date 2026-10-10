@@ -17,6 +17,8 @@
  */
 import { TEAM_LEADER_MAX_TURNS, TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER, TEAM_MAX_DISPATCHES_PER_RUN } from './teamRunBounds';
 import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
+import { agentToolPolicyForRoute, resolveAgentToolNames } from '@/core/agent/agentToolPolicy';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { STALL_STOP_MINUTES } from './stallThreshold';
 import type { SubagentDefinition, ToolExecutionContext } from '@/types';
 import type { RouteResult } from '@/core/agent/orchestrator';
@@ -160,7 +162,20 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push(`12. Stalls: a member with no new step for ${STALL_STOP_MINUTES} minutes is stopped automatically and its result says so. Re-dispatch that step once with a smaller scope or a different approach; if it stalls again, mark it blocked.`);
   lines.push('13. Restart: when a message says the app restarted mid-run, first read this conversation and the existing output files to see which steps already completed; never redo them. Dispatch only what is missing, then report.');
   lines.push('14. Mid-run instructions: the user can address a running member directly; the member sees it as "你的追加指令" in its process and may mention it in its result. Such an instruction is genuine and takes precedence over the original task — never tell the member to ignore it, never treat it as noise, and fold its outcome into your report.');
+  // Left out for a leader whose own role policy withholds present_files. The
+  // restrictions of the run are not known here, hence the condition in the rule.
+  if (leaderRoleOffers(team, TOOL_NAMES.PRESENT_FILES)) {
+    lines.push('15. Members cannot present files. When members finish and the present_files tool is available to you, call it yourself with the finished deliverables they wrote (not their notes or drafts).');
+  }
   return lines.join('\n');
+}
+
+/** Whether the leader's role policy, as its team route applies it, offers `toolName`. */
+function leaderRoleOffers(team: TeamRouteContext, toolName: string): boolean {
+  const policy = agentToolPolicyForRoute(
+    applyTeamLeaderRoute({ type: 'general', name: team.leader.name, cleanInput: '' }, team),
+  );
+  return policy !== undefined && resolveAgentToolNames([toolName], policy).toolNames.includes(toolName);
 }
 
 /** Team-mode replacement for the "Available Agents" section (roster only). */

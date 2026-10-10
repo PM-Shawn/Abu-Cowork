@@ -408,7 +408,8 @@ describe('subagentRunner', () => {
         | 'scheduledTaskId'
         | 'preloadedSkills'
         | 'initiatedBy'
-        | 'dispatchKey';
+        | 'dispatchKey'
+        | 'ownsUserTurn';
       type CoveredOptionField = WireOptionField | LocalOnlyField;
       type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
       expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
@@ -435,6 +436,7 @@ describe('subagentRunner', () => {
         'preloadedSkills',
         'initiatedBy',
         'dispatchKey',
+        'ownsUserTurn',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -487,6 +489,7 @@ describe('subagentRunner', () => {
         parentConversationSummary: 'summary',
         parentConversationId: 'conv-1',
         persistParentToolImages: true,
+        ownsUserTurn: true,
         imContext: { workspacePath: '/im/ws' } as never,
         allowedTools: ['read_*'],
         blockedTools: ['abu-browser__*'],
@@ -509,6 +512,7 @@ describe('subagentRunner', () => {
       expect(Object.keys(wireParams).sort()).toEqual([...SUBAGENT_RUN_WIRE_FIELDS].sort());
       expect(wireParams.workspacePathSnapshot).toBe('/im/ws');
       expect(wireParams.persistParentToolImages).toBe(true);
+      expect(wireParams.ownsUserTurn).toBe(true);
       for (const localField of SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS) {
         expect(wireParams).not.toHaveProperty(localField);
       }
@@ -1646,6 +1650,39 @@ describe('subagentRunner', () => {
         toolInvokeHandler({ runId, toolName, input: { path: '/tmp/x' } }),
       ).rejects.toThrow(/fixed tool boundary/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['a dispatched member', { ownsUserTurn: undefined }, false],
+      ['a dispatched member whose role names the tool', { ownsUserTurn: undefined, tools: ['present_files'] }, false],
+      ['the expert that runs the user turn', { ownsUserTurn: true }, true],
+      ['the expert that runs the user turn behind a role allowlist', { ownsUserTurn: true, tools: ['read_file'] }, true],
+      ['the expert that runs the user turn in a run restricted to reading', { ownsUserTurn: true, allowedTools: ['read_*'] }, false],
+    ])('answers a reverse present_files call from %s by its standing', async (_label, setup, accepted) => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: async () => 'read' },
+        { name: 'present_files', description: 'present', inputSchema: { type: 'object', properties: {} }, execute: async () => 'present' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const { tools, ownsUserTurn, allowedTools } = setup as { tools?: string[]; ownsUserTurn?: boolean; allowedTools?: string[] };
+      const runPromise = runSubagent({ agent: { ...agent, ...(tools ? { tools } : {}) }, task: 'hand over', ownsUserTurn, allowedTools });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.findLast((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      const call = toolInvokeHandler({ runId, toolName: 'present_files', input: { files: [{ path: '/ws/a.md' }] } });
+      if (accepted) {
+        await expect(call).resolves.toBe('tool result');
+        expect(executeAnyToolMock).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(call).rejects.toThrow();
+        expect(executeAnyToolMock).not.toHaveBeenCalled();
+      }
 
       d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;

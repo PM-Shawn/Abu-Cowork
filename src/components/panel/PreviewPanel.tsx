@@ -30,7 +30,7 @@ import { VersionHistoryMenu } from './VersionHistoryMenu';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
 import { isMacOS, isWindows } from '@/utils/platform';
-import { getToolbarButtons } from './previewToolbarConfig';
+import { getToolbarButtons, offersOpenInApp } from './previewToolbarConfig';
 import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { isValidInspectSelection, resolveReferencePath } from '@/utils/inspectMessage';
@@ -195,7 +195,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   const { t } = useI18n();
   const dataUrl = isDataUrl(filePath);
   const fileIcon = dataUrl ? AppIcons.fileImage : getFileIcon(filePath);
-  const toolbarButtons = getToolbarButtons(rendererType);
+  const toolbarButtons = getToolbarButtons(rendererType, filePath);
 
   return (
     <div className={cn(
@@ -997,7 +997,9 @@ export default function PreviewPanel({
               title={t.panel.unsupportedFileType}
               action={(
                 <div className="flex items-center gap-2">
-                  <Button variant="secondary" icon={AppIcons.openIn} onClick={handleOpenInApp}>{t.panel.openInApp}</Button>
+                  {offersOpenInApp(rendererType, previewFilePath) && (
+                    <Button variant="secondary" icon={AppIcons.openIn} onClick={handleOpenInApp}>{t.panel.openInApp}</Button>
+                  )}
                   <Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>
                 </div>
               )}

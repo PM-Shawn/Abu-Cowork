@@ -1,3 +1,4 @@
+import { isRunByDefault } from '@/utils/runByDefault';
 import type { RendererType } from './PreviewPanel';
 
 export interface PreviewToolbarButtons {
@@ -14,13 +15,21 @@ export interface PreviewToolbarButtons {
 const VIEW_TOGGLE = new Set<RendererType>(['html', 'markdown']);
 const EDITABLE = new Set<RendererType>(['code', 'text', 'html', 'markdown']);
 
+/**
+ * Whether the preview offers to open the file in its default application. A file with no
+ * preview that the system would run is only shown in the file manager.
+ */
+export function offersOpenInApp(type: RendererType, filePath: string): boolean {
+  return type !== 'unsupported' || !isRunByDefault(filePath);
+}
+
 /** 声明式：每种渲染类型显示哪些工具栏按钮。加新格式只改这里。 */
-export function getToolbarButtons(type: RendererType): PreviewToolbarButtons {
+export function getToolbarButtons(type: RendererType, filePath: string): PreviewToolbarButtons {
   const supported = type !== 'unsupported';
   return {
     viewToggle: VIEW_TOGGLE.has(type),
     fullscreen: supported,
-    openInApp: true,
+    openInApp: offersOpenInApp(type, filePath),
     versionHistory: EDITABLE.has(type),
   };
 }

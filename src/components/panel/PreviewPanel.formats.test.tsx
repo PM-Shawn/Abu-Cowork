@@ -136,6 +136,44 @@ describe('PreviewPanel file types', () => {
         .toEqual([{ type: 'error', title: 'Failed to open file', text: 'Could not open this file in a local app' }]));
     });
 
+    it.each(['doc', 'rtf', 'pages'])('offers both buttons for a .%s document', async (extension) => {
+      openPreview(`/w/file.${extension}`);
+      const content = (await screen.findByText(UNSUPPORTED)).parentElement as HTMLElement;
+      expect(within(content).getAllByRole('button').map((button) => button.textContent))
+        .toEqual(['Open in default app', 'Show in File Manager']);
+      expect(screen.getAllByRole('button', { name: 'Open in default app' })).toHaveLength(2);
+    });
+
+    it.each([
+      '/w/setup.command',
+      '/w/Tool.app',
+      '/w/Installer.pkg',
+      '/w/Build.COMMAND',
+      'C:\\w\\setup.exe',
+      'C:\\w\\run.bat',
+      'C:\\w\\Report.lnk',
+      'C:\\w\\SETUP.EXE',
+      '/w/app.jar',
+      '/w/build',
+    ])('only shows %s in the file manager, in the content and in the toolbar', async (path) => {
+      openPreview(path);
+      const content = (await screen.findByText(UNSUPPORTED)).parentElement as HTMLElement;
+
+      expect(within(content).getAllByRole('button').map((button) => button.textContent)).toEqual(['Show in File Manager']);
+      expect(screen.queryByRole('button', { name: 'Open in default app' })).toBeNull();
+
+      fireEvent.click(within(content).getByRole('button', { name: 'Show in File Manager' }));
+      await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith(path));
+      expect(openPath).not.toHaveBeenCalled();
+    });
+
+    it('keeps the toolbar without "Open in default app" when such a file is missing', async () => {
+      vi.mocked(exists).mockResolvedValue(false);
+      openPreview('/w/gone.command');
+      expect(await screen.findByRole('alert')).toHaveTextContent('File not found: gone.command');
+      expect(screen.queryByRole('button', { name: 'Open in default app' })).toBeNull();
+    });
+
     it('says a missing file was not found and offers neither button in its place', async () => {
       vi.mocked(exists).mockResolvedValue(false);
       openPreview('/w/gone.doc');

@@ -316,12 +316,12 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           data-abu-windows-sidebar-header
           className="flex h-[52px] shrink-0 items-center gap-2 px-4 pt-2 pr-[76px]"
         >
-          {/* Abu's name only: the version lives in the account menu, and the
-              row's width belongs to the switcher beside it. */}
+          {/* Abu's name only: the version lives in the account menu. The switcher
+              is a small pill at the row's far end, as wide as its words. */}
           <span className="shrink-0 whitespace-nowrap text-ui font-semibold text-label">
             {t.common.appName}
           </span>
-          <AppSwitcher className="min-w-0 flex-1" />
+          <AppSwitcher className="ml-auto min-w-0" />
         </div>
       ) : (
         <>
@@ -334,8 +334,13 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                   : 'h-8 shrink-0'
             }
           />
-          <div className="px-4 pb-1">
-            <AppSwitcher />
+          {/* The brand row: Abu's name in line with the navigation icons under it,
+              and the switcher as a small pill at the far end. */}
+          <div className="flex items-center gap-2 pb-2 pl-6 pr-4">
+            <span className="shrink-0 whitespace-nowrap text-ui font-semibold text-label">
+              {t.common.appName}
+            </span>
+            <AppSwitcher className="ml-auto min-w-0" />
           </div>
         </>
       )}

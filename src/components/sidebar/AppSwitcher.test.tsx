@@ -87,6 +87,21 @@ describe('AppSwitcher', () => {
     expect(screen.getByTestId(`app-switcher-enter-${hr.appId}`)).toHaveTextContent('进入');
   });
 
+  it('is a small quiet pill as wide as its words, filled darker while its menu is open', async () => {
+    const user = userEvent.setup();
+    renderSwitcher();
+    const trigger = screen.getByTestId('app-switcher-trigger');
+    const classes = () => trigger.className.split(/\s+/);
+    expect(classes()).toEqual(expect.arrayContaining(['h-6', 'text-ui-sm', 'rounded-full', 'max-w-full', 'font-normal', 'text-label-secondary']));
+    // It takes the room its words need: a full-width switcher reads as a navigation row.
+    expect(classes()).not.toContain('w-full');
+    expect(classes()).not.toContain('font-medium');
+    expect(classes()).toContain('aria-expanded:bg-fill-selected');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  });
+
   describe('once the menu has gone', () => {
     beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
     afterEach(() => { vi.useRealTimers(); });

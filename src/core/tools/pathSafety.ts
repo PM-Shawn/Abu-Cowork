@@ -242,8 +242,8 @@ function normalizeWorkspacePath(path: string): string {
 /**
  * A grant that would cover a whole filesystem root (`/`, `C:/`, a bare UNC
  * prefix) or that climbs with a `..` segment never enters the table. Every
- * legitimate producer hands over a plain absolute folder; a climbing spelling
- * is refused instead of being resolved to whatever it lands on.
+ * legitimate producer hands over a plain absolute folder, so a climbing
+ * spelling is refused outright.
  */
 function isBlankWorkspaceGrant(path: string): boolean {
   const normalized = normalizeWorkspacePath(path);

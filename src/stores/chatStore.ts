@@ -2720,6 +2720,8 @@ export const useChatStore = create<ChatStore>()(
             imPlatform: rawImPlatform,
             activeSkills: rawActiveSkills,
             enabledMCPServers: rawEnabledMCPServers,
+            // An app binding carries text that joins the system prompt.
+            appBinding: rawAppBinding,
             ...rawConversation
           } = conv;
           const restoringDeleted = options?.restoringDeleted === true;
@@ -2736,6 +2738,7 @@ export const useChatStore = create<ChatStore>()(
               ...(rawImPlatform !== undefined ? { imPlatform: rawImPlatform } : {}),
               ...(rawActiveSkills !== undefined ? { activeSkills: rawActiveSkills } : {}),
               ...(rawEnabledMCPServers !== undefined ? { enabledMCPServers: rawEnabledMCPServers } : {}),
+              ...(rawAppBinding !== undefined ? { appBinding: rawAppBinding } : {}),
             }
             : {};
 

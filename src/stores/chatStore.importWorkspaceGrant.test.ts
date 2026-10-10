@@ -131,13 +131,14 @@ describe('chatStore.importConversation · a conversation file carries no workspa
         activeSkills: ['skill-from-file'],
         enabledMCPServers: ['server-from-file'],
         permissionMode: 'autonomous',
+        appBinding: { appId: 'app-from-file', promptAppend: 'text from the file' },
       }),
     )!;
     const conv = useChatStore.getState().conversations[newId];
     const meta = useChatStore.getState().conversationIndex[newId];
     for (const field of [
       'workspacePath', 'projectId', 'scheduledTaskId', 'triggerId', 'imChannelId', 'imPlatform',
-      'activeSkills', 'enabledMCPServers', 'permissionMode',
+      'activeSkills', 'enabledMCPServers', 'permissionMode', 'appBinding',
     ] as const) {
       expect(field in conv, `conversation.${field}`).toBe(false);
       expect(field in meta, `meta.${field}`).toBe(false);

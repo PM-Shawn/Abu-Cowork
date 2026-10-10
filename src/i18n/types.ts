@@ -2991,6 +2991,7 @@ export interface TranslationDict {
     unsupportedFileType: string;
     showInFinder: string;
     failedToReadFile: string;
+    passwordProtectedFile: string;
     fileNotFound: string;
     // Editable preview (P2): autosave + external-change conflict notices
     saveFailedTitle: string;

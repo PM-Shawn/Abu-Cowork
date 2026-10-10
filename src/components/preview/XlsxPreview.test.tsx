@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as XLSX from 'xlsx';
 import { initLanguage } from '@/i18n';
+import { encryptedPackageBytes } from '@/test/encryptedPackage';
 import XlsxPreview from './XlsxPreview';
 
 function workbookBytes(sheets: Record<string, string[][]>): Uint8Array<ArrayBuffer> {
@@ -92,6 +93,29 @@ describe('XlsxPreview', () => {
 
     rerender(<XlsxPreview data={workbookBytes({ Customers: [['Name'], ['Grace']] })} />);
     expect(await screen.findByRole('cell', { name: 'Grace' })).toBeInTheDocument();
+  });
+
+  it('says a workbook saved with a password is password-protected, and draws the next bytes', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { rerender } = render(<XlsxPreview data={encryptedPackageBytes()} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^This file is password-protected and cannot be previewed$/);
+    expect(screen.queryByRole('table')).toBeNull();
+
+    rerender(<XlsxPreview data={workbookBytes({ Only: [['Name'], ['Ada']] })} />);
+    expect(await screen.findByRole('cell', { name: 'Ada' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('says so in Chinese', async () => {
+    initLanguage('zh-CN');
+    render(<XlsxPreview data={encryptedPackageBytes()} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^此文件受密码保护，无法预览$/);
+  });
+
+  it('reports a compound file that is cut short as a file it cannot read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<XlsxPreview data={encryptedPackageBytes().slice(0, 100)} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Failed to read file$/);
   });
 
   it('reports bytes it cannot parse with the fixed sentence, and draws the next bytes', async () => {

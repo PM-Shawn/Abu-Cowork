@@ -2449,6 +2449,7 @@ const enUS: TranslationDict = {
     unsupportedFileType: 'This file type is not supported for preview',
     showInFinder: 'Show in File Manager',
     failedToReadFile: 'Failed to read file',
+    passwordProtectedFile: 'This file is password-protected and cannot be previewed',
     fileNotFound: 'File not found',
     saveFailedTitle: 'Save failed',
     externalChangeTitle: 'File changed externally',

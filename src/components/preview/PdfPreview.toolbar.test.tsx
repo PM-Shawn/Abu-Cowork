@@ -21,26 +21,41 @@ vi.mock('@/components/ds/button', async (importOriginal) => {
   };
 });
 
+const LOCKED = 0xff;
+const passwordAsked = vi.hoisted(() => vi.fn());
+
 // pdf.js needs a canvas and a worker. The stand-in has one page per byte it was given, and
-// cannot open bytes that start with a zero.
+// cannot open bytes that start with a zero. Bytes that start with 0xff are a document saved
+// with a password: like pdf.js, the stand-in asks the `onPassword` it was given, keeps waiting
+// while that takes the question, and fails with a `PasswordException` once it declines.
 vi.mock('react-pdf', async () => {
   const { useEffect, useRef } = await import('react');
   return {
     pdfjs: { GlobalWorkerOptions: {} },
-    Document: ({ file, children, onLoadSuccess, onLoadError }: {
+    Document: ({ file, children, onLoadSuccess, onLoadError, onPassword }: {
       file: { data: Uint8Array };
       children: ReactNode;
       onLoadSuccess: (doc: { numPages: number }) => void;
       onLoadError: (error: Error) => void;
+      onPassword?: (answer: (password: string | null) => void, reason: number) => void;
     }) => {
       // The stand-in loads once per file object, like a real document.
       const loaded = useRef<{ data: Uint8Array } | null>(null);
       useEffect(() => {
         if (loaded.current === file) return;
         loaded.current = file;
-        if (file.data[0] === 0) onLoadError(new Error('Invalid PDF structure in /Users/someone/work/broken.pdf'));
+        if (file.data[0] === LOCKED) {
+          passwordAsked();
+          let declined = !onPassword;
+          try {
+            onPassword?.(() => {}, 1);
+          } catch {
+            declined = true;
+          }
+          if (declined) onLoadError(Object.assign(new Error('No password given'), { name: 'PasswordException', code: 1 }));
+        } else if (file.data[0] === 0) onLoadError(new Error('Invalid PDF structure in /Users/someone/work/broken.pdf'));
         else onLoadSuccess({ numPages: file.data.length });
-      }, [file, onLoadSuccess, onLoadError]);
+      }, [file, onLoadSuccess, onLoadError, onPassword]);
       return <div>{children}</div>;
     },
     Page: ({ pageNumber, width, scale, rotate, className }: { pageNumber: number; width?: number; scale?: number; rotate?: number; className?: string }) => (
@@ -190,6 +205,20 @@ describe('PdfPreview toolbar', () => {
     expect(errorLog.mock.calls.map((call) => call.map(String).join(' ')).join('\n')).toContain('Invalid PDF structure');
 
     rerender(<PdfPreview filePath="/work/broken.pdf" data={new Uint8Array([1, 2])} />);
+    expect(await screen.findByText('Page 1 / 2')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('asks for no password: it says a document saved with one is password-protected, and draws the next bytes', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    passwordAsked.mockClear();
+    const { rerender } = renderBare(<PdfPreview filePath="/work/locked.pdf" data={new Uint8Array([LOCKED, 1])} />, { wrapper: DesignSystemProvider });
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/^This file is password-protected and cannot be previewed$/));
+    expect(passwordAsked).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button')).toBeNull();
+
+    rerender(<PdfPreview filePath="/work/locked.pdf" data={new Uint8Array([1, 2])} />);
     expect(await screen.findByText('Page 1 / 2')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).toBeNull();
   });

@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
+import { encryptedPackageBytes } from '@/test/encryptedPackage';
 import PreviewPanel from './PreviewPanel';
 
 vi.mock('@/hooks/usePreviewFileWatch', () => ({ usePreviewFileWatch: () => {} }));
@@ -89,6 +90,16 @@ describe('PreviewPanel file types', () => {
     expect(screen.getByRole('cell', { name: '张三' })).toBeInTheDocument();
     expect(screen.getByRole('cell', { name: '42' })).toBeInTheDocument();
     expect(screen.queryByText(UNSUPPORTED)).toBeNull();
+  });
+
+  it('says a workbook saved with a password is password-protected, and still offers to open it in its default app', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(readFile).mockResolvedValue(encryptedPackageBytes());
+    openPreview('/w/locked.xlsx');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^This file is password-protected and cannot be previewed$/);
+    fireEvent.click(screen.getByRole('button', { name: 'Open in default app' }));
+    await waitFor(() => expect(openPath).toHaveBeenCalledWith('/w/locked.xlsx'));
   });
 
   it.each(['doc', 'rtf', 'odt', 'odp', 'pages', 'numbers', 'key'])('leaves a .%s file without a preview', async (extension) => {

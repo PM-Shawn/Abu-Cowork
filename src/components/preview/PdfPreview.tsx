@@ -8,6 +8,7 @@ import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { ScrollArea } from '@/components/ds/scroll-area';
 import { Spinner } from '@/components/ds/spinner';
+import { isPdfPasswordError, type PreviewFailure } from './passwordProtected';
 import { clampPdfScale, nextPdfRotation, PDF_SCALE_MAX, PDF_SCALE_MIN } from './pdfPreviewMath';
 
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -33,6 +34,12 @@ interface PdfReadingState {
 // intentionally session-only: reopening the app starts from a predictable
 // first page and does not add another persisted preference surface.
 const readingState = new Map<string, PdfReadingState>();
+
+// The preview asks for no password. pdf.js takes an error thrown here as the answer that
+// none is given and fails the load with its `PasswordException`.
+function declinePassword(): never {
+  throw new Error('The preview does not ask for a password');
+}
 
 function LoadingIndicator() {
   const { t } = useI18n();
@@ -87,7 +94,7 @@ export default function PdfPreview({ filePath, data }: { filePath: string; data:
   const { t } = useI18n();
   const viewportRef = useRef<HTMLDivElement>(null);
   // The bytes pdf.js could not open; an error belongs to those bytes only.
-  const [failedData, setFailedData] = useState<Uint8Array<ArrayBuffer> | null>(null);
+  const [failure, setFailure] = useState<{ data: Uint8Array<ArrayBuffer>; reason: PreviewFailure } | null>(null);
   const [numPages, setNumPages] = useState(0);
   const initialReadingState = readingState.get(filePath);
   const [currentPage, setCurrentPage] = useState(initialReadingState?.page ?? 1);
@@ -127,7 +134,7 @@ export default function PdfPreview({ filePath, data }: { filePath: string; data:
 
   const onDocumentLoadError = (err: Error) => {
     console.error('[PdfPreview] PDF load error:', redactFailureText(err.message));
-    setFailedData(data);
+    setFailure({ data, reason: isPdfPasswordError(err) ? 'password' : 'unreadable' });
   };
 
   const changePage = useCallback((step: -1 | 1) => {
@@ -147,7 +154,7 @@ export default function PdfPreview({ filePath, data }: { filePath: string; data:
     setScale((value) => clampPdfScale(value + step * 0.25));
   }, []);
 
-  const failed = failedData === data;
+  const failed = failure?.data === data;
 
   return (
     <div className="flex h-full flex-col">
@@ -169,7 +176,9 @@ export default function PdfPreview({ filePath, data }: { filePath: string; data:
       <div ref={viewportRef} className="min-h-0 flex-1">
         {failed ? (
           <div className="flex h-full items-center justify-center p-4">
-            <InlineMessage tone="danger">{t.panel.failedToReadFile}</InlineMessage>
+            <InlineMessage tone="danger">
+              {failure?.reason === 'password' ? t.panel.passwordProtectedFile : t.panel.failedToReadFile}
+            </InlineMessage>
           </div>
         ) : (
           <ScrollArea className="h-full">
@@ -178,6 +187,7 @@ export default function PdfPreview({ filePath, data }: { filePath: string; data:
                 file={fileProp}
                 onLoadSuccess={onDocumentLoadSuccess}
                 onLoadError={onDocumentLoadError}
+                onPassword={declinePassword}
                 loading={<LoadingIndicator />}
               >
                 {/* The page is white paper in every appearance; the marker gives its text the page selection color. */}

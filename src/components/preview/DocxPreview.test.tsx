@@ -3,6 +3,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
+import { encryptedPackageBytes } from '@/test/encryptedPackage';
 import DocxPreview from './DocxPreview';
 
 // The real renderer needs layout. Like the library, the stand-in reads the bytes first, which
@@ -113,6 +114,16 @@ describe('DocxPreview', () => {
     finishSecond();
     expect(await screen.findByText('Second draft')).toBeInTheDocument();
     expect(screen.queryByText('First draft')).toBeNull();
+  });
+
+  it('says a document saved with a password is password-protected without handing it to the renderer, and draws the next bytes', async () => {
+    const { rerender } = render(<DocxPreview data={encryptedPackageBytes()} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^This file is password-protected and cannot be previewed$/);
+    expect(docx.parseAsync).not.toHaveBeenCalled();
+
+    rerender(<DocxPreview data={bytes('Unlocked copy')} />);
+    expect(await screen.findByText('Unlocked copy')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('reports bytes it cannot draw with the fixed sentence, and draws the next bytes', async () => {

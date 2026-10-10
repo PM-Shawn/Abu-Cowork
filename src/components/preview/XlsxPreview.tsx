@@ -6,6 +6,7 @@ import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { cn } from '@/lib/utils';
 import DataTable from './DataTable';
+import { isPasswordProtectedOfficeFile, type PreviewFailure } from './passwordProtected';
 
 const MAX_ROWS = 1000;
 
@@ -13,7 +14,7 @@ const MAX_ROWS = 1000;
 export default function XlsxPreview({ data }: { data: Uint8Array<ArrayBuffer> }) {
   const { t } = useI18n();
   const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<PreviewFailure | null>(null);
   const [sheets, setSheets] = useState<{ name: string; headers: string[]; rows: string[][]; totalRows: number }[]>([]);
   const [activeSheet, setActiveSheet] = useState(0);
 
@@ -22,6 +23,10 @@ export default function XlsxPreview({ data }: { data: Uint8Array<ArrayBuffer> })
 
     const load = async () => {
       try {
+        if (await isPasswordProtectedOfficeFile(data)) {
+          if (!cancelled) setFailure('password');
+          return;
+        }
         const XLSX = await import('xlsx');
         const workbook = XLSX.read(data, { type: 'array' });
 
@@ -41,11 +46,11 @@ export default function XlsxPreview({ data }: { data: Uint8Array<ArrayBuffer> })
         setSheets(parsed);
         // The same file read again keeps the sheet in view while it still exists.
         setActiveSheet((index) => (index < parsed.length ? index : 0));
-        setFailed(false);
+        setFailure(null);
       } catch (err) {
         if (cancelled) return;
         console.error('[XlsxPreview] Failed to parse:', redactFailureText(err instanceof Error ? err.message : String(err)));
-        setFailed(true);
+        setFailure('unreadable');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -63,10 +68,12 @@ export default function XlsxPreview({ data }: { data: Uint8Array<ArrayBuffer> })
     );
   }
 
-  if (failed) {
+  if (failure) {
     return (
       <div className="flex h-full items-center justify-center p-4">
-        <InlineMessage tone="danger">{t.panel.failedToReadFile}</InlineMessage>
+        <InlineMessage tone="danger">
+          {failure === 'password' ? t.panel.passwordProtectedFile : t.panel.failedToReadFile}
+        </InlineMessage>
       </div>
     );
   }

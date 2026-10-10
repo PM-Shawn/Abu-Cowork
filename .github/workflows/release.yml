@@ -423,7 +423,7 @@ jobs:
         run: rm -f "$HOME/.ossutilconfig"
 
       - name: Upload the release audit manifest
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: electron-release-audit-${{ github.ref_name }}
           path: |
@@ -594,7 +594,7 @@ jobs:
         run: rm -f "$HOME/.ossutilconfig"
 
       - name: Upload website metadata repair audit
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: website-release-metadata-${{ inputs.transition_version }}
           path: release-stage/website-release.json

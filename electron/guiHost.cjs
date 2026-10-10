@@ -68,6 +68,7 @@ const { execFile } = require('node:child_process');
 const { REPO_ROOT } = require('./appEnv.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { resolveWindowPosition, wireWindowMoveEvent } = require('./windowPlacement.cjs');
+const { PET_SIZE, resolvePetFrame } = require('./petFrame.cjs');
 // Every floating window this module reveals (overlay / stop-button / pet) goes
 // through the window-show policy main.cjs configured at boot, so an E2E
 // launch with ABU_E2E_QUIET_WINDOW=1 never activates the app from here either
@@ -796,7 +797,8 @@ function getAbuWindowId() {
 
 /** @type {import('electron').BrowserWindow | null} */
 let petWindow = null;
-const PET_SIZE = 80;
+/** Where the avatar's top-left sits inside the pet window's current frame (DIP). */
+let petAvatarOffset = { x: 0, y: 0 };
 const PET_PRELOAD = path.join(__dirname, 'preload.cjs'); // full preload — pet.html is a real @tauri-apps/api-using React bundle, same as the main window
 
 /**
@@ -833,6 +835,7 @@ function petShow(args) {
     return null;
   }
   const { x, y } = initialPetPosition(args && args.position);
+  petAvatarOffset = { x: 0, y: 0 };
   petWindow = new BrowserWindow({
     x,
     y,
@@ -893,17 +896,13 @@ function petSetFrame(args) {
   const height = Math.round(Number(args.height) || 0);
   const anchorBottom = !!args.anchorBottom;
   const anchorRight = !!args.anchorRight;
-  const cur = petWindow.getBounds();
-  let x = anchorRight ? cur.x + cur.width - width : cur.x;
-  let y = anchorBottom ? cur.y + cur.height - height : cur.y;
-  // Clamp to the workArea so a frame change can't push the pet off-screen. The
-  // frontend's anchor choice differs between menu-open (top-fixed) and the
-  // collapse (mode-based, bottom-fixed when the pet sits in the lower half),
-  // which otherwise drove the window down past the bottom edge on menu close.
-  const wa = screen.getDisplayNearestPoint({ x: cur.x, y: cur.y }).workArea;
-  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - width));
-  y = Math.max(wa.y, Math.min(y, wa.y + wa.height - height));
-  petWindow.setBounds({ x, y, width, height });
+  const next = resolvePetFrame(
+    { bounds: petWindow.getBounds(), avatarOffset: petAvatarOffset },
+    { width, height, anchorBottom, anchorRight },
+    (point) => screen.getDisplayNearestPoint(point).workArea
+  );
+  petAvatarOffset = next.avatarOffset;
+  petWindow.setBounds(next.bounds);
   return null;
 }
 

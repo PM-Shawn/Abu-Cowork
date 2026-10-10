@@ -18,6 +18,28 @@ export function normalizeSeparators(p: string): string {
 }
 
 /**
+ * Resolve a path lexically, without reading the disk: `.` segments and
+ * duplicate separators go, each `..` removes the segment before it, and the
+ * result uses `/`. A Windows drive letter and a UNC prefix stay as written.
+ * An absolute path never climbs above its root; a relative one keeps its
+ * leading `..` segments.
+ */
+export function normalizeLexicalPath(p: string): string {
+  const normalized = normalizeSeparators(p);
+  const prefix = /^(?:\/\/|[A-Za-z]:)/.exec(normalized)?.[0] ?? '';
+  const body = normalized.slice(prefix.length);
+  const absolute = prefix === '//' || body.startsWith('/');
+  const segments: string[] = [];
+  for (const segment of body.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment !== '..') segments.push(segment);
+    else if (segments.length > 0 && segments[segments.length - 1] !== '..') segments.pop();
+    else if (!absolute) segments.push(segment);
+  }
+  return `${prefix}${prefix !== '//' && absolute ? '/' : ''}${segments.join('/')}`;
+}
+
+/**
  * Get the last segment of a path (file or folder name).
  * Replaces `path.split('/').pop()` patterns.
  */

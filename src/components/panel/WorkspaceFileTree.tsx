@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { mkdir, copyFile, rename, writeTextFile, exists } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
@@ -172,6 +172,7 @@ interface TreeRowProps {
   toggleExpand: (path: string) => void;
   openPreview: (path: string) => void;
   onContextMenu: (event: MouseEvent<HTMLElement>, entry: RowEntry) => void;
+  onPointerDown: (event: PointerEvent<HTMLElement>, entry: RowEntry) => void;
   onRenameSubmit: (entry: RowEntry, name: string) => void;
   onRenameCancel: () => void;
 }
@@ -191,6 +192,7 @@ const TreeRow = memo(function TreeRow({
   toggleExpand,
   openPreview,
   onContextMenu,
+  onPointerDown,
   onRenameSubmit,
   onRenameCancel,
 }: TreeRowProps) {
@@ -253,6 +255,7 @@ const TreeRow = memo(function TreeRow({
       title={path}
       onClick={handleActivate}
       onContextMenu={(event) => onContextMenu(event, entry)}
+      onPointerDown={(event) => onPointerDown(event, entry)}
       style={rowPadding}
       // The scroll area clips a focus ring drawn outside the row. An open menu takes the
       // pointer away from the page, so the row it is about carries the hover fill itself.
@@ -302,13 +305,16 @@ function WorkspaceFileTree() {
   // menu item only records them here; the menu's close hook carries them out.
   const pendingActionRef = useRef<PendingAction | null>(null);
   // One right-click menu serves every row: thousands of files stay one menu. It shows
-  // the actions of the row that was right-clicked last.
+  // the actions of the row its opening gesture began on.
   const [menuTarget, setMenuTarget] = useState<RowEntry | null>(null);
   const [rowMenuOpen, setRowMenuOpen] = useState(false);
   // The row a delete question is about, so the row stays marked while the question is open.
   const [askingPath, setAskingPath] = useState<string | null>(null);
   const menuRowRef = useRef<HTMLElement | null>(null);
   const rowRightClick = useRef<Event | null>(null);
+  // The row under the gesture that can open the menu next. The menu opens from a right-click
+  // event, and from a touch or a pen that stays down, which sends no event when its time is up.
+  const gestureRow = useRef<{ entry: RowEntry; element: HTMLElement } | null>(null);
   // Read when an answer or a menu's close hook arrives, which can be renders later.
   const rootPathRef = useRef(rootPath);
   const expandedPathsRef = useRef(expandedPaths);
@@ -523,14 +529,23 @@ function WorkspaceFileTree() {
   };
 
   const handleRowMenuOpenChange = (open: boolean) => {
-    if (open) pendingActionRef.current = null;
+    if (open) {
+      pendingActionRef.current = null;
+      const row = gestureRow.current;
+      if (!row) throw new Error('The row menu opens only for a gesture that began on a row');
+      menuRowRef.current = row.element;
+      setMenuTarget(row.entry);
+    }
     setRowMenuOpen(open);
   };
 
   const handleRowContextMenu = useCallback((event: MouseEvent<HTMLElement>, entry: RowEntry) => {
     rowRightClick.current = event.nativeEvent;
-    menuRowRef.current = event.currentTarget;
-    setMenuTarget(entry);
+    gestureRow.current = { entry, element: event.currentTarget };
+  }, []);
+
+  const handleRowPointerDown = useCallback((event: PointerEvent<HTMLElement>, entry: RowEntry) => {
+    if (event.pointerType !== 'mouse') gestureRow.current = { entry, element: event.currentTarget };
   }, []);
 
   // The name field and the confirmation open only after the menu has gone, with the
@@ -635,6 +650,7 @@ function WorkspaceFileTree() {
           toggleExpand={toggleExpand}
           openPreview={openPreview}
           onContextMenu={handleRowContextMenu}
+          onPointerDown={handleRowPointerDown}
           onRenameSubmit={handleRenameSubmit}
           onRenameCancel={handleRenameCancel}
         />
@@ -723,11 +739,15 @@ function WorkspaceFileTree() {
         <ScrollArea className="flex-1 min-h-0">
           <ContextMenu
             content={menuTarget ? renderRowMenu(menuTarget) : null}
+            // A long press between the rows, on a hint or in a name field has no row.
+            canOpen={() => gestureRow.current !== null}
             onOpenChange={handleRowMenuOpenChange}
             onCloseAutoFocus={handleRowMenuCloseAutoFocus}
           >
             <div
               className="pr-2 pb-2"
+              // A new touch or pen press starts with no row; the row it lands on reports itself next.
+              onPointerDownCapture={(event) => { if (event.pointerType !== 'mouse') gestureRow.current = null; }}
               // The menu writes its open state on its trigger, and a changed attribute here
               // makes the browser restyle every row below (60 ms with 2000 files). Nothing
               // reads that attribute, so the list declines it.

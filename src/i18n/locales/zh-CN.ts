@@ -2455,6 +2455,7 @@ const zhCN: TranslationDict = {
     unsupportedFileType: '此文件类型暂不支持预览',
     showInFinder: '在文件管理器中显示',
     failedToReadFile: '无法读取文件',
+    passwordProtectedFile: '此文件受密码保护，无法预览',
     fileNotFound: '文件不存在',
     saveFailedTitle: '保存失败',
     externalChangeTitle: '文件已被外部修改',

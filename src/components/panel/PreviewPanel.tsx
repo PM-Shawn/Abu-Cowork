@@ -1,5 +1,5 @@
 import { memo, useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
-import { readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { readFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -7,6 +7,7 @@ import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { buildPreviewUrl } from '@/utils/previewUrl';
 import { atomicWrite } from '@/utils/atomicFs';
 import { reconcileEditorContent } from '@/utils/editorReconcile';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { snapshotVersion, revertToVersion } from '@/utils/canvasVersions';
 import { usePreviewStore } from '@/stores/previewStore';
 import { usePreviewFileWatch } from '@/hooks/usePreviewFileWatch';
@@ -29,7 +30,7 @@ import { VersionHistoryMenu } from './VersionHistoryMenu';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
 import { isMacOS, isWindows } from '@/utils/platform';
-import { getToolbarButtons } from './previewToolbarConfig';
+import { getToolbarButtons, offersOpenInApp } from './previewToolbarConfig';
 import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { isValidInspectSelection, resolveReferencePath } from '@/utils/inspectMessage';
@@ -46,7 +47,7 @@ const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
 export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
-/** Binary types that handle their own file reading */
+/** Types whose preview component draws the file's bytes */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
 
 /**
@@ -68,6 +69,9 @@ function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
 }
 
+/** Workbook formats the spreadsheet preview reads. */
+const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'fods'];
+
 function getRendererType(filePath: string): RendererType {
   if (isDataUrl(filePath) && filePath.startsWith('data:image/')) return 'image';
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
@@ -76,8 +80,8 @@ function getRendererType(filePath: string): RendererType {
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx') return 'docx';
   if (ext === 'pptx' || ext === 'ppt') return 'pptx';
-  if (ext === 'xlsx' || ext === 'xls') return 'xlsx';
-  if (ext === 'csv') return 'csv';
+  if (SPREADSHEET_EXTENSIONS.includes(ext)) return 'xlsx';
+  if (ext === 'csv' || ext === 'tsv') return 'csv';
   if ([
     'ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h',
     'json', 'yaml', 'yml', 'toml', 'xml', 'css', 'scss', 'less',
@@ -98,7 +102,7 @@ function getFileIcon(filePath: string) {
   if (['ts', 'tsx', 'js', 'jsx', 'py', 'html', 'css', 'json'].includes(ext)) return AppIcons.fileCode;
   if (['md', 'txt', 'log'].includes(ext)) return AppIcons.file;
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return AppIcons.fileImage;
-  if (['xlsx', 'xls', 'csv'].includes(ext)) return AppIcons.fileSheet;
+  if (SPREADSHEET_EXTENSIONS.includes(ext) || ext === 'csv' || ext === 'tsv') return AppIcons.fileSheet;
   if (ext === 'pdf') return AppIcons.filePdf;
   if (ext === 'docx') return AppIcons.fileDocument;
   if (ext === 'pptx' || ext === 'ppt') return AppIcons.fileSlides;
@@ -191,7 +195,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   const { t } = useI18n();
   const dataUrl = isDataUrl(filePath);
   const fileIcon = dataUrl ? AppIcons.fileImage : getFileIcon(filePath);
-  const toolbarButtons = getToolbarButtons(rendererType);
+  const toolbarButtons = getToolbarButtons(rendererType, filePath);
 
   return (
     <div className={cn(
@@ -323,6 +327,10 @@ export default function PreviewPanel({
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [binaryData, setBinaryData] = useState<Uint8Array<ArrayBuffer> | null>(null);
+  // The file path whose document, or whose no-preview message, is on screen. A
+  // reload for this same path keeps it shown until the file is checked and read.
+  const shownPathRef = useRef<string | null>(null);
   const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -385,6 +393,8 @@ export default function PreviewPanel({
     if (!previewFilePath) {
       setContent(null);
       setImageUrl(null);
+      setBinaryData(null);
+      shownPathRef.current = null;
       setHtmlPreviewUrl(null);
       setDraft('');
       lastSavedRef.current = '';
@@ -397,11 +407,15 @@ export default function PreviewPanel({
     let cancelled = false;
     let blobUrl: string | null = null;
     const isEditableType = EDITABLE_TYPES.has(rendererType);
+    const isBinaryType = BINARY_TYPES.has(rendererType);
     // A reload (reloadNonce bump) of a file we've already established an
     // editable baseline for — most commonly our own autosave's fs-watch
     // echo. Skip the full loading/reset cycle so the editor never flashes
-    // a spinner or drops focus while the user is typing.
-    const isQuietReload = isEditableType && establishedEditablePathRef.current === previewFilePath;
+    // a spinner or drops focus while the user is typing. A reload of a
+    // document whose bytes are on screen, or of a file with no preview,
+    // keeps what is shown the same way.
+    const isQuietReload = (isEditableType && establishedEditablePathRef.current === previewFilePath)
+      || ((isBinaryType || rendererType === 'unsupported') && shownPathRef.current === previewFilePath);
 
     const loadFile = async () => {
       if (!isQuietReload) {
@@ -409,6 +423,8 @@ export default function PreviewPanel({
         setError(null);
         setContent(null);
         setImageUrl(null);
+        setBinaryData(null);
+        shownPathRef.current = null;
         setHtmlPreviewUrl(null);
         setDraft('');
         lastSavedRef.current = '';
@@ -418,15 +434,9 @@ export default function PreviewPanel({
       }
 
       try {
-        // Binary types and unsupported types don't need text reading from parent
-        if (rendererType === 'unsupported' || BINARY_TYPES.has(rendererType)) {
-          setLoading(false);
-          return;
-        }
-
-        // Data URL: use directly
+        // Data URL: an image is used directly, anything else has no preview
         if (isDataUrl(previewFilePath)) {
-          setImageUrl(previewFilePath);
+          if (rendererType === 'image') setImageUrl(previewFilePath);
           setLoading(false);
           return;
         }
@@ -435,12 +445,26 @@ export default function PreviewPanel({
         const fileExists = await exists(previewFilePath);
         if (cancelled) return;
         if (!fileExists) {
+          // No editable baseline holds for a file that is not there: the next
+          // reload for this path goes through the full reset, which clears
+          // this error once the file is back.
+          establishedEditablePathRef.current = null;
+          shownPathRef.current = null;
+          setBinaryData(null);
           setError(`${t.panel.fileNotFound}: ${getBaseName(previewFilePath)}`);
           setLoading(false);
           return;
         }
 
-        if (rendererType === 'image') {
+        if (rendererType === 'unsupported') {
+          // Nothing to read: the file is there, and the content area offers to open it elsewhere.
+          shownPathRef.current = previewFilePath;
+        } else if (isBinaryType) {
+          const bytes = await readFile(previewFilePath);
+          if (cancelled) return;
+          setBinaryData(bytes);
+          shownPathRef.current = previewFilePath;
+        } else if (rendererType === 'image') {
           blobUrl = await loadLocalImage(previewFilePath);
           if (cancelled) { URL.revokeObjectURL(blobUrl); blobUrl = null; return; }
           setImageUrl(blobUrl);
@@ -520,9 +544,15 @@ export default function PreviewPanel({
         // attempt — the next reload for this path should go through the
         // full (non-quiet) reset rather than reconciling against stale refs.
         establishedEditablePathRef.current = null;
-        console.error('[PreviewPanel] Failed to read file:', previewFilePath, err);
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message || t.panel.failedToReadFile);
+        shownPathRef.current = null;
+        setBinaryData(null);
+        // The host's text can carry the channel name and an absolute path, so
+        // it goes to the log only, as redacted text.
+        console.error(
+          '[PreviewPanel] Failed to read file:',
+          redactFailureText(err instanceof Error ? err.message : String(err)),
+        );
+        setError(t.panel.failedToReadFile);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -914,16 +944,20 @@ export default function PreviewPanel({
           <div className="flex h-full items-center justify-center p-4">
             <InlineMessage tone="danger">{error}</InlineMessage>
           </div>
-        ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'pptx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
+        ) : (BINARY_TYPES.has(rendererType) && binaryData !== null) || (rendererType === 'csv' && content !== null) ? (
           <DocSelectionLayer filePath={previewFilePath} active={!embedded || tabId === activeTabId}>
             <Suspense fallback={<LazyFallback />}>
-              {rendererType === 'pdf' && <PdfPreview filePath={previewFilePath} />}
-              {rendererType === 'docx' && <DocxPreview filePath={previewFilePath} />}
-              {rendererType === 'pptx' && <PptxPreview filePath={previewFilePath} />}
-              {rendererType === 'xlsx' && <XlsxPreview filePath={previewFilePath} />}
-              {rendererType === 'csv' && content !== null && <CsvPreview content={content} />}
+              {rendererType === 'pdf' && binaryData !== null && <PdfPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'docx' && binaryData !== null && <DocxPreview data={binaryData} />}
+              {rendererType === 'pptx' && binaryData !== null && <PptxPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'xlsx' && binaryData !== null && <XlsxPreview data={binaryData} />}
+              {rendererType === 'csv' && content !== null && (
+                <CsvPreview content={content} delimiter={getFileExtension(previewFilePath) === 'tsv' ? '\t' : ','} />
+              )}
             </Suspense>
           </DocSelectionLayer>
+        ) : BINARY_TYPES.has(rendererType) ? (
+          <LazyFallback />
         ) : rendererType === 'image' && imageUrl ? (
           <ImagePreview src={imageUrl} alt={fileName} />
         ) : rendererType === 'markdown' && content !== null ? (
@@ -977,7 +1011,14 @@ export default function PreviewPanel({
             <EmptyState
               icon={AppIcons.fileGeneric}
               title={t.panel.unsupportedFileType}
-              action={<Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>}
+              action={(
+                <div className="flex items-center gap-2">
+                  {offersOpenInApp(rendererType, previewFilePath) && (
+                    <Button variant="secondary" icon={AppIcons.openIn} onClick={handleOpenInApp}>{t.panel.openInApp}</Button>
+                  )}
+                  <Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>
+                </div>
+              )}
             />
           </div>
         )}

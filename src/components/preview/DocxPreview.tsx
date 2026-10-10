@@ -1,18 +1,33 @@
 import { useState, useEffect, useRef } from 'react';
-import { readFile } from '@tauri-apps/plugin-fs';
 import { useI18n } from '@/i18n';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { ScrollArea } from '@/components/ds/scroll-area';
 import { Spinner } from '@/components/ds/spinner';
 import { useFitToWidth } from '@/hooks/useFitToWidth';
 import { cn } from '@/lib/utils';
+import { isPasswordProtectedOfficeFile, type PreviewFailure } from './passwordProtected';
 
-export default function DocxPreview({ filePath }: { filePath: string }) {
+const RENDER_OPTIONS = {
+  className: 'docx-preview-wrapper',
+  inWrapper: true,
+  ignoreWidth: false,
+  ignoreHeight: true,
+  ignoreFonts: false,
+  breakPages: true,
+  renderHeaders: true,
+  renderFooters: true,
+  renderFootnotes: true,
+};
+
+/** Draws the bytes of a Word document. A new `data` draws over the pages on screen. */
+export default function DocxPreview({ data }: { data: Uint8Array<ArrayBuffer> }) {
   const { t } = useI18n();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<PreviewFailure | null>(null);
+  const failed = failure !== null;
 
   const { scale, scaledWidth, scaledHeight } = useFitToWidth(wrapperRef, containerRef, { padding: 16 });
 
@@ -20,31 +35,28 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
     let cancelled = false;
 
     const load = async () => {
-      setLoading(true);
-      setError(null);
       try {
-        const data = await readFile(filePath);
-        const { renderAsync } = await import('docx-preview');
+        const { parseAsync, renderDocument } = await import('docx-preview');
+        if (cancelled) return;
 
+        if (await isPasswordProtectedOfficeFile(data)) {
+          if (!cancelled) setFailure('password');
+          return;
+        }
+
+        // Reading the bytes takes time and touches no page. Only the read that is still the
+        // newest goes on to draw, so a slow read of earlier bytes never replaces later ones.
+        const parsed = await parseAsync(data, RENDER_OPTIONS);
         if (cancelled || !containerRef.current) return;
 
-        containerRef.current.innerHTML = '';
-
-        await renderAsync(data, containerRef.current, undefined, {
-          className: 'docx-preview-wrapper',
-          inWrapper: true,
-          ignoreWidth: false,
-          ignoreHeight: true,
-          ignoreFonts: false,
-          breakPages: true,
-          renderHeaders: true,
-          renderFooters: true,
-          renderFootnotes: true,
-        });
+        // The renderer empties the container and writes the pages in one step, in the document,
+        // where the shapes it measures on the next frame have a layout.
+        await renderDocument(parsed, containerRef.current, undefined, RENDER_OPTIONS);
+        if (!cancelled) setFailure(null);
       } catch (err) {
         if (cancelled) return;
-        console.error('[DocxPreview] Failed to render:', err);
-        setError(err instanceof Error ? err.message : String(err));
+        console.error('[DocxPreview] Failed to render:', redactFailureText(err instanceof Error ? err.message : String(err)));
+        setFailure('unreadable');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -52,24 +64,23 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
 
     load();
     return () => { cancelled = true; };
-  }, [filePath]);
-
-  if (error) {
-    return (
-      <div className="flex h-full items-center justify-center p-4">
-        <InlineMessage tone="danger">{error}</InlineMessage>
-      </div>
-    );
-  }
+  }, [data]);
 
   return (
-    <div className="flex h-full flex-col bg-code">
-      {loading && (
+    <div className={cn('flex h-full flex-col', !failed && 'bg-code')}>
+      {failed ? (
+        <div className="flex h-full items-center justify-center p-4">
+          <InlineMessage tone="danger">
+            {failure === 'password' ? t.panel.passwordProtectedFile : t.panel.failedToReadFile}
+          </InlineMessage>
+        </div>
+      ) : loading && (
         <div className="flex h-full items-center justify-center">
           <Spinner label={t.panel.loadingDocument} />
         </div>
       )}
-      <ScrollArea className={cn('min-h-0 flex-1', loading && 'hidden')}>
+      {/* The page container stays mounted through loading and failure: the renderer draws into it. */}
+      <ScrollArea className={cn('min-h-0 flex-1', (loading || failed) && 'hidden')}>
         <div ref={wrapperRef} className="p-4">
           <div
             style={{

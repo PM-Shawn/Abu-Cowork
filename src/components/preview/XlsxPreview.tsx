@@ -1,18 +1,20 @@
 import { useState, useEffect } from 'react';
-import { readFile } from '@tauri-apps/plugin-fs';
 import { useI18n } from '@/i18n';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { cn } from '@/lib/utils';
 import DataTable from './DataTable';
+import { isPasswordProtectedOfficeFile, type PreviewFailure } from './passwordProtected';
 
 const MAX_ROWS = 1000;
 
-export default function XlsxPreview({ filePath }: { filePath: string }) {
+/** Draws the bytes of a workbook. A new `data` replaces the sheets on screen once it is parsed. */
+export default function XlsxPreview({ data }: { data: Uint8Array<ArrayBuffer> }) {
   const { t } = useI18n();
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<PreviewFailure | null>(null);
   const [sheets, setSheets] = useState<{ name: string; headers: string[]; rows: string[][]; totalRows: number }[]>([]);
   const [activeSheet, setActiveSheet] = useState(0);
 
@@ -20,10 +22,11 @@ export default function XlsxPreview({ filePath }: { filePath: string }) {
     let cancelled = false;
 
     const load = async () => {
-      setLoading(true);
-      setError(null);
       try {
-        const data = await readFile(filePath);
+        if (await isPasswordProtectedOfficeFile(data)) {
+          if (!cancelled) setFailure('password');
+          return;
+        }
         const XLSX = await import('xlsx');
         const workbook = XLSX.read(data, { type: 'array' });
 
@@ -41,11 +44,13 @@ export default function XlsxPreview({ filePath }: { filePath: string }) {
         });
 
         setSheets(parsed);
-        setActiveSheet(0);
+        // The same file read again keeps the sheet in view while it still exists.
+        setActiveSheet((index) => (index < parsed.length ? index : 0));
+        setFailure(null);
       } catch (err) {
         if (cancelled) return;
-        console.error('[XlsxPreview] Failed to parse:', err);
-        setError(err instanceof Error ? err.message : String(err));
+        console.error('[XlsxPreview] Failed to parse:', redactFailureText(err instanceof Error ? err.message : String(err)));
+        setFailure('unreadable');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -53,7 +58,7 @@ export default function XlsxPreview({ filePath }: { filePath: string }) {
 
     load();
     return () => { cancelled = true; };
-  }, [filePath]);
+  }, [data]);
 
   if (loading) {
     return (
@@ -63,10 +68,12 @@ export default function XlsxPreview({ filePath }: { filePath: string }) {
     );
   }
 
-  if (error) {
+  if (failure) {
     return (
       <div className="flex h-full items-center justify-center p-4">
-        <InlineMessage tone="danger">{error}</InlineMessage>
+        <InlineMessage tone="danger">
+          {failure === 'password' ? t.panel.passwordProtectedFile : t.panel.failedToReadFile}
+        </InlineMessage>
       </div>
     );
   }

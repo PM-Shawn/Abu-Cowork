@@ -88,7 +88,7 @@ export function useDeleteConversation(rowFocus: ConversationRowFocus, offersUndo
             type: 'info',
             title: current.t.sidebar.conversationDeleted,
             duration: UNDO_OFFER_MS,
-            actions: [{ label: current.t.sidebar.undo, onClick: () => { chat().importConversation(json, { keepPermissionMode: true }); } }],
+            actions: [{ label: current.t.sidebar.undo, onClick: () => { chat().importConversation(json, { restoringDeleted: true }); } }],
           });
         }
       } finally {

@@ -189,7 +189,7 @@ test('a presented file gets a card with its description, and a file that was onl
   // The work process lists the presentation as a row of its group of steps;
   // the row's result names the file.
   await workProcessToggle(page).click();
-  await page.getByRole('button', { name: /^修改了 2 个文件/ }).click();
+  await page.getByRole('button', { name: /^交付了文件/ }).click();
   const presentedRow = page.getByText('交付了 1 个文件', { exact: true }).locator('xpath=..');
   await expect(presentedRow).toBeVisible();
   await presentedRow.getByRole('button', { name: '结果', exact: true }).click();

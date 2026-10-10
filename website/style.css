@@ -922,6 +922,65 @@ section h2 {
 }
 
 /* ============================================
+   User Feedback
+   ============================================ */
+.feedback {
+    padding: 88px 24px;
+    background: var(--color-bg);
+}
+
+.feedback-wall {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 20px 28px;
+    max-width: 920px;
+    margin: 0 auto;
+}
+
+.feedback-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    max-width: 440px;
+}
+
+.feedback-avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.feedback-avatar svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.feedback-avatar-clay { background: #f6ddd3; color: #d97757; }
+.feedback-avatar-green { background: #dcebdc; color: #5f9364; }
+.feedback-avatar-blue { background: #d9e6f2; color: #5b88b5; }
+.feedback-avatar-amber { background: #f5e6c4; color: #c1923a; }
+.feedback-avatar-plum { background: #e8dcec; color: #8d6a9c; }
+.feedback-avatar-teal { background: #d5eae8; color: #4f9590; }
+.feedback-avatar-rose { background: #f4dbe1; color: #b96a7e; }
+.feedback-avatar-slate { background: #dfe2e8; color: #6b7689; }
+
+.feedback-bubble {
+    position: relative;
+    padding: 12px 16px;
+    background: var(--color-bg-white);
+    border: 1px solid var(--color-border);
+    border-radius: 4px var(--radius-md) var(--radius-md) var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    color: var(--color-text);
+    font-size: 0.98rem;
+    line-height: 1.6;
+}
+
+/* ============================================
    Tech Architecture
    ============================================ */
 /* Dark anchor section — breaks the light-section monotony and reads as
@@ -1946,7 +2005,7 @@ section h2 {
         font-size: 1.6rem;
     }
 
-    .features, .screenshots, .use-cases, .tech, .community, .social,
+    .features, .screenshots, .use-cases, .feedback, .tech, .community, .social,
     .enterprise-section, .enterprise-cta {
         padding: 64px 20px;
     }

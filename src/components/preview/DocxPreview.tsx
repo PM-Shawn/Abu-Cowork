@@ -7,6 +7,18 @@ import { Spinner } from '@/components/ds/spinner';
 import { useFitToWidth } from '@/hooks/useFitToWidth';
 import { cn } from '@/lib/utils';
 
+const RENDER_OPTIONS = {
+  className: 'docx-preview-wrapper',
+  inWrapper: true,
+  ignoreWidth: false,
+  ignoreHeight: true,
+  ignoreFonts: false,
+  breakPages: true,
+  renderHeaders: true,
+  renderFooters: true,
+  renderFootnotes: true,
+};
+
 /** Draws the bytes of a Word document. A new `data` draws over the pages on screen. */
 export default function DocxPreview({ data }: { data: Uint8Array<ArrayBuffer> }) {
   const { t } = useI18n();
@@ -22,22 +34,17 @@ export default function DocxPreview({ data }: { data: Uint8Array<ArrayBuffer> })
 
     const load = async () => {
       try {
-        const { renderAsync } = await import('docx-preview');
+        const { parseAsync, renderDocument } = await import('docx-preview');
+        if (cancelled) return;
 
+        // Reading the bytes takes time and touches no page. Only the read that is still the
+        // newest goes on to draw, so a slow read of earlier bytes never replaces later ones.
+        const parsed = await parseAsync(data, RENDER_OPTIONS);
         if (cancelled || !containerRef.current) return;
 
-        // The renderer empties the container itself right before it draws.
-        await renderAsync(data, containerRef.current, undefined, {
-          className: 'docx-preview-wrapper',
-          inWrapper: true,
-          ignoreWidth: false,
-          ignoreHeight: true,
-          ignoreFonts: false,
-          breakPages: true,
-          renderHeaders: true,
-          renderFooters: true,
-          renderFootnotes: true,
-        });
+        // The renderer empties the container and writes the pages in one step, in the document,
+        // where the shapes it measures on the next frame have a layout.
+        await renderDocument(parsed, containerRef.current, undefined, RENDER_OPTIONS);
         if (!cancelled) setFailed(false);
       } catch (err) {
         if (cancelled) return;

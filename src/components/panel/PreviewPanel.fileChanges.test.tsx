@@ -35,10 +35,13 @@ vi.mock('react-pdf', async () => {
 
 // The Word and slide renderers need layout; the stand-ins write the bytes they were given as text.
 vi.mock('docx-preview', () => ({
-  renderAsync: async (data: Uint8Array, container: HTMLElement) => {
+  parseAsync: async (data: Uint8Array) => {
     const text = new TextDecoder().decode(data);
     if (text.startsWith('BROKEN')) throw new Error('not a zip file');
-    container.textContent = text;
+    return { text };
+  },
+  renderDocument: async (parsed: { text: string }, container: HTMLElement) => {
+    container.textContent = parsed.text;
   },
 }));
 

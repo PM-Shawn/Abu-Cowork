@@ -9,18 +9,25 @@ import PptxPreview from './PptxPreview';
 
 const deck = vi.hoisted(() => ({ preview: vi.fn(), destroy: vi.fn() }));
 
-// The real renderer needs layout; the stand-in draws one slide wrapper like the library does.
+// The real renderer needs layout. Like the library, each previewer adds a wrapper of its own
+// to the container when it is made, and draws its slides into that wrapper once the deck is read.
 vi.mock('pptx-preview', () => ({
-  init: (container: HTMLElement) => ({
-    preview: async (data: ArrayBuffer) => {
-      await deck.preview(data);
-      const slide = document.createElement('div');
-      slide.className = 'pptx-preview-slide-wrapper';
-      slide.textContent = new TextDecoder().decode(data);
-      container.appendChild(slide);
-    },
-    destroy: deck.destroy,
-  }),
+  init: (container: HTMLElement) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'pptx-preview-wrapper';
+    container.append(wrapper);
+    return {
+      preview: async (data: ArrayBuffer) => {
+        wrapper.innerHTML = '';
+        await deck.preview(data);
+        const slide = document.createElement('div');
+        slide.className = 'pptx-preview-slide-wrapper';
+        slide.textContent = new TextDecoder().decode(data);
+        wrapper.append(slide);
+      },
+      destroy: deck.destroy,
+    };
+  },
 }));
 
 function bytes(text: string): Uint8Array<ArrayBuffer> {
@@ -112,6 +119,31 @@ describe('PptxPreview', () => {
     expect(screen.queryByRole('status')).toBeNull();
     expect(await screen.findByText('Second deck')).toBeInTheDocument();
     expect(screen.queryByText('First deck')).toBeNull();
+  });
+
+  // A previewer draws into the wrapper it added, and the container is emptied before the next
+  // previewer is made: a deck read late draws into a wrapper that has left the page.
+  it('keeps the newest deck on screen when an earlier one is read after a later one', async () => {
+    let finishFirst: () => void = () => {};
+    const firstRead = new Promise<void>((resolve) => { finishFirst = resolve; });
+    deck.preview.mockImplementation((data: ArrayBuffer) => (
+      new TextDecoder().decode(data) === 'Large first deck' ? firstRead : Promise.resolve()
+    ));
+    const { rerender, container } = render(<PptxPreview filePath="/work/deck.pptx" data={bytes('Opening deck')} />);
+    expect(await screen.findByText('Opening deck')).toBeInTheDocument();
+
+    rerender(<PptxPreview filePath="/work/deck.pptx" data={bytes('Large first deck')} />);
+    await waitFor(() => expect(deck.preview).toHaveBeenCalledTimes(2));
+    rerender(<PptxPreview filePath="/work/deck.pptx" data={bytes('Small second deck')} />);
+    expect(await screen.findByText('Small second deck')).toBeInTheDocument();
+
+    finishFirst();
+    await firstRead;
+    await Promise.resolve();
+    expect(screen.getByText('Small second deck')).toBeInTheDocument();
+    expect(screen.queryByText('Large first deck')).toBeNull();
+    expect(container.querySelectorAll('.pptx-preview-wrapper')).toHaveLength(1);
+    expect(container.querySelectorAll('.pptx-preview-slide-wrapper')).toHaveLength(1);
   });
 
   it('hands the renderer the buffer the bytes fill, and a copy of exactly the bytes of a view into a larger one', async () => {

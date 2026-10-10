@@ -301,6 +301,47 @@ describe('PreviewPanel following the file on disk', () => {
     expect(await screen.findByRole('textbox', { name: 'source' })).toHaveValue('first line, edited');
   });
 
+  describe('a file type with no preview', () => {
+    const UNSUPPORTED = 'This file type is not supported for preview';
+
+    it('says the file was not found when it is removed, and offers its two buttons again when it returns', async () => {
+      disk.set('/w/report.doc', utf8('old Word format'));
+      openPreview('/w/report.doc');
+      expect(await screen.findByText(UNSUPPORTED)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Show in File Manager' })).toBeInTheDocument();
+
+      disk.delete('/w/report.doc');
+      await fileChangedOnDisk('/w/report.doc');
+      expect(await screen.findByRole('alert')).toHaveTextContent('File not found: report.doc');
+      expect(screen.queryByText(UNSUPPORTED)).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Show in File Manager' })).toBeNull();
+
+      disk.set('/w/report.doc', utf8('old Word format'));
+      await fileChangedOnDisk('/w/report.doc');
+      expect(await screen.findByText(UNSUPPORTED)).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Show in File Manager' })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Open in default app' })).toHaveLength(2);
+    });
+
+    it('keeps its message, with no loading state, while a changed file is checked again', async () => {
+      disk.set('/w/report.doc', utf8('old Word format'));
+      openPreview('/w/report.doc');
+      expect(await screen.findByText(UNSUPPORTED)).toBeInTheDocument();
+
+      const checksBefore = vi.mocked(exists).mock.calls.length;
+      let finish: (found: boolean) => void = () => {};
+      vi.mocked(exists).mockReturnValueOnce(new Promise<boolean>((resolve) => { finish = resolve; }));
+      await fileChangedOnDisk('/w/report.doc');
+      await waitFor(() => expect(vi.mocked(exists).mock.calls.length).toBe(checksBefore + 1));
+      expect(screen.getByText(UNSUPPORTED)).toBeInTheDocument();
+      expect(screen.queryByRole('status')).toBeNull();
+
+      await act(async () => { finish(true); });
+      expect(screen.getByText(UNSUPPORTED)).toBeInTheDocument();
+    });
+  });
+
   it('offers the PowerPoint fallback only for a deck that was read and cannot be drawn', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     disk.set('/w/deck.pptx', utf8('BROKEN'));

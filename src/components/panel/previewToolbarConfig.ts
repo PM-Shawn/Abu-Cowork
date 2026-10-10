@@ -20,7 +20,7 @@ export function getToolbarButtons(type: RendererType): PreviewToolbarButtons {
   return {
     viewToggle: VIEW_TOGGLE.has(type),
     fullscreen: supported,
-    openInApp: supported,
+    openInApp: true,
     versionHistory: EDITABLE.has(type),
   };
 }

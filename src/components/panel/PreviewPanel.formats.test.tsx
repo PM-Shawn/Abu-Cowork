@@ -1,14 +1,21 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, readFile, readTextFile } from '@tauri-apps/plugin-fs';
+import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import * as XLSX from 'xlsx';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
+import { useToastStore } from '@/stores/toastStore';
 import PreviewPanel from './PreviewPanel';
 
 vi.mock('@/hooks/usePreviewFileWatch', () => ({ usePreviewFileWatch: () => {} }));
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  openUrl: vi.fn().mockResolvedValue(undefined),
+  openPath: vi.fn().mockResolvedValue(undefined),
+  revealItemInDir: vi.fn().mockResolvedValue(undefined),
+}));
 
 const UNSUPPORTED = 'This file type is not supported for preview';
 
@@ -30,10 +37,14 @@ describe('PreviewPanel file types', () => {
   beforeEach(() => {
     initLanguage('en-US');
     vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(openPath).mockClear();
+    vi.mocked(revealItemInDir).mockClear();
+    useToastStore.setState({ toasts: [] });
   });
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     vi.mocked(exists).mockReset().mockResolvedValue(false);
     vi.mocked(readFile).mockReset().mockResolvedValue(new Uint8Array());
     vi.mocked(readTextFile).mockReset().mockResolvedValue('');
@@ -84,5 +95,55 @@ describe('PreviewPanel file types', () => {
     openPreview(`/w/file.${extension}`);
     expect(await screen.findByText(UNSUPPORTED)).toBeInTheDocument();
     expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  describe('a file type with no preview', () => {
+    it('offers to open the file in its default app beside "Show in File Manager"', async () => {
+      openPreview('/w/报告.doc');
+      const message = await screen.findByText(UNSUPPORTED);
+      const content = message.parentElement as HTMLElement;
+
+      const buttons = within(content).getAllByRole('button').map((button) => button.textContent);
+      expect(buttons).toEqual(['Open in default app', 'Show in File Manager']);
+
+      fireEvent.click(within(content).getByRole('button', { name: 'Open in default app' }));
+      await waitFor(() => expect(openPath).toHaveBeenCalledWith('/w/报告.doc'));
+
+      fireEvent.click(within(content).getByRole('button', { name: 'Show in File Manager' }));
+      await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith('/w/报告.doc'));
+    });
+
+    it('has the "Open in default app" toolbar button of a previewed file', async () => {
+      openPreview('/w/report.doc');
+      const message = await screen.findByText(UNSUPPORTED);
+      const content = message.parentElement as HTMLElement;
+      const inContent = within(content).getByRole('button', { name: 'Open in default app' });
+      const inToolbar = screen.getAllByRole('button', { name: 'Open in default app' }).filter((button) => button !== inContent);
+      expect(inToolbar).toHaveLength(1);
+
+      fireEvent.click(inToolbar[0]);
+      await waitFor(() => expect(openPath).toHaveBeenCalledWith('/w/report.doc'));
+    });
+
+    it('tells the user when the file cannot be opened', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(openPath).mockRejectedValueOnce(new Error('no application is set to open /w/report.doc'));
+      openPreview('/w/report.doc');
+      const message = await screen.findByText(UNSUPPORTED);
+
+      fireEvent.click(within(message.parentElement as HTMLElement).getByRole('button', { name: 'Open in default app' }));
+      await waitFor(() => expect(useToastStore.getState().toasts.map(({ type, title, message: text }) => ({ type, title, text })))
+        .toEqual([{ type: 'error', title: 'Failed to open file', text: 'Could not open this file in a local app' }]));
+    });
+
+    it('says a missing file was not found and offers neither button in its place', async () => {
+      vi.mocked(exists).mockResolvedValue(false);
+      openPreview('/w/gone.doc');
+      expect(await screen.findByRole('alert')).toHaveTextContent('File not found: gone.doc');
+      expect(screen.queryByText(UNSUPPORTED)).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Show in File Manager' })).toBeNull();
+      // The toolbar keeps its button, as it does for a missing file of a previewed type.
+      expect(screen.getAllByRole('button', { name: 'Open in default app' })).toHaveLength(1);
+    });
   });
 });

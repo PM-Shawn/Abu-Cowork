@@ -19,9 +19,12 @@ describe('getToolbarButtons', () => {
     expect(getToolbarButtons('code').versionHistory).toBe(true);
     expect(getToolbarButtons('code').viewToggle).toBe(false);
   });
-  it('unsupported gets no toolbar buttons', () => {
-    const b = getToolbarButtons('unsupported');
-    expect(b.fullscreen).toBe(false);
-    expect(b.openInApp).toBe(false);
+  it('unsupported gets openInApp only', () => {
+    expect(getToolbarButtons('unsupported')).toEqual({
+      viewToggle: false,
+      fullscreen: false,
+      openInApp: true,
+      versionHistory: false,
+    });
   });
 });

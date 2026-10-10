@@ -318,9 +318,9 @@ export default function PreviewPanel({
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [binaryData, setBinaryData] = useState<Uint8Array<ArrayBuffer> | null>(null);
-  // The file path whose bytes are on screen. A reload for this same path keeps
-  // them shown until the new bytes are read.
-  const shownBinaryPathRef = useRef<string | null>(null);
+  // The file path whose document, or whose no-preview message, is on screen. A
+  // reload for this same path keeps it shown until the file is checked and read.
+  const shownPathRef = useRef<string | null>(null);
   const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -384,7 +384,7 @@ export default function PreviewPanel({
       setContent(null);
       setImageUrl(null);
       setBinaryData(null);
-      shownBinaryPathRef.current = null;
+      shownPathRef.current = null;
       setHtmlPreviewUrl(null);
       setDraft('');
       lastSavedRef.current = '';
@@ -402,9 +402,10 @@ export default function PreviewPanel({
     // editable baseline for — most commonly our own autosave's fs-watch
     // echo. Skip the full loading/reset cycle so the editor never flashes
     // a spinner or drops focus while the user is typing. A reload of a
-    // document whose bytes are on screen keeps them there the same way.
+    // document whose bytes are on screen, or of a file with no preview,
+    // keeps what is shown the same way.
     const isQuietReload = (isEditableType && establishedEditablePathRef.current === previewFilePath)
-      || (isBinaryType && shownBinaryPathRef.current === previewFilePath);
+      || ((isBinaryType || rendererType === 'unsupported') && shownPathRef.current === previewFilePath);
 
     const loadFile = async () => {
       if (!isQuietReload) {
@@ -413,7 +414,7 @@ export default function PreviewPanel({
         setContent(null);
         setImageUrl(null);
         setBinaryData(null);
-        shownBinaryPathRef.current = null;
+        shownPathRef.current = null;
         setHtmlPreviewUrl(null);
         setDraft('');
         lastSavedRef.current = '';
@@ -423,14 +424,9 @@ export default function PreviewPanel({
       }
 
       try {
-        if (rendererType === 'unsupported') {
-          setLoading(false);
-          return;
-        }
-
-        // Data URL: use directly
+        // Data URL: an image is used directly, anything else has no preview
         if (isDataUrl(previewFilePath)) {
-          setImageUrl(previewFilePath);
+          if (rendererType === 'image') setImageUrl(previewFilePath);
           setLoading(false);
           return;
         }
@@ -443,18 +439,21 @@ export default function PreviewPanel({
           // reload for this path goes through the full reset, which clears
           // this error once the file is back.
           establishedEditablePathRef.current = null;
-          shownBinaryPathRef.current = null;
+          shownPathRef.current = null;
           setBinaryData(null);
           setError(`${t.panel.fileNotFound}: ${getBaseName(previewFilePath)}`);
           setLoading(false);
           return;
         }
 
-        if (isBinaryType) {
+        if (rendererType === 'unsupported') {
+          // Nothing to read: the file is there, and the content area offers to open it elsewhere.
+          shownPathRef.current = previewFilePath;
+        } else if (isBinaryType) {
           const bytes = await readFile(previewFilePath);
           if (cancelled) return;
           setBinaryData(bytes);
-          shownBinaryPathRef.current = previewFilePath;
+          shownPathRef.current = previewFilePath;
         } else if (rendererType === 'image') {
           blobUrl = await loadLocalImage(previewFilePath);
           if (cancelled) { URL.revokeObjectURL(blobUrl); blobUrl = null; return; }
@@ -535,7 +534,7 @@ export default function PreviewPanel({
         // attempt — the next reload for this path should go through the
         // full (non-quiet) reset rather than reconciling against stale refs.
         establishedEditablePathRef.current = null;
-        shownBinaryPathRef.current = null;
+        shownPathRef.current = null;
         setBinaryData(null);
         // The host's text can carry the channel name and an absolute path, so
         // it goes to the log only, as redacted text.
@@ -996,7 +995,12 @@ export default function PreviewPanel({
             <EmptyState
               icon={AppIcons.fileGeneric}
               title={t.panel.unsupportedFileType}
-              action={<Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>}
+              action={(
+                <div className="flex items-center gap-2">
+                  <Button variant="secondary" icon={AppIcons.openIn} onClick={handleOpenInApp}>{t.panel.openInApp}</Button>
+                  <Button variant="secondary" icon={AppIcons.folderOpen} onClick={handleOpenInFinder}>{t.panel.showInFinder}</Button>
+                </div>
+              )}
             />
           </div>
         )}

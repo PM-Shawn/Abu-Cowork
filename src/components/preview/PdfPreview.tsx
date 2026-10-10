@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { readFile } from '@tauri-apps/plugin-fs';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { IconButton } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
@@ -79,10 +79,15 @@ const PdfToolbar = memo(function PdfToolbar({ currentPage, numPages, scale, fitW
   );
 });
 
-export default function PdfPreview({ filePath }: { filePath: string }) {
+/**
+ * Draws the bytes of a PDF. `filePath` keys the reading position; a new `data`
+ * for the same path is the same file read again and keeps that position.
+ */
+export default function PdfPreview({ filePath, data }: { filePath: string; data: Uint8Array<ArrayBuffer> }) {
+  const { t } = useI18n();
   const viewportRef = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
+  // The bytes pdf.js could not open; an error belongs to those bytes only.
+  const [failedData, setFailedData] = useState<Uint8Array<ArrayBuffer> | null>(null);
   const [numPages, setNumPages] = useState(0);
   const initialReadingState = readingState.get(filePath);
   const [currentPage, setCurrentPage] = useState(initialReadingState?.page ?? 1);
@@ -90,33 +95,6 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
   const [rotation, setRotation] = useState(initialReadingState?.rotation ?? 0);
   const [fitWidth, setFitWidth] = useState(initialReadingState?.fitWidth ?? true);
   const [viewportWidth, setViewportWidth] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      const saved = readingState.get(filePath);
-      setError(null);
-      setPdfData(null);
-      setCurrentPage(saved?.page ?? 1);
-      setScale(saved?.scale ?? 1);
-      setRotation(saved?.rotation ?? 0);
-      setFitWidth(saved?.fitWidth ?? true);
-      setNumPages(0);
-      try {
-        const data = await readFile(filePath);
-        if (cancelled) return;
-        setPdfData(data);
-      } catch (err) {
-        if (cancelled) return;
-        console.error('[PdfPreview] Failed to read:', err);
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    };
-
-    load();
-    return () => { cancelled = true; };
-  }, [filePath]);
 
   useEffect(() => {
     readingState.set(filePath, { page: currentPage, scale, rotation, fitWidth });
@@ -136,13 +114,11 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
     return () => observer.disconnect();
   }, []);
 
-  const loading = !pdfData && !error;
-
-  // Memoize the file object so react-pdf loads the document ONCE. A fresh
-  // `{ data }` object each render makes react-pdf reload, and pdf.js transfers
-  // the buffer to the worker on load (detaching `pdfData`) — the reload then
-  // tries to post the detached array and throws "The object can not be cloned".
-  const fileProp = useMemo(() => (pdfData ? { data: pdfData } : null), [pdfData]);
+  // Memoize the file object so react-pdf loads each read of the file ONCE. A
+  // fresh `{ data }` object each render makes react-pdf reload, and pdf.js
+  // transfers the buffer to the worker on load (detaching `data`) — the reload
+  // then tries to post the detached array and throws "The object can not be cloned".
+  const fileProp = useMemo(() => ({ data }), [data]);
 
   const onDocumentLoadSuccess = ({ numPages: n }: { numPages: number }) => {
     setNumPages(n);
@@ -150,8 +126,8 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
   };
 
   const onDocumentLoadError = (err: Error) => {
-    console.error('[PdfPreview] PDF load error:', err);
-    setError(err.message);
+    console.error('[PdfPreview] PDF load error:', redactFailureText(err.message));
+    setFailedData(data);
   };
 
   const changePage = useCallback((step: -1 | 1) => {
@@ -171,18 +147,12 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
     setScale((value) => clampPdfScale(value + step * 0.25));
   }, []);
 
-  if (error) {
-    return (
-      <div className="flex h-full items-center justify-center p-4">
-        <InlineMessage tone="danger">{error}</InlineMessage>
-      </div>
-    );
-  }
+  const failed = failedData === data;
 
   return (
     <div className="flex h-full flex-col">
       {/* Reading controls — grouped by task: navigation on the left, view on the right. */}
-      {numPages > 0 && (
+      {numPages > 0 && !failed && (
         <PdfToolbar
           currentPage={currentPage}
           numPages={numPages}
@@ -195,12 +165,15 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
         />
       )}
 
-      {/* PDF Content */}
+      {/* PDF Content. The viewport stays mounted through a failure, so its width is still measured when the file is read again. */}
       <div ref={viewportRef} className="min-h-0 flex-1">
-        <ScrollArea className="h-full">
-          <div className="flex min-h-full justify-center bg-code p-6">
-            {loading && <LoadingIndicator />}
-            {fileProp && (
+        {failed ? (
+          <div className="flex h-full items-center justify-center p-4">
+            <InlineMessage tone="danger">{t.panel.failedToReadFile}</InlineMessage>
+          </div>
+        ) : (
+          <ScrollArea className="h-full">
+            <div className="flex min-h-full justify-center bg-code p-6">
               <Document
                 file={fileProp}
                 onLoadSuccess={onDocumentLoadSuccess}
@@ -219,9 +192,9 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
                   />
                 </div>
               </Document>
-            )}
-          </div>
-        </ScrollArea>
+            </div>
+          </ScrollArea>
+        )}
       </div>
     </div>
   );

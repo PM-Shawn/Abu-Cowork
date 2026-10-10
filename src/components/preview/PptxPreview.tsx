@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { readFile } from '@tauri-apps/plugin-fs';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useI18n } from '@/i18n';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { Button } from '@/components/ds/button';
 import { EmptyState } from '@/components/ds/empty-state';
 import { AppIcons } from '@/components/ds/icons';
@@ -16,15 +16,16 @@ const RENDER_WIDTH = 960;
 const RENDER_HEIGHT = 540;
 
 /**
- * PptxPreview — renders all slides vertically (mode: 'list') and scales to fit panel width.
+ * PptxPreview — renders all slides of the deck's bytes vertically (mode: 'list') and scales
+ * to fit panel width. `filePath` names the deck and is what the two ways out open.
  */
-export default function PptxPreview({ filePath }: { filePath: string }) {
+export default function PptxPreview({ filePath, data }: { filePath: string; data: Uint8Array<ArrayBuffer> }) {
   const { t } = useI18n();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const previewerRef = useRef<{ destroy: () => void } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
 
   const { scale, scaledWidth, scaledHeight } = useFitToWidth(wrapperRef, containerRef, { padding: 16 });
 
@@ -32,15 +33,12 @@ export default function PptxPreview({ filePath }: { filePath: string }) {
     let cancelled = false;
 
     const load = async () => {
-      setLoading(true);
-      setError(null);
-
       try {
-        const data = await readFile(filePath);
-        const arrayBuffer = data.buffer.slice(
-          data.byteOffset,
-          data.byteOffset + data.byteLength
-        );
+        // The renderer takes an ArrayBuffer. Bytes that fill their buffer are handed over as
+        // they are; only a view into a larger buffer is copied out.
+        const arrayBuffer = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+          ? data.buffer
+          : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
 
         const { init } = await import('pptx-preview');
 
@@ -65,11 +63,14 @@ export default function PptxPreview({ filePath }: { filePath: string }) {
           normalizeSlideBackgrounds(containerRef.current);
         }
 
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setFailed(false);
+          setLoading(false);
+        }
       } catch (err) {
         if (!cancelled) {
-          console.error('[PptxPreview] Failed to render:', err);
-          setError(err instanceof Error ? err.message : String(err));
+          console.error('[PptxPreview] Failed to render:', redactFailureText(err instanceof Error ? err.message : String(err)));
+          setFailed(true);
           setLoading(false);
         }
       }
@@ -84,67 +85,64 @@ export default function PptxPreview({ filePath }: { filePath: string }) {
         previewerRef.current = null;
       }
     };
-  }, [filePath]);
+  }, [data]);
 
-  if (error) {
-    const handleOpenWithDefaultApp = async () => {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const platform = navigator.platform.toLowerCase();
-        const command = platform.includes('win')
-          ? `start "" "${filePath}"`
-          : platform.includes('linux')
-            ? `xdg-open "${filePath}"`
-            : `open "${filePath}"`;
-        await invoke('run_shell_command', {
-          command,
-          cwd: null,
-          background: true,
-          timeout: 5,
-          sandboxEnabled: false,
-        });
-      } catch (err) {
-        console.error('[PptxPreview] Failed to open with default app:', err);
-      }
-    };
+  const handleOpenWithDefaultApp = async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const platform = navigator.platform.toLowerCase();
+      const command = platform.includes('win')
+        ? `start "" "${filePath}"`
+        : platform.includes('linux')
+          ? `xdg-open "${filePath}"`
+          : `open "${filePath}"`;
+      await invoke('run_shell_command', {
+        command,
+        cwd: null,
+        background: true,
+        timeout: 5,
+        sandboxEnabled: false,
+      });
+    } catch (err) {
+      console.error('[PptxPreview] Failed to open with default app:', err);
+    }
+  };
 
-    const handleShowInFinder = async () => {
-      try {
-        await revealItemInDir(filePath);
-      } catch (err) {
-        console.error('[PptxPreview] Failed to reveal in dir:', err);
-      }
-    };
-
-    return (
-      <div className="flex h-full items-center justify-center">
-        <EmptyState
-          icon={AppIcons.fileSlides}
-          title={<span className="block max-w-70 truncate">{getBaseName(filePath)}</span>}
-          description={t.panel.pptxPreviewUnavailable}
-          action={(
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" icon={AppIcons.fileSlides} onClick={handleOpenWithDefaultApp}>
-                {t.panel.openWithPowerPoint}
-              </Button>
-              <Button variant="plain" icon={AppIcons.folderOpen} onClick={handleShowInFinder}>
-                {t.panel.showInFinder}
-              </Button>
-            </div>
-          )}
-        />
-      </div>
-    );
-  }
+  const handleShowInFinder = async () => {
+    try {
+      await revealItemInDir(filePath);
+    } catch (err) {
+      console.error('[PptxPreview] Failed to reveal in dir:', err);
+    }
+  };
 
   return (
-    <div className="flex h-full flex-col bg-code">
-      {loading && (
+    <div className={cn('flex h-full flex-col', !failed && 'bg-code')}>
+      {failed ? (
+        <div className="flex h-full items-center justify-center">
+          <EmptyState
+            icon={AppIcons.fileSlides}
+            title={<span className="block max-w-70 truncate">{getBaseName(filePath)}</span>}
+            description={t.panel.pptxPreviewUnavailable}
+            action={(
+              <div className="flex items-center gap-2">
+                <Button variant="secondary" icon={AppIcons.fileSlides} onClick={handleOpenWithDefaultApp}>
+                  {t.panel.openWithPowerPoint}
+                </Button>
+                <Button variant="plain" icon={AppIcons.folderOpen} onClick={handleShowInFinder}>
+                  {t.panel.showInFinder}
+                </Button>
+              </div>
+            )}
+          />
+        </div>
+      ) : loading && (
         <div className="flex h-full items-center justify-center">
           <Spinner label={t.panel.loadingDocument} />
         </div>
       )}
-      <ScrollArea className={cn('min-h-0 flex-1', loading && 'hidden')}>
+      {/* The slide container stays mounted through loading and failure: the renderer draws into it. */}
+      <ScrollArea className={cn('min-h-0 flex-1', (loading || failed) && 'hidden')}>
         <div ref={wrapperRef} className="p-4">
           <div
             style={{

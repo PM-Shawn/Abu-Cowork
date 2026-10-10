@@ -1,0 +1,263 @@
+// @vitest-environment happy-dom
+/// <reference types="@testing-library/jest-dom" />
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { exists, readFile, readTextFile, watch, type WatchEvent } from '@tauri-apps/plugin-fs';
+import * as XLSX from 'xlsx';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { initLanguage } from '@/i18n';
+import PreviewPanel from './PreviewPanel';
+
+// pdf.js needs a canvas and a worker; the stand-in shows the bytes it was given as text.
+vi.mock('react-pdf', async () => {
+  const { useEffect, useRef } = await import('react');
+  return {
+    pdfjs: { GlobalWorkerOptions: {} },
+    Document: ({ file, children, onLoadSuccess }: {
+      file: { data: Uint8Array };
+      children: ReactNode;
+      onLoadSuccess: (doc: { numPages: number }) => void;
+    }) => {
+      // The stand-in loads once per file object, like a real document.
+      const loaded = useRef<{ data: Uint8Array } | null>(null);
+      useEffect(() => {
+        if (loaded.current === file) return;
+        loaded.current = file;
+        onLoadSuccess({ numPages: 1 });
+      }, [file, onLoadSuccess]);
+      return <div><p>{new TextDecoder().decode(file.data)}</p>{children}</div>;
+    },
+    Page: () => <div data-testid="pdf-page" />,
+  };
+});
+
+// The Word and slide renderers need layout; the stand-ins write the bytes they were given as text.
+vi.mock('docx-preview', () => ({
+  renderAsync: async (data: Uint8Array, container: HTMLElement) => {
+    const text = new TextDecoder().decode(data);
+    if (text.startsWith('BROKEN')) throw new Error('not a zip file');
+    container.textContent = text;
+  },
+}));
+
+vi.mock('pptx-preview', () => ({
+  init: (container: HTMLElement) => ({
+    preview: async (data: ArrayBuffer) => {
+      const text = new TextDecoder().decode(data);
+      if (text.startsWith('BROKEN')) throw new Error('not a zip file');
+      const slide = document.createElement('div');
+      slide.className = 'pptx-preview-slide-wrapper';
+      slide.textContent = text;
+      container.appendChild(slide);
+    },
+    destroy: () => { container.innerHTML = ''; },
+  }),
+}));
+
+// The real editor needs layout; a text box drives the same value/onChange pair.
+vi.mock('./CodeMirrorEditor', async () => {
+  const { TextArea } = await import('@/components/ds/text-area');
+  return {
+    default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
+      <TextArea aria-label="source" value={value} onChange={(event) => onChange(event.target.value)} />
+    ),
+  };
+});
+
+vi.mock('@/utils/atomicFs', () => ({ atomicWrite: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('@/utils/canvasVersions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/canvasVersions')>()),
+  snapshotVersion: vi.fn().mockResolvedValue(undefined),
+  listVersions: vi.fn().mockResolvedValue([]),
+}));
+
+const WATCH_DEBOUNCE_MS = 250;
+
+type Bytes = Uint8Array<ArrayBuffer>;
+
+// The folder the fs bridge serves in this file, and the watchers registered on it.
+const disk = new Map<string, Bytes>();
+const watchers: ((event: WatchEvent) => void)[] = [];
+
+function utf8(text: string): Bytes {
+  return new Uint8Array(new TextEncoder().encode(text));
+}
+
+function workbook(marker: string): Bytes {
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([['name'], [marker]]), 'Sheet1');
+  return new Uint8Array(XLSX.write(book, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+}
+
+async function fileChangedOnDisk(path: string) {
+  for (const notify of watchers) notify({ type: 'any', paths: [path], attrs: {} });
+  await act(() => vi.advanceTimersByTimeAsync(WATCH_DEBOUNCE_MS));
+}
+
+function openPreview(path: string) {
+  return render(
+    <DesignSystemProvider>
+      <PreviewPanel filePath={path} tabId="t1" embedded />
+    </DesignSystemProvider>,
+  );
+}
+
+const BINARY_KINDS = [
+  { kind: 'PDF', path: '/w/report.pdf', write: utf8 },
+  { kind: 'Word', path: '/w/report.docx', write: utf8 },
+  { kind: 'PowerPoint', path: '/w/report.pptx', write: utf8 },
+  { kind: 'Excel', path: '/w/report.xlsx', write: workbook },
+] as const;
+
+describe('PreviewPanel following the file on disk', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    initLanguage('en-US');
+    disk.clear();
+    watchers.length = 0;
+    vi.mocked(exists).mockImplementation(async (path) => path === '/w' || disk.has(String(path)));
+    vi.mocked(readFile).mockImplementation(async (path) => {
+      const bytes = disk.get(String(path));
+      if (!bytes) throw new Error(`Error invoking remote method 'tauri:invoke': Error: ENOENT: no such file or directory, open '${String(path)}'`);
+      return new Uint8Array(bytes);
+    });
+    vi.mocked(readTextFile).mockImplementation(async (path) => {
+      const bytes = disk.get(String(path));
+      if (!bytes) throw new Error(`Error invoking remote method 'tauri:invoke': Error: ENOENT: no such file or directory, open '${String(path)}'`);
+      return new TextDecoder().decode(bytes);
+    });
+    vi.mocked(watch).mockImplementation(async (_dir, onEvent) => {
+      watchers.push(onEvent);
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+    vi.mocked(readFile).mockReset().mockResolvedValue(new Uint8Array());
+    vi.mocked(readTextFile).mockReset().mockResolvedValue('');
+    vi.mocked(watch).mockReset().mockResolvedValue(() => {});
+  });
+
+  describe.each(BINARY_KINDS)('a $kind file', ({ path, write }) => {
+    const name = path.slice('/w/'.length);
+
+    it('shows the new content after the file is rewritten on disk', async () => {
+      disk.set(path, write('MARK-V1'));
+      openPreview(path);
+      expect(await screen.findByText('MARK-V1')).toBeInTheDocument();
+
+      disk.set(path, write('MARK-V2'));
+      await fileChangedOnDisk(path);
+      expect(await screen.findByText('MARK-V2')).toBeInTheDocument();
+      expect(screen.queryByText('MARK-V1')).toBeNull();
+    });
+
+    it('re-reads the file when Reload is pressed', async () => {
+      disk.set(path, write('MARK-V1'));
+      openPreview(path);
+      expect(await screen.findByText('MARK-V1')).toBeInTheDocument();
+
+      disk.set(path, write('MARK-V2'));
+      fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+      expect(await screen.findByText('MARK-V2')).toBeInTheDocument();
+      expect(screen.queryByText('MARK-V1')).toBeNull();
+    });
+
+    it('keeps the shown content, with no loading state, while a changed file is read again', async () => {
+      disk.set(path, write('MARK-V1'));
+      openPreview(path);
+      expect(await screen.findByText('MARK-V1')).toBeInTheDocument();
+
+      let finish: (bytes: Bytes) => void = () => {};
+      vi.mocked(readFile).mockReturnValueOnce(new Promise<Bytes>((resolve) => { finish = resolve; }));
+      await fileChangedOnDisk(path);
+      await waitFor(() => expect(vi.mocked(readFile)).toHaveBeenCalledTimes(2));
+      expect(screen.getByText('MARK-V1')).toBeInTheDocument();
+      expect(screen.queryByRole('status')).toBeNull();
+
+      await act(async () => { finish(write('MARK-V2')); });
+      expect(await screen.findByText('MARK-V2')).toBeInTheDocument();
+    });
+
+    it('says the file was not found when it is missing at open, and shows it once it appears', async () => {
+      openPreview(path);
+      expect(await screen.findByRole('alert')).toHaveTextContent(`File not found: ${name}`);
+      expect(screen.queryByRole('button', { name: 'Open in PowerPoint' })).toBeNull();
+
+      disk.set(path, write('MARK-V1'));
+      await fileChangedOnDisk(path);
+      expect(await screen.findByText('MARK-V1')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('replaces the content with "File not found" when the file is removed, and shows it again when it returns', async () => {
+      disk.set(path, write('MARK-V1'));
+      openPreview(path);
+      expect(await screen.findByText('MARK-V1')).toBeInTheDocument();
+
+      disk.delete(path);
+      await fileChangedOnDisk(path);
+      expect(await screen.findByRole('alert')).toHaveTextContent(`File not found: ${name}`);
+      expect(screen.queryByText('MARK-V1')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Open in PowerPoint' })).toBeNull();
+
+      disk.set(path, write('MARK-V3'));
+      await fileChangedOnDisk(path);
+      expect(await screen.findByText('MARK-V3')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('shows "Failed to read file" for another read failure and keeps the host text in the console', async () => {
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      disk.set(path, write('MARK-V1'));
+      vi.mocked(readFile).mockRejectedValue(
+        new Error(`Error invoking remote method 'tauri:invoke': Error: EACCES: permission denied, open '${path}' token=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789`),
+      );
+      openPreview(path);
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(/^Failed to read file$/);
+      expect(document.body.textContent).not.toContain('tauri:invoke');
+      expect(document.body.textContent).not.toContain('EACCES');
+      expect(document.body.textContent).not.toContain('/w/');
+      expect(screen.queryByRole('button', { name: 'Open in PowerPoint' })).toBeNull();
+
+      const logged = errorLog.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+      expect(logged).toContain('EACCES');
+      expect(logged).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
+    });
+  });
+
+  it('offers the PowerPoint fallback only for a deck that was read and cannot be drawn', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    disk.set('/w/deck.pptx', utf8('BROKEN'));
+    openPreview('/w/deck.pptx');
+    expect(await screen.findByRole('button', { name: 'Open in PowerPoint' })).toBeInTheDocument();
+    expect(screen.getByText('In-app preview does not support this PPT. Open in PowerPoint to view the full slides.')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    disk.set('/w/deck.pptx', utf8('MARK-V2'));
+    await fileChangedOnDisk('/w/deck.pptx');
+    expect(await screen.findByText('MARK-V2')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in PowerPoint' })).toBeNull();
+  });
+
+  it('shows "Failed to read file" for a Word file that was read and cannot be drawn, and draws it once it is rewritten', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    disk.set('/w/broken.docx', utf8('BROKEN'));
+    openPreview('/w/broken.docx');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Failed to read file$/);
+    expect(document.body.textContent).not.toContain('not a zip file');
+    expect(errorLog.mock.calls.map((call) => call.map(String).join(' ')).join('\n')).toContain('not a zip file');
+
+    disk.set('/w/broken.docx', utf8('MARK-V2'));
+    await fileChangedOnDisk('/w/broken.docx');
+    expect(await screen.findByText('MARK-V2')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

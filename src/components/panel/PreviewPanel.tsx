@@ -1,5 +1,5 @@
 import { memo, useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
-import { readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { readFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -7,6 +7,7 @@ import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { buildPreviewUrl } from '@/utils/previewUrl';
 import { atomicWrite } from '@/utils/atomicFs';
 import { reconcileEditorContent } from '@/utils/editorReconcile';
+import { redactFailureText } from '@/core/diagnostic/scrub';
 import { snapshotVersion, revertToVersion } from '@/utils/canvasVersions';
 import { usePreviewStore } from '@/stores/previewStore';
 import { usePreviewFileWatch } from '@/hooks/usePreviewFileWatch';
@@ -46,7 +47,7 @@ const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
 export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
-/** Binary types that handle their own file reading */
+/** Types whose preview component draws the file's bytes */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
 
 /**
@@ -313,6 +314,10 @@ export default function PreviewPanel({
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [binaryData, setBinaryData] = useState<Uint8Array<ArrayBuffer> | null>(null);
+  // The file path whose bytes are on screen. A reload for this same path keeps
+  // them shown until the new bytes are read.
+  const shownBinaryPathRef = useRef<string | null>(null);
   const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -375,6 +380,8 @@ export default function PreviewPanel({
     if (!previewFilePath) {
       setContent(null);
       setImageUrl(null);
+      setBinaryData(null);
+      shownBinaryPathRef.current = null;
       setHtmlPreviewUrl(null);
       setDraft('');
       lastSavedRef.current = '';
@@ -387,11 +394,14 @@ export default function PreviewPanel({
     let cancelled = false;
     let blobUrl: string | null = null;
     const isEditableType = EDITABLE_TYPES.has(rendererType);
+    const isBinaryType = BINARY_TYPES.has(rendererType);
     // A reload (reloadNonce bump) of a file we've already established an
     // editable baseline for — most commonly our own autosave's fs-watch
     // echo. Skip the full loading/reset cycle so the editor never flashes
-    // a spinner or drops focus while the user is typing.
-    const isQuietReload = isEditableType && establishedEditablePathRef.current === previewFilePath;
+    // a spinner or drops focus while the user is typing. A reload of a
+    // document whose bytes are on screen keeps them there the same way.
+    const isQuietReload = (isEditableType && establishedEditablePathRef.current === previewFilePath)
+      || (isBinaryType && shownBinaryPathRef.current === previewFilePath);
 
     const loadFile = async () => {
       if (!isQuietReload) {
@@ -399,6 +409,8 @@ export default function PreviewPanel({
         setError(null);
         setContent(null);
         setImageUrl(null);
+        setBinaryData(null);
+        shownBinaryPathRef.current = null;
         setHtmlPreviewUrl(null);
         setDraft('');
         lastSavedRef.current = '';
@@ -408,8 +420,7 @@ export default function PreviewPanel({
       }
 
       try {
-        // Binary types and unsupported types don't need text reading from parent
-        if (rendererType === 'unsupported' || BINARY_TYPES.has(rendererType)) {
+        if (rendererType === 'unsupported') {
           setLoading(false);
           return;
         }
@@ -425,12 +436,19 @@ export default function PreviewPanel({
         const fileExists = await exists(previewFilePath);
         if (cancelled) return;
         if (!fileExists) {
+          shownBinaryPathRef.current = null;
+          setBinaryData(null);
           setError(`${t.panel.fileNotFound}: ${getBaseName(previewFilePath)}`);
           setLoading(false);
           return;
         }
 
-        if (rendererType === 'image') {
+        if (isBinaryType) {
+          const bytes = await readFile(previewFilePath);
+          if (cancelled) return;
+          setBinaryData(bytes);
+          shownBinaryPathRef.current = previewFilePath;
+        } else if (rendererType === 'image') {
           blobUrl = await loadLocalImage(previewFilePath);
           if (cancelled) { URL.revokeObjectURL(blobUrl); blobUrl = null; return; }
           setImageUrl(blobUrl);
@@ -510,9 +528,15 @@ export default function PreviewPanel({
         // attempt — the next reload for this path should go through the
         // full (non-quiet) reset rather than reconciling against stale refs.
         establishedEditablePathRef.current = null;
-        console.error('[PreviewPanel] Failed to read file:', previewFilePath, err);
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message || t.panel.failedToReadFile);
+        shownBinaryPathRef.current = null;
+        setBinaryData(null);
+        // The host's text can carry the channel name and an absolute path, so
+        // it goes to the log only, as redacted text.
+        console.error(
+          '[PreviewPanel] Failed to read file:',
+          redactFailureText(err instanceof Error ? err.message : String(err)),
+        );
+        setError(t.panel.failedToReadFile);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -898,16 +922,18 @@ export default function PreviewPanel({
           <div className="flex h-full items-center justify-center p-4">
             <InlineMessage tone="danger">{error}</InlineMessage>
           </div>
-        ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'pptx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
+        ) : (BINARY_TYPES.has(rendererType) && binaryData !== null) || (rendererType === 'csv' && content !== null) ? (
           <DocSelectionLayer filePath={previewFilePath} active={!embedded || tabId === activeTabId}>
             <Suspense fallback={<LazyFallback />}>
-              {rendererType === 'pdf' && <PdfPreview filePath={previewFilePath} />}
-              {rendererType === 'docx' && <DocxPreview filePath={previewFilePath} />}
-              {rendererType === 'pptx' && <PptxPreview filePath={previewFilePath} />}
-              {rendererType === 'xlsx' && <XlsxPreview filePath={previewFilePath} />}
+              {rendererType === 'pdf' && binaryData !== null && <PdfPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'docx' && binaryData !== null && <DocxPreview data={binaryData} />}
+              {rendererType === 'pptx' && binaryData !== null && <PptxPreview filePath={previewFilePath} data={binaryData} />}
+              {rendererType === 'xlsx' && binaryData !== null && <XlsxPreview data={binaryData} />}
               {rendererType === 'csv' && content !== null && <CsvPreview content={content} />}
             </Suspense>
           </DocSelectionLayer>
+        ) : BINARY_TYPES.has(rendererType) ? (
+          <LazyFallback />
         ) : rendererType === 'image' && imageUrl ? (
           <ImagePreview src={imageUrl} alt={fileName} />
         ) : rendererType === 'markdown' && content !== null ? (

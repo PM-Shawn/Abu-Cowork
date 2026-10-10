@@ -120,7 +120,8 @@ export default function AppSwitcher({ className }: { className?: string }) {
   );
 
   return (
-    <div className={cn('relative', className)} data-testid="app-switcher">
+    // A flex box as high as the pill: the brand row keeps one height whatever the pill shows.
+    <div className={cn('relative flex h-6 items-center', className)} data-testid="app-switcher">
       <Menu
         open={open}
         // A menu opened again while it fades never ran its close hook for the earlier choice: opening forgets it.
@@ -141,11 +142,13 @@ export default function AppSwitcher({ className }: { className?: string }) {
             size="sm"
             data-testid="app-switcher-trigger"
             aria-label={t.appSwitcher.openLabel}
-            className="w-full justify-start"
+            // A small pill beside Abu's name, as wide as its words and never wider than the room
+            // the brand row leaves it: quiet text, so the navigation under it is read first.
+            className="max-w-full rounded-full font-normal text-label-secondary aria-expanded:bg-fill-selected"
           >
             {isGeneral
               ? <Icon icon={AppIcons.discoverApps} size="sm" className="text-label-secondary" />
-              : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" />}
+              : <AppLogo name={selected.name} logo={selected.logo} logoDark={selected.logoDark} icon={selected.icon} size="sm" className="h-4 w-4" />}
             <span
               className={cn('min-w-0 flex-1 text-left', isGeneral ? 'whitespace-nowrap' : 'truncate')}
               data-testid="app-switcher-current"

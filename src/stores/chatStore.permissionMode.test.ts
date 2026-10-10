@@ -325,7 +325,7 @@ describe('a raw conversation JSON', () => {
   });
 
   it('from the undo of a delete keeps an accepted mode', async () => {
-    const newId = useChatStore.getState().importConversation(JSON.stringify(RAW), { keepPermissionMode: true })!;
+    const newId = useChatStore.getState().importConversation(JSON.stringify(RAW), { restoringDeleted: true })!;
     expect(useChatStore.getState().conversations[newId].permissionMode).toBe('autonomous');
     expect(useChatStore.getState().conversationIndex[newId].permissionMode).toBe('autonomous');
     await vi.waitFor(async () => expect((await indexEntryOnDisk(newId))?.permissionMode).toBe('autonomous'));
@@ -334,7 +334,7 @@ describe('a raw conversation JSON', () => {
   it('a kept mode still passes the rule', () => {
     const newId = useChatStore.getState().importConversation(
       JSON.stringify({ ...RAW, permissionMode: 'strict' }),
-      { keepPermissionMode: true },
+      { restoringDeleted: true },
     )!;
     expect('permissionMode' in useChatStore.getState().conversations[newId]).toBe(false);
     expect('permissionMode' in useChatStore.getState().conversationIndex[newId]).toBe(false);

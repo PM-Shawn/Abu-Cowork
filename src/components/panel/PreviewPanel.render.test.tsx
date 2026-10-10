@@ -4,9 +4,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, readTextFile } from '@tauri-apps/plugin-fs';
+import { openPath } from '@tauri-apps/plugin-opener';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { useToastStore } from '@/stores/toastStore';
 import { atomicWrite } from '@/utils/atomicFs';
+import { OPEN_REFUSED_RUNS_BY_DEFAULT } from '@/utils/openWithDefaultApp';
 import PreviewPanel from './PreviewPanel';
 
 const layerRenders = vi.hoisted(() => ({ iconButton: vi.fn(), menu: vi.fn() }));
@@ -107,6 +109,34 @@ describe('PreviewPanel toolbar', () => {
     const sides = new Map(layerRenders.iconButton.mock.calls.map(([props]) => [props.label, props.tooltipSide]));
     expect([...sides.keys()].sort()).toEqual(['Fullscreen', 'More actions', 'Open in default app', 'Preview', 'Reload', 'Source', 'Version history'].sort());
     expect([...new Set(sides.values())]).toEqual(['bottom']);
+  });
+
+  it('offers no open-in-app button for code the system would run', async () => {
+    render(
+      <DesignSystemProvider>
+        <PreviewPanel filePath="/w/job.py" tabId="t1" embedded />
+      </DesignSystemProvider>,
+    );
+    await screen.findByRole('button', { name: 'Version history' });
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in default app' })).toBeNull();
+  });
+
+  it('takes the open-in-app button away once the main process has refused to open the file', async () => {
+    vi.mocked(openPath).mockRejectedValueOnce(new Error(`Error invoking remote method 'tauri:invoke': Error: ${OPEN_REFUSED_RUNS_BY_DEFAULT}`));
+    render(
+      <DesignSystemProvider>
+        <PreviewPanel filePath="/w/main.ts" tabId="t1" embedded />
+      </DesignSystemProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in default app' }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Open in default app' })).toBeNull());
+    expect(openPath).toHaveBeenCalledWith('/w/main.ts');
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: 'error', title: 'Failed to open file', message: 'Could not open this file in a local app' }),
+    ]);
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument();
   });
 
   it('says so in the toolbar when a save fails, with the failure mark', async () => {

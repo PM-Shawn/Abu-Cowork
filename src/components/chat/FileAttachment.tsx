@@ -5,6 +5,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { loadLocalImage, getBaseName, isLocalFilePath } from '@/utils/pathUtils';
+import { isRunByDefault } from '@/utils/runByDefault';
 import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
 import { Button, IconButton } from '@/components/ds/button';
 import { Pressable } from '@/components/ds/pressable';
@@ -139,6 +140,11 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   // null when the file is not loadable (skipped/missing/loading).
   const effectivePath = resolved && resolved.status === 'available' ? resolved.path : null;
 
+  // A file the system would run is shown in the file manager and never opened: by its name,
+  // or once the main process has refused to open it (a link to such a file, for one).
+  const [refusedPath, setRefusedPath] = useState<string | null>(null);
+  const revealOnly = effectivePath !== null && (isRunByDefault(effectivePath) || refusedPath === effectivePath);
+
   // Load image thumbnail via Tauri readFile (uses effective path so snapshots work)
   useEffect(() => {
     if (!showThumbnail || !effectivePath) {
@@ -170,11 +176,36 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
       });
       return;
     }
+    const { openWithDefaultApp, isRunByDefaultRefusal } = await import('@/utils/openWithDefaultApp');
     try {
-      const { openWithDefaultApp } = await import('@/utils/openWithDefaultApp');
       await openWithDefaultApp(effectivePath);
     } catch (err) {
       console.error('[FileAttachment] Failed to open with default app:', err);
+      if (isRunByDefaultRefusal(err)) {
+        setRefusedPath(effectivePath);
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: t.chat.openFailed,
+          message: t.panel.openInAppFailed,
+        });
+        return;
+      }
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: t.chat.openFailed,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handleRevealInFileManager = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!effectivePath) return;
+    try {
+      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+      await revealItemInDir(effectivePath);
+    } catch (err) {
+      console.error('[FileAttachment] Failed to reveal in file manager:', err);
       useToastStore.getState().addToast({
         type: 'error',
         title: t.chat.openFailed,
@@ -283,10 +314,15 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
         </span>
       </Pressable>
 
-      {/* Open with default app button */}
-      <Button variant="secondary" size="sm" icon={openWithIcon} onClick={handleOpenWithDefaultApp} className="whitespace-nowrap">
-        {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
-      </Button>
+      {revealOnly ? (
+        <Button variant="secondary" size="sm" icon={AppIcons.folderOpen} onClick={handleRevealInFileManager} className="whitespace-nowrap">
+          {t.chat.openInFinder}
+        </Button>
+      ) : (
+        <Button variant="secondary" size="sm" icon={openWithIcon} onClick={handleOpenWithDefaultApp} className="whitespace-nowrap">
+          {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
+        </Button>
+      )}
     </div>
   );
 }

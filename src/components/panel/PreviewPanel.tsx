@@ -69,6 +69,9 @@ function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
 }
 
+/** Workbook formats the spreadsheet preview reads. */
+const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'fods'];
+
 function getRendererType(filePath: string): RendererType {
   if (isDataUrl(filePath) && filePath.startsWith('data:image/')) return 'image';
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
@@ -77,8 +80,8 @@ function getRendererType(filePath: string): RendererType {
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx') return 'docx';
   if (ext === 'pptx' || ext === 'ppt') return 'pptx';
-  if (ext === 'xlsx' || ext === 'xls') return 'xlsx';
-  if (ext === 'csv') return 'csv';
+  if (SPREADSHEET_EXTENSIONS.includes(ext)) return 'xlsx';
+  if (ext === 'csv' || ext === 'tsv') return 'csv';
   if ([
     'ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h',
     'json', 'yaml', 'yml', 'toml', 'xml', 'css', 'scss', 'less',
@@ -99,7 +102,7 @@ function getFileIcon(filePath: string) {
   if (['ts', 'tsx', 'js', 'jsx', 'py', 'html', 'css', 'json'].includes(ext)) return AppIcons.fileCode;
   if (['md', 'txt', 'log'].includes(ext)) return AppIcons.file;
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return AppIcons.fileImage;
-  if (['xlsx', 'xls', 'csv'].includes(ext)) return AppIcons.fileSheet;
+  if (SPREADSHEET_EXTENSIONS.includes(ext) || ext === 'csv' || ext === 'tsv') return AppIcons.fileSheet;
   if (ext === 'pdf') return AppIcons.filePdf;
   if (ext === 'docx') return AppIcons.fileDocument;
   if (ext === 'pptx' || ext === 'ppt') return AppIcons.fileSlides;
@@ -933,7 +936,9 @@ export default function PreviewPanel({
               {rendererType === 'docx' && binaryData !== null && <DocxPreview data={binaryData} />}
               {rendererType === 'pptx' && binaryData !== null && <PptxPreview filePath={previewFilePath} data={binaryData} />}
               {rendererType === 'xlsx' && binaryData !== null && <XlsxPreview data={binaryData} />}
-              {rendererType === 'csv' && content !== null && <CsvPreview content={content} />}
+              {rendererType === 'csv' && content !== null && (
+                <CsvPreview content={content} delimiter={getFileExtension(previewFilePath) === 'tsv' ? '\t' : ','} />
+              )}
             </Suspense>
           </DocSelectionLayer>
         ) : BINARY_TYPES.has(rendererType) ? (

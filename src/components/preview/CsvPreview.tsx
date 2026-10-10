@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
 import DataTable from './DataTable';
 
-function parseCSV(text: string): { headers: string[]; rows: string[][] } {
+export type CsvDelimiter = ',' | '\t';
+
+function parseCSV(text: string, delimiter: CsvDelimiter): { headers: string[]; rows: string[][] } {
   const lines: string[][] = [];
   let current: string[] = [];
   let field = '';
@@ -23,7 +25,7 @@ function parseCSV(text: string): { headers: string[]; rows: string[][] } {
     } else {
       if (ch === '"') {
         inQuotes = true;
-      } else if (ch === ',') {
+      } else if (ch === delimiter) {
         current.push(field);
         field = '';
       } else if (ch === '\n' || ch === '\r') {
@@ -61,7 +63,8 @@ function parseCSV(text: string): { headers: string[]; rows: string[][] } {
   return { headers, rows: normalizedRows };
 }
 
-export default function CsvPreview({ content }: { content: string }) {
-  const { headers, rows } = useMemo(() => parseCSV(content), [content]);
+/** A table of delimiter-separated text: commas for CSV, tabs for TSV. */
+export default function CsvPreview({ content, delimiter = ',' }: { content: string; delimiter?: CsvDelimiter }) {
+  const { headers, rows } = useMemo(() => parseCSV(content, delimiter), [content, delimiter]);
   return <DataTable headers={headers} rows={rows} />;
 }

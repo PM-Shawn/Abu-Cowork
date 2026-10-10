@@ -7,6 +7,7 @@ import { exists, readFile, readTextFile, watch, type WatchEvent } from '@tauri-a
 import * as XLSX from 'xlsx';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
+import { atomicWrite } from '@/utils/atomicFs';
 import PreviewPanel from './PreviewPanel';
 
 // pdf.js needs a canvas and a worker; the stand-in shows the bytes it was given as text.
@@ -65,6 +66,8 @@ vi.mock('./CodeMirrorEditor', async () => {
   };
 });
 
+// The loopback preview server belongs to the host; the frame gets an empty page.
+vi.mock('@/utils/previewUrl', () => ({ buildPreviewUrl: vi.fn().mockResolvedValue('about:blank') }));
 vi.mock('@/utils/atomicFs', () => ({ atomicWrite: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('@/utils/canvasVersions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/utils/canvasVersions')>()),
@@ -73,6 +76,7 @@ vi.mock('@/utils/canvasVersions', async (importOriginal) => ({
 }));
 
 const WATCH_DEBOUNCE_MS = 250;
+const AUTOSAVE_DEBOUNCE_MS = 1000;
 
 type Bytes = Uint8Array<ArrayBuffer>;
 
@@ -141,6 +145,7 @@ describe('PreviewPanel following the file on disk', () => {
     vi.mocked(readFile).mockReset().mockResolvedValue(new Uint8Array());
     vi.mocked(readTextFile).mockReset().mockResolvedValue('');
     vi.mocked(watch).mockReset().mockResolvedValue(() => {});
+    vi.mocked(atomicWrite).mockReset().mockResolvedValue(undefined);
   });
 
   describe.each(BINARY_KINDS)('a $kind file', ({ path, write }) => {
@@ -231,6 +236,69 @@ describe('PreviewPanel following the file on disk', () => {
       expect(logged).toContain('EACCES');
       expect(logged).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
     });
+  });
+
+  describe.each([
+    { kind: 'plain text', path: '/w/notes.txt', write: (marker: string) => marker },
+    { kind: 'Markdown', path: '/w/notes.md', write: (marker: string) => `# ${marker}` },
+    { kind: 'JSON', path: '/w/notes.json', write: (marker: string) => `{"marker":"${marker}"}` },
+    { kind: 'HTML', path: '/w/notes.html', write: (marker: string) => `<p>${marker}</p>` },
+  ])('a $kind file', ({ kind, path, write }) => {
+    const name = path.slice('/w/'.length);
+
+    // Markdown is drawn as a page, HTML in a frame with its source one press away, the rest in the
+    // editor. The source view, once chosen, stays through reloads of the same file.
+    async function expectShown(marker: string) {
+      if (kind === 'Markdown') {
+        expect(await screen.findByRole('heading', { name: marker })).toBeInTheDocument();
+        return;
+      }
+      const source = screen.queryByRole('button', { name: 'Source' });
+      if (kind === 'HTML' && source?.getAttribute('aria-pressed') === 'false') {
+        expect(await screen.findByTitle(name)).toBeInTheDocument();
+        fireEvent.click(source);
+      }
+      expect(await screen.findByRole('textbox', { name: 'source' })).toHaveValue(write(marker));
+    }
+
+    it('says the file was not found when it is removed, and shows it again when it returns', async () => {
+      disk.set(path, utf8(write('MARK-V1')));
+      openPreview(path);
+      await expectShown('MARK-V1');
+
+      disk.delete(path);
+      await fileChangedOnDisk(path);
+      expect(await screen.findByRole('alert')).toHaveTextContent(`File not found: ${name}`);
+      expect(screen.queryByRole('textbox', { name: 'source' })).toBeNull();
+
+      disk.set(path, utf8(write('MARK-V3')));
+      await fileChangedOnDisk(path);
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      await expectShown('MARK-V3');
+    });
+  });
+
+  // An edit that is not saved yet when the file is found missing stays in the pending autosave,
+  // which writes the file anew; the preview then shows the file with that edit.
+  it('writes an unsaved edit of a removed text file with the pending autosave and shows the file again', async () => {
+    vi.mocked(atomicWrite).mockImplementation(async (path, content) => { disk.set(path, utf8(content)); });
+    disk.set('/w/notes.txt', utf8('first line'));
+    openPreview('/w/notes.txt');
+    const editor = await screen.findByRole('textbox', { name: 'source' });
+    expect(editor).toHaveValue('first line');
+
+    disk.delete('/w/notes.txt');
+    fireEvent.change(editor, { target: { value: 'first line, edited' } });
+    await fileChangedOnDisk('/w/notes.txt');
+    expect(await screen.findByRole('alert')).toHaveTextContent('File not found: notes.txt');
+    expect(vi.mocked(atomicWrite)).not.toHaveBeenCalled();
+
+    await act(() => vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS));
+    expect(vi.mocked(atomicWrite)).toHaveBeenCalledWith('/w/notes.txt', 'first line, edited');
+
+    await fileChangedOnDisk('/w/notes.txt');
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(await screen.findByRole('textbox', { name: 'source' })).toHaveValue('first line, edited');
   });
 
   it('offers the PowerPoint fallback only for a deck that was read and cannot be drawn', async () => {

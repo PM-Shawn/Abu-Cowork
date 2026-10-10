@@ -436,6 +436,10 @@ export default function PreviewPanel({
         const fileExists = await exists(previewFilePath);
         if (cancelled) return;
         if (!fileExists) {
+          // No editable baseline holds for a file that is not there: the next
+          // reload for this path goes through the full reset, which clears
+          // this error once the file is back.
+          establishedEditablePathRef.current = null;
           shownBinaryPathRef.current = null;
           setBinaryData(null);
           setError(`${t.panel.fileNotFound}: ${getBaseName(previewFilePath)}`);

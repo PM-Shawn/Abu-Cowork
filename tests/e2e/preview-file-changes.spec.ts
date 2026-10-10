@@ -4,7 +4,8 @@
  * A PDF, a Word document and a workbook that are rewritten while their preview is open show the
  * new content. A Word document and a text file that are removed say 「文件不存在: 文件名」 and show
  * their content again once the file is back. A TSV file is a table, and a file type with no
- * preview offers 「用本地应用打开」.
+ * preview offers 「用本地应用打开」, unless the system would run the file. A file saved with a
+ * password says so.
  *
  * The files live in a seeded sidebar project and are opened from its file tree, so no model is
  * asked anything. The host reports a change about two seconds after it happens; every wait here
@@ -22,7 +23,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
-import { docxBytes, marker, pdfBytes, textBytes, tsvBytes, xlsxBytes } from './previewFixtures';
+import { docxBytes, encryptedOfficeBytes, lockedPdfBytes, marker, pdfBytes, textBytes, tsvBytes, xlsxBytes } from './previewFixtures';
 import { persistedStoreVersion } from './storeVersions';
 
 const READY_TIMEOUT = 45_000;
@@ -56,6 +57,10 @@ test.describe.serial('preview panel and the file on disk', () => {
     fs.writeFileSync(file('remove.txt'), textBytes(1));
     fs.writeFileSync(file('table.tsv'), tsvBytes(1));
     fs.writeFileSync(file('legacy.doc'), Buffer.from('not a Word document the preview reads'));
+    fs.writeFileSync(file('setup.command'), Buffer.from('a file the system would start\n'));
+    fs.writeFileSync(file('locked.pdf'), lockedPdfBytes());
+    fs.writeFileSync(file('locked.xlsx'), encryptedOfficeBytes());
+    fs.writeFileSync(file('locked.docx'), encryptedOfficeBytes());
 
     const launched = await launchAbuElectron(dataRoot);
     app = launched.app;
@@ -156,4 +161,19 @@ test.describe.serial('preview panel and the file on disk', () => {
     await expect(openInApp.filter({ hasText: '用本地应用打开' })).toHaveCount(1);
     await expect(panel().getByRole('button', { name: '在文件管理器中显示', exact: true })).toBeVisible();
   });
+
+  test('a .command file has no preview and is only shown in the file manager', async () => {
+    await open('setup.command');
+    await expect(panel()).toContainText('此文件类型暂不支持预览', { timeout: READY_TIMEOUT });
+    await expect(panel().getByRole('button', { name: '在文件管理器中显示', exact: true })).toBeVisible();
+    await expect(panel().getByRole('button', { name: '用本地应用打开', exact: true })).toHaveCount(0);
+  });
+
+  for (const name of ['locked.pdf', 'locked.xlsx', 'locked.docx']) {
+    test(`${name}, saved with a password, says 此文件受密码保护，无法预览`, async () => {
+      await open(name);
+      await expect(panel().getByRole('alert')).toHaveText('此文件受密码保护，无法预览', { timeout: READY_TIMEOUT });
+      await expect(panel().getByRole('button', { name: '用本地应用打开', exact: true })).toHaveCount(1);
+    });
+  }
 });

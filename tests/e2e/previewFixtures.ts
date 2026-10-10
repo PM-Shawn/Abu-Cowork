@@ -19,8 +19,18 @@ export function tsvBytes(version: number): Buffer {
 
 /** One page per version, each page showing the marker. */
 export function pdfBytes(version: number): Buffer {
-  const pageCount = version;
-  const text = marker('PDF', version);
+  return pdfDocument(version, marker('PDF', version), false);
+}
+
+/**
+ * A PDF saved with a password: its trailer names a standard security handler whose owner and
+ * user entries no reader opens without the password.
+ */
+export function lockedPdfBytes(): Buffer {
+  return pdfDocument(1, 'LOCKED', true);
+}
+
+function pdfDocument(pageCount: number, text: string, locked: boolean): Buffer {
   const objects: string[] = [];
   const fontId = 3 + pageCount * 2;
   const kids: string[] = [];
@@ -36,6 +46,12 @@ export function pdfBytes(version: number): Buffer {
     objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
   }
   objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  let security = '';
+  if (locked) {
+    const entry = (first: number) => Array.from({ length: 32 }, (_, i) => (first + i).toString(16).padStart(2, '0')).join('');
+    objects.push(`<< /Filter /Standard /V 1 /R 2 /O <${entry(1)}> /U <${entry(65)}> /P -4 >>`);
+    security = ` /Encrypt ${objects.length} 0 R /ID [<${entry(129)}> <${entry(129)}>]`;
+  }
 
   let body = '%PDF-1.4\n';
   const offsets: number[] = [];
@@ -46,7 +62,7 @@ export function pdfBytes(version: number): Buffer {
   const xrefOffset = body.length;
   body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
   for (const offset of offsets) body += `${String(offset).padStart(10, '0')} 00000 n \n`;
-  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R${security} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   return Buffer.from(body, 'latin1');
 }
 
@@ -74,6 +90,25 @@ export function docxBytes(version: number): Buffer {
     '_rels/.rels': strToU8(rels),
     'word/document.xml': strToU8(document),
   }));
+}
+
+/**
+ * The container Word, Excel and PowerPoint write for a document saved with a password: a
+ * compound file with an agile `EncryptionInfo` stream beside an `EncryptedPackage` stream.
+ */
+export function encryptedOfficeBytes(): Buffer {
+  const container = XLSX.CFB.utils.cfb_new();
+  const xml = Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<encryption xmlns="http://schemas.microsoft.com/office/2006/encryption">' +
+    '<keyData saltSize="16" blockSize="16" keyBits="256" hashSize="64" cipherAlgorithm="AES"' +
+    ' cipherChaining="ChainingModeCBC" hashAlgorithm="SHA512" saltValue="AAAAAAAAAAAAAAAAAAAAAA=="/>' +
+    '</encryption>',
+    'utf8',
+  );
+  XLSX.CFB.utils.cfb_add(container, '/EncryptionInfo', Buffer.concat([Buffer.from([4, 0, 4, 0, 0x40, 0, 0, 0]), xml]));
+  XLSX.CFB.utils.cfb_add(container, '/EncryptedPackage', Buffer.alloc(4096, 7));
+  return Buffer.from(XLSX.CFB.write(container, { type: 'buffer' }) as Uint8Array);
 }
 
 export function xlsxBytes(version: number): Buffer {

@@ -20,8 +20,9 @@
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { Conversation, Message, MessageContent, ToolCall } from '@/types';
 import { uint8ArrayToBase64 } from '@/utils/base64';
-import { normalizeSeparators } from '@/utils/pathUtils';
-import { listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
+import { joinPath, normalizeSeparators } from '@/utils/pathUtils';
+import { extractFileOutputs } from '@/utils/workflowExtractor';
+import { expandTilde, listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
 import { redactText, redactDeep, type RedactionSample } from './shareRedactor';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
@@ -128,7 +129,8 @@ export async function buildShareBundle(
     opts.onProgress?.(++done, visible.length);
   }
 
-  const attachments = await collectAttachments(conv.id, snapshotEntries, tier);
+  const references = await collectExportedReferences(visible, conv.workspacePath);
+  const attachments = await collectAttachments(conv.id, snapshotEntries, tier, references);
 
   const embeddedCount = Object.values(attachments).filter((a) => a.data).length;
   const bundle: ShareBundle = {
@@ -335,15 +337,86 @@ function redactToolCall(
   return out;
 }
 
+/**
+ * What the exported messages refer to. An attachment goes out only when one
+ * of these ties it to a message that is in the bundle.
+ */
+interface ExportedReferences {
+  messageIds: Set<string>;
+  toolCallIds: Set<string>;
+  /** Raw message text, for a code save whose file is the text of a code block. */
+  texts: string[];
+  /** Normalized paths the messages name as written outputs or attached images. */
+  paths: Set<string>;
+}
+
+async function collectExportedReferences(
+  messages: Message[],
+  workspacePath: string | null | undefined,
+): Promise<ExportedReferences> {
+  const refs: ExportedReferences = {
+    messageIds: new Set(),
+    toolCallIds: new Set(),
+    texts: [],
+    paths: new Set(),
+  };
+  const addPath = async (raw: string): Promise<void> => {
+    const resolved = workspacePath && !/^(?:\/|[A-Za-z]:[\\/]|~)/.test(raw) ? joinPath(workspacePath, raw) : raw;
+    refs.paths.add(normalizeSeparators(await expandTilde(resolved)).replace(/\/+$/, ''));
+  };
+  for (const m of messages) {
+    refs.messageIds.add(m.id);
+    if (typeof m.content === 'string') {
+      refs.texts.push(m.content);
+    } else if (Array.isArray(m.content)) {
+      for (const block of m.content as MessageContent[]) {
+        if (block.type === 'text') refs.texts.push(block.text);
+        else if (block.type === 'image' && block.filePath) await addPath(block.filePath);
+      }
+    }
+    if (m.toolCalls && m.toolCalls.length > 0) {
+      for (const tc of m.toolCalls) refs.toolCallIds.add(tc.id);
+      const outputs = extractFileOutputs(m.toolCalls, { mode: 'deliverables', includeReads: false });
+      for (const o of outputs) {
+        if (o.operation === 'create' || o.operation === 'write') await addPath(o.path);
+      }
+    }
+  }
+  return refs;
+}
+
+/**
+ * Whether an exported message accounts for this manifest entry. A tool output
+ * is tied by its tool call id, a user upload by its message id, an entry
+ * installed from an imported bundle by a path a message names, and a code
+ * save by its text appearing in a message; the last needs the file's bytes.
+ */
+function isReferencedByExport(entry: SnapshotEntry, refs: ExportedReferences, bytes: Uint8Array | null): boolean {
+  if (entry.source === 'code-save') {
+    if (!bytes || bytes.length === 0) return false;
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    return refs.texts.some((t) => t.includes(text));
+  }
+  if (entry.refId === 'shared-import') return refs.paths.has(entry.originalPath);
+  if (entry.source === 'tool-output') return refs.toolCallIds.has(entry.refId);
+  return refs.messageIds.has(entry.refId);
+}
+
 async function collectAttachments(
   convId: string,
   entries: SnapshotEntry[],
   tier: ShareTier,
+  refs: ExportedReferences,
 ): Promise<Record<string, ShareAttachment>> {
   const out: Record<string, ShareAttachment> = {};
   let totalEmbedded = 0;
 
   for (const e of entries) {
+    // A code save is confirmed by its bytes, read below; every other entry is
+    // settled here, before anything is read for it.
+    const confirmedByBytes = e.source === 'code-save';
+    if (!confirmedByBytes && !isReferencedByExport(e, refs, null)) continue;
+
     const keyPath = redactText(e.originalPath).text;
     const base: ShareAttachment = {
       basename: e.basename,
@@ -357,23 +430,28 @@ async function collectAttachments(
       continue;
     }
     if (!e.snapshotRelPath) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'snapshot-unavailable' };
       continue;
     }
     if (e.size > MAX_ATTACHMENT_BYTES) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'oversized' };
       continue;
     }
     if (totalEmbedded + e.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'budget-exceeded' };
       continue;
     }
 
     const bytes = await readSnapshotBytes(convId, e.snapshotRelPath);
     if (!bytes) {
+      if (confirmedByBytes) continue;
       out[keyPath] = { ...base, skipReason: 'missing' };
       continue;
     }
+    if (confirmedByBytes && !isReferencedByExport(e, refs, bytes)) continue;
 
     out[keyPath] = {
       ...base,

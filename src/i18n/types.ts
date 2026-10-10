@@ -166,6 +166,10 @@ export interface TranslationDict {
     deleteConversation: string;
     conversationDeleted: string;
     undo: string;
+    /** The question before a task whose record cannot be read is deleted: no undo can be offered for it. */
+    deleteUnreadableTitle: string;
+    /** `{name}` is the task's title. */
+    deleteUnreadableMessage: string;
     importSession: string;
     renameConversation: string;
     moreActions: string;
@@ -459,10 +463,6 @@ export interface TranslationDict {
     addAttachment: string;
     /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
     composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
-    // Agent selector in toolbar
-    pickAgent: string;
-    pickAgentEmpty: string;
-    pickAgentClear: string;
     /** Trailing tag on a plugin-contributed agent's row in the @ picker. */
     pickAgentPluginTag: string;
     // Conversation ID badge
@@ -560,6 +560,8 @@ export interface TranslationDict {
      * names what happened and carries no instruction.
      */
     historyUnavailable: string;
+    /** The chat page of a task whose record is on disk and cannot be read, above 「重试」. */
+    recordUnreadable: string;
     /**
      * The sidecar never reached `running`, so the message was never sent (#549).
      * The chat row says 「发送失败」 and offers Retry instead of this sentence;
@@ -804,10 +806,7 @@ export interface TranslationDict {
 
   // Status Bar
   status: {
-    ready: string;
     thinking: string;
-    responding: string;
-    usingTool: string;
   };
 
   // Task Block
@@ -1190,7 +1189,6 @@ export interface TranslationDict {
     advanced: string;
     pressEscToClose: string;
     // API Section
-    provider: string;
     providerAnthropic: string;
     providerOpenAI: string;
     providerLocal: string;
@@ -1210,18 +1208,17 @@ export interface TranslationDict {
     clearAllKeys: string;
     clearAllKeysConfirm: string;
     clearAllKeysDone: string;
+    secretShow: string;
+    secretHide: string;
     // Model Section
-    model: string;
     customModelOption: string;
     customModelName: string;
     customModelPlaceholder: string;
     customModelDesc: string;
     currentModel: string;
-    notSet: string;
     // Advanced Section
     baseUrl: string;
     baseUrlPlaceholder: string;
-    apiFormat: string;
     billingPaygo: string;
     billingPaygoBeijing: string;
     billingCoding: string;
@@ -1247,7 +1244,6 @@ export interface TranslationDict {
     serviceNameRequired: string;
     // Language
     language: string;
-    languageDescription: string;
     followSystem: string;
     // Image Generation — independent backend list (design doc §3.1, "C-a")
     imageGenVendor: string;
@@ -2255,6 +2251,25 @@ export interface TranslationDict {
     enter: string;
     current: string;
     openLabel: string;
+    remove: string;
+    removeCreatedTitle: string;
+    removeCreatedMessage: string;
+    removeFailed: string;
+    createConversation: string;
+    createPrompt: string;
+  };
+  /** The preview of an app made in 「创建应用」. */
+  appDraft: {
+    title: string;
+    home: string;
+    newExperts: string;
+    newTeams: string;
+    confirm: string;
+    modify: string;
+    adding: string;
+    added: string;
+    failed: string;
+    previewFailed: string;
   };
   appMarket: {
     title: string;
@@ -2263,6 +2278,35 @@ export interface TranslationDict {
     entryCount: string;
     emptyTitle: string;
     emptyHint: string;
+    use: string;
+    enter: string;
+    update: string;
+    needsUpgrade: string;
+    uses: string;
+    addMarket: string;
+    fromFolder: string;
+    marketsTitle: string;
+    removeMarket: string;
+    removeMarketTitle: string;
+    removeMarketMessage: string;
+    confirmAddTitle: string;
+    confirmUpdateTitle: string;
+    previewTitle: string;
+    needInstall: string;
+    needUpdate: string;
+    sitesTitle: string;
+    scenesTitle: string;
+    confirm: string;
+    adding: string;
+    addFailed: string;
+    remoteNeedsSha: string;
+    nameMismatch: string;
+    entryMismatch: string;
+    needsNewerAbu: string;
+    pluginNotFound: string;
+    pluginTooOld: string;
+    pluginLacksReference: string;
+    invalidApp: string;
   };
 
   /** App home page (product spec §5.4) and app-bound conversations. */
@@ -2277,8 +2321,14 @@ export interface TranslationDict {
     connectorHintBody: string;
     connectorHintConnect: string;
     connectorHintLater: string;
+    sceneRunUnavailable: string;
+    scenePreparing: string;
+    scenePrepareFailed: string;
     removedNotice: string;
+    removedCreatedNotice: string;
     removedAction: string;
+    disabledNotice: string;
+    offlineNotice: string;
   };
 
   toolbox: {
@@ -2346,6 +2396,8 @@ export interface TranslationDict {
     pluginsConfigurationHint: string;
     pluginsMarketplaceNameConflict: string;
     pluginsMarketplaceIdentityChanged: string;
+    pluginsMarketplaceAuthRequired: string;
+    pluginsMarketplaceNotFound: string;
     pluginsRefreshMarketplace: string;
     pluginsCachedMarketplace: string;
     pluginsRecoveryNeeded: string;
@@ -2359,7 +2411,6 @@ export interface TranslationDict {
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;
     pluginsRequiresNewerAbu: string;
-    pluginsProvidesAppWithoutApp: string;
     pluginsComponentConflict: string;
     pluginsMarketplaceDirLabel: string;
     pluginsMarketplaceDirPlaceholder: string;
@@ -2385,7 +2436,7 @@ export interface TranslationDict {
     pluginsUninstallTitle: string;
     pluginsUninstallMessage: string;
     pluginsUninstallTeamsNote: string;
-    pluginsUninstallAppNote: string;
+    usedByApps: string;
     pluginsUninstallFailed: string;
     pluginsSkillCount: string;
     pluginsServerCount: string;
@@ -2393,22 +2444,8 @@ export interface TranslationDict {
     pluginsGoToMarketplace: string;
     /** 「我的」 empty state — the user has authored no plugins yet. */
     pluginsMineEmptyHint: string;
-    pluginsUse: string;
-    pluginsEnter: string;
-    pluginsInstallAndEnter: string;
-    pluginsAgreeAndUse: string;
     pluginsAppEntered: string;
     pluginsDisclosureTeams: string;
-    pluginsDisclosureApp: string;
-    pluginsAppContents: string;
-    pluginsDisclosureAppNav: string;
-    pluginsDisclosureAppPages: string;
-    pluginsDisclosureAppScenes: string;
-    pluginsDisclosureRunTeam: string;
-    pluginsDisclosureRunExpert: string;
-    pluginsDisclosureRunSkill: string;
-    pluginsDisclosureRunDefault: string;
-    pluginsAuthorAppPrompt: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
     /** One line under it: they still work, and the detail dialog uninstalls. */
@@ -2547,22 +2584,6 @@ export interface TranslationDict {
     systemSkills: string;
     customSkills: string;
     noCustomSkills: string;
-    // ModelsSection
-    currentConfig: string;
-    quickSwitch: string;
-    current: string;
-    configured: string;
-    notConfigured: string;
-    localModels: string;
-    openaiCompatible: string;
-    qiniuCloud: string;
-    openrouter: string;
-    deepseek: string;
-    anthropic: string;
-    volcengine: string;
-    bailian: string;
-    advancedSettings: string;
-    advancedSettingsDesc: string;
     // Sub-tab labels
     tabSystem: string;
     tabCustom: string;
@@ -2619,7 +2640,6 @@ export interface TranslationDict {
     skillContextFork: string;
     skillMaxTurns: string;
     maxTurnsInheritGlobalHint: string;
-    skillContent: string;
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
@@ -2689,8 +2709,6 @@ export interface TranslationDict {
     installAgentSkillsHint: string;
     installAgentSkillsButton: string;
     recommendedSkills: string;
-    activeSkills: string;
-    activeSkillsRemove: string;
     // Category filter
     categoryAll: string;
     categoryDocument: string;
@@ -2713,7 +2731,6 @@ export interface TranslationDict {
     agentMemoryUser: string;
     agentMaxTurns: string;
     agentBackground: string;
-    agentSystemPrompt: string;
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
     agentFromPluginRemoveHint: string;
@@ -2904,7 +2921,6 @@ export interface TranslationDict {
     /** Toast: a folder was picked after the request it was picked for had ended. */
     folderRequestEnded: string;
     abuCanDo: string;
-    allowOnce: string;
     allowAlways: string;
     deny: string;
     rememberChoice: string;
@@ -2922,10 +2938,6 @@ export interface TranslationDict {
     allowSessionButton: string;
     allow24hButton: string;
     allowAlwaysButton: string;
-    // Compact inline permission labels (InlinePermissionRequest)
-    compactAccessLabel: string;
-    compactShellLabel: string;
-    compactWriteLabel: string;
   };
 
   // Panels

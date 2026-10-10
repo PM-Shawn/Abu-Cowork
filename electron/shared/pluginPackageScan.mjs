@@ -1,5 +1,5 @@
 // Node-side scan of a plugin package directory on disk: the names of what it
-// ships, for `pluginAppSpec` reference checks. Used by
+// ships, for `pluginSpec` and `appSpec` reference checks. Used by
 // `scripts/validate-plugin-market.mjs`; the renderer installer walks the
 // same layout through its Tauri-backed `PackageScan`.
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
@@ -205,7 +205,7 @@ export function packageFileExists(packageDir, relPath) {
     return ownedFile(packageDir, relPath.replace(/\\/g, '/').replace(/^\.\//, '')) !== undefined;
 }
 
-/** Everything `parseAppConfig` / `parseTeamFile` need to know about a package on disk. */
+/** Everything `parseTeamFile` and an app's `plugin:` references need to know about a package on disk. */
 export function scanPluginPackageDir(packageDir) {
     const manifest = readManifestRaw(packageDir);
     const raw = manifest.raw && typeof manifest.raw === 'object' ? manifest.raw : {};

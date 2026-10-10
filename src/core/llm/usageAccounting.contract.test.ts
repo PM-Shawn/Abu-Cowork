@@ -11,6 +11,7 @@ import {
   mergeAccountingUsage,
   normalizeWireUsage,
   promptTokensOf,
+  uncachedInputTokensOf,
   totalsComplete,
   type AccountingUsage,
 } from './usageAccounting';
@@ -205,6 +206,35 @@ describe('给 token 估算器校准用的提示词大小', () => {
     expect(
       promptTokensOf('openai-compatible', { inputTokens: 1000, cacheReadInputTokens: 800 }),
     ).toBe(1000);
+  });
+});
+
+describe('按输入单价计费的那部分输入', () => {
+  it('Anthropic：inputTokens 本身就是没有命中缓存的部分', () => {
+    expect(
+      uncachedInputTokensOf('anthropic', {
+        inputTokens: 600,
+        cacheReadInputTokens: 48_000,
+        cacheCreationInputTokens: 1_400,
+      }),
+    ).toBe(600);
+  });
+
+  it('OpenAI 兼容协议：从 prompt_tokens 里减去缓存读', () => {
+    expect(
+      uncachedInputTokensOf('openai-compatible', { inputTokens: 10_000, cacheReadInputTokens: 8_000 }),
+    ).toBe(2_000);
+  });
+
+  it('OpenAI 兼容协议：没有报缓存读时整段都按输入单价', () => {
+    expect(uncachedInputTokensOf('openai-compatible', { inputTokens: 10_000 })).toBe(10_000);
+  });
+
+  it('OpenAI 兼容协议：缓存读大于整段输入时无法确定，返回 null', () => {
+    // 与账本的做法一致：数字互相矛盾时既不取 0，也不让它变成负数。
+    expect(
+      uncachedInputTokensOf('openai-compatible', { inputTokens: 1_000, cacheReadInputTokens: 1_200 }),
+    ).toBeNull();
   });
 });
 

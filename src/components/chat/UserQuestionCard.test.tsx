@@ -56,6 +56,15 @@ describe('UserQuestionCard (settled, read-only)', () => {
     expect(screen.queryByText('提交')).not.toBeInTheDocument();
   });
 
+  it('draws the settled answers as a flat card', () => {
+    render(<UserQuestionCard toolCall={SETTLED_TC} />);
+    const card = screen.getByText('你的选择').parentElement!;
+    expect(card).toHaveClass('rounded-panel');
+    expect(card).toHaveClass('border-separator');
+    expect(card).toHaveClass('bg-surface');
+    expect(screen.getByText('详细')).toHaveClass('text-label');
+  });
+
   it('joins multi-select answers with 、', () => {
     const multiTc: ToolCall = {
       ...SETTLED_TC,

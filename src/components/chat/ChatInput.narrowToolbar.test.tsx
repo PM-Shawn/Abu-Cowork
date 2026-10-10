@@ -1,10 +1,14 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatInput from './ChatInput';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { getI18n } from '@/i18n';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 vi.mock('@/utils/electronHost', () => ({
   hasElectronCommandHost: vi.fn(() => false),
@@ -64,20 +68,22 @@ describe('composer toolbar in a narrow pane', () => {
     },
   );
 
-  it('keeps the permission mode readable by assistive tech once its label collapses', () => {
+  it('keeps the permission mode readable by assistive tech once its label collapses', async () => {
     useChatStore.getState().createConversation();
     render(<ChatInput variant="chat" onSend={vi.fn()} />);
 
     // The label is display:none at narrow widths, which takes it out of the
     // accessibility tree too — so the name must not depend on it.
-    // The name matches the visible label, and must NOT pick up the title's
-    // "默认权限模式: …" phrasing — that belongs to the settings dialog control,
-    // and sharing it makes getByRole ambiguous across the two (which is exactly
-    // how tests/e2e/security-settings.spec.ts broke).
+    // The name matches the visible label, and must NOT pick up the hover
+    // text's "默认权限模式: …" phrasing — that belongs to the settings dialog
+    // control, and sharing it makes getByRole ambiguous across the two (which
+    // is exactly how tests/e2e/security-settings.spec.ts broke).
     const { settings } = getI18n();
     const chip = screen.getByRole('button', { name: settings.permissionModeStandard });
-    expect(chip).toHaveAttribute('title', `${settings.permissionMode}: ${settings.permissionModeStandard}`);
     expect(chip.querySelector('.\\@max-\\[420px\\]\\:hidden')).not.toBeNull();
+    // Collapsed to its icon, the chip still says what it is on hover and focus.
+    chip.focus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(`${settings.permissionMode}: ${settings.permissionModeStandard}`);
   });
 
   /* The chat column now keeps a floor (clampNarrowPanelWidth), so on a normal

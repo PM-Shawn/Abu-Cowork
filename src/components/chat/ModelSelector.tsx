@@ -1,20 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Search, Star, Clock } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useActiveConversation, useChatStore } from '@/stores/chatStore';
+import { useChatStore } from '@/stores/chatStore';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Input } from '@/components/ui/input';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Popover } from '@/components/ds/popover';
+import { Tag } from '@/components/ds/tag';
+import { TextField } from '@/components/ds/text-field';
 import type { ModelInfo, ProviderInstance } from '@/types';
 import { refreshManagedProvider } from '@/core/llm/managedProviderRefresh';
 import { resolveModelVision } from '@/core/llm/resolveModelDeclared';
 import { applyModelPick } from './modelPick';
 
-interface ModelSelectorProps {
-  open: boolean;
-  onClose: () => void;
-  anchorRef: React.RefObject<HTMLElement | null>;
-}
+const GROUP_TITLE = 'px-2 py-1 text-ui-sm font-medium text-label-tertiary';
 
 /** Single model row */
 function ModelRow({
@@ -36,62 +36,69 @@ function ModelRow({
 }) {
   const { t } = useI18n();
   const name = model.label || model.id;
+  const selected = isActive && !dim;
+  // The row holds the favorite button, and a button cannot sit inside a button.
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSelect();
+    }
+  };
   return (
     <div
       role="button"
       tabIndex={0}
-      // 带「能看图」标记时，读屏按「模型名，能看图」读出，避免两段文字连成一个词
-      aria-label={canSeeImages ? format(t.chat.modelRowCanSeeImages, { model: name }) : undefined}
+      // With the "can see images" mark, a screen reader reads "model name, can see images", so the
+      // two pieces do not run into one word. The name is given on the row itself, which keeps the
+      // favorite button inside the row out of the row's name.
+      aria-label={canSeeImages ? format(t.chat.modelRowCanSeeImages, { model: name }) : name}
       className={cn(
-        'flex items-center w-full px-3 py-1.5 text-left text-body rounded-md transition-colors cursor-pointer',
-        'hover:bg-[var(--abu-bg-hover)]',
-        isActive && !dim && 'bg-[var(--abu-bg-hover)]'
+        'group/row flex h-7 items-center gap-1 rounded-control px-2 text-ui text-label outline-none hover:bg-fill-hover focus-visible:ring-2 focus-visible:ring-focus',
+        selected && 'bg-fill-selected',
+        dim && 'text-label-secondary',
       )}
       onClick={onSelect}
-      onKeyDown={(e) => { if (e.key === 'Enter') onSelect(); }}
+      onKeyDown={handleKeyDown}
     >
-      <span className={cn(
-        'flex-1 truncate',
-        dim ? 'text-[var(--abu-text-muted)]' : 'text-[var(--abu-text-secondary)]'
-      )}>
-        {name}
-      </span>
-
-      {canSeeImages && (
-        <span className="shrink-0 mr-1 px-1.5 rounded border border-[var(--abu-border)] text-caption text-[var(--abu-text-tertiary)]">
-          {t.chat.modelCanSeeImages}
-        </span>
-      )}
-
-      {isActive && !dim && (
-        <Check className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0 mr-1" />
-      )}
-
-      <button
-        className={cn(
-          'p-0.5 rounded shrink-0 mr-1 transition-colors',
-          'hover:bg-[var(--abu-bg-muted)]',
-          isFavorite ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-text-muted)] opacity-0 group-hover/row:opacity-100'
-        )}
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      {canSeeImages && <Tag>{t.chat.modelCanSeeImages}</Tag>}
+      {selected && <Icon icon={AppIcons.done} size="sm" />}
+      <IconButton
+        size="sm"
+        icon={AppIcons.favorite}
+        label="Favorite"
+        aria-pressed={isFavorite}
+        // A favorite is the user's own mark, shown by the filled star alone.
+        pressedFill={false}
+        className={cn(isFavorite ? '[&_svg]:fill-current' : 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100')}
         onClick={(e) => {
           e.stopPropagation();
           onToggleFavorite();
         }}
-      >
-        <Star className={cn('h-3 w-3', isFavorite && 'fill-current')} />
-      </button>
+      />
     </div>
   );
 }
 
-export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) {
+export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, trigger }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  trigger: ReactNode;
+}) {
   const { t } = useI18n();
   const providers = useSettingsStore((s) => s.providers);
   const activeModel = useSettingsStore((s) => s.activeModel);
-  const activeConv = useActiveConversation();
+  // Only the open conversation's id and model: the picker must not re-render while a reply streams.
+  const activeConversationId = useChatStore((s) => (
+    s.activeConversationId && s.conversations[s.activeConversationId] ? s.activeConversationId : null
+  ));
+  const conversationModel = useChatStore((s) => (
+    s.activeConversationId ? s.conversations[s.activeConversationId]?.model : undefined
+  ));
   const setConversationModel = useChatStore((s) => s.setConversationModel);
   // When a conversation is open, the picker reflects/edits ITS model (falling back to the new-conversation default for legacy unpinned conversations).
-  const effectiveActiveModel = activeConv?.model ?? activeModel;
+  const effectiveActiveModel = conversationModel ?? activeModel;
   const recentModels = useSettingsStore((s) => s.recentModels);
   const favoriteModels = useSettingsStore((s) => s.favoriteModels);
   const selectModel = useSettingsStore((s) => s.selectModel);
@@ -100,18 +107,10 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
 
   const [query, setQuery] = useState('');
-  const panelRef = useRef<HTMLDivElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
 
   // Reset search when opening
   useEffect(() => {
-    if (open) {
-      setQuery('');
-      // Focus search input after mount
-      requestAnimationFrame(() => {
-        searchRef.current?.focus();
-      });
-    }
+    if (open) setQuery('');
   }, [open]);
 
   // A managed provider's list can change on the owning system's side at any
@@ -122,44 +121,6 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
       if (p.source === 'managed') void refreshManagedProvider(p.id);
     }
   }, [open]);
-
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleKey, true);
-    return () => document.removeEventListener('keydown', handleKey, true);
-  }, [open, onClose]);
-
-  // Close on click outside
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e: MouseEvent) => {
-      const panel = panelRef.current;
-      const anchor = anchorRef.current;
-      if (
-        panel &&
-        !panel.contains(e.target as Node) &&
-        anchor &&
-        !anchor.contains(e.target as Node)
-      ) {
-        onClose();
-      }
-    };
-    // Use setTimeout to avoid catching the same click that opened the panel
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handleClick);
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('mousedown', handleClick);
-    };
-  }, [open, onClose, anchorRef]);
 
   const enabledProviders = useMemo(
     () => providers.filter((p) => p.enabled && p.models.length > 0),
@@ -211,12 +172,12 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
       // Inside a conversation the pick is scoped to it; on the new-task page it
       // sets the default for new conversations (issue #545, see modelPick.ts).
       applyModelPick(
-        { activeConversationId: activeConv?.id, providerId, modelId },
+        { activeConversationId, providerId, modelId },
         { selectModel, touchRecentModel, setConversationModel },
       );
-      onClose();
+      onOpenChange(false);
     },
-    [selectModel, touchRecentModel, setConversationModel, activeConv, onClose]
+    [selectModel, touchRecentModel, setConversationModel, activeConversationId, onOpenChange]
   );
 
   const handleToggleFavorite = useCallback(
@@ -259,169 +220,133 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
     [providers, lowerQuery]
   );
 
-  if (!open) return null;
-
   const hasNoProviders = enabledProviders.length === 0 && pendingManagedProviders.length === 0;
   const showsManagedGroup = pendingManagedProviders.length > 0
     || filteredProviders.some((g) => g.provider.source === 'managed');
   const firstOwnGroupId = showsManagedGroup
     ? filteredProviders.find((g) => g.provider.source !== 'managed')?.provider.id
     : undefined;
+  const searchLabel = t.common.search + '...';
 
   return (
-    <div
-      ref={panelRef}
-      className={cn(
-        'absolute bottom-full right-0 mb-1.5 z-50',
-        'w-72 max-h-96 rounded-lg shadow-lg',
-        'bg-[var(--abu-bg-base)] border border-[var(--abu-border)]',
-        'flex flex-col overflow-hidden'
-      )}
-    >
-      {/* Search */}
-      <div className="p-2 border-b border-[var(--abu-border)]">
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-          <Input
-            ref={searchRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={t.common.search + '...'}
-            className="h-7 pl-7 pr-2 text-minor bg-transparent border-none focus:ring-0"
-          />
-        </div>
-      </div>
+    <Popover open={open} onOpenChange={onOpenChange} side="top" align="end" trigger={trigger}>
+      <TextField
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        aria-label={searchLabel}
+        placeholder={searchLabel}
+      />
 
       {hasNoProviders ? (
         /* No providers message */
         <div className="p-4 text-center">
-          <p className="text-body text-[var(--abu-text-tertiary)]">{t.settings.noProviders}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-1">{t.settings.noProvidersHint}</p>
-          <button
-            className="mt-2 text-minor text-[var(--abu-clay)] hover:underline"
+          <p className="text-ui text-label-secondary">{t.settings.noProviders}</p>
+          <p className="mt-1 text-ui-sm text-label-tertiary">{t.settings.noProvidersHint}</p>
+          <Button
+            variant="plain"
+            size="sm"
+            className="mt-2"
             onClick={() => {
-              onClose();
+              onOpenChange(false);
               openSystemSettings('ai-services');
             }}
           >
             {t.settings.noProvidersAction}
-          </button>
+          </Button>
         </div>
       ) : (
         /* Model list */
-        <div className="overflow-y-auto max-h-80">
-          <div className="p-1">
-            {/* Favorites section */}
-            {resolvedFavorites.length > 0 && (
-              <div className="mb-1">
-                <div className="flex items-center gap-1.5 px-3 py-1">
-                  <Star className="h-3 w-3 text-[var(--abu-warning)] fill-[var(--abu-warning-solid)]" />
-                  <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-text-muted)]">
-                    Favorites
-                  </span>
-                </div>
-                {resolvedFavorites.map(({ provider, model }) => (
-                  <div key={`fav-${provider.id}-${model.id}`} className="group/row">
-                    <ModelRow
-                      model={model}
-                      isActive={isModelActive(provider.id, model.id)}
-                      isFavorite={true}
-                      onSelect={() => handleSelect(provider.id, model.id)}
-                      onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
-                      canSeeImages={resolveModelVision(provider, model.id)}
-                    />
-                  </div>
-                ))}
+        <div className="mt-2 max-h-80 overflow-y-auto">
+          {/* Favorites section */}
+          {resolvedFavorites.length > 0 && (
+            <div className="mb-1">
+              <div className={cn('flex items-center gap-1', GROUP_TITLE)}>
+                <Icon icon={AppIcons.favorite} size="sm" />
+                <span>Favorites</span>
               </div>
-            )}
+              {resolvedFavorites.map(({ provider, model }) => (
+                <ModelRow
+                  key={`fav-${provider.id}-${model.id}`}
+                  model={model}
+                  isActive={isModelActive(provider.id, model.id)}
+                  isFavorite={true}
+                  onSelect={() => handleSelect(provider.id, model.id)}
+                  onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                  canSeeImages={resolveModelVision(provider, model.id)}
+                />
+              ))}
+            </div>
+          )}
 
-            {/* Recent section */}
-            {resolvedRecents.length > 0 && (
-              <div className="mb-1">
-                <div className="flex items-center gap-1.5 px-3 py-1">
-                  <Clock className="h-3 w-3 text-[var(--abu-text-muted)]" />
-                  <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-text-muted)]">
-                    Recent
-                  </span>
-                </div>
-                {resolvedRecents.map(({ provider, model }) => (
-                  <div key={`recent-${provider.id}-${model.id}`} className="group/row">
-                    <ModelRow
-                      model={model}
-                      isActive={false}
-                      isFavorite={isModelFavorite(provider.id, model.id)}
-                      onSelect={() => handleSelect(provider.id, model.id)}
-                      onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
-                      canSeeImages={resolveModelVision(provider, model.id)}
-                      dim
-                    />
-                  </div>
-                ))}
+          {/* Recent section */}
+          {resolvedRecents.length > 0 && (
+            <div className="mb-1">
+              <div className={cn('flex items-center gap-1', GROUP_TITLE)}>
+                <Icon icon={AppIcons.clock} size="sm" />
+                <span>Recent</span>
               </div>
-            )}
+              {resolvedRecents.map(({ provider, model }) => (
+                <ModelRow
+                  key={`recent-${provider.id}-${model.id}`}
+                  model={model}
+                  isActive={false}
+                  isFavorite={isModelFavorite(provider.id, model.id)}
+                  onSelect={() => handleSelect(provider.id, model.id)}
+                  onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                  canSeeImages={resolveModelVision(provider, model.id)}
+                  dim
+                />
+              ))}
+            </div>
+          )}
 
-            {/* Divider between special sections and main list */}
-            {(resolvedFavorites.length > 0 || resolvedRecents.length > 0) && filteredProviders.length > 0 && (
-              <div className="mx-3 my-1 border-t border-[var(--abu-border)]" />
-            )}
+          {/* Divider between special sections and main list */}
+          {(resolvedFavorites.length > 0 || resolvedRecents.length > 0) && filteredProviders.length > 0 && (
+            <div className="mx-2 my-1 border-t border-separator" />
+          )}
 
-            {pendingManagedProviders.map((provider) => (
-              <div key={provider.id} className="mb-1">
-                <div className="px-3 py-1">
-                  <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-clay)]">
-                    {provider.name}
-                  </span>
-                </div>
-                <div className="px-3 py-1.5 text-minor text-[var(--abu-text-muted)]">
-                  {provider.status === 'failed'
-                    ? format(t.chat.managedProviderUnreachable, { org: provider.name })
-                    : t.chat.managedModelsSyncing}
-                </div>
+          {pendingManagedProviders.map((provider) => (
+            <div key={provider.id} className="mb-1">
+              <div className={cn(GROUP_TITLE, 'text-label-secondary')}>{provider.name}</div>
+              <div className="px-2 py-1 text-ui-sm text-label-tertiary">
+                {provider.status === 'failed'
+                  ? format(t.chat.managedProviderUnreachable, { org: provider.name })
+                  : t.chat.managedModelsSyncing}
               </div>
-            ))}
+            </div>
+          ))}
 
-            {/* Main list grouped by provider */}
-            {filteredProviders.map(({ provider, models }) => (
-              <div key={provider.id} className="mb-1">
-                {provider.id === firstOwnGroupId && (
-                  <div className="px-3 pt-1.5 pb-0.5 text-caption font-medium text-[var(--abu-text-tertiary)]">
-                    {t.chat.myModels}
-                  </div>
-                )}
-                <div className="px-3 py-1">
-                  <span
-                    className={cn(
-                      'text-caption font-medium uppercase tracking-wider',
-                      provider.source === 'managed' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]',
-                    )}
-                  >
-                    {provider.name}
-                  </span>
-                </div>
-                {models.map((model) => (
-                  <div key={`${provider.id}-${model.id}`} className="group/row">
-                    <ModelRow
-                      model={model}
-                      isActive={isModelActive(provider.id, model.id)}
-                      isFavorite={isModelFavorite(provider.id, model.id)}
-                      onSelect={() => handleSelect(provider.id, model.id)}
-                      onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
-                      canSeeImages={resolveModelVision(provider, model.id)}
-                    />
-                  </div>
-                ))}
+          {/* Main list grouped by provider */}
+          {filteredProviders.map(({ provider, models }) => (
+            <div key={provider.id} className="mb-1">
+              {provider.id === firstOwnGroupId && (
+                <div className={GROUP_TITLE}>{t.chat.myModels}</div>
+              )}
+              <div className={cn(GROUP_TITLE, provider.source === 'managed' && 'text-label-secondary')}>
+                {provider.name}
               </div>
-            ))}
+              {models.map((model) => (
+                <ModelRow
+                  key={`${provider.id}-${model.id}`}
+                  model={model}
+                  isActive={isModelActive(provider.id, model.id)}
+                  isFavorite={isModelFavorite(provider.id, model.id)}
+                  onSelect={() => handleSelect(provider.id, model.id)}
+                  onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                  canSeeImages={resolveModelVision(provider, model.id)}
+                />
+              ))}
+            </div>
+          ))}
 
-            {/* No results */}
-            {filteredProviders.length === 0 && pendingManagedProviders.length === 0 && resolvedFavorites.length === 0 && resolvedRecents.length === 0 && (
-              <div className="px-3 py-4 text-center text-minor text-[var(--abu-text-muted)]">
-                No models found
-              </div>
-            )}
-          </div>
+          {/* No results */}
+          {filteredProviders.length === 0 && pendingManagedProviders.length === 0 && resolvedFavorites.length === 0 && resolvedRecents.length === 0 && (
+            <div className="px-2 py-4 text-center text-ui-sm text-label-tertiary">
+              No models found
+            </div>
+          )}
         </div>
       )}
-    </div>
+    </Popover>
   );
-}
+});

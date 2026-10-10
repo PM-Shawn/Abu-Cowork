@@ -110,7 +110,7 @@ import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningPar
 import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
-import { adapterKindFor } from '../llm/adapterKind';
+import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { contextTooSmallMessage } from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
@@ -357,6 +357,19 @@ export function skillBlockedTools(
       .filter((pattern) => CHANNEL_GOVERNED_TOOLS.includes(pattern))),
   ];
   return [...new Set(patterns)];
+}
+
+/**
+ * The skills whose tools load this turn. A skill reached by `/name` is the
+ * route and is not in activeSkills yet, so the tools it needs
+ * (read_skill_file, its own tools) would otherwise wait for the next turn.
+ */
+export function prefetchSkills(
+  routedSkill: import('../../types').Skill | undefined,
+  activeSkills: import('../../types').Skill[],
+): import('../../types').Skill[] {
+  if (!routedSkill || activeSkills.some((skill) => skill.name === routedSkill.name)) return activeSkills;
+  return [routedSkill, ...activeSkills];
 }
 
 export function resolveTools(
@@ -1885,7 +1898,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const prefetchCtx = {
         userInput: userMessage,
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
-        activeSkills: activeSkillObjects,
+        activeSkills: prefetchSkills(route.type === "skill" ? route.skill : undefined, activeSkillObjects),
         turnCount,
         hasGoal: conv?.goal !== undefined,
       };
@@ -2796,7 +2809,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             toolCalls: collectedToolCalls.map(tc => ({ name: tc.name, input: tc.input })),
           },
           usage: finalUsage,
-          costUsd: finalUsage ? calculateTurnCost(effectiveModelId, finalUsage) : undefined,
+          costUsd: finalUsage
+            ? calculateTurnCost(effectiveModelId, finalUsage, usageProtocolFor(adapterKind))
+            : undefined,
         });
       }
 
@@ -2809,7 +2824,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // 开了提示缓存之后它可以只有几百，直接拿去校准会把估算比例拉到接近零。
         calibrateFromUsage(
           estimatedInput,
-          promptTokensOf(adapterKind === 'claude' ? 'anthropic' : 'openai-compatible', finalUsage),
+          promptTokensOf(usageProtocolFor(adapterKind), finalUsage),
         );
       }
 

@@ -2,8 +2,12 @@
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
+import {
+  BookOpen, Bot, Calculator, Camera, ChartBar, Code, Compass, Cpu, Database, FlaskConical, Globe, Megaphone,
+  Palette, PenLine, Scale, Search, ShieldCheck, Sparkles, UsersRound, Wrench,
+} from 'lucide-react';
 import { Icon } from './icon';
-import { AppIcons } from './icons';
+import { AppIcons, AvatarGlyphs } from './icons';
 
 describe('Icon', () => {
   it('renders 16px with a 1.5 stroke by default', () => {
@@ -45,5 +49,28 @@ describe('AppIcons', () => {
 
   it('includes the glyphs the component library needs', () => {
     expect(Object.keys(AppIcons)).toEqual(expect.arrayContaining(['loading', 'mixed', 'selectorChevrons']));
+  });
+});
+
+describe('AvatarGlyphs', () => {
+  it('holds the twenty glyphs an avatar can show, each a renderable icon', () => {
+    expect(Object.keys(AvatarGlyphs).sort()).toEqual([
+      'book', 'bot', 'calculator', 'camera', 'chartBar', 'code', 'compass', 'cpu', 'database', 'flask',
+      'globe', 'megaphone', 'palette', 'pen', 'scale', 'search', 'shield', 'sparkles', 'users', 'wrench',
+    ]);
+    for (const [name, glyph] of Object.entries(AvatarGlyphs)) {
+      const { container, unmount } = render(<Icon icon={glyph} />);
+      expect(container.querySelector('svg'), name).not.toBeNull();
+      unmount();
+    }
+  });
+
+  it('gives each name the glyph it had before the table moved here', () => {
+    expect(AvatarGlyphs).toEqual({
+      bot: Bot, chartBar: ChartBar, code: Code, flask: FlaskConical, pen: PenLine, shield: ShieldCheck,
+      users: UsersRound, search: Search, database: Database, palette: Palette, compass: Compass,
+      wrench: Wrench, book: BookOpen, megaphone: Megaphone, scale: Scale, sparkles: Sparkles, cpu: Cpu,
+      globe: Globe, camera: Camera, calculator: Calculator,
+    });
   });
 });

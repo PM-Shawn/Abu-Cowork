@@ -3,11 +3,12 @@
  *
  * Maintains pricing tables for known models and computes costs
  * from token usage data. Costs are accumulated per conversation
- * and per day for display in the StatusBar.
+ * and per day for display.
  *
  * Unknown models (e.g., Ollama local) return 0 cost.
  */
 import { GENERATED_MODEL_PRICING } from './generated/modelData.generated';
+import { uncachedInputTokensOf, type UsageProtocol } from './usageAccounting';
 
 // ════════════════════════════════════════════════════════════
 // Pricing (USD per million tokens)
@@ -74,14 +75,21 @@ export interface TokenUsage {
 /**
  * Calculate the cost (USD) for a single LLM turn.
  * Returns 0 for unknown models (Ollama, local, etc.).
+ *
+ * `inputTokens` 的含义随协议不同（见 `uncachedInputTokensOf`），所以必须传入协议。
+ * 没有命中缓存的部分无法确定时同样返回 0。
  */
-export function calculateTurnCost(model: string, usage: TokenUsage): number {
+export function calculateTurnCost(model: string, usage: TokenUsage, protocol: UsageProtocol): number {
   const pricing = findPricing(model);
   if (!pricing) return 0;
 
-  // inputTokens = uncached input tokens (Anthropic already excludes cache tokens;
-  // OpenAI-compatible providers typically don't report cache fields at all).
-  const inputCost = (usage.inputTokens ?? 0) * pricing.input / 1_000_000;
+  const uncachedInput = uncachedInputTokensOf(protocol, {
+    inputTokens: usage.inputTokens ?? 0,
+    cacheReadInputTokens: usage.cacheReadInputTokens,
+  });
+  if (uncachedInput === null) return 0;
+
+  const inputCost = uncachedInput * pricing.input / 1_000_000;
   const outputCost = (usage.outputTokens ?? 0) * pricing.output / 1_000_000;
   const cacheReadCost = (usage.cacheReadInputTokens ?? 0) * pricing.cacheRead / 1_000_000;
   const cacheCreationCost = (usage.cacheCreationInputTokens ?? 0) * pricing.cacheCreation / 1_000_000;
@@ -119,8 +127,9 @@ export function recordTurnCost(
   conversationId: string,
   model: string,
   usage: TokenUsage,
+  protocol: UsageProtocol,
 ): number {
-  const cost = calculateTurnCost(model, usage);
+  const cost = calculateTurnCost(model, usage, protocol);
   if (cost <= 0) return 0;
 
   // Accumulate per conversation

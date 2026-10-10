@@ -61,6 +61,7 @@ describe('ShowWidgetCard', () => {
   it('shows the skeleton with loading_messages[0] while executing', () => {
     render(<ShowWidgetCard toolCall={makeCall({ result: undefined, isExecuting: true })} />);
     expect(screen.getByText('画图中…')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('画图中…');
     expect(screen.queryByTestId('widget-block')).not.toBeInTheDocument();
   });
 
@@ -85,6 +86,7 @@ describe('ShowWidgetCard', () => {
   it('shows the cancelled row for the cancel marker', () => {
     render(<ShowWidgetCard toolCall={makeCall({ result: TOOL_RESULT_CANCELLED_MARKER })} />);
     expect(screen.getByText(/组件渲染已取消/)).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByTestId('widget-block')).not.toBeInTheDocument();
   });
 
@@ -96,6 +98,7 @@ describe('ShowWidgetCard', () => {
   it('shows the error row (with title) for the interrupted-by-user backfill', () => {
     render(<ShowWidgetCard toolCall={makeCall({ isError: true, result: '[Tool execution interrupted by user]' })} />);
     expect(screen.getByText(/组件渲染失败 · Sales chart/)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('组件渲染失败 · Sales chart');
   });
 
   it('shows the error row when the code fails client-side validation even though the result looks settled', () => {

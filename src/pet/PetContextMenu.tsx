@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react'
 import type { PetStatus } from '@/core/pet/petStatusBridge'
-import { STATUS_COLOR } from './petStatusMeta'
+import { STATUS_TONE } from './petStatusMeta'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ds/button'
+import { Icon } from '@/components/ds/icon'
+import { AppIcons } from '@/components/ds/icons'
+import { Pressable } from '@/components/ds/pressable'
 import { useI18n } from '@/i18n'
 
 interface PetContextMenuProps {
@@ -31,40 +36,34 @@ export function PetContextMenu({
   }, [onDismiss])
 
   return (
-    // No box-shadow — on the transparent pet window it rendered as the
-    // "black shadow" smudge around the menu. The border delimits it.
+    // No box-shadow: the pet window is transparent and barely larger than this
+    // box, so a shadow would be cut off at the window edge and drawn straight
+    // onto the desktop. The border delimits it. The close control is a named
+    // `Pressable` with no tooltip, for the same lack of room.
     <div
       ref={menuRef}
-      className="w-[170px] bg-[var(--abu-bg-base)] rounded-[10px] py-1.5 border border-[var(--abu-border)]"
+      className="w-44 rounded-panel border border-separator bg-raised pb-1"
     >
-      <div className="px-3.5 py-2 flex items-center gap-2 border-b border-[var(--abu-border)]">
-        <div
-          className="w-2 h-2 rounded-full flex-shrink-0"
-          style={{ backgroundColor: STATUS_COLOR[status] }}
-        />
-        <span className="flex-1 text-caption text-[var(--abu-text-tertiary)]">{t.pet.status[status]}</span>
-        <button
-          className="w-4 h-4 flex items-center justify-center flex-shrink-0 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+      <div className="flex items-center gap-2 border-b border-separator px-3 py-2">
+        <div data-pet-status-dot="" className={cn('h-2 w-2 shrink-0 rounded-full bg-current', STATUS_TONE[status])} />
+        <span className="flex-1 text-ui-sm text-label-secondary">{t.pet.status[status]}</span>
+        <Pressable
+          className="flex h-4 w-4 shrink-0 items-center justify-center rounded-control text-label-tertiary hover:text-label"
           onClick={onDismiss}
           aria-label={t.pet.closeMenu}
         >
-          ×
-        </button>
+          <Icon icon={AppIcons.close} size="sm" />
+        </Pressable>
       </div>
 
-      <button
-        className="w-full px-3.5 py-2 text-minor text-[var(--abu-text-secondary)] text-left hover:bg-[var(--abu-bg-hover)]"
-        onClick={onOpenMain}
-      >
-        {t.pet.openMain}
-      </button>
-
-      <button
-        className="w-full px-3.5 py-2 text-minor text-[var(--abu-text-tertiary)] text-left hover:bg-[var(--abu-bg-hover)]"
-        onClick={onClosePet}
-      >
-        {t.pet.closePet}
-      </button>
+      <div className="flex flex-col gap-1 px-1 pt-1">
+        <Button variant="plain" size="sm" className="w-full justify-start" onClick={onOpenMain}>
+          {t.pet.openMain}
+        </Button>
+        <Button variant="plain" size="sm" className="w-full justify-start" onClick={onClosePet}>
+          {t.pet.closePet}
+        </Button>
+      </div>
     </div>
   )
 }

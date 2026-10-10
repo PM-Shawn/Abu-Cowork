@@ -44,7 +44,14 @@ test.describe('design preview — visual regression', () => {
       // The settings store must exist before the first-run acknowledgements are seeded.
       await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
       await dismissFirstRunOverlays(page);
-      await page.keyboard.press('Meta+Alt+Shift+KeyD');
+      // The shortcut listener arrives in a lazily loaded chunk, which can land after the
+      // composer is ready. The host element is attached in the keydown handler itself, so a
+      // press that found no listener leaves no host and is safe to repeat.
+      const host = page.locator('[data-design-preview-host]');
+      await expect(async () => {
+        if ((await host.count()) === 0) await page.keyboard.press('Meta+Alt+Shift+KeyD');
+        await expect(host).toHaveCount(1, { timeout: 500 });
+      }).toPass({ timeout: 30_000 });
       await expect(page.locator('[data-design-preview-root]')).toBeVisible();
       await unrollPreview(page);
       await setSwitch(page, 'Reduce motion', true);

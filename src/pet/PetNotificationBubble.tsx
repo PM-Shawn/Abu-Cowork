@@ -1,8 +1,12 @@
 import { useEffect, useRef } from 'react'
-import { ChevronDown, ChevronUp, Clock } from 'lucide-react'
 import type { PetStatus, WaitingKind } from '@/core/pet/petStatusBridge'
-import { STATUS_COLOR } from './petStatusMeta'
-import { Input } from '@/components/ui/input'
+import { STATUS_TONE } from './petStatusMeta'
+import { isImeComposing } from '@/components/chat/composerKeys'
+import { Icon } from '@/components/ds/icon'
+import { AppIcons } from '@/components/ds/icons'
+import { Pressable } from '@/components/ds/pressable'
+import { TextField } from '@/components/ds/text-field'
+import { cn } from '@/lib/utils'
 import { useI18n } from '@/i18n'
 
 /** Non-waiting display modes, driven by PetApp (which owns the window frame). */
@@ -39,6 +43,10 @@ interface PetNotificationBubbleProps {
  * (PetApp owns the frame): expand wraps the full text; 回复 opens an inline
  * input. The `waiting` state always shows the input directly. Renders
  * nothing when idle; a collapsed `done` bubble fades out (petNotifFade).
+ *
+ * The buttons are `Pressable`s with a name and no tooltip: the pet window is
+ * exactly as large as the bubble and the avatar, so a floating layer has no
+ * room in it.
  */
 export function PetNotificationBubble({
   status, title, summary, mode, waitingKind, paused, onHoverChange,
@@ -49,7 +57,7 @@ export function PetNotificationBubble({
 
   // A blocking approval dialog (file permission etc.): the pet only signals it
   // and routes to the main window — no inline text reply, since typing can't
-  // grant a permission. Mirrors Codex's orange-clock "needs confirmation" slot.
+  // grant a permission. Mirrors Codex's clock "needs confirmation" slot.
   const isApproval = status === 'waiting' && waitingKind === 'approval'
   const showInput = !isApproval && (status === 'waiting' || mode === 'replying')
   const expanded = mode === 'expanded'
@@ -64,7 +72,11 @@ export function PetNotificationBubble({
   // idle → nothing to show (avatar only, per spec)
   if (status === 'idle') return null
 
+  // The field drops the repeats of a held Enter before this runs (ds TextField).
+  // An Enter that belongs to an input method confirms the composition and sends nothing: the
+  // same test the composer uses (chat/composerKeys.ts).
   function handleReplyKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (isImeComposing(e, false)) return
     if (e.key === 'Enter') {
       const val = e.currentTarget.value.trim()
       if (val) {
@@ -74,84 +86,78 @@ export function PetNotificationBubble({
     }
   }
 
-  const Chevron = expanded ? ChevronUp : ChevronDown
-
   return (
     <div
-      className="relative w-[200px]"
+      className="relative w-50"
       data-testid="pet-notification"
       data-status={status}
       data-mode={mode}
       onMouseEnter={() => onHoverChange?.(true)}
       onMouseLeave={() => onHoverChange?.(false)}
     >
-      {/* No box-shadow: on the transparent pet window a CSS shadow composites
-          straight onto the desktop as a dark smudge (the old "black shadow"
-          bug). The 1px border alone delimits the bubble. `group` drives the
-          hover-reveal of the controls below. The collapsed-done fade is
-          suppressed while `paused` (parent is hovering) so the bubble doesn't
-          vanish from under a user reaching for its controls. */}
+      {/* No box-shadow: the pet window is transparent and exactly as wide as
+          this card, so a shadow would be cut off at the window edge and drawn
+          straight onto the desktop. The 1px border alone delimits the bubble.
+          `group` drives the hover-reveal of the controls below. The
+          collapsed-done fade is suppressed while `paused` (parent is hovering)
+          so the bubble doesn't vanish from under a user reaching for its
+          controls. The curve is the one CSS names ease-out, written out. */}
       <div
-        style={{ animation: status === 'done' && mode === 'collapsed' && !paused ? 'petNotifFade 6s ease-out forwards' : undefined }}
-        className="group bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-2xl px-3 py-2"
+        style={{ animation: status === 'done' && mode === 'collapsed' && !paused ? 'petNotifFade 6s cubic-bezier(0, 0, 0.58, 1) forwards' : undefined }}
+        className="group rounded-panel border border-separator bg-raised px-3 py-2"
       >
         <div className="relative flex items-start gap-2">
-          <button
-            className="flex items-start gap-2 flex-1 min-w-0 text-left"
+          <Pressable
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-control text-left"
             onClick={onOpenMain}
             aria-label={t.pet.openMain}
           >
             {isApproval ? (
-              <Clock
-                className="w-3.5 h-3.5 mt-0.5 flex-shrink-0"
-                style={{ color: STATUS_COLOR.waiting }}
-                strokeWidth={2.5}
-              />
+              <Icon icon={AppIcons.clock} size="sm" className="mt-0.5 text-warning" />
             ) : (
-              <span
-                className="w-2 h-2 mt-1 rounded-full flex-shrink-0"
-                style={{ backgroundColor: STATUS_COLOR[status] }}
-              />
+              <span data-pet-status-dot="" className={cn('mt-1 h-2 w-2 shrink-0 rounded-full bg-current', STATUS_TONE[status])} />
             )}
             {isApproval ? (
-              // The 需要授权 hint is the whole point — pin it (flex-shrink-0)
+              // The 需要授权 hint is the whole point — pin it (shrink-0)
               // and let the (contextual) title truncate to make room, so a
               // long title never squeezes the hint into "需要…".
-              <span className="flex-1 min-w-0 flex items-baseline gap-1.5 text-caption text-[var(--abu-text-primary)]">
-                {title && <b className="font-semibold truncate min-w-0">{title}</b>}
-                <span className="flex-shrink-0 font-medium" style={{ color: STATUS_COLOR.waiting }}>{t.pet.needAuth}</span>
+              <span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-caption text-label">
+                {title && <b className="min-w-0 truncate font-semibold">{title}</b>}
+                <span className="shrink-0 font-medium text-warning">{t.pet.needAuth}</span>
               </span>
             ) : (
               <span
-                className={`flex-1 min-w-0 text-caption text-[var(--abu-text-primary)] ${expanded ? 'block whitespace-normal break-words leading-relaxed max-h-[300px] overflow-y-auto pr-1' : 'truncate'}`}
+                className={cn(
+                  'min-w-0 flex-1 text-caption text-label',
+                  expanded ? 'block max-h-75 overflow-y-auto whitespace-normal break-words pr-1 leading-relaxed' : 'truncate',
+                )}
               >
                 {title && <b className="font-semibold">{title}</b>}
                 {title && summary ? '　' : ''}
-                {summary && <span className="text-[var(--abu-text-secondary)]">{summary}</span>}
+                {summary && <span className="text-label-secondary">{summary}</span>}
               </span>
             )}
-          </button>
+          </Pressable>
 
           {/* Top-right hover control: expand/collapse only (pure CSS reveal,
               no height change). 回复 lives at the bottom, Codex-style. */}
           {!isApproval && (
-            <div className="flex-shrink-0 self-start opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto bg-[var(--abu-bg-base)] pl-1">
-              <button
-                className="w-5 h-5 flex items-center justify-center rounded-md text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
+            <div className="pointer-events-none shrink-0 self-start bg-raised pl-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+              <Pressable
+                className="flex h-5 w-5 items-center justify-center rounded-control text-label-tertiary hover:bg-fill-hover hover:text-label"
                 onClick={onToggleExpand}
                 aria-label={expanded ? t.pet.collapse : t.pet.expand}
               >
-                <Chevron className="w-3.5 h-3.5" />
-              </button>
+                <Icon icon={expanded ? AppIcons.collapse : AppIcons.expand} size="sm" />
+              </Pressable>
             </div>
           )}
         </div>
 
         {showInput ? (
           <div className="mt-2">
-            <Input
+            <TextField
               ref={inputRef}
-              className="h-7 text-caption px-2"
               placeholder={t.pet.replyPlaceholder}
               onKeyDown={handleReplyKey}
             />
@@ -161,14 +167,14 @@ export function PetNotificationBubble({
           // the layout (so the window height is stable — no resize-on-hover
           // jank) and revealed by pure CSS group-hover, same as the chevron.
           canReply && (
-            <div className="mt-1.5 flex opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto">
-              <button
-                className="text-caption leading-none px-2 py-1 rounded-md text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
+            <div className="pointer-events-none mt-1.5 flex opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+              <Pressable
+                className="rounded-control px-2 py-1 text-caption leading-none text-label-secondary hover:bg-fill-hover hover:text-label"
                 onClick={onStartReply}
                 aria-label={t.pet.reply}
               >
                 {t.pet.reply}
-              </button>
+              </Pressable>
             </div>
           )
         )}

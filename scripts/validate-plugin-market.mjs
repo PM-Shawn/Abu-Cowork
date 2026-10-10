@@ -1,29 +1,32 @@
 /**
- * Marketplace check — every package a marketplace lists must pass the same
- * `app` / `teams/` / `minAbuVersion` validation the installer applies
- * (`electron/shared/pluginAppSpec.mjs`), plus the curation rules for an app
- * entry (`providesApp` agrees with the manifest, logos exist, referenced icons
- * exist, entry version matches the manifest for relative sources).
+ * Marketplace check — every plugin and every app a marketplace lists must pass
+ * the same validation Abu applies when installing or adding it
+ * (`electron/shared/pluginSpec.mjs`, `electron/shared/appSpec.mjs`), plus the
+ * curation rules: entry and file agree on name, version and `minAbuVersion`,
+ * logos and referenced icons exist, and every `plugin:` reference in an app
+ * names a team, expert, skill or connector the listed plugin really ships.
  *
  * Runs in CI after `verify` (`npm run market:check`) against the official
  * market shipped with the app, and locally against any market directory:
  *
  *   node scripts/validate-plugin-market.mjs [--dir <marketDir>] [--host-version <semver>]
  *
- * Remote entries (`url` / `git-subdir`) must pin a `sha`; they are fetched
- * with the same code the app uses (`electron/pluginGitHost.cjs`) into
- * `.agent/market-check/` before validation.
+ * An app's plugins are looked up in the checked market first, then in the
+ * official market. Remote entries (`url` / `git-subdir`) must pin a `sha`; they
+ * are fetched with the same code the app uses (`electron/pluginGitHost.cjs`)
+ * into `.agent/market-check/` before validation.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import semver from 'semver';
 import {
   assertMinAbuVersionDeclared,
   checkMinAbuVersion,
-  parseAppConfig,
   parseTeamFile,
-} from '../electron/shared/pluginAppSpec.mjs';
+} from '../electron/shared/pluginSpec.mjs';
+import { APP_FILE_PATH, appRuns, parseAppFile, splitRunTarget } from '../electron/shared/appSpec.mjs';
 import { PluginManifestError } from '../electron/shared/pluginManifestError.mjs';
 import { packageFileExists, scanPluginPackageDir } from '../electron/shared/pluginPackageScan.mjs';
 
@@ -31,6 +34,7 @@ const require = createRequire(import.meta.url);
 const { fetchRemoteSource, runGit } = require('../electron/pluginGitHost.cjs');
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const officialMarketDir = path.join(repoRoot, 'builtin-plugin-market');
 const MARKETPLACE_CANDIDATES = ['.abu-plugin/marketplace.json', '.claude-plugin/marketplace.json', '.agents/plugins/marketplace.json'];
 
 /** One problem found in one entry; `field` is the package field path when known. */
@@ -73,14 +77,14 @@ function insideDir(base, candidate) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-async function resolvePackageDir(marketDir, entry, source, stagingRoot) {
+async function resolveEntryDir(marketDir, name, source, stagingRoot) {
   if (source.kind === 'relative') {
     const dir = path.resolve(marketDir, source.path);
     if (!insideDir(marketDir, dir)) throw new Error(`source path escapes the marketplace directory: ${source.path}`);
     return dir;
   }
   if (!source.sha) throw new Error(`remote source must pin a sha`);
-  const finalDir = path.join(stagingRoot, entry.name, source.sha);
+  const finalDir = path.join(stagingRoot, name, source.sha);
   if (existsSync(finalDir)) return finalDir;
   mkdirSync(path.dirname(finalDir), { recursive: true });
   const tmpDir = `${finalDir}.tmp`;
@@ -96,33 +100,9 @@ async function resolvePackageDir(marketDir, entry, source, stagingRoot) {
   return finalDir;
 }
 
-/** All asset paths the manifest interface and the app config reference, with the field each came from. */
-function referencedAssets(manifest, app) {
-  const assets = [];
-  const iface = manifest.interface ?? {};
-  for (const key of ['logo', 'logoDark', 'composerIcon']) if (typeof iface[key] === 'string') assets.push({ field: `interface.${key}`, path: iface[key] });
-  for (const [index, shot] of (Array.isArray(iface.screenshots) ? iface.screenshots : []).entries()) assets.push({ field: `interface.screenshots[${index}]`, path: shot });
-  if (!app) return assets;
-  app.home.modes.items.forEach((mode, modeIndex) => {
-    if (mode.icon) assets.push({ field: `app.home.modes.items[${modeIndex}].icon`, path: mode.icon });
-    mode.scenes.forEach((scene, sceneIndex) => {
-      if (scene.icon) assets.push({ field: `app.home.modes.items[${modeIndex}].scenes[${sceneIndex}].icon`, path: scene.icon });
-    });
-  });
-  app.nav?.items.forEach((item, index) => {
-    if (item.icon) assets.push({ field: `app.nav.items[${index}].icon`, path: item.icon });
-  });
-  return assets;
-}
-
-/**
- * Validate one package directory as the installer would, then apply the
- * marketplace curation rules. Returns the failures instead of throwing so a
- * run reports every entry.
- */
-export function checkPackage(packageDir, entry, { hostVersion }) {
+function collector(entryName) {
   const failures = [];
-  const fail = (message, field) => failures.push(new MarketCheckFailure(entry.name, message, field));
+  const fail = (message, field) => failures.push(new MarketCheckFailure(entryName, message, field));
   const catching = (fn) => {
     try {
       return fn();
@@ -134,19 +114,52 @@ export function checkPackage(packageDir, entry, { hostVersion }) {
       throw error;
     }
   };
+  return { failures, fail, catching };
+}
 
+/** Asset paths a plugin manifest's interface references, with the field each came from. */
+function pluginAssets(manifest) {
+  const assets = [];
+  const iface = manifest.interface ?? {};
+  for (const key of ['logo', 'logoDark', 'composerIcon']) if (typeof iface[key] === 'string') assets.push({ field: `interface.${key}`, path: iface[key] });
+  for (const [index, shot] of (Array.isArray(iface.screenshots) ? iface.screenshots : []).entries()) assets.push({ field: `interface.screenshots[${index}]`, path: shot });
+  return assets;
+}
+
+/** Asset paths an app references: its logos, and the icons of its modes, scenes and nav items. */
+function appAssets(app) {
+  const assets = [];
+  for (const key of ['logo', 'logoDark']) if (app.interface[key]) assets.push({ field: `interface.${key}`, path: app.interface[key] });
+  app.config.home.modes.items.forEach((mode, modeIndex) => {
+    if (mode.icon) assets.push({ field: `home.modes.items[${modeIndex}].icon`, path: mode.icon });
+    mode.scenes.forEach((scene, sceneIndex) => {
+      if (scene.icon) assets.push({ field: `home.modes.items[${modeIndex}].scenes[${sceneIndex}].icon`, path: scene.icon });
+    });
+  });
+  app.config.nav?.items.forEach((item, index) => {
+    if (item.icon) assets.push({ field: `nav.items[${index}].icon`, path: item.icon });
+  });
+  return assets;
+}
+
+/**
+ * Validate one plugin package as the installer would, then apply the
+ * marketplace curation rules. Returns the failures and, when the package
+ * reads, what it ships (for the apps that reference it).
+ */
+export function checkPackage(packageDir, entry, { hostVersion }) {
+  const { failures, fail, catching } = collector(entry.name);
   const scan = catching(() => scanPluginPackageDir(packageDir));
-  if (!scan) return failures;
+  if (!scan) return { failures };
   const manifest = scan.manifest.raw;
   if (!manifest || typeof manifest !== 'object') {
     fail('manifest must be a JSON object', scan.manifest.relPath);
-    return failures;
+    return { failures };
   }
   if (manifest.name !== entry.name) fail(`manifest name "${manifest.name}" differs from the marketplace entry`, 'name');
   if (entry.source.kind === 'relative' && entry.version !== undefined && manifest.version !== entry.version) {
     fail(`entry version ${entry.version} differs from manifest version ${manifest.version}; relative sources detect updates by this field`, 'version');
   }
-
   const teams = [];
   for (const file of scan.teamFiles) {
     const team = catching(() => parseTeamFile(file.raw, file.id, { agentNames: scan.agentNames }));
@@ -155,43 +168,81 @@ export function checkPackage(packageDir, entry, { hostVersion }) {
   catching(() => assertMinAbuVersionDeclared(manifest, { hasTeams: scan.teamFiles.length > 0 }));
   const compat = catching(() => checkMinAbuVersion(manifest, hostVersion));
   if (compat && !compat.ok) fail(`requires Abu ${compat.required}, this checkout is ${hostVersion}`, 'minAbuVersion');
-
-  const app = manifest.app === undefined ? undefined : catching(() => parseAppConfig(manifest.app, {
-    teamIds: teams.map(team => team.id),
-    agentNames: scan.agentNames,
-    skillNames: scan.skillNames,
-    mcpServerNames: scan.mcpServerNames,
-  }));
-
-  if (entry.providesApp !== undefined && typeof entry.providesApp !== 'boolean') fail('providesApp must be a boolean', 'providesApp');
   if (entry.minAbuVersion !== undefined && entry.minAbuVersion !== manifest.minAbuVersion) fail(`entry minAbuVersion ${entry.minAbuVersion} differs from manifest minAbuVersion ${manifest.minAbuVersion}`, 'minAbuVersion');
-  if (entry.providesApp === true && entry.minAbuVersion === undefined) fail('an app entry must mirror the manifest minAbuVersion so older Abu versions hide it', 'minAbuVersion');
-  if (entry.providesApp === true && manifest.app === undefined) fail('entry sets providesApp but the manifest has no app', 'app');
-  if (entry.providesApp !== true && manifest.app !== undefined) fail('manifest has app but the entry does not set providesApp: true', 'providesApp');
-  if (manifest.app !== undefined) {
-    const iface = manifest.interface ?? {};
-    for (const key of ['displayName', 'shortDescription', 'logo', 'logoDark']) {
-      if (typeof iface[key] !== 'string' || iface[key].length === 0) fail(`an app must set interface.${key}`, `interface.${key}`);
-    }
-    // The listing shows the entry's own displayName, and the app itself shows
-    // the manifest's. Two spellings would give the same app two names.
-    if (entry.displayName === undefined) fail('an app entry must mirror interface.displayName so the listing names the app', 'displayName');
-    else if (entry.displayName !== iface.displayName) fail(`entry displayName ${entry.displayName} differs from interface.displayName ${iface.displayName}`, 'displayName');
-  }
-  if (entry.displayName !== undefined && typeof entry.displayName !== 'string') fail('displayName must be a string', 'displayName');
-  for (const asset of referencedAssets(manifest, app)) {
+  for (const asset of pluginAssets(manifest)) {
     if (!packageFileExists(packageDir, asset.path)) fail(`file not found in package: ${asset.path}`, asset.field);
   }
+  return {
+    failures,
+    ships: {
+      teamIds: new Set(teams.map(team => team.id)),
+      agentNames: new Set(scan.agentNames),
+      skillNames: new Set(scan.skillNames),
+      mcpServerNames: new Set(scan.mcpServerNames),
+    },
+  };
+}
+
+/**
+ * Validate one app directory as the add step would, then check that every
+ * `plugin:` reference names something the plugin ships. `pluginsByName` maps a
+ * plugin name to what it ships, or is missing the name when no checked market
+ * lists it.
+ */
+export function checkApp(appDir, entry, { hostVersion, pluginsByName }) {
+  const { failures, fail, catching } = collector(`app ${entry.name}`);
+  const file = path.join(appDir, APP_FILE_PATH);
+  if (!existsSync(file)) {
+    fail(`${APP_FILE_PATH} not found`, APP_FILE_PATH);
+    return failures;
+  }
+  let raw;
+  try {
+    raw = readJson(file);
+  } catch {
+    fail('is not valid JSON', APP_FILE_PATH);
+    return failures;
+  }
+  const app = catching(() => parseAppFile(raw));
+  if (!app) return failures;
+  if (app.name !== entry.name) fail(`app name "${app.name}" differs from the marketplace entry`, 'name');
+  for (const key of ['version', 'minAbuVersion']) {
+    if (entry[key] !== undefined && entry[key] !== app[key]) fail(`entry ${key} ${entry[key]} differs from app.json ${key} ${app[key]}`, key);
+  }
+  if (semver.lt(hostVersion, app.minAbuVersion)) fail(`requires Abu ${app.minAbuVersion}, this checkout is ${hostVersion}`, 'minAbuVersion');
+  for (const key of ['logo', 'logoDark']) {
+    if (!app.interface[key]) fail(`a listed app must set interface.${key}`, `interface.${key}`);
+  }
+  for (const asset of appAssets(app)) {
+    if (!packageFileExists(appDir, asset.path)) fail(`file not found in app: ${asset.path}`, asset.field);
+  }
+  app.plugins.forEach((name, index) => {
+    if (!pluginsByName.has(name)) fail(`plugin "${name}" is not listed in this market or the official market`, `plugins[${index}]`);
+  });
+  const shipsKey = { team: 'teamIds', expert: 'agentNames', skill: 'skillNames' };
+  for (const { field, run } of appRuns(app.config)) {
+    for (const kind of ['team', 'expert', 'skill']) {
+      if (run[kind] === undefined) continue;
+      const target = splitRunTarget(kind, run[kind]);
+      if (target?.origin !== 'plugin') continue;
+      const ships = pluginsByName.get(target.plugin);
+      if (ships && !ships[shipsKey[kind]].has(target.id)) fail(`plugin "${target.plugin}" does not ship ${kind} "${target.id}"`, `${field}.${kind}`);
+    }
+  }
+  (app.config.requiredConnectors ?? []).forEach((value, index) => {
+    const slash = value.indexOf('/');
+    const ships = pluginsByName.get(value.slice(0, slash));
+    if (ships && !ships.mcpServerNames.has(value.slice(slash + 1))) fail(`plugin "${value.slice(0, slash)}" does not declare connector "${value.slice(slash + 1)}"`, `requiredConnectors[${index}]`);
+  });
   return failures;
 }
 
-export async function checkMarket(marketDir, { hostVersion, stagingRoot = path.join(repoRoot, '.agent', 'market-check') }) {
-  const { marketplace, file } = readMarketplace(marketDir);
-  if (!Array.isArray(marketplace.plugins)) throw new Error(`${file}: plugins must be an array`);
+async function checkPlugins(marketDir, marketplace, { hostVersion, stagingRoot }) {
   const failures = [];
   const checked = [];
+  const shipsByName = new Map();
   const names = new Set();
-  for (const [index, raw] of marketplace.plugins.entries()) {
+  for (const [index, raw] of (marketplace.plugins ?? []).entries()) {
     const label = typeof raw?.name === 'string' ? raw.name : `plugins[${index}]`;
     if (names.has(label)) failures.push(new MarketCheckFailure(label, 'listed more than once'));
     names.add(label);
@@ -202,22 +253,66 @@ export async function checkMarket(marketDir, { hostVersion, stagingRoot = path.j
       failures.push(new MarketCheckFailure(label, error.message, 'source'));
       continue;
     }
-    const entry = { name: label, displayName: raw.displayName, version: raw.version, providesApp: raw.providesApp, minAbuVersion: raw.minAbuVersion, source };
+    const entry = { name: label, version: raw.version, minAbuVersion: raw.minAbuVersion, source };
     let packageDir;
     try {
-      packageDir = await resolvePackageDir(marketDir, entry, source, stagingRoot);
+      packageDir = await resolveEntryDir(marketDir, label, source, stagingRoot);
     } catch (error) {
       failures.push(new MarketCheckFailure(label, error.message, 'source'));
       continue;
     }
-    failures.push(...checkPackage(packageDir, entry, { hostVersion }));
-    checked.push({ name: label, packageDir, providesApp: entry.providesApp === true });
+    const result = checkPackage(packageDir, entry, { hostVersion });
+    failures.push(...result.failures);
+    if (result.ships) shipsByName.set(label, result.ships);
+    checked.push({ kind: 'plugin', name: label, dir: packageDir });
+  }
+  return { failures, checked, shipsByName };
+}
+
+export async function checkMarket(marketDir, { hostVersion, stagingRoot = path.join(repoRoot, '.agent', 'market-check') }) {
+  const { marketplace, file } = readMarketplace(marketDir);
+  if (marketplace.plugins !== undefined && !Array.isArray(marketplace.plugins)) throw new Error(`${file}: plugins must be an array`);
+  if (marketplace.apps !== undefined && !Array.isArray(marketplace.apps)) throw new Error(`${file}: apps must be an array`);
+  const own = await checkPlugins(marketDir, marketplace, { hostVersion, stagingRoot });
+  const failures = [...own.failures];
+  const checked = [...own.checked];
+  const pluginsByName = new Map(own.shipsByName);
+  if ((marketplace.apps ?? []).length > 0 && path.resolve(marketDir) !== officialMarketDir) {
+    const official = await checkPlugins(officialMarketDir, readMarketplace(officialMarketDir).marketplace, { hostVersion, stagingRoot });
+    for (const [name, ships] of official.shipsByName) if (!pluginsByName.has(name)) pluginsByName.set(name, ships);
+  }
+  const appNames = new Set();
+  for (const [index, raw] of (marketplace.apps ?? []).entries()) {
+    const label = typeof raw?.name === 'string' ? raw.name : `apps[${index}]`;
+    if (appNames.has(label)) failures.push(new MarketCheckFailure(`app ${label}`, 'listed more than once'));
+    appNames.add(label);
+    let source;
+    try {
+      source = entrySource(raw.source);
+    } catch (error) {
+      failures.push(new MarketCheckFailure(`app ${label}`, error.message, 'source'));
+      continue;
+    }
+    if (source.kind !== 'relative') {
+      for (const key of ['version', 'description', 'minAbuVersion']) {
+        if (typeof raw[key] !== 'string') failures.push(new MarketCheckFailure(`app ${label}`, `a remote app entry must state ${key}`, key));
+      }
+    }
+    let appDir;
+    try {
+      appDir = await resolveEntryDir(marketDir, label, source, stagingRoot);
+    } catch (error) {
+      failures.push(new MarketCheckFailure(`app ${label}`, error.message, 'source'));
+      continue;
+    }
+    failures.push(...checkApp(appDir, { name: label, version: raw.version, minAbuVersion: raw.minAbuVersion }, { hostVersion, pluginsByName }));
+    checked.push({ kind: 'app', name: label, dir: appDir });
   }
   return { marketplace: marketplace.name, file, checked, failures };
 }
 
 function parseArgs(argv) {
-  const options = { dir: path.join(repoRoot, 'builtin-plugin-market'), hostVersion: readJson(path.join(repoRoot, 'package.json')).version };
+  const options = { dir: officialMarketDir, hostVersion: readJson(path.join(repoRoot, 'package.json')).version };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--dir') options.dir = path.resolve(argv[++i]);
     else if (argv[i] === '--host-version') options.hostVersion = argv[++i];
@@ -229,9 +324,9 @@ function parseArgs(argv) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const result = await checkMarket(options.dir, { hostVersion: options.hostVersion });
-  for (const item of result.checked) console.log(`checked ${item.name}${item.providesApp ? ' (app)' : ''} — ${path.relative(repoRoot, item.packageDir) || '.'}`);
+  for (const item of result.checked) console.log(`checked ${item.kind} ${item.name} — ${path.relative(repoRoot, item.dir) || '.'}`);
   if (result.failures.length === 0) {
-    console.log(`market "${result.marketplace}": ${result.checked.length} package(s) OK`);
+    console.log(`market "${result.marketplace}": ${result.checked.length} entr${result.checked.length === 1 ? 'y' : 'ies'} OK`);
     return;
   }
   for (const failure of result.failures) console.error(`✗ ${failure}`);

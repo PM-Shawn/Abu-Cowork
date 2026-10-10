@@ -4,24 +4,18 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { type LanguageSetting, format, useI18n } from '@/i18n';
 import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
-import { Trash2 } from 'lucide-react';
 import { clearBehaviorData, testWindowPermission } from '@/core/agent/behaviorSensor';
 import { useToastStore } from '@/stores/toastStore';
-import { Select } from '@/components/ui/select';
-import { Toggle } from '@/components/ui/toggle';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { SegmentedControl } from '@/components/ds/segmented-control';
+import { Select } from '@/components/ds/select';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { Switch } from '@/components/ds/switch';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import { SETTING_CONTROL_WIDTH } from '@/components/settings/settingsLayout';
 import { buildAgentMaxTurnsOptions } from '@/core/agent/maxTurnsNotice';
 import { DEFAULT_MAX_TURNS } from '@/core/agent/loopGuards';
-
-/**
- * One width for every control on the right of a settings row.
- *
- * `Select variant="inline"` is `w-full`, so without a sized wrapper each row's
- * control is as wide as the option it happens to be showing and the column
- * comes out ragged. Sized here rather than inside `Select` because the width
- * belongs to this page's layout, not to the control.
- */
-const SETTINGS_CONTROL_WIDTH = 'w-40 shrink-0';
 
 export default function GeneralSection() {
   const closeAction = useSettingsStore(s => s.closeAction);
@@ -105,123 +99,104 @@ export default function GeneralSection() {
   ];
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <SettingsSectionHeader title={t.settings.general} description={t.settings.generalDescription} />
 
-      {/* Appearance */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <p className="text-body text-[var(--abu-text-primary)]">{t.settings.appearance}</p>
-        <div className={SETTINGS_CONTROL_WIDTH}>
-          <Select
-            variant="inline"
+      <SettingGroup>
+        <SettingRow title={t.settings.appearance}>
+          <SegmentedControl
+            label={t.settings.appearance}
             value={theme}
             options={themeOptions}
-            onChange={(v) => setTheme(v as 'light' | 'system' | 'dark')}
+            onValueChange={(v) => setTheme(v as 'light' | 'system' | 'dark')}
           />
-        </div>
-      </div>
+        </SettingRow>
 
-      {/* Language */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <p className="text-body text-[var(--abu-text-primary)]">{t.settings.language}</p>
-        <div className={SETTINGS_CONTROL_WIDTH}>
-          <Select
-            variant="inline"
-            value={language}
-            options={languageOptions}
-            onChange={(v) => setLanguage(v as LanguageSetting)}
-          />
-        </div>
-      </div>
-
-      {/* Agent max turns */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{t.settings.agentMaxTurns}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.agentMaxTurnsDesc}</p>
-        </div>
-        <div className={SETTINGS_CONTROL_WIDTH}>
-          <Select
-            variant="inline"
-            value={String(agentMaxTurns ?? DEFAULT_MAX_TURNS)}
-            options={maxTurnsOptions}
-            onChange={(v) => setAgentMaxTurns(Number(v))}
-          />
-        </div>
-      </div>
-
-      {/* Close window behavior */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <p className="text-body text-[var(--abu-text-primary)]">{t.settings.closeWindowBehavior}</p>
-        <div className={SETTINGS_CONTROL_WIDTH}>
-          <Select
-            variant="inline"
-            value={closeAction}
-            options={closeOptions}
-            onChange={(v) => setCloseAction(v as 'ask' | 'minimize' | 'quit')}
-          />
-        </div>
-      </div>
-
-      {/* Composer send shortcut */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{t.settings.composerEnterBehavior}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.composerEnterBehaviorDesc}</p>
-        </div>
-        <div className={SETTINGS_CONTROL_WIDTH}>
-          <Select
-            variant="inline"
-            value={composerEnterBehavior}
-            options={enterBehaviorOptions}
-            onChange={(v) => setComposerEnterBehavior(v as ComposerEnterBehavior)}
-          />
-        </div>
-      </div>
-
-      {/* Behavior sensor */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-          <div className="flex-1 mr-4">
-            <p className="text-body text-[var(--abu-text-primary)]">{t.settings.behaviorSensor}</p>
-            <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.behaviorSensorDesc}</p>
+        <SettingRow title={t.settings.language}>
+          <div className={SETTING_CONTROL_WIDTH.general}>
+            <Select
+              fullWidth
+              label={t.settings.language}
+              value={language}
+              options={languageOptions}
+              onValueChange={(v) => setLanguage(v as LanguageSetting)}
+            />
           </div>
-          <Toggle
+        </SettingRow>
+
+        <SettingRow title={t.settings.agentMaxTurns} description={t.settings.agentMaxTurnsDesc}>
+          <div className={SETTING_CONTROL_WIDTH.general}>
+            <Select
+              fullWidth
+              label={t.settings.agentMaxTurns}
+              value={String(agentMaxTurns ?? DEFAULT_MAX_TURNS)}
+              options={maxTurnsOptions}
+              onValueChange={(v) => setAgentMaxTurns(Number(v))}
+            />
+          </div>
+        </SettingRow>
+
+        <SettingRow title={t.settings.closeWindowBehavior}>
+          <div className={SETTING_CONTROL_WIDTH.general}>
+            <Select
+              fullWidth
+              label={t.settings.closeWindowBehavior}
+              value={closeAction}
+              options={closeOptions}
+              onValueChange={(v) => setCloseAction(v as 'ask' | 'minimize' | 'quit')}
+            />
+          </div>
+        </SettingRow>
+
+        <SettingRow title={t.settings.composerEnterBehavior} description={t.settings.composerEnterBehaviorDesc}>
+          <div className={SETTING_CONTROL_WIDTH.general}>
+            <Select
+              fullWidth
+              label={t.settings.composerEnterBehavior}
+              value={composerEnterBehavior}
+              options={enterBehaviorOptions}
+              onValueChange={(v) => setComposerEnterBehavior(v as ComposerEnterBehavior)}
+            />
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup>
+        <SettingRow title={t.settings.behaviorSensor} description={t.settings.behaviorSensorDesc} htmlFor="setting-behavior-sensor">
+          <Switch
+            id="setting-behavior-sensor"
             checked={behaviorSensorEnabled}
-            onChange={handleToggleSensor}
-            size="lg"
+            onCheckedChange={handleToggleSensor}
             disabled={sensorTesting}
           />
-        </div>
+        </SettingRow>
         {behaviorSensorEnabled && (
-          <button
-            onClick={async () => {
-              await clearBehaviorData();
-              useToastStore.getState().addToast({
-                type: 'success',
-                title: t.settings.behaviorSensorCleared,
-              });
-            }}
-            className="flex items-center gap-2 px-3 py-2 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] rounded-lg transition-colors"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t.settings.behaviorSensorClearData}
-          </button>
+          <div className="py-3">
+            <Button
+              variant="danger"
+              size="sm"
+              icon={AppIcons.delete}
+              onClick={async () => {
+                await clearBehaviorData();
+                useToastStore.getState().addToast({
+                  type: 'success',
+                  title: t.settings.behaviorSensorCleared,
+                });
+              }}
+            >
+              {t.settings.behaviorSensorClearData}
+            </Button>
+          </div>
         )}
-      </div>
 
-      {/* Prevent sleep */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{t.settings.preventSleep}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.preventSleepDesc}</p>
-        </div>
-        <Toggle
-          checked={preventSleep}
-          onChange={handleTogglePreventSleep}
-          size="lg"
-        />
-      </div>
+        <SettingRow title={t.settings.preventSleep} description={t.settings.preventSleepDesc} htmlFor="setting-prevent-sleep">
+          <Switch
+            id="setting-prevent-sleep"
+            checked={preventSleep}
+            onCheckedChange={handleTogglePreventSleep}
+          />
+        </SettingRow>
+      </SettingGroup>
     </div>
   );
 }

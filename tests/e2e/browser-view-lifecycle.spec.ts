@@ -40,6 +40,7 @@ import {
   configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -718,7 +719,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
     await configureBrowserAsking(page);
     await sendComposerMessage(page, mock, '打开两篇网页，分别保留标签供我比较');
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
     await expect(page.getByText(finished, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     const lastRequest = taskRequests(mock).at(-1)?.body as { messages?: Array<{ role?: string; content?: unknown }> };
     const toolResults = lastRequest.messages?.filter((message) => message.role === 'tool') ?? [];
@@ -785,7 +786,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
     await configureBrowserAsking(page);
     await sendComposerMessage(page, mock, '打开网页，点击按钮并保留提交结果的新标签');
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
     await expect(page.getByText(finished, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     if (mode === 'manual') {
       await page.getByRole('button', { name: '接管', exact: true }).click();
@@ -901,7 +902,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
       for (const known of app.windows()) observeDialogs(known);
       await sendComposerMessage(page, mock, '保留第一篇网页，关闭后台未使用的第二篇');
       await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-      await browserAllowSiteButton(page).click();
+      await pressWhenSettled(browserAllowSiteButton(page));
       await expect(page.getByText(finished, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
       const last = taskRequests(mock).at(-1)?.body as { messages: OpenAiRequestMessage[] };
       const result = last.messages.filter((message) => message.role === 'tool').at(-1);
@@ -971,10 +972,10 @@ test.describe('Electron browser view lifecycle E2E', () => {
     await configureLocalMockProvider(page,mock.baseUrl,LOCAL_MOCK_PROVIDER_OPTIONS); await configureBrowserAsking(page);
     await sendComposerMessage(page,mock,'填写嵌入表单里的姓名');
     await expect(browserConfirmHeading(page)).toBeVisible({timeout:READY_TIMEOUT});
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
     await expect(browserConfirmHeading(page)).toBeVisible({timeout:READY_TIMEOUT});
     await expect(page.locator('code').filter({hasText:'abu-browser__snapshot (http://localhost:'})).toContainText('localhost');
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
     await expect(page.getByText('cross-origin-form-complete',{exact:true})).toBeVisible({timeout:READY_TIMEOUT});
     const value = await app.evaluate(async ({webContents}, url) => {
       const contents = webContents.getAllWebContents().find(contents => contents.getURL() === url)!;
@@ -1098,7 +1099,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
     await configureBrowserAsking(page);
     await sendComposerMessage(page, mock, '打开网页并保留子任务结果');
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
     await expect(page.getByText('child-lifecycle-ready', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     const childUrl = `${fixture.url}?child=result`;
     const result = await app.evaluate(async ({ app }, url) => {
@@ -1169,7 +1170,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(3);
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -1207,7 +1208,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
       };
     });
     await page.getByRole('button', { name: /^(新建标签页|New tab)$/ }).click();
-    await page.getByRole('button', { name: /^(新建终端|New Terminal)$/ }).click();
+    await page.getByRole('menuitem', { name: /^(新建终端|New Terminal)$/ }).click();
     const terminalTab = page.getByRole('tab', { name: /^(终端|Terminal)$/ });
     await expect(terminalTab).toHaveAttribute('aria-selected', 'true');
     const terminalId = await terminalTab.locator('..').getAttribute('data-tab-id');
@@ -1347,7 +1348,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
     // add an ask of its own.
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
 
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
@@ -1455,7 +1456,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
     // four page actions inside the batch must not add a second dialog.
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
 
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
@@ -1575,7 +1576,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
       await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(requestCount);
       await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
       await expect(page.getByText(new RegExp(`abu-browser__${tool}`)).last()).toBeVisible();
-      await browserConfirmButton(page).click();
+      await pressWhenSettled(browserConfirmButton(page));
     }
 
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -1642,7 +1643,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(3);
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -1683,6 +1684,22 @@ test.describe('Electron browser view lifecycle E2E', () => {
     ).toBe(true);
     const finalStates = await nativeBrowserViewStates(app!);
     expect(finalStates.filter((state) => state.url === fixture!.url)).toHaveLength(1);
+
+    // --- A dialog over the browser tab ---
+    // The native view paints above the page, so it is hidden for as long as a dialog is up
+    // (`App.tsx` hands the design-system provider's `onModalChange` to the preview store).
+    await page.getByRole('button', { name: /^(搜索对话\.\.\.|Search chats\.\.\.)$/ }).first().click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(
+      async () => (await ourNativeViewState(app!, fixture!.url))?.visible ?? null,
+      { timeout: READY_TIMEOUT },
+    ).toBe(false);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: READY_TIMEOUT });
+    await expect.poll(
+      async () => (await ourNativeViewState(app!, fixture!.url))?.visible ?? null,
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
   });
 
   /**
@@ -1756,7 +1773,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
       // navigate asks first.
       await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
       await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-      await browserAllowSiteButton(page).click();
+      await pressWhenSettled(browserAllowSiteButton(page));
 
       // Then the upload asks on its own — and the question NAMES the file, in
       // the spelling the user wrote it, which is the whole point of freezing
@@ -1774,7 +1791,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
       await expect(browserConfirmHeading(page)).toBeHidden();
       await expect(page.getByText(uploadName, { exact: false })).toBeVisible({ timeout: READY_TIMEOUT });
       await expect(page.getByText('abu-browser__upload_file', { exact: false })).toHaveCount(0);
-      await browserUploadConfirmButton(page).click();
+      await pressWhenSettled(browserUploadConfirmButton(page));
 
       await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
       await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -1859,7 +1876,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowSiteButton(page).click();
+    await pressWhenSettled(browserAllowSiteButton(page));
 
     // `download` is an `interactive` action — it presses a control — so it
     // uses the saved browse rule the user just explicitly granted, exactly the

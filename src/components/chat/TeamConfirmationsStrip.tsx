@@ -2,8 +2,11 @@ import { grantBrowserPermissionTargets } from '@/core/permissions/browserPermiss
 import { isRetryableTeamIdentity } from '@/core/agent/teamConfirmationIdentity';
 import { teamTaskRuleCategory } from '@/core/agent/teamApprovalScope';
 import { forgiveMember, resetDispatchCount } from '@/core/team/teamRunBounds';
-import { useMemo, useState } from 'react';
-import { ShieldAlert, Check, X } from 'lucide-react';
+import { memo, useMemo, useState } from 'react';
+import { Button } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { StatusIcon } from '@/components/ds/status-icon';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { useChatStore } from '@/stores/chatStore';
@@ -19,9 +22,6 @@ import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { forgiveTeamBrowserDenials, runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { describeTaskRuleScope } from './teamTaskRuleScope';
 
-const PRIMARY_BUTTON = 'inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--abu-clay)] px-2 py-0.5 text-caption text-white hover:opacity-90';
-const SECONDARY_BUTTON = 'inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-caption';
-
 /**
  * "需要你确认" strip for a team conversation: every action the run refused
  * because nobody could confirm it, and every hand-off the task's bounds
@@ -30,7 +30,7 @@ const SECONDARY_BUTTON = 'inline-flex shrink-0 items-center gap-1 rounded-md bor
  * for a site, allowed from now on; "this task" allowances are listed at the
  * bottom and can be revoked.
  */
-export default function TeamConfirmationsStrip({ conversationId }: { conversationId: string }) {
+function TeamConfirmationsStrip({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
   const [saving, setSaving] = useState<string | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -139,19 +139,19 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
   };
 
   return (
-    <div className="mx-3 mb-1.5 rounded-lg border border-[var(--abu-warning)] bg-[var(--abu-bg-muted)] px-3 py-2" data-testid="team-confirmations-strip">
+    <div className="mx-3 mb-2 rounded-panel border border-separator bg-surface px-3 py-2" data-testid="team-confirmations-strip">
       {items.length + stoppedItems.length > 0 && (
-        <div className="mb-1 flex items-center gap-1.5 text-caption font-medium text-[var(--abu-text-primary)]">
-          <ShieldAlert aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-warning)]" />
+        <div className="mb-1 flex items-center gap-2 text-ui font-medium text-label">
+          <StatusIcon tone="warning" size="sm" />
           <span className="flex-1">{format(t.team.confirmationStripTitle, { n: items.length + stoppedItems.length })}</span>
           {items.length >= 2 && approvableForTask.length > 0 && (
-            <button type="button" disabled={saving !== null} onClick={approveAll} className={SECONDARY_BUTTON}>
+            <Button variant="secondary" size="sm" disabled={saving !== null} onClick={approveAll}>
               {t.team.confirmationApproveAll}
-            </button>
+            </Button>
           )}
         </div>
       )}
-      {saveFailed && <p role="alert">{t.settings.browserSaveFailed}</p>}
+      {saveFailed && <div className="mb-1"><InlineMessage tone="danger">{t.settings.browserSaveFailed}</InlineMessage></div>}
       <ul className="max-h-60 space-y-2 overflow-y-auto pr-1">
         {items.map((item) => {
           const retryable = isRetryableTeamIdentity(item.identity);
@@ -159,67 +159,73 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
           const offerSite = retryable && canOfferSite(item);
           return (
             <li key={item.id} className="flex flex-wrap items-center gap-2" data-testid="team-confirmation-item">
-              <div className="min-w-0 w-full text-caption text-[var(--abu-text-secondary)]">
-                <span className="text-[var(--abu-text-primary)]">{memberLabel(item)}</span>
+              <div className="w-full min-w-0 text-ui-sm text-label-secondary">
+                <span className="text-label">{memberLabel(item)}</span>
                 <span>{t.team.confirmationSeparator}</span>
                 {actionText(item) === item.detail
-                  ? <code className="line-clamp-2 break-all align-top" title={item.detail}>{item.detail}</code>
-                  : <span className="text-[var(--abu-text-primary)]">{actionText(item)}</span>}
+                  ? <code className="line-clamp-2 break-all align-top font-code text-caption" title={item.detail}>{item.detail}</code>
+                  : <span className="text-label">{actionText(item)}</span>}
                 {item.kind === 'file' && <div>{item.capability === 'write'
                   ? (item.additionalCapabilities?.includes('read') ? t.team.confirmationWriteRead : t.team.confirmationWrite)
                   : t.team.confirmationRead}</div>}
-                {item.identity && (item.kind === 'command' || item.kind === 'file') && <div>{t.team.confirmationCwd}: <code>{item.identity.cwd ?? t.team.confirmationDefaultCwd}</code></div>}
-                {item.browserOrigin && <div>{t.team.confirmationOrigin}: <code>{item.browserOrigin}</code></div>}
+                {item.identity && (item.kind === 'command' || item.kind === 'file') && <div>{t.team.confirmationCwd}: <code className="font-code text-caption">{item.identity.cwd ?? t.team.confirmationDefaultCwd}</code></div>}
+                {item.browserOrigin && <div>{t.team.confirmationOrigin}: <code className="font-code text-caption">{item.browserOrigin}</code></div>}
                 {item.browserPermissionTargets?.filter((target) => target.embeddedIn).map((target, index) =>
-                  <div key={index}><code>{target.origin} ({target.embeddedIn})</code></div>)}
+                  <div key={index}><code className="font-code text-caption">{target.origin} ({target.embeddedIn})</code></div>)}
                 {!retryable && <div>{t.team.confirmationExpired}</div>}
-                {item.reason && <span className="ml-1 text-[var(--abu-text-muted)]" title={item.reason}>（{item.reason.slice(0, 40)}{item.reason.length > 40 ? '…' : ''}）</span>}
+                {item.reason && <span className="ml-1 text-label-tertiary" title={item.reason}>（{item.reason.slice(0, 40)}{item.reason.length > 40 ? '…' : ''}）</span>}
               </div>
               {retryable && (
-                <button
-                  type="button"
+                <Button
+                  variant={category ? 'secondary' : 'primary'}
+                  size="sm"
+                  icon={category ? undefined : AppIcons.done}
                   onClick={() => approveOnce(item)}
                   disabled={saving !== null}
-                  className={category ? SECONDARY_BUTTON : PRIMARY_BUTTON}
                   aria-label={`${t.team.confirmationApprove}: ${actionText(item)}`}
                 >
-                  {!category && <Check aria-hidden="true" className="h-3 w-3" />}
                   {t.team.confirmationApprove}
-                </button>
+                </Button>
               )}
               {category && (
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={AppIcons.done}
                   onClick={() => approveTask(item)}
                   disabled={saving !== null}
                   data-primary="true"
-                  className={PRIMARY_BUTTON}
                   aria-label={`${t.team.confirmationApproveTask}: ${actionText(item)}`}
                 >
-                  <Check aria-hidden="true" className="h-3 w-3" />
                   {t.team.confirmationApproveTask}
-                </button>
+                </Button>
               )}
               {offerSite && (
-                <button type="button" disabled={saving !== null}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  // Its own save is running: busy, so the focus stays on it. While the grant of
+                  // another request is saved it is unavailable, like the other answers.
+                  busy={saving === item.id}
+                  disabled={saving !== null && saving !== item.id}
                   onClick={() => void allowSite(item)}
                   data-testid="team-confirmation-allow-site"
-                  className={SECONDARY_BUTTON}
-                  aria-label={siteGrantLabel(item)}>
+                  aria-label={siteGrantLabel(item)}
+                >
                   {siteGrantLabel(item)}
-                </button>
+                </Button>
               )}
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={AppIcons.close}
                 onClick={() => reject(item)}
-                className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
                 aria-label={`${t.team.confirmationReject}: ${actionText(item)}`}
               >
-                <X aria-hidden="true" className="h-3 w-3" />
                 {t.team.confirmationReject}
-              </button>
+              </Button>
               {category && (
-                <div className="w-full text-caption text-[var(--abu-text-muted)]">
+                <div className="w-full text-ui-sm text-label-tertiary">
                   {describeTaskRuleScope(item, memberLabel(item), t.team)}
                 </div>
               )}
@@ -228,35 +234,38 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
         })}
         {stoppedItems.map((entry) => (
           <li key={entry.id} className="flex flex-wrap items-center gap-2" data-testid="team-stopped-item">
-            <div className="min-w-0 w-full text-caption text-[var(--abu-text-secondary)]">
+            <div className="w-full min-w-0 text-ui-sm text-label-secondary">
               {entry.reason === 'member_blocked'
                 ? format(t.team.stoppedMemberBlocked, { member: entry.member ?? t.team.confirmationLeader, n: entry.count })
                 : format(t.team.stoppedRunCap, { n: entry.count })}
-              {entry.lastFailure && <div className="text-[var(--abu-text-muted)]">{format(t.team.stoppedLastFailure, { reason: entry.lastFailure })}</div>}
+              {entry.lastFailure && <div className="text-label-tertiary">{format(t.team.stoppedLastFailure, { reason: entry.lastFailure })}</div>}
             </div>
-            <button type="button" className={PRIMARY_BUTTON} onClick={() => tryAnotherWay(entry)}>
+            <Button variant="primary" size="sm" onClick={() => tryAnotherWay(entry)}>
               {t.team.stoppedTryAnotherWay}
-            </button>
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => skip(entry)}>
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => skip(entry)}>
               {t.team.stoppedSkip}
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
       {rules.length > 0 && (
-        <div className={cn('text-caption text-[var(--abu-text-secondary)]',
-          items.length + stoppedItems.length > 0 && 'mt-2 border-t border-[var(--abu-border)] pt-1.5')}>
-          <div className="mb-0.5 text-[var(--abu-text-primary)]">{t.team.confirmationTaskRules}</div>
+        <div className={cn('text-ui-sm text-label-secondary',
+          items.length + stoppedItems.length > 0 && 'mt-2 border-t border-separator pt-2')}>
+          <div className="mb-1 text-label">{t.team.confirmationTaskRules}</div>
           {rules.map(([id, rule]) => {
             const scope = describeTaskRuleScope(rule.item, memberLabel(rule.item), t.team);
             return (
               <div key={id} className="flex items-center gap-2">
                 <span className="min-w-0 flex-1">{scope}</span>
-                <button type="button" className="shrink-0 underline"
+                <Button
+                  variant="plain"
+                  size="sm"
                   aria-label={`${t.team.confirmationRevoke}: ${scope}`}
-                  onClick={() => useTeamConfirmationStore.getState().revoke(id)}>
+                  onClick={() => useTeamConfirmationStore.getState().revoke(id)}
+                >
                   {t.team.confirmationRevoke}
-                </button>
+                </Button>
               </div>
             );
           })}
@@ -265,3 +274,6 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
     </div>
   );
 }
+
+// ChatView re-renders on every streamed token; the strip's own inputs do not change then.
+export default memo(TeamConfirmationsStrip);

@@ -2,6 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { getI18n } from '@/i18n';
 import { classifyError } from '@/core/llm/adapter';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -41,6 +42,16 @@ function StoreBackedCard() {
   return provider ? <ProviderCard provider={provider} isActive={false} onEdit={vi.fn()} /> : null;
 }
 
+/** Presses the card's re-check button and returns the element that carries the failure text as its `title`. */
+async function recheckAndFindFailure(): Promise<HTMLElement> {
+  render(<StoreBackedCard />, { wrapper: DesignSystemProvider });
+  fireEvent.click(screen.getByRole('button', { name: getI18n().settings.revalidate }));
+  const badge = await screen.findByText(getI18n().settings.statusFailed);
+  const holder = badge.closest<HTMLElement>('[title]');
+  if (!holder) throw new Error('the failed status carries no title');
+  return holder;
+}
+
 const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug'] as const;
 
 describe('ProviderCard after a failed health check', () => {
@@ -68,10 +79,7 @@ describe('ProviderCard after a failed health check', () => {
         }),
       ),
     );
-    render(<StoreBackedCard />);
-
-    fireEvent.click(screen.getByTitle(getI18n().settings.revalidate));
-    const badge = await screen.findByText(getI18n().settings.statusFailed);
+    const badge = await recheckAndFindFailure();
 
     expect(badge).toHaveAttribute('title', 'Incorrect API key provided: [REDACTED]; sent Authorization: [REDACTED]');
 
@@ -97,10 +105,7 @@ describe('ProviderCard after a failed health check', () => {
 
   it('caps a long response body before it reaches the title', async () => {
     mocks.chat.mockRejectedValue(classifyError(502, 'gateway dump '.repeat(1000)));
-    render(<StoreBackedCard />);
-
-    fireEvent.click(screen.getByTitle(getI18n().settings.revalidate));
-    const badge = await screen.findByText(getI18n().settings.statusFailed);
+    const badge = await recheckAndFindFailure();
 
     expect(badge.getAttribute('title')).toHaveLength(500);
   });

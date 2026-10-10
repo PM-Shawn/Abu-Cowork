@@ -7,7 +7,8 @@
  * keeps showing the most recent execution that actually has planned steps.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { initLanguage } from '@/i18n';
 import TaskProgressPanel from './TaskProgressPanel';
 import { useChatStore } from '@/stores/chatStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
@@ -32,8 +33,13 @@ function makeExec(id: string, startTime: number, stepDescs: string[]): TaskExecu
 
 afterEach(() => cleanup());
 
+function titleButton() {
+  return screen.getByRole('button', { name: /Progress/ });
+}
+
 describe('TaskProgressPanel', () => {
   beforeEach(() => {
+    initLanguage('en-US');
     useChatStore.setState({ activeConversationId: 'conv-1' });
     useTaskExecutionStore.setState({ executions: {} });
   });
@@ -106,9 +112,10 @@ describe('TaskProgressPanel', () => {
     expect(screen.getByText('已持久化步骤B')).toBeInTheDocument();
   });
 
-  // An in_progress step spins ONLY while a running execution still owns the
-  // plan (active feedback). This is the "live" path.
-  it('spins an in_progress step while the execution is live', () => {
+  // While a running execution owns the plan, the progress area shows exactly one
+  // spinner, on the title row. The step being worked on is marked as the current
+  // step and stays still.
+  it('shows one spinner on the title row while the execution is live', () => {
     useTaskExecutionStore.setState({
       executions: {
         e1: {
@@ -123,17 +130,21 @@ describe('TaskProgressPanel', () => {
         } as TaskExecution,
       },
     });
-    render(<TaskProgressPanel />);
-    const row = screen.getByText('进行中步骤').closest('div.flex.items-start');
-    expect(row?.querySelector('.animate-spin')).toBeInTheDocument();
+    const { container } = render(<TaskProgressPanel />);
+    const spinners = container.querySelectorAll('[data-ds-spinner]');
+    expect(spinners).toHaveLength(1);
+    expect(titleButton()).toContainElement(spinners[0] as HTMLElement);
+    const step = screen.getByText('进行中步骤').closest('li');
+    expect(step).toHaveAttribute('aria-current', 'step');
+    expect(step?.querySelector('[data-ds-spinner]')).not.toBeInTheDocument();
   });
 
   // Smoke-test bug: on abort the loop cancels the execution but RETURNS before
   // persistExecutionSnapshot evicts it, so a cancelled execution lingers in the
   // store with an in_progress step. Presence of plannedSteps is not enough to
-  // mean "live" — gate on status 'running'. A lingering cancelled step must
-  // render statically (no perpetual spinner).
-  it('does NOT spin an in_progress step of a stopped (lingering) execution', () => {
+  // mean "live" — gate on status 'running'. A lingering cancelled plan shows no
+  // spinner anywhere; its step keeps the current-step marker.
+  it('shows no spinner for a stopped (lingering) execution', () => {
     useTaskExecutionStore.setState({
       executions: {
         e1: {
@@ -149,10 +160,9 @@ describe('TaskProgressPanel', () => {
         } as TaskExecution,
       },
     });
-    render(<TaskProgressPanel />);
-    const row = screen.getByText('被停止的步骤').closest('div.flex.items-start');
-    expect(row).toBeInTheDocument();
-    expect(row?.querySelector('.animate-spin')).not.toBeInTheDocument();
+    const { container } = render(<TaskProgressPanel />);
+    expect(container.querySelector('[data-ds-spinner]')).not.toBeInTheDocument();
+    expect(screen.getByText('被停止的步骤').closest('li')).toHaveAttribute('aria-current', 'step');
   });
 
   // Regression (smoke-test finding): after a task is stopped, the live
@@ -188,9 +198,56 @@ describe('TaskProgressPanel', () => {
         },
       },
     });
+    const { container } = render(<TaskProgressPanel />);
+    expect(container.querySelector('[data-ds-spinner]')).not.toBeInTheDocument();
+    expect(screen.getByText('旧状态步骤').closest('li')).toHaveAttribute('aria-current', 'step');
+  });
+
+  it('collapses from the title button and says so with aria-expanded', () => {
+    useTaskExecutionStore.setState({
+      executions: { e1: makeExec('e1', 100, ['扫描目录']) },
+    });
     render(<TaskProgressPanel />);
-    const row = screen.getByText('旧状态步骤').closest('div.flex.items-start');
-    expect(row).toBeInTheDocument();
-    expect(row?.querySelector('.animate-spin')).not.toBeInTheDocument();
+    expect(titleButton()).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(titleButton());
+    expect(titleButton()).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('扫描目录')).not.toBeInTheDocument();
+  });
+
+  it('keeps the owner of a step next to its text', () => {
+    useTaskExecutionStore.setState({
+      executions: {
+        e1: {
+          ...makeExec('e1', 100, []),
+          plannedSteps: [{ index: 1, description: '整理需求', status: 'pending' as const, owner: '产品经理' }],
+        } as TaskExecution,
+      },
+    });
+    render(<TaskProgressPanel />);
+    expect(screen.getByTestId('plan-step-owner')).toHaveTextContent('@产品经理');
+    expect(screen.getByText('整理需求').closest('li')).toContainElement(screen.getByTestId('plan-step-owner'));
+  });
+
+  // History can carry a step status from before the union was narrowed; a failed
+  // step keeps its failure mark, and only the step in flight is the current one.
+  it('marks each step by its status, including a legacy failed one', () => {
+    useTaskExecutionStore.setState({
+      executions: {
+        e1: {
+          ...makeExec('e1', 100, []),
+          plannedSteps: [
+            { index: 1, description: '已完成步骤', status: 'completed' as const },
+            { index: 2, description: '失败步骤', status: 'error' as unknown as 'pending' },
+            { index: 3, description: '未开始步骤', status: 'pending' as const },
+          ],
+        } as TaskExecution,
+      },
+    });
+    render(<TaskProgressPanel />);
+    expect(screen.getByRole('list', { name: 'Progress' })).toBeInTheDocument();
+    expect(screen.getByText('已完成步骤').closest('li')?.querySelector('svg')).toHaveClass('text-success');
+    expect(screen.getByText('失败步骤').closest('li')?.querySelector('svg')).toHaveClass('text-danger');
+    expect(screen.getByText('未开始步骤').closest('li')?.querySelector('svg')).not.toBeInTheDocument();
+    expect(screen.getByText('未开始步骤').closest('li')).not.toHaveAttribute('aria-current');
   });
 });

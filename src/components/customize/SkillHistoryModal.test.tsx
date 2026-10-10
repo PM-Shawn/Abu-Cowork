@@ -1,9 +1,15 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { act, fireEvent, render as renderBare, screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { getI18n } from '@/i18n';
 import SkillHistoryModal from './SkillHistoryModal';
+
+// The window is a design-system dialog, so it renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 import type { HistoryEntry, RevertResult } from '@/core/skill/history';
 
 const mockReadHistory = vi.fn<(skillDir: string) => Promise<HistoryEntry[]>>();
@@ -188,19 +194,111 @@ describe('SkillHistoryModal', () => {
     expect(screen.queryByRole('button', { name: /Revert this change/ })).not.toBeInTheDocument();
   });
 
-  it('backdrop click closes the modal', async () => {
+  it('is a window named after the skill, and Escape closes it', async () => {
     mockReadHistory.mockResolvedValueOnce([]);
     const user = userEvent.setup();
-    const { container } = render(
-      <SkillHistoryModal skillDir="/skill" skillName="wd" onClose={onClose} />,
-    );
+    render(<SkillHistoryModal skillDir="/skill" skillName="wd" onClose={onClose} />);
 
     await screen.findByText(/No modifications recorded yet/i);
-    // Click the backdrop (the outermost fixed inset div).
-    const backdrop = container.firstChild as HTMLElement;
-    await user.pointer({ keys: '[MouseLeft>]', target: backdrop });
-    await user.pointer({ keys: '[/MouseLeft]', target: backdrop });
+    expect(screen.getByRole('dialog', { name: `${getI18n().toolbox.historyModalTitle} — wd` })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
 
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes from its close button', async () => {
+    mockReadHistory.mockResolvedValueOnce([]);
+    const user = userEvent.setup();
+    render(<SkillHistoryModal skillDir="/skill" skillName="wd" onClose={onClose} />);
+
+    await screen.findByText(/No modifications recorded yet/i);
+    await user.click(screen.getByRole('button', { name: getI18n().common.close }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('says it is loading with one spinner, then lists the changes', async () => {
+    let finish: (entries: HistoryEntry[]) => void = () => {};
+    mockReadHistory.mockReturnValueOnce(new Promise<HistoryEntry[]>((resolve) => { finish = resolve; }));
+    render(<SkillHistoryModal skillDir="/skill" skillName="wd" onClose={onClose} />);
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getAllByRole('status')).toHaveLength(1);
+    expect(within(dialog).getByRole('status')).toHaveTextContent(getI18n().common.loading);
+
+    await act(async () => { finish([{ turnId: 't-1', ts: FIXED_TIMESTAMP, op: 'edit', files: [{ relPath: 'SKILL.md', snapshotPath: '/b', action: 'modified' }] }]); });
+
+    expect(await screen.findByText(/Edited/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole('status')).toBeNull();
+  });
+
+  it('says whether a row is open, and marks what happened to each file', async () => {
+    mockReadHistory.mockResolvedValueOnce([
+      { turnId: 't-1', ts: FIXED_TIMESTAMP, op: 'write_file', files: [{ relPath: 'notes.md', snapshotPath: null, action: 'created' }] },
+    ]);
+    const user = userEvent.setup();
+    render(<SkillHistoryModal skillDir="/skill" skillName="wd" onClose={onClose} />);
+
+    const row = (await screen.findByText(getI18n().toolbox.historyOpWriteFile)).closest('button') as HTMLButtonElement;
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    await user.click(row);
+
+    expect(row).toHaveAttribute('aria-expanded', 'true');
+    const mark = await screen.findByText(getI18n().toolbox.historyActionCreated);
+    expect(mark).toHaveClass('text-success');
+  });
+
+  it('keeps the revert button focusable while its revert runs, and reverts once', async () => {
+    mockReadHistory.mockResolvedValue([
+      { turnId: 't-1', ts: FIXED_TIMESTAMP, op: 'patch', files: [{ relPath: 'SKILL.md', snapshotPath: '/b', action: 'modified' }] },
+    ]);
+    let finish: (result: RevertResult) => void = () => {};
+    mockRevertTurn.mockReturnValueOnce(new Promise<RevertResult>((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    render(<SkillHistoryModal skillDir="/skill" skillName="wd" onClose={onClose} />);
+    await user.click(await screen.findByText(/Patched/));
+    const revert = await screen.findByRole('button', { name: /Revert this change/ });
+
+    await user.click(revert);
+
+    expect(revert).toHaveAttribute('aria-disabled', 'true');
+    expect(revert).not.toBeDisabled();
+    fireEvent.click(revert);
+    expect(mockRevertTurn).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finish({ ok: true, restored: 1, failed: [] }); });
+    await waitFor(() => expect(revert).not.toHaveAttribute('aria-disabled'));
+  });
+
+  it('reverts nothing from a window that is closing', async () => {
+    mockReadHistory.mockResolvedValue([
+      { turnId: 't-1', ts: FIXED_TIMESTAMP, op: 'patch', files: [{ relPath: 'SKILL.md', snapshotPath: '/b', action: 'modified' }] },
+    ]);
+    const user = userEvent.setup();
+    const view = render(<SkillHistoryModal open skillDir="/skill" skillName="wd" onClose={onClose} />);
+    await user.click(await screen.findByText(/Patched/));
+    const revert = await screen.findByRole('button', { name: /Revert this change/ });
+
+    // happy-dom reports no animation, so Radix removes a closed layer at once. With this, the
+    // closed window has an exit animation: it stays on the page, as it does in the app while it fades out.
+    const real = window.getComputedStyle.bind(window);
+    const styles = vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const computed = real(element, pseudo);
+      return new Proxy(computed, {
+        get(target, prop) {
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    view.rerender(<SkillHistoryModal open={false} skillDir="/skill" skillName="wd" onClose={onClose} />);
+    expect(document.querySelector('[role="dialog"][data-state="closed"]')).not.toBeNull();
+
+    fireEvent.click(revert);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(mockRevertTurn).not.toHaveBeenCalled();
+    styles.mockRestore();
   });
 });

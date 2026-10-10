@@ -1,17 +1,22 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronRight, CircleAlert, Settings2, Plus, Trash2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Button, IconButton } from '@/components/ds/button';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Pressable } from '@/components/ds/pressable';
+import { Select } from '@/components/ds/select';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { TextField } from '@/components/ds/text-field';
+import { SETTING_CONTROL_WIDTH } from '@/components/settings/settingsLayout';
 import { format, useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useBrowserSaveStatusStore } from '@/stores/browserSaveStatus';
-import { BROWSER_PERMISSION_RESOURCES, emptyBrowserSiteRule, parseBrowserPermissionConfig, type BrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import { BROWSER_PERMISSION_RESOURCES, emptyBrowserSiteRule, parseBrowserPermissionConfig, type BrowserPermissionConfig, type BrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
 import type { BrowserDefaultDecision, BrowserSiteOverride } from '@/core/permissions/browserPermissionDefaults';
 import type { BrowserBackend } from './BrowserPermissionCards';
 import { analyzeBrowserSitePermissionDraft } from './browserSitePermissionDraft';
-import { CapabilityBreadcrumb, settingsCardClass } from './CapabilitySetupView';
-import SettingsConfirmDialog from '../SettingsConfirmDialog';
+import { CapabilityBreadcrumb } from './CapabilitySetupView';
 
 function useResourceLabels() {
   const { t } = useI18n();
@@ -35,9 +40,15 @@ function SaveStatus() {
     return () => clearTimeout(timer);
   }, [status]);
   if (!status || status === 'idle') return null;
-  return <p role="status" className={`mt-2 text-minor ${status === 'failed' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]'}`}>
-    {status === 'failed' ? t.settings.browserSaveFailed : status === 'saving' ? t.settings.browserSaveSaving : t.settings.browserSaveSaved}
-    {status === 'failed' && <Button variant="link" size="sm" onClick={() => useSettingsStore.getState().retryBrowserConfigSave('browserPermissionConfigV2')}>{t.settings.browserSaveRetry}</Button>}
+  if (status === 'failed') {
+    return <div className="mt-2">
+      <InlineMessage tone="danger" action={<Button variant="plain" size="sm" onClick={() => useSettingsStore.getState().retryBrowserConfigSave('browserPermissionConfigV2')}>{t.settings.browserSaveRetry}</Button>}>
+        {t.settings.browserSaveFailed}
+      </InlineMessage>
+    </div>;
+  }
+  return <p role="status" className="mt-2 text-ui-sm text-label-secondary">
+    {status === 'saving' ? t.settings.browserSaveSaving : t.settings.browserSaveSaved}
   </p>;
 }
 export function NewBrowserPermissionCards({ onManageSites }: { backend: BrowserBackend; onManageSites: () => void }) {
@@ -46,51 +57,89 @@ export function NewBrowserPermissionCards({ onManageSites }: { backend: BrowserB
   const labels = useResourceLabels();
   const options = usePermissionOptions();
   const descriptions = { browse: t.settings.browserBrowseDesc, upload: t.settings.browserUploadActionDesc, script: t.settings.browserScriptActionDesc };
-  if (!config) return <p role="alert">{t.settings.browserConfigInvalid}</p>;
+  if (!config) return <InlineMessage tone="danger">{t.settings.browserConfigInvalid}</InlineMessage>;
   return <div className="space-y-6">
-    <section>
-      <h4 className="mb-2 text-body font-medium text-[var(--abu-text-primary)]">{t.settings.browserPermissionsTitle}</h4>
-      <p className="text-minor leading-relaxed text-[var(--abu-text-muted)]">{t.settings.browserPermissionsSharedDesc}</p>
-      <ul className="mt-3 divide-y divide-[var(--abu-border)] rounded-lg border border-[var(--abu-border)] px-4">
-        {BROWSER_PERMISSION_RESOURCES.map((resource) => <li key={resource} className="py-3">
-          <div className="flex items-center gap-3">
-            <div className="min-w-0 flex-1"><p className="text-body text-[var(--abu-text-secondary)]">{labels[resource]}</p><p className="mt-0.5 text-minor text-[var(--abu-text-muted)]">{descriptions[resource]}</p></div>
-            <Select variant="inline" value={config.defaults[resource]} options={options} ariaLabel={labels[resource]} className="w-52 shrink-0" onChange={(value) => { void useSettingsStore.getState().setBrowserPermissionDefault(resource, value as BrowserDefaultDecision); }} />
-          </div>
-          {resource === 'script' && config.defaults.script === 'allow' && <p className="mt-2 flex items-start gap-2 text-minor text-[var(--abu-warning)]"><CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{t.settings.browserUnattendedScriptRiskWarning}</p>}
-        </li>)}
-      </ul>
+    <div>
+      <SettingGroup title={t.settings.browserPermissionsTitle} description={t.settings.browserPermissionsSharedDesc}>
+        {BROWSER_PERMISSION_RESOURCES.map((resource) => <div key={resource}>
+          <SettingRow title={labels[resource]} description={descriptions[resource]}>
+            <div className={SETTING_CONTROL_WIDTH.browserPermission}>
+              <Select fullWidth label={labels[resource]} value={config.defaults[resource]} options={options} onValueChange={(value) => { void useSettingsStore.getState().setBrowserPermissionDefault(resource, value as BrowserDefaultDecision); }} />
+            </div>
+          </SettingRow>
+          {resource === 'script' && config.defaults.script === 'allow' && <div className="pb-3"><InlineMessage tone="warning">{t.settings.browserUnattendedScriptRiskWarning}</InlineMessage></div>}
+        </div>)}
+      </SettingGroup>
       <SaveStatus />
-    </section>
-    <Button variant="ghost" onClick={onManageSites} aria-label={t.settings.browserSitePermsTitle} className={`${settingsCardClass} h-auto w-full justify-start gap-3 whitespace-normal bg-transparent text-left hover:bg-[var(--abu-bg-hover)]`}>
-      <span className="min-w-0 flex-1"><span className="block text-body font-semibold">{t.settings.browserSitePermsTitle}</span><span className="mt-1 block text-minor font-normal text-[var(--abu-text-muted)]">{format(t.settings.browserSiteRulesSummary, { count: Object.keys(config.sites).length + Object.values(config.embeddedSites).reduce((count, sites) => count + Object.keys(sites).length, 0) })}</span></span><ChevronRight className="h-4 w-4 shrink-0" />
-    </Button>
+    </div>
+    {/* Named as the entry of the site list: the capabilities page gives it the focus when that list is left. */}
+    <Pressable onClick={onManageSites} data-capability-entry="sites" aria-label={t.settings.browserSitePermsTitle} className="flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover">
+      <span className="min-w-0 flex-1"><span className="block text-ui font-medium text-label">{t.settings.browserSitePermsTitle}</span><span className="mt-1 block text-ui-sm text-label-secondary">{format(t.settings.browserSiteRulesSummary, { count: Object.keys(config.sites).length + Object.values(config.embeddedSites).reduce((count, sites) => count + Object.keys(sites).length, 0) })}</span></span>
+      <Icon icon={AppIcons.disclose} className="text-label-tertiary" />
+    </Pressable>
   </div>;
 }
 
-// A Select menu is portalled outside the dialog. Consume its dismissal keys
-// before the outer confirmation's window capture listener, only while open.
-function SiteRuleFields({ children }: { children: ReactNode }) {
-  const root = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' && event.key !== 'Tab') return;
-      const trigger = root.current?.querySelector<HTMLButtonElement>('button[aria-expanded="true"][aria-controls]');
-      if (!trigger) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      trigger.click();
-      trigger.focus();
-      if (event.key === 'Tab') {
-        const controls = Array.from(root.current?.closest('[role="dialog"]')?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]') ?? []);
-        const index = controls.indexOf(trigger);
-        controls[(index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length]?.focus();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown, true);
-    return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, []);
-  return <div ref={root} className="space-y-3">{children}</div>;
+function sameRule(a: BrowserSiteRule, b: BrowserSiteRule) {
+  return a.blocked === b.blocked && a.browse === b.browse && a.upload === b.upload && a.script === b.script;
+}
+
+// One website of the list. The list can hold hundreds of them and the page re-renders on every
+// character typed in the add window, so a row renders again only when its own website changes.
+const SiteRow = memo(function SiteRow({ origin, embeddedIn, rule, busy, onStatus, onRemove }: {
+  origin: string;
+  embeddedIn?: string;
+  rule: BrowserSiteRule;
+  busy: boolean;
+  onStatus: (origin: string, rule: BrowserSiteRule, status: string, embeddedIn?: string) => void;
+  onRemove: (origin: string, rule: BrowserSiteRule, embeddedIn?: string) => void;
+}) {
+  const { t } = useI18n();
+  // "Custom" opens a window. It opens after the list has closed and the focus is back on the
+  // select, so the window returns the focus there. Opening the list again drops the request.
+  const customAsked = useRef(false);
+  const statusOptions = [
+    { value: 'allowed', label: t.settings.browserSiteAllowBrowse, tone: 'success' as const },
+    { value: 'blocked', label: t.settings.browserSiteAccessBlock, tone: 'danger' as const },
+    { value: 'custom', label: t.settings.browserSiteCustom, icon: AppIcons.settings },
+  ];
+  const pick = (status: string) => {
+    if (status === 'custom') customAsked.current = true;
+    else onStatus(origin, rule, status, embeddedIn);
+  };
+  return <section aria-label={origin} className="flex items-center gap-4 py-3">
+    <h4 className="min-w-0 flex-1 truncate text-ui font-medium text-label" title={origin}>{origin}{embeddedIn && <span className="block text-ui-sm font-normal text-label-secondary">{format(t.settings.browserEmbeddedScope, { origin: embeddedIn })}</span>}</h4>
+    <div className={SETTING_CONTROL_WIDTH.siteAccess}>
+      <Select
+        fullWidth
+        label={`${origin} ${t.settings.browserSiteAccess}`}
+        value={rule.blocked ? 'blocked' : rule.browse === 'allow' && rule.upload === 'inherit' && rule.script === 'inherit' ? 'allowed' : 'custom'}
+        options={embeddedIn ? statusOptions.filter((option) => option.value !== 'blocked') : statusOptions}
+        disabled={busy}
+        onOpenChange={(open) => { if (open) customAsked.current = false; }}
+        onValueChange={pick}
+        // A website that already has a custom rule shows Custom: picking it again edits the rule.
+        onReselect={pick}
+        onCloseAutoFocus={() => {
+          if (!customAsked.current) return;
+          customAsked.current = false;
+          onStatus(origin, rule, 'custom', embeddedIn);
+        }}
+      />
+    </div>
+    <IconButton icon={AppIcons.delete} label={format(t.settings.browserSiteDeleteLabel, { origin })} disabled={busy} onClick={() => onRemove(origin, rule, embeddedIn)} />
+  </section>;
+}, (previous, next) => (
+  previous.origin === next.origin && previous.embeddedIn === next.embeddedIn && previous.busy === next.busy
+  && previous.onStatus === next.onStatus && previous.onRemove === next.onRemove && sameRule(previous.rule, next.rule)
+));
+
+// The websites of the list, in the order the page shows them.
+function siteRows(config: BrowserPermissionConfig) {
+  return [
+    ...Object.entries(config.sites).map(([origin, rule]) => ({ origin, rule, embeddedIn: undefined as string | undefined })),
+    ...Object.entries(config.embeddedSites).flatMap(([embeddedIn, sites]) => Object.entries(sites).map(([origin, overrides]) => ({ origin, embeddedIn, rule: { ...overrides, blocked: false } }))),
+  ].sort((a, b) => a.origin.localeCompare(b.origin));
 }
 
 export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
@@ -108,23 +157,12 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
   const [busy, setBusy] = useState(false);
   const operation = useRef(0);
   useEffect(() => () => { operation.current += 1; }, []);
+  // A removed website takes its delete button, which had the focus, with it. This is the place
+  // the website had in the list, kept until the removal question has gone.
+  const pageRef = useRef<HTMLDivElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const removedAt = useRef(-1);
   const analysis = analyzeBrowserSitePermissionDraft(draft, 'denied', {});
-  if (!config) return <p role="alert">{t.settings.browserConfigInvalid}</p>;
-  const inheritedState = (resource: typeof BROWSER_PERMISSION_RESOURCES[number]) => {
-    const site = editing?.embeddedIn ? config.sites[editing.origin] : undefined;
-    if (site?.blocked) return 'deny';
-    const override = site?.[resource];
-    return override && override !== 'inherit' ? override : config.defaults[resource];
-  };
-  const rows = [
-    ...Object.entries(config.sites).map(([origin, rule]) => ({ origin, rule, embeddedIn: undefined as string | undefined })),
-    ...Object.entries(config.embeddedSites).flatMap(([embeddedIn, sites]) => Object.entries(sites).map(([origin, overrides]) => ({ origin, embeddedIn, rule: { ...overrides, blocked: false } }))),
-  ].sort((a, b) => a.origin.localeCompare(b.origin));
-  const statusOptions = [
-    { value: 'allowed', label: t.settings.browserSiteAllowBrowse, icon: <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-[var(--abu-success)]" /> },
-    { value: 'blocked', label: t.settings.browserSiteAccessBlock, icon: <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-[var(--abu-danger-solid)]" /> },
-    { value: 'custom', label: t.settings.browserSiteCustom, icon: <Settings2 aria-hidden="true" className="size-3.5 shrink-0 text-[var(--abu-text-muted)]" /> },
-  ];
   const browsingRule = (): BrowserSiteRule => ({ ...emptyBrowserSiteRule(), browse: 'allow' });
   function closeDialog() {
     operation.current += 1;
@@ -143,6 +181,8 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
     else setError(result === 'conflict' ? t.settings.browserSiteRuleConflict : t.settings.browserSaveFailed);
   }
   function addSite() {
+    // The add window stays on the page while it fades out; it adds nothing then.
+    if (!adding) return;
     if (!analysis.normalizedOrigin || analysis.issue === 'credentials' || analysis.issue === 'invalid') {
       setError(analysis.issue === 'credentials' ? t.settings.browserSitePermsAddCredentials : t.settings.browserSitePermsAddInvalid);
       return;
@@ -160,47 +200,100 @@ export function NewBrowserSitePermissionsPage({ trail, onNavigate }: {
   async function removeSite() {
     if (!pendingRemoval) return;
     const token = ++operation.current;
+    const place = config ? siteRows(config).findIndex((row) => row.origin === pendingRemoval.origin && row.embeddedIn === pendingRemoval.embeddedIn) : -1;
     setBusy(true); setError('');
     const saved = pendingRemoval.embeddedIn
       ? await useSettingsStore.getState().setBrowserEmbeddedRule(pendingRemoval.embeddedIn, pendingRemoval.origin, null, { browse: pendingRemoval.expected.browse, upload: pendingRemoval.expected.upload, script: pendingRemoval.expected.script }, () => token === operation.current) === 'saved'
       : await useSettingsStore.getState().removeBrowserSiteRule(pendingRemoval.origin, pendingRemoval.expected, () => token === operation.current);
     if (token !== operation.current) return;
     setBusy(false);
-    if (saved) closeDialog(); else setError(t.settings.browserSaveFailed);
+    if (saved) { removedAt.current = place; closeDialog(); } else setError(t.settings.browserSaveFailed);
   }
-  const errorMessage = error && <p role="alert" className="mt-2 text-minor text-[var(--abu-danger)]">{error}</p>;
-  return <div className="space-y-5">
+  // Once the removal question has gone: the focus goes to the website that took the removed
+  // one's place, else to the one before it, else to the add button. After Cancel no place is kept,
+  // and the focus goes back to the delete button.
+  function focusAfterRemoval(event: Event) {
+    const place = removedAt.current;
+    removedAt.current = -1;
+    if (place < 0 || event.defaultPrevented) return;
+    const websites = pageRef.current?.querySelectorAll<HTMLElement>('section[aria-label]');
+    const website = websites?.[Math.min(place, websites.length - 1)];
+    const target = website?.querySelector<HTMLElement>('button') ?? addButtonRef.current;
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
+  }
+  // Rows keep the same two callbacks for as long as the page lives; the first always runs the latest changeStatus.
+  const latestChangeStatus = useRef(changeStatus);
+  useLayoutEffect(() => { latestChangeStatus.current = changeStatus; });
+  const changeRowStatus = useCallback((origin: string, rule: BrowserSiteRule, status: string, embeddedIn?: string) => {
+    latestChangeStatus.current(origin, rule, status, embeddedIn);
+  }, []);
+  const askToRemove = useCallback((origin: string, rule: BrowserSiteRule, embeddedIn?: string) => {
+    operation.current += 1; setError(''); setPendingRemoval({ origin, embeddedIn, expected: { ...rule } });
+  }, []);
+  if (!config) return <InlineMessage tone="danger">{t.settings.browserConfigInvalid}</InlineMessage>;
+  const inheritedState = (resource: typeof BROWSER_PERMISSION_RESOURCES[number]) => {
+    const site = editing?.embeddedIn ? config.sites[editing.origin] : undefined;
+    if (site?.blocked) return 'deny';
+    const override = site?.[resource];
+    return override && override !== 'inherit' ? override : config.defaults[resource];
+  };
+  const rows = siteRows(config);
+  const errorMessage = error && <InlineMessage tone="danger">{error}</InlineMessage>;
+  const closeWhenDismissed = (next: boolean) => { if (!next) closeDialog(); };
+  return <div ref={pageRef} className="space-y-5">
     <CapabilityBreadcrumb trail={trail} onNavigate={onNavigate} />
     <div className="flex items-start gap-3">
-      <div className="min-w-0 flex-1"><h3 className="text-h-sm text-[var(--abu-text-primary)]">{t.settings.browserSitePermsTitle}</h3><p className="mt-1 text-minor text-[var(--abu-text-muted)]">{t.settings.browserSiteRulesDesc}</p></div>
-      <Button variant="ghost" size="sm" className="rounded-xl bg-[var(--abu-bg-muted)] px-3 hover:bg-[var(--abu-bg-hover)]" disabled={busy} onClick={() => { operation.current += 1; setDraft(''); setError(''); setAdding(true); }}><Plus className="size-4" />{t.settings.browserSitePermsAddButton}</Button>
+      <div className="min-w-0 flex-1"><h3 className="text-title text-label">{t.settings.browserSitePermsTitle}</h3><p className="mt-1 text-ui-sm text-label-secondary">{t.settings.browserSiteRulesDesc}</p></div>
+      <Button ref={addButtonRef} variant="secondary" size="sm" icon={AppIcons.add} disabled={busy} onClick={() => { operation.current += 1; setDraft(''); setError(''); setAdding(true); }}>{t.settings.browserSitePermsAddButton}</Button>
     </div>
-    {rows.length === 0 && <p className="py-4 text-minor text-[var(--abu-text-muted)]">{t.settings.browserSitePermsEmpty}</p>}
+    {rows.length === 0 && <p className="py-4 text-ui-sm text-label-tertiary">{t.settings.browserSitePermsEmpty}</p>}
     {rows.length > 0 && <div>
-    <div className="divide-y divide-[var(--abu-border)] rounded-2xl border border-[var(--abu-border)] px-4">{rows.map(({ origin, rule, embeddedIn }) => <section key={`${embeddedIn ?? ""}:${origin}`} aria-label={origin} className="flex min-h-16 items-center gap-4 py-3">
-      <h4 className="min-w-0 flex-1 truncate text-body font-medium text-[var(--abu-text-primary)]" title={origin}>{origin}{embeddedIn && <span className="block text-minor font-normal text-[var(--abu-text-muted)]">{format(t.settings.browserEmbeddedScope, { origin: embeddedIn })}</span>}</h4>
-      <Select variant="inline" ariaLabel={`${origin} ${t.settings.browserSiteAccess}`} value={rule.blocked ? 'blocked' : rule.browse === 'allow' && rule.upload === 'inherit' && rule.script === 'inherit' ? 'allowed' : 'custom'} options={embeddedIn ? statusOptions.filter((option) => option.value !== 'blocked') : statusOptions} disabled={busy} onChange={(value) => changeStatus(origin, rule, value, embeddedIn)} className="w-48 shrink-0 [&>button]:h-8 [&>button]:rounded-xl [&>button]:py-0 [&>button]:font-medium" />
-      <Button variant="ghost" size="icon-sm" className="text-[var(--abu-text-muted)]" disabled={busy} aria-label={format(t.settings.browserSiteDeleteLabel, { origin })} onClick={() => { operation.current += 1; setError(''); setPendingRemoval({ origin, embeddedIn, expected: { ...rule } }); }}><Trash2 className="h-4 w-4 text-[var(--abu-text-muted)]" /></Button>
-    </section>)}</div>
-    <p className="mt-2 px-4 text-minor text-[var(--abu-text-muted)]">{t.settings.browserSiteRulesFootnote}</p>
+      <div className="divide-y divide-separator rounded-panel border border-separator px-4">
+        {rows.map(({ origin, rule, embeddedIn }) => <SiteRow key={`${embeddedIn ?? ""}:${origin}`} origin={origin} embeddedIn={embeddedIn} rule={rule} busy={busy} onStatus={changeRowStatus} onRemove={askToRemove} />)}
+      </div>
+      <p className="mt-2 px-4 text-ui-sm text-label-secondary">{t.settings.browserSiteRulesFootnote}</p>
     </div>}
     {!adding && !editing && !pendingRemoval && errorMessage}
     <SaveStatus />
-    <SettingsConfirmDialog open={adding} title={t.settings.browserSiteAddTitle} confirmText={t.settings.browserSitePermsAddButton} cancelText={t.common.cancel} confirmDisabled={busy || !draft.trim()} onCancel={closeDialog} onConfirm={addSite} message={<div className="space-y-3">
-      <label className="block text-body text-[var(--abu-text-primary)]" htmlFor="browser-site-rule-url">{t.settings.browserSitePermsAddLabel}</label>
-      <Input id="browser-site-rule-url" value={draft} disabled={busy} onChange={(event) => { setDraft(event.target.value); setError(''); }} placeholder={t.settings.browserSitePermsAddPlaceholder} />
-      {analysis.normalizedOrigin && <p className="break-all text-minor text-[var(--abu-text-muted)]">{t.settings.browserSitePermsEffectiveOrigin}: {analysis.normalizedOrigin}</p>}
-      <p className="text-minor text-[var(--abu-text-muted)]">{t.settings.browserSiteAddHint}</p>{errorMessage}
-    </div>} />
-    {editing && <SettingsConfirmDialog open title={t.settings.browserSiteCustomTitle} confirmText={t.settings.browserSitePermsSave} cancelText={t.common.cancel} confirmDisabled={busy} onCancel={closeDialog} onConfirm={() => void saveRule(editing.origin, editing.rule, editing.expected, editing.embeddedIn)} message={<SiteRuleFields>
-      <p className="break-all text-body text-[var(--abu-text-primary)]">{editing.origin}{editing.embeddedIn && <span className="block">{format(t.settings.browserEmbeddedScope, { origin: editing.embeddedIn })}</span>}</p>
-      {editing.expected.blocked && <p className="text-minor text-[var(--abu-warning)]">{t.settings.browserSiteUnblockOnSave}</p>}
-      {BROWSER_PERMISSION_RESOURCES.map((resource) => <div key={resource} className="flex items-center gap-3">
-        <span className="min-w-0 flex-1 text-body text-[var(--abu-text-secondary)]">{labels[resource]}</span>
-        <Select variant="inline" value={editing.rule[resource]} options={[{ value: 'inherit', label: format(t.settings.browserSiteDefaultState, { state: options.find((option) => option.value === inheritedState(resource))!.label }) }, ...options]} disabled={busy} ariaLabel={labels[resource]} className="w-52 shrink-0" onChange={(value) => setEditing({ ...editing, rule: { ...editing.rule, [resource]: value as BrowserSiteOverride } })} />
-      </div>)}
+    <Dialog open={adding} onOpenChange={closeWhenDismissed} title={t.settings.browserSiteAddTitle} size="md" dirty={draft.trim() !== ''}
+      footer={<>
+        {/* Cancel closes the way Escape does: a typed address is asked about first. */}
+        <DialogClose asChild><Button variant="secondary">{t.common.cancel}</Button></DialogClose>
+        <Button variant="primary" busy={busy} disabled={!draft.trim()} onClick={addSite}>{t.settings.browserSitePermsAddButton}</Button>
+      </>}>
+      <div className="space-y-3">
+        <label className="block text-ui text-label" htmlFor="browser-site-rule-url">{t.settings.browserSitePermsAddLabel}</label>
+        <TextField id="browser-site-rule-url" value={draft} disabled={busy} onChange={(event) => { setDraft(event.target.value); setError(''); }} placeholder={t.settings.browserSitePermsAddPlaceholder} />
+        {analysis.normalizedOrigin && <p className="break-all text-ui-sm text-label-secondary">{t.settings.browserSitePermsEffectiveOrigin}: {analysis.normalizedOrigin}</p>}
+        <p className="text-ui-sm text-label-secondary">{t.settings.browserSiteAddHint}</p>{errorMessage}
+      </div>
+    </Dialog>
+    {editing && <Dialog open onOpenChange={closeWhenDismissed} title={t.settings.browserSiteCustomTitle} size="md"
+      footer={<>
+        <Button variant="secondary" onClick={closeDialog}>{t.common.cancel}</Button>
+        <Button variant="primary" busy={busy} onClick={() => void saveRule(editing.origin, editing.rule, editing.expected, editing.embeddedIn)}>{t.settings.browserSitePermsSave}</Button>
+      </>}>
+      <div className="space-y-3">
+        <p className="break-all text-ui text-label">{editing.origin}{editing.embeddedIn && <span className="block">{format(t.settings.browserEmbeddedScope, { origin: editing.embeddedIn })}</span>}</p>
+        {editing.expected.blocked && <InlineMessage tone="warning">{t.settings.browserSiteUnblockOnSave}</InlineMessage>}
+        {BROWSER_PERMISSION_RESOURCES.map((resource) => <div key={resource} className="flex items-center gap-3">
+          <span className="min-w-0 flex-1 text-ui text-label-secondary">{labels[resource]}</span>
+          <div className={SETTING_CONTROL_WIDTH.browserPermission}>
+            <Select fullWidth value={editing.rule[resource]} options={[{ value: 'inherit', label: format(t.settings.browserSiteDefaultState, { state: options.find((option) => option.value === inheritedState(resource))!.label }) }, ...options]} disabled={busy} label={labels[resource]} onValueChange={(value) => setEditing({ ...editing, rule: { ...editing.rule, [resource]: value as BrowserSiteOverride } })} />
+          </div>
+        </div>)}
+        {errorMessage}
+      </div>
+    </Dialog>}
+    {/* Mounted only while asked: every frame of the question names the website it is about. */}
+    {pendingRemoval && <Dialog open role="alertdialog" size="sm" onOpenChange={closeWhenDismissed} onCloseAutoFocus={focusAfterRemoval} title={t.settings.browserSiteDeleteTitle} description={format(t.settings.browserSiteDeleteMessage, { origin: pendingRemoval.origin })}
+      footer={<>
+        <Button variant="secondary" onClick={closeDialog}>{t.common.cancel}</Button>
+        <Button variant="danger" busy={busy} onClick={() => void removeSite()}>{t.settings.browserSiteDeleteButton}</Button>
+      </>}>
       {errorMessage}
-    </SiteRuleFields>} />}
-    <SettingsConfirmDialog open={pendingRemoval !== null} title={t.settings.browserSiteDeleteTitle} message={<>{format(t.settings.browserSiteDeleteMessage, { origin: pendingRemoval?.origin ?? '' })}{errorMessage}</>} confirmText={t.settings.browserSiteDeleteButton} cancelText={t.common.cancel} variant="danger" confirmDisabled={busy} onCancel={closeDialog} onConfirm={() => void removeSite()} />
+    </Dialog>}
   </div>;
 }

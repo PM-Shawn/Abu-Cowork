@@ -1,20 +1,44 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const kickGoalDriver = vi.fn();
 vi.mock('@/core/goal/goalDriver', () => ({ kickGoalDriver: (id: string) => kickGoalDriver(id) }));
 
+const iconButtonRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the bar's icon buttons, each of which mounts a tooltip.
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
+      iconButtonRenders();
+      return actual.IconButton(props);
+    },
+  };
+});
+
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { getLanguageSetting, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import { disarmGoal, isGoalArmed, resetGoalActivationsForTest, setGoalRetry } from '@/core/goal/goalActivation';
 import { createConversationGoal, getGoal } from '@/core/goal/goalService';
 import type { GoalState } from '@/core/goal/goalTypes';
+import { passSettleInterval } from '@/test/dsWindows';
 import GoalBar from './GoalBar';
 import GoalRoundMarker from './GoalRoundMarker';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
+// Stands in for ChatView re-rendering on every streamed token: `tick` changes, the bar's props do not.
+function Host({ tick, children }: { tick: number; children: ReactNode }) {
+  return <DesignSystemProvider><span data-tick={tick} />{children}</DesignSystemProvider>;
+}
 
 function seed(over: Partial<Conversation> = {}): void {
   useChatStore.setState({
@@ -163,6 +187,8 @@ describe('GoalBar', () => {
       await userEvent.type(input, 'Only the 2025 contracts{Enter}');
       expect(getGoal('c1')?.objective).toBe('Only the 2025 contracts');
       expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+      // The Enter that saved does not also press the edit button the focus returned to.
+      expect(screen.getByRole('button', { name: 'Edit goal' })).toHaveFocus();
     });
 
     it('asks before clearing', async () => {
@@ -171,9 +197,97 @@ describe('GoalBar', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Clear goal' }));
       expect(getGoal('c1')).toBeDefined();
       expect(screen.getByText('Clear this goal?')).toBeInTheDocument();
-      const confirmButtons = screen.getAllByRole('button', { name: 'Clear goal' });
-      await userEvent.click(confirmButtons[confirmButtons.length - 1]);
-      expect(getGoal('c1')).toBeUndefined();
+      const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
+      // The question says which goal it is about.
+      expect(question).toHaveTextContent('Extract every contract into summary.xlsx');
+      await userEvent.click(within(question).getByRole('button', { name: 'Clear goal' }));
+      await waitFor(() => expect(getGoal('c1')).toBeUndefined());
+    });
+
+    it('keeps the goal when the clearing question is cancelled', async () => {
+      const goal = createGoal();
+      render(<GoalBar conversationId="c1" />);
+      await userEvent.click(screen.getByRole('button', { name: 'Clear goal' }));
+      const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
+      await userEvent.click(within(question).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+      expect(getGoal('c1')?.id).toBe(goal.id);
+    });
+
+    it('leaves a goal that was set while the clearing question was open', async () => {
+      createGoal();
+      render(<GoalBar conversationId="c1" />);
+      await userEvent.click(screen.getByRole('button', { name: 'Clear goal' }));
+      const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
+      setGoal({ id: 'goal-set-later', objective: 'Another objective' });
+
+      await userEvent.click(within(question).getByRole('button', { name: 'Clear goal' }));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+
+      expect(getGoal('c1')).toMatchObject({ id: 'goal-set-later', objective: 'Another objective' });
+    });
+
+    it('clears nothing when the answer comes after the bar has left the page', async () => {
+      const goal = createGoal();
+      const { rerender } = renderBare(<Host tick={0}><GoalBar conversationId="c1" /></Host>);
+      await userEvent.click(screen.getByRole('button', { name: 'Clear goal' }));
+      const question = screen.getByRole('alertdialog', { name: 'Clear this goal?' });
+      // A question takes no pointer press for a moment after it appears: it has been read.
+      passSettleInterval();
+      rerender(<Host tick={1}>{null}</Host>);
+
+      await userEvent.click(within(question).getByRole('button', { name: 'Clear goal' }));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+
+      expect(getGoal('c1')?.id).toBe(goal.id);
+    });
+  });
+
+  describe('presentation', () => {
+    it('lets the spinner carry the status word while a round runs', () => {
+      seed({ status: 'running' });
+      createGoal();
+      render(<GoalBar conversationId="c1" />);
+      expect(within(screen.getByTestId('goal-bar-status')).getByRole('status')).toHaveTextContent(/^Ongoing goal$/);
+      expect(screen.getByTestId('goal-bar-status')).toHaveTextContent(/^Ongoing goal$/);
+    });
+
+    it('keeps the focus on the pause / resume button after a press', async () => {
+      createGoal();
+      render(<GoalBar conversationId="c1" />);
+      const toggle = screen.getByRole('button', { name: 'Pause goal' });
+      await userEvent.click(toggle);
+      expect(screen.getByRole('button', { name: 'Resume goal' })).toBe(toggle);
+      expect(toggle).toHaveFocus();
+    });
+
+    it('returns the focus to the edit button when the inline edit closes', async () => {
+      createGoal();
+      render(<GoalBar conversationId="c1" />);
+      await userEvent.click(screen.getByRole('button', { name: 'Edit goal' }));
+      expect(screen.getByRole('textbox', { name: 'Edit goal' })).toHaveFocus();
+      await userEvent.keyboard('{Escape}');
+      expect(screen.getByRole('button', { name: 'Edit goal' })).toHaveFocus();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Edit goal' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+      expect(screen.getByRole('button', { name: 'Edit goal' })).toHaveFocus();
+    });
+
+    it('does not re-render its buttons when only the chat view re-renders', () => {
+      createGoal();
+      const { rerender } = renderBare(<Host tick={0}><GoalBar conversationId="c1" /></Host>);
+      const initial = iconButtonRenders.mock.calls.length;
+      expect(initial).toBeGreaterThan(0);
+      rerender(<Host tick={1}><GoalBar conversationId="c1" /></Host>);
+      rerender(<Host tick={2}><GoalBar conversationId="c1" /></Host>);
+      expect(iconButtonRenders).toHaveBeenCalledTimes(initial);
     });
   });
 });

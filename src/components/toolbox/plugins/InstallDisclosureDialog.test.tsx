@@ -1,10 +1,20 @@
 // @vitest-environment happy-dom
-import { render, screen, fireEvent } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as renderBare, screen, fireEvent, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import InstallDisclosureDialog from './InstallDisclosureDialog';
 import { formatServerCommand } from './serverCommand';
+import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
+import { PLUGIN_CONFIG_VALUE_LIMIT } from '@/core/plugin/configuration';
 import type { InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
+import { passSettleInterval } from '@/test/dsWindows';
+
+// The window is a design-system dialog, so it renders inside the provider like the app does.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const disclosure: InstallDisclosure = {
   key: 'weather@official',
@@ -138,10 +148,9 @@ describe('InstallDisclosureDialog', () => {
     expect(rows[3]).toHaveTextContent(tb.pluginsDisclosureAgentEmptyPrompt);
   });
 
-  it('names the team and the expert behind each scene the way the user sees them', () => {
-    // Who does the work is the reason to add an app, and the user reads this
-    // before anything is installed — so the screen shows the team's name and
-    // the expert's name, never `builtin-team:recruiting` or `builtin:HR 招聘官`.
+  it('names a team and its members the way the user sees them', () => {
+    // The screen shows the team's name and its members' names, never
+    // `plugin:advisor` or `builtin:HR 招聘官`.
     renderDialog({
       state: {
         kind: 'ready',
@@ -151,39 +160,21 @@ describe('InstallDisclosureDialog', () => {
             id: 'ops',
             name: { 'zh-CN': '店铺运营小组' },
             leaderRoleId: 'plugin:advisor',
-            memberRoleIds: ['plugin:advisor'],
+            memberRoleIds: ['plugin:advisor', 'builtin:HR 招聘官'],
             requirePlanApproval: false,
             description: { 'zh-CN': '看店的人' },
             expertise: [],
             samplePrompts: [],
           }],
-          app: {
-            version: 1,
-            defaultRun: { team: 'builtin-team:recruiting' },
-            home: {
-              modes: {
-                items: [{
-                  modeId: 'prepare',
-                  title: { 'zh-CN': '岗位准备' },
-                  scenes: [
-                    { id: 'jd', title: { 'zh-CN': '写 JD' }, templates: [] },
-                    { id: 'shop', title: { 'zh-CN': '看店' }, run: { team: 'ops' }, templates: [] },
-                    { id: 'ask', title: { 'zh-CN': '问专家' }, run: { expert: 'builtin:HR 招聘官' }, templates: [] },
-                  ],
-                }],
-              },
-            },
-          },
         },
       } as const,
     });
 
-    const section = screen.getByTestId('plugin-disclosure-app');
-    expect(section).toHaveTextContent('招聘专家团');
-    expect(section).toHaveTextContent('店铺运营小组');
-    expect(section).toHaveTextContent('HR 招聘官');
-    expect(section.textContent).not.toContain('builtin-team:');
-    expect(section.textContent).not.toContain('builtin:');
+    const [row] = screen.getAllByTestId('plugin-disclosure-team');
+    expect(row).toHaveTextContent('店铺运营小组');
+    expect(row).toHaveTextContent('advisor、HR 招聘官');
+    expect(row.textContent).not.toContain('plugin:');
+    expect(row.textContent).not.toContain('builtin:');
   });
 
   it('still offers the install when every agent is skipped', () => {
@@ -357,6 +348,401 @@ it('requires secret configuration before approval and clears it for a new previe
   rerender(<InstallDisclosureDialog {...props} state={{ ...props.state, disclosure: { ...props.state.disclosure, preparedToken: 'second' } }} />);
   expect(screen.getByLabelText('TOKEN')).toHaveValue('');
   expect(screen.getByTestId('plugin-install-confirm')).toBeDisabled();
+});
+
+describe('InstallDisclosureDialog: what the user approves and what they type', () => {
+  // Obviously not a secret; the tests look for it everywhere it must not appear.
+  const FAKE_TOKEN = 'plugin-config-not-a-secret';
+  const FAKE_REGION = 'plugin-config-region-not-a-secret';
+  const configured: InstallDisclosure = {
+    ...disclosure,
+    preparedToken: 'configured',
+    manifest: {
+      name: 'weather',
+      mcpServers: { weather: { env: { TOKEN: '${config.TOKEN}' }, headers: { 'X-Region': '${config.REGION}' } } },
+    } as InstallDisclosure['manifest'],
+  };
+  const ready = { kind: 'ready', disclosure: configured } as const;
+
+  it('masks every configuration field and limits its length', () => {
+    renderDialog({ state: ready });
+    for (const field of ['REGION', 'TOKEN']) {
+      const input = screen.getByLabelText(field);
+      expect(input).toHaveAttribute('type', 'password');
+      expect(input).toHaveAttribute('autocomplete', 'new-password');
+      expect(input).toHaveAttribute('maxlength', String(PLUGIN_CONFIG_VALUE_LIMIT));
+    }
+  });
+
+  it('shows the command line of every server exactly as formatServerCommand gives it', () => {
+    renderDialog();
+    const servers = screen.getAllByTestId('plugin-disclosure-server');
+    expect(servers.map((server) => server.textContent)).toEqual(
+      disclosure.mcpServers.map((server) => `${server.name}${formatServerCommand(server)}`),
+    );
+    expect(within(servers[0]).getByText('npx -y @acme/weather-mcp --verbose')).toBeInTheDocument();
+  });
+
+  it('keeps Install unavailable until every field has something other than spaces', () => {
+    const props = renderDialog({ state: ready });
+    const confirm = screen.getByTestId('plugin-install-confirm');
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('TOKEN'), { target: { value: FAKE_TOKEN } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('REGION'), { target: { value: '   ' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(props.onConfirm).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('REGION'), { target: { value: FAKE_REGION } });
+    expect(confirm).toBeEnabled();
+  });
+
+  it('hands over exactly the fields that were filled in', () => {
+    const props = renderDialog({ state: ready });
+    fireEvent.change(screen.getByLabelText('TOKEN'), { target: { value: FAKE_TOKEN } });
+    fireEvent.change(screen.getByLabelText('REGION'), { target: { value: FAKE_REGION } });
+    fireEvent.click(screen.getByTestId('plugin-install-confirm'));
+
+    expect(props.onConfirm).toHaveBeenCalledExactlyOnceWith({ TOKEN: FAKE_TOKEN, REGION: FAKE_REGION });
+    expect(props.onCancel).not.toHaveBeenCalled();
+  });
+
+  it('hands over an empty object for a package that asks for no configuration', () => {
+    const props = renderDialog();
+    fireEvent.click(screen.getByTestId('plugin-install-confirm'));
+    expect(props.onConfirm).toHaveBeenCalledExactlyOnceWith({});
+  });
+
+  it('never shows a typed value as text or in a title, a name or a data attribute', () => {
+    renderDialog({ state: ready });
+    fireEvent.change(screen.getByLabelText('TOKEN'), { target: { value: FAKE_TOKEN } });
+    fireEvent.change(screen.getByLabelText('REGION'), { target: { value: FAKE_REGION } });
+
+    expect(document.body.textContent).not.toContain(FAKE_TOKEN);
+    expect(document.body.textContent).not.toContain(FAKE_REGION);
+    for (const element of document.body.querySelectorAll('*')) {
+      for (const attribute of element.attributes) {
+        // The value lives in the masked input and nowhere else.
+        if (element instanceof HTMLInputElement && attribute.name === 'value') continue;
+        expect(attribute.value).not.toContain(FAKE_TOKEN);
+        expect(attribute.value).not.toContain(FAKE_REGION);
+      }
+    }
+  });
+
+  it('while installing, neither Install nor Cancel nor Escape does anything', () => {
+    const props = renderDialog({ installing: true });
+    const confirm = screen.getByTestId('plugin-install-confirm');
+    expect(confirm).toHaveTextContent(getI18n().toolbox.pluginsInstalling);
+
+    fireEvent.click(confirm);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    const cancel = screen.getByRole('button', { name: getI18n().common.cancel });
+    expect(cancel).toBeDisabled();
+    fireEvent.click(cancel);
+
+    expect(props.onConfirm).not.toHaveBeenCalled();
+    expect(props.onCancel).not.toHaveBeenCalled();
+  });
+
+  it('reports a cancel from the Cancel button and from Escape when nothing is installing', () => {
+    const props = renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+    expect(props.onCancel).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(props.onCancel).toHaveBeenCalledTimes(2);
+    expect(props.onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('names the button after what the confirmation does', () => {
+    const tb = getI18n().toolbox;
+    const cases: [Partial<React.ComponentProps<typeof InstallDisclosureDialog>>, string][] = [
+      [{}, tb.pluginsInstall],
+      [{ installing: true }, tb.pluginsInstalling],
+      [{ updating: true }, tb.pluginsUpdate],
+      [{ updating: true, installing: true }, tb.pluginsUpdating],
+      [{ authoring: true }, tb.pluginsInstall],
+    ];
+    for (const [overrides, label] of cases) {
+      const view = renderBare(<InstallDisclosureDialog open entryName="weather" installing={false} onConfirm={vi.fn()} onCancel={vi.fn()} state={{ kind: 'ready', disclosure }} {...overrides} />, { wrapper: DesignSystemProvider });
+      expect(screen.getByTestId('plugin-install-confirm').textContent).toBe(label);
+      view.unmount();
+    }
+  });
+});
+
+describe('InstallDisclosureDialog: the window', () => {
+  const tb = () => getI18n().toolbox;
+
+  it('is a window named after what it asks, with one close button', () => {
+    renderDialog();
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(tb().pluginsDisclosureTitle);
+    expect(screen.getByTestId('plugin-install-disclosure')).toBe(screen.getByRole('dialog'));
+    expect(screen.getByRole('button', { name: getI18n().common.close })).toBeInTheDocument();
+  });
+
+  it('is named for an update and for a source that cannot be installed', () => {
+    const update = renderBare(<InstallDisclosureDialog open updating entryName="weather" installing={false} onConfirm={vi.fn()} onCancel={vi.fn()} state={{ kind: 'ready', disclosure }} />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(tb().pluginsUpdateDisclosureTitle);
+    update.unmount();
+    renderDialog({ state: { kind: 'unsupported', sourceKind: 'git-subdir' } });
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(tb().pluginsUnsupportedTitle);
+  });
+
+  it('has one heading, its title, in the market form and in the draft-preview form', () => {
+    const market = renderBare(<InstallDisclosureDialog open entryName="weather" installing={false} onConfirm={vi.fn()} onCancel={vi.fn()} state={{ kind: 'ready', disclosure }} />, { wrapper: DesignSystemProvider });
+    expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([tb().pluginsDisclosureTitle]);
+    market.unmount();
+
+    renderDialog({ authoring: true });
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(tb().pluginsDisclosureTitle);
+    expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([tb().pluginsDisclosureTitle]);
+    expect(screen.getByRole('status')).toHaveTextContent(tb().pluginsValidationPassed);
+  });
+
+  it('a draft preview keeps the height of the draft window it replaces: a title row and a content area of fixed height', () => {
+    renderDialog({ authoring: true, state: { kind: 'loading' } });
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveClass('max-w-2xl');
+    expect(screen.getByRole('heading', { level: 2 }).firstElementChild).toHaveClass('h-11');
+    expect(Array.from(dialog.querySelectorAll('div')).some((area) => area.classList.contains(DETAIL_WINDOW_CONTENT_HEIGHT))).toBe(true);
+  });
+
+  it('shows one spinner whose words say what is being read', () => {
+    renderDialog({ state: { kind: 'loading' } });
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent(tb().pluginsDisclosureLoading);
+    // One way out, named once: the footer's button.
+    expect(screen.getAllByRole('button', { name: getI18n().common.close })).toHaveLength(1);
+  });
+
+  it('announces a failure and explains an unsupported source without alarm', () => {
+    const failed = renderBare(<InstallDisclosureDialog open entryName="weather" installing={false} onConfirm={vi.fn()} onCancel={vi.fn()} state={{ kind: 'error', message: 'No plugin manifest found in /m/x' }} />, { wrapper: DesignSystemProvider });
+    expect(screen.getByRole('alert')).toHaveTextContent(tb().pluginsPlanFailed);
+    expect(screen.getByRole('alert')).toHaveTextContent('No plugin manifest found in /m/x');
+    failed.unmount();
+    renderDialog({ state: { kind: 'unsupported', sourceKind: 'git-subdir' }, entryName: 'cool-plugin' });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(within(screen.getByTestId('plugin-unsupported-notice')).getByRole('status')).toHaveTextContent('cool-plugin');
+  });
+
+  it('while installing, Install stays focusable and the corner close button is gone', () => {
+    renderDialog({ installing: true });
+    const confirm = screen.getByTestId('plugin-install-confirm');
+    expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    expect(confirm).not.toBeDisabled();
+    expect(screen.queryByRole('button', { name: getI18n().common.close })).toBeNull();
+  });
+
+  it('while it fades out it keeps what it showed, confirms nothing and forgets what was typed', () => {
+    const real = window.getComputedStyle.bind(window);
+    // A closed layer has an exit animation: it stays on the page, as it does in the app.
+    const computedStyle = vi.spyOn(window, 'getComputedStyle').mockImplementation((element: Element, pseudo?: string | null) => {
+      const styles = real(element, pseudo);
+      return new Proxy(styles, {
+        get(target, prop) {
+          if (prop === 'animationName') return element.getAttribute('data-state') === 'closed' ? 'exit' : 'enter';
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    const onConfirm = vi.fn();
+    const configured: InstallDisclosure = { ...disclosure, preparedToken: 'p', manifest: { name: 'weather', mcpServers: { weather: { env: { TOKEN: '${config.TOKEN}' } } } } as InstallDisclosure['manifest'] };
+    const props = { entryName: 'weather', installing: false, onConfirm, onCancel: vi.fn() };
+    const view = render(<InstallDisclosureDialog open {...props} state={{ kind: 'ready', disclosure: configured }} />);
+    fireEvent.change(screen.getByLabelText('TOKEN'), { target: { value: 'plugin-config-not-a-secret' } });
+
+    // The owner closes the window and its plan goes back to "nothing planned" in one update.
+    view.rerender(<InstallDisclosureDialog open={false} {...props} entryName="" state={{ kind: 'loading' }} />);
+
+    const closing = document.querySelector('[role="dialog"][data-state="closed"]');
+    expect(closing).not.toBeNull();
+    expect(closing).toHaveTextContent('weather-mcp');
+    expect(screen.queryByText(tb().pluginsDisclosureLoading)).toBeNull();
+    expect((screen.getByLabelText('TOKEN') as HTMLInputElement).value).toBe('');
+    view.unmount();
+
+    // A package with nothing to fill in: its Install button is not held back by an empty field.
+    const plain = render(<InstallDisclosureDialog open {...props} state={{ kind: 'ready', disclosure }} />);
+    plain.rerender(<InstallDisclosureDialog open={false} {...props} entryName="" state={{ kind: 'loading' }} />);
+    expect(document.querySelector('[role="dialog"][data-state="closed"]')).not.toBeNull();
+    fireEvent.click(screen.getByTestId('plugin-install-confirm'));
+    expect(onConfirm).not.toHaveBeenCalled();
+    computedStyle.mockRestore();
+  });
+});
+
+// An installation that is running is work in progress: the window steps aside for an approval
+// and comes back. Nothing here cancels, and the owner still closes it when the install ends.
+describe('InstallDisclosureDialog and an approval that arrives', () => {
+  const onApprovalAnswer = vi.fn();
+  function page(props: React.ComponentProps<typeof InstallDisclosureDialog>, approval: boolean) {
+    return (
+      <>
+        <InstallDisclosureDialog {...props} />
+        <Dialog
+          open={approval}
+          onOpenChange={onApprovalAnswer}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Confirm Action"
+          footer={<Button>Cancel the command</Button>}
+        />
+      </>
+    );
+  }
+  const installWindow = () => document.querySelector<HTMLElement>('[data-testid="plugin-install-disclosure"]');
+  function installProps(installing: boolean) {
+    return {
+      open: true,
+      entryName: 'weather',
+      state: { kind: 'ready', disclosure } as const,
+      installing,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    };
+  }
+
+  it('steps aside while installing, untouched, and returns when the approval has been answered', () => {
+    onApprovalAnswer.mockReset();
+    const props = installProps(true);
+    const view = render(page(props, false));
+    const window = installWindow();
+    expect(window).not.toBeNull();
+
+    view.rerender(page(props, true));
+    expect(screen.getByRole('alertdialog', { name: 'Confirm Action' })).toBeInTheDocument();
+    expect(installWindow()).toBe(window);
+    expect(window).toHaveAttribute('hidden');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Escape belongs to the approval while the window is hidden.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(onApprovalAnswer.mock.calls).toEqual([[false]]);
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(props.onConfirm).not.toHaveBeenCalled();
+
+    view.rerender(page(props, false));
+    expect(installWindow()).toBe(window);
+    expect(window).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('plugin-install-confirm')).toHaveTextContent(getI18n().toolbox.pluginsInstalling);
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(props.onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('does not come back when its owner closed it while it stood aside: the install ended behind the approval', () => {
+    onApprovalAnswer.mockReset();
+    const props = installProps(true);
+    const view = render(page(props, false));
+    view.rerender(page(props, true));
+    expect(installWindow()).toHaveAttribute('hidden');
+
+    // The owner hears that the install has ended and closes the window.
+    view.rerender(page({ ...props, open: false, installing: false }, true));
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(onApprovalAnswer).not.toHaveBeenCalled();
+
+    view.rerender(page({ ...props, open: false, installing: false }, false));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(installWindow()?.getAttribute('data-state') ?? 'closed').toBe('closed');
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(props.onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('is closed for the approval while nothing is installing: that is a cancel, as Escape is', () => {
+    onApprovalAnswer.mockReset();
+    const props = installProps(false);
+    const view = render(page(props, false));
+    view.rerender(page(props, true));
+
+    expect(props.onCancel).toHaveBeenCalledTimes(1);
+    expect(props.onConfirm).not.toHaveBeenCalled();
+    expect(onApprovalAnswer).not.toHaveBeenCalled();
+  });
+});
+
+// 「安装」 is painted when the package has been read, later than the press that opened the window:
+// the second press of a double press may find it under the pointer.
+describe('InstallDisclosureDialog: a press on the confirming button that the plan has just painted', () => {
+  const confirmButton = () => screen.getByTestId('plugin-install-confirm');
+  // A pointer press as the browser reports it; `fireEvent.click` alone says detail 0, a key press.
+  const pointerPress = (button: HTMLElement) => {
+    fireEvent.pointerDown(button);
+    fireEvent.mouseDown(button);
+    fireEvent.click(button, { detail: 1 });
+  };
+  function props(state: React.ComponentProps<typeof InstallDisclosureDialog>['state'], onConfirm: () => void, onCancel = vi.fn()) {
+    return { open: true, entryName: 'weather', state, installing: false, onConfirm, onCancel };
+  }
+  // The window reads the package for a while, then shows what it found.
+  function readThenReady(onConfirm: () => void, onCancel = vi.fn()) {
+    const view = render(<InstallDisclosureDialog {...props({ kind: 'loading' }, onConfirm, onCancel)} />);
+    passSettleInterval();
+    view.rerender(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure }, onConfirm, onCancel)} />);
+    return view;
+  }
+
+  it('installs nothing on a pointer press made before the button could be read, and installs once on a press after that', () => {
+    const onConfirm = vi.fn();
+    readThenReady(onConfirm);
+    pointerPress(confirmButton());
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    passSettleInterval();
+    pointerPress(confirmButton());
+    expect(onConfirm).toHaveBeenCalledExactlyOnceWith({});
+  });
+
+  it('takes a pointer press once the interval has passed, however often its owner renders it with an equal state', () => {
+    const onConfirm = vi.fn();
+    const view = readThenReady(onConfirm);
+    passSettleInterval();
+    // The owner builds the state object anew with every render.
+    for (let i = 0; i < 3; i += 1) view.rerender(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure }, onConfirm)} />);
+    pointerPress(confirmButton());
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds presses back again for another package shown in the same window', () => {
+    const onConfirm = vi.fn();
+    const view = render(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure: { ...disclosure, preparedToken: 'first' } }, onConfirm)} />);
+    passSettleInterval();
+    view.rerender(<InstallDisclosureDialog {...props({ kind: 'ready', disclosure: { ...disclosure, preparedToken: 'second' } }, onConfirm)} />);
+    pointerPress(confirmButton());
+    expect(onConfirm).not.toHaveBeenCalled();
+    passSettleInterval();
+    pointerPress(confirmButton());
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs at once from the keyboard', () => {
+    const onConfirm = vi.fn();
+    readThenReady(onConfirm);
+    fireEvent.click(confirmButton(), { detail: 0 });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs nothing under the repeats of an Enter held since the button that opened the window', () => {
+    const onConfirm = vi.fn();
+    readThenReady(onConfirm);
+    confirmButton().focus();
+    for (let i = 0; i < 5; i += 1) {
+      expect(fireEvent.keyDown(confirmButton(), { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    }
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('cancels on Escape at the first moment', () => {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    readThenReady(onConfirm, onCancel);
+    fireEvent.keyDown(confirmButton(), { key: 'Escape', code: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
 });
 
 it('omits empty skill and connector categories from the installation preview', () => {

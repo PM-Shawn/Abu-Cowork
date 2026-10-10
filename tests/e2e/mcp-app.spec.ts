@@ -46,6 +46,7 @@ import {
   configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   REPO_ROOT,
   type ElectronDataRoot,
@@ -280,7 +281,7 @@ async function toggleDemoConnector(page: Page, expectConnected: boolean): Promis
 
 /** Reveal the sidebar if it is collapsed; a no-op when it is already open. */
 async function showSidebar(page: Page): Promise<void> {
-  const sidebarToggle = page.getByTitle(/显示侧栏|Show sidebar/);
+  const sidebarToggle = page.getByRole('button', { name: /^(显示侧栏|Show sidebar)$/ });
   if (await sidebarToggle.count()) await sidebarToggle.first().click();
 }
 
@@ -655,7 +656,7 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(page.getByTestId('mcp-app-open-link-url')).toHaveText(
       'https://modelcontextprotocol.io/',
     );
-    await page.getByRole('button', { name: '取消' }).click();
+    await pressWhenSettled(page.getByRole('button', { name: '取消' }));
     const declinedRow = page.getByTestId('mcp-app-audit-row').filter({ hasText: '界面请求打开链接' });
     await expect(declinedRow).toBeVisible({ timeout: READY_TIMEOUT });
     await declinedRow.click();
@@ -738,7 +739,7 @@ test.describe.serial('MCP Apps host in Electron', () => {
     });
     // Nothing ran yet: the rows are still the ones the model's call produced.
     await expect(replayed.getByTestId('demo-value-alpha')).toHaveText('100');
-    await page.getByRole('button', { name: /^(确认执行|Confirm)$/ }).click();
+    await pressWhenSettled(page.getByRole('button', { name: /^(确认执行|Confirm)$/ }));
 
     await expect(replayed.getByTestId('demo-value-alpha')).toHaveText('101', {
       timeout: READY_TIMEOUT,

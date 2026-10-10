@@ -1,13 +1,15 @@
-import { Bot, ChartBar, Code, FlaskConical, PenLine, ShieldCheck, UsersRound, Search, Database, Palette, Compass, Wrench, BookOpen, Megaphone, Scale, Sparkles, Cpu, Globe, Camera, Calculator } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { AvatarGlyphs, type AvatarGlyph } from '@/components/ds/icons';
 
-/** Built-in avatar references reuse the product's Lucide icons. No image files. */
-export const AVATAR_ICON_MAP: Record<string, LucideIcon> = {
-  'chart-bar': ChartBar, code: Code, flask: FlaskConical, pen: PenLine,
-  shield: ShieldCheck, users: UsersRound, search: Search, database: Database,
-  palette: Palette, compass: Compass, wrench: Wrench, book: BookOpen,
-  megaphone: Megaphone, scale: Scale, sparkles: Sparkles, cpu: Cpu,
-  globe: Globe, camera: Camera, calculator: Calculator, bot: Bot,
+/**
+ * Built-in avatar references reuse the product's icons. No image files. The keys are the names
+ * stored in an avatar value (`icon:<name>/<tint>`); their order is the order the picker shows.
+ */
+export const AVATAR_ICON_MAP: Record<string, AvatarGlyph> = {
+  'chart-bar': AvatarGlyphs.chartBar, code: AvatarGlyphs.code, flask: AvatarGlyphs.flask, pen: AvatarGlyphs.pen,
+  shield: AvatarGlyphs.shield, users: AvatarGlyphs.users, search: AvatarGlyphs.search, database: AvatarGlyphs.database,
+  palette: AvatarGlyphs.palette, compass: AvatarGlyphs.compass, wrench: AvatarGlyphs.wrench, book: AvatarGlyphs.book,
+  megaphone: AvatarGlyphs.megaphone, scale: AvatarGlyphs.scale, sparkles: AvatarGlyphs.sparkles, cpu: AvatarGlyphs.cpu,
+  globe: AvatarGlyphs.globe, camera: AvatarGlyphs.camera, calculator: AvatarGlyphs.calculator, bot: AvatarGlyphs.bot,
 };
 
 export const AVATAR_ICONS = Object.keys(AVATAR_ICON_MAP);

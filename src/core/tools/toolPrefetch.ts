@@ -245,6 +245,10 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
   if (ctx.activeSkills.some((skill) => skill.name === 'Abu-Chrome-Bridge')) {
     additionalTools.push(TOOL_NAMES.MANAGE_MCP_SERVER, ...CHROME_BRIDGE_TOOLS);
   }
+  // The app builder's first step is asking app_prepare what the user already has.
+  if (ctx.activeSkills.some((skill) => skill.name === 'abu-app-builder')) {
+    additionalTools.push(TOOL_NAMES.APP_PREPARE);
+  }
 
   // Goal mode: once a conversation has a goal the model must always be able
   // to complete / block it, so the tool stays loaded (a stable roster also

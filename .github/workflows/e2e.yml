@@ -2,9 +2,10 @@ name: E2E Tests
 
 on:
   push:
-    branches: [dev, main]
+    # feat/design-system-next collects design-system batches 3–9 before they reach dev.
+    branches: [dev, main, feat/design-system-next]
   pull_request:
-    branches: [dev, main]
+    branches: [dev, main, feat/design-system-next]
 
 concurrency:
   group: e2e-${{ github.ref }}

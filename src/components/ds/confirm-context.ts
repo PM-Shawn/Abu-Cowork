@@ -1,8 +1,9 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 
 export interface ConfirmOptions {
   title: string;
-  message?: string;
+  // Words, or an element when part of the message needs its own look (an address shown in the code font).
+  message?: ReactNode;
   // The specific action, e.g. "Delete" — never "OK".
   confirmLabel: string;
   tone?: 'default' | 'danger';

@@ -1,12 +1,17 @@
-import { useCallback, useState } from 'react';
-import { Check, X, AlertTriangle, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { memo, useCallback, useState } from 'react';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Toggle } from '@/components/ui/toggle';
+import { IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { refreshManagedProvider } from '@/core/llm/managedProviderRefresh';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
 import type { ProviderInstance } from '@/types/provider';
 import { SECRET_KEYS } from '@/utils/secretStore';
 
@@ -20,42 +25,34 @@ interface ProviderCardProps {
   onEdit: (provider: ProviderInstance) => void;
 }
 
+const CARD = 'group rounded-panel border border-separator px-4 py-3';
+
 function StatusBadge({ provider, t }: { provider: ProviderInstance; t: ReturnType<typeof useI18n>['t'] }) {
   switch (provider.status) {
     case 'verified':
-      return (
-        <span className="inline-flex items-center gap-1 text-caption text-[var(--abu-success)]">
-          <Check className="h-3 w-3" />
-          {provider.statusLatency ? `${provider.statusLatency}ms` : t.settings.statusConnected}
-        </span>
-      );
+      return <Tag tone="success">{provider.statusLatency ? `${provider.statusLatency}ms` : t.settings.statusConnected}</Tag>;
     case 'failed':
       return (
-        <span className="inline-flex items-center gap-1 text-caption text-[var(--abu-danger)] max-w-[200px] truncate" title={provider.statusMessage}>
-          <X className="h-3 w-3 shrink-0" />
-          {t.settings.statusFailed}
+        <span className="inline-flex" title={provider.statusMessage}>
+          <Tag tone="danger">{t.settings.statusFailed}</Tag>
         </span>
       );
     case 'checking':
-      return (
-        <span className="inline-flex items-center gap-1 text-caption text-[var(--abu-text-muted)]">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          {t.settings.validating}
-        </span>
-      );
+      return <Spinner size="sm" label={t.settings.validating} />;
     default:
-      return (
-        <span className="inline-flex items-center gap-1 text-caption text-[var(--abu-warning)]">
-          <AlertTriangle className="h-3 w-3" />
-          {t.settings.statusUnchecked}
-        </span>
-      );
+      return <Tag tone="warning">{t.settings.statusUnchecked}</Tag>;
   }
 }
 
 function UserProviderCard({ provider, isActive, onEdit }: ProviderCardProps) {
   const { t } = useI18n();
-  const { removeProvider, updateProvider, toggleProvider, setProviderStatus } = useSettingsStore();
+  const confirm = useConfirm();
+  // One selector per action: the card re-renders when its own provider changes, never because
+  // another setting did (each of its buttons mounts a tooltip).
+  const removeProvider = useSettingsStore((s) => s.removeProvider);
+  const updateProvider = useSettingsStore((s) => s.updateProvider);
+  const toggleProvider = useSettingsStore((s) => s.toggleProvider);
+  const setProviderStatus = useSettingsStore((s) => s.setProviderStatus);
   // True when bootstrapSecrets detected a prior ciphertext for this
   // provider but couldn't decrypt it (typical cause: hardware/UUID change).
   const keyDecryptFailed = useSettingsStore((s) =>
@@ -69,34 +66,43 @@ function UserProviderCard({ provider, isActive, onEdit }: ProviderCardProps) {
   );
 
   const [showStatus, setShowStatus] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const selectModel = useSettingsStore((s) => s.selectModel);
 
-  const handleDeleteConfirm = useCallback(() => {
-    const wasActive = isActive;
+  const handleDelete = useCallback(async () => {
+    const confirmed = await confirm({
+      title: t.settings.deleteProviderConfirm,
+      message: provider.name,
+      confirmLabel: t.common.confirm,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    // The answer is about the provider as it is now: it may have gone, or become the one in
+    // use, while the question was open.
+    const answered = useSettingsStore.getState();
+    const current = answered.providers.find((p) => p.id === provider.id);
+    if (!current) return;
+    const wasActive = answered.activeModel.providerId === current.id;
 
-    if (provider.source === 'custom') {
-      removeProvider(provider.id);
+    if (current.source === 'custom') {
+      removeProvider(current.id);
     } else {
       // Builtin providers can't be removed from the array (they're seeded
       // by createDefaultProviders); we hide them by clearing userAdded so
       // visibleProviders' filter drops them. Keep also clearing
       // enabled/apiKey for backward compat with the legacy fallback.
-      updateProvider(provider.id, { enabled: false, apiKey: '', status: 'unchecked', userAdded: false });
+      updateProvider(current.id, { enabled: false, apiKey: '', status: 'unchecked', userAdded: false });
     }
 
     // If we deleted the active provider, switch to next enabled one
     if (wasActive) {
       const state = useSettingsStore.getState();
-      const next = state.providers.find(p => p.enabled && p.id !== provider.id);
+      const next = state.providers.find(p => p.enabled && p.id !== current.id);
       if (next && next.models.length > 0) {
         selectModel(next.id, next.models[0].id);
       }
     }
-
-    setShowDeleteConfirm(false);
-  }, [provider, isActive, removeProvider, updateProvider, selectModel]);
+  }, [provider, confirm, t, removeProvider, updateProvider, selectModel]);
 
   const handleRevalidate = useCallback(async () => {
     setShowStatus(true);
@@ -125,90 +131,61 @@ function UserProviderCard({ provider, isActive, onEdit }: ProviderCardProps) {
   if (provider.capabilities?.webSearch) caps.push(t.settings.capabilityWebSearch);
   if (provider.capabilities?.imageGen) caps.push(t.settings.capabilityImageGen);
 
-  // ─── Compact collapsed view ───
   return (
     <div
+      data-testid="provider-card"
       className={cn(
-        'group rounded-xl border px-4 py-2.5 transition-colors',
-        keyDecryptFailed
-          ? 'border-[var(--abu-danger)] bg-[var(--abu-danger-bg)]'
-          : 'border-[var(--abu-border)] hover:border-[var(--abu-clay-ring)]',
-        isActive && 'ring-1 ring-[var(--abu-clay-ring)]',
+        CARD,
+        isActive && 'bg-fill-selected',
         !provider.enabled && !keyDecryptFailed && 'opacity-50',
       )}
     >
       {keyDecryptFailed && (
-        <div className="flex items-start gap-1.5 text-caption text-[var(--abu-danger)] mb-1.5">
-          <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
-          <span>{t.settings.apiKeyDecryptFailed}</span>
+        <div className="mb-2">
+          <InlineMessage tone="danger">{t.settings.apiKeyDecryptFailed}</InlineMessage>
         </div>
       )}
       {!keyDecryptFailed && keySaveFailed && (
-        <div className="flex items-start gap-1.5 text-caption text-[var(--abu-warning)] mb-1.5">
-          <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
-          <span>{t.settings.apiKeySaveFailed}</span>
+        <div className="mb-2">
+          <InlineMessage tone="warning">{t.settings.apiKeySaveFailed}</InlineMessage>
         </div>
       )}
       {/* Row 1: Name + status + toggle */}
       <div className="flex items-center gap-3">
-        <span className="text-body font-medium text-[var(--abu-text-primary)] truncate min-w-0 flex-1">
+        <span className="min-w-0 flex-1 truncate text-ui font-medium text-label">
           {provider.name}
         </span>
         {(showStatus || provider.status === 'checking') && <StatusBadge provider={provider} t={t} />}
-        <Toggle checked={provider.enabled} onChange={() => toggleProvider(provider.id)} size="sm" />
+        <Switch checked={provider.enabled} onCheckedChange={() => toggleProvider(provider.id)} aria-label={provider.name} />
       </div>
 
       {/* Row 2: Models + caps + actions */}
-      <div className="flex items-center gap-2 mt-1.5">
+      <div className="mt-1 flex items-center gap-2">
         {/* Info */}
-        <div className="flex items-center gap-2 text-caption text-[var(--abu-text-muted)] truncate min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 items-center gap-2 truncate text-caption text-label-tertiary">
           {modelsSummary && <span className="truncate">{modelsSummary}</span>}
           {caps.length > 0 && (
             <>
-              <span className="text-[var(--abu-border)]">·</span>
+              <span>·</span>
               <span className="shrink-0">{caps.join(', ')}</span>
             </>
           )}
         </div>
 
-        {/* Actions (show on hover or always on mobile) */}
-        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={() => onEdit(provider)}
-            className="p-1 rounded text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-            title={t.settings.editProvider}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={handleRevalidate}
+        {/* Actions: under the pointer, and when the keyboard reaches the card */}
+        <div className="flex shrink-0 items-center opacity-0 transition-opacity duration-fast group-hover:opacity-100 group-focus-within:opacity-100">
+          <IconButton size="sm" icon={AppIcons.rename} label={t.settings.editProvider} onClick={() => onEdit(provider)} />
+          {/* The card's one spinner is the status next to the name; this icon stays still. */}
+          <IconButton
+            size="sm"
+            icon={AppIcons.retry}
+            label={t.settings.revalidate}
             disabled={provider.status === 'checking'}
-            className="p-1 rounded text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors disabled:opacity-40"
-            title={t.settings.revalidate}
-          >
-            <RefreshCw className={cn('h-3.5 w-3.5', provider.status === 'checking' && 'animate-spin')} />
-          </button>
-          <button
-            onClick={() => setShowDeleteConfirm(true)}
-            className="p-1 rounded text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-            title={t.settings.deleteProvider}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+            onClick={handleRevalidate}
+          />
+          <IconButton size="sm" icon={AppIcons.delete} label={t.settings.deleteProvider} onClick={() => { void handleDelete(); }} />
         </div>
       </div>
-
-      {/* Delete confirmation dialog */}
-      <ConfirmDialog
-        open={showDeleteConfirm}
-        title={t.settings.deleteProvider}
-        message={t.settings.deleteProviderConfirm}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setShowDeleteConfirm(false)}
-      />
     </div>
   );
 }
@@ -219,6 +196,21 @@ function managedStatusText(provider: ProviderInstance, t: ReturnType<typeof useI
   return provider.models.length === 0
     ? t.settings.managedStatusEmpty
     : format(t.settings.managedStatusConnected, { count: provider.models.length });
+}
+
+function ManagedStatus({ provider, t }: { provider: ProviderInstance; t: ReturnType<typeof useI18n>['t'] }) {
+  const text = managedStatusText(provider, t);
+  // Only a sync that is running spins; before the first one the words stand still.
+  if (provider.status === 'checking') return <Spinner size="sm" label={text} />;
+  if (provider.status === 'failed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-caption text-warning">
+        <StatusIcon tone="warning" size="sm" />
+        {text}
+      </span>
+    );
+  }
+  return <span className="text-caption text-label-tertiary">{text}</span>;
 }
 
 /**
@@ -235,49 +227,40 @@ function ManagedProviderCard({ provider, isActive }: Pick<ProviderCardProps, 'pr
     : modelNames.join(', ');
 
   return (
-    <div
-      className={cn(
-        'group rounded-xl border px-4 py-2.5 transition-colors',
-        'border-[var(--abu-border)] hover:border-[var(--abu-clay-ring)]',
-        isActive && 'ring-1 ring-[var(--abu-clay-ring)]',
-      )}
-    >
+    <div data-testid="provider-card" className={cn(CARD, isActive && 'bg-fill-selected')}>
       <div className="flex items-center gap-2">
-        <span className="text-body font-medium text-[var(--abu-text-primary)] truncate min-w-0">
+        <span className="min-w-0 truncate text-ui font-medium text-label">
           {provider.name}
         </span>
-        <span className="shrink-0 rounded px-1.5 py-0.5 text-caption bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]">
-          {format(t.settings.managedProviderBadge, { org: provider.name })}
+        <span className="inline-flex shrink-0">
+          <Tag>{format(t.settings.managedProviderBadge, { org: provider.name })}</Tag>
         </span>
-        <span
-          className={cn(
-            'ml-auto shrink-0 text-caption',
-            provider.status === 'failed' ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-text-muted)]',
-          )}
-        >
-          {managedStatusText(provider, t)}
+        <span className="ml-auto inline-flex shrink-0">
+          <ManagedStatus provider={provider} t={t} />
         </span>
       </div>
 
-      <div className="flex items-center gap-2 mt-1.5">
-        <div className="text-caption text-[var(--abu-text-muted)] truncate min-w-0 flex-1" title={modelNames.join('\n')}>
+      <div className="mt-1 flex items-center gap-2">
+        <div className="min-w-0 flex-1 truncate text-caption text-label-tertiary" title={modelNames.join('\n')}>
           {modelsSummary}
         </div>
-        <button
-          onClick={() => { void refreshManagedProvider(provider.id); }}
+        {/* The card's one spinner is the status above; this icon stays still. */}
+        <IconButton
+          size="sm"
+          icon={AppIcons.retry}
+          label={t.settings.managedResync}
           disabled={syncing}
-          className="p-1 rounded shrink-0 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors disabled:opacity-40"
-          title={t.settings.managedResync}
-        >
-          <RefreshCw className={cn('h-3.5 w-3.5', syncing && 'animate-spin')} />
-        </button>
+          onClick={() => { void refreshManagedProvider(provider.id); }}
+        />
       </div>
     </div>
   );
 }
 
-export default function ProviderCard(props: ProviderCardProps) {
+const ProviderCard = memo(function ProviderCard(props: ProviderCardProps) {
   return props.provider.source === 'managed'
     ? <ManagedProviderCard provider={props.provider} isActive={props.isActive} />
     : <UserProviderCard {...props} />;
-}
+});
+
+export default ProviderCard;

@@ -1,13 +1,16 @@
 'use strict';
 
 const LIGHT_CHROME = {
-  backgroundColor: '#f2f0e9',
-  symbolColor: '#656358',
+  backgroundColor: '#ececf0', // --ds-desk-solid (light)
+  symbolColor: '#5c5c61', // --ds-label-secondary (light)
 };
 const DARK_CHROME = {
-  backgroundColor: '#121110',
-  symbolColor: '#f0ede8',
+  backgroundColor: '#141416', // --ds-desk-solid (dark)
+  symbolColor: '#a1a1a6', // --ds-label-secondary (dark)
 };
+const TRANSPARENT_BACKGROUND = '#00000000';
+// Electron: backgroundMaterial is only drawn on Windows 11 22H2 (build 22621) and later.
+const MICA_MIN_BUILD = 22621;
 const WINDOWS_TOOLBAR_HEIGHT = 30;
 // The renderer owns the complete visual title-bar plane. Keeping Electron's
 // Window Controls Overlay background transparent lets theme colors and every
@@ -43,18 +46,33 @@ function chromeColors(dark) {
   return dark ? DARK_CHROME : LIGHT_CHROME;
 }
 
-function mainWindowPlatformOptions(platform = process.platform, dark = false) {
+// Which system material the OS will draw behind the page. The renderer reads the
+// same answer (via the launch argument) to decide whether `desk` is translucent.
+function windowMaterial(platform = process.platform, systemVersion = process.getSystemVersion()) {
+  if (platform === 'darwin') return 'vibrancy';
+  if (platform !== 'win32') return 'none';
+  const build = Number(String(systemVersion).split('.')[2]);
+  if (!Number.isInteger(build)) throw new Error(`Unrecognised Windows version: ${systemVersion}`);
+  return build >= MICA_MIN_BUILD ? 'mica' : 'none';
+}
+
+function mainWindowPlatformOptions(platform = process.platform, dark = false, material = windowMaterial(platform)) {
   const colors = chromeColors(dark);
+  const backgroundColor = material === 'none' ? colors.backgroundColor : TRANSPARENT_BACKGROUND;
   if (platform === 'darwin') {
     return {
-      backgroundColor: colors.backgroundColor,
+      backgroundColor,
       titleBarStyle: 'hidden',
       trafficLightPosition: { x: 20, y: 27 },
+      vibrancy: 'sidebar',
+      // Fades with the window when it loses focus, like every other macOS window.
+      visualEffectState: 'followWindow',
     };
   }
   if (platform === 'win32') {
     return {
-      backgroundColor: colors.backgroundColor,
+      backgroundColor,
+      ...(material === 'mica' ? { backgroundMaterial: 'mica' } : {}),
       // Keep the system-owned caption buttons/Snap behavior, but let the
       // renderer use the rest of this SAME row for Abu's icon and menus.
       titleBarStyle: 'hidden',
@@ -67,7 +85,7 @@ function mainWindowPlatformOptions(platform = process.platform, dark = false) {
     };
   }
   return {
-    backgroundColor: colors.backgroundColor,
+    backgroundColor,
     autoHideMenuBar: true,
   };
 }
@@ -179,10 +197,11 @@ function attachEditContextMenu(win, Menu, { isZh = false } = {}) {
   });
 }
 
-function syncMainWindowChromeTheme(win, dark, platform = process.platform) {
+function syncMainWindowChromeTheme(win, dark, platform = process.platform, material = windowMaterial(platform)) {
   if (!win || win.isDestroyed?.()) return false;
   const colors = chromeColors(dark);
-  win.setBackgroundColor?.(colors.backgroundColor);
+  // A system material shows through a transparent window; an opaque color would cover it.
+  if (material === 'none') win.setBackgroundColor?.(colors.backgroundColor);
   if (platform === 'win32') {
     win.setTitleBarOverlay?.({
       color: WINDOWS_OVERLAY_BACKGROUND,
@@ -234,4 +253,5 @@ module.exports = {
   mainWindowPlatformOptions,
   popupWindowsMenu,
   syncMainWindowChromeTheme,
+  windowMaterial,
 };

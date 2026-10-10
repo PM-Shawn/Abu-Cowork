@@ -1,5 +1,5 @@
-import { Loader2 } from 'lucide-react';
 import { useI18n } from '@/i18n';
+import { Spinner } from '@/components/ds/spinner';
 import { getConversationAgentState, useChatStore } from '@/stores/chatStore';
 
 /**
@@ -21,10 +21,10 @@ export default function AgentStatusStrip({ conversationId }: { conversationId: s
     ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
     : t.chat.compressingContext;
 
+  // The strip is one place: its only spinner carries the words.
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-tertiary)]">
-      <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-      <span className="truncate">{text}</span>
+    <div className="flex min-w-0 items-center px-3 py-2">
+      <Spinner label={text} />
     </div>
   );
 }

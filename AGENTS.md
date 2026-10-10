@@ -16,10 +16,10 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 - **LLM**: Anthropic API (Claude) via `@anthropic-ai/sdk`
 - **State**: Zustand + Immer + persist middleware
 - **Tools**: MCP Protocol (`@modelcontextprotocol/sdk`)
-- **Icons**: Lucide React
+- **Icons**: Lucide React through `src/components/ds/icons.ts`
 - **Markdown**: react-markdown + remark-gfm + react-syntax-highlighter (Prism)
 - **Test**: Vitest (`node` env by default; DOM tests opt in with `// @vitest-environment happy-dom`)
-- **Lint**: ESLint v9 flat config + typescript-eslint
+- **Lint**: ESLint v10 flat config + typescript-eslint
 
 ## Git Workflow & Development Constraints
 
@@ -130,7 +130,7 @@ src/
 │   ├── schedule/     # Scheduled tasks
 │   ├── settings/     # Settings modal & sections
 │   ├── sidebar/      # Navigation sidebar
-│   └── ui/           # shadcn-style base components
+│   └── ds/           # Design-system component library (§6.1)
 ├── stores/           # Zustand state stores
 ├── core/             # Core engine (non-UI)
 │   ├── llm/          # LLM adapter layer (Claude + OpenAI-compatible)
@@ -274,7 +274,7 @@ Abu 是 Electron 桌面端，每轮“改 → 重启 dev → 验证”的成本�
   import { useI18n } from '@/i18n'
   import { cn } from '@/lib/utils'
   ```
-- Lucide icons: import individually, never import the entire package.
+- Icons come from `@/components/ds/icons`.
 
 ### 4. Component Rules
 - **Function components only**, no class components.
@@ -284,36 +284,9 @@ Abu 是 Electron 桌面端，每轮“改 → 重启 dev → 验证”的成本�
   export default function MyComponent({ title, onClose }: { title: string; onClose: () => void }) { ... }
   ```
 - **i18n**: Always use `const { t } = useI18n()` — never hardcode Chinese strings in JSX.
-- **Icons**: in design-system migrated files, render icons only through `Icon` + `AppIcons` from `@/components/ds/icon` and `@/components/ds/icons` (`size` = `sm` 14 / `md` 16 / `lg` 20, stroke fixed at 1.5). Legacy files keep Lucide with explicit size classes until they migrate.
+- **Icons**: render icons only through `Icon` + `AppIcons` from `@/components/ds/icon` and `@/components/ds/icons` (`size` = `sm` 14 / `md` 16 / `lg` 20, stroke fixed at 1.5).
 - **Class merging**: Use `cn()` from `@/lib/utils` for conditional className composition.
 - **Pure helper functions** for data transformation should be defined outside the component.
-
-### 4.1 UI Component Library (MANDATORY)
-This section covers legacy files. Files on the design-system migration list use `src/components/ds/` instead (§6.3).
-All form controls **MUST** use components from `src/components/ui/`. **Do NOT** hand-roll `<input>`, `<textarea>`, `<select>`, or toggle switches with inline styling.
-
-- **Select** (`@/components/ui/select`): Use `variant="default"` for form fields (full-width), `variant="inline"` for compact settings rows.
-  ```tsx
-  import { Select } from '@/components/ui/select';
-  <Select value={v} options={opts} onChange={setV} />                // form field
-  <Select variant="inline" value={v} options={opts} onChange={setV} /> // settings row
-  ```
-- **Toggle** (`@/components/ui/toggle`): Use `size="sm"` for lists, `size="md"` for forms, `size="lg"` for settings pages. Supports `disabled` prop.
-  ```tsx
-  import { Toggle } from '@/components/ui/toggle';
-  <Toggle checked={on} onChange={() => setOn(!on)} size="lg" />
-  ```
-- **Input** (`@/components/ui/input`): Drop-in replacement for `<input>`. Override styles via `className`.
-  ```tsx
-  import { Input } from '@/components/ui/input';
-  <Input type="text" value={v} onChange={e => setV(e.target.value)} placeholder="..." />
-  ```
-- **Textarea** (`@/components/ui/textarea`): Drop-in replacement for `<textarea>`.
-- **Button** (`@/components/ui/button`): Use CVA variants (`default`, `secondary`, `ghost`, `outline`, `destructive`, `link`) and sizes (`xs`, `sm`, `default`, `lg`, `icon`, `icon-xs`, `icon-sm`, `icon-lg`).
-- **Tooltip** (`@/components/ui/tooltip`): Radix-based tooltip.
-- **ScrollArea** (`@/components/ui/scroll-area`): Radix-based custom scrollbar.
-
-**Violations**: Do NOT define local `CustomSelect`, inline toggle `<button>` with `rounded-full translate-x-*`, or raw `<input>` with hand-rolled focus/border styles. If a UI component is missing a needed variant, **extend the component in `ui/`** rather than hand-rolling a one-off.
 
 ### 5. State Management (Zustand)
 - All stores use `persist` middleware with `partialize` to whitelist persistent fields. Ephemeral UI state must be excluded.
@@ -336,108 +309,241 @@ All form controls **MUST** use components from `src/components/ui/`. **Do NOT** 
   3. Update `storeVersions.test.ts` registry
   4. Zustand calls migrate once — function must handle full chain (v0→v1→v2→...→N)
 
+  `storeVersions.test.ts` checks that the blob each store writes is at or above the registry's `minVersion`; since the store writes its own version, this catches a registry number above the code and never a code bump without a registry update. The guard that catches a forgotten bump is a test that writes a blob through the store and asserts its `version`.
+
+  Zustand calls `migrate` for any stored version different from the code's, newer included, runs no block for a newer one and writes the blob back under the running build's version; an older build that opens a newer store therefore makes every `if (version < N)` block run again on the next start of the newer build. Blocks that reset a user choice (V42, V54 of `abu-settings`) accept this.
+
 ### 6. Styling (TailwindCSS v4)
 - TailwindCSS v4 via `@tailwindcss/vite` plugin — **no `tailwind.config.js` file**.
-- **Design system (in migration)**: tokens live only in `src/styles/tokens.css` (spec: workspace `docs/2026-09-28-design-system-brief.md`). See §6.3.
-- Legacy code still uses `--abu-*` tokens and shadcn variables (§6.1, §6.2) until its directory migrates.
-- Custom CSS classes (`btn-ghost`, `btn-claude-primary`, `streaming-cursor`) defined in global CSS files are legacy; do not add new ones.
+- Every design token lives in `src/styles/tokens.css`, the type scale included (spec: workspace `docs/2026-09-28-design-system-brief.md`). See §6.1.
+- `src/styles/index.css` holds no theme and no variable. It holds the imports, the scan's `@source not` lines, two variants (`@custom-variant dark`, which keys `dark:` off the `dark` class, and `@custom-variant hover`, which takes hover out of the `hover: hover` media query), the base layer, text selection, the scrollbar rules, the window drag regions and three motion rules (`block-expand*`, `update-progress-indeterminate`, the `petNotifFade` keyframes). No class is added to it.
+- Tailwind generates a class only for the files it scans, and by itself it scans this checkout, comments included: a class spelled in a comment of a scanned file is generated. `index.css` keeps test files, Markdown, `tests/`, `scripts/`, `eslint.config.js`, `electron/` and `src-tauri/` out of the scan (`@source not`), and `scripts/designTokens.test.ts` holds the two host lines. The enterprise overlay's interface files are outside this checkout: `index.css` imports `@enterprise-modules/interface-classes.css`, where the overlay names them (`@source`); the stub's file of that name names none, so the personal stylesheet holds no class of the overlay (see Enterprise overlay).
 
-### 6.1 Font sizes — 8-token scale (MANDATORY)
-Applies to legacy files. Files on the design-system migration list use the §6.3 type scale.
-All font sizes go through the `--text-*` token scale defined in `src/styles/index.css`
-(`@theme` block). Each token binds font-size + line-height + font-weight (TRAE-style).
-**Never** hand-roll a size with `text-[Npx]`, and **do not** use Tailwind's default named
-sizes (`text-xs/sm/base/lg/xl/2xl/3xl`) — both are banned by ESLint (`no-restricted-syntax`).
+### 6.1 Design system (MANDATORY)
+The interface has one component library, `src/components/ds/`, and one token file, `src/styles/tokens.css`. The rules of this section apply to every file under `src/`. ESLint enforces four groups of them (`eslint.config.js`), and `scripts/eslintDesignRules.test.ts` pins where each group applies:
 
-| Token | px / line-height / weight | Use |
-|---|---|---|
-| `text-caption` | 11 / 16 / 400 | badges, timestamps, minimal captions |
-| `text-minor` | 12 / 18 / 400 | secondary labels, helper text |
-| `text-body` | 14 / 22 / 400 | **reading default** — body, lists, most text (emphasis = add `font-medium`) |
-| `text-h-xs` | 14 / 22 / 600 | inline small headings, group headers |
-| `text-h-sm` | 16 / 24 / 600 | card / small modal titles |
-| `text-h-md` | 20 / 28 / 600 | page / modal titles |
-| `text-h-lg` | 22 / 30 / 600 | empty-state big titles |
-| `text-h-xl` | 24 / 32 / 600 | welcome / hero |
-
-Heading weight caps at **600** (`font-semibold`) — never `font-bold`/`font-[700]` on a
-heading. Neutral text uses `text-[var(--abu-text-*)]` (`--abu-text-muted` is AA-compliant
-as of 2026-07). Semantic/link colors are tokenized too — see §6.2.
-
-### 6.2 Semantic + link colors — token scale (MANDATORY)
-Applies to legacy files. Files on the design-system migration list use the §6.3 color tokens.
-Link and status colors go through the `--abu-*` semantic tokens in `src/styles/index.css`
-(both themes). **Never** use raw Tailwind status/link hues (`text/bg/border/ring/fill-`
-`red/green/emerald/lime/amber/yellow/blue/sky/indigo/orange-*`) — banned by ESLint
-(`no-restricted-syntax`). Each status has **3 roles**; pick by use:
-
-| Use | Token |
+| Group | Bans |
 |---|---|
-| text / icon / border (AA-safe) | `text-[var(--abu-{role})]`, `border-[var(--abu-{role})]` |
-| solid fill (dots, filled buttons, solid badges) | `bg-[var(--abu-{role}-solid)]` |
-| soft callout/badge background | `bg-[var(--abu-{role}-bg)]` |
+| Sizes | an arbitrary font size (`text-[13px]`) and Tailwind's named sizes (`text-sm`…) |
+| Values | arbitrary values (`bg-[…]`, `text-[…]`, `z-[…]`, `rounded-[…]`, `shadow-[…]`, `duration-[…]`); Tailwind palette colors (`gray-*`, `white`, …); a hand-written scrim (`fixed inset-0`); shadcn color names (`bg-background`, `text-muted-foreground`…); sizes outside the type scale (`text-minor`, `text-h-*`); Tailwind's own radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `duration-150`, `shadow-md`, `ease-out`); a bare `animate-in` |
+| Structure | the raw `button`, `input`, `select` and `textarea` elements |
+| Imports | `lucide-react`, `radix-ui` (subpaths and `@radix-ui/*` included), `cmdk` |
 
-`{role}` ∈ `danger` (error/destructive, red) · `warning` (amber) · `success` (green) ·
-`info` (blue status/indicator). **Links** use `text-[var(--abu-link)]` +
-`hover:text-[var(--abu-link-hover)]` (Abu's brand is clay/orange, so links have their own
-blue token — do NOT reuse the accent). Brand orange stays `--abu-clay*`.
+- Interface code, which is every file of `src/` outside the two cases below, gets all four groups.
+- `src/components/ds/**` wraps the raw controls and the underlying libraries, so it gets the size and value groups only.
+- `src/core/**`, `src/stores/**`, `src/i18n/**` and `src/eval/**` hold no JSX class names, and their English prose (prompt text, translations, test titles) uses "rounded" and "shadow" as words: the size, value and structure groups do not read them. The import restriction applies there as everywhere else.
+- A test file gets the groups of the code beside it, together with the determinism rules of `TESTING.md` §3.
+- Every TypeScript file of the repository, outside `src/` as well, is kept off arbitrary and named font sizes and off Tailwind's status and link hues by the base rules.
 
-Notes: tokens are theme-aware — do **not** add `dark:` color variants. Solid-fill hover =
-`hover:opacity-90` (no per-role hover-fill token). There is no per-role hover *foreground*
-token except link, so `hover:text-[var(--abu-{role})]` on an element already in that role is
-a no-op (fine). Categorical tag palettes (e.g. memory-type tags: purple/teal + orange/blue)
-are a different concern from semantic status — keep those raw with a scoped
-`eslint-disable no-restricted-syntax` + comment.
-
-### 6.3 Design-system tokens and the migration list (MANDATORY for migrated files)
-Files matched by `DESIGN_SYSTEM_MIGRATED_FILES` / `DESIGN_SYSTEM_UI_FILES` in `eslint.config.js`
-must use only design-system token classes. ESLint bans arbitrary values
-(`bg-[…]`, `text-[…]`, `z-[…]`, `rounded-[…]`, `shadow-[…]`, `duration-[…]`), Tailwind palette
-colors (`gray-*`, `white`, …), and hand-written scrims (`fixed inset-0`) in both lists. Raw form
-controls and direct `lucide-react` / `radix-ui` / `cmdk` imports are banned only in
-`DESIGN_SYSTEM_MIGRATED_FILES`, because `src/components/ds/` is where those wrappers live.
-Both lists also ban legacy class names: shadcn color names (`bg-background`,
-`text-muted-foreground`…), legacy font sizes (`text-minor`, `text-h-*`), and Tailwind's own
-radius, z-index, duration, shadow and easing steps (`rounded-lg`, `z-50`, `duration-150`,
-`shadow-md`, `ease-out`).
+**Tokens and classes**
 
 | Category | Classes |
 |---|---|
-| Surfaces | `bg-desk` `bg-surface` `bg-raised` `bg-material` `bg-code` `bg-field` `bg-scrim` |
+| Surfaces | `bg-desk` `bg-surface` `bg-raised` `bg-code` `bg-field` `bg-scrim` |
 | Fills | `bg-fill` `bg-fill-hover` `bg-fill-selected` `bg-fill-pressed` |
 | Text | `text-label` `text-label-secondary` `text-label-tertiary` `text-label-placeholder` `text-link` |
 | Primary action | `bg-emphasis` + `text-on-emphasis` |
 | Status | `text-{success,warning,danger,info}` on `bg-{role}-soft` |
 | Lines / focus | `border-separator` `border-control-border` `ring-focus` |
-| Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono`; code font: `font-code` |
-| Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` |
-| Layers / motion | `z-sticky` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
+| Type | UI: `text-title-lg` `text-title` `text-ui` `text-ui-sm` `text-caption`; content: `text-body` `text-h1` `text-h2` `text-h3` `text-mono` `text-code-inline` (inline code inside message text); code font: `font-code` |
+| Radius / shadow | `rounded-window` `rounded-panel` `rounded-control`; `shadow-panel` `shadow-float` `shadow-dialog` `shadow-composer` (the composer card only) |
+| Layers / motion | `z-sticky` `z-fullscreen` `z-popover` `z-dialog` `z-toast` `z-tooltip`; `duration-fast` `duration-base` `duration-slow`; `ease-enter` `ease-exit` |
 | Identity (avatar, app icon only) | `bg-brand` `text-brand-ink` |
 
-**Components** live in `src/components/ds/` (spec §6.4). Render the tree inside
-`DesignSystemProvider` (tooltips, the layer manager that keeps one dialog and one
-menu/popover open at a time, and `useConfirm()`); use `useConfirm()` instead of
-`window.confirm()`, `Dialog` for every modal (it owns the only scrim and asks before
-discarding `dirty` input), and `InlineMessage` / `Toaster` / `EmptyState` / `LoadError`
-for feedback. Icon-only buttons are `IconButton` with a `label`. A confirmation from
-`useConfirm()` is a question about the current dialog: it stacks over an open dialog, and
-it answers `false` when another dialog opens and replaces it. `Toaster` renders its own
-notification list (a labelled region whose `aria-live="polite"` area holds the list, newest
-last) and
-does not use Radix Toast, so a toast never takes Escape from an open dialog. Every floating
-root — portaled overlay content, scrims, and the toast list — carries
-`data-electron-no-drag`; `src/__tests__/overlayDragRegions.test.ts` guards this. ds code
-never uses a bare `animate-in` class, because the legacy global `.animate-in` rule in
-`src/styles/index.css` overrides it; use the `data-[state=…]:animate-in` forms instead.
+Tailwind's own palette is off: `--color-*: initial` is the first declaration of `@theme inline` in `tokens.css`, so a palette class (`bg-gray-100`, `text-white`, `bg-black/40`) generates nothing, in this repository and in the private one. `cn` (`src/lib/utils.ts`) registers every token name of `tokens.css` under the property it sets, and `lib/utils.test.ts` holds a case per name; a new token is registered there in the same change.
 
-**Accessibility appearances**: `src/styles/appearance.ts` sets `data-contrast="more"`,
-`data-transparency="reduced"` and `data-motion="reduced"` on `<html>`; `tokens.css` keys
-off those attributes only — never add `prefers-*` media queries to it. Animated floating
-layers carry `data-ds-motion` and spinners `data-ds-spinner` so reduced motion can stop them.
+Type: message text uses the content scale (`text-body`, `text-h1`..`text-h3`, `font-code text-mono`, `text-code-inline`). Everything else is UI text: the rest of the chat area, the right panel, the settings window and every page. The source editor and the terminal use the code scale (`--text-mono`, `--ds-font-mono`). Heading weight caps at 600 (`font-semibold`, which the title and heading sizes carry by themselves): never `font-bold`.
 
-When a directory finishes migrating, append its glob to the list in the same PR. Never remove an
-entry. `scripts/designTokens.test.ts` fails if a token change breaks WCAG contrast in any of the
-four appearances (light, dark, and each with increased contrast).
+Appearance: a color class takes no `dark:` variant. Every token follows the appearance by itself (`tokens.css` gives each one its light and its dark value), so one class is right in both.
+
+Third-party surfaces read `--ds-*` variables, so no component checks the appearance. Code highlighting takes its colors from `--ds-syntax-*` through `src/components/chat/syntaxTheme.ts`, CodeMirror through `src/components/panel/codeMirrorTheme.ts`, and xterm through `resolveTerminalTheme`, with `useTokenRevision` re-reading the variables when the appearance changes. `--ds-selection` is the neutral selected-text color (terminal, source editor, document previews) and `--ds-page-canvas` / `bg-page-canvas` the white paper of web pages and Word pages.
+
+A frame cannot read a host variable. The widget kit (`core/widget/designSystem.ts`) therefore carries literal copies of the host's tokens, light and dark; `designSystem.test.ts` reads `tokens.css` and holds each copy to its token, so a token change is made in both files. `--w-primary` is the emphasis color and its text is `--w-primary-fg`; `--w-series-1..4` are a chart palette of their own. The `srcdoc` styles of `HtmlWidgetBlock` write literal colors for the same reason and keep the variable names widget authors use (`--abu-primary`, `--abu-text`, `--abu-bg`, `--abu-border`, `--abu-font`).
+
+Guards: `scripts/designTokens.test.ts` fails if a token change breaks WCAG contrast in any of the four appearances (light, dark, and each with increased contrast). A status `Tag` (`text-{role}` on `bg-{role}-soft`) and a neutral one (`text-label-secondary` on `bg-fill`) keep 4.5:1 over `bg-surface` and over `bg-raised`, and the test checks both bases; `text-label-tertiary` on `bg-fill` is outside that check. The selected segment of a `SegmentedControl` keeps 1.15:1 from its track over both bases, with `text-label` on it at 4.5:1; the test reads the two fills from `ds/styles.ts` (`SEGMENT_TRACK`, `SEGMENT_SELECTED`), and `ds/segmented-control.test.tsx` holds the control to them. Design-preview baselines come from the CI runner; a token change that moves a picture more than 1 % needs new baselines for that picture.
+
+**Components**
+
+Components live in `src/components/ds/` (spec §6.4). The tree renders inside `DesignSystemProvider`, which brings the tooltips, the layer manager that keeps one dialog and one menu or popover open at a time, and `useConfirm()`. A component that renders `FullscreenSurface` or calls `useConfirm`, and its tests, need the provider.
+
+- A modal is a `Dialog`: it draws the scrim, as only `FullscreenSurface` also does, and asks before discarding `dirty` input. A confirmation is `useConfirm()`, never `window.confirm()`. Feedback is `InlineMessage` / `Toaster` / `EmptyState` / `LoadError`.
+- Buttons: icon-only buttons are `IconButton` with a `label`; `IconButton variant="primary"` is the filled icon-only action (Send). `Pressable` (`@/components/ds/pressable`) is the button for targets whose look is their content; an icon-only `Pressable` sits in a `Tooltip` with its name, so the name shows on keyboard focus. A page's one `primary` is its 「添加」 button (the todos page: 「新建待办」; the inbox has none), card buttons are `secondary size="sm"`, and a window's `primary` is its main action.
+- A group of settings is a `SettingGroup` of `SettingRow`s (title, one-line description, control). Dropdowns there are `Select fullWidth` inside a width wrapper from `settings/settingsLayout.ts`, with option explanations in `SelectOption.description`.
+- Choices: a small, mutually exclusive choice inside a form is a `SegmentedControl` (`fullWidth`: equal shares; the automation editors' frequency, weekday, source, filter, output) or a `RadioGroup` (listen scope, extract mode); the selected segment is `bg-fill-selected` over the `bg-fill` track, the fill every selected row of the library uses, with no shadow or line of its own; a choice from a list (hour, minute, skill, project, channel, push platform) and both autonomy choices (a task's and a listener's) are `Select`s. A closed `Select` never changes its value from a key press, and arrow keys only move the highlight, so it is the control for consequential choices as well. A `Select` shows its placeholder while the value it holds matches no option, and leaves the owner's value alone. It mounts its list only while open (a closed Radix list keeps every option and its listeners alive per select), so it closes without an exit fade; it is not remounted to get one.
+- `MultiCombobox` is the multi-select with a search box: the choice is read from `aria-checked` (cmdk's `aria-selected` follows the highlight and is left alone), Enter or a click toggles one and the list stays open, and Space types into the search box. In `Combobox` and `MultiCombobox` Tab closes the list and keeps focus on the trigger. Option objects are stable (`useMemo`), and both pass one pick callback for the life of the list, because the rows are `memo`.
+- A secret field that offers show / hide is `settings/SecretField`; a secret field that only masks is a `TextField type="password"` (IM App Secret). Neither puts the value anywhere but the input.
+- `TextArea bare` is the editing area of a card that draws the box itself: no border, fill, focus ring, padding, minimum height or disabled look of its own. Its one user is the composer: `chat/InlineSkillInput` renders it while the message holds no skill tag, and an editable `div role="textbox"` with the tag as a `button` once it does; both carry `data-chat-composer`. The tag and its two caret marks are built by a layout effect with DOM calls, never as JSX, because the browser owns that subtree while the user types and an input method composes. The composer card (`shadow-composer`, `focus-within:border-control-border`) is the field's border and focus mark.
+- `Checkbox` takes `aria-describedby` for an explanation shown beside it. `Tag` takes `title` and data attributes on its root. `AppIcons.offline` is the glyph for a service that cannot be reached. Avatar glyphs are `AvatarGlyphs` in `ds/icons.ts`; `core/team/avatarPresets.ts` maps the stored names to them, and no stored name is renamed or removed. A `Spinner size="sm"` label is `text-ui-sm`, or `labelSize="ui"` where it trades places with 13px words.
+- A tooltip is no layer: Escape hides it and still acts on the layer underneath, for as long as its box is on the page, and focus moved by code after a pointer action opens no tooltip (after a key press it does).
+- `Toaster` renders its own notification list (a labelled region whose `aria-live="polite"` area holds the list, newest first) and does not use Radix Toast, so a notice never takes Escape from an open dialog.
+- Every floating root — portaled overlay content, scrims, and the notification list — carries `data-electron-no-drag`; `src/__tests__/overlayDragRegions.test.ts` guards this and holds the exact list of fixed overlay roots (`ds/dialog.tsx`, `ds/toaster.tsx`).
+- Motion: an enter animation belongs to a state. ds layers use the `data-[state=…]:animate-in` forms; a bare `animate-in` is the enter animation of `tw-animate-css` and plays on every mount. Animated floating layers carry `data-ds-motion` and spinners `data-ds-spinner`, so reduced motion can stop them.
+- When a dialog leaves with a menu still fading in it, Radix leaves `pointer-events: none` on `body`; `ds/layer-context.ts` clears it once no `[data-ds-layer]` remains, and it is the only code that writes `pointer-events` on `body`: page code never does.
+
+Rendering: `App` renders for every piece of a streamed reply. Pages it re-renders (`ExtensionsView`, `TeamView`) are `memo` with no props and read stores through selectors; `InboxView`, `TodoView` and `SystemSettingsDialog` are `memo` with no props, so the settings window does not render with a streamed reply. `RightPanel` and `WorkspacePanel` are `memo` and read primitive selectors, so the panel does not re-render per streamed token. Cards in long grids are `memo` and mount no Tooltip, Menu or Select root, so `IconButton` is not used on cards. Todo and inbox rows mount none either: their icon-only buttons are `Pressable`s with an `aria-label` and no tooltip, and `TodoItem` is `memo` with handlers that stay the same between renders. The one row that owns a menu root is the sidebar project row (see Sidebar rows).
+
+**Layers, approvals, focus and stacking**
+
+Layers: a menu, select or popover opened inside a dialog sits on the dialog's level (`useFloatingLevel`), and every floating layer keeps 8px from the window edge. A dialog keeps rendering while it fades out and its content takes no pointer input then. A layer that is closing takes no Escape: the key acts on the top open layer. `Menu`, `ContextMenu`, `Popover`, `Combobox`, `MultiCombobox` and the discard question pass Escape on while they close (`useLayer().onEscapeKeyDown` → `registry.escapeTop()`). `LayerProvider.onModalChange` feeds `previewStore.dsModalOpen`, and it follows what is painted: a layer counts until it reports the end of its fade (`registry.left`), else until a look one fade later, repeated while `isPainted()` holds. A provider that leaves the page reports nothing, and one that mounts tells both listeners (`onModalChange`, `onDecisionChange`) where it starts: no, unless a layer is open in its first commit, which says yes itself. So neither signal keeps the yes of a provider that a render error took away with a layer open (the root error page and 「重试」). The native browser view hides on that signal, on the settings window and on an open menu of the workspace tab strip (`useNativeViewOcclusion`, `BrowserTab`); no window raises a flag of its own for the native view, and no ds window watches an approval queue or another window.
+
+Alerts: `role="alertdialog"` on a dialog that is no approval registers as an alert. It stacks over the open dialog or approval, a new alert or a new dialog replaces it, and it steps aside for an approval that arrives. It is for a question about what is on screen (a confirmation, the privacy check, a site removal), never for a form. A confirmation or alert asked while a dialog or an approval is open belongs to the innermost open one: it is answered with cancel when that layer leaves, and dialogs opened inside a dialog or an approval are closed by the registry together with it, so an owner never has to close a nested window itself.
+
+Approvals: an approval is a `Dialog layer="approval"`. The command approval and the path or workspace grant are `role="alertdialog" outsidePress="ignore"` and open on `data-approval-cancel` (取消 / 拒绝; a workspace request that names no folder has one button, the folder picker). The task grant window keeps `role="dialog"`, refuses on a press outside, and opens on its page's way back, which refuses. Only its own buttons answer an approval; Escape and the corner button refuse. The registry never closes one, and no other layer, notification, conversation switch or window close answers one. One shows at a time; the rest wait off the page, an `urgent` one (the workspace request, which answers itself after 60 s) first. The owner keys each approval by request id, and for an owner without one `PermissionDialog` keys its window by kind and path, so no state and no focus carries over; when allow turns into grant for good under the focus, the focus moves to cancel. `ChatView` renders one approval, of the conversation in view, in the order of `common/approvalQueueView.ts`.
+
+Arrivals: an approval that meets a dialog with unsaved input waits behind the discard question; a `busy` dialog steps aside with the dialogs around it, as does an open question; any other dialog is closed, and a question over it cancelled. What steps aside stays mounted and `hidden`, nothing in it answered or cancelled, and returns when no approval shows or is due, or when the approvals that are due wait behind a dialog the user chose to keep editing: questions about the page first, then windows, last out first, a window only to a page with no other window or question. While an approval shows, a new dialog is turned away unpainted or, if `busy`, waits unmounted; a question stacks over the approval and answers alone. A window is `busy` exactly while closing it would cancel work in flight (sign-in, `InstallDisclosureDialog`, `AddMarketplaceDialog`, `app/AppAddConfirmDialog`, `AddProviderModal`, `SkillUploadModal`).
+
+Focus between layers: the registry hands the focus on between layers that follow each other. A layer shown while another fades marks it (`focusTaken()`), so that one gives the focus to nobody; an approval takes over the return target of the layer it follows or that steps aside for it, so the last of a run returns the focus to where it was before the run. A window that steps aside moves no focus and returns to the control that had it, else its opening control; a question returns on its opening control, and a window under it leaves the focus alone. The registry's hand-offs between layers never drop the focus onto the window; a press on an approval's scrim does (Tab brings it back). A dialog whose place to return to is no control on the page — nothing had the focus when it appeared, or that control has left since — calls `Dialog onFocusUnplaced` once it has gone, and only when the focus is its own to give back (not after the registry, the caller's `onCloseAutoFocus` or a trigger placed it). `ChatView` passes `focusComposerFromWindow` to its three approvals: an approval that arrived after Send turned into Stop, or with the focus on the window, returns the focus to the message field.
+
+Focus in windows and pages: a dialog opens on its first control, or on the one `Dialog initialFocus` names (the settings window opens on the navigation row of the page in view); after a pointer press that first focus shows no ring (`ds/input-modality.ts`), after a key press it does. A dismissible dialog whose only control is its corner close button opens with focus on its own box. Tab from the dialog's own box goes to its first control and Shift+Tab to its last. A `SegmentedControl` that is a dialog's first control does not let Shift+Tab out. A control never drops the focus onto the window:
+- a page that replaces another moves the focus to its way back, and to the control that opened it when it is left (`CapabilitiesSection`, `data-capability-entry` / `data-capability-back`);
+- after a row is removed the focus goes to the row that took its place, else the one before it, else the add button;
+- a control that leaves a window under the focus hands it on first (edit profile's 「恢复默认」, to the nickname field);
+- the settings window puts the focus in the composer when the control that opened it has left the page (the first-run guide's link);
+- `chat/composerFocus.ts` has `focusComposer()`, `focusComposerFromWindow()` (the message field takes the focus only when no control has it and no ds layer is on the page) and `focusComposerAfterPageChange()`, which does the same one frame later, for an action that replaces the page with the chat page (start a conversation with an expert, 「查看会话」 of a run, the first message of a new task: `ChatView` calls it when a message sent from the new-task page replaces that page with the chat page, whose message field is another element). All three find the field by `[data-chat-composer]` in both of its forms, the text area and the editable box of a message with a skill tag, and pass over a field that takes no input (`disabled`, `aria-disabled`). The editable box takes the focus the way it names for itself (`setComposerFieldFocus`, the `focus()` of `InlineSkillInput`'s handle), with its caret where it was left. The message field is the only target; Send and Stop never take the focus by code, and the field sends once per press of Enter, so a key still down from the control that left starts nothing. Send leaves under the focus once it has taken a message (it has nothing left to send, or Stop takes its place), so it hands the focus to the field first (`ChatInput` `resetInput`), where a send with Enter leaves it. After a project is created the composer takes the focus.
+
+Focus helpers, one per kind of list, each acting only when the focus would otherwise be on the window (`focusIsOnWindow`):
+- `toolbox/cardFocus.ts` finds a card again after a delete, an uninstall or an editor: the focus goes to that card, else the card now at its index, else the last one, else the page's 「添加」 button (`focusByTestId`).
+- `automation/useListDetailFocus.ts` hands the focus between a list and the page of one item (cards through `cardProps('automation', id)`, the way back marked `data-automation-back`): to the way back on the way in, to the item's card on the way out, else the card that took its place, else the create button. It also covers an item deleted from outside while its question or its editor is open.
+- `common/useRowFocus.ts` serves inbox and todo rows, which hold native buttons: after a row is deleted, an inbox item is answered or the inline form closes, the focus goes to the same row's first button, else the next row that has one, else a row before, else the header control.
+- The sidebar's helpers are under Sidebar rows.
+
+Stacking: the floating levels in `tokens.css` (`z-popover` and up) sit above every stacking value hand-written in `src/`: a modal ds layer takes pointer input from the rest of the page, so what is seen has to be what takes the press. Page code never writes a value at or above `z-popover`. `scripts/designTokens.test.ts` holds the exact list of stacking values written by hand in `src/` (one: the SVG markup in `MermaidBlock.tsx`); a new one fails it and becomes a layer utility. Its comment lists the forms it reads and the forms it cannot see, and `scripts/__fixtures__/stacking-*` holds one case per form. The two corner banners are rendered by `common/CornerBanners`, one at a time: the disclaimer until it is acknowledged, then the first unseen announcement. They sit on `z-fullscreen`, under every floating layer. The announcement appears where the disclaimer, or the announcement before it, was a moment ago: it takes no pointer press that began within `TOAST_SETTLE_MS` of its appearing, counted anew for each announcement, so a double press on the disclaimer's 「我知道了」 leaves the announcement shown and its seen mark unwritten. The keyboard is not held.
+
+`Dialog` props: `layer`, `urgent`, `busy`, `outsidePress`, `settles`, `settleKey`, `size` (`page` for the settings window, `viewer` for a viewer), a `header` slot outside the scroll area, `closeButton` (which takes data attributes for that button), `contentProps`, `initialFocus`, `onCloseAutoFocus`, `onFocusUnplaced`. `Dialog dismissible={false}` is for a window only its own buttons may close. A description renders line breaks, breaks long words and scrolls when it is taller than its box; it is then a Tab stop (`role="group"`, named by the title) that the opening focus passes over. A key handler for a `Dialog`'s whole content sits on an element around the `Dialog`. `ConfirmOptions.message` is a node. `Popover` takes `contentProps`, `label`, `onOpenAutoFocus` and scrolls inside the room beside its trigger.
+
+**Settling: an early pointer press answers nothing**
+
+A box whose answering control is painted by itself takes no pointer press that began within `TOAST_SETTLE_MS` (500 ms) of that control's appearing. Three kinds of box settle:
+- by their kind: an approval, a question (`useConfirm`, any `role="alertdialog"` window) and a window's question about unsaved input;
+- by their owner's word, `Dialog settles`: an ordinary window whose confirming button appears after a step of the window's own. `app/AppAddConfirmDialog` (both mounts) and `toolbox/plugins/InstallDisclosureDialog` open while a plan is read and paint 「确认」 / 「安装」 once it is there;
+- a part of the page that is no layer, wrapped in `Settling` (`ds/settling.tsx`): the agent's question dock (`chat/UserQuestionDock`), which appears by itself above the message field.
+
+Any other window opens on the user's own press with its buttons in its first paint, and takes a press at once.
+
+The count starts when the box joins the page (for an approval: when the registry shows it), and again when it returns after standing aside, when the last layer over an approval has left the page, and when its `settleKey` changes, which says that a control of the box changed its meaning: the allowing button of `PermissionDialog` turned into the one that grants for good, the plan a window was reading is there (the flow step of `AppAddConfirmDialog`, the plan state and the prepared package of `InstallDisclosureDialog`), the dock turned its page. A `settleKey` is a value that stays the same between renders of one step. The dock is two `Settling` boxes: the whole dock counts when a question arrives, and the answers of a page (options, 其他, 跳过 and the button under them) count again with every page turn, so the second press of a double press on an option, or on 「下一题」 where 「提交」 is on the last page, answers nothing; the pager and the close button keep their meaning across pages and stay in use. The registry tells an approval when it is covered and uncovered (`LayerEntry.covered()` / `uncovered()`: a question over it, a window opened inside it); while covered it is held with no end.
+
+An early press starts nothing in the box, does not move the focus and reaches no control, the corner button and the cancelling button included; during the interval the box takes no hover, wheel or selection either. The keyboard is never held (`detail === 0`): Enter, Space and Escape act at the first moment. The box carries `data-ds-settling` exactly while it holds presses back, and nothing inside it is the pointer's target then. A press on the scrim of the task grant window refuses at once, before and after the interval. Settling changes when a press is taken and nothing else: what an answer means, which control a box opens on and every way of cancelling stay as they are. The rule lives in `ds/settle.ts` (`useSettling`), used by `ds/dialog.tsx` and `ds/settling.tsx` only: page code writes no guard of its own, it passes `settles` and `settleKey` or wraps a part in `Settling`.
+
+A popover does not tell the registry that it covers an approval. No approval, question or discard question holds a menu, select list or combobox; one that gets such a control makes it report as a cover first, as a question or a window does.
+
+**Held keys: a key acts once per press**
+
+`ds/heldKey.ts` holds three rules, all about key repeats (`event.repeat`). A first press always acts, and a click with `detail` 0 that comes with no key always acts.
+
+- Controls: a control that acts at once — `Button`, `IconButton`, `Pressable`, `NavItem`, `Link`, `Switch`, `Checkbox`, the `Disclosure` trigger, the closed `Select` (Enter, Space and the two arrows that open it) and the `Combobox` trigger — drops the repeats of Enter and Space before the browser makes a click from them and before the caller's `onKeyDown`, which does not hear them. `TextField` drops a repeating Enter only, never one that belongs to an input method; `TextArea` drops nothing.
+- Layers: every `Dialog` and its question about unsaved input, `Menu` and its nested lists, `ContextMenu`, `Popover`, and the lists of `Select` and `Combobox` drop the repeats of every key that was already down when the layer was shown, until that key is released and pressed again. A `Dialog` counts again when it returns after standing aside, at `uncovered()`, when `settleKey` changes, and when its discard question shows or is answered. Keys pressed inside a layer repeat as its controls define (arrows walk a list, Tab moves, Backspace deletes). A menu, a nested list, a context menu and a select list choose once per press of Enter or Space; a list with a search box once per press of Enter (Space types there).
+- Escape acts once per press (`dropsHeldEscape`, which reads `event.repeat` and keeps nothing): every layer drops the repeats of a held Escape where it hears of the key — a `Dialog` of any kind and its discard question through `useLayer().onEscapeKeyDown`, `Menu`, `ContextMenu`, `Popover`, `Combobox` and `MultiCombobox` through the same handler, nested menu lists and the `Select` list through their own `onEscapeKeyDown`, both forms of `FullscreenSurface` in their document listener, and the agent's question dock. So an Escape that is down when an approval arrives, or whose first press the page never heard, does not refuse it; the Escape that closed one layer does not go on to the layer under it; a held Escape on a window with unsaved input asks once. A fresh press is never dropped and acts as it always does, also while the layer it reaches is fading.
+
+The keys that are down are tracked by `LayerProvider` by `event.code`, and forgotten when the window loses the focus or the page is hidden. A key the page never heard go down (a frame, the native view, another window, before the focus returned) is unknown to the layer rule: its Enter and Space repeats are still dropped by the controls and lists, its Tab and arrow repeats move.
+
+Page code writes no held-key guard around a ds control. A hand-written `role="button"` or a container that acts on a key-down returns on the repeat itself: `toolbox/ToolCard`, `sidebar/rowKeys.ts` and `chat/UserQuestionDock` through the same helpers, and the tab strip's Delete by reading `e.repeat`. The message field sends once and picks a suggestion once per press of Enter; Shift+Enter, Alt+Enter and a bare Enter under 「Enter 换行」 repeat. `belongsToInputMethod` (`heldKey.ts`) is the one test for a key that belongs to an input method; `chat/composerKeys.ts` `isImeComposing` adds the composer's own composition flag to it.
+
+**Busy controls**
+
+A button or a switch whose own action is running is `Button busy` / `IconButton busy` / `Switch busy` and not `disabled`: `aria-disabled`, focusable, dimmed, with a plain cursor. The control takes the pointer and ends the click on itself (`preventDefault` and `stopPropagation`), so nothing behind it acts; a press puts the focus on it. A control that cannot act and may hold the focus stays focusable; a switch whose feature is unavailable stays `disabled`.
+
+Its hover and pressed looks are off: every class of a ds button that answers the pointer is written `not-aria-disabled:hover:` / `not-aria-disabled:active:` (`button-variants.ts`), and a new one is written the same way. `cn` leaves `not-aria-disabled` out when it compares classes, so a caller's `hover:` / `active:` class on a ds button replaces the button's own; a caller on a button that can be busy writes the variant itself. Page code that marks an element of its own as working with `BUSY` gates its hover classes the same way. `isWorking(element)` (`ds/styles.ts`) is the one test for the mark; `Menu` and `sidebar/RowMenus` read it.
+
+`busy` is presentation only: the handler keeps its own re-entry check, released on every exit path. `AddProviderModal.handleValidate` owns its check in `validatingRef`, which holds the check in flight for the current opening; every form reset clears it, and an answer from an earlier opening is dropped.
+
+**Menus**
+
+- `InstalledItemMenu` and `ToolboxCreateMenu` are `Menu`s. A menu item that opens a window records the action in a ref; `onCloseAutoFocus` focuses the trigger, then runs it. A question asked from a menu runs after the menu has gone.
+- A menu item that cannot be chosen stays in the menu, disabled, with its reason as `title` (`InstalledItemMenu disabledReason`); it never fires. `MenuItem description` adds a second line.
+- `Menu contentProps` and `MenuItem testId` carry the test ids E2E reads. The 「…」 trigger is the default `IconButton` size in every detail header.
+- `Menu` content stops clicks, also for `click` listeners on `document`: outside-press code listens for `pointerdown` / `mousedown`.
+- Menu buttons: a `Menu` trigger and the 「…」 of `RowMenus` open on a click with `detail` 0 (a screen reader, `element.click()`), only while the menu is closed; a pointer press opens on pointer-down and an opening key on key-down, once each. The repeats of Enter, Space and ArrowDown on a closed menu button open nothing. A trigger marked `aria-disabled` (a busy control, or one its owner marks) opens nothing from any kind of press.
+- The project file tree (`panel/WorkspaceFileTree`) keeps one `ContextMenu` around all its rows and binds it as `sidebar/RowMenus` does (see Sidebar rows): a row hands over its right-clicks and its touch or pen presses, the menu shows the row its opening gesture began on, and a gesture with no row (between the rows, on a folder's hint line, in a name field) opens nothing.
+- The boxes of `Popover`, `Combobox` and `MultiCombobox` have the role `dialog` and are no windows; they carry `data-ds-popover`, and code that looks for the top window excludes them by it (menus and select lists have roles of their own).
+
+**Notices**
+
+`common/ToasterMount` renders the ds `Toaster` from `toastStore`. The list sits at the top centre of the window, newest on top, in a `region` named 「通知」 (`t.designSystem.notifications`); nothing in it is `role="status"`, and E2E reads notices through that region. The store keeps every notice and the newest three show; one shows while the user is asked to decide (`onDecisionChange`: an approval, an alert question or a window's discard question is on the page), so no notice lies over the buttons that answer. A notice pushed out by newer ones keeps its remaining time and returns when a place frees, last out first, for at least `MIN_RETURN_MS`. Adding a notice equal to one in the list (type, title, message, action labels) shows that one again as the newest, with its full time.
+
+A notice that has just appeared or moved takes no pointer press for `TOAST_SETTLE_MS`; the keyboard is not held. A notice takes pointer input over a modal layer (the list's own box takes none), and a press on it is no press outside a dialog. A title shows three lines and a message eight; more scrolls, and long words break. A title or a message that scrolls is a Tab stop, so the keyboard can scroll it: `role="group"`, named by the notice's title, as a `Dialog`'s scrolling description is; one that fits adds no stop, and nothing gives it the focus but Tab. A notice takes no focus when it arrives. When the one that holds the focus leaves, the focus goes back to where it was before after a pointer press, else to the close button now at its place, and back once the list is empty.
+
+The sidebar's undo offer after a deleted conversation is a notice (`sidebar/undoOffer.ts`, `UNDO_OFFER_MS`); equal notices merge, so it undoes the last delete only. The sandbox notice's 「前往安全设置」 opens the settings window on the sandbox page (`openSystemSettings('sandbox')`).
+
+**Windows and questions**
+
+A window is closed (`open={false}`), never unmounted, so it fades out like every other ds window. Its owner sets `open` to false in `onOpenChange(false)`: every way of closing a window (Escape, the corner button, a press outside, the registry) arrives through that call and through nothing else. It keeps what it showed while it fades: the owner or the window holds the last item in state (`held`), and every handler reachable from the fading window returns at once (`selectedRef`, `openRef` or the `open` prop), each with a test that uses the `getComputedStyle` stub recipe (`ai-services/AddProviderModal.test.tsx`).
+
+Closing guards: a handler in a window that closes on success (save, add, remove in a form dialog) returns once the window is closing; a page handler inside the settings window gets the same `systemSettingsOpen` check only when it starts something that cannot be taken back (export, upload, download an update, relaunch). Store writes and switches need no guard. Form baselines and held objects that contain a secret are cleared once the window has closed.
+
+Two windows never stack: the history window replaces the skill detail, the expert editor replaces the expert detail, and a new window replaces the detail that opened it. Two cases are nested. The connector edit form opens inside the connector detail, and Escape there closes the form alone. The app market (`app/AppMarketDialog`) holds the add-market window and the add confirmation of a flow started in it, so cancelling either returns to the list; `AppAddConfirmDialog` is mounted there (`within="market"`) and at the app root (`within="page"`, for a flow started on the app home), and a flow shows in the one `appAddFlowStore.shownIn` names: `start` and `repair` set it from whether the app market is open, and the market's instance hands a flow it still shows to the page when it leaves the page with the market's window, so no flow is without a window.
+
+Forms: a form that can fail stays in a `Dialog`. A form window fills its form when it opens or moves to another item, from the item as the store holds it at that moment, and leaves it alone when the stored values change, so a run recorded meanwhile leaves what was typed alone (the schedule and trigger editors, `Dialog size="lg"`; project settings; edit profile).
+
+Questions: confirmations go through `useConfirm`, name what they act on (the second line of a delete question is the name of what it acts on) and re-read their target by a stable identity at the answer. `ConfirmProvider` gives every `useConfirm` question a window of its own (keyed), so no box and no focus carries over from the question it replaces, which is answered `false`. An answer belongs to the question whose window was pressed. A confirmation is a question about the current dialog: it stacks over an open dialog, and it answers `false` when another dialog opens and replaces it. A question asked inside the click handler ends with its window; one asked after an `await` keeps a mounted/open check. `useConfirm` freezes its text at asking time, so the handler takes the names before asking and acts only on those that still exist at the answer. The provider returns the focus of a question to where it was before the first of the questions that followed each other, and only when no window or approval is open or that place is inside the top one: never onto the page under an open layer. An owner whose own questions can overlap excludes them (`MemoryViewModal`, `asking`).
+
+Deletes ask first and re-read their target at answer time — a skill (file path), a connector (store entry), an expert (file path through the registry; the "used by teams" question stays for that case), a project (its id in `useProjectStore`). The handler keeps a `deleting` / `removing` ref so one target gets one delete; a project row needs none (see Sidebar rows). A question asked from a detail window's menu runs over that window, and the window ends it when it leaves. A plugin is uninstalled through `toolbox/plugins/useUninstallPlugin(home, onClose)`, whose `ask(target)` asks and uninstalls. A market is removed after a question that names it, from the plugins page and from the app market, and the answer re-reads the list. The app switcher's 移除 is a nested list (`MenuSub`) of the apps the user added: an app from a market or a folder can be added again and is removed at once, an app the user made is asked about first, re-read by its id at the answer, one removal per app at a time (`removing`, released in `finally`).
+
+The redo actions (regenerate, retry, edit and resend) ask through `chat/rewindQuestion.ts`, which re-reads at the answer: its row still mounted, no run started on the conversation meanwhile, the same messages and the same count of later turns. The message editor closes only when the edited message is sent. The IM end-session question goes through `useConfirm` and re-reads its session at the answer. The close question is an alert that opens on 「最小化到托盘」, unticked: only its two buttons answer, the tick is written only with a pressed answer, and its handlers return once it is closing. The MCP app link consent is a ds `ConfirmDialog` held by `McpAppBlock` and keyed per request, because the block takes it off the page when its bridge goes, which a `useConfirm` question does not allow. It shows the whole address and takes one request at a time; Escape, a press outside and a window that takes its place refuse.
+
+The windows: the settings window is a `Dialog size="page"`. `CreateProjectDialog` (rendered by `Sidebar`, and with presets by `chat/PromoteToProjectHint`), `ProjectSettingsDialog`, `ProfileEditModal`, `GuideModal`, `InstructionsEditModal`, `MemoryViewModal` and `ShareExportDialog` are `Dialog`s.
+- `dirty`: create project, project settings, edit profile, instructions. `busy`: create project while it creates, edit profile while a picture is read, instructions while saving, export while the save dialog is open or the file is written.
+- The instructions window offers no field and no save for a file it cannot read; a missing file opens empty. The memory window's 「清空」 scans the folder first, so its question states the count of that scan.
+- The export window holds its own open state: its owner mounts it keyed by conversation and removes it on `onClose`, which the window calls once it has left the page; a window its owner has already removed tells nobody. Its export button is `busy` after a failure.
+- The first-run guide is a modal `Dialog` that opens on its dismissing button; the page behind it is out of the accessibility tree, so a spec calls `dismissFirstRunOverlays` before it reads anything by role.
+
+Page shells: the extensions, experts and automation pages share one shell — `toolbox/TopTabNav` (buttons: E2E reads them by button name), `SourceSubNav` (a `tablist`), `ToolCard` (`div role="button"` because it nests a `Switch`; it serves task and listener cards as well), `ToolGrid`, `SourceBadge` (a `Tag`), and the window chrome `ToolDetailModal` (a `Dialog` with a hidden title named after the item). Its name row — avatar, name as a `div`, subtitle and actions — sits in the `Dialog` `header` slot, which stays above the scrolling content; the page's `h2` stays in the body. A detail window whose content is replaced while it is open (a plugin's detail, draft and preview; a connector's detail, logs and catalog entry) takes its content height from `toolbox/windowHeight.ts` (`DETAIL_WINDOW_CONTENT_HEIGHT`), so the windows of one page are one size and none scrolls an empty strip. `ToolDetailModal` keeps its props for the private repo: `maxWidth` maps to the dialog size, `panelClassName` gives only the content height, `disableEscape` is accepted and unused, `testId` goes on the dialog content through `contentProps`, and it takes `onCloseAutoFocus`. `LoadError` has two users: `AppPageView`, where the retry tooltip opens beside the button because the native page is painted over everything below the header row, and the chat page.
+
+A conversation whose record is on disk and cannot be read is held in `chatStore.loadFailures` and in `conversations` under no form: `ChatView` shows `LoadError` with `t.chat.recordUnreadable` and a retry, never the host's error text (it goes to the console through `redactFailureText`). `loadConversation` reads strictly; a missing record is an empty conversation and a damaged line is skipped. The explanation stays while a retry reads (`LoadError busy`), and a retry that succeeds hands the focus to the message field. `chatStore.addMessage` adds nothing to a conversation in `loadFailures`, and the conversation writer rejects every write while the record cannot be read.
+
+The agent's question dock takes no focus from a user who is writing a message (`chat/composerActivity.ts`: the focus is inside `[data-chat-composer]` and the field holds a draft or a key went down in it within `COMPOSER_TYPING_MS`, the Enter that sent the message included); it still shows, before the field in the page, and takes the focus once the user turns one of its pages. The dock is a `role="group"` named by the question on its page, and it settles (see Settling). A screen reader hears the dock that takes the focus; one that leaves the focus in the message field hands the words of its question (its header and its question) to `ChatView` (`onArrivedWithoutFocus`), which writes them into one polite live element that is on the chat page before any question arrives, and empties it when the dock leaves.
+
+**Viewers and fullscreen**
+
+The one image viewer is `ImageLightbox`, a `Dialog size="viewer"` opened only through `useImageLightboxStore.open(items, index, returnFocus)`. A saved tool image is handed over as the file its thumbnail read (`filePath`). The viewer keeps what it showed while it fades, returns the focus to the thumbnail, else to the composer, and offers download only for the four types of `ImageLightboxMediaType`. In the viewer a gallery arrow that reaches an end hands the focus to the other arrow. A viewer opens on its close or exit control, never in a frame: a frame that has the focus keeps every key.
+
+`FullscreenSurface` covers the window without moving its content in the page and is the one other place in `src/components/ds/` that writes `fixed inset-0`: plain, a layout state on `z-fullscreen`; with `layer`, a dialog to the registry whose first focus skips frames; with `scrim`, its box passes presses to the scrim and its direct children take them, so pass-through parts sit one level down. Closed, it is `display: contents`, so its content brings its own layout box.
+
+The HTML widget fullscreen is a `Dialog size="viewer"` with a frame of its own. It follows the appearance: `buildFullscreenHtml(code, isDark)`, and the frame's document is built again when the appearance changes, in the same frame with the same `sandbox="allow-scripts"`. A complete document is shown as authored.
+
+The MCP app fullscreen is a `FullscreenSurface layer scrim` around the block, so the iframe node stays the same and the app is not reloaded. An app's own fullscreen request is refused while a window, a question or an approval is on the page, waits or has stepped aside (`mayGoFullscreen`, with `pageOccupied` read from `LayerRegistry.isOccupied()`; menus and popovers do not count), and the refusal spends no grace and starts no cool-down.
+
+The preview panel fullscreen is the plain `FullscreenSurface`: on `z-fullscreen`, with no stacking class from page code, `role="group"`, no focus moved when it opens or closes. The page it covers cannot be seen, so Tab stays among the surface's own controls, round from the last to the first and back, and a Tab pressed on the covered page comes in. The surface's first and last child are its two Tab stops (`data-ds-focus-guard`), which turn the focus round when it comes out of a frame; the caller's content sits between them. While the preview is fullscreen the banners and the title bar take the pointer only; the notice list is in the round Tab makes: after the surface's last control comes the list's first stop (a title that scrolls, else a button), after its last button the surface's first control, and back with Shift+Tab; a surface with no control of its own goes round the list alone; the focus that comes out of a frame at either end goes on to the list first. The list takes no focus by itself. A ds layer opened over the surface (`[data-ds-layer]`) keeps its own keys, the surface takes no Tab at all while a window, a question or an approval shows over it or while it is not displayed (a preview tab that is not in view keeps its fullscreen state under `hidden`), and the rest of the page is never made `inert`, because floating layers are portaled there. Escape leaves the surface unless the key was pressed inside a ds layer or something else has used it (`defaultPrevented`).
+
+**Sidebar rows**
+
+- Conversation rows are `div role="button"`; Enter and Space on the row itself open the conversation through `sidebar/rowKeys.ts` (`opensOnKey`).
+- Rows share one menu root per list through `sidebar/RowMenus`. The list's right-click menu shows the row its opening gesture began on: a row hands the list its right-clicks (`onRowContextMenu`) and its pointer presses (`onRowPointerDown`), because a touch or a pen that stays down opens the menu after 700 ms with no right-click event. A gesture with no row opens nothing: one between the rows, or one of a kind its row does not hand over (a right-click is declined by the list, a long press by `ContextMenu canOpen`). A delete chosen from a menu that a long press opened is the delete of the right-click menu. The project row is the exception to "rows mount no Menu root": each project row owns one `ContextMenu` and one `Menu` (the 「更多操作」 button, which shows the right-click menu's items), because a menu holding 归档 and 删除 is bound statically to its row. The project's name and the three buttons beside it (项目文件, 新任务, 更多操作) are a `role="group"` named by the name button, so a screen reader hears whose buttons they are; a test finds them through that group.
+- The archive and delete questions of a project read the project by id in the store twice: before the question is asked (it is asked from the menu's close hook, later than the choice, and a project that has gone meanwhile is asked nothing about) and at the answer. The delete question names the project on its second line. One archive or delete per project follows from that read and from the provider answering a question once; the row keeps no ref for it.
+- `sidebar/projectRowFocus.ts`: after a project row is archived or deleted, from its menu or from its settings window, the focus goes to the row now at its place, else the last row, else the create button; `useArchivedRowFocus` serves the archived list.
+- `sidebar/conversationRowFocus.ts`: after a conversation is deleted from its row menu the focus stays in the same list (the frame of one `RowMenus`: the recent tasks, or one project's tasks): it goes to the row now at its place in that list, else that list's last row, and once the list is empty to the list's home (`useConversationRowFocus(home)`: the project's own row), else 「新任务」. It moves only when it would otherwise be on the window; a row that leaves while its menu is still closing is handled from the menu's close hook, and the undo notice is never given the focus.
+- Deleting a conversation goes through `sidebar/useDeleteConversation` from both row menus (recent tasks, and a project's tasks): the record is read first, a readable conversation is deleted at once (the recent tasks offer the undo notice, project rows none), and a conversation that is listed, not in memory and in `chatStore.loadFailures` is deleted only after a `useConfirm` question that names it, asked once the menu has gone and the focus is back on the row. The answer re-reads the store: gone → nothing, read meanwhile → the ordinary delete, still unreadable → deleted without undo. One delete per conversation at a time (`deleting`, released in `finally`); a question still waiting for a menu that is opened again is dropped unasked, like rename and export.
+
+**Appearance and window material**
+
+The appearance default is `'system'`. `index.html`'s blocking script paints by the same rule as `settingsStore` after hydration: a stored `theme` is painted unless the blob's `version` is a number below 54, and everything else follows the system; `src/__tests__/prePaintTheme.test.ts` runs the shipped script. A store bump that changes `theme` changes the script's version check with it. `styles/colorScheme.ts` `followSystemColorScheme()` keeps `dark` on `<html>` while the setting is 「跟随系统」. The `dark` class on `<html>` is the one place that tells light from dark; a component that has to know reads it (`useEffectiveThemeIsDark`).
+
+Accessibility appearances: `src/styles/appearance.ts` sets `data-contrast="more"`, `data-transparency="reduced"` and `data-motion="reduced"` on `<html>`; `tokens.css` keys off those attributes only and holds no `prefers-*` media query.
+
+Window material: `electron/windowChrome.cjs` `windowMaterial()` decides what the OS draws behind the window (`vibrancy` on macOS, `mica` on Windows 11 22H2+, otherwise `none`), passes it to the page as `--abu-window-material`, and `src/styles/windowMaterial.ts` writes `data-window-material` on `<html>` before the first paint. With a material the window background is transparent and `bg-desk` is translucent; with `none` tokens.css makes `desk` opaque. Content cards (`bg-surface`) and every floating layer — menus, popovers, tooltips, notices and dialogs (`bg-raised`) — are always opaque, and the page never uses `backdrop-filter` (`backdrop-blur-*`): the window material is the only translucent layer.
+
+Page language: `i18n/pageLanguage.ts` `followPageLanguage()` keeps `lang` on `<html>` equal to the resolved interface locale (`zh-CN` or `en-US`) and follows the language setting. Each window's entry point (`main.tsx`, `pet/main.tsx`) calls it before it renders; `index.html` and `pet.html` name no language themselves, because no constant is right for both locales. A window follows its own i18n module: the pet window takes a changed setting when it loads next, in its words and in its `lang` alike.
+
+The root error page (`ErrorBoundary`, above `DesignSystemProvider`) fills the window with `bg-surface` and reads no context.
+
+The pet window (`pet.html`, `src/pet/`) is an entry point of its own and mounts `DesignSystemProvider` in `pet/main.tsx`. It follows the application's color scheme through the same `followSystemColorScheme()`; the host's `set_theme` makes the two windows agree in every setting, and `pet/main.tsx` also installs the accessibility attributes and the page language. The window is transparent and exactly as large as what it shows, so nothing in it draws outside its box: no shadow, no tooltip, no floating layer; its icon-only controls are named `Pressable`s. Its status dots are `bg-current` on a status token class (`pet/petStatusMeta.ts` `STATUS_TONE`). The pet's reply field ignores an Enter that belongs to an input method (`chat/composerKeys.ts`).
+
+**Enterprise overlay**
+
+The private repository's interface files use the same components and tokens, and are linted with the same rules. What this repository provides for that:
+- `overlayLintConfig(globs)`, a named export of `eslint.config.js`, returns the base block and, for a list that is not empty, the design-system rules on those globs; the overlay keeps its own list and runs this repository's ESLint from its own directory, so the globs are relative to it. The default export is built from the same base block.
+- Every private test runs through a forwarding file under `enterprise-tests/`, one import line per test file; a private test without one is never run, so the forwarder is added together with the test, followed by `npm run test:inventory` (`TESTING.md` counts the directory). `vitest.enterprise.config.ts` resolves `@testing-library/react` and `@testing-library/user-event` for those tests from this repository's `node_modules`.
+- `npm run typecheck:enterprise` compiles the private callers against the props of the components they render: `ToolCard`, `ToolGrid`, `ToolDetailModal`, `MarketplaceEntryRow`, `InstallDisclosureDialog`, and `sidebar/RowMenus` around the private plugin grid. `InstalledItemMenu` has no private user.
+- `<PolicyConfirmModal />` at the app root sits inside `DesignSystemProvider`, as every private component that renders a ds component does (and its tests); it renders nothing in the OSS build.
+- The class scan: `src/styles/index.css` imports `@enterprise-modules/interface-classes.css`. The overlay's file of that name holds the `@source` lines for its interface files, so a class written only there has a rule in the enterprise stylesheet; the stub's twin (`src/enterprise-modules-stub/interface-classes.css`) holds a comment and nothing else. `scripts/designTokens.test.ts` holds the import and the empty twin; `enterprise-tests/host-interface-classes.test.ts` holds the overlay's side in the enterprise suite.
+- The rules for the private interface are in that repository's own `AGENTS.md`.
+
+**Tests and helpers**
+
+- `src/test/dsWindows.ts` holds the helpers for a window's fade and for an approval that arrives over a window.
+- Settling: a unit test that presses a box that settles (an approval, a question, a `Dialog settles` window, the question dock) with the pointer calls `passSettleInterval()` (`src/test/dsWindows.ts`) first, and again after each change of its `settleKey` (a page turn of the dock), or advances its fake clock by `TOAST_SETTLE_MS`; `fireEvent.click` reports `detail` 0 and is a key press. `tests/e2e/early-press.spec.ts` presses each `settles` window and the dock with the mouse inside the interval, in the shell. A test asserts `data-ds-settling` only under fake timers. A test that presses a notice's button with the pointer advances the clock first. An Electron spec presses with `pressWhenSettled(locator)` (`tests/e2e/electronHelpers.ts`); a plain `locator.click()` also waits, because Playwright finds the box in front of the button.
+- Held keys: user-event sets no `repeat`; a held key is `fireEvent.keyDown(target, { key, code, repeat: true })` after a first key-down of the same `code`, and a case reads the return value (`false` once prevented) or what the control did. happy-dom makes no click from a key, so that the browser makes none is proven in the shell (`tests/e2e/tool-approval.spec.ts`, the held-Enter case).
+- Busy controls: `pointerTargetOf(element)` (`src/test/pointerTarget.ts`) gives the element a pointer press lands on, from the two ds classes that take the pointer off a control; unit tests load no stylesheet, so the hit test itself is proven in the shell.
+- Closing guards and fading windows: the `getComputedStyle` stub recipe in `ai-services/AddProviderModal.test.tsx`.
 
 ### 7. Core Module Patterns
 - **Interface-first design**: Define interfaces before implementations (e.g. `LLMAdapter` interface → `ClaudeAdapter` / `OpenAICompatibleAdapter`).
@@ -462,6 +568,7 @@ four appearances (light, dark, and each with increased contrast).
 - **`TranslationDict` interface** in `src/i18n/types.ts` defines the complete type-safe shape. Both `zh-CN.ts` and `en-US.ts` must satisfy this interface.
 - **Adding new text**: Add the key to `TranslationDict` first, then add translations to both locale files.
 - **Outside React**: Use `getI18n()` for non-component code.
+- **Page language**: `<html lang>` is set by `followPageLanguage()` (`src/i18n/pageLanguage.ts`) from the resolved locale; nothing else writes it (§6.1 Appearance and window material).
 - **Interpolation**: `format(template, { key: value })` for `{placeholder}` patterns.
 
 ### 10. Type Definitions
@@ -507,7 +614,7 @@ four appearances (light, dark, and each with increased contrast).
 - Do not add default exports to hook files.
 - Do not create new Zustand stores without `persist` middleware (unless the store is purely ephemeral by design).
 - Do not use `jest` syntax (`jest.fn()`, `jest.mock()`) — use Vitest (`vi.fn()`, `vi.mock()`).
-- Do not hand-roll form controls (select, toggle, input, textarea) — legacy files use `src/components/ui/`, migrated files use `src/components/ds/`. If a variant is missing, extend the component.
+- Do not hand-roll form controls (select, toggle, input, textarea) — use `src/components/ds/`. If a variant is missing, extend the component.
 
 ### 15. Reviewing review output (sanity-check-first)
 

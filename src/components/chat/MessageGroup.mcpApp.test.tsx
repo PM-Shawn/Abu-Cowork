@@ -18,9 +18,10 @@
  *   - resolution re-runs when a connector connects later, because
  *     `resolveToolCallAppUi` asks the live MCP client.
  */
-import { createElement } from 'react';
+import { createElement, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render as renderBare, screen } from '@testing-library/react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -62,6 +63,9 @@ vi.mock('./McpAppBlock', async (importOriginal) => {
 
 import MessageGroup from './MessageGroup';
 import { resolveToolCallAppUi } from '@/core/mcp/appHost';
+
+// The action row's icon buttons carry ds tooltips, which need the provider the app mounts at its root.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const CONV_ID = 'conv-mcp-app';
 const LOOP_ID = 'loop-mcp-app';

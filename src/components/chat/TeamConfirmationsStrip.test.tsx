@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
+import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
 import { admitDispatches, clearRunBounds, getRunBounds, recordDispatchOutcome } from '@/core/team/teamRunBounds';
 import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
@@ -21,6 +23,27 @@ vi.mock('@/core/agent/agentLoopRunner', () => ({
 }));
 const enqueueUserInput = vi.fn((..._args: unknown[]) => undefined);
 vi.mock('@/core/agent/userInputQueue', () => ({ enqueueUserInput: (...args: unknown[]) => enqueueUserInput(...args) }));
+
+const buttonRenders = vi.hoisted(() => vi.fn());
+
+// Counts renders of the strip's buttons.
+vi.mock('@/components/ds/button', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/ds/button')>();
+  return {
+    ...actual,
+    Button: (props: ComponentProps<typeof actual.Button>) => {
+      buttonRenders();
+      return actual.Button(props);
+    },
+  };
+});
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+
+// Stands in for ChatView re-rendering on every streamed token: `tick` changes, the strip's props do not.
+function Host({ tick, children }: { tick: number; children: ReactNode }) {
+  return <DesignSystemProvider><span data-tick={tick} />{children}</DesignSystemProvider>;
+}
 
 function conversation(status: Conversation['status']): Conversation {
   return { id: 'c1', title: 'x', teamId: 't1', createdAt: 1, updatedAt: 2, status, messages: [] };
@@ -59,7 +82,7 @@ describe('TeamConfirmationsStrip', () => {
     expect(screen.queryByRole('button', { name: '这个任务里都允许: rm -rf ./old' })).toBeNull();
     expect(row).not.toHaveTextContent('不再问');
     const once = screen.getByRole('button', { name: '只允许这一次: rm -rf ./old' });
-    expect(once.className).toContain('bg-[var(--abu-clay)]');
+    expect(once).toHaveClass('bg-emphasis');
 
     fireEvent.click(once);
     expect(useTeamConfirmationStore.getState().approvedOnce).toEqual({});
@@ -96,7 +119,8 @@ describe('TeamConfirmationsStrip', () => {
     expect(screen.getByTestId('team-confirmation-item')).toHaveTextContent('A在 /project 里再执行「npm run」开头的命令时不再问');
     const task = screen.getByRole('button', { name: '这个任务里都允许: npm run build' });
     expect(task).toHaveAttribute('data-primary', 'true');
-    expect(screen.getByRole('button', { name: '只允许这一次: npm run build' }).className).not.toContain('bg-[var(--abu-clay)]');
+    expect(screen.getByRole('button', { name: '只允许这一次: npm run build' })).not.toHaveClass('bg-emphasis');
+    expect(task).toHaveClass('bg-emphasis');
 
     fireEvent.click(task);
     expect(Object.values(useTeamConfirmationStore.getState().taskRules)).toMatchObject([{ category: 'command:["/project","prefix:npm run"]' }]);
@@ -114,6 +138,16 @@ describe('TeamConfirmationsStrip', () => {
     fireEvent.click(screen.getByRole('button', { name: '收回: A在 /project 里再执行「npm run」开头的命令时不再问' }));
     expect(useTeamConfirmationStore.getState().taskRules).toEqual({});
     expect(screen.queryByTestId('team-confirmations-strip')).toBeNull();
+  });
+
+  it('does not re-render its buttons when only the chat view re-renders', () => {
+    useTeamConfirmationStore.getState().add({ identity, conversationId: 'c1', kind: 'command', detail: 'npm publish', member: 'A' });
+    const { rerender } = renderBare(<Host tick={0}><TeamConfirmationsStrip conversationId="c1" /></Host>);
+    const initial = buttonRenders.mock.calls.length;
+    expect(initial).toBeGreaterThan(0);
+    rerender(<Host tick={1}><TeamConfirmationsStrip conversationId="c1" /></Host>);
+    rerender(<Host tick={2}><TeamConfirmationsStrip conversationId="c1" /></Host>);
+    expect(buttonRenders).toHaveBeenCalledTimes(initial);
   });
 
   it('"全部允许" appears for two or more requests and allows every one that has a scope in one follow-up', () => {
@@ -351,6 +385,25 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     setSite.mockRestore();
   });
 
+  it('gives each row exactly one filled button: 这个任务里都允许 when the request has a scope, else 只允许这一次', () => {
+    useTeamConfirmationStore.getState().add({ identity: { ...identity, callId: 'publish' }, conversationId: 'c1', kind: 'command', detail: 'npm publish', member: 'zz发布员' });
+    useTeamConfirmationStore.getState().add({ identity: { ...identity, callId: 'build', scope: 'prefix:npm run' }, conversationId: 'c1', kind: 'command', level: 'warn', detail: 'npm run build', member: 'zz发布员' });
+    renderWith(browserRequest());
+    const rows = screen.getAllByTestId('team-confirmation-item');
+    expect(rows).toHaveLength(3);
+    const filledIn = (row: HTMLElement) => within(row).getAllByRole('button').filter((button) => button.classList.contains('bg-emphasis'));
+    for (const row of rows) {
+      expect(within(row).getByRole('button', { name: /^拒绝: / })).not.toHaveClass('bg-emphasis');
+    }
+    const publishRow = rows.find((row) => row.textContent?.includes('npm publish'))!;
+    expect(filledIn(publishRow)).toEqual([within(publishRow).getByRole('button', { name: '只允许这一次: npm publish' })]);
+    const buildRow = rows.find((row) => row.textContent?.includes('npm run build'))!;
+    expect(filledIn(buildRow)).toEqual([within(buildRow).getByRole('button', { name: '这个任务里都允许: npm run build' })]);
+    const browserRow = rows.find((row) => row.textContent?.includes(ORIGIN))!;
+    expect(filledIn(browserRow)).toEqual([within(browserRow).getByRole('button', { name: '只允许这一次: 操作网页' })]);
+    expect(within(browserRow).getByRole('button', { name: '以后允许在此网站浏览' })).not.toHaveClass('bg-emphasis');
+  });
+
   it('F: granting writes the resource once and retries only this call', async () => {
     const setSite = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets');
     renderWith(browserRequest());
@@ -362,6 +415,51 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
     // The grant covers the site; it mints no reusable run rule.
     expect(useTeamConfirmationStore.getState().taskRules).toEqual({});
+    setSite.mockRestore();
+  });
+
+  it('keeps the focus on the site grant while it is saved, saves once, and holds the other answers', async () => {
+    let finish!: (saved: boolean) => void;
+    const saving = new Promise<boolean>((resolve) => { finish = resolve; });
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets').mockReturnValue(saving);
+    renderWith(browserRequest());
+    const grant = allowSiteButton()!;
+    grant.focus();
+
+    fireEvent.click(grant);
+    // Its own save is running: marked busy, not switched off under the keyboard.
+    expect(grant).toHaveAttribute('aria-disabled', 'true');
+    expect(grant).not.toBeDisabled();
+    expect(grant).toHaveFocus();
+    fireEvent.click(grant);
+    expect(setSite).toHaveBeenCalledTimes(1);
+    // The other approvals wait for that save: they are unavailable for another reason.
+    expect(screen.getByRole('button', { name: '只允许这一次: 操作网页' })).toBeDisabled();
+
+    await act(async () => { finish(false); await saving; });
+    expect(grant).not.toHaveAttribute('aria-disabled');
+    expect(grant).toHaveFocus();
+    expect(screen.getByRole('button', { name: '只允许这一次: 操作网页' })).toBeEnabled();
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    setSite.mockRestore();
+  });
+
+  it('switches a site grant off while the grant of another request is saved', async () => {
+    let finish!: (saved: boolean) => void;
+    const saving = new Promise<boolean>((resolve) => { finish = resolve; });
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets').mockReturnValue(saving);
+    useTeamConfirmationStore.getState().add(browserRequest({ identity: { ...identity, toolName: 'fill', callId: 'other' }, detail: 'fill #other' }));
+    renderWith(browserRequest());
+    const [first, second] = screen.getAllByTestId('team-confirmation-allow-site');
+
+    fireEvent.click(first);
+    expect(first).toHaveAttribute('aria-disabled', 'true');
+    expect(second).toBeDisabled();
+    expect(second).not.toHaveAttribute('aria-disabled');
+    fireEvent.click(second);
+    expect(setSite).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finish(false); await saving; });
     setSite.mockRestore();
   });
 });

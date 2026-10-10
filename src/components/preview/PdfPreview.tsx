@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
-import { Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, ScanLine } from 'lucide-react';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Button } from '@/components/ui/button';
+import { IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { Spinner } from '@/components/ds/spinner';
 import { clampPdfScale, nextPdfRotation, PDF_SCALE_MAX, PDF_SCALE_MIN } from './pdfPreviewMath';
 
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -32,17 +34,52 @@ interface PdfReadingState {
 // first page and does not add another persisted preference surface.
 const readingState = new Map<string, PdfReadingState>();
 
-function LoadingIndicator({ label }: { label?: string }) {
+function LoadingIndicator() {
+  const { t } = useI18n();
   return (
-    <div className="flex items-center justify-center gap-2 h-full">
-      <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
-      {label && <span className="text-body text-[var(--abu-text-tertiary)]">{label}</span>}
+    <div className="flex h-full items-center justify-center">
+      <Spinner label={t.panel.loadingDocument} />
     </div>
   );
 }
 
-export default function PdfPreview({ filePath }: { filePath: string }) {
+// Dragging the panel edge re-renders the preview for every width it passes through. The
+// toolbar mounts a tooltip per button, so it takes only primitives and stable handlers.
+const PdfToolbar = memo(function PdfToolbar({ currentPage, numPages, scale, fitWidth, onPage, onToggleFit, onRotate, onZoom }: {
+  currentPage: number;
+  numPages: number;
+  scale: number;
+  fitWidth: boolean;
+  onPage: (step: -1 | 1) => void;
+  onToggleFit: () => void;
+  onRotate: () => void;
+  onZoom: (step: -1 | 1) => void;
+}) {
   const { t } = useI18n();
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-separator px-3 py-1">
+      <div className="flex items-center gap-1">
+        <IconButton size="sm" icon={AppIcons.previous} label={t.panel.pdfPrevPage} onClick={() => onPage(-1)} disabled={currentPage <= 1} />
+        <span className="min-w-21 text-center text-caption tabular-nums text-label-tertiary">
+          {format(t.panel.pdfPage, { current: String(currentPage), total: String(numPages) })}
+        </span>
+        <IconButton size="sm" icon={AppIcons.next} label={t.panel.pdfNextPage} onClick={() => onPage(1)} disabled={currentPage >= numPages} />
+      </div>
+      <div className="flex items-center gap-1 rounded-control bg-fill p-0.5">
+        <IconButton size="sm" icon={AppIcons.fitWidth} label={t.panel.pdfFitWidth} aria-pressed={fitWidth} onClick={onToggleFit} />
+        <IconButton size="sm" icon={AppIcons.rotateRight} label={t.panel.pdfRotate} onClick={onRotate} />
+        <div className="mx-1 h-4 w-px bg-separator" />
+        <IconButton size="sm" icon={AppIcons.zoomOut} label={t.panel.pdfZoomOut} onClick={() => onZoom(-1)} disabled={!fitWidth && scale <= PDF_SCALE_MIN} />
+        <span className="min-w-12 text-center text-caption tabular-nums text-label-tertiary">
+          {fitWidth ? t.panel.pdfFit : `${Math.round(scale * 100)}%`}
+        </span>
+        <IconButton size="sm" icon={AppIcons.zoomIn} label={t.panel.pdfZoomIn} onClick={() => onZoom(1)} disabled={!fitWidth && scale >= PDF_SCALE_MAX} />
+      </div>
+    </div>
+  );
+});
+
+export default function PdfPreview({ filePath }: { filePath: string }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
@@ -117,110 +154,70 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
     setError(err.message);
   };
 
+  const changePage = useCallback((step: -1 | 1) => {
+    setCurrentPage((page) => Math.min(Math.max(1, numPages), Math.max(1, page + step)));
+  }, [numPages]);
+
+  const toggleFitWidth = useCallback(() => {
+    setFitWidth((value) => !value);
+  }, []);
+
+  const rotate = useCallback(() => {
+    setRotation((value) => nextPdfRotation(value));
+  }, []);
+
+  const changeZoom = useCallback((step: -1 | 1) => {
+    setFitWidth(false);
+    setScale((value) => clampPdfScale(value + step * 0.25));
+  }, []);
+
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full p-4">
-        <p className="text-body text-[var(--abu-danger)]">{error}</p>
+      <div className="flex h-full items-center justify-center p-4">
+        <InlineMessage tone="danger">{error}</InlineMessage>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       {/* Reading controls — grouped by task: navigation on the left, view on the right. */}
       {numPages > 0 && (
-        <div className="shrink-0 flex items-center justify-between gap-3 px-3 py-1.5 bg-[var(--abu-bg-subtle)] border-b border-[var(--abu-border-subtle)]">
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6"
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage <= 1}
-              title={t.panel.pdfPrevPage}
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </Button>
-            <span className="text-caption tabular-nums text-[var(--abu-text-tertiary)] min-w-[84px] text-center">
-              {format(t.panel.pdfPage, { current: String(currentPage), total: String(numPages) })}
-            </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6"
-              onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
-              disabled={currentPage >= numPages}
-              title={t.panel.pdfNextPage}
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-          <div className="flex items-center gap-0.5 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] p-0.5">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className={fitWidth ? 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]' : ''}
-              onClick={() => setFitWidth((value) => !value)}
-              title={t.panel.pdfFitWidth}
-            >
-              <ScanLine className="h-3.5 w-3.5" strokeWidth={1.6} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setRotation((value) => nextPdfRotation(value))}
-              title={t.panel.pdfRotate}
-            >
-              <RotateCw className="h-3.5 w-3.5" strokeWidth={1.6} />
-            </Button>
-            <div className="mx-0.5 h-4 w-px bg-[var(--abu-border-subtle)]" />
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => { setFitWidth(false); setScale((value) => clampPdfScale(value - 0.25)); }}
-              disabled={!fitWidth && scale <= PDF_SCALE_MIN}
-              title={t.panel.pdfZoomOut}
-            >
-              <ZoomOut className="h-3.5 w-3.5" />
-            </Button>
-            <span className="text-caption tabular-nums text-[var(--abu-text-tertiary)] min-w-[46px] text-center">
-              {fitWidth ? t.panel.pdfFit : `${Math.round(scale * 100)}%`}
-            </span>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => { setFitWidth(false); setScale((value) => clampPdfScale(value + 0.25)); }}
-              disabled={!fitWidth && scale >= PDF_SCALE_MAX}
-              title={t.panel.pdfZoomIn}
-            >
-              <ZoomIn className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
+        <PdfToolbar
+          currentPage={currentPage}
+          numPages={numPages}
+          scale={scale}
+          fitWidth={fitWidth}
+          onPage={changePage}
+          onToggleFit={toggleFitWidth}
+          onRotate={rotate}
+          onZoom={changeZoom}
+        />
       )}
 
       {/* PDF Content */}
-      <div ref={viewportRef} className="flex-1 min-h-0">
+      <div ref={viewportRef} className="min-h-0 flex-1">
         <ScrollArea className="h-full">
-          <div className="flex min-h-full justify-center bg-[var(--abu-bg-active)] p-6">
-            {loading && (
-              <LoadingIndicator label={t.panel.loadingDocument} />
-            )}
+          <div className="flex min-h-full justify-center bg-code p-6">
+            {loading && <LoadingIndicator />}
             {fileProp && (
               <Document
                 file={fileProp}
                 onLoadSuccess={onDocumentLoadSuccess}
                 onLoadError={onDocumentLoadError}
-                loading={<LoadingIndicator label={t.panel.loadingDocument} />}
+                loading={<LoadingIndicator />}
               >
-                <Page
-                  pageNumber={currentPage}
-                  width={fitWidth && viewportWidth > 0 ? Math.max(240, viewportWidth - 48) : undefined}
-                  scale={fitWidth ? undefined : scale}
-                  rotate={rotation}
-                  className="overflow-hidden rounded-sm shadow-[0_18px_50px_rgba(35,31,23,0.16)]"
-                  loading={<div className="h-[400px]"><LoadingIndicator /></div>}
-                />
+                {/* The page is white paper in every appearance; the marker gives its text the page selection color. */}
+                <div data-page-canvas>
+                  <Page
+                    pageNumber={currentPage}
+                    width={fitWidth && viewportWidth > 0 ? Math.max(240, viewportWidth - 48) : undefined}
+                    scale={fitWidth ? undefined : scale}
+                    rotate={rotation}
+                    className="overflow-hidden rounded-control shadow-panel"
+                    loading={<div className="h-100"><LoadingIndicator /></div>}
+                  />
+                </div>
               </Document>
             )}
           </div>

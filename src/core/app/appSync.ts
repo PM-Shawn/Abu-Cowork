@@ -1,42 +1,51 @@
-import { usePluginStore } from '@/stores/pluginStore';
+import { homeDir } from '@tauri-apps/api/path';
 import { useAppStore } from '@/stores/appStore';
-import { loadInstalledApps } from './appRegistry';
-import { destroyAppPagesForPlugin } from './appPageBridge';
+import { loadAddedApps, removeAddedApp } from './appRecords';
+import { destroyAppPages, setManagedAppPages } from './appPageBridge';
 import { hasElectronCommandHost } from '@/utils/electronHost';
 
+let generation = 0;
+
 /**
- * Keep `appStore.installedApps` in step with the plugin records: reload
- * whenever the install records or their activation change, only once the
- * records reflect a successful read of `installed.json` (while a refresh is
- * in flight the previous list stays, so the switcher never blinks empty).
- * Loads are ordered by generation so a slower earlier read cannot overwrite
- * a later one — the same shape as `initPluginTeamsSync`.
+ * Reload `appStore.addedApps` from `~/.abu/apps/`. Called at launch and after
+ * every add, update and removal. Loads are ordered by generation so a slower
+ * earlier read cannot overwrite a later one. An app that left the list has no
+ * page to show any more: its native views and its page login state go too.
  */
-export function initInstalledAppsSync(): () => void {
-  let generation = 0;
-  const refresh = () => {
-    const { installed, activationByKey, activationReady } = usePluginStore.getState();
-    if (!activationReady) return;
-    const current = ++generation;
-    void loadInstalledApps(installed, activationByKey).then((apps) => {
-      if (current !== generation) return;
-      const before = useAppStore.getState().installedApps;
-      useAppStore.getState().setInstalledApps(apps);
-      // An app that left the list has no page to show any more: its native
-      // views go; its login state goes too when the plugin itself is gone
-      // (uninstalled), and stays for one that is merely disabled.
-      if (!hasElectronCommandHost()) return;
-      const remaining = new Set(apps.map((app) => app.appId));
-      const stillInstalled = new Set(installed.map((plugin) => plugin.key));
-      for (const app of before) {
-        if (remaining.has(app.appId) || app.pluginKey === null) continue;
-        void destroyAppPagesForPlugin(app.pluginKey, !stillInstalled.has(app.pluginKey));
-      }
-    });
-  };
-  const unsubscribe = usePluginStore.subscribe((state, previous) => {
-    if (state.installed !== previous.installed || state.activationByKey !== previous.activationByKey || state.activationReady !== previous.activationReady) refresh();
+export async function refreshAddedApps(): Promise<void> {
+  const current = ++generation;
+  const apps = await loadAddedApps(await homeDir());
+  if (current !== generation) return;
+  const before = useAppStore.getState().addedApps;
+  useAppStore.getState().setAddedApps(apps);
+  if (!hasElectronCommandHost()) return;
+  const remaining = new Set(apps.map((app) => app.appId));
+  for (const app of before) {
+    if (!remaining.has(app.appId)) await destroyAppPages(app.appId, true);
+  }
+}
+
+/** Remove an added app (the switcher's 「移除」): only the app; plugins, experts, teams and skills stay. */
+export async function removeApp(appId: string): Promise<void> {
+  await removeAddedApp(await homeDir(), appId);
+  await refreshAddedApps();
+}
+
+/**
+ * Organization apps have no files on this computer, so the page host is told
+ * their page configuration each time a sync replaces them; it keeps checking
+ * origins itself and closes pages of apps that left.
+ */
+function syncManagedAppPages(): () => void {
+  return useAppStore.subscribe((state, previous) => {
+    if (state.managedApps === previous.managedApps || !hasElectronCommandHost()) return;
+    const apps = Object.values(state.managedApps).flat().map((app) => ({ appId: app.appId, nav: app.config.nav, allowedOrigins: app.config.allowedOrigins }));
+    void setManagedAppPages(apps);
   });
-  refresh();
-  return unsubscribe;
+}
+
+/** Load the added apps once at launch and keep the page host in step with organization apps. */
+export function initAddedAppsSync(): void {
+  syncManagedAppPages();
+  void refreshAddedApps();
 }

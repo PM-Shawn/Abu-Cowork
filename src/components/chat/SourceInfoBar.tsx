@@ -9,7 +9,9 @@ import { useScheduleStore } from '@/stores/scheduleStore';
 import { useTriggerStore } from '@/stores/triggerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { ArrowLeft, Clock, Zap } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import type { Conversation } from '@/types';
 
 interface SourceInfoBarProps {
@@ -50,21 +52,15 @@ export default function SourceInfoBar({ conversation }: SourceInfoBarProps) {
   };
 
   return (
-    <button
-      onClick={handleClick}
-      className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-[var(--abu-bg-base)]/60 border-b border-[var(--abu-border)] text-body w-full text-left hover:bg-[var(--abu-bg-hover)] transition-colors"
-    >
-      <ArrowLeft className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
-      {isSchedule ? (
-        <Clock className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-      ) : (
-        <Zap className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-      )}
-      <span className="font-medium text-[var(--abu-text-primary)] truncate">{name}</span>
-      <span className="text-[var(--abu-text-placeholder)]">·</span>
-      <span className="text-[var(--abu-text-tertiary)] shrink-0">
-        {isSchedule ? t.chat.fromScheduledTask : t.chat.fromTrigger}
-      </span>
-    </button>
+    <div className="flex shrink-0 items-center border-b border-separator px-6 py-1 md:px-10">
+      <Button variant="plain" size="sm" icon={AppIcons.back} onClick={handleClick} className="max-w-full">
+        <Icon icon={isSchedule ? AppIcons.clock : AppIcons.trigger} size="sm" className="text-label-secondary" />
+        <span className="min-w-0 truncate">{name}</span>
+        <span className="text-label-placeholder">·</span>
+        <span className="shrink-0 font-normal text-label-tertiary">
+          {isSchedule ? t.chat.fromScheduledTask : t.chat.fromTrigger}
+        </span>
+      </Button>
+    </div>
   );
 }

@@ -98,15 +98,20 @@ test.describe('team member identity integrity', () => {
       await page.getByTestId('team-source-mine').click();
       await page.getByText('新建专家团').first().click();
       await page.getByTestId('team-name-input').fill(TEAM_NAME);
-      await page.getByTestId('team-leader-select').click();
-      await page.getByTestId('search-select-query').fill('产品');
-      await page.getByTestId('search-select-option-产品经理').click();
-      await page.getByTestId('team-members-select').click();
-      await page.getByTestId('search-select-query').fill(AGENT_NAME);
-      await page.getByTestId(`search-select-option-${AGENT_NAME}`).click();
-      // Escape would close the whole DialogShell; a click inside the dialog just
-      // dismisses the member picker's popover.
-      await page.getByTestId('team-name-input').click();
+      // Leader and members are comboboxes: each list opens on its search box.
+      await page.getByRole('combobox', { name: '队长', exact: true }).click();
+      await page.keyboard.type('产品');
+      await page.getByRole('option', { name: '产品经理', exact: true }).click();
+      await page.getByRole('combobox', { name: '成员', exact: true }).click();
+      await page.keyboard.type(AGENT_NAME);
+      await page.getByRole('option', { name: AGENT_NAME, exact: true }).click();
+      // The members list stays open after a choice. Escape closes the list alone;
+      // the window behind it stays open.
+      await expect(page.getByRole('listbox')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await expect(page.getByRole('combobox', { name: '成员', exact: true })).toContainText(AGENT_NAME);
+      await expect(page.getByTestId('team-name-input')).toHaveValue(TEAM_NAME);
       await page.getByTestId('team-save').click();
       const row = page.getByTestId(`team-row-${TEAM_NAME}`);
       await expect(row).toBeVisible();

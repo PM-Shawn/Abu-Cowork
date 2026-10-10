@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { createPortal } from 'react-dom';
-import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -27,7 +25,14 @@ import {
   type AppApprovalDecision,
   type McpAppAuditEntry,
 } from '@/core/mcp/appBridgeHandlers';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { IconButton } from '@/components/ds/button';
+import { ConfirmDialog } from '@/components/ds/confirm-dialog';
+import { FullscreenSurface } from '@/components/ds/fullscreen';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { useLayerRegistry } from '@/components/ds/layer-context';
+import { Pressable } from '@/components/ds/pressable';
+import { StatusIcon } from '@/components/ds/status-icon';
 import type { ConfirmationInfo } from '@/core/tools/registry';
 import type { RawCallToolResult } from '@/core/mcp/client';
 import { useChatStore } from '@/stores/chatStore';
@@ -43,12 +48,14 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
  *  says "and more" — the note is one line under a tool card, not a report. */
 const MAX_LISTED_DOMAINS = 3;
 
-/** How much of an app-supplied URL the consent dialog prints. The rest is
- *  reachable through the element's `title`, so a long URL neither truncates
- *  away the part that matters nor turns the dialog into a wall of text. */
-const MAX_SHOWN_LINK_CHARS = 512;
-
 type BlockStatus = 'loading' | 'ready' | 'failed' | 'disconnected';
+
+/** The scrim behind the fullscreen app, and the control the fullscreen surface
+ *  opens on: the exit button, never the app's frame. */
+const FULLSCREEN_SCRIM = { 'data-testid': 'mcp-app-fullscreen-backdrop' } as const;
+const fullscreenExitOf = (surface: HTMLElement) => (
+  surface.querySelector<HTMLElement>('[data-testid="mcp-app-fullscreen-exit"]')
+);
 
 // ---------------------------------------------------------------------------
 // Concurrency cap (spec §4.5) — at most MAX_ACTIVE_MCP_APPS live bridges per
@@ -282,23 +289,24 @@ function AuditRow({ entry, label, argsLabel, resultLabel, resultText }: {
   const [open, setOpen] = useState(false);
   return (
     <div data-testid="mcp-app-audit-row" className="px-1">
-      <button
-        type="button"
+      <Pressable
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1 text-left text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+        aria-expanded={open}
+        className="flex w-full items-center gap-1 rounded-control text-left text-caption text-label-tertiary transition-colors duration-fast hover:text-label"
       >
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span className={cn(entry.isError && 'text-[var(--abu-danger)]')}>{label}</span>
-      </button>
+        <Icon icon={open ? AppIcons.expand : AppIcons.disclose} size="sm" />
+        {entry.isError && <StatusIcon tone="danger" size="sm" />}
+        <span className={cn(entry.isError && 'text-danger')}>{label}</span>
+      </Pressable>
       {open && (
-        <div className="mt-1 space-y-1 pl-4 text-caption text-[var(--abu-text-muted)]">
+        <div className="mt-1 space-y-1 pl-4 text-caption text-label-tertiary">
           <div>
             <div className="font-medium">{argsLabel}</div>
-            <pre className="whitespace-pre-wrap break-all">{formatAuditArgs(entry.args)}</pre>
+            <pre className="whitespace-pre-wrap break-all font-code text-caption text-label-secondary">{formatAuditArgs(entry.args)}</pre>
           </div>
           <div>
             <div className="font-medium">{resultLabel}</div>
-            <pre className="whitespace-pre-wrap break-all">{resultText}</pre>
+            <pre className="whitespace-pre-wrap break-all font-code text-caption text-label-secondary">{resultText}</pre>
           </div>
         </div>
       )}
@@ -391,8 +399,10 @@ export default function McpAppBlock({
   const [audit, setAudit] = useState<McpAppAuditEntry[]>([]);
   const [rateLimited, setRateLimited] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
-  /** URL awaiting the user's answer in the `ui/open-link` consent dialog. */
-  const [pendingLink, setPendingLink] = useState<string | null>(null);
+  /** The `ui/open-link` request awaiting the user's answer. Each request gets a number, and its
+   *  question window is keyed by it: no window, focus or answer carries over to a later request. */
+  const [pendingLink, setPendingLink] = useState<{ id: number; url: string } | null>(null);
+  const linkRequestCountRef = useRef(0);
   const pendingLinkResolveRef = useRef<((allowed: boolean) => void) | null>(null);
   // Local echo of `ui/update-model-context` so the expander updates even when
   // the block has no message to persist against (replay-only mounts).
@@ -413,11 +423,19 @@ export default function McpAppBlock({
    * `lastUserGestureAt` is the last pointerdown/keydown the HOST saw inside this
    * block — a gesture inside the sandboxed iframe never crosses the document
    * boundary, so this is all the host can honestly know. `lastUserExitAt` is set
-   * ONLY when the user left fullscreen themselves; an app-driven return to
-   * inline must not look like the user saying no.
+   * whenever the HOST takes the app out of fullscreen (`exitFullscreen`: the
+   * user left, or a window or an approval took the app's place); an app-driven
+   * return to inline must not look like that. `pageOccupied` is read from the
+   * layer registry: while the user has a window, a question or an approval open
+   * or due, the app's request is refused before it can take anything's place.
    */
   const lastUserGestureAtRef = useRef<number | undefined>(undefined);
   const lastUserExitAtRef = useRef<number | undefined>(undefined);
+  const layerRegistry = useLayerRegistry();
+  // The mode on the page, for the bridge's handlers: while this block is the
+  // fullscreen surface, the layer the registry holds is the block itself.
+  const displayModeRef = useRef(displayMode);
+  useEffect(() => { displayModeRef.current = displayMode; }, [displayMode]);
   const noteUserGesture = useCallback(() => {
     lastUserGestureAtRef.current = Date.now();
   }, []);
@@ -461,15 +479,18 @@ export default function McpAppBlock({
       return;
     }
     pendingLinkResolveRef.current = resolve;
-    setPendingLink(url);
+    linkRequestCountRef.current += 1;
+    setPendingLink({ id: linkRequestCountRef.current, url });
   }), []);
 
   const settleOpenLink = useCallback((allowed: boolean, url: string | null) => {
     const resolve = pendingLinkResolveRef.current;
     pendingLinkResolveRef.current = null;
     setPendingLink(null);
+    // One answer per request: a second press that arrives before the window has left opens nothing.
+    if (!resolve) return;
     if (allowed && url) handlerDepsRef.current.openLink(url);
-    resolve?.(allowed);
+    resolve(allowed);
   }, []);
 
   // ---- 1. Fetch the interface resource -------------------------------------
@@ -608,6 +629,7 @@ export default function McpAppBlock({
       setDisplayMode: (mode) => setDisplayMode(mode),
       lastUserGestureAt: () => lastUserGestureAtRef.current,
       lastUserExitAt: () => lastUserExitAtRef.current,
+      pageOccupied: () => displayModeRef.current !== 'fullscreen' && layerRegistry.isOccupied(),
       // Per-kind caps (see `appendAuditRow`): a resource-read storm must not
       // be able to push the tool-call rows out of the trail.
       onAudit: (entry) => setAudit((prev) => appendAuditRow(prev, entry)),
@@ -713,29 +735,27 @@ export default function McpAppBlock({
     void sessionRef.current?.sendHostContextChange({ displayMode });
   }, [displayMode]);
 
-  /** Every USER-initiated way out of fullscreen. Recording the moment is what
-   *  stops the app from dragging the user straight back in. */
+  /** Every way out of fullscreen that the HOST takes: the user's (the exit
+   *  button, the backdrop, Escape) and the layer manager's (another window or
+   *  an approval takes the app's place, or an approval on the page turns the
+   *  app away). Recording the moment is what stops the app from dragging the
+   *  user straight back in — or straight back over the window that replaced it. */
   const exitFullscreen = useCallback(() => {
     lastUserExitAtRef.current = Date.now();
     setDisplayMode('inline');
   }, []);
 
   // Esc leaves fullscreen: the iframe is sandboxed and cannot offer a host
-  // control of its own, so the host must always provide a way out.
+  // control of its own, so the host must always provide a way out. The
+  // fullscreen surface is a layer of the design system, so the key reaches it
+  // through the layer manager (one press, one layer) and the surface opens with
+  // the focus on the exit button.
   //
-  // ⚠️ SPEC LIMITATION: this listener is on the HOST window, and a keydown that
-  // happens while focus is inside the sandboxed iframe never crosses the
-  // document boundary — so Escape does nothing once the user has clicked into
-  // the app. The visible close button (and the backdrop) are the guaranteed
-  // exits; Escape is a convenience for when focus is still on the host side.
-  useEffect(() => {
-    if (displayMode !== 'fullscreen') return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') exitFullscreen();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [displayMode, exitFullscreen]);
+  // ⚠️ SPEC LIMITATION: a keydown that happens while focus is inside the
+  // sandboxed iframe never crosses the document boundary — so Escape does
+  // nothing once the user has clicked into the app. The visible exit button
+  // (and the backdrop) are the guaranteed exits; Escape is a convenience for
+  // when focus is still on the host side.
 
   // ---- 4. Theme + container size -------------------------------------------
   useEffect(() => {
@@ -787,14 +807,13 @@ export default function McpAppBlock({
   if (!active && activated) {
     return (
       <div className="my-2" data-testid="mcp-app-block">
-        <button
-          type="button"
+        <Pressable
           onClick={activate}
           data-testid="mcp-app-placeholder"
-          className="btn-ghost w-full rounded-lg border border-dashed border-[var(--abu-border-subtle)] px-3 py-2 text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+          className="w-full rounded-panel border border-dashed border-separator px-3 py-2 text-ui text-label-secondary transition-colors duration-fast hover:bg-fill-hover hover:text-label"
         >
           {t.chat.mcpAppLoadPlaceholder}
-        </button>
+        </Pressable>
       </div>
     );
   }
@@ -802,7 +821,7 @@ export default function McpAppBlock({
   if (status === 'disconnected') {
     return (
       <div className="my-2" data-testid="mcp-app-block">
-        <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
+        <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-status">
           {format(t.chat.mcpAppNotConnected, { server })}
         </div>
       </div>
@@ -812,7 +831,7 @@ export default function McpAppBlock({
   if (status === 'failed') {
     return (
       <div className="my-2" data-testid="mcp-app-block">
-        <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
+        <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-status">
           {t.chat.mcpAppLoadFailed}
         </div>
       </div>
@@ -835,36 +854,31 @@ export default function McpAppBlock({
     }
   };
 
-  // Fullscreen is a CSS promotion of the very same element tree — the iframe
-  // keeps its position in the JSX children array, so React never unmounts it
-  // and the bridge (and the app's own state) survive. Reparenting the iframe
-  // into a portal container would look tidier but discards the nested browsing
-  // context, i.e. reloads the app; see the spec's "不重建，保状态".
+  // Fullscreen is a promotion of the very same element tree — the iframe keeps
+  // its position in the JSX children array, so React never unmounts it and the
+  // bridge (and the app's own state) survive. Reparenting the iframe into a
+  // portal container would look tidier but discards the nested browsing
+  // context, i.e. reloads the app; see the spec's "不重建，保状态". That is why
+  // this is a `FullscreenSurface` and no `Dialog`: the surface shows its content
+  // over the window without moving it in the page. To the layer manager it is a
+  // dialog — one at a time, an approval takes its place and none is covered by
+  // it, the keyboard stays inside — and it brings the scrim. The surface's
+  // padding is where the scrim can be pressed to leave.
   return (
     <>
-      {fullscreen && createPortal(
-        <div
-          data-testid="mcp-app-fullscreen-backdrop"
-          // Fullscreen paints over the window chrome; without this the top 72px
-          // band is an OS drag lane on Windows and swallows the click that is
-          // supposed to close the overlay.
-          data-electron-no-drag
-          className="fixed inset-0 z-40 bg-black/60"
-          onClick={exitFullscreen}
-        />,
-        document.body,
-      )}
-      {/* In fullscreen the frame container covers the viewport, so it would sit
-          ON TOP of the backdrop and swallow every click meant for it. It is
-          therefore click-through (`pointer-events-none`) and each real control
-          — the close button and the iframe itself — opts back in. That leaves
-          the padding around the app as backdrop, which is what makes
-          click-outside-to-close work at all. */}
+      <FullscreenSurface
+        open={fullscreen}
+        onExit={exitFullscreen}
+        layer
+        scrim
+        // The connector's name, as the frame's own title starts with it.
+        label={server}
+        scrimProps={FULLSCREEN_SCRIM}
+        initialFocus={fullscreenExitOf}
+        className="flex flex-col p-6"
+      >
       <div
-        className={cn(
-          'my-2',
-          fullscreen && 'pointer-events-none fixed inset-0 z-50 my-0 flex flex-col gap-2 p-6 [&>*]:pointer-events-auto',
-        )}
+        className={cn('my-2', fullscreen && 'my-0 flex min-h-0 flex-1 flex-col gap-2')}
         data-electron-no-drag
         data-testid="mcp-app-block"
         data-display-mode={displayMode}
@@ -876,25 +890,21 @@ export default function McpAppBlock({
       >
         {fullscreen && (
           <div className="flex justify-end" data-testid="mcp-app-fullscreen">
-            <button
-              type="button"
+            <IconButton
+              icon={AppIcons.exitFullscreen}
+              label={t.chat.mcpAppExitFullscreen}
               onClick={exitFullscreen}
               data-testid="mcp-app-fullscreen-exit"
-              aria-label={t.chat.mcpAppExitFullscreen}
-              title={t.chat.mcpAppExitFullscreen}
-              className="btn-ghost rounded-full p-1.5"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            />
           </div>
         )}
         {disclosure && (
-          <div className="mb-1 px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-unsupported">
+          <div className="mb-1 px-1 text-caption text-label-tertiary" data-testid="mcp-app-unsupported">
             {disclosure}
           </div>
         )}
         {status === 'loading' || !srcdoc ? (
-          <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
+          <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-status">
             {t.chat.mcpAppLoading}
           </div>
         ) : (
@@ -907,9 +917,9 @@ export default function McpAppBlock({
             allow=""
             referrerPolicy="no-referrer"
             className={cn(
-              'block w-full rounded-lg',
-              fullscreen && 'min-h-0 flex-1 bg-[var(--abu-bg-primary)]',
-              meta?.prefersBorder && 'border border-[var(--abu-border-subtle)]',
+              'block w-full rounded-panel',
+              fullscreen && 'min-h-0 flex-1 bg-surface',
+              meta?.prefersBorder && 'border border-separator',
             )}
             style={{
               height: fullscreen ? undefined : `${height}px`,
@@ -918,7 +928,7 @@ export default function McpAppBlock({
           />
         )}
         {rateLimited && (
-          <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-rate-limited">
+          <div className="px-1 text-caption text-label-tertiary" data-testid="mcp-app-rate-limited">
             {t.chat.mcpAppRateLimited}
           </div>
         )}
@@ -940,45 +950,50 @@ export default function McpAppBlock({
             (`ui/update-model-context`) — visible on demand, spec §4.5. */}
         {shownModelContext && (
           <div className="px-1" data-testid="mcp-app-context">
-            <button
-              type="button"
+            <Pressable
               onClick={() => setContextOpen((v) => !v)}
-              className="flex w-full items-center gap-1 text-left text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+              aria-expanded={contextOpen}
+              className="flex w-full items-center gap-1 rounded-control text-left text-caption text-label-tertiary transition-colors duration-fast hover:text-label"
             >
-              {contextOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              <Icon icon={contextOpen ? AppIcons.expand : AppIcons.disclose} size="sm" />
               {t.chat.mcpAppModelContext}
-            </button>
+            </Pressable>
             {contextOpen && (
-              <pre className="mt-1 whitespace-pre-wrap break-all pl-4 text-caption text-[var(--abu-text-muted)]">
+              <pre className="mt-1 whitespace-pre-wrap break-all pl-4 font-code text-caption text-label-secondary">
                 {shownModelContext}
               </pre>
             )}
           </div>
         )}
       </div>
+      </FullscreenSurface>
       {/* Consent for an app-initiated `ui/open-link`. The URL is shown verbatim
-          (monospace, wrapped) because it is the thing being consented to — a
-          prettified or shortened URL would hide exactly the query string an
-          exfiltration attempt lives in. */}
-      <ConfirmDialog
-        open={pendingLink !== null}
-        title={t.chat.mcpAppOpenLinkTitle}
-        message={(
-          <span
-            data-testid="mcp-app-open-link-url"
-            title={pendingLink ?? undefined}
-            className="block break-all font-mono"
-          >
-            {pendingLink && pendingLink.length > MAX_SHOWN_LINK_CHARS
-              ? `${pendingLink.slice(0, MAX_SHOWN_LINK_CHARS)}…`
-              : pendingLink}
-          </span>
-        )}
-        confirmText={t.chat.mcpAppOpenLinkConfirm}
-        cancelText={t.common.cancel}
-        onConfirm={() => settleOpenLink(true, pendingLink)}
-        onCancel={() => settleOpenLink(false, pendingLink)}
-      />
+          and whole (code font, wrapped; a long one scrolls) because it is the
+          thing being consented to — a prettified or shortened URL would hide
+          exactly the query string an exfiltration attempt lives in.
+          The window is the design-system question, held by this block and not
+          asked through `useConfirm()`: the block takes it off the page when its
+          bridge goes (the request is refused then), and a request from another
+          interface replaces it with a window of its own. It opens on Cancel;
+          Escape, a press outside and a window that takes its place refuse. */}
+      {pendingLink && (
+        <ConfirmDialog
+          key={pendingLink.id}
+          open
+          title={t.chat.mcpAppOpenLinkTitle}
+          message={(
+            <span
+              data-testid="mcp-app-open-link-url"
+              title={pendingLink.url}
+              className="block break-all font-code"
+            >
+              {pendingLink.url}
+            </span>
+          )}
+          confirmLabel={t.chat.mcpAppOpenLinkConfirm}
+          onResult={(allowed) => settleOpenLink(allowed, pendingLink.url)}
+        />
+      )}
     </>
   );
 }

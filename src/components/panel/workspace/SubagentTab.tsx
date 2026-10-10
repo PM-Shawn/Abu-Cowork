@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bot, Check, CircleStop, Clock, Loader2, XCircle, AlertTriangle, Square } from 'lucide-react';
 import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
-import { cn } from '@/lib/utils';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { useBatchProgress, type BatchTaskProgress } from '@/stores/batchProgressStore';
 import { TaskStepItem, convertExecutionStep, type UnifiedStep } from '@/components/chat/TaskBlock';
@@ -48,29 +51,33 @@ function statusLabel(status: BatchTaskProgress['status'], t: TranslationDict): s
   }
 }
 
-function StatusIcon({ status }: { status: BatchTaskProgress['status'] }) {
+// As tall as the Stop button in every state, so the steps below stay put when the spinner
+// hands over to a tag and when the button leaves.
+const META_ROW = 'mt-2 flex min-h-6 flex-wrap items-center gap-2 text-caption text-label-tertiary';
+
+/**
+ * The header's status: the one spinner of the tab while the expert runs, a still tag otherwise.
+ * `announcedAbove`: the caller already announces the status in its own live region, so the
+ * spinner's word is shown and kept out of the accessibility tree.
+ */
+function TaskStatusTag({ status, label, announcedAbove = false }: { status: BatchTaskProgress['status']; label: string; announcedAbove?: boolean }) {
+  // Inset by a tag's padding less the wider gap, so the word starts where a tag's word starts.
+  if (status === 'running') return <span className="flex pl-1" aria-hidden={announcedAbove || undefined}><Spinner size="sm" label={label} /></span>;
   if (status === 'queued') {
-    return <Clock aria-hidden="true" className="w-4 h-4 text-[var(--abu-text-muted)]" strokeWidth={1.5} />;
-  }
-  if (status === 'running') {
-    return <Loader2 aria-hidden="true" className="w-4 h-4 motion-safe:animate-spin text-[var(--abu-clay)]" strokeWidth={1.5} />;
-  }
-  if (status === 'succeeded') {
-    return <Check aria-hidden="true" className="w-4 h-4 text-[var(--abu-success)]" strokeWidth={1.5} />;
+    return <Tag><Icon icon={AppIcons.clock} size="sm" />{label}</Tag>;
   }
   if (status === 'stopped') {
-    return <CircleStop aria-hidden="true" className="w-4 h-4 text-[var(--abu-text-muted)]" strokeWidth={1.5} />;
+    return <Tag><Icon icon={AppIcons.stopped} size="sm" />{label}</Tag>;
   }
-  if (status === 'incomplete') {
-    return <AlertTriangle aria-hidden="true" className="w-4 h-4 text-[var(--abu-warning)]" strokeWidth={1.5} />;
-  }
-  return <XCircle aria-hidden="true" className="w-4 h-4 text-[var(--abu-danger)]" strokeWidth={1.5} />;
+  if (status === 'succeeded') return <Tag tone="success">{label}</Tag>;
+  if (status === 'incomplete') return <Tag tone="warning">{label}</Tag>;
+  return <Tag tone="danger">{label}</Tag>;
 }
 
 function totalTokens(task: BatchTaskProgress): number | null {
   const usage = task.tokenUsage;
   if (!usage) return null;
-  return usage.inputTokens + usage.outputTokens + (usage.cacheCreationInputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0);
+  return usage.inputTokens + usage.outputTokens;
 }
 
 interface PersistedBatchTask {
@@ -99,20 +106,38 @@ function childrenForTask(children: readonly ExecutionStep[], taskIndex: number):
   return tagged ? children.filter((child) => child.batchTask?.index === taskIndex) : (taskIndex === 0 ? [...children] : []);
 }
 
+function ownsCall(message: Message, toolCallId: string): boolean {
+  return message.role === 'assistant' && !!message.toolCalls?.some((call) => call.id === toolCallId);
+}
+
+/**
+ * The member's own terminal record. A run_agent_batch call's summary gains a
+ * row each time one of its tasks ends, so it is there while the batch still runs.
+ */
+function terminalRow(message: Message | undefined, identity: BatchIdentity, taskIndex: number, t: TranslationDict): BatchTaskRow | undefined {
+  const toolCall = message?.toolCalls?.find((call) => call.id === identity.batchToolCallId);
+  return toolCall ? rowsFromPersistedSummary(identity, toolCall, t)?.[taskIndex] : undefined;
+}
+
 /** Live fallback for dispatches without a batch-store entry (serial delegate_to_agent). */
 function findLiveDispatch(
   executions: Record<string, TaskExecution>,
+  messages: readonly Message[] | undefined,
   identity: BatchIdentity,
   taskIndex: number,
   locale: string,
+  t: TranslationDict,
 ): PersistedBatchTask | null {
   for (const exec of Object.values(executions)) {
     if (exec.conversationId !== identity.conversationId) continue;
     const step = exec.steps.find((candidate) => candidate.toolCallId === identity.batchToolCallId);
     if (!step) continue;
+    // Provider tool-call ids can repeat across loops, so an unnamed message must belong to this loop.
+    const dispatchMessage = messages?.find((m) => ownsCall(m, identity.batchToolCallId)
+      && (identity.assistantMessageId ? m.id === identity.assistantMessageId : m.loopId === exec.loopId));
     return {
       steps: childrenForTask(step.childSteps ?? [], taskIndex).map((child) => convertExecutionStep(child, locale)),
-      row: undefined,
+      row: terminalRow(dispatchMessage, identity, taskIndex, t),
       liveStatus: step.status,
     };
   }
@@ -138,10 +163,9 @@ function findPersistedBatchTask(
   t: TranslationDict,
 ): PersistedBatchTask | null {
   if (!messages) return null;
-  const ownsCall = (m: Message) => m.role === 'assistant' && !!m.toolCalls?.some((call) => call.id === identity.batchToolCallId);
   const dispatchMessage = identity.assistantMessageId
     ? messages.find((m) => m.id === identity.assistantMessageId)
-    : messages.find(ownsCall);
+    : messages.find((m) => ownsCall(m, identity.batchToolCallId));
   if (identity.assistantMessageId && !dispatchMessage) return null;
   const loopId = dispatchMessage?.loopId;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -150,11 +174,25 @@ function findPersistedBatchTask(
     const batchStep = message.executionSteps?.find((step) => step.toolCallId === identity.batchToolCallId);
     if (!batchStep) continue;
     const children = childrenForTask(snapshotToExecutionSteps(batchStep.childSteps ?? []), taskIndex);
-    const toolCall = (dispatchMessage ?? message).toolCalls?.find((call) => call.id === identity.batchToolCallId);
-    const row = toolCall ? rowsFromPersistedSummary(identity, toolCall, t)?.[taskIndex] : undefined;
+    const row = terminalRow(dispatchMessage ?? message, identity, taskIndex, t);
     return { steps: children.map((child) => convertExecutionStep(child, locale)), row };
   }
   return null;
+}
+
+/** Stops this one hand-off; shown only while its member is running. */
+function StopDispatchButton({ dispatchKey, member, t }: { dispatchKey: string; member: string; t: TranslationDict }) {
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      icon={AppIcons.stop}
+      onClick={() => requestDispatchCancel(dispatchKey)}
+      aria-label={format(t.workspace.teamStopDispatch, { member })}
+    >
+      {t.workspace.teamStopDispatchShort}
+    </Button>
+  );
 }
 
 function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title: string; persisted: PersistedBatchTask; locale: string; t: TranslationDict; dispatchKey?: string }) {
@@ -165,47 +203,34 @@ function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title
     seen = seen || steps[i + 1].type !== 'thinking';
     laterTool[i] = seen;
   }
-  const rowStatus = row?.status ?? (liveStatus === 'running' ? 'running' : liveStatus === 'error' ? 'failed' : liveStatus === 'completed' ? 'succeeded' : undefined);
-  const statusText = rowStatus && rowStatus !== 'unknown' ? batchRowStatusLabel(rowStatus, t) : null;
+  // A batch step's status is the whole batch's, so the member's own terminal record
+  // comes first; the step speaks only for a member that has no record yet.
+  const rowStatus = row && row.status !== 'unknown'
+    ? row.status
+    : liveStatus === 'running' ? 'running' : liveStatus === 'error' ? 'failed' : liveStatus === 'completed' ? 'succeeded' : undefined;
+  const running = rowStatus === 'running';
+  const statusText = rowStatus ? batchRowStatusLabel(rowStatus, t) : null;
   // Persisted rows are terminal; a stale live status maps to the warning icon.
-  const iconStatus: BatchTaskProgress['status'] | null = !rowStatus || rowStatus === 'unknown'
+  const iconStatus: BatchTaskProgress['status'] | null = !rowStatus
     ? null
     : rowStatus === 'queued' ? 'incomplete' : rowStatus;
   return (
     <div className="h-full overflow-auto p-5">
       <div className="mx-auto max-w-4xl">
-        <header className="mb-4 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
-          <div className="flex items-center gap-2 text-body font-medium text-[var(--abu-text-primary)]">
-            <Bot aria-hidden="true" className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+        <header className="mb-4 rounded-panel border border-separator bg-surface p-4">
+          <div className="flex items-center gap-2 text-ui font-medium text-label">
+            <Icon icon={AppIcons.agent} />
             <span className="truncate">{title || row?.label || t.workspace.agentTitle}</span>
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-caption text-[var(--abu-text-muted)]">
-            {statusText && iconStatus && (
-              <span className={cn(
-                'inline-flex items-center gap-1 rounded-full px-2 py-0.5 bg-[var(--abu-bg-base)]',
-                iconStatus === 'failed' && 'text-[var(--abu-danger)]',
-              )}>
-                <StatusIcon status={iconStatus} />
-                {statusText}
-              </span>
-            )}
+          <div className={META_ROW}>
+            {statusText && iconStatus && <TaskStatusTag status={iconStatus} label={statusText} />}
             <span>{format(t.workspace.agentTools, { count: steps.length })}</span>
-            <span>{liveStatus === 'running' ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
-            {liveStatus === 'running' && dispatchKey && (
-              <button
-                type="button"
-                onClick={() => requestDispatchCancel(dispatchKey)}
-                aria-label={format(t.workspace.teamStopDispatch, { member: title })}
-                className="inline-flex items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
-              >
-                <Square aria-hidden="true" className="h-3 w-3" />
-                {t.workspace.teamStopDispatchShort}
-              </button>
-            )}
+            <span>{running ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
+            {running && dispatchKey && <StopDispatchButton dispatchKey={dispatchKey} member={title} t={t} />}
           </div>
         </header>
         {steps.length === 0 ? (
-          <p className="text-minor text-[var(--abu-text-muted)]">{t.workspace.agentNoSteps}</p>
+          <p className="text-ui-sm text-label-tertiary">{t.workspace.agentNoSteps}</p>
         ) : (
           <div data-testid="subagent-persisted-steps">
             {steps.map((step, index) => (
@@ -248,26 +273,27 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
     () => {
       if (batch && task) return null;
       return preferRicherDispatch(
-        findLiveDispatch(liveExecutions, identity, taskIndex, locale),
+        findLiveDispatch(liveExecutions, persistedMessages, identity, taskIndex, locale, t),
         findPersistedBatchTask(persistedMessages, identity, taskIndex, locale, t),
       );
     },
     [batch, task, liveExecutions, persistedMessages, identity, taskIndex, locale, t],
   );
+  const dispatchKey = `${identity.batchToolCallId}:${taskIndex}`;
 
   if (persisted) {
-    return <PersistedTaskView title={title} persisted={persisted} locale={locale} t={t} dispatchKey={`${identity.batchToolCallId}:${taskIndex}`} />;
+    return <PersistedTaskView title={title} persisted={persisted} locale={locale} t={t} dispatchKey={dispatchKey} />;
   }
 
   if (!batch || !task) {
     return (
       <div className="h-full overflow-auto p-5">
-        <div className="max-w-3xl rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
-          <div className="flex items-center gap-2 text-body text-[var(--abu-text-primary)]">
-            <Bot aria-hidden="true" className="w-4 h-4" strokeWidth={1.5} />
+        <div className="max-w-3xl rounded-panel border border-separator bg-surface p-4">
+          <div className="flex items-center gap-2 text-ui font-medium text-label">
+            <Icon icon={AppIcons.agent} />
             {title || t.workspace.agentTitle}
           </div>
-          <p className="mt-2 text-minor text-[var(--abu-text-muted)]">
+          <p className="mt-2 text-ui-sm text-label-tertiary">
             {t.workspace.agentFullProcessUnavailable}
           </p>
         </div>
@@ -287,31 +313,26 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
   return (
     <div className="h-full overflow-auto p-5">
       <div className="mx-auto max-w-4xl">
-        <header className="mb-4 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
-          <div className="flex items-center gap-2 text-body font-medium text-[var(--abu-text-primary)]">
-            <Bot aria-hidden="true" className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+        <header className="mb-4 rounded-panel border border-separator bg-surface p-4">
+          <div className="flex items-center gap-2 text-ui font-medium text-label">
+            <Icon icon={AppIcons.agent} />
             <span className="truncate">{title || task.label || t.workspace.agentTitle}</span>
           </div>
           <div role="status" aria-live="polite" className="sr-only">
             {statusAnnouncement}
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-caption text-[var(--abu-text-muted)]">
-            <span className={cn(
-              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 bg-[var(--abu-bg-base)]',
-              task.status === 'failed' && 'text-[var(--abu-danger)]',
-            )}>
-              <StatusIcon status={task.status} />
-              {statusLabel(task.status, t)}
-            </span>
+          <div className={META_ROW}>
+            <TaskStatusTag status={task.status} label={statusLabel(task.status, t)} announcedAbove />
             <span>{format(t.workspace.agentTools, { count: task.toolCallCount })}</span>
             {tokens !== null && <span>{format(t.workspace.agentTokens, { count: tokens })}</span>}
             {elapsed !== null && <span>{formatElapsed(elapsed)}</span>}
             {task.activity && <span>{task.activity}</span>}
+            {task.status === 'running' && <StopDispatchButton dispatchKey={dispatchKey} member={title || task.label} t={t} />}
           </div>
         </header>
 
         {steps.length === 0 ? (
-          <p className="text-minor text-[var(--abu-text-muted)]">{t.workspace.agentNoSteps}</p>
+          <p className="text-ui-sm text-label-tertiary">{t.workspace.agentNoSteps}</p>
         ) : (
           <div className="space-y-0">
             {steps.map(({ raw, unified }, index) => {
@@ -326,12 +347,12 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
                     t={t}
                   />
                   {raw.richContentState === 'released' && (
-                    <div className="ml-6 -mt-2 mb-3 rounded-md border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-3 py-2 text-caption text-[var(--abu-text-muted)]">
+                    <div className="ml-6 -mt-2 mb-3 rounded-control border border-dashed border-separator px-3 py-2 text-caption text-label-tertiary">
                       {t.workspace.agentRichContentReleased}
                     </div>
                   )}
                   {raw.richContentState === 'partially-retained' && (
-                    <div className="ml-6 -mt-2 mb-3 rounded-md border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-3 py-2 text-caption text-[var(--abu-text-muted)]">
+                    <div className="ml-6 -mt-2 mb-3 rounded-control border border-dashed border-separator px-3 py-2 text-caption text-label-tertiary">
                       {t.workspace.agentRichContentPartiallyRetained}
                     </div>
                   )}

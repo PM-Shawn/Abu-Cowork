@@ -1,0 +1,214 @@
+// @vitest-environment happy-dom
+/// <reference types="@testing-library/jest-dom" />
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { getI18n } from '@/i18n';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { passSettleInterval } from '@/test/dsWindows';
+import type { AnnouncementItem } from '@/utils/consoleAnnouncement';
+import CornerBanners from './CornerBanners';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
+const t = () => getI18n();
+
+const ITEM: AnnouncementItem = {
+  id: 7,
+  slug: 'test-item',
+  type: 'feature',
+  title: 'Test announcement title',
+  body: 'Test announcement body',
+  ctaUrl: 'https://example.invalid/notes',
+  ctaLabel: 'Read the notes',
+  publishedAt: null,
+};
+
+const settings = () => useSettingsStore.getState();
+const reset = () => useSettingsStore.setState({ hasAcknowledgedDisclaimer: false, systemSettingsOpen: false, activeSystemTab: 'usage' });
+const banners = () => [...document.querySelectorAll<HTMLElement>('.fixed.bottom-6.right-6')];
+const disclaimer = () => screen.queryByText(t().about.disclaimerTitle);
+const announcement = () => screen.queryByText(ITEM.title);
+
+// `none` renders with no announcement due.
+function show(due: 'announcement' | 'none' = 'announcement') {
+  const onDismiss = vi.fn();
+  render(<CornerBanners announcement={due === 'none' ? undefined : ITEM} onDismissAnnouncement={onDismiss} />);
+  return { onDismiss };
+}
+
+beforeEach(reset);
+
+afterEach(() => {
+  cleanup();
+  reset();
+  vi.mocked(openUrl).mockClear();
+});
+
+describe('CornerBanners', () => {
+  describe('each banner alone', () => {
+    it('shows the disclaimer until it has been acknowledged, with no announcement', () => {
+      show('none');
+      expect(disclaimer()).toBeInTheDocument();
+      expect(banners()).toHaveLength(1);
+    });
+
+    it('shows the announcement once the disclaimer has been acknowledged', () => {
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      show();
+      expect(announcement()).toBeInTheDocument();
+      expect(disclaimer()).toBeNull();
+      expect(banners()).toHaveLength(1);
+    });
+
+    it('shows nothing with the disclaimer acknowledged and no announcement', () => {
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      show('none');
+      expect(banners()).toHaveLength(0);
+      expect(screen.queryAllByRole('button')).toHaveLength(0);
+    });
+
+    it('hands the dismissal of the announcement to its owner, from both of its buttons', () => {
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const { onDismiss } = show();
+      fireEvent.click(screen.getByRole('button', { name: t().common.close }));
+      fireEvent.click(screen.getByRole('button', { name: t().announcement.dismiss }));
+      expect(onDismiss).toHaveBeenCalledTimes(2);
+    });
+
+    it('opens the address of the announcement and leaves it showing', () => {
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const { onDismiss } = show();
+      fireEvent.click(screen.getByRole('button', { name: ITEM.ctaLabel! }));
+      expect(openUrl).toHaveBeenCalledWith(ITEM.ctaUrl);
+      expect(onDismiss).not.toHaveBeenCalled();
+      expect(announcement()).toBeInTheDocument();
+    });
+
+    it('acknowledges the disclaimer from its dismiss button and opens nothing', () => {
+      show('none');
+      fireEvent.click(screen.getByRole('button', { name: t().disclaimerBanner.dismiss }));
+      expect(settings().hasAcknowledgedDisclaimer).toBe(true);
+      expect(settings().systemSettingsOpen).toBe(false);
+      expect(banners()).toHaveLength(0);
+    });
+  });
+
+  describe('both due at once', () => {
+    it('shows the disclaimer alone', () => {
+      show();
+      expect(disclaimer()).toBeInTheDocument();
+      expect(announcement()).toBeNull();
+      expect(banners()).toHaveLength(1);
+    });
+
+    it('offers only the three buttons of the disclaimer', () => {
+      show();
+      const names = screen.getAllByRole('button').map((button) => button.getAttribute('aria-label') ?? button.textContent);
+      expect(names).toEqual([t().common.close, t().disclaimerBanner.dismiss, t().disclaimerBanner.viewFull]);
+    });
+
+    it('does not dismiss the announcement when the disclaimer is dismissed', () => {
+      const { onDismiss } = show();
+      fireEvent.click(screen.getByRole('button', { name: t().disclaimerBanner.dismiss }));
+      expect(onDismiss).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['its dismiss button', () => t().disclaimerBanner.dismiss],
+      ['its corner button', () => t().common.close],
+    ] as const)('shows the announcement after the disclaimer is dismissed from %s', (_name, label) => {
+      show();
+      fireEvent.click(screen.getByRole('button', { name: label() }));
+      expect(settings().hasAcknowledgedDisclaimer).toBe(true);
+      expect(disclaimer()).toBeNull();
+      expect(announcement()).toBeInTheDocument();
+      expect(banners()).toHaveLength(1);
+    });
+
+    it('shows the announcement after the full text of the disclaimer is opened', () => {
+      show();
+      fireEvent.click(screen.getByRole('button', { name: t().disclaimerBanner.viewFull }));
+      expect(settings().systemSettingsOpen).toBe(true);
+      expect(settings().activeSystemTab).toBe('about');
+      expect(disclaimer()).toBeNull();
+      expect(announcement()).toBeInTheDocument();
+    });
+
+    it('keeps the announcement dismissible once it shows', () => {
+      const { onDismiss } = show();
+      fireEvent.click(screen.getByRole('button', { name: t().disclaimerBanner.dismiss }));
+      fireEvent.click(screen.getByRole('button', { name: t().announcement.dismiss }));
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The announcement appears where the disclaimer was, its dismiss button under the pointer that
+  // just dismissed the disclaimer.
+  describe('a pointer press on the announcement that began before it could be read', () => {
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+    const pointer = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const dismissButton = () => screen.getByRole('button', { name: t().announcement.dismiss });
+
+    it('dismisses nothing with the second press of a double press on the disclaimer; a press after the interval dismisses', async () => {
+      const user = pointer();
+      const { onDismiss } = show();
+      await user.click(screen.getByRole('button', { name: t().disclaimerBanner.dismiss }));
+      expect(announcement()).toBeInTheDocument();
+
+      await user.click(dismissButton());
+      await user.click(screen.getByRole('button', { name: t().common.close }));
+      await user.click(screen.getByRole('button', { name: ITEM.ctaLabel! }));
+      expect(onDismiss).not.toHaveBeenCalled();
+      expect(openUrl).not.toHaveBeenCalled();
+      expect(announcement()).toBeInTheDocument();
+
+      passSettleInterval();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a press that began inside the interval and ends after it', async () => {
+      const user = pointer();
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const { onDismiss } = show();
+      await user.pointer({ keys: '[MouseLeft>]', target: dismissButton() });
+      passSettleInterval();
+      await user.pointer({ keys: '[/MouseLeft]', target: dismissButton() });
+      expect(onDismiss).not.toHaveBeenCalled();
+
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('never holds the keyboard: Enter on its dismiss button dismisses at the first moment', () => {
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const { onDismiss } = show();
+      // A click raised by a key reports detail 0.
+      fireEvent.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds presses back again for the announcement that takes the place of the one dismissed', async () => {
+      const user = pointer();
+      useSettingsStore.setState({ hasAcknowledgedDisclaimer: true });
+      const onDismiss = vi.fn();
+      const view = render(<CornerBanners announcement={ITEM} onDismissAnnouncement={onDismiss} />);
+      passSettleInterval();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+
+      view.rerender(<CornerBanners announcement={{ ...ITEM, id: 8, title: 'Next announcement title' }} onDismissAnnouncement={onDismiss} />);
+      expect(screen.getByText('Next announcement title')).toBeInTheDocument();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+
+      passSettleInterval();
+      await user.click(dismissButton());
+      expect(onDismiss).toHaveBeenCalledTimes(2);
+    });
+  });
+});

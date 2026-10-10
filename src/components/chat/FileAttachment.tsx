@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
-import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe, SquareArrowOutUpRight, Presentation, Sheet, FileType2, FileSearch, FileX, FileWarning } from 'lucide-react';
+import { memo, useState, useEffect, useCallback } from 'react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -7,74 +6,80 @@ import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { loadLocalImage, getBaseName, isLocalFilePath } from '@/utils/pathUtils';
 import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
+import { Button, IconButton } from '@/components/ds/button';
+import { Pressable } from '@/components/ds/pressable';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons, type AppIconName } from '@/components/ds/icons';
+
+type AppIcon = (typeof AppIcons)[AppIconName];
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
 
 // Get file type info for display
-function getFileTypeInfo(filePath: string): { icon: typeof File; label: string; category: string } {
+function getFileTypeInfo(filePath: string): { icon: AppIcon; label: string; category: string } {
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
 
   // Code files
   if (['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'cpp', 'c', 'h'].includes(ext)) {
-    return { icon: FileCode, label: ext.toUpperCase(), category: 'Code' };
+    return { icon: AppIcons.fileCode, label: ext.toUpperCase(), category: 'Code' };
   }
   // Config/data files
   if (['json', 'yaml', 'yml', 'toml', 'xml'].includes(ext)) {
-    return { icon: FileJson, label: ext.toUpperCase(), category: 'Config' };
+    return { icon: AppIcons.fileJson, label: ext.toUpperCase(), category: 'Config' };
   }
   // HTML
   if (['html', 'htm'].includes(ext)) {
-    return { icon: FileCode, label: 'HTML', category: 'Code' };
+    return { icon: AppIcons.fileCode, label: 'HTML', category: 'Code' };
   }
   // Markdown
   if (ext === 'md') {
-    return { icon: FileText, label: 'MD', category: 'Document' };
+    return { icon: AppIcons.file, label: 'MD', category: 'Document' };
   }
   // Plain text
   if (['txt', 'log'].includes(ext)) {
-    return { icon: FileText, label: ext.toUpperCase(), category: 'Text' };
+    return { icon: AppIcons.file, label: ext.toUpperCase(), category: 'Text' };
   }
   // Images
   if (IMAGE_EXTENSIONS.has(ext) || ext === 'svg') {
-    return { icon: FileImage, label: ext.toUpperCase(), category: 'Image' };
+    return { icon: AppIcons.fileImage, label: ext.toUpperCase(), category: 'Image' };
   }
   // CSS
   if (['css', 'scss', 'less'].includes(ext)) {
-    return { icon: FileCode, label: 'CSS', category: 'Style' };
+    return { icon: AppIcons.fileCode, label: 'CSS', category: 'Style' };
   }
   // Office documents
   if (['pptx', 'ppt'].includes(ext)) {
-    return { icon: Presentation, label: 'PPTX', category: 'Presentation' };
+    return { icon: AppIcons.fileSlides, label: 'PPTX', category: 'Presentation' };
   }
   if (['docx', 'doc'].includes(ext)) {
-    return { icon: FileType2, label: 'DOCX', category: 'Document' };
+    return { icon: AppIcons.fileDocument, label: 'DOCX', category: 'Document' };
   }
   if (['xlsx', 'xls'].includes(ext)) {
-    return { icon: Sheet, label: 'XLSX', category: 'Spreadsheet' };
+    return { icon: AppIcons.fileSheet, label: 'XLSX', category: 'Spreadsheet' };
   }
   if (ext === 'pdf') {
-    return { icon: FileSearch, label: 'PDF', category: 'Document' };
+    return { icon: AppIcons.filePdf, label: 'PDF', category: 'Document' };
   }
 
-  return { icon: File, label: ext.toUpperCase() || 'FILE', category: 'File' };
+  return { icon: AppIcons.fileGeneric, label: ext.toUpperCase() || 'FILE', category: 'File' };
 }
 
 // Get open-with label and icon by file extension
-function getOpenWithInfo(filePath: string, labels: { preview: string; browser: string }): { label: string; icon: typeof File } {
+function getOpenWithInfo(filePath: string, labels: { preview: string; browser: string }): { label: string; icon: AppIcon } {
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const map: Record<string, { label: string; icon: typeof File }> = {
-    pptx: { label: 'PowerPoint', icon: Presentation },
-    ppt: { label: 'PowerPoint', icon: Presentation },
-    xlsx: { label: 'Excel', icon: Sheet },
-    xls: { label: 'Excel', icon: Sheet },
-    csv: { label: 'Excel', icon: Sheet },
-    docx: { label: 'Word', icon: FileType2 },
-    doc: { label: 'Word', icon: FileType2 },
-    pdf: { label: labels.preview, icon: FileSearch },
-    html: { label: labels.browser, icon: Globe },
-    htm: { label: labels.browser, icon: Globe },
+  const map: Record<string, { label: string; icon: AppIcon }> = {
+    pptx: { label: 'PowerPoint', icon: AppIcons.fileSlides },
+    ppt: { label: 'PowerPoint', icon: AppIcons.fileSlides },
+    xlsx: { label: 'Excel', icon: AppIcons.fileSheet },
+    xls: { label: 'Excel', icon: AppIcons.fileSheet },
+    csv: { label: 'Excel', icon: AppIcons.fileSheet },
+    docx: { label: 'Word', icon: AppIcons.fileDocument },
+    doc: { label: 'Word', icon: AppIcons.fileDocument },
+    pdf: { label: labels.preview, icon: AppIcons.filePdf },
+    html: { label: labels.browser, icon: AppIcons.webPage },
+    htm: { label: labels.browser, icon: AppIcons.webPage },
   };
-  return map[ext] || { label: '', icon: SquareArrowOutUpRight };
+  return map[ext] || { label: '', icon: AppIcons.openExternal };
 }
 
 function isImageFile(filePath: string): boolean {
@@ -90,6 +95,10 @@ interface FileAttachmentProps {
   filePath: string;
   operation?: 'read' | 'write' | 'create';
 }
+
+// Flat card shared by every file card state.
+const FILE_CARD = 'flex w-full items-center gap-3 rounded-panel border border-separator bg-surface px-4 py-3';
+const FILE_ICON_BOX = 'flex h-10 w-10 shrink-0 items-center justify-center rounded-control bg-fill';
 
 export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const openPreview = usePreviewStore((s) => s.openPreview);
@@ -107,10 +116,10 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const outputsRev = useChatStore((s) => (conversationId ? s.outputsRev[conversationId] ?? 0 : 0));
   const workspacePath = useChatStore((s) => (conversationId ? (s.conversations[conversationId]?.workspacePath ?? null) : null));
   const { t } = useI18n();
-  const { icon: Icon, label, category } = getFileTypeInfo(filePath);
+  const { icon: fileIcon, label, category } = getFileTypeInfo(filePath);
   const fileName = getBaseName(filePath);
   const showThumbnail = isImageFile(filePath);
-  const { label: openWithLabel, icon: OpenWithIcon } = getOpenWithInfo(filePath, { preview: t.chat.openWithPreview, browser: t.chat.openWithBrowser });
+  const { label: openWithLabel, icon: openWithIcon } = getOpenWithInfo(filePath, { preview: t.chat.openWithPreview, browser: t.chat.openWithBrowser });
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [resolved, setResolved] = useState<ResolvedSource | null>(null);
 
@@ -174,11 +183,11 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
     }
   };
 
-  // Loading skeleton — match the standard card shape so the layout doesn't jump
+  // Loading placeholder — match the standard card shape so the layout doesn't jump
   if (!resolved) {
     return (
-      <div className="w-full rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] px-4 py-3 opacity-50">
-        <div className="h-5 w-32 bg-[var(--abu-border)] rounded animate-pulse" />
+      <div className={FILE_CARD}>
+        <div className="h-5 w-32 rounded-control bg-fill" />
       </div>
     );
   }
@@ -186,15 +195,15 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   // Missing: no original on disk and no snapshot record at all
   if (resolved.status === 'missing') {
     return (
-      <div className="flex items-center gap-3 w-full rounded-lg border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-4 py-3 opacity-60">
-        <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 bg-[var(--abu-bg-muted)]">
-          <FileX className="w-5 h-5 text-[var(--abu-text-muted)]" />
+      <div className={cn(FILE_CARD, 'border-dashed')}>
+        <div className={FILE_ICON_BOX}>
+          <Icon icon={AppIcons.fileMissing} size="lg" className="text-label-tertiary" />
         </div>
-        <div className="flex flex-col min-w-0">
-          <span className="text-body font-medium text-[var(--abu-text-muted)] truncate line-through">
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate text-ui font-medium text-label-tertiary line-through" title={resolved.basename}>
             {resolved.basename}
           </span>
-          <span className="text-caption text-[var(--abu-text-muted)]">
+          <span className="text-caption text-label-tertiary">
             {t.chat.fileMissing}
           </span>
         </div>
@@ -209,15 +218,15 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
         ? t.chat.fileOversized
         : t.chat.fileBackupFailed;
     return (
-      <div className="flex items-center gap-3 w-full rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
-        <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 bg-[var(--abu-bg-muted)]">
-          <FileWarning className="w-5 h-5 text-[var(--abu-warning)]" />
+      <div className={FILE_CARD}>
+        <div className={FILE_ICON_BOX}>
+          <Icon icon={AppIcons.fileNotBackedUp} size="lg" className="text-warning" />
         </div>
-        <div className="flex flex-col min-w-0">
-          <span className="text-body font-medium text-[var(--abu-text-primary)] truncate">
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate text-ui font-medium text-label" title={resolved.entry.basename}>
             {resolved.entry.basename}
           </span>
-          <span className="text-caption text-[var(--abu-text-muted)]">
+          <span className="text-caption text-label-tertiary">
             {reasonLabel}
           </span>
         </div>
@@ -231,77 +240,53 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   // Image file: show thumbnail card
   if (showThumbnail && thumbUrl) {
     return (
-      <div
+      <Pressable
         onClick={handleClick}
-        className={cn(
-          'group rounded-lg cursor-pointer transition-all overflow-hidden',
-          'bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] hover:border-[var(--abu-clay-40)]',
-          'max-w-[240px]'
-        )}
+        className="block max-w-60 overflow-hidden rounded-panel border border-separator bg-surface text-left transition-colors duration-fast hover:border-control-border"
         title={t.chat.clickToPreviewImage}
       >
         <img
           src={thumbUrl}
-          alt={fileName}
-          className="w-full max-h-[180px] object-cover"
+          alt=""
+          className="max-h-44 w-full object-cover"
           onError={() => setThumbUrl(null)}
         />
-        <div className="px-2.5 py-1.5 flex items-center gap-2">
-          <FileImage className="w-3.5 h-3.5 text-[var(--abu-text-muted)] shrink-0" />
-          <span className="text-minor text-[var(--abu-text-primary)] truncate">{fileName}</span>
-        </div>
-      </div>
+        <span className="flex items-center gap-2 px-2 py-1">
+          <Icon icon={AppIcons.fileImage} size="sm" className="text-label-secondary" />
+          <span className="truncate text-ui-sm text-label" title={fileName}>{fileName}</span>
+        </span>
+      </Pressable>
     );
   }
 
   // Default: icon + text card
   return (
-    <div
-      className={cn(
-        'group flex items-center gap-3 w-full rounded-lg transition-all',
-        'bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] hover:border-[var(--abu-border-hover)]',
-        'px-4 py-3',
-      )}
-    >
+    <div className={cn(FILE_CARD, 'transition-colors duration-fast hover:border-control-border')}>
       {/* File card area - clickable to preview */}
-      <div
+      <Pressable
         onClick={handleClick}
-        className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-control text-left"
         title={t.chat.clickToPreview}
       >
-        {/* File Icon */}
-        <div className={cn(
-          'w-10 h-10 rounded-lg flex items-center justify-center shrink-0',
-          'bg-[var(--abu-bg-muted)]'
-        )}>
-          <Icon className="w-5 h-5 text-[var(--abu-text-tertiary)]" />
-        </div>
+        <span className={FILE_ICON_BOX}>
+          <Icon icon={fileIcon} size="lg" className="text-label-secondary" />
+        </span>
 
         {/* File Info */}
-        <div className="flex flex-col min-w-0">
-          <span className="text-body font-medium text-[var(--abu-text-primary)] truncate">
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate text-ui font-medium text-label" title={fileName}>
             {fileName.replace(/\.[^/.]+$/, '') || fileName}
           </span>
-          <span className="text-caption text-[var(--abu-text-muted)]">
+          <span className="text-caption text-label-tertiary">
             {category} · {label}
           </span>
-        </div>
-      </div>
+        </span>
+      </Pressable>
 
       {/* Open with default app button */}
-      <button
-        onClick={handleOpenWithDefaultApp}
-        className={cn(
-          'flex items-center gap-1.5 px-3 py-2 shrink-0 cursor-pointer whitespace-nowrap',
-          'rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors',
-        )}
-        title={openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
-      >
-        <OpenWithIcon className="w-4 h-4 text-[var(--abu-text-muted)]" />
-        <span className="text-minor text-[var(--abu-text-tertiary)]">
-          {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
-        </span>
-      </button>
+      <Button variant="secondary" size="sm" icon={openWithIcon} onClick={handleOpenWithDefaultApp} className="whitespace-nowrap">
+        {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
+      </Button>
     </div>
   );
 }
@@ -328,28 +313,35 @@ export function ImageThumbnail({ src }: { src: string }) {
 
   if (!imgUrl) return null;
 
+  const image = (
+    <img
+      src={imgUrl}
+      alt=""
+      className="h-full w-full object-cover"
+      onError={() => setImgUrl(null)}
+    />
+  );
+  const frame = 'h-16 w-16 overflow-hidden rounded-control border border-separator';
+
+  // Only local files open in the preview; a web image is just shown.
+  if (!isLocalPath) {
+    return <div className={frame} title={src}>{image}</div>;
+  }
   return (
-    <div
-      onClick={() => isLocalPath && openPreview(src)}
-      className={cn(
-        'w-16 h-16 rounded-lg overflow-hidden border border-[var(--abu-bg-pressed)] transition-all',
-        'hover:border-[var(--abu-clay-40)]',
-        isLocalPath && 'cursor-pointer'
-      )}
-      title={isLocalPath ? t.chat.clickToPreviewFull : src}
+    <Pressable
+      onClick={() => openPreview(src)}
+      className={cn(frame, 'transition-colors duration-fast hover:border-control-border')}
+      title={t.chat.clickToPreviewFull}
+      aria-label={t.chat.clickToPreviewFull}
     >
-      <img
-        src={imgUrl}
-        alt=""
-        className="w-full h-full object-cover"
-        onError={() => setImgUrl(null)}
-      />
-    </div>
+      {image}
+    </Pressable>
   );
 }
 
-// Compact image preview card for generated images
-export function ImagePreviewCard({ filePath }: { filePath: string }) {
+// Compact image preview card for generated images. Memoized: its reveal button carries a
+// tooltip, and finished message groups re-render with every streamed token of a later reply.
+export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { filePath: string }) {
   const openPreview = usePreviewStore((s) => s.openPreview);
   const { t } = useI18n();
   const fileName = getBaseName(filePath);
@@ -389,48 +381,48 @@ export function ImagePreviewCard({ filePath }: { filePath: string }) {
   };
 
   return (
-    <div
-      onClick={() => openPreview(filePath)}
-      className={cn(
-        'group/card relative inline-block rounded-lg cursor-pointer overflow-hidden align-bottom',
-        'border border-[var(--abu-border)] bg-[var(--abu-bg-base)] transition-colors hover:border-[var(--abu-clay-40)]',
-      )}
-      title={t.chat.clickToPreview}
-    >
+    <div className="group/card relative inline-block overflow-hidden rounded-panel border border-separator bg-surface align-bottom transition-colors duration-fast hover:border-control-border">
       {/* Image-first: the thumbnail IS the card, no persistent filename/size
           chrome. Metadata + actions live in a hover overlay so the default
           look is just a clean rounded thumbnail. */}
-      {imgUrl ? (
-        <img
-          src={imgUrl}
-          alt={fileName}
-          className="block w-auto max-w-[200px] max-h-[200px] object-contain"
-          onLoad={handleImgLoad}
-          onError={() => { setImgUrl(null); setLoadFailed(true); }}
-        />
-      ) : (
-        <div className="w-[160px] h-[120px] flex items-center justify-center bg-[var(--abu-bg-muted)]">
-          <FileImage className={cn('w-8 h-8', loadFailed ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-clay)] animate-pulse')} />
-        </div>
-      )}
-      {/* Hover overlay: filename + dimensions + reveal-in-Finder */}
+      <Pressable
+        onClick={() => openPreview(filePath)}
+        className="block"
+        title={t.chat.clickToPreview}
+      >
+        {imgUrl ? (
+          <img
+            src={imgUrl}
+            alt={fileName}
+            className="block max-h-50 w-auto max-w-50 object-contain"
+            onLoad={handleImgLoad}
+            onError={() => { setImgUrl(null); setLoadFailed(true); }}
+          />
+        ) : (
+          <span className="flex h-30 w-40 items-center justify-center bg-fill">
+            <Icon icon={AppIcons.fileImage} size="lg" className={loadFailed ? 'text-label-placeholder' : 'text-label-tertiary'} />
+          </span>
+        )}
+      </Pressable>
+      {/* Hover overlay: filename + dimensions + reveal-in-Finder, as small raised chips
+          over the image. Clicks outside the reveal button fall through to the preview. */}
       {imgUrl && (
-        <div className="absolute inset-x-0 bottom-0 flex items-center gap-1 px-2 py-1.5 bg-gradient-to-t from-black/60 via-black/25 to-transparent opacity-0 group-hover/card:opacity-100 transition-opacity">
-          <div className="min-w-0 flex-1">
-            <div className="text-caption font-medium text-white/95 truncate">{fileName}</div>
-          </div>
-          {dimensions && (
-            <span className="text-caption text-white/70 shrink-0">{dimensions.w}×{dimensions.h}</span>
-          )}
-          <button
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1 p-1 opacity-0 transition-opacity duration-fast group-hover/card:opacity-100 group-focus-within/card:opacity-100">
+          <span className="flex min-w-0 flex-1 items-center gap-1 rounded-control bg-raised px-2 py-1 text-caption text-label shadow-float">
+            <span className="min-w-0 flex-1 truncate font-medium">{fileName}</span>
+            {dimensions && (
+              <span className="shrink-0 text-label-secondary">{dimensions.w}×{dimensions.h}</span>
+            )}
+          </span>
+          <IconButton
+            icon={AppIcons.folderOpen}
+            label={t.chat.openInFinder}
+            size="sm"
             onClick={handleReveal}
-            className="p-0.5 rounded hover:bg-white/20 shrink-0"
-            title={t.chat.openInFinder}
-          >
-            <ExternalLink className="w-3 h-3 text-white/90" />
-          </button>
+            className="pointer-events-auto bg-raised text-label shadow-float hover:bg-raised"
+          />
         </div>
       )}
     </div>
   );
-}
+});

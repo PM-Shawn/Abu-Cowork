@@ -256,7 +256,7 @@ const FONT_MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
  * `--w-*` widget CSS ships) onto the SDK's documented `styles.variables` names
  * so an app styled against the spec looks native in either theme.
  *
- * Typography/radius values mirror Abu's 8-token text scale (AGENTS.md §6.1).
+ * Font sizes, line heights and radii are literal values of this mapping.
  */
 export function buildAppStyleVariables(isDark: boolean): Record<string, string> {
   /* eslint-disable no-restricted-syntax -- `--font-text-xs-size` and friends are

@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, ListChecks, MessageSquare } from 'lucide-react';
 import type { ToolCall } from '@/types';
 import { parsePlanSteps } from '@/utils/workflowExtractor';
 import { useI18n } from '@/i18n';
-import { cn } from '@/lib/utils';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Tag } from '@/components/ds/tag';
 
 /**
  * Compact inline summary for a report_plan tool call. The plan's full live
@@ -20,35 +22,34 @@ export default function PlanStepsCard({ toolCall }: { toolCall: ToolCall }) {
   if (steps.length === 0) return null;
 
   return (
-    <div className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">
-      <button
+    <div className="my-2 overflow-hidden rounded-panel border border-separator bg-surface">
+      <Pressable
         onClick={() => setExpanded((v) => !v)}
-        className="btn-ghost w-full flex items-center gap-1.5 px-3 py-2 text-left"
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors duration-fast hover:bg-fill-hover"
       >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        )}
-        <ListChecks className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0" />
-        <span className="text-minor font-medium text-[var(--abu-text-primary)]">
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="text-label-tertiary" />
+        <Icon icon={AppIcons.plan} size="sm" className="text-label-secondary" />
+        <span className="text-ui font-medium text-label">
           {t.planCard.title}
         </span>
-        <span className="text-caption text-[var(--abu-text-muted)]">
+        <span className="text-ui-sm text-label-secondary">
           · {steps.length} {t.planCard.stepsUnit}
         </span>
         {awaiting && (
-          <span className="ml-auto flex items-center gap-1 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium shrink-0">
-            <MessageSquare className="h-3 w-3" />
-            {t.planCard.awaiting}
+          <span className="ml-auto shrink-0">
+            <Tag>
+              <Icon icon={AppIcons.awaitingAnswer} size="sm" />
+              {t.planCard.awaiting}
+            </Tag>
           </span>
         )}
-      </button>
+      </Pressable>
       {expanded && (
-        <ol className={cn('space-y-1 px-3 pb-2.5', !awaiting && 'pt-0.5')}>
+        <ol className="space-y-1 px-3 pb-3">
           {steps.map((step, i) => (
-            <li key={i} className="flex gap-2 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
-              <span className="shrink-0 text-[var(--abu-text-muted)]">{i + 1}.</span>
+            <li key={i} className="flex gap-2 text-ui text-label-secondary">
+              <span className="shrink-0 text-label-tertiary tabular-nums">{i + 1}.</span>
               <span className="min-w-0 break-words">{step}</span>
             </li>
           ))}

@@ -1,21 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Loader2, RotateCw } from 'lucide-react';
+import { IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { LoadError } from '@/components/ds/load-error';
+import { Spinner } from '@/components/ds/spinner';
 import { useI18n } from '@/i18n';
 import { useAppStore, useSelectedApp } from '@/stores/appStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useNativeViewOcclusion } from '@/hooks/useNativeViewOcclusion';
 import { APP_PAGE_STATE_EVENT, hideAppPages, reloadAppPage, setAppPageBounds, showAppPage, type AppPageStateEvent } from '@/core/app/appPageBridge';
 import { resolveText } from '@/core/app/appBinding';
-import { Button } from '@/components/ui/button';
 
 /**
  * The main-area host for an app's `url:` page. It owns a placeholder that
  * fills the area, streams the placeholder's rectangle to the main process
  * (`appPage.setBounds`) and hides the native view whenever a React overlay
  * would be painted under it (`useNativeViewOcclusion`). The page itself is a
- * `WebContentsView` the main process resolves from the installed package —
- * nothing here knows or sends its URL.
+ * `WebContentsView` the main process resolves from the app's own
+ * configuration — nothing here knows or sends its URL.
  */
 export default function AppPageView() {
   const { t } = useI18n();
@@ -25,24 +27,24 @@ export default function AppPageView() {
   const occluded = useNativeViewOcclusion();
   const containerRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<AppPageStateEvent | null>(null);
-  const pluginKey = app.pluginKey;
+  const appId = app.origin === null ? null : app.appId;
   const navItemId = activePage?.appId === app.appId ? activePage.navItemId : null;
   const navItem = navItemId ? app.config.nav?.items.find((item) => item.id === navItemId) : undefined;
-  const shouldShow = viewMode === 'app-page' && !occluded && pluginKey !== null && navItemId !== null;
+  const shouldShow = viewMode === 'app-page' && !occluded && appId !== null && navItemId !== null;
 
   useEffect(() => {
-    if (!pluginKey || !navItemId) return;
+    if (!appId || !navItemId) return;
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen<AppPageStateEvent>(APP_PAGE_STATE_EVENT, (event) => {
-      if (event.payload.pluginKey === pluginKey && event.payload.navItemId === navItemId) setState(event.payload);
+      if (event.payload.appId === appId && event.payload.navItemId === navItemId) setState(event.payload);
     }).then((stop) => { if (disposed) stop(); else unlisten = stop; });
     return () => { disposed = true; unlisten?.(); };
-  }, [pluginKey, navItemId]);
+  }, [appId, navItemId]);
 
   useEffect(() => {
     const element = containerRef.current;
-    if (!shouldShow || !element || !pluginKey || !navItemId) {
+    if (!shouldShow || !element || !appId || !navItemId) {
       void hideAppPages();
       return;
     }
@@ -55,10 +57,10 @@ export default function AppPageView() {
       const next = bounds();
       if (!shown) {
         shown = true;
-        void showAppPage(pluginKey, navItemId, next);
+        void showAppPage(appId, navItemId, next);
         return;
       }
-      void setAppPageBounds(pluginKey, navItemId, next);
+      void setAppPageBounds(appId, navItemId, next);
     };
     sync();
     const observer = new ResizeObserver(() => sync());
@@ -69,28 +71,29 @@ export default function AppPageView() {
       window.removeEventListener('resize', sync);
       void hideAppPages();
     };
-  }, [shouldShow, pluginKey, navItemId]);
+  }, [shouldShow, appId, navItemId]);
 
   return (
     <div className="flex h-full flex-col" data-testid="app-page-view" data-nav-item={navItemId ?? undefined}>
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--abu-border)] px-4">
-        <span className="min-w-0 flex-1 truncate text-body font-medium text-[var(--abu-text-primary)]">
+      {/* h-11: the native page's rectangle starts right under this row. */}
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-separator px-4">
+        <span className="min-w-0 flex-1 truncate text-ui font-medium text-label">
           {navItem?.title === undefined ? app.name : resolveText(navItem.title)}
         </span>
-        {state?.state === 'loading' && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--abu-text-muted)]" />}
-        {pluginKey && navItemId && (
-          <Button size="icon-sm" variant="ghost" aria-label={t.common.retry} onClick={() => { void reloadAppPage(pluginKey, navItemId); }}>
-            <RotateCw className="h-3.5 w-3.5" />
-          </Button>
+        {state?.state === 'loading' && <Spinner size="sm" label={t.common.loading} labelHidden />}
+        {appId && navItemId && (
+          // The tooltip opens beside the button, inside this row: below it the native page is
+          // painted over everything the app draws, and above it the window ends.
+          <IconButton size="sm" icon={AppIcons.reload} label={t.common.retry} tooltipSide="left" onClick={() => { void reloadAppPage(appId, navItemId); }} />
         )}
       </div>
-      <div ref={containerRef} className="relative min-h-0 flex-1 bg-[var(--abu-bg-base)]">
+      <div ref={containerRef} className="relative min-h-0 flex-1 bg-surface">
         {state?.state === 'failed' && (
-          <div data-testid="app-page-failed" className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
-            <p className="text-body text-[var(--abu-text-secondary)]">{state.errorDescription}</p>
-            {pluginKey && navItemId && (
-              <Button variant="outline" size="sm" onClick={() => { void reloadAppPage(pluginKey, navItemId); }}>{t.common.retry}</Button>
-            )}
+          <div data-testid="app-page-failed" className="absolute inset-0 flex flex-col items-center justify-center">
+            {appId && navItemId
+              ? <LoadError reason={state.errorDescription} onRetry={() => { void reloadAppPage(appId, navItemId); }} />
+              // No page is selected any more: the reason stays, with nothing to retry.
+              : <p role="alert" className="max-w-96 px-6 text-center text-ui text-label">{state.errorDescription}</p>}
           </div>
         )}
       </div>

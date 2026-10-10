@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderBare, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import ChatView from './ChatView';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -36,6 +38,9 @@ vi.mock('./ScenarioGuide', () => ({ default: () => null }));
 vi.mock('./UsageChip', () => ({ default: () => null }));
 vi.mock('./ChapterRail', () => ({ default: () => null }));
 vi.mock('./ChapterMenu', () => ({ default: () => null }));
+
+// The folder request is a design-system window, which needs the provider the app root gives it.
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 const WORKSPACE_REQUEST_TIMEOUT_MS = 60_000;
 

@@ -27,7 +27,7 @@ export default function WelcomeAvatar({ avatar }: { avatar?: string }) {
     <div
       data-testid="welcome-avatar"
       data-avatar-kind={parsed.kind}
-      className="w-20 h-20 mx-auto mb-4 rounded-full bg-[var(--abu-bg-active)] flex items-center justify-center text-5xl select-none"
+      className="w-20 h-20 mx-auto mb-4 rounded-full bg-fill flex items-center justify-center text-5xl select-none"
     >
       {parsed.kind === 'emoji' ? parsed.emoji : '🤖'}
     </div>

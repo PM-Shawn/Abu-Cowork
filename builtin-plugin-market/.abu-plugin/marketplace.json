@@ -1,7 +1,7 @@
 {
   "name": "abu-official",
   "owner": { "name": "Abu", "email": "hello@abu.example" },
-  "description": "阿布官方内置插件市场 —— 随应用附带，开箱即可浏览安装",
+  "description": "阿布官方市场 —— 随阿布附带，开箱即可浏览安装",
   "plugins": [
     {
       "name": "abu-prd-doctor",
@@ -11,39 +11,11 @@
       "author": { "name": "Abu" },
       "category": "productivity",
       "source": "./plugins/abu-prd-doctor"
-    },
-    {
-      "name": "abu-app-recruiting",
-      "displayName": "招聘",
-      "description": "招聘应用：写 JD、筛简历、备面试、查行情，由招聘专家团负责",
-      "version": "1.0.0",
-      "author": { "name": "Abu" },
-      "category": "hr",
-      "providesApp": true,
-      "minAbuVersion": "0.51.0",
-      "source": "./plugins/abu-app-recruiting"
-    },
-    {
-      "name": "abu-app-finance-reconciliation",
-      "displayName": "财务对账",
-      "description": "财务对账应用：对流水、查差异、出报表，由财务对账专家团负责",
-      "version": "1.0.0",
-      "author": { "name": "Abu" },
-      "category": "finance",
-      "providesApp": true,
-      "minAbuVersion": "0.51.0",
-      "source": "./plugins/abu-app-finance-reconciliation"
-    },
-    {
-      "name": "abu-app-content-creation",
-      "displayName": "内容创作",
-      "description": "内容创作应用：选题、成稿、配图、发布物料，由内容创作专家团负责",
-      "version": "1.0.0",
-      "author": { "name": "Abu" },
-      "category": "content",
-      "providesApp": true,
-      "minAbuVersion": "0.51.0",
-      "source": "./plugins/abu-app-content-creation"
     }
+  ],
+  "apps": [
+    { "name": "recruiting", "source": "./apps/recruiting" },
+    { "name": "finance-reconciliation", "source": "./apps/finance-reconciliation" },
+    { "name": "content-creation", "source": "./apps/content-creation" }
   ]
 }

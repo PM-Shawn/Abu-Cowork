@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Download, Loader2, Mic, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { format, useI18n } from '@/i18n';
 import type { TranslationDict } from '@/i18n/types';
-import { Button } from '@/components/ui/button';
-import { Select } from '@/components/ui/select';
-import { Toggle } from '@/components/ui/toggle';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Select } from '@/components/ds/select';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { Spinner } from '@/components/ds/spinner';
+import type { StatusTone } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import { SETTING_CONTROL_WIDTH } from '@/components/settings/settingsLayout';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { ensureSpeechStatus, useSpeechStore } from '@/stores/speechStore';
 import { useVoiceInputStore } from '@/stores/voiceInputStore';
@@ -16,10 +24,10 @@ import { getMicrophoneStatus, openMicrophoneSettings, type MicrophoneStatus } fr
 import { formatFileSize } from '@/utils/formatFileSize';
 import { isMacOS, isWindows } from '@/utils/platform';
 
-const SETTINGS_CONTROL_WIDTH = 'w-40 shrink-0';
-const ROW = 'p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]';
-
 type VoiceText = TranslationDict['voiceInput'];
+
+// One line of the model box: what there is on the left, what can be done about it on the right.
+const MODEL_LINE = 'flex items-center justify-between gap-6 py-3';
 
 function micStatusLabel(v: VoiceText, status: MicrophoneStatus): string {
   if (status === 'granted') return v.micGranted;
@@ -28,9 +36,16 @@ function micStatusLabel(v: VoiceText, status: MicrophoneStatus): string {
   return v.micUnknown;
 }
 
+function micStatusTone(status: MicrophoneStatus): 'neutral' | StatusTone {
+  if (status === 'granted') return 'success';
+  if (status === 'denied' || status === 'restricted') return 'warning';
+  return 'neutral';
+}
+
 export default function VoiceInputSection() {
   const { t } = useI18n();
   const v = t.voiceInput;
+  const confirm = useConfirm();
   const enabled = useVoiceInputStore((s) => s.enabled);
   const language = useVoiceInputStore((s) => s.language);
   const setEnabled = useVoiceInputStore((s) => s.setEnabled);
@@ -41,8 +56,9 @@ export default function VoiceInputSection() {
   const cancelDownload = useSpeechStore((s) => s.cancelDownload);
   const deleteModel = useSpeechStore((s) => s.deleteModel);
   const [source, setSource] = useState<SpeechDownloadSource>('auto');
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [mic, setMic] = useState<MicrophoneStatus>('unknown');
+  // One delete per question: a second answer while the first delete runs does nothing.
+  const deletingRef = useRef(false);
 
   useEffect(() => { ensureSpeechStatus(); }, []);
 
@@ -66,52 +82,66 @@ export default function VoiceInputSection() {
     { value: 'huggingface', label: v.sourceHuggingface },
   ];
 
+  // A download started from the settings window while it fades out is not what the user asked for.
+  const settingsOpen = () => useSettingsStore.getState().systemSettingsOpen;
+
+  const handleDownload = () => {
+    if (!settingsOpen()) return;
+    void downloadModel(source);
+  };
+
   const handleDelete = async () => {
-    setConfirmDelete(false);
-    await deleteModel();
-    useToastStore.getState().addToast({ type: 'success', title: v.deleted });
+    const yes = await confirm({
+      title: v.deleteModel,
+      message: format(v.modelDesc, { size: sizeText }),
+      confirmLabel: v.deleteModel,
+      tone: 'danger',
+    });
+    // The model is read again at answer time: it may have gone, or a delete may already be running.
+    if (!yes || deletingRef.current || useSpeechStore.getState().status?.model.state !== 'ready') return;
+    deletingRef.current = true;
+    try {
+      await deleteModel();
+      useToastStore.getState().addToast({ type: 'success', title: v.deleted });
+    } finally {
+      deletingRef.current = false;
+    }
   };
 
   const renderModelBody = () => {
-    if (unavailable) return <p className="text-minor text-[var(--abu-text-muted)]">{v.unavailable}</p>;
+    if (unavailable) return <p className="py-3 text-ui-sm text-label-secondary">{v.unavailable}</p>;
     if (!status || !model || model.state === 'checking') {
-      return (
-        <p className="flex items-center gap-2 text-minor text-[var(--abu-text-muted)]">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          {v.modelChecking}
-        </p>
-      );
+      return <div className="py-3"><Spinner size="sm" label={v.modelChecking} /></div>;
     }
     if (!status.runtimeAvailable) {
-      return <p className="text-minor text-[var(--abu-danger)]">{v.runtimeMissing}</p>;
+      return <div className="py-3"><InlineMessage tone="danger">{v.runtimeMissing}</InlineMessage></div>;
     }
     if (model.state === 'downloading') {
       const progress = model.download;
       const percent = progress && progress.total > 0 ? Math.min(100, (progress.received / progress.total) * 100) : 0;
+      const progressText = progress
+        ? format(v.modelDownloading, { file: progress.file, index: progress.fileIndex + 1, count: progress.fileCount })
+        : v.modelChecking;
       return (
-        <div className="space-y-2">
+        <div className="space-y-2 py-3">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-minor text-[var(--abu-text-secondary)] truncate">
-              {progress
-                ? format(v.modelDownloading, { file: progress.file, index: progress.fileIndex + 1, count: progress.fileCount })
-                : v.modelChecking}
-            </p>
-            <Button variant="ghost" size="xs" onClick={() => void cancelDownload()}>
-              <X className="h-3 w-3" />
+            <p className="truncate text-ui-sm text-label-secondary">{progressText}</p>
+            <Button variant="plain" size="sm" icon={AppIcons.close} onClick={() => void cancelDownload()}>
               {v.cancel}
             </Button>
           </div>
           <div
-            className="h-1.5 rounded-full bg-[var(--abu-bg-active)] overflow-hidden"
+            className="h-2 w-full overflow-hidden rounded-full bg-fill"
             role="progressbar"
+            aria-label={progressText}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(percent)}
           >
-            <div className="h-full bg-[var(--abu-clay)] transition-[width]" style={{ width: `${percent}%` }} />
+            <div className="h-full rounded-full bg-emphasis" style={{ width: `${percent}%` }} />
           </div>
           {progress && (
-            <p className="text-caption text-[var(--abu-text-muted)]">
+            <p className="text-caption tabular-nums text-label-tertiary">
               {format(v.modelProgress, { received: formatFileSize(progress.received), total: formatFileSize(progress.total) })}
             </p>
           )}
@@ -120,10 +150,9 @@ export default function VoiceInputSection() {
     }
     if (model.state === 'ready') {
       return (
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-minor text-[var(--abu-success)]">{v.modelReady}</p>
-          <Button variant="ghost" size="xs" className="text-[var(--abu-danger)]" onClick={() => setConfirmDelete(true)}>
-            <Trash2 className="h-3 w-3" />
+        <div className={MODEL_LINE}>
+          <Tag tone="success">{v.modelReady}</Tag>
+          <Button variant="danger" size="sm" icon={AppIcons.delete} onClick={() => void handleDelete()}>
             {v.deleteModel}
           </Button>
         </div>
@@ -131,100 +160,76 @@ export default function VoiceInputSection() {
     }
     // missing | error
     return (
-      <div className="space-y-3">
+      <>
         {model.state === 'error' && (
-          <p className="text-minor text-[var(--abu-danger)]">{describeDownloadError(v, model.error)}</p>
-        )}
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-minor text-[var(--abu-text-muted)]">{v.source}</span>
-            <div className={SETTINGS_CONTROL_WIDTH}>
-              <Select
-                variant="inline"
-                value={source}
-                options={sourceOptions}
-                onChange={(value) => setSource(value as SpeechDownloadSource)}
-              />
-            </div>
+          <div className="py-3">
+            <InlineMessage tone="danger">{describeDownloadError(v, model.error)}</InlineMessage>
           </div>
-          <Button size="sm" onClick={() => void downloadModel(source)}>
-            <Download className="h-3.5 w-3.5" />
+        )}
+        <SettingRow title={v.source}>
+          <div className={SETTING_CONTROL_WIDTH.general}>
+            <Select
+              fullWidth
+              label={v.source}
+              value={source}
+              options={sourceOptions}
+              onValueChange={(value) => setSource(value as SpeechDownloadSource)}
+            />
+          </div>
+        </SettingRow>
+        <div className={MODEL_LINE}>
+          {model.state === 'error' ? <Tag tone="danger">{v.modelError}</Tag> : <Tag>{v.modelMissing}</Tag>}
+          <Button variant="primary" size="sm" icon={AppIcons.download} onClick={handleDownload}>
             {model.state === 'error' ? v.retry : v.download}
           </Button>
         </div>
-      </div>
+      </>
     );
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <SettingsSectionHeader title={v.title} description={v.description} />
 
-      <div className={`flex items-center justify-between ${ROW}`}>
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{v.enable}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{v.enableDesc}</p>
-        </div>
-        <Toggle checked={enabled} onChange={() => setEnabled(!enabled)} size="lg" />
-      </div>
+      <SettingGroup>
+        <SettingRow title={v.enable} description={v.enableDesc} htmlFor="setting-voice-enable">
+          <Switch id="setting-voice-enable" checked={enabled} onCheckedChange={setEnabled} />
+        </SettingRow>
+      </SettingGroup>
 
-      <div className={`space-y-3 ${ROW}`}>
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1">
-            <p className="text-body text-[var(--abu-text-primary)]">{v.modelTitle}</p>
-            <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{format(v.modelDesc, { size: sizeText })}</p>
+      <SettingGroup title={v.modelTitle} description={format(v.modelDesc, { size: sizeText })}>
+        {renderModelBody()}
+      </SettingGroup>
+
+      <SettingGroup>
+        <SettingRow title={v.language} description={v.languageDesc}>
+          <div className={SETTING_CONTROL_WIDTH.general}>
+            <Select
+              fullWidth
+              label={v.language}
+              value={language}
+              options={speechLanguageOptions(v)}
+              onValueChange={(value) => setLanguage(value as SpeechLanguage)}
+            />
           </div>
-          {model && model.state !== 'checking' && (
-            <span className="text-caption text-[var(--abu-text-muted)] shrink-0">
-              {model.state === 'ready' ? v.modelReady
-                : model.state === 'downloading' ? '' : model.state === 'error' ? v.modelError : v.modelMissing}
+        </SettingRow>
+        <SettingRow
+          title={(
+            <span className="inline-flex items-center gap-2">
+              <Icon icon={AppIcons.microphone} size="sm" />
+              {v.micTitle}
+              <Tag tone={micStatusTone(mic)}>{micStatusLabel(v, mic)}</Tag>
             </span>
           )}
-        </div>
-        {renderModelBody()}
-      </div>
-
-      <div className={`flex items-center justify-between ${ROW}`}>
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{v.language}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{v.languageDesc}</p>
-        </div>
-        <div className={SETTINGS_CONTROL_WIDTH}>
-          <Select
-            variant="inline"
-            value={language}
-            options={speechLanguageOptions(v)}
-            onChange={(value) => setLanguage(value as SpeechLanguage)}
-          />
-        </div>
-      </div>
-
-      <div className={`flex items-center justify-between ${ROW}`}>
-        <div className="flex-1 mr-4">
-          <p className="flex items-center gap-2 text-body text-[var(--abu-text-primary)]">
-            <Mic className="h-4 w-4" />
-            {v.micTitle}
-            <span className="text-caption text-[var(--abu-text-muted)]">{micStatusLabel(v, mic)}</span>
-          </p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{v.micDesc}</p>
-        </div>
-        {showMicSettings && (
-          <Button variant="outline" size="sm" onClick={() => void openMicrophoneSettings()}>
-            {v.openSystemSettings}
-          </Button>
-        )}
-      </div>
-
-      <ConfirmDialog
-        open={confirmDelete}
-        title={v.deleteModel}
-        message={format(v.modelDesc, { size: sizeText })}
-        confirmText={v.deleteModel}
-        cancelText={v.cancel}
-        variant="danger"
-        onConfirm={() => void handleDelete()}
-        onCancel={() => setConfirmDelete(false)}
-      />
+          description={v.micDesc}
+        >
+          {showMicSettings && (
+            <Button variant="secondary" size="sm" onClick={() => void openMicrophoneSettings()}>
+              {v.openSystemSettings}
+            </Button>
+          )}
+        </SettingRow>
+      </SettingGroup>
     </div>
   );
 }

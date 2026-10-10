@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Dialog } from '@/components/ds/dialog';
 import { useAccountStore } from '@/core/account/accountStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { isMacOS } from '@/utils/platform';
-import { cn } from '@/lib/utils';
 import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
 import LoginPage, { type LoginPageStatus } from './LoginPage';
 
@@ -20,12 +18,19 @@ export default function AccountLoginDialog() {
   const cancel = useAccountStore((state) => state.cancel);
   const signOut = useAccountStore((state) => state.signOut);
   const { t } = useI18n();
+  // A personal sign-in was asked for from this opening and has not ended. The ref is what the
+  // handlers read; the state follows it so the window can say it has work in progress.
   const personalStartRequested = useRef(false);
+  const [personalStartPending, setPersonalStartPending] = useState(false);
+  const markPersonalStart = useCallback((requested: boolean) => {
+    personalStartRequested.current = requested;
+    setPersonalStartPending(requested);
+  }, []);
 
   const cancelAttempt = useCallback(() => {
-    personalStartRequested.current = false;
+    markPersonalStart(false);
     cancel();
-  }, [cancel]);
+  }, [cancel, markPersonalStart]);
 
   const closeDialog = useCallback(() => {
     if (
@@ -38,86 +43,62 @@ export default function AccountLoginDialog() {
 
   useEffect(() => {
     if (open && status === 'signed_in') {
-      personalStartRequested.current = false;
+      markPersonalStart(false);
       close();
     }
-  }, [close, open, status]);
+  }, [close, markPersonalStart, open, status]);
 
   useEffect(() => {
     if (!open) {
-      personalStartRequested.current = false;
+      markPersonalStart(false);
     }
-  }, [open]);
+  }, [markPersonalStart, open]);
 
   useEffect(() => {
-    if (error) personalStartRequested.current = false;
-  }, [error]);
+    if (error) markPersonalStart(false);
+  }, [error, markPersonalStart]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeDialog();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [closeDialog, open]);
-
-  if (!open || status === 'signed_in') return null;
-
-  const pageStatus: LoginPageStatus = status;
+  // The window is on screen until it is closed or the sign-in has finished. It stays on the
+  // page while it fades out; its buttons do nothing then.
+  const shown = open && status !== 'signed_in';
+  // A finished sign-in fades out on the sentence it was showing.
+  const pageStatus: LoginPageStatus = status === 'signed_in' ? 'exchanging' : status;
 
   return (
-    <div
-      data-abu-account-dialog
-      data-electron-no-drag
-      className={cn(
-        'fixed inset-0 z-[110] flex items-center justify-center bg-black/32 p-6 backdrop-blur-[2px]',
-        isMacOS() && 'pt-12',
-      )}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) closeDialog();
-      }}
+    <Dialog
+      open={shown}
+      // Closing the window cancels a sign-in that is under way, so it steps aside for an
+      // approval and returns afterwards. With no sign-in under way it closes for one, as any
+      // window does, and cancels nothing.
+      busy={status === 'awaiting_browser' || status === 'exchanging' || personalStartPending}
+      onOpenChange={(next) => { if (!next) closeDialog(); }}
+      title={t.account.loginRegister}
+      size="sm"
+      closeButton={{ 'data-abu-account-dialog-close': '' }}
+      contentProps={{ 'data-abu-account-dialog': '' }}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="abu-account-dialog-title"
-        className="relative w-full max-w-sm overflow-hidden rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-2xl"
-      >
-        <button
-          data-abu-account-dialog-close
-          onClick={closeDialog}
-          aria-label={t.common.close}
-          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg text-[var(--abu-text-tertiary)] transition-colors hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
-        >
-          <X className="h-[18px] w-[18px]" strokeWidth={1.7} />
-        </button>
-        <header className="px-6 pb-3 pt-6 text-center">
-          <h2 id="abu-account-dialog-title" className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-            {t.account.loginRegister}
-          </h2>
-        </header>
-        <LoginPage
-          status={pageStatus}
-          error={error}
-          hasAccount={account !== null}
-          onPersonalLogin={() => {
-            personalStartRequested.current = true;
-            void startPersonalLogin();
-          }}
-          onEnterpriseLogin={() => {
-            if (personalStartRequested.current) cancelAttempt();
-            close();
-            void startEnterpriseAccountLogin()
-              .then((result) => {
-                if (result === 'configuration_required') openSystemSettings('enterprise');
-              })
-              .catch(() => openSystemSettings('enterprise'));
-          }}
-          onCancel={cancelAttempt}
-          onSignOut={() => void signOut()}
-        />
-      </div>
-    </div>
+      <LoginPage
+        status={pageStatus}
+        error={error}
+        hasAccount={account !== null}
+        onPersonalLogin={() => {
+          if (!shown) return;
+          markPersonalStart(true);
+          void startPersonalLogin();
+        }}
+        onEnterpriseLogin={() => {
+          if (!shown) return;
+          if (personalStartRequested.current) cancelAttempt();
+          close();
+          void startEnterpriseAccountLogin()
+            .then((result) => {
+              if (result === 'configuration_required') openSystemSettings('enterprise');
+            })
+            .catch(() => openSystemSettings('enterprise'));
+        }}
+        onCancel={() => { if (shown) cancelAttempt(); }}
+        onSignOut={() => { if (shown) void signOut(); }}
+      />
+    </Dialog>
   );
 }

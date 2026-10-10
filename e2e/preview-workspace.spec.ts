@@ -217,17 +217,17 @@ test.describe('Preview and workspace journey', () => {
     await expect(panel).toBeVisible();
     await expect(panel.getByRole('img', { name: '图片预览' })).toBeVisible();
 
-    await panel.getByTitle('放大图片').click();
+    await panel.getByRole('button', { name: '放大图片' }).click();
     await expect(panel.getByText('125%')).toBeVisible();
 
-    await panel.getByTitle('向右旋转').click();
+    await panel.getByRole('button', { name: '向右旋转' }).click();
     await expect(panel.getByRole('img', { name: '图片预览' })).toHaveCSS(
       'transform',
       /matrix\(0, 1\.25, -1\.25, 0,/,
     );
 
     await panel.getByRole('button', { name: '新建标签页' }).click();
-    await page.getByRole('button', { name: '新建浏览器' }).click();
+    await page.getByRole('menuitem', { name: '新建浏览器' }).click();
     await expect(panel.locator('[role="tab"]').filter({ hasText: '新标签页' })).toBeVisible();
 
     await panel.locator('[role="tab"]').filter({ hasText: '图片预览' }).click();

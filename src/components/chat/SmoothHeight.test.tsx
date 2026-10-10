@@ -98,7 +98,20 @@ describe('SmoothHeight', () => {
     expect(outer.style.height).toBe('');
   });
 
-  it('does not animate when prefers-reduced-motion is set', () => {
+  it('does not animate when the app asks for reduced motion (<html data-motion="reduced">)', () => {
+    document.documentElement.dataset.motion = 'reduced';
+    try {
+      const outer = renderWrapper();
+      fireResize(300);
+      fireResize(100);
+      expect(outer.style.height).toBe('');
+      expect(outer.style.transition).toBe('');
+    } finally {
+      delete document.documentElement.dataset.motion;
+    }
+  });
+
+  it('follows the app setting, not the system media query', () => {
     vi.stubGlobal(
       'matchMedia',
       vi.fn().mockReturnValue({ matches: true }),
@@ -106,8 +119,8 @@ describe('SmoothHeight', () => {
     const outer = renderWrapper();
     fireResize(300);
     fireResize(100);
-    expect(outer.style.height).toBe('');
-    expect(outer.style.transition).toBe('');
+    expect(outer.style.height).toBe('100px');
+    expect(outer.style.transition).toContain('height');
   });
 
   it('observes nothing when disabled (settled history groups)', () => {

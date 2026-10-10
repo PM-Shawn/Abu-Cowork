@@ -37,18 +37,19 @@
   // The confirm bar / comment editor replicate `SelectionToolbar.tsx` /
   // `CommentEditor.tsx` (doc-preview selection toolbar), but this script runs
   // inside the loopback-served preview document with no access to Abu's CSS
-  // tokens or Tailwind — so the host resolves the concrete `--abu-*` values
+  // tokens or Tailwind — so the host resolves the concrete `--ds-*` values
   // at toggle time and passes them in via `labels.theme` (see
   // `PreviewPanel.tsx` `resolveInspectTheme`). These are the light-theme
-  // literals used only if that's ever absent/malformed, so the bar never
-  // renders unstyled.
+  // literals of src/styles/tokens.css (raised, fill-hover, separator, label,
+  // label-tertiary, danger), used only if that's ever absent/malformed, so
+  // the bar never renders unstyled.
   var THEME_FALLBACK = {
-    bgBase: '#fdfcf9',
-    bgHover: '#e8e5de',
-    borderSubtle: 'rgba(112,107,87,0.15)',
-    textPrimary: '#141413',
-    textTertiary: '#656358',
-    danger: '#b42318'
+    bgBase: '#ffffff',
+    bgHover: 'rgba(0, 0, 0, 0.05)',
+    borderSubtle: 'rgba(0, 0, 0, 0.09)',
+    textPrimary: '#1d1d1f',
+    textTertiary: '#66666b',
+    danger: '#c4281c'
   };
 
   var FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';

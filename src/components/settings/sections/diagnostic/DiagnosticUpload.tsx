@@ -1,13 +1,20 @@
-import { Package, Loader2, Upload, Check, Info } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
-import { cn } from '@/lib/utils';
+import { useEffect, useState, type ComponentProps } from 'react';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Popover } from '@/components/ds/popover';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Switch } from '@/components/ds/switch';
+import { TextArea } from '@/components/ds/text-area';
+import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useFeedbackDraftStore } from '@/stores/feedbackDraftStore';
-import { Toggle } from '@/components/ui/toggle';
-import { Textarea } from '@/components/ui/textarea';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { produceBundle, collectAndZip, type ProduceResult } from '@/core/diagnostic/bundle';
 import { mapPermissionsError } from '@/core/diagnostic/errorMap';
 import { isDiagnosticUploadUnavailable, uploadDiagnosticBundle } from '@/utils/consoleDiagnostic';
@@ -25,6 +32,18 @@ function screenshotFilename(index: number, mediaType: string): string {
   const ext =
     mediaType === 'image/jpeg' ? 'jpg' : mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : mediaType === 'image/gif' ? 'gif' : 'png';
   return `${String(index + 1).padStart(2, '0')}.${ext}`;
+}
+
+/** The information button beside a field title. Its words show when the pointer rests on it or
+ *  the keyboard reaches it; the panel it opens hands it the rest of its props. */
+function InfoButton({ label, ...props }: Omit<ComponentProps<'button'>, 'children' | 'aria-label'> & { label: string }) {
+  return (
+    <Tooltip content={label}>
+      <Pressable aria-label={label} className="inline-flex rounded-control text-label-tertiary hover:text-label" {...props}>
+        <Icon icon={AppIcons.info} size="sm" />
+      </Pressable>
+    </Tooltip>
+  );
 }
 
 export default function DiagnosticUpload({ onExportSuccess, description, onDescriptionChange }: Props) {
@@ -55,25 +74,6 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
   const descriptionMissing = description.trim().length === 0;
   const conversationMissing = selectedConversationIds.length === 0;
 
-  // Click-to-toggle info popover next to the "select conversations" label
-  // (a hover tooltip vanishes on mouse-out; users want it to stay open).
-  const [infoOpen, setInfoOpen] = useState(false);
-  const infoRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!infoOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (infoRef.current && !infoRef.current.contains(e.target as Node)) setInfoOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setInfoOpen(false);
-    };
-    document.addEventListener('mousedown', onDown, true);
-    document.addEventListener('keydown', onEsc);
-    return () => {
-      document.removeEventListener('mousedown', onDown, true);
-      document.removeEventListener('keydown', onEsc);
-    };
-  }, [infoOpen]);
   // Until the user manually changes the selection, it follows the active
   // conversation (defaults to attaching just the current one). Runs on mount
   // too, so after clearDraft() the selection re-syncs to the active chat.
@@ -87,6 +87,8 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
   const busy = uploadInProgress || exportInProgress;
 
   const onUpload = async () => {
+    // The settings window stays on the page while it fades out; a key press there sends nothing.
+    if (!useSettingsStore.getState().systemSettingsOpen) return;
     if (uploadInProgress || exportInProgress) return;
     if (descriptionMissing || conversationMissing) {
       setShowRequiredErrors(true);
@@ -123,6 +125,8 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
   };
 
   const onExport = async () => {
+    // Same as above: no bundle is written from a window that is closing.
+    if (!useSettingsStore.getState().systemSettingsOpen) return;
     if (exportInProgress) return;
     setExportInProgress(true);
     try {
@@ -152,32 +156,31 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
     <section className="space-y-4">
       {/* Field 1 — problem description (the primary input). */}
       <div>
-        <div className="mb-1.5 text-body font-medium text-[var(--abu-text-secondary)]">
+        <label htmlFor="diag-description" className="mb-2 block text-ui font-medium text-label-secondary">
           {t.diagnostic.descriptionLabel}
-          <span className="ml-0.5 text-[var(--abu-danger)]">*</span>
-        </div>
-        <Textarea
+          <span aria-hidden className="ml-1 text-danger">*</span>
+        </label>
+        <TextArea
+          id="diag-description"
+          rows={5}
           value={description}
           onChange={(e) => onDescriptionChange(e.target.value)}
           placeholder={t.diagnostic.uploadDescriptionPlaceholder}
-          className={cn(
-            'min-h-[104px] text-body resize-none',
-            showRequiredErrors && descriptionMissing && 'border-[var(--abu-danger)]',
-          )}
+          invalid={showRequiredErrors && descriptionMissing}
           disabled={busy}
         />
         {showRequiredErrors && descriptionMissing && (
-          <div className="mt-1 text-caption text-[var(--abu-danger)]">{t.diagnostic.descriptionRequired}</div>
+          <RequiredError>{t.diagnostic.descriptionRequired}</RequiredError>
         )}
       </div>
 
       {/* Field 2 — screenshots (label + right-aligned counter). */}
       <div>
-        <div className="mb-1.5 flex items-center justify-between">
-          <span className="text-body font-medium text-[var(--abu-text-secondary)]">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-ui font-medium text-label-secondary">
             {t.diagnostic.screenshotTitle}
           </span>
-          <span className="text-caption text-[var(--abu-text-muted)]">
+          <span className="text-caption text-label-tertiary">
             {format(t.diagnostic.screenshotCount, { n: screenshots.length })}
           </span>
         </div>
@@ -187,29 +190,19 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
       {/* Field 3 — select conversations. The info icon carries the privacy +
           limits copy so no toggles/extra lines are needed. */}
       <div>
-        <div className="mb-1.5 flex items-center gap-1.5">
-          <span className="text-body font-medium text-[var(--abu-text-secondary)]">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-ui font-medium text-label-secondary">
             {t.diagnostic.conversationPickerTitle}
-            <span className="ml-0.5 text-[var(--abu-danger)]">*</span>
+            <span aria-hidden className="ml-1 text-danger">*</span>
           </span>
-          <div ref={infoRef} className="relative flex items-center">
-            <button
-              type="button"
-              aria-label={t.diagnostic.conversationPickerInfoTooltip}
-              onClick={() => setInfoOpen((o) => !o)}
-              className={cn(
-                'transition-colors',
-                infoOpen ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)]',
-              )}
-            >
-              <Info className="h-3.5 w-3.5" />
-            </button>
-            {infoOpen && (
-              <div className="absolute z-50 left-0 top-full mt-1.5 w-[260px] p-2.5 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] shadow-md text-caption text-[var(--abu-text-secondary)] leading-relaxed">
-                {t.diagnostic.conversationPickerInfoTooltip}
-              </div>
-            )}
-          </div>
+          {/* Opens on a press and stays open: a hover tip would vanish while it is being read. */}
+          <Popover
+            align="start"
+            className="w-65"
+            trigger={<InfoButton label={t.diagnostic.conversationPickerInfoTooltip} />}
+          >
+            <p className="text-ui-sm text-label-secondary">{t.diagnostic.conversationPickerInfoTooltip}</p>
+          </Popover>
         </div>
         <ConversationPicker
           selectedIds={selectedConversationIds}
@@ -217,77 +210,65 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
           disabled={busy}
         />
         {showRequiredErrors && conversationMissing && (
-          <div className="mt-1 text-caption text-[var(--abu-danger)]">{t.diagnostic.conversationRequired}</div>
+          <RequiredError>{t.diagnostic.conversationRequired}</RequiredError>
         )}
 
         {/* Raw-text toggle — ON by default (message text is included, secrets
             still scrubbed). Off strips text down to a size placeholder. */}
-        <div className="mt-2 flex items-center justify-between py-1.5">
-          <label htmlFor="diag-include-raw" className="text-minor text-[var(--abu-text-secondary)] flex-1">
-            {t.diagnostic.exportIncludeRaw}
-          </label>
-          <Toggle checked={includeRawText} onChange={() => setIncludeRawText(!includeRawText)} size="md" />
+        <div className="mt-2 flex items-center justify-between gap-4 py-2">
+          {/* The box takes the spare width; the label is only as wide as its words, so a press
+              on the empty part of the row does not move the switch. */}
+          <div className="min-w-0 flex-1">
+            <label htmlFor="diag-include-raw" className="text-ui-sm text-label-secondary">
+              {t.diagnostic.exportIncludeRaw}
+            </label>
+          </div>
+          <Switch id="diag-include-raw" checked={includeRawText} onCheckedChange={() => setIncludeRawText(!includeRawText)} />
         </div>
-        <div className="-mt-0.5 text-caption text-[var(--abu-text-muted)] leading-relaxed">
+        <div className="text-caption text-label-tertiary">
           {t.diagnostic.exportIncludeRawHint}
         </div>
       </div>
 
       {/* ── Submit ────────────────────────────────────────────── */}
-      <div className="border-t border-[var(--abu-border)] pt-3 space-y-2">
+      <div className="space-y-2 border-t border-separator pt-3">
         {/* Auto-included-content hint */}
-        <div className="text-caption text-[var(--abu-text-muted)]">{t.diagnostic.uploadAutoIncludedHint}</div>
+        <div className="text-caption text-label-tertiary">{t.diagnostic.uploadAutoIncludedHint}</div>
 
-        {/* Primary: upload to console */}
-        <button
-          type="button"
-          onClick={onUpload}
-          disabled={uploadInProgress || exportInProgress}
-          className={cn(
-            'mt-1 w-full py-2.5 rounded-lg text-body font-medium transition-colors flex items-center justify-center gap-2',
-            uploadDone
-              ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)] cursor-default'
-              : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
-          )}
-        >
-          {uploadInProgress ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {t.diagnostic.uploadInProgress}
-            </>
-          ) : uploadDone ? (
-            <>
-              <Check className="h-4 w-4" />
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Primary: upload to console */}
+          <Button variant="primary" icon={AppIcons.upload} onClick={onUpload} busy={busy}>
+            {t.diagnostic.uploadButton}
+          </Button>
+          {/* Secondary: export offline bundle */}
+          <Button variant="secondary" icon={AppIcons.bundle} onClick={onExport} busy={busy}>
+            {t.diagnostic.exportButton}
+          </Button>
+        </div>
+
+        {/* What the form is doing, or has just done. The line keeps its height while it is
+            empty, so nothing below it moves when the words appear. */}
+        <div className="flex min-h-5 items-center">
+          {uploadInProgress && <Spinner label={t.diagnostic.uploadInProgress} />}
+          {!uploadInProgress && exportInProgress && <Spinner label={t.diagnostic.exportInProgress} />}
+          {!busy && uploadDone && (
+            <span role="status" className="inline-flex items-center gap-2 text-ui text-label-secondary">
+              <StatusIcon tone="success" size="sm" />
               {t.diagnostic.uploadSuccess}
-            </>
-          ) : (
-            <>
-              <Upload className="h-4 w-4" />
-              {t.diagnostic.uploadButton}
-            </>
+            </span>
           )}
-        </button>
-
-        {/* Secondary: export offline bundle */}
-        <button
-          type="button"
-          onClick={onExport}
-          disabled={exportInProgress || uploadInProgress}
-          className="w-full py-2 flex items-center justify-center gap-1.5 text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {exportInProgress ? (
-            <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t.diagnostic.exportInProgress}
-            </>
-          ) : (
-            <>
-              <Package className="h-3.5 w-3.5" />
-              {t.diagnostic.exportButton}
-            </>
-          )}
-        </button>
+        </div>
       </div>
     </section>
+  );
+}
+
+// A required field that was left empty, said under the field after an upload was tried.
+function RequiredError({ children }: { children: string }) {
+  return (
+    <p className="mt-1 flex items-center gap-1 text-ui-sm text-danger">
+      <StatusIcon tone="danger" size="sm" />
+      {children}
+    </p>
   );
 }

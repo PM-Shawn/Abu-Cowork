@@ -2,15 +2,16 @@ import { initBuiltinBrowserRuntime, cleanupBuiltinBrowserRuntime } from '../brow
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { bootstrapPluginUpdates } from '@/stores/pluginStore';
 import { initPluginTeamsSync } from '@/core/team/pluginTeamsSync';
-import { initInstalledAppsSync } from '@/core/app/appSync';
+import { initAddedAppsSync } from '@/core/app/appSync';
 
 /** The private browser is independent of user plugin recovery and market IO. */
 export function startCapabilityRuntimes(): () => void {
   let stopped = false;
   initBuiltinBrowserRuntime();
-  // Plugin teams and apps follow the plugin records the recovery below publishes.
+  // Plugin teams follow the plugin records the recovery below publishes; apps
+  // have records of their own.
   const stopPluginTeams = initPluginTeamsSync();
-  const stopInstalledApps = initInstalledAppsSync();
+  initAddedAppsSync();
   // Plugin recovery and MCP startup must not share a FATE — one unreadable
   // plugin journal used to keep every user-configured connector offline for
   // the whole session. But MCP startup must still share an ORDER with it:
@@ -32,7 +33,6 @@ export function startCapabilityRuntimes(): () => void {
   return () => {
     stopped = true;
     stopPluginTeams();
-    stopInstalledApps();
     void cleanupBuiltinBrowserRuntime();
     cleanupMCPStoreSync();
   };

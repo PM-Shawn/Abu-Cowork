@@ -3,8 +3,10 @@ import { Button } from '@/components/ds/button';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { ContextMenu } from '@/components/ds/context-menu';
 import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { FullscreenSurface } from '@/components/ds/fullscreen';
+import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ds/menu';
+import { Menu, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { Popover } from '@/components/ds/popover';
 import { Select } from '@/components/ds/select';
 import { TextField } from '@/components/ds/text-field';
@@ -12,12 +14,22 @@ import { Tooltip } from '@/components/ds/tooltip';
 import { Section } from './Section';
 import { PREVIEW_MODELS } from './specimen';
 
+// Enough lines to be taller than a small window, so the dialog scrolls inside.
+const SCROLL_LINES = Array.from({ length: 30 }, (_, index) => `Line ${index + 1} of 30`);
+
 export function OverlaySection() {
   const confirm = useConfirm();
   const [renameOpen, setRenameOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [popoverModel, setPopoverModel] = useState('opus');
   const [answer, setAnswer] = useState('none yet');
+  const [menuTheme, setMenuTheme] = useState('system');
+  const [dialogModel, setDialogModel] = useState('sonnet');
+  const [pageModel, setPageModel] = useState('opus');
+  const [busyOpen, setBusyOpen] = useState(false);
+  const [busyDraft, setBusyDraft] = useState('');
+  const [approval, setApproval] = useState<'none' | 'first' | 'second'>('none');
+  const [fullscreen, setFullscreen] = useState(false);
 
   const askToDelete = async () => {
     const confirmed = await confirm({
@@ -45,7 +57,19 @@ export function OverlaySection() {
           <MenuLabel>Task</MenuLabel>
           <MenuItem icon={AppIcons.rename} shortcut="⌘R">Rename</MenuItem>
           <MenuItem icon={AppIcons.copy}>Copy link</MenuItem>
+          <MenuItem icon={AppIcons.history} description="Before AI edit · 2.1 KB">Restore 10:24:31</MenuItem>
           <MenuItem icon={AppIcons.share} disabled>Share (not available)</MenuItem>
+          <MenuSub icon={AppIcons.folder} label="Move to">
+            <MenuItem icon={AppIcons.folder}>Launch plan</MenuItem>
+            <MenuItem icon={AppIcons.folder}>Weekly report</MenuItem>
+          </MenuSub>
+          <MenuSub icon={AppIcons.appearance} label="Appearance">
+            <MenuRadioGroup value={menuTheme} onValueChange={setMenuTheme}>
+              <MenuRadioItem value="system">System</MenuRadioItem>
+              <MenuRadioItem value="light">Light</MenuRadioItem>
+              <MenuRadioItem value="dark">Dark</MenuRadioItem>
+            </MenuRadioGroup>
+          </MenuSub>
           <MenuSeparator />
           <MenuItem icon={AppIcons.delete} tone="danger">Delete</MenuItem>
         </Menu>
@@ -91,9 +115,128 @@ export function OverlaySection() {
         >
           <TextField aria-label="Folder path" placeholder="Folder path" />
         </Dialog>
+        <Dialog
+          size="lg"
+          title="Search"
+          titleHidden
+          trigger={<Button>Dialog without a visible title</Button>}
+        >
+          <TextField aria-label="Search tasks" placeholder="Search tasks..." />
+        </Dialog>
+        <Dialog
+          size="lg"
+          title="Dialog with a select inside"
+          description="The list and the menu open above the dialog; the lines scroll inside it."
+          closeButton
+          trigger={<Button>Dialog with a select inside</Button>}
+          footer={<DialogClose asChild><Button variant="primary">Done</Button></DialogClose>}
+        >
+          <div className="flex items-center gap-3">
+            <Select label="Model inside dialog" value={dialogModel} onValueChange={setDialogModel} options={PREVIEW_MODELS} />
+            <Menu trigger={<Button icon={AppIcons.more}>Menu inside dialog</Button>}>
+              <MenuItem icon={AppIcons.rename}>Rename</MenuItem>
+              <MenuSub icon={AppIcons.folder} label="Move to">
+                <MenuItem icon={AppIcons.folder}>Launch plan</MenuItem>
+              </MenuSub>
+            </Menu>
+            <Tooltip content="Show a tooltip above the dialog"><Button>Hover inside dialog</Button></Tooltip>
+          </div>
+          <div className="mt-3 flex flex-col gap-1">
+            {SCROLL_LINES.map((line) => <p key={line}>{line}</p>)}
+          </div>
+        </Dialog>
+        <Dialog
+          size="page"
+          title="Settings"
+          titleHidden
+          closeButton
+          trigger={<Button>Settings-size dialog</Button>}
+        >
+          <div className="flex h-full">
+            <div className="w-56 shrink-0 border-r border-separator p-3 text-ui-sm text-label-secondary">Navigation</div>
+            <div className="min-w-0 flex-1 p-6">
+              <p className="text-title text-label">Settings-size dialog</p>
+              <div className="mt-4">
+                <Select label="Model inside the settings-size dialog" value={pageModel} onValueChange={setPageModel} options={PREVIEW_MODELS} />
+              </div>
+            </div>
+          </div>
+        </Dialog>
         <Button variant="danger" onClick={() => { void askToDelete(); }}>Confirm dialog</Button>
         <Button onClick={() => { void askToArchive(); }}>Confirm (default tone)</Button>
         <span className="text-ui-sm text-label-secondary">{`Last answer: ${answer}`}</span>
+        <Button onClick={() => setBusyOpen(true)}>Busy window</Button>
+        <Dialog
+          open={busyOpen}
+          onOpenChange={setBusyOpen}
+          busy
+          title="Busy window"
+          description="Work is in flight here. An approval makes this window step aside; it returns as it was."
+          footer={<DialogClose asChild><Button>Close</Button></DialogClose>}
+        >
+          <div className="flex flex-col gap-3">
+            <TextField aria-label="Typed while busy" placeholder="Type something" value={busyDraft} onChange={(event) => setBusyDraft(event.target.value)} />
+            <Button onClick={() => setApproval('first')}>Approval arrives</Button>
+          </div>
+        </Dialog>
+        <Dialog
+          open={approval === 'first'}
+          onOpenChange={(open) => { if (!open) setApproval('none'); }}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          closeButton
+          title="Run this command?"
+          description="Only its own buttons, Escape and the close button answer an approval."
+          initialFocus={(content) => content.querySelector('[data-approval-cancel]')}
+          footer={(
+            <>
+              <Button data-approval-cancel="" onClick={() => setApproval('none')}>Cancel</Button>
+              <Button onClick={() => setRenameOpen(true)}>Open a dialog</Button>
+              <Button variant="primary" onClick={() => setApproval('second')}>Next approval</Button>
+            </>
+          )}
+        />
+        <Dialog
+          open={approval === 'second'}
+          onOpenChange={(open) => { if (!open) setApproval('none'); }}
+          layer="approval"
+          role="alertdialog"
+          outsidePress="ignore"
+          title="Allow this folder?"
+          initialFocus={(content) => content.querySelector('[data-approval-cancel]')}
+          footer={<Button data-approval-cancel="" onClick={() => setApproval('none')}>Deny</Button>}
+        />
+        <Dialog
+          size="viewer"
+          title="Viewer window"
+          titleHidden
+          closeButton
+          trigger={<Button>Viewer window</Button>}
+        >
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <div role="img" aria-label="Placeholder image" className="flex h-full max-h-80 w-full max-w-xl items-center justify-center rounded-panel bg-fill text-label-tertiary">
+              <Icon icon={AppIcons.imageGen} size="lg" />
+            </div>
+          </div>
+        </Dialog>
+        {/* The block stays where it is in the page; the surface shows the same elements over the window. */}
+        <FullscreenSurface
+          open={fullscreen}
+          onExit={() => setFullscreen(false)}
+          label="Fullscreen surface"
+          layer
+          scrim
+          initialFocus={(surface) => surface.querySelector<HTMLElement>('[data-fullscreen-toggle]')}
+          className="flex items-center justify-center p-8"
+        >
+          <div className="flex items-center gap-3 rounded-panel border border-separator bg-raised px-3 py-2">
+            <span className="text-ui-sm text-label-secondary">{fullscreen ? 'Shown over the window, in place.' : 'A block that can fill the window.'}</span>
+            <Button data-fullscreen-toggle="" onClick={() => setFullscreen((value) => !value)}>
+              {fullscreen ? 'Exit fullscreen' : 'Fullscreen surface'}
+            </Button>
+          </div>
+        </FullscreenSurface>
       </div>
     </Section>
   );

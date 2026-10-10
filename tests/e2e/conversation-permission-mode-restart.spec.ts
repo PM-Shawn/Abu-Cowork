@@ -24,6 +24,7 @@ import {
   configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
@@ -41,8 +42,6 @@ import {
 const PROVIDER = { permissionMode: 'standard', supportsTools: true } as const;
 const MODE_STANDARD = '请求批准';
 const MODE_AUTONOMOUS = '完全自主';
-/** A phrase only the 「完全自主」 row of the chip's list carries. */
-const AUTONOMOUS_ROW_TEXT = '系统红线始终禁止';
 const CONFIRM_DIALOG = /^(操作确认|Confirm Action)$/;
 const CANCEL_BUTTON = /^(取消|Cancel)$/;
 const STOP_BUTTON = /^(停止|Stop)$/;
@@ -175,17 +174,17 @@ async function launch(root: ElectronDataRoot, configure: boolean): Promise<Page>
 
 /**
  * The composer's permission chip. Its accessible name is exactly the mode's
- * label; the rows of its open list carry the label plus the mode's description,
- * so `exact` keeps the two apart.
+ * label; the options of its open menu carry the same name, so the chip is
+ * looked up inside the toolbar.
  */
 function permissionChip(page: Page, label: string) {
   return page.getByTestId('composer-toolbar').getByRole('button', { name: label, exact: true });
 }
 
-/** Open the chip's list and pick the row whose description carries `rowText`. */
-async function pickPermissionMode(page: Page, currentLabel: string, rowText: string): Promise<void> {
+/** Open the chip's menu and pick the mode named `targetLabel`. */
+async function pickPermissionMode(page: Page, currentLabel: string, targetLabel: string): Promise<void> {
   await permissionChip(page, currentLabel).click();
-  await page.locator('button').filter({ hasText: rowText }).click();
+  await page.getByRole('menuitemradio', { name: targetLabel, exact: true }).click();
 }
 
 async function send(page: Page, text: string): Promise<void> {
@@ -202,9 +201,9 @@ async function sendAndAwaitReply(page: Page, text: string, reply: string): Promi
 
 /** The sidebar starts collapsed once a conversation is open; expand it if so. */
 async function ensureSidebar(page: Page): Promise<void> {
-  const showSidebar = page.getByTitle('显示侧栏', { exact: true });
+  const showSidebar = page.getByRole('button', { name: '显示侧栏', exact: true });
   if (await showSidebar.isVisible()) await showSidebar.click();
-  await expect(page.getByTitle('显示侧栏', { exact: true })).toHaveCount(0);
+  await expect(showSidebar).toHaveCount(0);
 }
 
 async function openConversation(page: Page, title: string): Promise<void> {
@@ -277,7 +276,7 @@ test.describe.serial('#549 P2b per-conversation permission mode — real Electro
 
     // Pick 「完全自主」 in this conversation: the chip reads it and the
     // conversation's row of index.json carries it.
-    await pickPermissionMode(page, MODE_STANDARD, AUTONOMOUS_ROW_TEXT);
+    await pickPermissionMode(page, MODE_STANDARD, MODE_AUTONOMOUS);
     await expect(permissionChip(page, MODE_AUTONOMOUS)).toBeVisible();
     await expect.poll(
       () => indexEntry(dataRoot!, marker)?.permissionMode,
@@ -345,7 +344,7 @@ test.describe.serial('#549 P2b per-conversation permission mode — real Electro
     await send(page, fresh);
     await expect(page.getByRole('heading', { name: CONFIRM_DIALOG })).toBeVisible({ timeout: READY_TIMEOUT });
     expect(fs.existsSync(sentinelDefault), 'the default mode holds the command at the dialog').toBe(true);
-    await page.getByRole('button', { name: CANCEL_BUTTON }).click();
+    await pressWhenSettled(page.getByRole('button', { name: CANCEL_BUTTON }));
     await expect(page.getByText(replyDefault, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     expect(fs.existsSync(sentinelDefault), 'cancelling leaves the file where it was').toBe(true);
     expectCommandResult(taskRequests(mock).at(-1)!.body, commandDefault, '[用户取消了此操作]');
@@ -384,12 +383,14 @@ test.describe.serial('#549 P2b per-conversation permission mode — real Electro
     await openConversation(page, marker);
     await expect(permissionChip(page, MODE_STANDARD)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText(replies[0], { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    // Silently: no dialog, and no toast. ToastContainer
-    // (src/components/common/ToastContainer.tsx) renders its fixed
-    // `role="status"` region only while a toast is up, so an absent region is
+    // Silently: no dialog, and no toast. The notification region
+    // (src/components/ds/toaster.tsx, mounted by ToasterMount) is always on
+    // the page and holds one list item per toast, so a region with no item is
     // the DOM's way of saying nothing was announced.
     await expect(page.getByRole('heading', { name: CONFIRM_DIALOG })).toHaveCount(0);
-    await expect(page.locator('div.fixed[role="status"][aria-live="polite"]')).toHaveCount(0);
+    const notifications = page.getByRole('region', { name: /^(通知|Notifications)$/ });
+    await expect(notifications).toHaveCount(1);
+    await expect(notifications.getByRole('listitem')).toHaveCount(0);
 
     // The conversation works as one that never had a mode of its own, and the
     // next index write leaves the refused value out of the file.

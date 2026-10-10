@@ -58,6 +58,7 @@ const {
   attachEditContextMenu,
   configureApplicationMenu,
   mainWindowPlatformOptions,
+  windowMaterial,
 } = require('./windowChrome.cjs');
 const {
   configureRuntimeObservability,
@@ -229,6 +230,7 @@ function showTransitionSuccess(appInstance, win) {
 }
 
 function createWindow(transitionWindow = null) {
+  const material = windowMaterial();
   const win = new BrowserWindow({
     show: false,
     width: 1200,
@@ -237,7 +239,7 @@ function createWindow(transitionWindow = null) {
     // macOS overlays the traffic lights. Windows uses Window Controls Overlay:
     // the OS still owns caption buttons/Snap, while Abu renders the icon/menu
     // in the same row and keeps business controls in the row below.
-    ...mainWindowPlatformOptions(process.platform, nativeTheme.shouldUseDarkColors),
+    ...mainWindowPlatformOptions(process.platform, nativeTheme.shouldUseDarkColors, material),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -248,7 +250,11 @@ function createWindow(transitionWindow = null) {
       // belongs to whatever production Abu is installed on the machine. Passed
       // as a launch argument (not IPC) because the renderer needs it
       // synchronously while assembling the authorization URL.
-      additionalArguments: [`--abu-deep-link-scheme=${getActiveScheme()}`],
+      additionalArguments: [
+        `--abu-deep-link-scheme=${getActiveScheme()}`,
+        // The page needs this before its first paint to decide whether `desk` is translucent.
+        `--abu-window-material=${material}`,
+      ],
     },
   });
   if (process.platform === 'win32') {

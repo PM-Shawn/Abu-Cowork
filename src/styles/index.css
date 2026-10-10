@@ -1,7 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
 @import "./tokens.css";
+/* Tailwind generates a class only for the files it scans, and by itself it scans this checkout.
+   The enterprise overlay names its interface files in this file (`@source`), reached through the
+   build alias; the personal build reads the stub's file, which names none. */
+@import "@enterprise-modules/interface-classes.css";
 
 /* Test fixtures and docs are not UI: keep their class-name examples out of the build. */
 @source not "../../**/*.test.{ts,tsx,mjs,cjs}";
@@ -9,6 +12,9 @@
 @source not "../../tests";
 @source not "../../scripts";
 @source not "../../eslint.config.js";
+/* Neither desktop host draws a page with these classes; their pages bring their own styles. */
+@source not "../../electron";
+@source not "../../src-tauri";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -83,10 +89,10 @@
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    font-family: var(--ds-font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-size: 14px; /* reading default — aligned with --text-body token (13→14: matches TRAE/WorkBuddy chat body) */
+    font-size: 14px; /* reading default, the size of --text-body */
     line-height: 1.6;
   }
 
@@ -95,7 +101,7 @@
 @layer base {
   /* Monospace for code/terminal areas */
   .font-mono, pre, code {
-    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", "Fira Code", Menlo, monospace;
+    font-family: var(--ds-font-mono);
   }
 }
 
@@ -106,14 +112,20 @@
   -webkit-user-select: text !important;
 }
 
-/* Doc reference留痕 + native selection share the same soft clay fill so
-   dragging-to-select and the committed reference look identical. */
+/* A committed doc reference and a live selection share the neutral selection color, so dragging-to-select and the added reference look identical. */
 ::highlight(abu-reference) {
-  background-color: rgba(217, 119, 87, 0.13);
+  background-color: var(--ds-selection);
   border-radius: 2px;
 }
 [data-doc-selection-layer] ::selection {
-  background-color: rgba(217, 119, 87, 0.13);
+  background-color: var(--ds-selection);
+}
+/* White paper (Word, PDF and slide pages) stays white in every appearance, so it takes the dark page selection. */
+[data-page-canvas] ::selection {
+  background-color: var(--ds-page-selection);
+}
+[data-page-canvas] ::highlight(abu-reference) {
+  background-color: var(--ds-page-selection);
 }
 
 /* Scrollbar - default subtle style */
@@ -136,7 +148,7 @@
    removed ~1s after scrolling stops. This makes every native scroll surface
    behave the same (macOS-style overlay) instead of some showing a persistent
    light scrollbar and others not. Radix ScrollArea hides the native bar itself;
-   `.overlay-scroll` / `.dark-scrollbar` rules below still layer on top. */
+   the `.overlay-scroll` rules below still layer on top. */
 .is-scrolling::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.12);
 }
@@ -161,70 +173,6 @@
 .overlay-scroll.is-scrolling::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.22);
 }
-
-/* Dark area scrollbar (sidebar, tool outputs) */
-.dark-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.dark-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
-}
-
-/* Animations */
-.sidebar-transition {
-  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.toolbox-slide-in {
-  animation: toolbox-enter 0.25s cubic-bezier(0.4, 0, 0.2, 1) both;
-}
-
-@keyframes toolbox-enter {
-  from {
-    opacity: 0;
-    transform: translateX(-40px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.animate-in {
-  animation: fadeIn 0.15s ease-out forwards;
-}
-
-.streaming-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  background: var(--abu-clay);
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  animation: blink 1s steps(2) infinite;
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
-@keyframes bounce {
-  0%, 60%, 100% { transform: translateY(0); }
-  30% { transform: translateY(-3px); }
-}
-
-.typing-dot {
-  animation: bounce 1.4s ease-in-out infinite;
-}
-.typing-dot:nth-child(2) { animation-delay: 0.15s; }
-.typing-dot:nth-child(3) { animation-delay: 0.3s; }
 
 /* Expand/collapse for the live step timeline / streaming thinking pane.
    Grid trick (same pattern claude.ai ships): grid-template-rows 0fr↔1fr on a
@@ -298,281 +246,15 @@
   100% { opacity: 0; }
 }
 
-/* shadcn theme */
-@theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
-}
-
-/* === Abu Typography Scale — three-binding font-size tokens ===
-   Tailwind v4 --text-* namespace: each size ships a paired line-height and
-   font-weight, so one utility (e.g. `text-body`) sets font-size + line-height
-   + font-weight together — TRAE's "three-binding" convention.
-   Scale: reverse-engineered from TRAE (reading default 13px, headings 600).
-   Weights: 400 regular / 500 medium (body emphasis via `font-medium`) / 600 semibold. */
-@theme {
-  /* Body ramp — reading area, weight 400 (emphasis = add `font-medium`) */
-  --text-caption: 11px;
-  --text-caption--line-height: 16px;
-  --text-caption--font-weight: 400;
-
-  --text-minor: 12px;
-  --text-minor--line-height: 18px;
-  --text-minor--font-weight: 400;
-
-  --text-body: 14px; /* ← single reading default (13→14: matches TRAE/WorkBuddy chat body) */
-  --text-body--line-height: 22px;
-  --text-body--font-weight: 400;
-
-  /* Heading ramp — TRAE heading-*, weight 600 capped (no 700) */
-  --text-h-xs: 14px; /* body-sized bold inline heading — tracks --text-body */
-  --text-h-xs--line-height: 22px;
-  --text-h-xs--font-weight: 600;
-
-  --text-h-sm: 16px;
-  --text-h-sm--line-height: 24px;
-  --text-h-sm--font-weight: 600;
-
-  --text-h-md: 20px;
-  --text-h-md--line-height: 28px;
-  --text-h-md--font-weight: 600;
-
-  --text-h-lg: 22px;
-  --text-h-lg--line-height: 30px;
-  --text-h-lg--font-weight: 600;
-
-  --text-h-xl: 24px;
-  --text-h-xl--line-height: 32px;
-  --text-h-xl--font-weight: 600;
-}
-
-/* Light theme - Claude Design System tokens */
-:root {
-  --radius: 0.5rem;
-
-  /* === Abu Design Tokens (aligned with Claude Desktop) === */
-
-  /* Background hierarchy (warm neutral) */
-  --abu-bg-canvas:  #f2f0e9;   /* recessed "desk" — root bg, panel gaps, sidebar */
-  --abu-bg-base:    #fdfcf9;   /* raised content surface (chat + preview cards) */
-  --abu-bg-subtle:  #f8f8f4;   /* secondary surfaces */
-  --abu-bg-muted:   #f5f3ee;   /* cards, input fields */
-  --abu-bg-hover:   #e8e5de;   /* hover state */
-  --abu-bg-active:  #f0eee6;   /* selected / active state */
-  --abu-bg-pressed: #e5e2d9;   /* pressed / toggle-off */
-
-  /* Text hierarchy */
-  --abu-text-primary:     #141413;   /* headings, emphasis (Claude text-000) */
-  --abu-text-secondary:   #3d3929;   /* body text (Claude text-200) */
-  --abu-text-tertiary:    #656358;   /* captions, labels (Claude text-400) */
-  --abu-text-muted:       #726f65;   /* subtle hints/secondary — AA ≥4.5:1 (was #9a9689, failed AA) */
-  --abu-text-placeholder: #b8b5ab;   /* placeholder */
-
-  /* Border */
-  --abu-border:        #e8e4dd;
-  --abu-border-hover:  #d0cdc6;
-  --abu-border-subtle: rgba(112, 107, 87, 0.15);
-
-  /* Elevation — card-on-canvas panels */
-  --abu-radius-panel: 1rem;  /* 16px — panel cards (matches TRAE --solo-panel-border-radius) */
-  --abu-shadow-card:  0 1px 3px rgba(60, 56, 40, 0.04), 0 1px 2px rgba(60, 56, 40, 0.06);
-
-  /* Brand / Accent — Clay */
-  --abu-clay:       #d97757;
-  --abu-clay-hover: #c86a4d;
-  --abu-clay-ring:  rgba(217, 119, 87, 0.3);  /* focus ring */
-  --abu-clay-bg:    rgba(217, 119, 87, 0.1);  /* light tint backgrounds */
-  --abu-clay-bg-15: rgba(217, 119, 87, 0.15); /* IM badge, tags */
-  --abu-clay-5:     rgba(217, 119, 87, 0.05); /* selected option bg */
-  --abu-clay-20:    rgba(217, 119, 87, 0.2);  /* emphasized badges */
-  --abu-clay-40:    rgba(217, 119, 87, 0.4);  /* avatar ring hover */
-  --abu-clay-50:    rgba(217, 119, 87, 0.5);  /* medium emphasis */
-  --abu-clay-60:    rgba(217, 119, 87, 0.6);  /* borders, stronger emphasis */
-
-  /* Semantic status + link (light) — foreground is AA-safe (≥4.5:1) for
-     text/icon/border; -bg is a soft translucent tint of the vivid hue for
-     badges/callout backgrounds. Reverse-engineered from TRAE/WorkBuddy/Claude/
-     ChatGPT color systems (2026-07). Abu's brand is clay/orange, so links get
-     their own blue token (not the accent) — mirrors WorkBuddy (teal brand). */
-  --abu-danger:      #b42318;   /* fg: text/icon/border, AA-safe */
-  --abu-danger-solid:#dc2626;   /* solid fill: dots, filled buttons (white text ~4.5:1) */
-  --abu-danger-bg:   color-mix(in srgb, #ef4444 12%, transparent); /* soft tint */
-  --abu-warning:     #b45309;
-  --abu-warning-solid:#d97706;
-  --abu-warning-bg:  color-mix(in srgb, #f59e0b 14%, transparent);
-  --abu-success:     #15803d;
-  --abu-success-solid:#16a34a;
-  --abu-success-bg:  color-mix(in srgb, #22c55e 14%, transparent);
-  --abu-info:        #0e63c4;
-  --abu-info-solid:  #2563eb;
-  --abu-info-bg:     color-mix(in srgb, #3b82f6 12%, transparent);
-  --abu-link:        #2563eb;
-  --abu-link-hover:  #1d4ed8;
-
-  /* Legacy aliases (shadcn compat — will phase out) */
-  --claude-bg: var(--abu-bg-base);
-  --claude-text-100: var(--abu-text-primary);
-  --claude-text-200: var(--abu-text-secondary);
-  --claude-text-400: var(--abu-text-tertiary);
-  --claude-text-500: #737163;
-  --claude-border: var(--abu-border-subtle);
-  --claude-clay: var(--abu-clay);
-  --placeholder-foreground: var(--abu-text-placeholder);
-
-  /* HSL tokens from Claude */
-  --background: 48 33.3% 97.1%;
-  --foreground: 60 2.6% 7.6%;
-
-  --card: 0 0% 100%;
-  --card-foreground: 60 2.6% 7.6%;
-
-  --popover: 0 0% 100%;
-  --popover-foreground: 60 2.6% 7.6%;
-
-  --primary: 15 63.1% 59.6%;
-  --primary-foreground: 0 0% 100%;
-
-  --secondary: 53 28.6% 94.5%;
-  --secondary-foreground: 60 2.5% 23.3%;
-
-  --muted: 48 25% 92.2%;
-  --muted-foreground: 51 3.1% 43.7%;
-
-  --accent: 50 20.7% 88.6%;
-  --accent-foreground: 60 2.5% 23.3%;
-
-  --destructive: 0 56.2% 45.4%;
-
-  --border: 30 3.3% 11.8% / 0.08;
-  --input: 30 3.3% 11.8% / 0.08;
-  --ring: 15 63.1% 59.6%;
-
-  --sidebar: 48 33.3% 97.1%;
-  --sidebar-foreground: 60 2.6% 7.6%;
-  --sidebar-primary: 15 63.1% 59.6%;
-  --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 53 28.6% 94.5%;
-  --sidebar-accent-foreground: 60 2.5% 23.3%;
-  --sidebar-border: 30 3.3% 11.8% / 0.08;
-  --sidebar-ring: 15 63.1% 59.6%;
-}
-
-.dark {
-  /* === Abu Design Tokens — Dark overrides === */
-  --abu-bg-canvas:  #121110;   /* recessed desk (darkest) */
-  --abu-bg-base:    #1f1d1b;   /* raised content surface (lighter = elevated) */
-  --abu-bg-subtle:  #161513;
-  --abu-bg-muted:   #211f1c;
-  --abu-bg-hover:   #2c2a26;
-  --abu-bg-active:  #272522;
-  --abu-bg-pressed: #1e1c1a;
-
-  --abu-text-primary:     #f0ede8;
-  --abu-text-secondary:   #c5c0b7;
-  --abu-text-tertiary:    #8a8479;
-  --abu-text-muted:       #8d877e;   /* subtle hints/secondary — AA ≥4.5:1 (was #5e5a54, failed AA) */
-  --abu-text-placeholder: #706c66;
-
-  /* Semantic status + link (dark) — lighter shades read AA on the dark page;
-     -bg is a stronger translucent tint (dark needs more alpha). */
-  --abu-danger:      #f87171;
-  --abu-danger-solid:#ef4444;
-  --abu-danger-bg:   color-mix(in srgb, #f87171 18%, transparent);
-  --abu-warning:     #fbbf24;
-  --abu-warning-solid:#f59e0b;
-  --abu-warning-bg:  color-mix(in srgb, #fbbf24 16%, transparent);
-  --abu-success:     #4ade80;
-  --abu-success-solid:#22c55e;
-  --abu-success-bg:  color-mix(in srgb, #4ade80 16%, transparent);
-  --abu-info:        #60a5fa;
-  --abu-info-solid:  #3b82f6;
-  --abu-info-bg:     color-mix(in srgb, #60a5fa 16%, transparent);
-  --abu-link:        #60a5fa;
-  --abu-link-hover:  #93c5fd;
-
-  --abu-border:        #302e2b;
-  --abu-border-hover:  #403d39;
-  --abu-border-subtle: rgba(255, 250, 240, 0.08);
-
-  /* Elevation — dark: shadow deeper, --abu-radius-panel inherited from :root */
-  --abu-shadow-card:  0 1px 3px rgba(0, 0, 0, 0.4);
-
-  --placeholder-foreground: #666666;
-
-  --background: 0 0% 7%;
-  --foreground: 0 0% 93%;
-
-  --card: 0 0% 10%;
-  --card-foreground: 0 0% 93%;
-
-  --popover: 0 0% 10%;
-  --popover-foreground: 0 0% 93%;
-
-  --primary: 15 75% 58%;
-  --primary-foreground: 0 0% 100%;
-
-  --secondary: 0 0% 14%;
-  --secondary-foreground: 0 0% 88%;
-
-  --muted: 0 0% 14%;
-  --muted-foreground: 0 0% 55%;
-
-  --accent: 0 0% 16%;
-  --accent-foreground: 0 0% 88%;
-
-  --destructive: 0 62% 55%;
-
-  --border: 0 0% 16%;
-  --input: 0 0% 16%;
-  --ring: 15 75% 58%;
-
-  --sidebar: 0 0% 5%;
-  --sidebar-foreground: 0 0% 93%;
-  --sidebar-primary: 15 75% 58%;
-  --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 0 0% 12%;
-  --sidebar-accent-foreground: 0 0% 88%;
-  --sidebar-border: 0 0% 16%;
-  --sidebar-ring: 15 75% 58%;
-}
-
 @layer base {
   body {
-    @apply bg-background text-foreground;
+    /* The window material (bg-desk) must show through. */
+    @apply bg-transparent text-label;
   }
 
   input::placeholder,
   textarea::placeholder {
-    color: var(--placeholder-foreground);
+    color: var(--ds-label-placeholder);
   }
 }
 
@@ -597,84 +279,3 @@
     word-break: break-word;
   }
 }
-
-/* Claude button hover animation */
-.btn-claude-primary {
-  transition: transform 150ms cubic-bezier(0.165, 0.85, 0.45, 1);
-  will-change: transform;
-  backface-visibility: hidden;
-}
-.btn-claude-primary:hover:not(:disabled) {
-  transform: scaleY(1.015) scaleX(1.005);
-}
-.btn-claude-primary:active:not(:disabled) {
-  transform: scale(0.985);
-}
-
-/* Ghost button animation */
-.btn-ghost {
-  transition: background-color 300ms cubic-bezier(0.165, 0.85, 0.45, 1), color 300ms;
-}
-
-/* Subtle white/8 utility for dark sidebar */
-.bg-white\/8 {
-  background-color: rgba(255, 255, 255, 0.08);
-}
-
-.bg-white\/12 {
-  background-color: rgba(255, 255, 255, 0.12);
-}
-
-.border-white\/8 {
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-/* Range slider with filled track */
-input[type="range"].slider-filled {
-  -webkit-appearance: none;
-  appearance: none;
-  height: 6px;
-  border-radius: 999px;
-  background: linear-gradient(
-    to right,
-    var(--abu-clay) 0%,
-    var(--abu-clay) var(--slider-progress, 0%),
-    var(--abu-bg-hover) var(--slider-progress, 0%),
-    var(--abu-bg-hover) 100%
-  );
-  cursor: pointer;
-}
-input[type="range"].slider-filled::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: white;
-  border: 2px solid var(--abu-clay);
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-}
-input[type="range"].slider-filled::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: white;
-  border: 2px solid var(--abu-clay);
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-}
-
-/* Scenario Guide */
-.scenario-guide {
-  animation: fadeIn 0.25s ease-out forwards;
-}
-
-.scenario-prompt-item {
-  animation: fadeIn 0.2s ease-out forwards;
-  opacity: 0;
-}
-.scenario-prompt-item:nth-child(1) { animation-delay: 0.05s; }
-.scenario-prompt-item:nth-child(2) { animation-delay: 0.1s; }
-.scenario-prompt-item:nth-child(3) { animation-delay: 0.15s; }
-.scenario-prompt-item:nth-child(4) { animation-delay: 0.2s; }

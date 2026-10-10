@@ -6,7 +6,7 @@
  * opens the team panel, where the member can be removed or replaced.
  */
 
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render as renderBare, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TeamRouteContext } from '@/core/team/leaderRoute';
 
@@ -33,18 +33,22 @@ vi.mock('@/stores/pluginStore', async () => {
   return { usePluginStore: create(() => ({ activationReady: true })) };
 });
 
-const teamRef: { team: TeamRouteContext | null } = { team: null };
+const teamRef: { team: TeamRouteContext | null; status: Record<string, string> } = { team: null, status: {} };
 vi.mock('@/components/team/useTeamDispatches', () => ({
   memberDefByName: (_team: TeamRouteContext, name: string) => ({ name, description: '' }),
   useTeamDispatches: () => ({
     team: teamRef.team,
     dispatches: [],
-    members: (teamRef.team?.members ?? []).map((m) => ({ agent: m.name, status: 'idle', dispatches: [], latest: undefined })),
+    members: (teamRef.team?.members ?? []).map((m) => ({ agent: m.name, status: teamRef.status[m.name] ?? 'idle', dispatches: [], latest: undefined })),
   }),
 }));
 
+import type { ReactElement } from 'react';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { usePluginStore } from '@/stores/pluginStore';
 import TeamMemberBar from './TeamMemberBar';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
 
 function ctx(extra: Partial<TeamRouteContext>): TeamRouteContext {
   return {
@@ -59,6 +63,7 @@ describe('TeamMemberBar — unresolved members', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localeRef.current = 'zh-CN';
+    teamRef.status = {};
     usePluginStore.setState({ activationReady: true });
   });
 
@@ -126,5 +131,82 @@ describe('TeamMemberBar — unresolved members', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Collapse member bar' }));
     expect(screen.getByTestId('team-member-bar')).toHaveTextContent('1 expert');
     expect(screen.queryByTestId('team-member-bar')?.textContent).not.toContain('1 experts');
+  });
+
+  it('marks the unavailable pill with the danger shape, not a colored border', () => {
+    teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone'] });
+    render(<TeamMemberBar conversationId="c1" />);
+    const pill = screen.getByTestId('team-member-bar-unresolved');
+    expect(pill.querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
+    expect(pill).toHaveClass('border-separator');
+  });
+});
+
+describe('TeamMemberBar — member status marks', () => {
+  beforeEach(() => {
+    localeRef.current = 'zh-CN';
+    usePluginStore.setState({ activationReady: true });
+    teamRef.team = ctx({
+      members: ['a', 'b', 'c', 'd'].map((name) => ({ name, description: '', systemPrompt: '', filePath: `/${name}` })),
+    });
+    teamRef.status = { a: 'running', b: 'running', c: 'completed', d: 'error' };
+  });
+
+  it('gives running members a still loading icon, finished a check, failed a cross', () => {
+    const { container } = render(<TeamMemberBar conversationId="c1" />);
+    const chip = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}`) });
+    for (const name of ['a', 'b']) {
+      expect(chip(name).querySelector('svg.lucide-loader-circle')).toHaveClass('text-label-tertiary');
+      expect(chip(name).querySelector('svg.lucide-loader-circle')).not.toHaveClass('motion-safe:animate-spin');
+    }
+    expect(chip('c').querySelector('svg.lucide-circle-check')).toHaveClass('text-success');
+    expect(chip('d').querySelector('svg.lucide-circle-x')).toHaveClass('text-danger');
+    expect(container.innerHTML).not.toContain('--abu-');
+  });
+
+  it('turns one spinner for the whole bar, outside every chip, named by how many run', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    const bar = screen.getByTestId('team-member-bar');
+    expect(bar.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(bar.querySelector('button [data-ds-spinner]')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('2 运行中');
+  });
+
+  it('keeps the one spinner outside the collapsed pill, whose name stays the member count', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: '收起成员条' }));
+    const bar = screen.getByTestId('team-member-bar');
+    expect(bar.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(bar.querySelector('button [data-ds-spinner]')).toBeNull();
+    expect(screen.getByRole('button', { name: '4 位专家' })).toBeInTheDocument();
+  });
+
+  it('puts the spinner after the chips, so the leader chip stays first while someone runs', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    const bar = screen.getByTestId('team-member-bar');
+    expect(bar.lastElementChild).toHaveAttribute('role', 'status');
+    expect(bar.firstElementChild).toHaveTextContent('lead');
+  });
+
+  it('puts the spinner last in the collapsed bar as well', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: '收起成员条' }));
+    expect(screen.getByTestId('team-member-bar').lastElementChild).toHaveAttribute('role', 'status');
+  });
+
+  it('turns nothing once no member runs', () => {
+    teamRef.status = { c: 'completed', d: 'error' };
+    render(<TeamMemberBar conversationId="c1" />);
+    expect(screen.getByTestId('team-member-bar').querySelector('[data-ds-spinner]')).toBeNull();
+  });
+
+  it('keeps a still loading icon on the collapsed pill while someone runs', () => {
+    render(<TeamMemberBar conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: '收起成员条' }));
+    const pill = screen.getByRole('button', { name: '4 位专家' });
+    const icon = pill.querySelector('svg.lucide-loader-circle');
+    expect(icon).toHaveClass('text-label-tertiary');
+    expect(icon).not.toHaveClass('motion-safe:animate-spin');
+    expect(pill.querySelector('[data-ds-spinner]')).toBeNull();
   });
 });

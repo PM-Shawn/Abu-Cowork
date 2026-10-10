@@ -52,6 +52,19 @@ describe('AgentStatusStrip (Bug 1: 死寂可见)', () => {
     expect(screen.queryByText(/Compacting|压缩/)).not.toBeInTheDocument();
   });
 
+  it('shows its words inside the one design-system spinner', () => {
+    useChatStore.setState({
+      conversations: { c1: { ...baseConv, isCompressing: true } },
+      agentStates: new Map(),
+    });
+    const { container } = render(<AgentStatusStrip conversationId="c1" />);
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(/Compacting|压缩/);
+    expect(status.querySelector('[data-ds-spinner]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(container.querySelector('.animate-spin:not([data-ds-spinner])')).toBeNull();
+  });
+
   it('does not show another conversation retry state', () => {
     useChatStore.setState({
       conversations: { c1: baseConv, c2: { ...baseConv, id: 'c2' } },

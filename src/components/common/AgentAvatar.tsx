@@ -1,4 +1,5 @@
-import { Bot } from 'lucide-react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import { cn } from '@/lib/utils';
 import abuAvatar from '@/assets/abu-avatar.png';
 import { AVATAR_ICON_MAP, AVATAR_TINT_MAP, parseAvatarValue } from '@/core/team/avatarPresets';
@@ -7,24 +8,25 @@ export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const AVATAR_SIZE = {
-  // `xl` / `2xl` fill the grey slots the avatar used to sit inside: the 40px
-  // ToolCard slot and the 56px ToolDetailModal header slot. Their emoji sizes
-  // are the slot's own font size (`text-h-md` / `text-h-xl`), so a legacy emoji
-  // avatar keeps the size it had when the slot rendered it.
-  box: { xs: 'h-4 w-4', sm: 'h-5 w-5', md: 'h-7 w-7', lg: 'h-8 w-8', xl: 'h-10 w-10', '2xl': 'h-14 w-14' },
-  icon: { xs: 'h-3 w-3', sm: 'h-3.5 w-3.5', md: 'h-4 w-4', lg: 'h-[18px] w-[18px]', xl: 'h-5 w-5', '2xl': 'h-6 w-6' },
-  emoji: { xs: 'text-caption', sm: 'text-minor', md: 'text-body', lg: 'text-body', xl: 'text-h-md', '2xl': 'text-h-xl' },
+  // `xl` / `2xl` fill the grey slots the avatar sits inside: the 40px ToolCard
+  // slot and the 56px ToolDetailModal header slot. Their emoji sizes are the
+  // slot's own font size (`text-title` / `text-title-lg`), so a legacy emoji
+  // avatar has the size the slot gives one it renders itself.
+  box: { xs: 'size-4', sm: 'size-5', md: 'size-7', lg: 'size-8', xl: 'size-10', '2xl': 'size-14' },
+  // The design-system icon has three sizes (14 / 16 / 20px).
+  icon: { xs: 'sm', sm: 'sm', md: 'md', lg: 'md', xl: 'md', '2xl': 'lg' },
+  emoji: { xs: 'text-caption', sm: 'text-ui-sm', md: 'text-ui', lg: 'text-ui', xl: 'text-title', '2xl': 'text-title-lg' },
 } as const satisfies Record<'box' | 'icon' | 'emoji', Record<AvatarSize, string>>;
 const BOX = AVATAR_SIZE.box;
 const ICON = AVATAR_SIZE.icon;
 const EMOJI = AVATAR_SIZE.emoji;
 
 /** The corner radius that lets an avatar fill its slot without leaving grey
- *  corners showing: the 56px detail header slot is `rounded-2xl`, every other
- *  slot `rounded-lg`. */
+ *  corners showing: the 56px detail header slot is `rounded-panel`, every other
+ *  slot `rounded-control`. */
 // eslint-disable-next-line react-refresh/only-export-components
 export function avatarRadius(size: AvatarSize): string {
-  return size === '2xl' ? 'rounded-2xl' : 'rounded-lg';
+  return size === '2xl' ? 'rounded-panel' : 'rounded-control';
 }
 
 /** Any avatar an expert carries is rendered, whatever its source: the built-in
@@ -64,7 +66,8 @@ export default function AgentAvatar({ agent, size = 'md', round = false, classNa
     return <img src={abuAvatar} alt="Abu" className={cn(BOX[size], shape, 'object-cover shrink-0', className)} />;
   }
   const parsed = parseAvatarValue(agentAvatarValue(agent) ?? undefined);
-  const AvatarIcon = parsed.kind === 'icon' ? AVATAR_ICON_MAP[parsed.icon] : Bot;
+  const avatarIcon = parsed.kind === 'icon' ? AVATAR_ICON_MAP[parsed.icon] : AppIcons.agent;
+  // The tint is the expert's identity colour (data, like the brand mark), not a status colour.
   const tint = parsed.kind === 'icon' ? AVATAR_TINT_MAP[parsed.tint] : undefined;
   return (
     <span
@@ -72,9 +75,9 @@ export default function AgentAvatar({ agent, size = 'md', round = false, classNa
       data-testid="agent-avatar"
       data-avatar-kind={parsed.kind}
       style={tint ? { backgroundColor: tint.bg, color: tint.fg } : undefined}
-      className={cn(BOX[size], shape, 'inline-flex shrink-0 items-center justify-center bg-[var(--abu-bg-muted)] leading-none select-none', className)}
+      className={cn(BOX[size], shape, 'inline-flex shrink-0 select-none items-center justify-center bg-fill leading-none', className)}
     >
-      {parsed.kind === 'emoji' ? <span className={EMOJI[size]}>{parsed.emoji}</span> : <AvatarIcon className={cn(ICON[size], !tint && 'text-[var(--abu-text-muted)]')} strokeWidth={1.75} />}
+      {parsed.kind === 'emoji' ? <span className={EMOJI[size]}>{parsed.emoji}</span> : <Icon icon={avatarIcon} size={ICON[size]} className={tint ? undefined : 'text-label-tertiary'} />}
     </span>
   );
 }

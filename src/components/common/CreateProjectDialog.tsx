@@ -1,20 +1,29 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useI18n } from '@/i18n';
-import { useProjectStore } from '@/stores/projectStore';
-import { useChatStore } from '@/stores/chatStore';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
-import { useSettingsStore } from '@/stores/settingsStore';
-import { usePreviewStore } from '@/stores/previewStore';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { exists, mkdir } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
-import { FolderPlus, FolderOpen, X, ArrowLeft } from 'lucide-react';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Button } from '@/components/ui/button';
+import { focusComposer } from '@/components/chat/composerFocus';
+import { Button, IconButton } from '@/components/ds/button';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { lastInputWasPointer } from '@/components/ds/input-modality';
+import { Pressable } from '@/components/ds/pressable';
+import { TextArea } from '@/components/ds/text-area';
+import { TextField } from '@/components/ds/text-field';
+import { focusIsOnWindow } from '@/components/toolbox/cardFocus';
+import { useI18n } from '@/i18n';
+import { useChatStore } from '@/stores/chatStore';
+import { usePreviewStore } from '@/stores/previewStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { getBaseName, joinPath } from '@/utils/pathUtils';
 
 type CreateMode = 'scratch' | 'existing-folder';
+// A place the focus goes to after the window has changed what it shows.
+type FocusTarget = CreateMode | 'name' | 'folder';
 
 interface CreateProjectDialogProps {
   open: boolean;
@@ -29,6 +38,9 @@ interface CreateProjectDialogProps {
   presetFolder?: string;
   presetName?: string;
 }
+
+const FIELD_LABEL = 'mb-1 block text-ui-sm font-medium text-label-secondary';
+const MODE_CARD = 'flex w-full items-center gap-3 rounded-panel border border-separator p-4 text-left hover:bg-fill-hover';
 
 export default function CreateProjectDialog({
   open,
@@ -48,12 +60,64 @@ export default function CreateProjectDialog({
 
   // Form fields
   const [projectName, setProjectName] = useState('');
-  const [projectDesc, setProjectDesc] = useState('');
   const [instructions, setInstructions] = useState('');
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [defaultProjectsDir, setDefaultProjectsDir] = useState('');
-  const [hasAbuConfig, setHasAbuConfig] = useState(false);
+  // The project that already uses the chosen folder, as found when the folder was chosen. It is
+  // not looked up again: once this window has created the project, the folder is its own.
   const [conflictProject, setConflictProject] = useState<string | null>(null);
+  // The folder that was found to hold a project configuration.
+  const [folderWithConfig, setFolderWithConfig] = useState<string | null>(null);
+  // From the press on Create until the project exists or the attempt has failed.
+  const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
+  // This opening ended with a project: the page has moved to it, and the control that opened
+  // the window may be gone, so the focus goes to the message field.
+  const created = useRef(false);
+  useLayoutEffect(() => {
+    if (open) created.current = false;
+  }, [open]);
+
+  // Waits for the layers that are on the page to leave it, then puts the focus in the message
+  // field unless a control has it. The layer that leaves last would return the focus to the
+  // control that opened this window, which the new project has taken off the page.
+  const pageWatch = useRef<MutationObserver | null>(null);
+  const mounted = useRef(false);
+  const focusComposerOncePageIsFree = () => {
+    pageWatch.current?.disconnect();
+    pageWatch.current = null;
+    // An owner took the window off the page in the step that closed it, and this hook runs
+    // afterwards: nothing would end a watch started now.
+    if (!mounted.current) return;
+    // True once no layer is on the page; the focus is then placed and the watch ends.
+    const settle = () => {
+      if (document.querySelector('[data-ds-layer]:not([hidden])')) return false;
+      if (focusIsOnWindow()) focusComposer();
+      return true;
+    };
+    if (settle()) return;
+    const watch = new MutationObserver(() => {
+      if (!settle()) return;
+      watch.disconnect();
+      pageWatch.current = null;
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
+    pageWatch.current = watch;
+  };
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      pageWatch.current?.disconnect();
+    };
+  }, []);
+
+  const nameId = useId();
+  const instructionsId = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLButtonElement>(null);
+  const scratchRef = useRef<HTMLButtonElement>(null);
+  const existingRef = useRef<HTMLButtonElement>(null);
 
   // Get default projects directory
   useEffect(() => {
@@ -62,35 +126,46 @@ export default function CreateProjectDialog({
     }).catch(() => {});
   }, []);
 
-  // Reset on open. When preset values are supplied (promote-to-project
-  // hint path), skip mode selection and prefill the form so the user
-  // only has to confirm the name.
-  useEffect(() => {
-    if (!open) return;
-    setMode(presetMode ?? null);
-    setProjectName(presetName ?? '');
-    setProjectDesc('');
-    setInstructions('');
-    setSelectedFolder(presetFolder ?? null);
-    setHasAbuConfig(false);
-    setConflictProject(null);
-  }, [open, presetMode, presetFolder, presetName]);
-
-  // Check folder for config and conflicts
-  useEffect(() => {
-    if (!selectedFolder) {
-      setHasAbuConfig(false);
-      setConflictProject(null);
-      return;
+  // The form starts over each time the window opens, and keeps what it showed while it fades
+  // out. When preset values are supplied (promote-to-project hint path), it skips the mode
+  // selection and is prefilled, so the user only has to confirm the name.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setMode(presetMode ?? null);
+      setProjectName(presetName ?? '');
+      setInstructions('');
+      setSelectedFolder(presetFolder ?? null);
+      setConflictProject(presetFolder ? getProjectByWorkspace(presetFolder)?.name ?? null : null);
+      setFolderWithConfig(null);
     }
-    const existing = getProjectByWorkspace(selectedFolder);
-    setConflictProject(existing?.name ?? null);
-    const abuPath = joinPath(selectedFolder, '.abu', 'ABU.md');
-    exists(abuPath).then(setHasAbuConfig).catch(() => setHasAbuConfig(false));
-  }, [selectedFolder, getProjectByWorkspace]);
+  }
+
+  // Check the folder for a project configuration
+  useEffect(() => {
+    if (!selectedFolder) return;
+    let current = true;
+    exists(joinPath(selectedFolder, '.abu', 'ABU.md'))
+      .then((found) => { if (current) setFolderWithConfig(found ? selectedFolder : null); })
+      .catch(() => { if (current) setFolderWithConfig(null); });
+    return () => { current = false; };
+  }, [selectedFolder]);
+  const hasAbuConfig = selectedFolder !== null && folderWithConfig === selectedFolder;
+
+  // A step replaces the control that had the focus: the focus goes to the first control of the
+  // new step, and on the way back to the way that was chosen.
+  const focusNext = useRef<FocusTarget | null>(null);
+  useLayoutEffect(() => {
+    const next = focusNext.current;
+    if (!next) return;
+    focusNext.current = null;
+    const target = { name: nameRef, folder: folderRef, scratch: scratchRef, 'existing-folder': existingRef }[next].current;
+    target?.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+  });
 
   // Handle folder selection for "existing-folder" mode
-  const handleSelectFolder = useCallback(async () => {
+  const handleSelectFolder = async () => {
     try {
       const selected = await openDialog({
         directory: true,
@@ -100,245 +175,220 @@ export default function CreateProjectDialog({
       if (selected) {
         const folderPath = selected as string;
         setSelectedFolder(folderPath);
+        setConflictProject(getProjectByWorkspace(folderPath)?.name ?? null);
         if (!projectName) setProjectName(getBaseName(folderPath));
       }
     } catch (err) {
       console.error('Failed to open folder dialog:', err);
     }
-  }, [t.project.selectFolder, projectName]);
+  };
+
+  const chooseScratch = () => {
+    focusNext.current = 'name';
+    setMode('scratch');
+  };
+  const chooseExistingFolder = () => {
+    focusNext.current = 'folder';
+    setMode('existing-folder');
+    handleSelectFolder();
+  };
+  const backToModes = () => {
+    focusNext.current = mode;
+    setMode(null);
+  };
 
   // Create project
   const handleCreate = async () => {
+    // The window keeps rendering while it fades out: nothing is created then. One press creates once.
+    if (!open || creatingRef.current) return;
     if (!projectName.trim()) return;
 
-    let finalFolder = selectedFolder;
+    creatingRef.current = true;
+    setCreating(true);
+    try {
+      let finalFolder = selectedFolder;
 
-    // For "scratch" mode: create new folder
-    if (mode === 'scratch') {
-      const dir = defaultProjectsDir;
-      finalFolder = joinPath(dir, projectName.trim());
-      try {
-        await mkdir(finalFolder, { recursive: true });
-        // Create .abu/ dir with instructions if provided
-        if (instructions.trim()) {
-          const abuDir = joinPath(finalFolder, '.abu');
-          await mkdir(abuDir, { recursive: true });
-          const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-          await writeTextFile(joinPath(abuDir, 'ABU.md'), instructions.trim());
+      // For "scratch" mode: create new folder
+      if (mode === 'scratch') {
+        const dir = defaultProjectsDir;
+        finalFolder = joinPath(dir, projectName.trim());
+        try {
+          await mkdir(finalFolder, { recursive: true });
+          // Create .abu/ dir with instructions if provided
+          if (instructions.trim()) {
+            const abuDir = joinPath(finalFolder, '.abu');
+            await mkdir(abuDir, { recursive: true });
+            const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+            await writeTextFile(joinPath(abuDir, 'ABU.md'), instructions.trim());
+          }
+        } catch (err) {
+          console.error('Failed to create project folder:', err);
+          return;
         }
-      } catch (err) {
-        console.error('Failed to create project folder:', err);
-        return;
       }
+
+      if (!finalFolder) return;
+
+      // The folder is there (made above, or chosen): the project is created even when the window
+      // was closed meanwhile. A folder that was made stays on disk without a project only when
+      // its instructions could not be written (the return above).
+      const projectId = createProject({
+        name: projectName.trim(),
+        workspacePath: finalFolder,
+      });
+
+      // Auto-assign existing conversations with the same workspace
+      const matchingConvs = Object.values(conversationIndex).filter(
+        (c) => c.workspacePath === finalFolder && !c.projectId
+      );
+      for (const conv of matchingConvs) {
+        setConversationProject(conv.id, projectId);
+      }
+
+      // Switch to new project context: clear active conversation → welcome screen with workspace set
+      useChatStore.getState().startNewConversation();
+      useWorkspaceStore.getState().setWorkspace(finalFolder);
+      useSettingsStore.getState().setViewMode('chat');
+      usePreviewStore.getState().setFileTreeMode(true);
+      created.current = true;
+      onClose();
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
     }
-
-    if (!finalFolder) return;
-
-    const projectId = createProject({
-      name: projectName.trim(),
-      description: projectDesc.trim() || undefined,
-      workspacePath: finalFolder,
-    });
-
-    // Auto-assign existing conversations with the same workspace
-    const matchingConvs = Object.values(conversationIndex).filter(
-      (c) => c.workspacePath === finalFolder && !c.projectId
-    );
-    for (const conv of matchingConvs) {
-      setConversationProject(conv.id, projectId);
-    }
-
-    // Switch to new project context: clear active conversation → welcome screen with workspace set
-    useChatStore.getState().startNewConversation();
-    useWorkspaceStore.getState().setWorkspace(finalFolder);
-    useSettingsStore.getState().setViewMode('chat');
-    usePreviewStore.getState().setFileTreeMode(true);
-    onClose();
   };
-
-  // Escape to close
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [open, onClose]);
-
-  if (!open) return null;
 
   // Whether form is valid for creation
   const canCreate = mode === 'scratch'
     ? !!projectName.trim()
     : !!projectName.trim() && !!selectedFolder && !conflictProject;
 
-  return (
-    <div
-      data-electron-no-drag
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[80vh] overflow-y-auto animate-in zoom-in-95 duration-150">
-        {/* Header */}
-        <div className="flex items-center gap-3 px-6 pt-6 pb-2">
-          {mode !== null && !presetMode && (
-            <button
-              onClick={() => setMode(null)}
-              className="p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-lg"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </button>
-          )}
-          <div className="flex-1">
-            <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">
-              {t.project.createTitle}
-            </h2>
-            {mode === null && (
-              <p className="text-body text-[var(--abu-text-tertiary)] mt-0.5">
-                {t.project.createDesc}
-              </p>
-            )}
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-lg"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+  const dirty = projectName !== (presetName ?? '') || instructions !== '' || selectedFolder !== (presetFolder ?? null);
 
-        <div className="px-6 pb-6">
-          {/* ========== Mode Selection ========== */}
-          {mode === null && (
-            <div className="space-y-2 mt-4">
-              <button
-                onClick={() => setMode('scratch')}
-                className="w-full flex items-center gap-3 p-4 rounded-xl border border-[var(--abu-border)] hover:border-[var(--abu-clay)] hover:bg-[var(--abu-clay-bg)] transition-colors text-left"
-              >
-                <FolderPlus className="h-5 w-5 text-[var(--abu-text-tertiary)] shrink-0" />
-                <div>
-                  <div className="text-body font-medium text-[var(--abu-text-primary)]">{t.project.modeFromScratch}</div>
-                  <div className="text-minor text-[var(--abu-text-tertiary)] mt-0.5">{t.project.modeFromScratchDesc}</div>
-                </div>
-              </button>
-              <button
-                onClick={() => { setMode('existing-folder'); handleSelectFolder(); }}
-                className="w-full flex items-center gap-3 p-4 rounded-xl border border-[var(--abu-border)] hover:border-[var(--abu-clay)] hover:bg-[var(--abu-clay-bg)] transition-colors text-left"
-              >
-                <FolderOpen className="h-5 w-5 text-[var(--abu-text-tertiary)] shrink-0" />
-                <div>
-                  <div className="text-body font-medium text-[var(--abu-text-primary)]">{t.project.modeExistingFolder}</div>
-                  <div className="text-minor text-[var(--abu-text-tertiary)] mt-0.5">{t.project.modeExistingFolderDesc}</div>
-                </div>
-              </button>
-            </div>
-          )}
-
-          {/* ========== Mode: From Scratch ========== */}
-          {mode === 'scratch' && (
-            <div className="space-y-4 mt-4">
-              {/* Name */}
-              <div>
-                <label className="text-body font-medium text-[var(--abu-text-secondary)] mb-1.5 block">
-                  {t.project.nameLabel} *
-                </label>
-                <Input
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  placeholder={t.project.namePlaceholder}
-                  autoFocus
-                />
-              </div>
-
-              {/* Instructions */}
-              <div>
-                <label className="text-body font-medium text-[var(--abu-text-secondary)] mb-1.5 block">
-                  Instructions
-                </label>
-                <Textarea
-                  value={instructions}
-                  onChange={(e) => setInstructions(e.target.value)}
-                  placeholder="Tell Abu how to work in this project (optional)"
-                  className="min-h-[80px] resize-none"
-                />
-              </div>
-
-
-              {/* Project location (read-only) */}
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--abu-bg-subtle)] text-minor text-[var(--abu-text-tertiary)]">
-                <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">
-                  {projectName.trim()
-                    ? joinPath(defaultProjectsDir, projectName.trim())
-                    : defaultProjectsDir}
-                </span>
-              </div>
-
-              {/* Actions */}
-              <div className="flex items-center justify-end gap-3 pt-2">
-                <Button variant="ghost" onClick={onClose}>{t.project.cancel}</Button>
-                <Button onClick={handleCreate} disabled={!canCreate}>{t.project.create}</Button>
-              </div>
-            </div>
-          )}
-
-          {/* ========== Mode: Existing Folder ========== */}
-          {mode === 'existing-folder' && (
-            <div className="space-y-4 mt-4">
-              {/* Folder picker */}
-              <div>
-                <label className="text-body font-medium text-[var(--abu-text-secondary)] mb-1.5 block">
-                  {t.project.selectFolder}
-                </label>
-                <button
-                  onClick={handleSelectFolder}
-                  className="w-full flex items-center gap-2 p-3 rounded-lg border border-[var(--abu-border)] hover:border-[var(--abu-clay)] transition-colors text-left"
-                >
-                  <FolderOpen className="h-4 w-4 text-[var(--abu-clay)] shrink-0" />
-                  <span className="text-body text-[var(--abu-text-primary)] truncate flex-1">
-                    {selectedFolder || t.project.selectFolder}
-                  </span>
-                </button>
-              </div>
-
-              {/* Status */}
-              {selectedFolder && (
-                <div className="space-y-2">
-                  {hasAbuConfig && (
-                    <div className="px-3 py-2 rounded-lg bg-[var(--abu-clay-bg)] text-body text-[var(--abu-clay)]">
-                      ✓ {t.project.detectedConfig}
-                    </div>
-                  )}
-                  {conflictProject && (
-                    <div className="px-3 py-2 rounded-lg bg-[var(--abu-danger-bg)] text-body text-[var(--abu-danger)]">
-                      ✗ {t.project.folderConflict.replace('{name}', conflictProject)}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Name */}
-              <div>
-                <label className="text-body font-medium text-[var(--abu-text-secondary)] mb-1.5 block">
-                  {t.project.nameLabel} *
-                </label>
-                <Input
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  placeholder={t.project.namePlaceholder}
-                />
-              </div>
-
-
-              {/* Actions */}
-              <div className="flex items-center justify-end gap-3 pt-2">
-                <Button variant="ghost" onClick={onClose}>{t.project.cancel}</Button>
-                <Button onClick={handleCreate} disabled={!canCreate}>{t.project.create}</Button>
-              </div>
-            </div>
-          )}
-
-        </div>
-      </div>
+  const nameField = (
+    <div>
+      <label htmlFor={nameId} className={FIELD_LABEL}>{t.project.nameLabel} *</label>
+      <TextField
+        id={nameId}
+        ref={nameRef}
+        data-project-name
+        className="w-full"
+        value={projectName}
+        onChange={(e) => setProjectName(e.target.value)}
+        placeholder={t.project.namePlaceholder}
+      />
     </div>
+  );
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={t.project.createTitle}
+      description={mode === null ? t.project.createDesc : undefined}
+      size="md"
+      closeButton
+      dirty={dirty}
+      // Closing the window would not stop the create: it stays with it until the project exists.
+      busy={creating}
+      // Opened with the folder already chosen, it starts on the name.
+      initialFocus={(content) => content.querySelector<HTMLElement>('[data-project-name]')}
+      onCloseAutoFocus={(event) => {
+        const wasCreated = created.current;
+        created.current = false;
+        if (!wasCreated) return;
+        // Another layer has the focus (an approval the window stood aside for): the message
+        // field gets it once that layer has left.
+        if (event.defaultPrevented) focusComposerOncePageIsFree();
+        else if (focusComposer()) event.preventDefault();
+      }}
+      header={mode !== null && !presetMode ? (
+        <IconButton icon={AppIcons.back} label={t.schedule.backToList} onClick={backToModes} />
+      ) : undefined}
+      footer={mode !== null ? (
+        <>
+          <DialogClose asChild><Button variant="plain">{t.project.cancel}</Button></DialogClose>
+          <Button variant="primary" disabled={!canCreate} busy={creating} onClick={handleCreate}>{t.project.create}</Button>
+        </>
+      ) : undefined}
+    >
+      {/* ========== Mode Selection ========== */}
+      {mode === null && (
+        <div className="flex flex-col gap-2">
+          <Pressable ref={scratchRef} onClick={chooseScratch} className={MODE_CARD}>
+            <Icon icon={AppIcons.newFolder} size="lg" className="text-label-tertiary" />
+            <span className="min-w-0">
+              <span className="block text-ui font-medium text-label">{t.project.modeFromScratch}</span>
+              <span className="mt-1 block text-ui-sm text-label-tertiary">{t.project.modeFromScratchDesc}</span>
+            </span>
+          </Pressable>
+          <Pressable ref={existingRef} onClick={chooseExistingFolder} className={MODE_CARD}>
+            <Icon icon={AppIcons.folderOpen} size="lg" className="text-label-tertiary" />
+            <span className="min-w-0">
+              <span className="block text-ui font-medium text-label">{t.project.modeExistingFolder}</span>
+              <span className="mt-1 block text-ui-sm text-label-tertiary">{t.project.modeExistingFolderDesc}</span>
+            </span>
+          </Pressable>
+        </div>
+      )}
+
+      {/* ========== Mode: From Scratch ========== */}
+      {mode === 'scratch' && (
+        <div className="flex flex-col gap-4">
+          {nameField}
+
+          <div>
+            <label htmlFor={instructionsId} className={FIELD_LABEL}>Instructions</label>
+            <TextArea
+              id={instructionsId}
+              className="min-h-20 w-full"
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+              placeholder="Tell Abu how to work in this project (optional)"
+            />
+          </div>
+
+          {/* Project location (read-only) */}
+          <div className="flex items-center gap-2 rounded-control bg-fill px-3 py-2 text-ui-sm text-label-tertiary">
+            <Icon icon={AppIcons.folderOpen} size="sm" />
+            <span className="truncate">
+              {projectName.trim()
+                ? joinPath(defaultProjectsDir, projectName.trim())
+                : defaultProjectsDir}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ========== Mode: Existing Folder ========== */}
+      {mode === 'existing-folder' && (
+        <div className="flex flex-col gap-4">
+          <div>
+            <div className={FIELD_LABEL}>{t.project.selectFolder}</div>
+            <Pressable
+              ref={folderRef}
+              onClick={handleSelectFolder}
+              className="flex w-full items-center gap-2 rounded-control border border-control-border bg-field px-3 py-2 text-left hover:bg-fill-hover"
+            >
+              <Icon icon={AppIcons.folderOpen} size="sm" className="text-label-secondary" />
+              <span className="min-w-0 flex-1 truncate text-ui text-label">
+                {selectedFolder || t.project.selectFolder}
+              </span>
+            </Pressable>
+          </div>
+
+          {(hasAbuConfig || conflictProject) && (
+            <div className="flex flex-col gap-2">
+              {hasAbuConfig && <InlineMessage tone="success">{t.project.detectedConfig}</InlineMessage>}
+              {conflictProject && (
+                <InlineMessage tone="danger">{t.project.folderConflict.replace('{name}', conflictProject)}</InlineMessage>
+              )}
+            </div>
+          )}
+
+          {nameField}
+        </div>
+      )}
+    </Dialog>
   );
 }

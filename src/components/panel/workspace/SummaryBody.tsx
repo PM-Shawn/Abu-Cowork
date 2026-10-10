@@ -1,4 +1,4 @@
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { ScrollArea } from '@/components/ds/scroll-area';
 import TaskProgressPanel from '../TaskProgressPanel';
 import WorkspaceSection from '../WorkspaceSection';
 import ContextSection from '../ContextSection';
@@ -14,7 +14,7 @@ export default function SummaryBody() {
       <div className="p-4 space-y-5">
         <TaskProgressPanel />
         <WorkspaceSection />
-        <div className="border-t border-[var(--abu-border)]" />
+        <div className="border-t border-separator" />
         <ContextSection />
       </div>
     </ScrollArea>

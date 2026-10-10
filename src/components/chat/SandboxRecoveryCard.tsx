@@ -1,5 +1,9 @@
 import { useState } from 'react';
-import { AlertTriangle, ArrowUpRight, ChevronRight, Loader2, MonitorCog, ShieldCheck } from 'lucide-react';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Spinner } from '@/components/ds/spinner';
 import type { SandboxRecoveryAction, SandboxRecoveryPayload } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -12,9 +16,6 @@ import { format, useI18n } from '@/i18n';
 
 const RECOVERY_STOP_TIMEOUT_MS = 5_000;
 const RECOVERY_STOP_POLL_MS = 50;
-
-const ACTION_BUTTON_BASE =
-  'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-minor font-medium transition-colors disabled:cursor-default disabled:opacity-60';
 
 async function waitForPreviousRunToStop(conversationId: string): Promise<void> {
   const deadline = Date.now() + RECOVERY_STOP_TIMEOUT_MS;
@@ -66,26 +67,26 @@ export default function SandboxRecoveryCard({
         ? t.sandbox.appAutomationStarted
         : t.sandbox.appAutomationEnqueued;
     return (
-      <div className="my-2 flex items-start gap-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] px-3 py-2 text-minor text-[var(--abu-text-tertiary)]">
-        <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--abu-warning)]" />
-        <span>{statusText}</span>
+      <div className="my-2 flex rounded-panel border border-separator bg-surface px-3 py-2">
+        <Spinner label={statusText} />
       </div>
     );
   }
 
   if (effectiveAction === 'needs-review') {
     return (
-      <div className="my-2 flex items-start gap-2 rounded-lg border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] px-3 py-2 text-minor text-[var(--abu-text-secondary)]">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-warning)]" />
-        <span>{t.sandbox.appAutomationNeedsReview}</span>
+      <div className="my-2">
+        <InlineMessage tone="warning">{t.sandbox.appAutomationNeedsReview}</InlineMessage>
       </div>
     );
   }
 
   if (effectiveAction === 'completed' || effectiveAction === 'stopped') {
     return (
-      <div className="my-2 flex items-start gap-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] px-3 py-2 text-minor text-[var(--abu-text-tertiary)]">
-        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-success)]" />
+      <div className="my-2 flex items-start gap-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui text-label-secondary">
+        <span className="flex h-lh shrink-0 items-center">
+          <Icon icon={AppIcons.sandboxReady} className="text-success" />
+        </span>
         <span>
           {effectiveAction === 'completed'
             ? t.sandbox.appAutomationCompleted
@@ -189,70 +190,60 @@ export default function SandboxRecoveryCard({
   };
 
   return (
-    <div className="my-2 rounded-lg border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] p-3">
-      <div className="flex items-start gap-2.5">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--abu-bg-base)]">
-          <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)]" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h4 className="text-h-xs text-[var(--abu-text-primary)]">
-            {t.sandbox.appAutomationTitle}
-          </h4>
-          <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
-            {format(t.sandbox.appAutomationDescription, { app })}
-          </p>
-          {effectiveAction === 'failed' && (
-            <p className="mt-2 text-caption font-medium text-[var(--abu-danger)]">
-              {t.sandbox.appAutomationFailed}
-            </p>
-          )}
-        </div>
+    <div className="my-2 rounded-panel border border-separator bg-surface p-3">
+      <h4 className="flex items-center gap-2 text-ui font-medium text-label">
+        <Icon icon={AppIcons.sandbox} size="sm" className="text-label-secondary" />
+        {t.sandbox.appAutomationTitle}
+      </h4>
+      <div className="mt-2 space-y-2">
+        <InlineMessage tone="warning">{format(t.sandbox.appAutomationDescription, { app })}</InlineMessage>
+        {effectiveAction === 'failed' && (
+          <InlineMessage tone="danger">{t.sandbox.appAutomationFailed}</InlineMessage>
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
+          icon={AppIcons.sandbox}
           onClick={() => void continueWithComputerUse()}
           disabled={processing}
-          className={`${ACTION_BUTTON_BASE} bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]`}
         >
-          {processing
-            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            : <MonitorCog className="h-3.5 w-3.5" />}
           {t.sandbox.appAutomationUseComputer}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => void stopTask()}
           disabled={processing}
-          className={`${ACTION_BUTTON_BASE} border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]`}
         >
           {t.sandbox.appAutomationStop}
-        </button>
-        <button
-          type="button"
+        </Button>
+        {processing && <Spinner size="sm" label={t.task.processing} />}
+        <Button
+          variant="plain"
+          size="sm"
+          icon={advancedOpen ? AppIcons.expand : AppIcons.disclose}
           aria-expanded={advancedOpen}
           onClick={() => setAdvancedOpen((open) => !open)}
-          className="btn-ghost ml-auto inline-flex h-8 items-center gap-1 px-2 text-caption text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-secondary)]"
+          className="ml-auto"
         >
-          <ChevronRight
-            className={`h-3.5 w-3.5 transition-transform ${advancedOpen ? 'rotate-90' : ''}`}
-          />
           {t.sandbox.appAutomationAdvanced}
-        </button>
+        </Button>
       </div>
 
       {advancedOpen && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--abu-border-subtle)] pt-2.5 text-caption leading-relaxed text-[var(--abu-text-tertiary)]">
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-separator pt-2 text-ui-sm text-label-secondary">
           <span>{t.sandbox.appAutomationAdvancedWarning}</span>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={AppIcons.openIn}
             onClick={() => useSettingsStore.getState().openSystemSettings('sandbox')}
-            className="inline-flex items-center gap-0.5 text-caption text-[var(--abu-text-secondary)] underline decoration-[var(--abu-border)] underline-offset-[3px] hover:text-[var(--abu-text-primary)] hover:decoration-current"
           >
             {t.sandbox.appAutomationOpenSettings}
-            <ArrowUpRight className="h-3 w-3" />
-          </button>
+          </Button>
         </div>
       )}
     </div>

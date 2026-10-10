@@ -1,5 +1,7 @@
+import { memo } from 'react';
 import { useI18n } from '@/i18n';
 import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableCodeBlock';
+import { MERMAID_THEME_VARIABLES } from './mermaidTheme';
 
 // --- Mermaid-specific rendering logic ---
 
@@ -26,15 +28,7 @@ function getMermaid() {
       mermaid.initialize({
         startOnLoad: false,
         theme: 'base',
-        themeVariables: {
-          primaryColor: '#faf0e6',
-          primaryTextColor: '#29261b',
-          primaryBorderColor: '#d97757',
-          lineColor: '#888579',
-          secondaryColor: '#f5f0ea',
-          tertiaryColor: '#ebe6df',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-        },
+        themeVariables: MERMAID_THEME_VARIABLES,
         securityLevel: 'strict',
         fontFamily: 'system-ui, -apple-system, sans-serif',
       });
@@ -167,7 +161,8 @@ async function captureMermaidImage(code: string): Promise<string | null> {
 
 // --- Component ---
 
-export default function MermaidBlock({ code }: { code: string }) {
+// Memoized so a finished diagram does not re-render while the reply around it streams.
+export default memo(function MermaidBlock({ code }: { code: string }) {
   const { t } = useI18n();
 
   const config: CodeBlockRendererConfig = {
@@ -188,4 +183,4 @@ export default function MermaidBlock({ code }: { code: string }) {
   };
 
   return <RenderableCodeBlock code={code} config={config} />;
-}
+});

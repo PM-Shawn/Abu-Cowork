@@ -40,7 +40,7 @@ function taskElapsed(task: BatchTaskProgress, now: number): number | null {
 function totalTokens(task: BatchTaskProgress): number | undefined {
   const usage = task.tokenUsage;
   if (!usage) return undefined;
-  return usage.inputTokens + usage.outputTokens + (usage.cacheCreationInputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0);
+  return usage.inputTokens + usage.outputTokens;
 }
 
 export function taskInputLabels(toolCall: ToolCall, t: TranslationDict): string[] {

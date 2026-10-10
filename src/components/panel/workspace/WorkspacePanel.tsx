@@ -1,4 +1,7 @@
-import { ListChecks, AppWindow, SquareTerminal } from 'lucide-react';
+import { memo } from 'react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
 import { usePreviewStore, useVisibleTabs, isTabVisibleFor, workspaceTabButtonId, workspaceTabPanelId } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import TabStrip from './TabStrip';
@@ -20,25 +23,24 @@ function WorkspaceEmptyState() {
   const openTerminal = usePreviewStore((s) => s.openTerminal);
 
   const rows = [
-    { key: 'summary', Icon: ListChecks, label: t.workspace.summaryTitle, desc: t.workspace.summaryDesc, onClick: () => openSummary() },
-    { key: 'browser', Icon: AppWindow, label: t.workspace.browserTitle, desc: t.workspace.browserDesc, onClick: () => openBrowser() },
-    { key: 'terminal', Icon: SquareTerminal, label: t.workspace.terminalTitle, desc: t.workspace.terminalDesc, onClick: () => openTerminal() },
+    { key: 'summary', icon: AppIcons.plan, label: t.workspace.summaryTitle, desc: t.workspace.summaryDesc, onClick: () => openSummary() },
+    { key: 'browser', icon: AppIcons.webPage, label: t.workspace.browserTitle, desc: t.workspace.browserDesc, onClick: () => openBrowser() },
+    { key: 'terminal', icon: AppIcons.terminal, label: t.workspace.terminalTitle, desc: t.workspace.terminalDesc, onClick: () => openTerminal() },
   ];
 
   return (
     <div className="flex-1 min-h-0 flex flex-col justify-center px-5">
-      <p className="text-minor text-[var(--abu-text-tertiary)] mb-2 px-2">{t.workspace.startHere}</p>
-      {rows.map(({ key, Icon, label, desc, onClick }) => (
-        <button
+      <p className="mb-2 px-2 text-ui-sm text-label-tertiary">{t.workspace.startHere}</p>
+      {rows.map(({ key, icon, label, desc, onClick }) => (
+        <Pressable
           key={key}
-          type="button"
           onClick={onClick}
-          className="flex items-center gap-3 px-2 py-2.5 rounded-md hover:bg-[var(--abu-bg-hover)] text-left"
+          className="flex h-8 items-center gap-3 rounded-control px-2 text-left hover:bg-fill-hover"
         >
-          <Icon className="w-4 h-4 text-[var(--abu-text-secondary)] shrink-0" strokeWidth={1.5} />
-          <span className="text-body text-[var(--abu-text-primary)] shrink-0">{label}</span>
-          <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{desc}</span>
-        </button>
+          <Icon icon={icon} size="md" className="text-label-secondary" />
+          <span className="shrink-0 text-ui text-label">{label}</span>
+          <span className="truncate text-ui-sm text-label-tertiary">{desc}</span>
+        </Pressable>
       ))}
     </div>
   );
@@ -51,7 +53,7 @@ function WorkspaceEmptyState() {
  * browser page/history state. When no tabs are open, shows the "从这里开始"
  * launcher. See docs/2026-07-17-workspace-tabs-design.md.
  */
-export default function WorkspacePanel() {
+function WorkspacePanelImpl() {
   // Bodies are mounted for EVERY tab (keep-alive), including browser tabs
   // adopted for another conversation — their native view must survive. What
   // this conversation may *see* is `visibleTabs`; a foreign tab is therefore
@@ -105,3 +107,5 @@ export default function WorkspacePanel() {
     </div>
   );
 }
+
+export default memo(WorkspacePanelImpl);

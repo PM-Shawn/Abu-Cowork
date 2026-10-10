@@ -47,4 +47,12 @@ describe('CompactDivider', () => {
     render(<CompactDivider message={makeMarker('manual')} />);
     expect(screen.getByText('上下文已压缩（手动）')).toBeInTheDocument();
   });
+
+  it('draws separator lines and a tertiary UI-size label', () => {
+    const { container } = render(<CompactDivider message={makeMarker('auto')} />);
+    const label = screen.getByText('上下文已压缩');
+    expect(label).toHaveClass('text-ui-sm');
+    expect(label.parentElement).toHaveClass('text-label-tertiary');
+    expect(container.querySelectorAll('.bg-separator')).toHaveLength(2);
+  });
 });

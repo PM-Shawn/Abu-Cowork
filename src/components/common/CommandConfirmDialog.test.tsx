@@ -1,12 +1,18 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { cleanup, render as renderBare, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CommandConfirmDialog, { type CommandConfirmRequest } from './CommandConfirmDialog';
+import { Button } from '@/components/ds/button';
+import { Dialog } from '@/components/ds/dialog';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import { TextField } from '@/components/ds/text-field';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore, __resetBrowserConfigPersistenceForTests } from '@/stores/settingsStore';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import { passSettleInterval } from '@/test/dsWindows';
 import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 
 // Pins the browser-confirmation button set: which scopes are offered is a
@@ -14,6 +20,15 @@ import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // "always allow this site" click must both persist the verdict and resolve
 // the approval — a dialog that only did one of the two would either nag
 // forever or grant without asking.
+// An approval takes no pointer press for a moment after it appears; the keyboard is never held.
+// These cases are about what each control answers and records, so the approval has been read when
+// they begin: the clock it reads is past that moment once it is on the page.
+const render = (ui: ReactElement) => {
+  const view = renderBare(ui, { wrapper: DesignSystemProvider });
+  passSettleInterval();
+  return view;
+};
+
 const originalLocksDescriptor = Object.getOwnPropertyDescriptor(navigator, 'locks');
 function restoreNavigatorLocks() {
   if (originalLocksDescriptor) Object.defineProperty(navigator, 'locks', originalLocksDescriptor);
@@ -351,4 +366,585 @@ describe('audit-review dialog cancellation',()=>{
   await auditAct(async()=>release(false));
   expect(cancel).toHaveBeenCalledTimes(1);expect(confirm).not.toHaveBeenCalled();
  });
+});
+
+// What an answer means. Each case holds for the window as it was before it became a
+// design-system approval layer and holds, unchanged, after.
+describe('command approval: only a press on its own buttons answers it', () => {
+  const COMMAND = 'echo not-a-real-command';
+  const ORIGIN = 'https://example.invalid';
+
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    useSettingsStore.setState({ browserPermissionConfigV2: auditConfig() });
+  });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+  function commandRequest(overrides: Partial<CommandConfirmRequest> = {}): CommandConfirmRequest {
+    return { command: COMMAND, level: 'warn', reason: 'needs a look', kind: 'command', ...overrides };
+  }
+  function browserRequest(overrides: Partial<CommandConfirmRequest> = {}): CommandConfirmRequest {
+    return {
+      command: 'open the page',
+      level: 'warn',
+      reason: 'needs a look',
+      kind: 'browser',
+      browserOrigin: ORIGIN,
+      browserPermissionResource: 'browse',
+      browserPermissionTargets: [{ origin: ORIGIN }],
+      allowPersistentGrant: true,
+      ...overrides,
+    };
+  }
+  function open(request: CommandConfirmRequest, isRequestActive?: () => boolean) {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    const view = render(
+      <CommandConfirmDialog request={request} onConfirm={onConfirm} onCancel={onCancel} isRequestActive={isRequestActive} />,
+    );
+    return { onConfirm, onCancel, view };
+  }
+  // The corner button is the one button without words.
+  const cornerButton = () => {
+    const button = screen.getAllByRole('button').find((candidate) => candidate.textContent === '');
+    if (!button) throw new Error('The approval has no corner button');
+    return button;
+  };
+  const buttonNames = () => screen.getAllByRole('button').map((button) => button.textContent).filter((name) => name !== '');
+  // A write to the site rules that stays out until the test lets it land.
+  function heldWrite(method: 'grantBrowserPermissionTargets' | 'setBrowserSiteBlocked') {
+    let release!: (saved: boolean) => void;
+    const write = vi.spyOn(useSettingsStore.getState(), method).mockImplementation(
+      () => new Promise<boolean>((resolve) => { release = resolve; }),
+    );
+    return { write, release: (saved: boolean) => auditAct(async () => { release(saved); }) };
+  }
+
+  it('answers nothing by opening, and nothing by leaving the page', () => {
+    const { onConfirm, onCancel, view } = open(commandRequest());
+    expect(screen.getByRole('heading', { name: '操作确认' })).toBeInTheDocument();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+
+    view.unmount();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it('cancels once on Escape and never confirms', async () => {
+    const { onConfirm, onCancel } = open(commandRequest());
+    await userEvent.setup().keyboard('{Escape}');
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('never confirms on Enter or Space pressed right after it opened', async () => {
+    const user = userEvent.setup();
+    const { onConfirm } = open(commandRequest());
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('cancels from the corner button', async () => {
+    const { onConfirm, onCancel } = open(commandRequest());
+    await userEvent.setup().click(cornerButton());
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('cancels from 「取消」', async () => {
+    const { onConfirm, onCancel } = open(commandRequest());
+    await userEvent.setup().click(screen.getByRole('button', { name: '取消' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('confirms once from 「确认执行」', async () => {
+    const { onConfirm, onCancel } = open(commandRequest());
+    await userEvent.setup().click(screen.getByRole('button', { name: '确认执行' }));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it('confirms nothing and writes no site rule for a request that is no longer the pending one', async () => {
+    const user = userEvent.setup();
+    const write = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets');
+    const block = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteBlocked');
+    const { onConfirm, onCancel } = open(browserRequest(), () => false);
+    await user.click(screen.getByRole('button', { name: '仅允许这次' }));
+    await user.click(screen.getByRole('button', { name: '以后允许在此网站浏览' }));
+    await user.click(screen.getByRole('button', { name: '禁止此网站' }));
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(block).not.toHaveBeenCalled();
+  });
+
+  it('has no confirming control for a blocked command', () => {
+    open(commandRequest({ level: 'block' }));
+    expect(screen.getByRole('heading', { name: '操作已阻止' })).toBeInTheDocument();
+    expect(buttonNames()).toEqual(['取消']);
+  });
+
+  it('has no confirming control for a blocked browser action; blocking the site stays', () => {
+    open(browserRequest({ level: 'block' }));
+    expect(buttonNames()).toEqual(['取消', '禁止此网站']);
+  });
+
+  it('fires no second action while a standing grant is being saved', async () => {
+    const user = userEvent.setup();
+    const { write, release } = heldWrite('grantBrowserPermissionTargets');
+    const block = vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteBlocked');
+    const { onConfirm, onCancel } = open(browserRequest());
+    await user.click(screen.getByRole('button', { name: '以后允许在此网站浏览' }));
+    expect(write).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('button', { name: '仅允许这次' }));
+    await user.click(screen.getByRole('button', { name: '以后允许在此网站浏览' }));
+    await user.click(screen.getByRole('button', { name: '禁止此网站' }));
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(block).not.toHaveBeenCalled();
+
+    await release(true);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it('fires no second action while the site is being blocked', async () => {
+    const user = userEvent.setup();
+    const { write: block, release } = heldWrite('setBrowserSiteBlocked');
+    const grant = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets');
+    const { onConfirm, onCancel } = open(browserRequest());
+    await user.click(screen.getByRole('button', { name: '禁止此网站' }));
+    expect(block.mock.calls).toEqual([[ORIGIN, true]]);
+
+    await user.click(screen.getByRole('button', { name: '仅允许这次' }));
+    await user.click(screen.getByRole('button', { name: '以后允许在此网站浏览' }));
+    await user.click(screen.getByRole('button', { name: '禁止此网站' }));
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(block).toHaveBeenCalledTimes(1);
+    expect(grant).not.toHaveBeenCalled();
+
+    await release(true);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('stays on screen, unanswered, when blocking the site cannot be saved', async () => {
+    vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteBlocked').mockResolvedValue(false);
+    const { onConfirm, onCancel } = open(browserRequest());
+    await userEvent.setup().click(screen.getByRole('button', { name: '禁止此网站' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('未能保存，已恢复上次确认的设置');
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: '浏览器操作确认' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '仅允许这次' })).toBeEnabled();
+  });
+
+  it('stays on screen, unanswered, when the standing grant cannot be saved', async () => {
+    vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets').mockResolvedValue(false);
+    const { onConfirm, onCancel } = open(browserRequest());
+    await userEvent.setup().click(screen.getByRole('button', { name: '以后允许在此网站浏览' }));
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: '浏览器操作确认' })).toBeInTheDocument();
+  });
+
+  it('shows the command once, as text, and the site address in no attribute but the title of its two site buttons', () => {
+    open(browserRequest({ command: COMMAND }));
+    expect(document.body.textContent?.split(COMMAND)).toHaveLength(2);
+
+    const carriers: string[] = [];
+    for (const element of Array.from(document.body.querySelectorAll('*'))) {
+      for (const attribute of Array.from(element.attributes)) {
+        const watched = attribute.name === 'title' || attribute.name === 'aria-label' || attribute.name.startsWith('data-');
+        if (!watched) continue;
+        if (attribute.value.includes('example.invalid') || attribute.value.includes('not-a-real-command')) {
+          carriers.push(`${element.textContent} ${attribute.name}=${attribute.value}`);
+        }
+      }
+    }
+    expect(carriers).toEqual([
+      `以后允许在此网站浏览 title=${ORIGIN}`,
+      `禁止此网站 title=${ORIGIN}`,
+    ]);
+  });
+});
+
+// The window as a design-system approval layer: where the focus starts, what the keys do,
+// and what the windows around it can and cannot do to it.
+describe('command approval as an approval layer', () => {
+  const COMMAND = 'echo not-a-real-command';
+  const ORIGIN = 'https://example.invalid';
+
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    useSettingsStore.setState({ browserPermissionConfigV2: auditConfig() });
+  });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+  const command = (overrides: Partial<CommandConfirmRequest> = {}): CommandConfirmRequest => (
+    { command: COMMAND, level: 'warn', reason: 'needs a look', kind: 'command', ...overrides }
+  );
+  const browser = (overrides: Partial<CommandConfirmRequest> = {}): CommandConfirmRequest => ({
+    command: 'open the page',
+    level: 'warn',
+    reason: 'needs a look',
+    kind: 'browser',
+    browserOrigin: ORIGIN,
+    browserPermissionResource: 'browse',
+    browserPermissionTargets: [{ origin: ORIGIN }],
+    allowPersistentGrant: true,
+    ...overrides,
+  });
+  function open(request: CommandConfirmRequest) {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    const view = render(<CommandConfirmDialog request={request} onConfirm={onConfirm} onCancel={onCancel} />);
+    return { onConfirm, onCancel, view };
+  }
+  const approval = (name = '操作确认') => screen.getByRole('alertdialog', { name });
+  const button = (name: string) => screen.getByRole('button', { name });
+
+  it('is an alert dialog named by its title, with a named close button in the corner', () => {
+    open(command());
+    expect(approval()).toHaveAttribute('data-ds-layer');
+    expect(approval()).toHaveAccessibleDescription('以下命令需要你的确认才能执行：');
+    expect(button('关闭')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['a command', command(), '操作确认'],
+    ['a dangerous command', command({ level: 'danger' }), '危险操作确认'],
+    ['a blocked command', command({ level: 'block' }), '操作已阻止'],
+    ['a browser action with a standing grant on offer', browser(), '浏览器操作确认'],
+  ] as const)('opens with the focus on 「取消」: %s', (_name, request, title) => {
+    open(request);
+    expect(approval(title)).toBeInTheDocument();
+    expect(button('取消')).toHaveFocus();
+  });
+
+  it('cancels on Enter pressed right after it opened', async () => {
+    const { onConfirm, onCancel } = open(command());
+    await userEvent.setup().keyboard('{Enter}');
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('cancels on Space pressed right after it opened', async () => {
+    const { onConfirm, onCancel } = open(browser());
+    await userEvent.setup().keyboard(' ');
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('does nothing on a press on the scrim or on the page behind it', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <>
+        <p>Elsewhere</p>
+        <CommandConfirmDialog request={command()} onConfirm={onConfirm} onCancel={onCancel} />
+      </>,
+    );
+    await user.click(document.querySelector('.bg-scrim') as Element);
+    await user.click(screen.getByText('Elsewhere'));
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(approval()).toBeInTheDocument();
+  });
+
+  it('keeps Tab among its own controls', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <Button>Behind</Button>
+        <CommandConfirmDialog request={command()} onConfirm={vi.fn()} onCancel={vi.fn()} />
+      </>,
+    );
+    const seen: (string | null)[] = [];
+    for (let presses = 0; presses < 4; presses += 1) {
+      await user.tab();
+      seen.push(document.activeElement?.textContent || document.activeElement?.getAttribute('aria-label') || null);
+    }
+    expect(seen).toEqual(['确认执行', '关闭', '取消', '确认执行']);
+  });
+
+  describe('the windows around it', () => {
+    interface PageProps {
+      approvalShown?: boolean;
+      second?: boolean;
+      search?: boolean;
+      form?: boolean;
+      busy?: boolean;
+      dirty?: boolean;
+      question?: boolean;
+    }
+    function harness() {
+      const calls = {
+        onConfirm: vi.fn(), onCancel: vi.fn(), secondConfirm: vi.fn(), secondCancel: vi.fn(),
+        onSearch: vi.fn(), onForm: vi.fn(), onQuestion: vi.fn(), formAction: vi.fn(),
+      };
+      function Page({ approvalShown = false, second = false, search = false, form = false, busy = false, dirty = false, question = false }: PageProps) {
+        return (
+          <>
+            {approvalShown && <CommandConfirmDialog request={command()} onConfirm={calls.onConfirm} onCancel={calls.onCancel} />}
+            {second && (
+              <CommandConfirmDialog
+                request={command({ command: 'echo not-a-real-command --again', level: 'danger' })}
+                onConfirm={calls.secondConfirm}
+                onCancel={calls.secondCancel}
+              />
+            )}
+            <Dialog open={search} onOpenChange={calls.onSearch} title="Search" />
+            <Dialog open={form} onOpenChange={calls.onForm} busy={busy} dirty={dirty} title="Add a service">
+              <TextField aria-label="Address" defaultValue="https://example.invalid/v1" />
+              <Button onClick={calls.formAction}>Check</Button>
+            </Dialog>
+            <Dialog open={question} onOpenChange={calls.onQuestion} role="alertdialog" title="Remove this item?" footer={<Button>Keep</Button>} />
+          </>
+        );
+      }
+      return { calls, Page };
+    }
+    const unanswered = (calls: ReturnType<typeof harness>['calls']) => {
+      expect(calls.onConfirm).not.toHaveBeenCalled();
+      expect(calls.onCancel).not.toHaveBeenCalled();
+    };
+    // The box of a window that is in the page, on screen or hidden.
+    const box = (title: string) => Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]'))
+      .find((element) => element.querySelector('h2')?.textContent === title) ?? null;
+
+    it('turns away a window that opens while it is on screen, and is not answered by that', () => {
+      const { calls, Page } = harness();
+      const view = render(<Page approvalShown />);
+      view.rerender(<Page approvalShown search />);
+
+      expect(calls.onSearch.mock.calls).toEqual([[false]]);
+      expect(box('Search')).toBeNull();
+      expect(approval()).toHaveAttribute('data-state', 'open');
+      expect(button('取消')).toHaveFocus();
+      unanswered(calls);
+
+      view.rerender(<Page approvalShown />);
+      unanswered(calls);
+    });
+
+    it('takes the place of a window with nothing to lose: that window is closed, the approval is not answered', () => {
+      const { calls, Page } = harness();
+      const view = render(<Page search />);
+      view.rerender(<Page search approvalShown />);
+
+      expect(calls.onSearch.mock.calls).toEqual([[false]]);
+      expect(approval()).toBeInTheDocument();
+      unanswered(calls);
+    });
+
+    it('keeps a second approval off the page until the first is answered; neither answers the other', () => {
+      const { calls, Page } = harness();
+      const view = render(<Page approvalShown />);
+      view.rerender(<Page approvalShown second />);
+
+      expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+      expect(box('危险操作确认')).toBeNull();
+      expect(screen.queryByText('echo not-a-real-command --again')).toBeNull();
+      unanswered(calls);
+      expect(calls.secondConfirm).not.toHaveBeenCalled();
+      expect(calls.secondCancel).not.toHaveBeenCalled();
+
+      // The first is answered: its owner takes it off the page.
+      view.rerender(<Page second />);
+      expect(approval('危险操作确认')).toBeInTheDocument();
+      expect(button('取消')).toHaveFocus();
+      unanswered(calls);
+      expect(calls.secondConfirm).not.toHaveBeenCalled();
+      expect(calls.secondCancel).not.toHaveBeenCalled();
+    });
+
+    it('answers only the approval on screen when Escape is pressed with a second one waiting', async () => {
+      const { calls, Page } = harness();
+      render(<Page approvalShown second />);
+      await userEvent.setup().keyboard('{Escape}');
+      expect(calls.onCancel).toHaveBeenCalledTimes(1);
+      expect(calls.onConfirm).not.toHaveBeenCalled();
+      expect(calls.secondConfirm).not.toHaveBeenCalled();
+      expect(calls.secondCancel).not.toHaveBeenCalled();
+    });
+
+    it('waits, off the page and unanswered, while the user is asked about unsaved input; Discard shows it', async () => {
+      const user = userEvent.setup();
+      const { calls, Page } = harness();
+      const view = render(<Page form dirty />);
+      view.rerender(<Page form dirty approvalShown />);
+
+      expect(screen.getByRole('alertdialog', { name: '放弃这些内容？' })).toBeInTheDocument();
+      expect(box('操作确认')).toBeNull();
+      unanswered(calls);
+      expect(calls.onForm).not.toHaveBeenCalled();
+
+      // The question about the unsaved input has been read.
+      passSettleInterval();
+      await user.click(button('放弃'));
+      expect(calls.onForm.mock.calls).toEqual([[false]]);
+      expect(approval()).toBeInTheDocument();
+      unanswered(calls);
+    });
+
+    it('goes on waiting, unanswered, when the user keeps the unsaved input, and is shown once that window has closed', async () => {
+      const user = userEvent.setup();
+      const { calls, Page } = harness();
+      const view = render(<Page form dirty />);
+      view.rerender(<Page form dirty approvalShown />);
+      passSettleInterval();
+      await user.click(button('继续填写'));
+
+      expect(box('操作确认')).toBeNull();
+      expect(calls.onForm).not.toHaveBeenCalled();
+      unanswered(calls);
+
+      view.rerender(<Page approvalShown />);
+      expect(approval()).toBeInTheDocument();
+      unanswered(calls);
+    });
+
+    it('has a window with work in progress step aside, untouched, and return when the approval is answered', async () => {
+      const user = userEvent.setup();
+      const { calls, Page } = harness();
+      const view = render(<Page form busy dirty />);
+      const form = box('Add a service');
+      view.rerender(<Page form busy dirty approvalShown />);
+
+      expect(box('Add a service')).toBe(form);
+      expect(form).toHaveAttribute('hidden');
+      expect(screen.queryByRole('dialog', { name: 'Add a service' })).toBeNull();
+      expect(screen.queryByRole('alertdialog', { name: '放弃这些内容？' })).toBeNull();
+      expect(approval()).toBeInTheDocument();
+      expect(button('取消')).toHaveFocus();
+      expect(calls.onForm).not.toHaveBeenCalled();
+      unanswered(calls);
+
+      // The keyboard acts on the approval alone while the window is hidden.
+      await user.keyboard('{Enter}');
+      expect(calls.formAction).not.toHaveBeenCalled();
+      expect(calls.onForm).not.toHaveBeenCalled();
+      expect(calls.onCancel).toHaveBeenCalledTimes(1);
+      expect(calls.onConfirm).not.toHaveBeenCalled();
+
+      view.rerender(<Page form busy dirty />);
+      expect(box('Add a service')).toBe(form);
+      expect(form).not.toHaveAttribute('hidden');
+      expect(screen.getByRole('textbox', { name: 'Address' })).toHaveValue('https://example.invalid/v1');
+      expect(calls.onForm).not.toHaveBeenCalled();
+    });
+
+    it('is not answered by a question that is asked over it and answered', async () => {
+      const { calls, Page } = harness();
+      const view = render(<Page approvalShown />);
+      view.rerender(<Page approvalShown question />);
+      // The question is the top layer; the approval stays open under it.
+      expect(screen.getByRole('alertdialog', { name: 'Remove this item?' })).toBeInTheDocument();
+      expect(box('操作确认')).toHaveAttribute('data-state', 'open');
+
+      await userEvent.setup().keyboard('{Escape}');
+      expect(calls.onQuestion.mock.calls).toEqual([[false]]);
+      unanswered(calls);
+
+      view.rerender(<Page approvalShown />);
+      unanswered(calls);
+      expect(approval()).toBeInTheDocument();
+    });
+
+    it('has an open question step aside, unanswered, and return', () => {
+      const { calls, Page } = harness();
+      const view = render(<Page question />);
+      const asked = box('Remove this item?');
+      view.rerender(<Page question approvalShown />);
+
+      expect(asked).toHaveAttribute('hidden');
+      expect(calls.onQuestion).not.toHaveBeenCalled();
+      expect(approval()).toBeInTheDocument();
+      unanswered(calls);
+
+      view.rerender(<Page question />);
+      expect(asked).not.toHaveAttribute('hidden');
+      expect(calls.onQuestion).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('what it shows', () => {
+    const levelIcon = () => approval(document.querySelector('h2')?.textContent ?? '').querySelector('svg[width="20"]');
+
+    it.each([
+      ['warn', 'text-warning'],
+      ['danger', 'text-danger'],
+      ['block', 'text-danger'],
+      ['safe', 'text-success'],
+    ] as const)('marks the %s level with a status icon above the command', (level, tone) => {
+      open(command({ level }));
+      expect(levelIcon()).toHaveClass(tone);
+      expect(levelIcon()).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it.each([
+      ['warn', 'status'],
+      ['safe', 'status'],
+      ['danger', 'alert'],
+      ['block', 'alert'],
+    ] as const)('gives the reason of a %s request as an inline message', (level, role) => {
+      open(command({ level }));
+      expect(screen.getByRole(role)).toHaveTextContent('needs a look');
+    });
+
+    it('shows no reason block without a reason', () => {
+      open(command({ reason: '' }));
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it('shows the command in the code font, in an element E2E reads as code', () => {
+      open(command());
+      const text = screen.getByText(COMMAND);
+      expect(text.tagName).toBe('CODE');
+      expect(text.closest('pre')).toHaveClass('font-code');
+    });
+
+    it('has one filled button, the one-time confirmation', () => {
+      open(browser());
+      const filled = screen.getAllByRole('button').filter((candidate) => candidate.classList.contains('bg-emphasis'));
+      expect(filled.map((candidate) => candidate.textContent)).toEqual(['仅允许这次']);
+      expect(button('禁止此网站')).toHaveClass('text-danger');
+    });
+
+    it('keeps its buttons focusable and inert while a site rule is being saved; 「取消」 still cancels', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets').mockImplementation(() => new Promise<boolean>(() => undefined));
+      const { onConfirm, onCancel } = open(browser());
+      await user.click(button('以后允许在此网站浏览'));
+
+      for (const name of ['仅允许这次', '以后允许在此网站浏览', '禁止此网站']) {
+        expect(button(name)).toHaveAttribute('aria-disabled', 'true');
+        expect(button(name)).not.toBeDisabled();
+      }
+      expect(button('取消')).not.toHaveAttribute('aria-disabled');
+      expect(button('以后允许在此网站浏览')).toHaveFocus();
+
+      await user.click(button('取消'));
+      expect(onCancel).toHaveBeenCalledTimes(1);
+      expect(onConfirm).not.toHaveBeenCalled();
+    });
+
+    it('puts a failed save above the command, as an alert', async () => {
+      vi.spyOn(useSettingsStore.getState(), 'setBrowserSiteBlocked').mockResolvedValue(false);
+      open(browser({ command: COMMAND }));
+      await userEvent.setup().click(button('禁止此网站'));
+      const failed = screen.getByRole('alert');
+      expect(failed).toHaveTextContent('未能保存，已恢复上次确认的设置');
+      expect(failed.compareDocumentPosition(screen.getByText(COMMAND)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
 });

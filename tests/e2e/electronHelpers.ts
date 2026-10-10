@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect } from '@playwright/test';
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
+import { _electron as electron, type ElectronApplication, type Locator, type Page } from 'playwright';
 
 /**
  * Repo root. The npm script (`test:e2e:electron`) always invokes `playwright
@@ -43,9 +43,10 @@ export interface LaunchedApp extends ElectronDataRoot {
 
 export interface LaunchOptions {
   /**
-   * Extra main-process env for a single launch. Only for the gated #549 test
-   * hooks (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`),
-   * which electron/e2eTestHooks.cjs reads only in an unpackaged build.
+   * Extra main-process env for a single launch: the gated #549 test hooks
+   * (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`), which
+   * electron/e2eTestHooks.cjs reads only in an unpackaged build, and
+   * `NODE_EXTRA_CA_CERTS` for a spec that serves a loopback HTTPS address.
    */
   extraEnv?: Record<string, string>;
   /**
@@ -244,6 +245,17 @@ export async function windowListenerRegistered(
     if (!win) return false;
     return tauriHostForE2E().__test.subscribedEvents(win.webContents).includes(name);
   }, { suffix: urlSuffix, name: event });
+}
+
+// A design-system approval or question takes no pointer press for a moment after it appears,
+// returns or is uncovered (`data-ds-settling` on its box). Wait for that moment to pass before
+// pressing one of its buttons. The box that holds the button is the one that is asked: a question
+// over an approval is pressed while the approval under it still holds presses back. It fails when
+// the mark never clears.
+export async function pressWhenSettled(locator: Locator): Promise<void> {
+  await expect(locator).toBeVisible();
+  await expect(locator.locator('xpath=ancestor::*[@data-ds-settling]')).toHaveCount(0);
+  await locator.click();
 }
 
 /** Persist the common first-run acknowledgements used by Electron E2E journeys. */

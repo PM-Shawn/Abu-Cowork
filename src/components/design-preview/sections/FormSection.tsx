@@ -1,17 +1,29 @@
 import { useState } from 'react';
 import { Checkbox } from '@/components/ds/checkbox';
-import { Combobox } from '@/components/ds/combobox';
+import { Combobox, MultiCombobox, type ComboboxOption } from '@/components/ds/combobox';
 import { AppIcons } from '@/components/ds/icons';
 import { RadioGroup } from '@/components/ds/radio-group';
 import { SegmentedControl } from '@/components/ds/segmented-control';
-import { Select } from '@/components/ds/select';
-import { SettingRow } from '@/components/ds/setting-row';
+import { Select, type SelectOption } from '@/components/ds/select';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
 import { Slider } from '@/components/ds/slider';
 import { Switch } from '@/components/ds/switch';
 import { TextArea } from '@/components/ds/text-area';
 import { TextField } from '@/components/ds/text-field';
 import { Section } from './Section';
 import { CJK_SPECIMEN, PREVIEW_MODELS } from './specimen';
+
+const SITE_ACCESS: SelectOption[] = [
+  { value: 'allow', label: 'Allow', tone: 'success', description: 'Abu opens the site without asking.' },
+  { value: 'ask', label: 'Ask every time', icon: AppIcons.settings, description: 'Abu asks before it opens the site, each time a task needs it.' },
+  { value: 'block', label: 'Block', tone: 'danger', description: 'Abu never opens the site.' },
+];
+
+const TEAM_MEMBERS: ComboboxOption[] = [
+  { value: 'researcher', label: 'Researcher', description: 'Finds and reads the sources.' },
+  { value: 'writer', label: 'Writer', description: 'Drafts the report from the notes.' },
+  { value: 'reviewer', label: 'Reviewer', description: 'Checks the draft against the sources.' },
+];
 
 export function FormSection() {
   const [name, setName] = useState('');
@@ -27,6 +39,11 @@ export function FormSection() {
   const [sortOrder, setSortOrder] = useState('newest');
   const [view, setView] = useState('tasks');
   const [unchosenModel, setUnchosenModel] = useState('');
+  const [siteAccess, setSiteAccess] = useState('ask');
+  const [groupModel, setGroupModel] = useState('sonnet');
+  const [groupAccess, setGroupAccess] = useState('allow');
+  const [groupNotify, setGroupNotify] = useState(true);
+  const [members, setMembers] = useState(['researcher', 'writer']);
   return (
     <Section id="forms" title="Form controls">
       <div className="grid max-w-3xl grid-cols-2 gap-4">
@@ -70,6 +87,15 @@ export function FormSection() {
           searchPlaceholder="Filter models"
           emptyText="No matching model"
         />
+        <MultiCombobox
+          label="Team members"
+          values={members}
+          onValuesChange={setMembers}
+          options={TEAM_MEMBERS}
+          placeholder="Choose members"
+          searchPlaceholder="Filter experts"
+          emptyText="No matching expert"
+        />
       </div>
       <h3 className="mt-6 mb-3 text-ui font-medium text-label-secondary">Disabled and invalid</h3>
       <div className="grid max-w-3xl grid-cols-2 gap-4">
@@ -96,6 +122,26 @@ export function FormSection() {
         <SettingRow title="Follow system appearance" description={CJK_SPECIMEN} htmlFor="preview-follow-system">
           <Switch id="preview-follow-system" checked={followSystem} onCheckedChange={setFollowSystem} />
         </SettingRow>
+      </div>
+      <h3 className="mt-6 mb-3 text-ui font-medium text-label-secondary">Select with descriptions and status icons</h3>
+      <Select label="Site access" value={siteAccess} onValueChange={setSiteAccess} options={SITE_ACCESS} />
+      <h3 className="mt-6 mb-3 text-ui font-medium text-label-secondary">Setting group</h3>
+      <div className="max-w-3xl">
+        <SettingGroup title="Tasks" description="How Abu runs a task.">
+          <SettingRow title="Default model" description="Used by a new task.">
+            <div className="w-40">
+              <Select fullWidth label="Default model" value={groupModel} onValueChange={setGroupModel} options={PREVIEW_MODELS} />
+            </div>
+          </SettingRow>
+          <SettingRow title="Site access">
+            <div className="w-40">
+              <Select fullWidth label="Site access in tasks" value={groupAccess} onValueChange={setGroupAccess} options={SITE_ACCESS} />
+            </div>
+          </SettingRow>
+          <SettingRow title="Notify when done" description="A system notification when a task ends." htmlFor="preview-group-notify">
+            <Switch id="preview-group-notify" checked={groupNotify} onCheckedChange={setGroupNotify} />
+          </SettingRow>
+        </SettingGroup>
       </div>
     </Section>
   );

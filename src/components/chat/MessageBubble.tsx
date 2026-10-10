@@ -1,5 +1,4 @@
-import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare, MessageSquarePlus } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { memo, useState, useEffect } from 'react';
 import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
 import ToolCallsGroup, { InlineToolResultImages } from './ToolCallsGroup';
@@ -8,7 +7,13 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { Button, IconButton } from '@/components/ds/button';
+import { Pressable } from '@/components/ds/pressable';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { InlineMessage } from '@/components/ds/inline-message';
+import { Tag } from '@/components/ds/tag';
+import { TextArea } from '@/components/ds/text-area';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useTodosStore } from '@/stores/todosStore';
@@ -17,12 +22,12 @@ import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
 import { computeRewindImpact } from '@/utils/rewindImpact';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { useRewindQuestion } from './rewindQuestion';
 import abuAvatar from '@/assets/abu-avatar.png';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
@@ -103,24 +108,23 @@ function UserImageThumbnail({
   if (expired) {
     return (
       <div
-        className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-bg-pressed)] flex items-center justify-center bg-[var(--abu-bg-muted)]"
+        className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-control border border-separator bg-fill"
         title={t.chat.imageExpired}
       >
-        <ImageOff className="w-4 h-4 text-[var(--abu-text-muted)]" />
+        <Icon icon={AppIcons.imageMissing} className="text-label-tertiary" />
       </div>
     );
   }
 
   if (!src) {
     return (
-      <div className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-muted)] animate-pulse" />
+      <div className="h-8 w-8 overflow-hidden rounded-control border border-separator bg-fill" />
     );
   }
 
   return (
-    <button
-      type="button"
-      className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-border-subtle)] hover:border-[var(--abu-border-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
+    <Pressable
+      className="h-8 w-8 overflow-hidden rounded-control border border-separator transition-colors duration-fast hover:border-control-border"
       onClick={(event) => {
         useImageLightboxStore.getState().open(
           images.map((item, imageIndex) => ({
@@ -139,12 +143,14 @@ function UserImageThumbnail({
       aria-label={t.chat.clickToViewFull}
     >
       <img src={src} alt="" className="w-full h-full object-cover" />
-    </button>
+    </Pressable>
   );
 }
 
-/** Clickable file chip for user message attachments */
-function UserAttachmentChip({ filePath }: { filePath: string }) {
+/** Clickable file chip for user message attachments. Memoized: its reveal button carries
+ *  a tooltip, and the bubble above it re-renders with every streamed token of the reply. */
+const UserAttachmentChip = memo(function UserAttachmentChip({ filePath }: { filePath: string }) {
+  const { t } = useI18n();
   const openPreview = usePreviewStore((s) => s.openPreview);
   const fileName = getBaseName(filePath);
 
@@ -163,22 +169,25 @@ function UserAttachmentChip({ filePath }: { filePath: string }) {
   };
 
   return (
-    <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-pressed)] hover:border-[var(--abu-clay-40)] cursor-pointer transition-all text-body group/chip"
-      title={filePath}
-      onClick={handleClick}
-    >
-      <FileText className="w-3.5 h-3.5 text-[var(--abu-text-muted)] shrink-0" />
-      <span className="text-[var(--abu-text-primary)] truncate max-w-[200px]">{fileName}</span>
-      <button
-        onClick={handleReveal}
-        className="p-0.5 rounded hover:bg-[var(--abu-bg-pressed)] opacity-0 group-hover/chip:opacity-100 transition-opacity shrink-0"
+    <span className="group/chip inline-flex items-center gap-1 rounded-control border border-separator bg-surface py-1 pl-2 pr-1 transition-colors duration-fast hover:border-control-border">
+      <Pressable
+        className="inline-flex min-w-0 items-center gap-1 rounded-control text-ui text-label"
+        title={filePath}
+        onClick={handleClick}
       >
-        <FolderOpen className="w-3 h-3 text-[var(--abu-text-muted)]" />
-      </button>
+        <Icon icon={AppIcons.file} size="sm" className="text-label-secondary" />
+        <span className="max-w-52 truncate">{fileName}</span>
+      </Pressable>
+      <IconButton
+        icon={AppIcons.folderOpen}
+        label={t.chat.openInFinder}
+        size="sm"
+        onClick={handleReveal}
+        className="opacity-0 group-hover/chip:opacity-100 focus-visible:opacity-100"
+      />
     </span>
   );
-}
+});
 
 // Helper to get text content from Message
 function getTextContent(content: string | MessageContent[]): string {
@@ -216,22 +225,19 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
   const { t } = useI18n();
 
   return (
-    <div className="my-3 rounded-xl overflow-hidden border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] max-w-full">
-      <button
+    <div className="my-3 max-w-full overflow-hidden rounded-panel border border-separator bg-surface">
+      <Pressable
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
-        className="btn-ghost w-full flex items-center gap-2 px-3.5 py-2.5 text-body hover:bg-[var(--abu-bg-hover)]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-ui transition-colors duration-fast hover:bg-fill-hover"
       >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-        )}
-        <Brain className="h-3.5 w-3.5 text-purple-500 shrink-0" />
-        <span className="text-body font-medium text-[var(--abu-text-primary)]">{t.chat.thinkingProcess}</span>
-      </button>
+        <Icon icon={expanded ? AppIcons.expand : AppIcons.disclose} size="sm" className="text-label-tertiary" />
+        <Icon icon={AppIcons.thinking} size="sm" className="text-label-secondary" />
+        <span className="font-medium text-label">{t.chat.thinkingProcess}</span>
+      </Pressable>
       {expanded && (
-        <div className="border-t border-[var(--abu-border-subtle)] px-4 py-3">
-          <pre className="text-minor text-[var(--abu-text-tertiary)] whitespace-pre-wrap break-words leading-relaxed">
+        <div className="border-t border-separator px-4 py-3">
+          <pre className="whitespace-pre-wrap break-words text-ui-sm text-label-secondary">
             {thinking}
           </pre>
         </div>
@@ -258,7 +264,7 @@ interface MessageActionsProps {
 function MessageTimestamp({ timestamp, className = '' }: { timestamp: number; className?: string }) {
   return (
     <span
-      className={`text-caption text-[var(--abu-text-muted)] tabular-nums select-none whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity ${className}`}
+      className={cn('select-none whitespace-nowrap text-caption text-label-tertiary tabular-nums opacity-0 transition-opacity duration-fast group-hover:opacity-100', className)}
       title={new Date(timestamp).toLocaleString()}
     >
       {formatRelativeTime(timestamp)}
@@ -285,79 +291,58 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
   };
 
   return (
-    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-      {/* Copy button */}
-      <button
+    <div className="flex items-center gap-1 opacity-0 transition-opacity duration-fast group-hover:opacity-100 focus-within:opacity-100">
+      <IconButton
+        icon={copied ? AppIcons.done : AppIcons.copy}
+        label={t.chat.copy}
+        size="sm"
         onClick={handleCopy}
-        className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-        title={t.chat.copy}
-      >
-        {copied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      />
 
       {/* Edit button - only for user messages */}
       {isUser && (
-        <button
-          onClick={onEdit}
-          className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-          title={t.chat.edit}
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </button>
+        <IconButton icon={AppIcons.rename} label={t.chat.edit} size="sm" onClick={onEdit} />
       )}
 
       {/* Regenerate button - only for assistant messages */}
       {!isUser && (
-        <button
-          onClick={onRegenerate}
-          className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
-          title={t.chat.regenerate}
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-        </button>
+        <IconButton icon={AppIcons.retry} label={t.chat.regenerate} size="sm" onClick={onRegenerate} />
       )}
 
       {/* Feedback buttons - only for assistant messages */}
       {!isUser && (
         <>
-          <button
+          <IconButton
+            icon={AppIcons.thumbsUp}
+            label={t.chat.feedbackPositive}
+            size="sm"
+            aria-pressed={feedbackRating === 'positive'}
             onClick={() => {
               const next = feedbackRating === 'positive' ? null : 'positive';
               setFeedbackRating(next);
               sendFeedback(next ?? 'cancel', conversationId, message.id, activeSkill);
             }}
-            className={cn(
-              'btn-ghost p-1.5 rounded-md transition-colors',
-              feedbackRating === 'positive'
-                ? 'text-[var(--abu-success)] bg-[var(--abu-bg-hover)]'
-                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-            )}
-            title={t.chat.feedbackPositive}
-          >
-            <ThumbsUp className="h-3.5 w-3.5" />
-          </button>
-          <button
+          />
+          <IconButton
+            icon={AppIcons.thumbsDown}
+            label={t.chat.feedbackNegative}
+            size="sm"
+            aria-pressed={feedbackRating === 'negative'}
             onClick={() => {
               const next = feedbackRating === 'negative' ? null : 'negative';
               setFeedbackRating(next);
               sendFeedback(next ?? 'cancel', conversationId, message.id, activeSkill);
             }}
-            className={cn(
-              'btn-ghost p-1.5 rounded-md transition-colors',
-              feedbackRating === 'negative'
-                ? 'text-[var(--abu-danger)] bg-[var(--abu-bg-hover)]'
-                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-            )}
-            title={t.chat.feedbackNegative}
-          >
-            <ThumbsDown className="h-3.5 w-3.5" />
-          </button>
+          />
         </>
       )}
 
       {/* Add to Todos button - only for assistant messages */}
       {showTodosInbox && !isUser && (
-        <button
+        <IconButton
+          icon={addedToTodos ? AppIcons.done : AppIcons.todos}
+          label={addedToTodos ? t.todos.addedToTodos : t.todos.addToTodos}
+          size="sm"
           onClick={() => {
             const text = getTextContent(message.content).slice(0, 60).trim();
             if (!text) return;
@@ -369,16 +354,7 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
             setAddedToTodos(true);
             setTimeout(() => setAddedToTodos(false), 1500);
           }}
-          className={cn(
-            'btn-ghost p-1.5 rounded-md transition-colors',
-            addedToTodos
-              ? 'text-[var(--abu-success)] bg-[var(--abu-bg-hover)]'
-              : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]',
-          )}
-          title={addedToTodos ? t.todos.addedToTodos : t.todos.addToTodos}
-        >
-          {addedToTodos ? <Check className="h-3.5 w-3.5" /> : <CheckSquare className="h-3.5 w-3.5" />}
-        </button>
+        />
       )}
 
     </div>
@@ -401,41 +377,32 @@ function EditInput({
 }) {
   const [text, setText] = useState(initialContent);
   const { t } = useI18n();
-  const routingChip = delegateAgentName
-    ? { label: `@${delegateAgentName}`, color: 'text-[var(--abu-info)] bg-[var(--abu-info-bg)]' }
+  const routingLabel = delegateAgentName
+    ? `@${delegateAgentName}`
     : skillName
-      ? { label: `/${skillName}`, color: 'text-purple-600 bg-purple-50' }
+      ? `/${skillName}`
       : null;
 
   return (
-    <div className="min-w-[280px] rounded-2xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] overflow-hidden">
-      {routingChip && (
-        <div className="flex items-center px-4 pt-3 pb-1 bg-[var(--abu-bg-muted)]">
-          <span className={cn('inline-flex items-center px-2 py-0.5 rounded-md text-minor font-medium', routingChip.color)}>
-            {routingChip.label}
-          </span>
+    <div className="flex min-w-72 flex-col gap-3 rounded-panel border border-separator bg-surface p-3">
+      {routingLabel && (
+        <div className="flex items-center">
+          <Tag>{routingLabel}</Tag>
         </div>
       )}
-      <textarea
+      <TextArea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        className="w-full min-h-[80px] px-4 py-3 bg-[var(--abu-bg-muted)] text-body text-[var(--abu-text-primary)] resize-none focus:outline-none border-none"
+        className="min-h-20 text-body"
         autoFocus
       />
-      <div className="flex items-center justify-end gap-3 px-4 py-2.5 border-t border-[var(--abu-bg-pressed)]">
-        <button
-          onClick={onCancel}
-          className="btn-ghost text-body text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
-        >
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="plain" onClick={onCancel}>
           {t.common.cancel}
-        </button>
-        <button
-          onClick={() => onSave(text)}
-          className="btn-ghost flex items-center gap-1.5 px-4 py-1.5 rounded-full text-body bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
+        </Button>
+        <Button variant="primary" icon={AppIcons.retry} onClick={() => onSave(text)}>
           {t.chat.saveAndResend}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -488,26 +455,9 @@ export default function MessageBubble({
   // Rewind (edit-resend / regenerate / run-retry) truncates the conversation
   // from the redone turn onward via deleteMessagesFrom, durably discarding
   // anything after it. When that redone turn isn't the conversation's last,
-  // later turns would be silently lost — gate those cases behind a confirm.
-  // `run` holds the exact same delete+resend steps the unconfirmed path would
-  // have executed immediately.
-  const [pendingRewind, setPendingRewind] = useState<{ laterTurnsCount: number; run: () => void } | null>(null);
-  const rewindConfirmDialog = (
-    <ConfirmDialog
-      open={!!pendingRewind}
-      title={t.chat.rewindConfirmTitle}
-      message={pendingRewind ? format(t.chat.rewindConfirmMessage, { count: String(pendingRewind.laterTurnsCount) }) : ''}
-      confirmText={t.common.confirm}
-      cancelText={t.common.cancel}
-      onConfirm={() => {
-        const run = pendingRewind?.run;
-        setPendingRewind(null);
-        run?.();
-      }}
-      onCancel={() => setPendingRewind(null)}
-      variant="danger"
-    />
-  );
+  // later turns would be silently lost — those cases ask first. After a yes,
+  // `proceed` runs the exact same delete+resend steps the unasked path runs.
+  const askBeforeRewind = useRewindQuestion();
 
   const textContent = getTextContent(message.content);
   const imageBlocks = getImageBlocks(message.content);
@@ -522,11 +472,13 @@ export default function MessageBubble({
     // Refuse before anything is deleted; the editor stays open so the edit survives.
     if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
-    setIsEditing(false);
 
     const proceed = async () => {
       // Re-check: the provider may have been removed while the confirm was open.
       if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
+      // The editor closes only now that the edited message is sent. Until then it stays, with
+      // what was typed: a no to the question, or a resend refused at the answer, loses nothing.
+      setIsEditing(false);
       // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
       useChatStore.getState().deleteMessagesFrom(convId, message.id);
       // Re-attach the original routing prefix (@expert or /skill) so the
@@ -546,10 +498,13 @@ export default function MessageBubble({
     const impact = activeConv
       ? computeRewindImpact(activeConv.messages, message.loopId, message.id)
       : { hasLaterTurns: false, laterTurnsCount: 0 };
-    if (impact.hasLaterTurns) {
-      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-      return;
-    }
+    if (impact.hasLaterTurns && !(await askBeforeRewind({
+      conversationId: convId,
+      laterTurnsCount: impact.laterTurnsCount,
+      loopId: message.loopId,
+      fallbackMessageId: message.id,
+      messageIds: [message.id],
+    }))) return;
     await proceed();
   };
 
@@ -582,10 +537,13 @@ export default function MessageBubble({
     };
 
     const impact = computeRewindImpact(activeConv.messages, message.loopId, message.id);
-    if (impact.hasLaterTurns) {
-      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-      return;
-    }
+    if (impact.hasLaterTurns && !(await askBeforeRewind({
+      conversationId: convId,
+      laterTurnsCount: impact.laterTurnsCount,
+      loopId: message.loopId,
+      fallbackMessageId: message.id,
+      messageIds: [message.id, truncateFromId],
+    }))) return;
     await proceed();
   };
 
@@ -642,10 +600,13 @@ export default function MessageBubble({
       };
 
       const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);
-      if (impact.hasLaterTurns) {
-        setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
-        return;
-      }
+      if (impact.hasLaterTurns && !(await askBeforeRewind({
+        conversationId: convId,
+        laterTurnsCount: impact.laterTurnsCount,
+        loopId: targetUserMsg.loopId,
+        fallbackMessageId: targetUserMsg.id,
+        messageIds: [message.id, targetUserMsg.id],
+      }))) return;
       await proceed();
     }
   };
@@ -661,8 +622,8 @@ export default function MessageBubble({
             : <AgentAvatar agent={{ name: identity.agentName ?? identity.name, avatar: identity.avatar }} size="md" round />}
         </div>
         <div className="flex-1 min-w-0 overflow-hidden">
-          <div className="text-minor text-[var(--abu-text-muted)] mb-2">{identity.name}</div>
-          <div className="text-[var(--abu-text-primary)] break-words select-text"><MarkdownRenderer content={textContent} /></div>
+          <div className="mb-2 text-ui-sm text-label-tertiary">{identity.name}</div>
+          <div className="break-words text-label select-text"><MarkdownRenderer content={textContent} /></div>
         </div>
       </div>
     );
@@ -671,19 +632,16 @@ export default function MessageBubble({
   // Actions only mode - just render the action buttons
   if (actionsOnly && !isUser) {
     return (
-      <>
-        {rewindConfirmDialog}
-        <div className="flex items-center gap-2">
-          <MessageActions
-            message={message}
-            onEdit={() => {}}
-            onRegenerate={handleRegenerate}
-            isUser={false}
-            conversationId={convId}
-          />
-          {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
-        </div>
-      </>
+      <div className="flex items-center gap-2">
+        <MessageActions
+          message={message}
+          onEdit={() => {}}
+          onRegenerate={handleRegenerate}
+          isUser={false}
+          conversationId={convId}
+        />
+        {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
+      </div>
     );
   }
 
@@ -692,11 +650,10 @@ export default function MessageBubble({
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
       <div className="flex justify-end w-full group" data-message-id={message.id}>
-        {rewindConfirmDialog}
-        <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
+        <div className="flex max-w-[85%] flex-col items-end gap-2">
           {/* Image thumbnails — above the text bubble */}
           {imageBlocks.length > 0 && !isEditing && (
-            <div className="flex flex-wrap justify-end gap-1.5">
+            <div className="flex flex-wrap justify-end gap-2">
               {imageBlocks.map((img, idx) => (
                 <UserImageThumbnail
                   key={`${message.id}:image:${idx}`}
@@ -710,7 +667,7 @@ export default function MessageBubble({
           )}
           {/* File attachment chips — above the bubble */}
           {attachmentPaths.length > 0 && !isEditing && (
-            <div className="flex flex-wrap justify-end gap-1.5">
+            <div className="flex flex-wrap justify-end gap-2">
               {attachmentPaths.map((path, idx) => (
                 <UserAttachmentChip key={idx} filePath={path} />
               ))}
@@ -718,9 +675,9 @@ export default function MessageBubble({
           )}
           {/* Delegate agent badge — above the bubble */}
           {message.delegateAgent && (
-            <div className="flex items-center justify-end gap-1 text-[var(--abu-text-muted)]">
-              <AtSign className="h-3 w-3" />
-              <span className="text-caption font-medium">{message.delegateAgent.name}</span>
+            <div className="flex items-center justify-end gap-1 text-ui-sm text-label-secondary">
+              <Icon icon={AppIcons.mention} size="sm" />
+              <span className="font-medium">{message.delegateAgent.name}</span>
             </div>
           )}
           {isEditing ? (
@@ -735,12 +692,12 @@ export default function MessageBubble({
             <>
               {/* Hide bubble when there's no text and no skill badge (pure image message) */}
               {(userCleanText || message.skill) && (
-                <div className="px-4 py-2.5 rounded-2xl rounded-br-sm bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]">
+                <div className="rounded-panel bg-fill px-4 py-2 text-label">
                   {/* Skill badge inside bubble */}
                   {message.skill && (
-                    <div className="flex items-center gap-1.5 mb-1.5 opacity-90">
-                      <Wand2 className="h-3 w-3" />
-                      <span className="text-caption font-medium">/{message.skill.name}</span>
+                    <div className="mb-1 flex items-center gap-1 text-ui-sm text-label-secondary">
+                      <Icon icon={AppIcons.skill} size="sm" />
+                      <span className="font-medium">/{message.skill.name}</span>
                     </div>
                   )}
                   {userCleanText && (() => {
@@ -748,26 +705,23 @@ export default function MessageBubble({
                       userCleanText.length > LONG_TEXT_CHARS ||
                       (userCleanText.match(/\n/g) ?? []).length >= LONG_TEXT_LINES;
                     return (
-                      <div className="text-body leading-relaxed break-words select-text">
+                      <div className="text-body break-words select-text">
                         {isLongText ? (
                           <>
-                            <div className={cn('relative', !isTextExpanded && 'max-h-32 overflow-hidden')}>
+                            {/* The bubble fill is translucent, so the fade is a mask on the text
+                                (last 40px of the 128px preview) instead of a gradient painted over it. */}
+                            <div className={cn(!isTextExpanded && 'max-h-32 overflow-hidden mask-b-from-22')}>
                               <MarkdownRenderer content={userCleanText} variant="user" />
-                              {!isTextExpanded && (
-                                <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-[var(--abu-bg-active)] to-transparent pointer-events-none" />
-                              )}
                             </div>
-                            <button
-                              type="button"
+                            <Button
+                              variant="plain"
+                              size="sm"
+                              icon={isTextExpanded ? AppIcons.collapse : AppIcons.expand}
                               onClick={() => setIsTextExpanded(v => !v)}
-                              className="mt-1.5 flex items-center gap-1 text-[var(--abu-clay)] hover:opacity-75 text-minor font-medium transition-opacity"
+                              className="-ml-2 mt-1"
                             >
-                              {isTextExpanded ? (
-                                <><ChevronUp className="h-3 w-3" />{t.chat.userMessageCollapse}</>
-                              ) : (
-                                <><ChevronDown className="h-3 w-3" />{t.chat.userMessageShowMore}</>
-                              )}
-                            </button>
+                              {isTextExpanded ? t.chat.userMessageCollapse : t.chat.userMessageShowMore}
+                            </Button>
                           </>
                         ) : (
                           <MarkdownRenderer content={userCleanText} variant="user" />
@@ -781,59 +735,56 @@ export default function MessageBubble({
                   waiting for the sidecar shows only the 「思考中」 activity row, and
                   only actionable failures belong under the user's message. */}
               {hasRunFailure && (
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
-                    <span>
-                      {isOversizeFailure && t.chat.payloadTooLarge}
-                      {!isOversizeFailure && message.runState === 'failed' && t.chat.runFailed}
-                      {!isOversizeFailure && message.runState === 'connection-failed' && t.chat.runConnectionFailed}
-                    </span>
-                    {!isConvRunning && (isOversizeFailure ? (
-                      <Button variant="ghost" size="xs" onClick={handleNewConversationWithDraft}>
-                        <MessageSquarePlus className="h-3 w-3" />
+                <div className="max-w-2xl">
+                  <InlineMessage
+                    tone="danger"
+                    action={!isConvRunning && (isOversizeFailure ? (
+                      <Button variant="secondary" size="sm" icon={AppIcons.newTaskFromMessage} onClick={handleNewConversationWithDraft}>
                         {t.chat.newConversationAction}
                       </Button>
                     ) : (
-                      <Button variant="ghost" size="xs" onClick={handleRunRetry}>
-                        <RefreshCw className="h-3 w-3" />
+                      <Button variant="secondary" size="sm" icon={AppIcons.retry} onClick={handleRunRetry}>
                         {t.chat.runRetry}
                       </Button>
                     ))}
-                  </div>
-                  {showFailureReason && message.runError && (
-                    <p className="max-w-2xl break-words text-caption text-[var(--abu-text-secondary)]">
-                      {message.runError}
-                    </p>
-                  )}
-                </div>
-              )}
-              {hasRunFailure && message.runErrorDetails && (
-                <div
-                  role="alert"
-                  className="max-w-2xl space-y-1.5 rounded-lg border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2 text-minor text-[var(--abu-text-primary)]"
-                >
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-caption">
-                    <span>HTTP {message.runErrorDetails.status}</span>
-                    {message.runErrorDetails.error_type && (
-                      <span className="break-all">
-                        error_type: <span>{message.runErrorDetails.error_type}</span>
+                  >
+                    <div className="flex flex-col gap-1">
+                      <span>
+                        {isOversizeFailure && t.chat.payloadTooLarge}
+                        {!isOversizeFailure && message.runState === 'failed' && t.chat.runFailed}
+                        {!isOversizeFailure && message.runState === 'connection-failed' && t.chat.runConnectionFailed}
                       </span>
-                    )}
-                    {message.runErrorDetails.traceId && (
-                      <span className="break-all">
-                        traceId: <span>{message.runErrorDetails.traceId}</span>
-                      </span>
-                    )}
-                  </div>
-                  {message.runErrorDetails.summary && (
-                    <p className="break-words text-[var(--abu-text-secondary)]">
-                      {message.runErrorDetails.summary}
-                    </p>
-                  )}
+                      {showFailureReason && message.runError && (
+                        <p className="break-words text-ui-sm text-label-secondary">
+                          {message.runError}
+                        </p>
+                      )}
+                      {message.runErrorDetails && (
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 font-code text-caption text-label-secondary">
+                          <span>HTTP {message.runErrorDetails.status}</span>
+                          {message.runErrorDetails.error_type && (
+                            <span className="break-all">
+                              error_type: <span>{message.runErrorDetails.error_type}</span>
+                            </span>
+                          )}
+                          {message.runErrorDetails.traceId && (
+                            <span className="break-all">
+                              traceId: <span>{message.runErrorDetails.traceId}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {message.runErrorDetails?.summary && (
+                        <p className="break-words text-ui-sm text-label-secondary">
+                          {message.runErrorDetails.summary}
+                        </p>
+                      )}
+                    </div>
+                  </InlineMessage>
                 </div>
               )}
               {/* Actions + timestamp row below bubble */}
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 {!isConvRunning && (
                   <MessageActions
                     message={message}
@@ -855,12 +806,11 @@ export default function MessageBubble({
   if (hideAvatar) {
     return (
       <div className="assistant-turn">
-        {rewindConfirmDialog}
         {/* Thinking block if present */}
         {message.thinking && <ThinkingBlock thinking={message.thinking} />}
 
         {textContent && (
-          <div className="text-[var(--abu-text-primary)] break-words select-text">
+          <div className="break-words text-label select-text">
             <MarkdownRenderer content={textContent} />
           </div>
         )}
@@ -872,12 +822,12 @@ export default function MessageBubble({
         {message.toolCalls && message.toolCalls.length > 0 && (
           <InlineToolResultImages toolCalls={message.toolCalls} conversationId={convId} />
         )}
-        {message.isStreaming && <span className="streaming-cursor" />}
+        {message.isStreaming && <span aria-hidden="true" className="ml-1 inline-block h-4 w-0.5 bg-label-secondary align-text-bottom" />}
 
         {/* 只显示输出：这条消息上的数字来自旧口径，用量页读的是新账本，
             同屏显示两个输入数会对不上（任务书 U08）。输出两边含义一致。 */}
         {message.usage && !message.isStreaming && message.usage.outputTokens != null && (
-          <div className="mt-2 text-caption text-[var(--abu-text-muted)]">
+          <div className="mt-2 text-caption text-label-tertiary">
             {`${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
           </div>
         )}
@@ -901,7 +851,6 @@ export default function MessageBubble({
 
   return (
     <div className="flex gap-3 w-full overflow-hidden group">
-      {rewindConfirmDialog}
       {/* ABU Avatar - 小布丁人 */}
       <div className="shrink-0 mt-0.5">
         <div className="w-7 h-7 rounded-full overflow-hidden">
@@ -915,7 +864,7 @@ export default function MessageBubble({
         {message.thinking && <ThinkingBlock thinking={message.thinking} />}
 
         {textContent && (
-          <div className="text-[var(--abu-text-primary)] break-words select-text">
+          <div className="break-words text-label select-text">
             <MarkdownRenderer content={textContent} />
           </div>
         )}
@@ -927,12 +876,12 @@ export default function MessageBubble({
         {message.toolCalls && message.toolCalls.length > 0 && (
           <InlineToolResultImages toolCalls={message.toolCalls} conversationId={convId} />
         )}
-        {message.isStreaming && <span className="streaming-cursor" />}
+        {message.isStreaming && <span aria-hidden="true" className="ml-1 inline-block h-4 w-0.5 bg-label-secondary align-text-bottom" />}
 
         {/* 只显示输出：这条消息上的数字来自旧口径，用量页读的是新账本，
             同屏显示两个输入数会对不上（任务书 U08）。输出两边含义一致。 */}
         {message.usage && !message.isStreaming && message.usage.outputTokens != null && (
-          <div className="mt-2 text-caption text-[var(--abu-text-muted)]">
+          <div className="mt-2 text-caption text-label-tertiary">
             {`${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
           </div>
         )}

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import { History } from 'lucide-react';
+import { memo } from 'react';
 import { useI18n } from '@/i18n';
-import { cn } from '@/lib/utils';
-import type { Chapter } from './chapters';
+import { IconButton } from '@/components/ds/button';
+import { AppIcons } from '@/components/ds/icons';
+import { Menu, MenuRadioGroup, MenuRadioItem } from '@/components/ds/menu';
+import { sameChapters, type Chapter } from './chapters';
 
 /**
  * The chapter rail's stand-in for narrow windows.
@@ -16,8 +17,12 @@ import type { Chapter } from './chapters';
  * The trigger is icon-only: a history glyph, which reads as "go back to an
  * earlier part of this conversation" — what the list is actually for — rather
  * than as a generic list of things to pick from.
+ *
+ * The chapters are a single-choice list (the current one is checked). The
+ * menu's accessible name comes from its trigger button, which carries the same
+ * words as the rail's `railLabel`.
  */
-export default function ChapterMenu({
+function ChapterMenu({
   chapters,
   currentIndex,
   onJump,
@@ -27,78 +32,36 @@ export default function ChapterMenu({
   onJump: (chapter: Chapter) => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
 
   if (chapters.length === 0) return null;
 
   return (
-    <div ref={rootRef} className="relative ml-auto">
-      <button
-        type="button"
-        aria-label={t.chat.chapters.openList}
-        aria-expanded={open}
-        title={t.chat.chapters.openList}
-        onClick={() => setOpen((v) => !v)}
-        // Same recipe as the window controls in WindowTitleBar (CONTROL_CLASS)
-        // so this button sits at the same visual weight as the panel toggles
-        // it shares a row with — including strokeWidth 1.5 on the glyph, which
-        // is what actually separates "same colour" from "looks the same".
-        className="btn-ghost flex items-center justify-center p-1 rounded-md
-                   text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]
-                   focus-visible:outline-2 focus-visible:outline-[var(--abu-clay)] focus-visible:outline-offset-2"
-      >
-        <History className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
-      </button>
-
-      {open && (
-        <div
-          role="menu"
-          aria-label={t.chat.chapters.railLabel}
-          className="absolute right-0 top-[30px] z-20 min-w-[232px] max-h-[320px] overflow-y-auto p-1.5
-                     rounded-xl bg-[var(--abu-bg-base)] border border-[var(--abu-border)] shadow-lg"
+    <Menu
+      align="end"
+      trigger={<IconButton size="sm" icon={AppIcons.history} label={t.chat.chapters.openList} className="ml-auto" />}
+    >
+      {/* A long conversation has many chapters; the list scrolls instead of growing past the window. */}
+      <div className="max-h-80 overflow-y-auto">
+        <MenuRadioGroup
+          value={chapters[currentIndex]?.messageId ?? ''}
+          onValueChange={(messageId) => {
+            const chapter = chapters.find((item) => item.messageId === messageId);
+            if (chapter) onJump(chapter);
+          }}
         >
-          {chapters.map((chapter, index) => (
-            <button
-              key={chapter.messageId}
-              type="button"
-              role="menuitem"
-              aria-current={index === currentIndex}
-              onClick={() => { onJump(chapter); setOpen(false); }}
-              className={cn(
-                'flex items-center gap-2.5 w-full text-left px-2 py-1 rounded-lg text-minor',
-                'hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]',
-                index === currentIndex ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]',
-              )}
-            >
-              {/* Same 5x2px tick as the rail — one visual language, one size. */}
-              <span
-                className={cn(
-                  'flex-none w-[5px] h-[2px] rounded-[1px]',
-                  index === currentIndex ? 'bg-[var(--abu-clay)]' : 'bg-[var(--abu-text-placeholder)]',
-                )}
-              />
-              <span className="flex-1 truncate">{chapter.title}</span>
-            </button>
+          {chapters.map((chapter) => (
+            <MenuRadioItem key={chapter.messageId} value={chapter.messageId}>{chapter.title}</MenuRadioItem>
           ))}
-        </div>
-      )}
-    </div>
+        </MenuRadioGroup>
+      </div>
+    </Menu>
   );
 }
+
+// ChatView re-renders on every streamed token and derives a new chapter array
+// each time; the trigger's tooltip and the menu only re-render when a title or
+// the current chapter changed. onJump reads only the position fields.
+export default memo(ChapterMenu, (prev, next) =>
+  prev.currentIndex === next.currentIndex
+  && prev.onJump === next.onJump
+  && sameChapters(prev.chapters, next.chapters, { summary: false }));

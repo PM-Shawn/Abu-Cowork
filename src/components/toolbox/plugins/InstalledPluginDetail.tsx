@@ -3,22 +3,19 @@
  * without resizing the dialog. Uninstall requires its own confirmation.
  */
 
-import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Bot, Server, Sparkles, Package, MessageCircle, ArrowLeft } from 'lucide-react';
+import { useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
 import { useI18n, format } from '@/i18n';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import InstalledItemMenu, { type InstalledItemMenuAction } from '@/components/toolbox/InstalledItemMenu';
-import { Toggle } from '@/components/ui/toggle';
+import { Button, IconButton } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Switch } from '@/components/ds/switch';
+import { Tag } from '@/components/ds/tag';
 import { usePluginActivation } from './usePluginActivation';
+import { DETAIL_WINDOW_CONTENT_HEIGHT } from '../windowHeight';
 import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
 import { useToastStore } from '@/stores/toastStore';
-import { useAppStore } from '@/stores/appStore';
-import { useTeamStore } from '@/stores/teamStore';
-import { agentRegistry } from '@/core/agent/registry';
-import { effectiveRun, resolveText, runExpertName, runTeamId } from '@/core/app/appBinding';
-import { Button } from '@/components/ui/button';
-import type { AppScene } from '@/types/app';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 
 /** "来自 X · N 个技能 · M 个连接器" — the row subtitle in the 「我的」 list. */
@@ -26,7 +23,7 @@ export function InstalledPluginSummary({ plugin }: { plugin: InstalledPlugin }) 
   const { t } = useI18n();
   const tb = t.toolbox;
   return (
-    <span className="mt-0.5 block truncate text-minor text-[var(--abu-text-tertiary)]">
+    <span className="block truncate text-ui-sm text-label-tertiary">
       {plugin.authoringId ? tb.pluginsAuthoredSource : format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
       {' · '}
       {format(tb.pluginsSkillCount, { count: plugin.contributed.skills.length })}
@@ -36,69 +33,23 @@ export function InstalledPluginSummary({ plugin }: { plugin: InstalledPlugin }) 
   );
 }
 
-/**
- * "这个应用里有什么" (product spec §5.2): the app's modes and scenes with
- * whoever runs each one, read from the installed app the plugin provides. The
- * skills and connectors above already name the rest of the package.
- */
-function AppContents({ pluginKey }: { pluginKey: string }) {
-  const { t, format, locale } = useI18n();
-  const app = useAppStore((s) => s.installedApps.find((item) => item.pluginKey === pluginKey));
-  const teams = useTeamStore((s) => s.teams);
-  if (!app) return null;
-
-  const owner = (scene: AppScene): string => {
-    const run = effectiveRun(app, scene);
-    if (!run) return t.appHome.sceneRunDefault;
-    if ('team' in run) {
-      const team = teams.find((item) => item.id === runTeamId(app, run));
-      return format(t.appHome.sceneRunTeam, { name: team?.name ?? run.team });
-    }
-    if ('expert' in run) {
-      const name = runExpertName(run)!;
-      return format(t.appHome.sceneRunExpert, { name: agentRegistry.getAgent(name)?.displayNames?.[locale] ?? name });
-    }
-    return format(t.appHome.sceneRunSkill, { name: run.skill });
-  };
-
-  return (
-    <section className="space-y-2" data-testid="plugin-detail-app">
-      <h4 className="text-minor font-medium text-[var(--abu-text-muted)]">{t.toolbox.pluginsAppContents}</h4>
-      <div className="space-y-2">
-        {app.config.home.modes.items.map((mode) => (
-          <div key={mode.modeId} className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-3 py-2.5">
-            <p className="text-body font-medium text-[var(--abu-text-primary)]">{resolveText(mode.title)}</p>
-            <ul className="mt-1 space-y-0.5">
-              {mode.scenes.map((scene) => (
-                <li key={scene.id} className="flex items-baseline justify-between gap-3 text-minor">
-                  <span className="truncate text-[var(--abu-text-secondary)]">{resolveText(scene.title)}</span>
-                  <span className="shrink-0 text-[var(--abu-text-muted)]">{owner(scene)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function Section({ icon: Icon, title, items = [] }: {
-  icon: typeof Sparkles;
+function Section({ icon, title, items = [] }: {
+  /** A design-system icon: callers pass `AppIcons.*`. */
+  icon: ComponentProps<typeof Icon>['icon'];
   title: string;
   items?: string[];
 }) {
   if (items.length === 0) return null;
   return (
     <section className="space-y-2">
-      <h4 className="text-minor font-medium text-[var(--abu-text-muted)]">{title}</h4>
-      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <h4 className="text-ui-sm font-medium text-label-tertiary">{title}</h4>
+      <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {items.map(item => (
-          <li key={item} className="flex items-center gap-3 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-3 py-3">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-active)]">
-              <Icon className="h-4 w-4 text-[var(--abu-text-muted)]" />
+          <li key={item} className="flex items-center gap-3 rounded-panel border border-separator px-3 py-3">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-control bg-fill">
+              <Icon icon={icon} size="md" className="text-label-tertiary" />
             </span>
-            <span className="min-w-0 break-words text-body font-medium text-[var(--abu-text-primary)]">{item}</span>
+            <span className="min-w-0 break-words text-ui font-medium text-label">{item}</span>
           </li>
         ))}
       </ul>
@@ -116,6 +67,8 @@ interface InstalledPluginDetailProps {
   onClose: () => void;
   /** Hand the record to the shared uninstall confirmation. */
   onUninstall: (plugin: InstalledPlugin) => void;
+  /** Runs once the window has gone; `event.preventDefault()` there keeps the focus from returning to the card that opened it. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 export default function InstalledPluginDetail({
@@ -126,83 +79,114 @@ export default function InstalledPluginDetail({
   description,
   onClose,
   onUninstall,
+  onCloseAutoFocus,
 }: InstalledPluginDetailProps) {
   const { t } = useI18n();
   const [showSource, setShowSource] = useState(false);
-  useEffect(() => setShowSource(false), [plugin?.key]);
-  const activation = usePluginActivation(plugin, home);
+  // The source page takes the place of the details: the focus goes to its way back when it
+  // opens, and to the menu that opened it when it is left.
+  const moveFocus = useRef(false);
+  const backRef = useRef<HTMLButtonElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  // The window stays on the page while it fades out and keeps showing the plugin it showed.
+  const [held, setHeld] = useState({ plugin, description });
+  if (plugin && (plugin !== held.plugin || description !== held.description)) setHeld({ plugin, description });
+  const shown = plugin ?? held.plugin;
+  const shownDescription = plugin ? description : held.description;
+  const [openedKey, setOpenedKey] = useState(plugin?.key ?? null);
+  if (openedKey !== (plugin?.key ?? null)) {
+    setOpenedKey(plugin?.key ?? null);
+    // Another plugin, or the same one opened again: its window opens on the details.
+    if (plugin) setShowSource(false);
+  }
+  // Keys still reach a window that is fading out; nothing in it acts then.
+  const openRef = useRef(plugin !== null);
+  useLayoutEffect(() => { openRef.current = plugin !== null; });
+  useLayoutEffect(() => {
+    if (!moveFocus.current) return;
+    moveFocus.current = false;
+    if (showSource) backRef.current?.focus();
+    else actionsRef.current?.querySelector<HTMLElement>('[data-testid="plugin-detail-menu"]')?.focus();
+  }, [showSource]);
+  const activation = usePluginActivation(shown, home);
   const launchTrial = useTrialLauncher();
   const addToast = useToastStore(s => s.addToast);
 
-  if (!plugin) return null;
+  if (!shown) return null;
   const tb = t.toolbox;
   // A verified remote install pins one of these; a local one pins neither.
-  const pinned = plugin.sha ?? plugin.checksum;
+  const pinned = shown.sha ?? shown.checksum;
+  const openSource = (open: boolean) => { if (!openRef.current) return; moveFocus.current = true; setShowSource(open); };
+  // Menu actions run after the menu has gone; by then the window may be closing.
+  const whileOpen = (run: () => void) => () => { if (openRef.current) run(); };
 
-  return createPortal(
+  return (
     <ToolDetailModal
-      open
+      open={plugin !== null}
+      // The window's name is the plugin's: the heading inside adds the word for what it is.
+      ariaLabel={shown.name}
       onClose={onClose}
+      onCloseAutoFocus={onCloseAutoFocus}
       stackedHeader
       maxWidth="max-w-2xl"
-      panelClassName="h-[min(640px,85vh)]"
-      avatar={showSource ? <button type="button" aria-label={tb.backToDetails} title={tb.backToDetails} onClick={() => setShowSource(false)} className="flex h-full w-full items-center justify-center rounded-full hover:bg-[var(--abu-bg-active)]"><ArrowLeft className="h-5 w-5 text-[var(--abu-text-muted)]" /></button> : <Package className="h-6 w-6 text-[var(--abu-text-muted)]" />}
-      headerActions={showSource ? undefined : <>
-
-        <Toggle checked={activation.enabled} disabled={activation.busy || !activation.available} tone="green" onChange={() => {
-        void activation.toggle().catch(error => addToast({ type: 'error', title: plugin.name, message: String(error) }));
-      }} />
-        <InstalledItemMenu testId="plugin-detail-menu" ariaLabel={format(tb.itemMenuLabel, { name: plugin.name })} actions={[
-          ...(authorActions ?? []),
-          { id: 'view', label: tb.pluginsDisclosureSource, onSelect: () => setShowSource(true) },
+      panelClassName={DETAIL_WINDOW_CONTENT_HEIGHT}
+      avatar={showSource
+        ? <IconButton ref={backRef} icon={AppIcons.back} label={tb.backToDetails} onClick={() => openSource(false)} />
+        : <Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />}
+      headerActions={showSource ? undefined : <div ref={actionsRef} className="flex items-center gap-2">
+        {/* Busy while the plugin is being turned on: dimmed, and the keyboard focus stays on it. */}
+        <span className="flex">
+          <Switch checked={activation.enabled} disabled={!activation.available} busy={activation.busy} aria-label={shown.name} onCheckedChange={() => {
+            if (!openRef.current) return;
+            void activation.toggle().catch(error => addToast({ type: 'error', title: shown.name, message: String(error) }));
+          }} />
+        </span>
+        <InstalledItemMenu testId="plugin-detail-menu" ariaLabel={format(tb.itemMenuLabel, { name: shown.name })} actions={[
+          ...(authorActions ?? []).map(action => ({ ...action, onSelect: whileOpen(action.onSelect) })),
+          { id: 'view', label: tb.pluginsDisclosureSource, onSelect: () => openSource(true) },
         ]} />
-      </>}
-      footer={showSource ? undefined : <div className="flex items-center justify-between gap-3">
-        <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => onUninstall(plugin)}>{tb.pluginsUninstall}</Button>
-        <div className="flex items-center gap-3">
-        {authorUpdate && <Button variant="ghost" size="sm" className="rounded-xl border border-[var(--abu-border)]" onClick={authorUpdate.onReview}>{authorUpdate.available ? tb.pluginsPreviewUpdate : tb.pluginsCheckChanges}</Button>}
-        <Button size="sm" className="rounded-xl" disabled={!activation.enabled || activation.busy} onClick={() => { onClose(); launchTrial({ name: plugin.name, description }); }}><MessageCircle className="h-3.5 w-3.5" />{tb.menuTrial}</Button>
+      </div>}
+      // The row is as tall as the footer of the draft window and of the preview, so the three windows are one size.
+      footer={showSource ? undefined : <div className="flex min-h-7 w-full items-center justify-between gap-3">
+        <Button variant="danger" size="sm" icon={AppIcons.delete} onClick={() => { if (plugin) onUninstall(plugin); }}>{tb.pluginsUninstall}</Button>
+        <div className="flex items-center gap-2">
+          {authorUpdate && <Button variant="secondary" size="sm" onClick={() => { if (plugin) authorUpdate.onReview(); }}>{authorUpdate.available ? tb.pluginsPreviewUpdate : tb.pluginsCheckChanges}</Button>}
+          <Button variant="primary" size="sm" icon={AppIcons.startChat} disabled={!activation.enabled || activation.busy} onClick={() => { if (!plugin) return; onClose(); launchTrial({ name: plugin.name, description }); }}>{tb.menuTrial}</Button>
         </div>
       </div>}
     >
       {showSource ? <div data-testid="plugin-source-dialog" className="space-y-4">
-        <h2 className="text-h-lg font-semibold text-[var(--abu-text-primary)]">{tb.pluginsDisclosureSource}</h2>
-        <p className="text-body text-[var(--abu-text-primary)]">{plugin.authoringId ? tb.pluginsAuthoredSource : format(tb.pluginsFromMarketplace, { name: plugin.marketplace })} · v{plugin.version}</p>
-        {pinned && <p className="break-all font-mono text-minor text-[var(--abu-text-muted)]">{pinned}</p>}
-      </div> : <div data-testid="plugin-manage-dialog">
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <h2 className="text-h-lg font-semibold text-[var(--abu-text-primary)]">{plugin.name} <span className="font-normal text-[var(--abu-text-muted)]">{tb.plugins}</span></h2>
-            {authorUpdate && <p className="text-minor text-[var(--abu-text-muted)]">{authorUpdate.available ? tb.pluginsAuthorUpdateAvailable : tb.pluginsAuthorUpdateHint}</p>}
-            {description && <p className="text-body text-[var(--abu-text-secondary)] leading-relaxed">{description}</p>}
-          </div>
-          <div className="space-y-5">
+        <h2 className="text-title text-label">{tb.pluginsDisclosureSource}</h2>
+        <p className="text-ui text-label">{shown.authoringId ? tb.pluginsAuthoredSource : format(tb.pluginsFromMarketplace, { name: shown.marketplace })} · v{shown.version}</p>
+        {pinned && <p className="break-all font-code text-ui-sm text-label-tertiary">{pinned}</p>}
+      </div> : <div data-testid="plugin-manage-dialog" className="space-y-4">
+        <div className="space-y-2">
+          <h2 className="text-title text-label">{shown.name} <span className="font-normal text-label-tertiary">{tb.plugins}</span></h2>
+          {authorUpdate && (authorUpdate.available
+            ? <p><Tag tone="info">{tb.pluginsAuthorUpdateAvailable}</Tag></p>
+            : <p className="text-ui-sm text-label-tertiary">{tb.pluginsAuthorUpdateHint}</p>)}
+          {shownDescription && <p className="text-ui text-label-secondary">{shownDescription}</p>}
+        </div>
+        <div className="space-y-5">
           <Section
-            icon={Sparkles}
+            icon={AppIcons.sparkles}
             title={tb.skills}
-            items={plugin.contributed.skills}
+            items={shown.contributed.skills}
           />
           <Section
-            icon={Server}
+            icon={AppIcons.connector}
             title={tb.connectors}
-            items={plugin.contributed.mcpServers}
+            items={shown.contributed.mcpServers}
           />
           {/* Named for the same reason as the other two: uninstall withdraws
               these, and they live outside the package directory. */}
           <Section
-            icon={Bot}
+            icon={AppIcons.agent}
             title={tb.pluginsDisclosureAgents}
-            items={plugin.contributed.agents}
+            items={shown.contributed.agents}
           />
-          <AppContents pluginKey={plugin.key} />
-
-          </div>
-
-
         </div>
-
       </div>}
-    </ToolDetailModal>,
-    document.body,
+    </ToolDetailModal>
   );
 }

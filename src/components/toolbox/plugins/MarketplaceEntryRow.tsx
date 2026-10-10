@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from 'react';
-import { Package } from 'lucide-react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 import ToolCard from '@/components/toolbox/ToolCard';
 
 export interface MarketplaceEntryRowProps {
@@ -37,7 +38,7 @@ export default function MarketplaceEntryRow({
         id: name,
         name,
         nameTestId,
-        avatar: icon ?? <Package className="h-6 w-6 text-[var(--abu-text-muted)]" />,
+        avatar: icon ?? <Icon icon={AppIcons.bundle} size="lg" className="text-label-tertiary" />,
 
         toggle: actions && <span className="flex shrink-0 items-center gap-1">{actions}</span>,
         description,

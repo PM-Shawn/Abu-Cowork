@@ -333,10 +333,12 @@ function orgCard(page: Page, name: string) {
     .filter({ has: page.getByTitle(name, { exact: true }) });
 }
 
-/** 卸载 lives behind the row's `···` menu, exactly as it does in the OSS 市场. */
+/** 卸载 lives behind the row's `···` menu, exactly as it does in the OSS 市场.
+ *  The menu is portaled to the page, so its item is no descendant of the row;
+ *  one menu is open at a time. */
 async function uninstallOrgPlugin(page: Page, name: string): Promise<void> {
   await orgCard(page, name).getByTestId('enterprise-plugin-menu').click();
-  await orgCard(page, name).getByTestId('enterprise-plugin-menu-uninstall').click();
+  await page.getByTestId('enterprise-plugin-menu-uninstall').click();
 }
 
 /** Force a catalog re-sync: the tab polls every 5 min, but re-syncs on mount.

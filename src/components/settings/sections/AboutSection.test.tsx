@@ -1,11 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render as renderBare, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
 import AboutSection from './AboutSection';
+import { DesignSystemProvider } from '@/components/ds/provider';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { checkForUpdate } from '@/core/updates/checker';
+import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
 import { OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
 
 const openUrl = vi.fn();
@@ -60,6 +62,10 @@ vi.mock('@/i18n', () => ({
   }),
 }));
 
+function render(page: ReactElement) {
+  return renderBare(page, { wrapper: DesignSystemProvider });
+}
+
 function resetUpdateState(updaterUnsupported: boolean | null) {
   useSettingsStore.setState({
     updateInfo: null,
@@ -67,6 +73,8 @@ function resetUpdateState(updaterUnsupported: boolean | null) {
     updateDownloadProgress: null,
     updateInstalling: false,
     updaterUnsupported,
+    // The page lives in the settings window; it downloads and restarts only while that window is open.
+    systemSettingsOpen: true,
   });
 }
 
@@ -201,5 +209,225 @@ describe('AboutSection — update status caption (three-state)', () => {
     render(<AboutSection />);
 
     expect(vi.mocked(checkForUpdate)).not.toHaveBeenCalled();
+  });
+});
+
+// A made-up release. Nothing is downloaded or installed: the updater functions are mocks.
+const RELEASE = {
+  version: '9.9.9',
+  releaseNotes: '### Fixes\n\n- A made-up fix, see [the notes](https://example.invalid/notes)',
+  releaseUrl: 'https://example.invalid/release',
+  publishedAt: '2026-10-02T00:00:00Z',
+};
+
+describe('AboutSection — version, device and the update card', () => {
+  beforeEach(() => {
+    openUrl.mockReset();
+    openUrl.mockResolvedValue(undefined);
+    vi.mocked(checkForUpdate).mockReset();
+    vi.mocked(downloadAndInstallUpdate).mockReset().mockResolvedValue(undefined);
+    vi.mocked(restartApp).mockReset().mockResolvedValue(undefined);
+    resetUpdateState(false);
+  });
+
+  afterEach(cleanup);
+
+  it('shows the short device id and copies the whole one', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(<AboutSection />);
+    const copy = screen.getByTitle('device-1234-abcd');
+    expect(copy).toHaveTextContent('device-1');
+    expect(copy).not.toHaveTextContent('device-1234');
+
+    await user.click(copy);
+
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('device-1234-abcd');
+  });
+
+  it('shows nothing about a release while there is none', () => {
+    render(<AboutSection />);
+
+    expect(screen.getByText('当前版本')).toBeInTheDocument();
+    expect(screen.queryByText('发现新版本')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '下载更新' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
+
+  it('offers a new release with its notes and starts the download on request', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({ updateInfo: RELEASE });
+    render(<AboutSection />);
+
+    expect(screen.getByText('发现新版本')).toBeInTheDocument();
+    expect(screen.getByText('v9.9.9')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Fixes' })).toBeInTheDocument();
+    expect(screen.queryByText('已是最新版本')).not.toBeInTheDocument();
+    expect(downloadAndInstallUpdate).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '下载更新' }));
+
+    expect(downloadAndInstallUpdate).toHaveBeenCalledTimes(1);
+    expect(restartApp).not.toHaveBeenCalled();
+  });
+
+  it('opens links in the notes and the full notes outside the app', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({ updateInfo: RELEASE });
+    render(<AboutSection />);
+
+    await user.click(screen.getByRole('link', { name: 'the notes' }));
+    expect(openUrl).toHaveBeenLastCalledWith('https://example.invalid/notes');
+
+    await user.click(screen.getByRole('button', { name: '在 GitHub 查看完整更新说明' }));
+    expect(openUrl).toHaveBeenLastCalledWith('https://example.invalid/release');
+  });
+
+  it('shows how far the download is and offers neither a second download nor a check', () => {
+    useSettingsStore.setState({ updateInfo: RELEASE, updateDownloadProgress: { phase: 'downloading', downloaded: 250, total: 1000 } });
+    render(<AboutSection />);
+
+    const bar = screen.getByRole('progressbar', { name: '正在下载更新...' });
+    expect(bar).toHaveAttribute('aria-valuenow', '25');
+    expect(bar).toHaveAttribute('aria-valuemin', '0');
+    expect(bar).toHaveAttribute('aria-valuemax', '100');
+    expect(screen.getByText('25.0%')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '下载更新' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '检查更新' })).toBeDisabled();
+  });
+
+  it('gives no percentage while the download is being prepared or verified', () => {
+    useSettingsStore.setState({ updateInfo: RELEASE, updateDownloadProgress: { phase: 'preparing', downloaded: 0, total: 0 } });
+    const { unmount } = render(<AboutSection />);
+    expect(screen.getByRole('progressbar', { name: '正在准备下载...' })).not.toHaveAttribute('aria-valuenow');
+    expect(screen.queryByText(/%$/)).not.toBeInTheDocument();
+    unmount();
+
+    useSettingsStore.setState({ updateDownloadProgress: { phase: 'verifying', downloaded: 1000, total: 1000 } });
+    render(<AboutSection />);
+    expect(screen.getByRole('progressbar', { name: '正在验证更新...' })).not.toHaveAttribute('aria-valuenow');
+  });
+
+  it('says the download failed and tries again on request', async () => {
+    const user = userEvent.setup();
+    vi.mocked(downloadAndInstallUpdate).mockRejectedValueOnce(new Error('made-up network failure'));
+    useSettingsStore.setState({ updateInfo: RELEASE });
+    render(<AboutSection />);
+
+    await user.click(screen.getByRole('button', { name: '下载更新' }));
+
+    expect(await screen.findByText('下载更新失败')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '下载更新' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '重试' }));
+
+    expect(downloadAndInstallUpdate).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByText('下载更新失败')).not.toBeInTheDocument());
+  });
+
+  it('restarts to finish an update that is ready', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({ updateInfo: RELEASE, updateInstalling: true });
+    render(<AboutSection />);
+    expect(screen.queryByRole('button', { name: '下载更新' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '重启以完成更新' }));
+
+    expect(restartApp).toHaveBeenCalledTimes(1);
+    expect(downloadAndInstallUpdate).not.toHaveBeenCalled();
+  });
+
+  it('takes no second check while one is running', () => {
+    useSettingsStore.setState({ updateChecking: true });
+    render(<AboutSection />);
+
+    expect(screen.getByText('检查中...')).toBeInTheDocument();
+    expect(screen.queryByText('已是最新版本')).not.toBeInTheDocument();
+    for (const button of screen.getAllByRole('button')) {
+      if (button.getAttribute('title') === 'device-1234-abcd') continue;
+      expect(button).toBeDisabled();
+    }
+  });
+
+  it('turns one indicator beside the check button while a check runs, and none inside it', () => {
+    useSettingsStore.setState({ updateChecking: true });
+    const { container } = render(<AboutSection />);
+
+    const turning = container.querySelectorAll('[data-ds-spinner]');
+    expect(turning).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent('检查中...');
+    const check = screen.getByRole('button', { name: '检查更新' });
+    expect(check).toBeDisabled();
+    expect(check.querySelector('[data-ds-spinner]')).toBeNull();
+    expect(container.querySelectorAll('.animate-spin')).toHaveLength(1);
+  });
+
+  it('has one filled button at most: download, then restart', () => {
+    useSettingsStore.setState({ updateInfo: RELEASE });
+    const { container, unmount } = render(<AboutSection />);
+    expect(container.querySelectorAll('.bg-emphasis')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '下载更新' })).toHaveClass('bg-emphasis');
+    unmount();
+
+    useSettingsStore.setState({ updateInstalling: true });
+    const second = render(<AboutSection />);
+    expect(second.container.querySelectorAll('.bg-emphasis')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '重启以完成更新' })).toHaveClass('bg-emphasis');
+    second.unmount();
+
+    useSettingsStore.setState({ updateInfo: null, updateInstalling: false });
+    const third = render(<AboutSection />);
+    expect(third.container.querySelector('.bg-emphasis')).toBeNull();
+  });
+
+  it('lists version and device in one group', () => {
+    const { container } = render(<AboutSection />);
+
+    const group = container.querySelector('.rounded-panel');
+    expect(group).not.toBeNull();
+    expect(group).toHaveTextContent('当前版本');
+    expect(group).toHaveTextContent('设备 ID');
+    expect(screen.getByTitle('device-1234-abcd')).toHaveClass('font-code');
+  });
+
+  describe('while the settings window is closing', () => {
+    // The window stays on the page while it fades out; the keyboard can still reach its buttons.
+    it('starts no download', async () => {
+      const user = userEvent.setup();
+      useSettingsStore.setState({ updateInfo: RELEASE });
+      render(<AboutSection />);
+      useSettingsStore.setState({ systemSettingsOpen: false });
+
+      screen.getByRole('button', { name: '下载更新' }).focus();
+      await user.keyboard('{Enter}');
+      await user.keyboard(' ');
+
+      expect(downloadAndInstallUpdate).not.toHaveBeenCalled();
+    });
+
+    it('does not restart', async () => {
+      const user = userEvent.setup();
+      useSettingsStore.setState({ updateInfo: RELEASE, updateInstalling: true });
+      render(<AboutSection />);
+      useSettingsStore.setState({ systemSettingsOpen: false });
+
+      screen.getByRole('button', { name: '重启以完成更新' }).focus();
+      await user.keyboard('{Enter}');
+
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+  });
+
+  it('says the check failed when it could not be made', async () => {
+    const user = userEvent.setup();
+    vi.mocked(checkForUpdate).mockRejectedValue(new Error('made-up failure'));
+    render(<AboutSection />);
+
+    await user.click(screen.getByRole('button', { name: '检查更新' }));
+
+    expect(await screen.findByText('检查更新失败')).toBeInTheDocument();
+    expect(screen.queryByText('已是最新版本')).not.toBeInTheDocument();
+    expect(checkForUpdate).toHaveBeenCalledExactlyOnceWith(true);
   });
 });

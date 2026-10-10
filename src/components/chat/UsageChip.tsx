@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { useI18n } from '@/i18n';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip } from '@/components/ds/tooltip';
 import { queryUsageConversation, type UsageAggregate } from '@/core/usage/usageLedgerClient';
 
 /**
@@ -16,7 +16,7 @@ function formatTokens(n: number): string {
 /** 会话还在跑的时候数字会变，所以定期取一次。 */
 const REFRESH_INTERVAL_MS = 15_000;
 
-export default function UsageChip({ conversationId }: { conversationId: string }) {
+function UsageChip({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
   const [usage, setUsage] = useState<UsageAggregate | null>(null);
 
@@ -47,22 +47,20 @@ export default function UsageChip({ conversationId }: { conversationId: string }
   ].join(' · ');
 
   return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            className="inline-flex items-center gap-1 text-caption text-[var(--abu-text-muted)] tabular-nums select-none cursor-default"
-          >
-            <span>{formatTokens(total)}</span>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="flex flex-col items-start gap-0.5 max-w-xs">
-          <span className="text-caption opacity-60 leading-tight">
-            {t.chat.usageChipSubtitle}
-          </span>
-          <span className="leading-tight">{bodyLine}</span>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip
+      content={(
+        <span className="flex flex-col items-start gap-1">
+          <span className="text-caption text-label-tertiary">{t.chat.usageChipSubtitle}</span>
+          <span>{bodyLine}</span>
+        </span>
+      )}
+    >
+      <span className="inline-flex cursor-default select-none items-center gap-1 text-caption text-label-tertiary tabular-nums">
+        <span>{formatTokens(total)}</span>
+      </span>
+    </Tooltip>
   );
 }
+
+// Sits under the composer; ChatView re-renders on every streamed token, the chip only when its conversation changes.
+export default memo(UsageChip);

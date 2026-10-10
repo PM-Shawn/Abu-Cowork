@@ -66,10 +66,7 @@ export function showSandboxBlockedToast(command: string): void {
         },
         {
           label: t.sandbox.goToSettings,
-          onClick: () => {
-            useSettingsStore.getState().setActiveSystemTab('sandbox' as never);
-            useSettingsStore.getState().toggleSettings();
-          },
+          onClick: openSecuritySettings,
         },
       ],
     });
@@ -82,12 +79,14 @@ export function showSandboxBlockedToast(command: string): void {
       actions: [
         {
           label: t.sandbox.goToSettings,
-          onClick: () => {
-            useSettingsStore.getState().setActiveSystemTab('sandbox' as never);
-            useSettingsStore.getState().toggleSettings();
-          },
+          onClick: openSecuritySettings,
         },
       ],
     });
   }
+}
+
+// The settings window, on the security page (sandbox settings).
+function openSecuritySettings(): void {
+  useSettingsStore.getState().openSystemSettings('sandbox');
 }

@@ -1,6 +1,9 @@
-import { Bot, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import type { InboxItem } from '@/types/todo';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ds/button';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 
@@ -14,13 +17,13 @@ interface InboxItemRowProps {
 function iconFor(type: InboxItem['type']) {
   switch (type) {
     case 'agent_proposed_todo':
-      return <Bot className="h-4 w-4 text-[var(--abu-clay)]" />;
+      return <Icon icon={AppIcons.agent} size="md" className="text-label-secondary" />;
     case 'agent_confirmation':
-      return <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)]" />;
+      return <Icon icon={AppIcons.warning} size="md" className="text-warning" />;
     case 'agent_result':
-      return <CheckCircle2 className="h-4 w-4 text-[var(--abu-success)]" />;
+      return <Icon icon={AppIcons.success} size="md" className="text-success" />;
     case 'agent_error':
-      return <XCircle className="h-4 w-4 text-[var(--abu-danger)]" />;
+      return <Icon icon={AppIcons.error} size="md" className="text-danger" />;
   }
 }
 
@@ -45,42 +48,38 @@ export default function InboxItemRow({
 }: InboxItemRowProps) {
   const { t } = useI18n();
   const processed = item.status !== 'pending';
-  const statusBadge = item.status === 'accepted'
-    ? { label: t.inboxTabs.statusAccepted, cls: 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]' }
-    : item.status === 'ignored'
-      ? { label: t.inboxTabs.statusIgnored, cls: 'bg-gray-100 dark:bg-[var(--abu-bg-muted)] text-gray-500 dark:text-[var(--abu-text-secondary)]' }
-      : null;
 
   return (
-    <div className={cn(
-      'px-4 py-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-card)]',
-      processed ? 'opacity-70' : 'hover:border-[var(--abu-clay-40)]',
-    )}>
-      <div className="flex items-center gap-2 mb-2">
+    <div
+      data-inbox-item={item.id}
+      className={cn('rounded-panel border border-separator bg-surface px-4 py-3', processed && 'opacity-60')}
+    >
+      <div className="mb-2 flex items-center gap-2">
         {iconFor(item.type)}
-        <span className="text-minor font-medium text-[var(--abu-text-secondary)]">
+        <span className="text-ui-sm font-medium text-label-secondary">
           {labelFor(item.type, t)}
         </span>
         {item.unread && !processed && (
-          <span className="w-1.5 h-1.5 rounded-full bg-[var(--abu-danger-solid)]" />
+          <StatusIcon tone="info" size="sm" label={t.inboxTabs.pending} />
         )}
-        {statusBadge && (
-          <span className={cn('ml-auto text-caption px-1.5 py-0.5 rounded', statusBadge.cls)}>
-            {statusBadge.label}
-          </span>
+        {item.status === 'accepted' && (
+          <span className="ml-auto"><Tag tone="success">{t.inboxTabs.statusAccepted}</Tag></span>
+        )}
+        {item.status === 'ignored' && (
+          <span className="ml-auto"><Tag>{t.inboxTabs.statusIgnored}</Tag></span>
         )}
       </div>
-      <p className="text-body text-[var(--abu-text-primary)] mb-3 whitespace-pre-wrap">
+      <p className="mb-3 whitespace-pre-wrap text-ui text-label">
         {item.summary}
       </p>
       {!processed && (
         <div className="flex gap-2">
           {item.type === 'agent_proposed_todo' && (
             <>
-              <Button size="sm" onClick={onAccept}>
+              <Button variant="secondary" size="sm" onClick={onAccept}>
                 {t.inbox.accept}
               </Button>
-              <Button size="sm" variant="ghost" onClick={onIgnore}>
+              <Button variant="plain" size="sm" onClick={onIgnore}>
                 {t.inbox.ignore}
               </Button>
             </>
@@ -88,11 +87,11 @@ export default function InboxItemRow({
           {item.type === 'agent_result' && (
             <>
               {onView && (
-                <Button size="sm" onClick={onView}>
+                <Button variant="secondary" size="sm" onClick={onView}>
                   {t.inbox.viewResult}
                 </Button>
               )}
-              <Button size="sm" variant="ghost" onClick={onIgnore}>
+              <Button variant="plain" size="sm" onClick={onIgnore}>
                 {t.inbox.close}
               </Button>
             </>
@@ -100,11 +99,11 @@ export default function InboxItemRow({
           {item.type === 'agent_confirmation' && (
             <>
               {onView && (
-                <Button size="sm" onClick={onView}>
+                <Button variant="secondary" size="sm" onClick={onView}>
                   {t.inbox.viewResult}
                 </Button>
               )}
-              <Button size="sm" variant="ghost" onClick={onIgnore}>
+              <Button variant="plain" size="sm" onClick={onIgnore}>
                 {t.inbox.cancelTask}
               </Button>
             </>
@@ -112,11 +111,11 @@ export default function InboxItemRow({
           {item.type === 'agent_error' && (
             <>
               {onView && (
-                <Button size="sm" onClick={onView}>
+                <Button variant="secondary" size="sm" onClick={onView}>
                   {t.inbox.retry}
                 </Button>
               )}
-              <Button size="sm" variant="ghost" onClick={onIgnore}>
+              <Button variant="plain" size="sm" onClick={onIgnore}>
                 {t.inbox.close}
               </Button>
             </>

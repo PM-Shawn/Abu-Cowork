@@ -1,16 +1,22 @@
 import { ContextMenu as ContextMenuPrimitive, DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
 import type { LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useId, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import type { DataAttributes } from './dialog';
+import { dropsHeldEscape, dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { Icon } from './icon';
+import { AppIcons } from './icons';
 import { LayerScope } from './layer';
-import { useLayer, useLayerContainer, useOpenState } from './layer-context';
+import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
 import { MenuKindContext, useMenuKind } from './menu-context';
-import { FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED } from './styles';
+import { EDGE_GAP, FLOAT_MOTION, FLOAT_SURFACE, MENU_ITEM, RADIX_ITEM_DISABLED, isWorking } from './styles';
 
-const MENU_PANEL = 'z-popover min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) p-1';
+// The panel never grows past the room Radix measures between the trigger and the window edge; a longer list scrolls.
+const MENU_PANEL = 'max-h-(--radix-dropdown-menu-content-available-height) min-w-40 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto p-1';
 
-export function Menu({ trigger, children, align = 'start', side = 'bottom', open, defaultOpen = false, onOpenChange }: {
+// onCloseAutoFocus runs after the layer's own handler once the menu has gone; call
+// event.preventDefault() there to keep focus off the trigger (e.g. to focus a field).
+export function Menu({ trigger, children, align = 'start', side = 'bottom', open, defaultOpen = false, onOpenChange, onCloseAutoFocus, contentProps }: {
   trigger: ReactNode;
   children: ReactNode;
   align?: 'start' | 'center' | 'end';
@@ -18,23 +24,65 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   open?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
+  // data-* attributes for the menu's content element (a test id).
+  contentProps?: DataAttributes;
 }) {
   const container = useLayerContainer();
   const [isOpen, setOpen] = useOpenState(open, defaultOpen, onOpenChange);
-  const { id, onCloseAutoFocus } = useLayer('popover', isOpen, setOpen);
+  const { id, onCloseAutoFocus: layerCloseAutoFocus, onEscapeKeyDown } = useLayer('popover', isOpen, setOpen);
+  const level = useFloatingLevel();
+  // A menu chooses on the key-down of Enter or Space, and the key that opened it is still down
+  // when it shows with the focus on its first item: that key chooses nothing, and moves nothing,
+  // until it is pressed again. Keys pressed inside the menu repeat (arrows walk the list), except
+  // Enter and Space: one press chooses once, also while the menu fades out.
+  const heldKeys = useHeldKeys(isOpen, 'enter-space');
+  // Radix opens the menu when the pointer goes down on the trigger and on the key-down of Enter,
+  // Space or ArrowDown, and never on a click. A screen reader activates a button with a click
+  // alone (`detail` 0: no pointer went down for it); that click opens the menu here. The click of
+  // a pointer press counts its presses (`detail` 1 and up) and is left to the pointer-down, and
+  // the opening keys make no click (Radix prevents their default; the trigger's own control drops
+  // their repeats), so one press of either kind opens the menu once. A trigger that refuses its
+  // click (a busy button) opens nothing.
+  const openOnBareClick = (event: MouseEvent<HTMLElement>) => {
+    if (event.detail === 0 && !event.defaultPrevented && !isOpen && !isWorking(event.currentTarget)) setOpen(true);
+  };
+  // A trigger that is busy, or that its owner marks `aria-disabled`, is no menu button for now:
+  // the pointer-down is prevented, and Radix leaves a prevented event alone.
+  const refuseWhileWorking = (event: PointerEvent<HTMLElement>) => {
+    if (isWorking(event.currentTarget)) event.preventDefault();
+  };
+  // The repeat of a held key opens nothing, whatever the trigger is made of (Enter, Space, and
+  // the arrow that opens the menu): a prevented key-down is one Radix leaves alone, and the
+  // browser makes no click from it. A new press opens. A working trigger takes none of the three.
+  const dropOpeningKey = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (dropsHeldRepeat(event)) return;
+    const opens = event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown';
+    if (opens && isWorking(event.currentTarget)) event.preventDefault();
+    else if (event.repeat && event.key === 'ArrowDown') event.preventDefault();
+  };
   return (
     <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setOpen}>
-      <DropdownMenuPrimitive.Trigger asChild>{trigger}</DropdownMenuPrimitive.Trigger>
+      <DropdownMenuPrimitive.Trigger asChild onClick={openOnBareClick} onPointerDown={refuseWhileWorking} onKeyDown={dropOpeningKey}>{trigger}</DropdownMenuPrimitive.Trigger>
       <DropdownMenuPrimitive.Portal container={container}>
         <DropdownMenuPrimitive.Content
+          {...heldKeys.handlers}
           align={align}
           side={side}
           sideOffset={4}
-          onCloseAutoFocus={onCloseAutoFocus}
+          collisionPadding={EDGE_GAP}
+          onEscapeKeyDown={onEscapeKeyDown}
+          onCloseAutoFocus={(event) => { layerCloseAutoFocus(event); onCloseAutoFocus?.(event); }}
+          // React sends a click in the portaled menu up to the menu's React ancestors. A card or a
+          // row that opens on click must not open because its own menu was pressed. The native click
+          // stops at the menu's portal container as well, so a `click` listener on `document` or
+          // `window` hears no click made inside a menu, on an item or beside one.
+          onClick={(event) => event.stopPropagation()}
+          {...contentProps}
           data-ds-layer
           data-ds-motion
           data-electron-no-drag
-          className={cn(MENU_PANEL, FLOAT_SURFACE, FLOAT_MOTION)}
+          className={cn(level, MENU_PANEL, FLOAT_SURFACE, FLOAT_MOTION)}
         >
           <LayerScope id={id}>
             <MenuKindContext.Provider value="dropdown">{children}</MenuKindContext.Provider>
@@ -45,26 +93,150 @@ export function Menu({ trigger, children, align = 'start', side = 'bottom', open
   );
 }
 
-export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect }: {
+// onSelect receives Radix's select event; event.preventDefault() keeps the menu open
+// (an item whose result shows in the item itself, like checking for updates).
+export function MenuItem({ children, icon, shortcut, tone = 'default', disabled, onSelect, description, title, testId }: {
   children: ReactNode;
   icon?: LucideIcon;
   shortcut?: string;
   tone?: 'default' | 'danger';
   disabled?: boolean;
-  onSelect?: () => void;
+  onSelect?: (event: Event) => void;
+  // A second line under the name. The name alone stays the item's name.
+  description?: ReactNode;
+  // Native hint for an item whose name does not say what choosing it does (a version's time).
+  title?: string;
+  // Rendered as data-testid on the item.
+  testId?: string;
 }) {
   const kind = useMenuKind();
-  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger');
+  const descriptionId = useId();
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, tone === 'danger' && 'text-danger', description && 'h-auto items-start py-1');
+  // aria-hidden keeps the description out of the name; aria-describedby still reads it.
+  const label = description ? (
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="truncate">{children}</span>
+      <span id={descriptionId} aria-hidden="true" className="w-64 text-ui-sm text-label-secondary">{description}</span>
+    </span>
+  ) : <span className="min-w-0 flex-1 truncate">{children}</span>;
+  // With a second line the row aligns to the top; the nudge centers the icon and the shortcut on the first line.
   const body = (
     <>
-      {icon && <Icon icon={icon} size="sm" className={tone === 'danger' ? 'text-danger' : 'text-label-secondary'} />}
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-      {shortcut && <span className="text-ui-sm text-label-tertiary">{shortcut}</span>}
+      {icon && <Icon icon={icon} size="sm" className={cn(tone === 'danger' ? 'text-danger' : 'text-label-secondary', description && 'mt-0.5')} />}
+      {label}
+      {shortcut && <span className={cn('text-ui-sm text-label-tertiary', description && 'mt-0.5')}>{shortcut}</span>}
     </>
   );
+  const describedBy = description ? descriptionId : undefined;
   return kind === 'dropdown'
-    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={() => onSelect?.()} className={className}>{body}</DropdownMenuPrimitive.Item>
-    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={() => onSelect?.()} className={className}>{body}</ContextMenuPrimitive.Item>;
+    ? <DropdownMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} data-testid={testId} className={className}>{body}</DropdownMenuPrimitive.Item>
+    : <ContextMenuPrimitive.Item disabled={disabled} onSelect={(event) => onSelect?.(event)} aria-describedby={describedBy} title={title} data-testid={testId} className={className}>{body}</ContextMenuPrimitive.Item>;
+}
+
+// A nested list inside a Menu or ContextMenu. It belongs to the parent menu's layer:
+// choosing one of its items closes the whole menu.
+export function MenuSub({ label, icon, children }: { label: ReactNode; icon?: LucideIcon; children: ReactNode }) {
+  const kind = useMenuKind();
+  const container = useLayerContainer();
+  const level = useFloatingLevel();
+  // The key that opened the nested list chooses nothing in it while it stays down (see Menu).
+  const heldKeys = useHeldKeys(false, 'enter-space');
+  const markShown = (open: boolean) => { if (open) heldKeys.mark(); };
+  // Escape in the nested list closes the whole menu: once per press, like the menu's own list.
+  const dropHeldEscape = (event: KeyboardEvent) => { dropsHeldEscape(event); };
+  const triggerBody = (
+    <>
+      {icon && <Icon icon={icon} size="sm" className="text-label-secondary" />}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <Icon icon={AppIcons.disclose} size="sm" className="text-label-tertiary" />
+    </>
+  );
+  const triggerClass = cn(MENU_ITEM, 'data-[state=open]:bg-fill-selected');
+  const contentClass = cn(level, 'min-w-40 p-1', FLOAT_SURFACE, FLOAT_MOTION);
+  if (kind === 'dropdown') {
+    return (
+      <DropdownMenuPrimitive.Sub onOpenChange={markShown}>
+        <DropdownMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</DropdownMenuPrimitive.SubTrigger>
+        <DropdownMenuPrimitive.Portal container={container}>
+          <DropdownMenuPrimitive.SubContent
+            {...heldKeys.handlers}
+            onEscapeKeyDown={dropHeldEscape}
+            sideOffset={4}
+            collisionPadding={EDGE_GAP}
+            data-ds-motion
+            data-electron-no-drag
+            className={cn('origin-(--radix-dropdown-menu-content-transform-origin)', contentClass)}
+          >
+            {children}
+          </DropdownMenuPrimitive.SubContent>
+        </DropdownMenuPrimitive.Portal>
+      </DropdownMenuPrimitive.Sub>
+    );
+  }
+  return (
+    <ContextMenuPrimitive.Sub onOpenChange={markShown}>
+      <ContextMenuPrimitive.SubTrigger className={triggerClass}>{triggerBody}</ContextMenuPrimitive.SubTrigger>
+      <ContextMenuPrimitive.Portal container={container}>
+        <ContextMenuPrimitive.SubContent
+          {...heldKeys.handlers}
+          onEscapeKeyDown={dropHeldEscape}
+          sideOffset={4}
+          collisionPadding={EDGE_GAP}
+          data-ds-motion
+          data-electron-no-drag
+          className={cn('origin-(--radix-context-menu-content-transform-origin)', contentClass)}
+        >
+          {children}
+        </ContextMenuPrimitive.SubContent>
+      </ContextMenuPrimitive.Portal>
+    </ContextMenuPrimitive.Sub>
+  );
+}
+
+// A set of choices where exactly one is current (language, appearance, the current app).
+// Items read as menuitemradio with aria-checked; the current one shows a check.
+export function MenuRadioGroup({ value, onValueChange, children }: {
+  value: string;
+  onValueChange: (value: string) => void;
+  children: ReactNode;
+}) {
+  return useMenuKind() === 'dropdown'
+    ? <DropdownMenuPrimitive.RadioGroup value={value} onValueChange={onValueChange}>{children}</DropdownMenuPrimitive.RadioGroup>
+    : <ContextMenuPrimitive.RadioGroup value={value} onValueChange={onValueChange}>{children}</ContextMenuPrimitive.RadioGroup>;
+}
+
+export function MenuRadioItem({ value, children, description, disabled }: {
+  value: string;
+  children: ReactNode;
+  // A second line under the name (what the choice means). The name alone stays the item's name.
+  description?: ReactNode;
+  disabled?: boolean;
+}) {
+  const kind = useMenuKind();
+  const descriptionId = useId();
+  const className = cn(MENU_ITEM, RADIX_ITEM_DISABLED, 'relative pr-6', description && 'h-auto items-start py-1');
+  const check = <Icon icon={AppIcons.done} size="sm" />;
+  // aria-hidden keeps the description out of the name; aria-describedby still reads it.
+  const body = description ? (
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="truncate">{children}</span>
+      <span id={descriptionId} aria-hidden="true" className="w-64 text-ui-sm text-label-secondary">{description}</span>
+    </span>
+  ) : <span className="min-w-0 flex-1 truncate">{children}</span>;
+  const describedBy = description ? descriptionId : undefined;
+  return kind === 'dropdown'
+    ? (
+      <DropdownMenuPrimitive.RadioItem value={value} disabled={disabled} aria-describedby={describedBy} className={className}>
+        {body}
+        <DropdownMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</DropdownMenuPrimitive.ItemIndicator>
+      </DropdownMenuPrimitive.RadioItem>
+    )
+    : (
+      <ContextMenuPrimitive.RadioItem value={value} disabled={disabled} aria-describedby={describedBy} className={className}>
+        {body}
+        <ContextMenuPrimitive.ItemIndicator className="absolute right-2 inline-flex">{check}</ContextMenuPrimitive.ItemIndicator>
+      </ContextMenuPrimitive.RadioItem>
+    );
 }
 
 export function MenuSeparator() {

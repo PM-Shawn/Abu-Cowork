@@ -1,19 +1,12 @@
 import { useState, useMemo, useEffect } from 'react';
-import {
-  ChevronDown,
-  ChevronRight,
-  FileSearch,
-  FilePen,
-  Terminal,
-  Wrench,
-  Clock,
-  Plug,
-  Circle,
-  Loader2,
-} from 'lucide-react';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Pressable } from '@/components/ds/pressable';
+import { Spinner } from '@/components/ds/spinner';
+import { Tag } from '@/components/ds/tag';
 import { cn } from '@/lib/utils';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
-import { useActiveConversation } from '@/stores/chatStore';
+import { useActiveToolCallLists } from './useActiveToolCallLists';
 import { useMCPStore, initMCPStoreSync, type MCPServerEntry } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { useShallow } from 'zustand/react/shallow';
@@ -31,7 +24,9 @@ export default function ContextSection() {
   const [expanded, setExpanded] = useState(false);
   const [connectorsExpanded, setConnectorsExpanded] = useState(true);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
-  const conversation = useActiveConversation();
+  // Only the tool calls: text streaming into a message leaves them as they are, so
+  // the section stays as it is for every streamed character.
+  const toolCallLists = useActiveToolCallLists();
   const mcpServers = useMCPStore(useShallow((s) => Object.values(s.servers)));
   const isLoadingMCP = useMCPStore((s) => s.isLoading);
   const { t } = useI18n();
@@ -43,19 +38,15 @@ export default function ContextSection() {
 
   // Extract context data from messages, including file content from read_file results
   const contextData = useMemo(() => {
-    if (!conversation) {
-      return { accessedFiles: [], toolStats: {}, totalToolCalls: 0, usedMCPServers: new Set<string>() };
-    }
-
     const accessedFiles: AccessedFile[] = [];
     const toolStats: Record<string, number> = {};
     const seenFiles = new Set<string>();
     const fileContents: Record<string, string> = {};
     const usedMCPServers = new Set<string>();
 
-    for (const message of conversation.messages) {
-      if (message.toolCalls) {
-        for (const tc of message.toolCalls) {
+    for (const toolCalls of toolCallLists) {
+      if (toolCalls) {
+        for (const tc of toolCalls) {
           // Count tool usage
           toolStats[tc.name] = (toolStats[tc.name] || 0) + 1;
 
@@ -102,7 +93,7 @@ export default function ContextSection() {
     const totalToolCalls = Object.values(toolStats).reduce((a, b) => a + b, 0);
 
     return { accessedFiles, toolStats, totalToolCalls, usedMCPServers };
-  }, [conversation]);
+  }, [toolCallLists]);
 
   // Toggle file expansion
   const toggleFileExpand = (path: string) => {
@@ -123,29 +114,28 @@ export default function ContextSection() {
   const hasContent = contextData.totalToolCalls > 0 || hasUsedMCPServers;
 
   return (
-    <div className="context-section">
+    <div>
       {/* Header */}
-      <button
+      <Pressable
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
-        className="flex items-center justify-between w-full text-left group"
+        className="flex w-full items-center justify-between text-left"
       >
-        <div className="flex items-center gap-2">
-          <Clock className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-          <span className="text-body font-medium text-[var(--abu-text-primary)]">{t.panel.context}</span>
+        <span className="flex items-center gap-2">
+          <Icon icon={AppIcons.clock} className="text-label-secondary" />
+          <span className="text-ui font-medium text-label">{t.panel.context}</span>
           {contextData.totalToolCalls > 0 && (
-            <span className="text-minor text-[var(--abu-text-muted)]">
+            <span className="text-ui-sm text-label-tertiary">
               {contextData.totalToolCalls} ops
             </span>
           )}
-        </div>
-        <ChevronDown
-          className={cn(
-            'h-4 w-4 text-[var(--abu-text-muted)] transition-transform',
-            !expanded && '-rotate-90'
-          )}
+        </span>
+        <Icon
+          icon={AppIcons.expand}
+          size="sm"
+          className={cn('text-label-tertiary transition-transform duration-fast', !expanded && '-rotate-90')}
         />
-      </button>
+      </Pressable>
 
       {expanded && (
         <div className="mt-3">
@@ -154,7 +144,7 @@ export default function ContextSection() {
               {/* Accessed Files - now with expandable content */}
               {contextData.accessedFiles.length > 0 && (
                 <div>
-                  <div className="text-minor text-[var(--abu-text-muted)] mb-2">{t.panel.accessedFiles}</div>
+                  <div className="mb-2 text-ui-sm text-label-tertiary">{t.panel.accessedFiles}</div>
                   <div className="space-y-1">
                     {contextData.accessedFiles.slice(0, 10).map((file, i) => (
                       <FileRow
@@ -165,7 +155,7 @@ export default function ContextSection() {
                       />
                     ))}
                     {contextData.accessedFiles.length > 10 && (
-                      <div className="text-caption text-[var(--abu-text-muted)]">
+                      <div className="text-caption text-label-tertiary">
                         {format(t.panel.moreFiles, { count: contextData.accessedFiles.length - 10 })}
                       </div>
                     )}
@@ -176,17 +166,14 @@ export default function ContextSection() {
               {/* Tool Stats */}
               {Object.keys(contextData.toolStats).length > 0 && (
                 <div>
-                  <div className="text-minor text-[var(--abu-text-muted)] mb-2">{t.panel.toolUsage}</div>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="mb-2 text-ui-sm text-label-tertiary">{t.panel.toolUsage}</div>
+                  <div className="flex flex-wrap gap-1">
                     {Object.entries(contextData.toolStats).map(([tool, count]) => (
-                      <span
-                        key={tool}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--abu-bg-muted)] text-caption text-[var(--abu-text-tertiary)]"
-                      >
-                        <Wrench className="h-3 w-3" />
+                      <Tag key={tool}>
+                        <Icon icon={AppIcons.tool} size="sm" />
                         {formatToolName(tool)}
-                        <span className="text-[var(--abu-text-muted)]">x{count}</span>
-                      </span>
+                        <span className="text-label-tertiary">x{count}</span>
+                      </Tag>
                     ))}
                   </div>
                 </div>
@@ -204,14 +191,13 @@ export default function ContextSection() {
               )}
             </div>
           ) : (
-            // Empty state - Claude Cowork style
             <div className="flex flex-col items-center py-4 text-center">
-              <div className="flex items-center gap-2 mb-2">
-                <div className="w-5 h-6 rounded bg-[var(--abu-bg-hover)]" />
-                <div className="w-5 h-6 rounded bg-[var(--abu-bg-hover)]" />
-                <div className="w-5 h-6 rounded bg-[var(--abu-bg-hover)]" />
+              <div className="mb-2 flex items-center gap-2">
+                <div className="h-6 w-5 rounded-control bg-fill" />
+                <div className="h-6 w-5 rounded-control bg-fill" />
+                <div className="h-6 w-5 rounded-control bg-fill" />
               </div>
-              <p className="text-minor text-[var(--abu-text-muted)]">
+              <p className="text-ui-sm text-label-tertiary">
                 {t.panel.contextEmptyHint}
               </p>
             </div>
@@ -224,6 +210,12 @@ export default function ContextSection() {
 
 // --- File Row with expandable content ---
 
+const OPERATION_ICON = {
+  read: AppIcons.fileRead,
+  write: AppIcons.fileEdit,
+  execute: AppIcons.terminal,
+} as const;
+
 interface FileRowProps {
   file: AccessedFile;
   isExpanded: boolean;
@@ -233,46 +225,38 @@ interface FileRowProps {
 function FileRow({ file, isExpanded, onToggle }: FileRowProps) {
   const hasContent = !!file.content;
 
-  const getIcon = () => {
-    switch (file.operation) {
-      case 'read':
-        return <FileSearch className="h-3 w-3" />;
-      case 'write':
-        return <FilePen className="h-3 w-3" />;
-      case 'execute':
-        return <Terminal className="h-3 w-3" />;
-    }
-  };
+  // The disclosure arrow, or the same width left empty, so every name starts in one column.
+  const body = (
+    <>
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+        {hasContent && <Icon icon={isExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />}
+      </span>
+      <Icon icon={OPERATION_ICON[file.operation]} size="sm" />
+      <span className="truncate font-code">{getFileName(file.path)}</span>
+    </>
+  );
 
   return (
     <div>
-      <div
-        role={hasContent ? 'button' : undefined}
-        tabIndex={hasContent ? 0 : undefined}
-        onClick={hasContent ? onToggle : undefined}
-        onKeyDown={hasContent ? (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onToggle()) : undefined}
-        className={cn(
-          'flex items-center gap-2 text-minor text-[var(--abu-text-tertiary)] py-0.5 rounded',
-          hasContent && 'cursor-pointer hover:bg-[var(--abu-bg-muted)] -mx-1 px-1'
-        )}
-      >
-        {hasContent ? (
-          isExpanded ? (
-            <ChevronDown className="h-3 w-3 text-[var(--abu-text-muted)] shrink-0" />
-          ) : (
-            <ChevronRight className="h-3 w-3 text-[var(--abu-text-muted)] shrink-0" />
-          )
-        ) : (
-          <span className="w-3" />
-        )}
-        {getIcon()}
-        <span className="truncate font-mono">{getFileName(file.path)}</span>
-      </div>
+      {hasContent ? (
+        // The negative margin lets the hover fill reach past the text column.
+        <div className="-mx-1">
+          <Pressable
+            onClick={onToggle}
+            aria-expanded={isExpanded}
+            className="flex w-full items-center gap-2 rounded-control px-1 py-1 text-left text-ui-sm text-label-tertiary hover:bg-fill-hover"
+          >
+            {body}
+          </Pressable>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 py-1 text-ui-sm text-label-tertiary">{body}</div>
+      )}
 
       {/* Expanded content */}
       {isExpanded && hasContent && (
-        <div className="ml-5 mt-1 p-2 bg-[var(--abu-bg-muted)] rounded border border-[var(--abu-bg-hover)]">
-          <pre className="font-mono text-caption text-[var(--abu-text-tertiary)] whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto">
+        <div className="ml-5 mt-1 rounded-control bg-code p-2">
+          <pre className="max-h-50 overflow-y-auto whitespace-pre-wrap break-all font-code text-caption text-label-secondary">
             {truncateContent(file.content!, 2000)}
           </pre>
         </div>
@@ -296,36 +280,32 @@ function ConnectorsSection({ servers, expanded, onToggle, isLoading, t }: Connec
 
   return (
     <div>
-      <button
+      <Pressable
         onClick={onToggle}
-        className="flex items-center justify-between w-full text-left group"
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between text-left"
       >
-        <div className="flex items-center gap-2">
-          <Plug className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-          <span className="text-minor text-[var(--abu-text-muted)]">{t.panel.connectors}</span>
-          <span className="text-caption text-[var(--abu-text-muted)]">
+        <span className="flex items-center gap-2">
+          <Icon icon={AppIcons.plug} size="sm" className="text-label-tertiary" />
+          <span className="text-ui-sm text-label-tertiary">{t.panel.connectors}</span>
+          <span className="text-caption text-label-tertiary">
             {connectedCount}/{servers.length}
           </span>
-        </div>
-        <ChevronDown
-          className={cn(
-            'h-3 w-3 text-[var(--abu-text-muted)] transition-transform',
-            !expanded && '-rotate-90'
-          )}
+        </span>
+        <Icon
+          icon={AppIcons.expand}
+          size="sm"
+          className={cn('text-label-tertiary transition-transform duration-fast', !expanded && '-rotate-90')}
         />
-      </button>
+      </Pressable>
 
       {expanded && (
-        <div className="mt-2 space-y-1.5">
+        <div className="mt-2 space-y-1">
           {servers.map((server) => (
             <ConnectorRow key={server.config.name} server={server} />
           ))}
-          {isLoading && (
-            <div className="flex items-center gap-2 text-caption text-[var(--abu-text-muted)]">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              <span>{t.panel.refreshing}</span>
-            </div>
-          )}
+          {/* The one spinner of the connectors area; a reconnecting row shows a still icon */}
+          {isLoading && <Spinner size="sm" label={t.panel.refreshing} />}
         </div>
       )}
     </div>
@@ -339,23 +319,27 @@ interface ConnectorRowProps {
 function ConnectorRow({ server }: ConnectorRowProps) {
   const { config, status, tools } = server;
 
-  // Simple status icon - Claude Cowork style
+  // Every status mark sits in the same 16px box, so the names share one column.
   const renderStatusIcon = () => {
     if (status === 'connected') {
-      return <Plug className="h-4 w-4 text-[var(--abu-text-tertiary)]" />;
+      return <Icon icon={AppIcons.plug} size="md" className="text-label-secondary" />;
     }
     if (status === 'reconnecting') {
-      return <Loader2 className="h-4 w-4 text-[var(--abu-text-muted)] animate-spin" />;
+      return <Icon icon={AppIcons.loading} size="md" className="text-label-tertiary" />;
     }
-    return <Circle className="h-4 w-4 text-[var(--abu-text-placeholder)]" />;
+    return (
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+        <span className="h-2 w-2 rounded-full border border-control-border" />
+      </span>
+    );
   };
 
   return (
     <div className="flex items-center gap-3 py-1">
       {renderStatusIcon()}
-      <span className="text-body text-[var(--abu-text-tertiary)]">{config.name}</span>
+      <span className="text-ui text-label-tertiary">{config.name}</span>
       {status === 'connected' && tools.length > 0 && (
-        <span className="text-caption text-[var(--abu-text-muted)]">{tools.length} tools</span>
+        <span className="text-caption text-label-tertiary">{tools.length} tools</span>
       )}
     </div>
   );

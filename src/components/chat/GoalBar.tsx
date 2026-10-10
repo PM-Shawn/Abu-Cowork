@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import { Loader2, Pause, Pencil, Play, Target, X } from 'lucide-react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
+import { Spinner } from '@/components/ds/spinner';
+import { TextField } from '@/components/ds/text-field';
 import { getGoalActivation, subscribeGoalActivation, type GoalDisarmReason } from '@/core/goal/goalActivation';
 import { applyGoalCommand, type GoalCommand } from '@/core/goal/goalCommand';
 import type { GoalBlockedReason, GoalPhase, GoalState } from '@/core/goal/goalTypes';
@@ -92,8 +94,9 @@ function goalStatus(
  * action goes through the same path as `/goal`. A completed goal has no bar:
  * the model's closing note in the transcript says what was done.
  */
-export default function GoalBar({ conversationId }: { conversationId: string }) {
+function GoalBar({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const goal = useChatStore((s) => s.conversations[conversationId]?.goal);
   const running = useChatStore((s) => s.conversations[conversationId]?.status === 'running');
   const snapshot = useSyncExternalStore(
@@ -110,7 +113,22 @@ export default function GoalBar({ conversationId }: { conversationId: string }) 
   }, [ticking]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
-  const [confirmClear, setConfirmClear] = useState(false);
+  // False once this bar has unmounted. ChatView mounts one bar per conversation (keyed by its
+  // id), so that happens when the conversation leaves the view or its goal goes away; a yes to
+  // the clearing question that arrives afterwards clears nothing.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  // The inline edit replaces the edit button; when it closes, the focus goes back to that button.
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const returnFocusToEditRef = useRef(false);
+  useLayoutEffect(() => {
+    if (editing || !returnFocusToEditRef.current) return;
+    returnFocusToEditRef.current = false;
+    editButtonRef.current?.focus();
+  }, [editing]);
 
   const run = useCallback((command: Exclude<GoalCommand, { kind: 'create' }>) => {
     const outcome = applyGoalCommand(conversationId, command);
@@ -130,40 +148,68 @@ export default function GoalBar({ conversationId }: { conversationId: string }) 
     setDraft(goal.objective);
     setEditing(true);
   };
+  const closeEdit = () => {
+    returnFocusToEditRef.current = true;
+    setEditing(false);
+  };
   const saveEdit = () => {
-    if (run({ kind: 'edit', objective: draft })) setEditing(false);
+    if (run({ kind: 'edit', objective: draft })) closeEdit();
+  };
+  const askClear = async () => {
+    const askedGoalId = goal.id;
+    const confirmed = await confirm({
+      title: g.clearConfirmTitle,
+      message: `${g.clearConfirmBody}\n${goal.objective}`,
+      confirmLabel: g.actionClear,
+      tone: 'danger',
+    });
+    if (!confirmed || !mountedRef.current) return;
+    // The question named one goal. One that was set, or finished, while it was open stays.
+    const current = useChatStore.getState().conversations[conversationId]?.goal;
+    if (!current || current.id !== askedGoalId || current.phase === 'complete') return;
+    run({ kind: 'clear' });
   };
 
   return (
     <div
-      className="mb-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] px-3 py-1.5"
+      className="mb-2 rounded-panel border border-separator bg-surface px-3 py-1"
       data-testid="goal-bar"
     >
       <div className="flex items-center gap-2">
-        {running && canPause
-          ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--abu-text-secondary)]" />
-          : <Target className="h-4 w-4 shrink-0 text-[var(--abu-text-secondary)]" />}
-        <span className="shrink-0 text-minor font-medium text-[var(--abu-text-secondary)]" data-testid="goal-bar-status">{status.label}</span>
+        {/* While a round runs, the spinner carries the status word. */}
+        <span className="inline-flex shrink-0 items-center gap-2 text-ui-sm font-medium text-label-secondary" data-testid="goal-bar-status">
+          {running && canPause
+            ? <Spinner size="sm" label={status.label} />
+            : <><Icon icon={AppIcons.goal} size="sm" />{status.label}</>}
+        </span>
         {editing ? (
-          <Input
+          <TextField
             value={draft}
             autoFocus
+            aria-label={g.actionEdit}
             placeholder={g.editPlaceholder}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing) saveEdit();
-              if (e.key === 'Escape') setEditing(false);
+              const save = e.key === 'Enter' && !e.nativeEvent.isComposing;
+              const cancel = e.key === 'Escape';
+              if (!save && !cancel) return;
+              // The focus moves to the edit button while this key is still down: without this,
+              // the rest of the same Enter press would land on that button and open the edit again.
+              e.preventDefault();
+              if (save) saveEdit();
+              else closeEdit();
             }}
-            className="h-7 flex-1 text-minor"
+            // As tall as the bar's buttons, so the bar keeps its height when the edit opens.
+            className="h-6 min-w-0 flex-1"
           />
         ) : (
-          <span className="min-w-0 flex-1 truncate text-minor text-[var(--abu-text-primary)]" title={status.detail ?? goal.objective}>
+          <span className="min-w-0 flex-1 truncate text-ui-sm text-label" title={status.detail ?? goal.objective}>
             {goal.objective}
           </span>
         )}
         {!editing && status.aside && (
           <span
-            className={cn('shrink-0 text-caption tabular-nums', status.asideTone === 'warning' ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-text-muted)]')}
+            className={cn('shrink-0 text-caption tabular-nums', status.asideTone === 'warning' ? 'text-warning' : 'text-label-tertiary')}
             data-testid="goal-bar-aside"
           >
             {status.aside}
@@ -171,44 +217,28 @@ export default function GoalBar({ conversationId }: { conversationId: string }) 
         )}
         {editing ? (
           <>
-            <Button size="xs" variant="ghost" onClick={() => setEditing(false)}>{g.actionCancel}</Button>
-            <Button size="xs" onClick={saveEdit}>{g.actionSave}</Button>
+            <Button size="sm" variant="plain" onClick={closeEdit}>{g.actionCancel}</Button>
+            <Button size="sm" variant="secondary" onClick={saveEdit}>{g.actionSave}</Button>
           </>
         ) : (
           <>
-            {canPause && (
-              <Button size="icon-xs" variant="ghost" aria-label={g.actionPause} title={g.actionPause} onClick={() => run({ kind: 'pause' })}>
-                <Pause className="h-3.5 w-3.5" />
-              </Button>
+            {/* Pause and resume take turns in one button, so the focus stays on it after a press. */}
+            {(canPause || canResume) && (
+              <IconButton
+                size="sm"
+                icon={canPause ? AppIcons.pause : AppIcons.continue}
+                label={canPause ? g.actionPause : g.actionResume}
+                onClick={() => run({ kind: canPause ? 'pause' : 'resume' })}
+              />
             )}
-            {canResume && (
-              <Button size="icon-xs" variant="ghost" aria-label={g.actionResume} title={g.actionResume} onClick={() => run({ kind: 'resume' })}>
-                <Play className="h-3.5 w-3.5" />
-              </Button>
-            )}
-            <Button size="icon-xs" variant="ghost" aria-label={g.actionEdit} title={g.actionEdit} onClick={startEdit}>
-              <Pencil className="h-3.5 w-3.5" />
-            </Button>
-            <Button size="icon-xs" variant="ghost" aria-label={g.actionClear} title={g.actionClear} onClick={() => setConfirmClear(true)}>
-              <X className="h-3.5 w-3.5" />
-            </Button>
+            <IconButton ref={editButtonRef} size="sm" icon={AppIcons.rename} label={g.actionEdit} onClick={startEdit} />
+            <IconButton size="sm" icon={AppIcons.close} label={g.actionClear} onClick={() => void askClear()} />
           </>
         )}
       </div>
-
-      <ConfirmDialog
-        open={confirmClear}
-        title={g.clearConfirmTitle}
-        message={g.clearConfirmBody}
-        confirmText={g.actionClear}
-        cancelText={g.actionCancel}
-        variant="danger"
-        onConfirm={() => {
-          setConfirmClear(false);
-          run({ kind: 'clear' });
-        }}
-        onCancel={() => setConfirmClear(false)}
-      />
     </div>
   );
 }
+
+// ChatView renders for every piece of a streamed reply; the bar's buttons carry tooltips.
+export default memo(GoalBar);

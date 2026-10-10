@@ -8,6 +8,7 @@ import {
   terminateAbuElectron,
   dismissFirstRunOverlays,
   launchAbuElectron,
+  pressWhenSettled,
   removeElectronDataRoot,
   REPO_ROOT,
   type ElectronDataRoot,
@@ -123,9 +124,16 @@ async function openPluginsTab(page: Page): Promise<void> {
   // one rendered at a time; the tab opens on 市场 and remembers the last pick.
 }
 
+/** A window's box once its opening animation has ended; while it scales in, the box is smaller. */
+async function settledBox(page: Page, testId: string) {
+  const dialog = page.getByTestId(testId);
+  await dialog.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+  return dialog.boundingBox();
+}
+
 async function openAddMarketplace(page: Page): Promise<void> {
   await page.getByTestId('plugin-create-trigger').click();
-  await page.getByTestId('plugin-create-menu').getByRole('button', { name: /添加插件市场|Add marketplace/ }).click();
+  await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /^(添加市场|Add market)$/ }).click();
 }
 
 test('loads custom skill directories and standalone MCP configuration in Electron', async () => {
@@ -349,9 +357,12 @@ test.describe('plugin install loop', () => {
     await pluginSkillCard.click();
     await expect(page.getByTestId('skill-plugin-origin')).toContainText('e2e-weather');
     await page.getByTestId('skill-detail-menu').click();
-    await expect(page.getByRole('button', { name: /^(编辑|Edit)$/ })).toHaveCount(0);
+    await expect(page.getByRole('menuitem')).toHaveCount(2);
+    await expect(page.getByRole('menuitem', { name: /^(编辑|Edit)$/ })).toHaveCount(0);
+    // The first Escape closes the menu; the second, pressed while the menu fades out, closes the window.
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
+    await expect(page.getByTestId('skill-detail')).toHaveCount(0);
     await page.getByRole('main').getByRole('button', { name: PLUGINS_TAB }).click();
     // 市场 keeps the entry, marked installed, and is where the rest of this
     // journey happens.
@@ -601,7 +612,7 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await page.getByTestId('plugin-create-trigger').click();
-    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /创建插件|Create plugin/ }).click();
+    await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /创建插件|Create plugin/ }).click();
     const authorsPath = path.join(launched.appDataDir, 'Home/.abu/plugin-authors/authors.json');
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
     const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
@@ -619,12 +630,13 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     fs.writeFileSync(sourceSkill, '---\nname: author-greeting\ndescription: A local author fixture\n---\nOriginal instructions.\n');
     await openPluginsTab(page);
     await page.getByTestId('plugin-mine-draft').click();
-    const detailBounds = await page.getByTestId('plugin-author-detail').boundingBox();
+    const detailBounds = await settledBox(page, 'plugin-author-detail');
     await page.getByRole('button', { name: /^(校验并预览|Validate and preview)$/ }).click();
     await expect(page.getByTestId('plugin-install-disclosure')).toContainText('author-greeting');
-    expect(await page.getByTestId('plugin-install-disclosure').boundingBox()).toEqual(detailBounds);
+    expect(await settledBox(page, 'plugin-install-disclosure')).toEqual(detailBounds);
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-author-preview.png'), animations: 'disabled' });
-    await page.getByTestId('plugin-install-disclosure').getByRole('button', { name: /^(取消|关闭|Cancel|Close)$/ }).click();
+    // The preview is ready, so its footer offers Cancel; 关闭 is the window's corner button.
+    await page.getByTestId('plugin-install-disclosure').getByRole('button', { name: /^(取消|Cancel)$/ }).click();
     await expect(page.getByTestId('plugin-install-disclosure')).toBeHidden();
     expect(fs.existsSync(path.join(installRoot(launched), `author-${author.id}/e2e-author/1.0.0`))).toBe(false);
     await page.keyboard.press('Escape');
@@ -714,7 +726,7 @@ test('configures an authored MCP without putting its credential in source or run
     await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await page.getByTestId('plugin-create-trigger').click();
-    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /创建插件|Create plugin/ }).click();
+    await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /创建插件|Create plugin/ }).click();
     const authorsPath = path.join(launched.appDataDir, 'Home/.abu/plugin-authors/authors.json');
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
     const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
@@ -804,52 +816,6 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   }
 });
 
-// The app authored in a creation conversation: the example package stands in
-// for the files the model writes; the preview names the team and the pages,
-// and confirming the install enters the app the way the market's 使用 does.
-test('creates an app in a creation conversation and enters it from the preview', async () => {
-  let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
-  try {
-    launched = await launchAbuElectron();
-    const page = await launched.app.firstWindow();
-    await waitForWelcomeScreen(page);
-    await dismissFirstRunOverlays(page);
-    // 创建应用 lives with the apps, in the switcher beside Abu's own name.
-    await page.getByTestId('app-switcher-trigger').click();
-    await page.getByTestId('app-switcher-create').click();
-    const authorsPath = path.join(launched.appDataDir, 'Home/.abu/plugin-authors/authors.json');
-    await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
-    const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
-    const composer = page.locator('[data-chat-composer]');
-    const composerText = () => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '');
-    await expect(composer).toBeVisible();
-    await expect.poll(composerText).toMatch(/创建一个应用|create an app/);
-    const sourceDir = path.join(launched.appDataDir, 'Home/Abu Plugins', author.id);
-    fs.cpSync(path.join(REPO_ROOT, 'examples', 'plugin-market', 'plugins', 'abu-example-shop-ops'), sourceDir, { recursive: true });
-
-    await openPluginsTab(page);
-    // The draft waits on 「我的」, where the guide sends the user to preview it.
-    await page.getByTestId('extensions-source-mine').click();
-    await page.getByTestId('plugin-mine-draft').click();
-    await page.getByRole('button', { name: /^(校验并预览|Validate and preview)$/ }).click();
-    const disclosure = page.getByTestId('plugin-install-disclosure');
-    await expect(disclosure).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(disclosure.getByTestId('plugin-disclosure-team')).toContainText('店铺运营小组');
-    await expect(disclosure.getByTestId('plugin-disclosure-app')).toContainText('店铺后台');
-    await expect(disclosure.getByTestId('plugin-disclosure-app-pages')).toContainText('https://example.com');
-    await expect(page.getByTestId('plugin-install-confirm')).toHaveText(/安装并进入|Install and enter/);
-    await page.getByLabel('SHOP_TOKEN', { exact: true }).fill('e2e-shop-token-placeholder');
-    await page.getByTestId('plugin-install-confirm').click();
-
-    await expect(page.getByTestId('app-switcher-current')).toHaveText('店铺运营', { timeout: READY_TIMEOUT });
-    await expect(page.getByTestId('app-home-title')).toHaveText('店铺运营');
-    await expect(page.getByTestId('sidebar-app-page-portal')).toBeVisible();
-    expect(fs.existsSync(path.join(installRoot(launched), `author-${author.id}/abu-example-shop-ops/1.0.0/.abu-plugin/plugin.json`))).toBe(true);
-  } finally {
-    if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
-  }
-});
-
 test('deletes only draft metadata and explicitly archives an unreadable operation in Electron', async () => {
   let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
   try {
@@ -859,7 +825,7 @@ test('deletes only draft metadata and explicitly archives an unreadable operatio
     await dismissFirstRunOverlays(page);
     await openPluginsTab(page);
     await page.getByTestId('plugin-create-trigger').click();
-    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /创建插件|Create plugin/ }).click();
+    await page.getByTestId('plugin-create-menu').getByRole('menuitem', { name: /创建插件|Create plugin/ }).click();
     const home = fs.realpathSync(path.join(launched.appDataDir, 'Home'));
     const authorsPath = path.join(home, '.abu/plugin-authors/authors.json');
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
@@ -872,8 +838,9 @@ test('deletes only draft metadata and explicitly archives an unreadable operatio
     await page.getByTestId('plugin-author-menu').click();
     await page.getByTestId('plugin-author-menu-delete').click();
     await expect(page.getByText(/本期无法重新接管该目录|This release cannot re-adopt/)).toBeVisible();
-    await expect(page.getByText(sourceDir, { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: /^(删除草稿|Delete draft)$/ }).click();
+    // The question is one sentence followed by the directory that stays behind.
+    await expect(page.getByRole('alertdialog')).toContainText(sourceDir);
+    await pressWhenSettled(page.getByRole('button', { name: /^(删除草稿|Delete draft)$/ }));
     await expect(page.getByTestId('plugin-mine-draft')).toHaveCount(0);
     expect(JSON.parse(fs.readFileSync(authorsPath, 'utf8'))).toEqual([]);
     expect(fs.readFileSync(sourceFile, 'utf8')).toBe('Keep my source.');

@@ -1,16 +1,20 @@
 import type { PetStatus } from '@/core/pet/petStatusBridge'
 
 /**
- * Shared status → color map for the pet window. Used by the context menu
- * and the Activity Notification Tray bubble so the status dot color stays
- * consistent across both surfaces. Status *labels* are resolved through
- * i18n (`t.pet.status[status]`) at render time, not stored here.
+ * Shared status → color for the pet window. Used by the context menu and the
+ * Activity Notification Tray bubble so the status dot stays consistent across
+ * both surfaces. Status *labels* are resolved through i18n
+ * (`t.pet.status[status]`) at render time, not stored here.
+ *
+ * Each value is the text color class of a design token; the dot is filled with
+ * it (`bg-current`), so it has the contrast that token is checked for on the
+ * raised surface in both appearances. Complete literals so Tailwind generates
+ * them.
  */
-
-export const STATUS_COLOR: Record<PetStatus, string> = {
-  idle: '#6b7280',
-  running: '#3b82f6',
-  waiting: '#f97316',
-  error: '#ef4444',
-  done: '#22c55e',
+export const STATUS_TONE: Record<PetStatus, string> = {
+  idle: 'text-label-tertiary',
+  running: 'text-info',
+  waiting: 'text-warning',
+  error: 'text-danger',
+  done: 'text-success',
 }

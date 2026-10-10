@@ -1,7 +1,12 @@
 import {
-  Check, ChevronDown, ChevronRight, ChevronsUpDown, CircleCheck, CircleX, Copy, Download, Ellipsis,
-  ExternalLink, Folder, Info, LoaderCircle, Minus, Paperclip, Pencil, Plus, Redo2, RefreshCw, Search,
-  Settings, Share, SquarePen, Trash2, TriangleAlert, Undo2, X, type LucideIcon,
+  Activity, AppWindow, Archive, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, BookOpen, Bot, Brain, Building2, Calculator, Camera, ChartBar, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Chrome, CircleCheck, CircleHelp,
+  Circle, CircleMinus, CircleStop, CircleX, Clock, CloudOff, Code, Compass, Copy, CornerDownRight, Cpu, Database, Download, Ellipsis, ExternalLink, Eye, EyeOff, File, FileArchive, FileCode, FileImage, FileJson, FilePen, FilePlus,
+  FileSearch, FileText, FileType2, FileWarning, FileX, FlaskConical, Folder, FolderInput, FolderLock, FolderOpen, FolderPlus, Globe, Hand, Hash, Heart, History, ImageIcon, ImageOff, ImagePlus, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
+  LoaderCircle, Lock, LogIn, LogOut, Maximize2, Megaphone, MessageCircle, MessageSquare, MessageSquarePlus, Mic, Minimize2, Minus, Monitor, MonitorCog, MousePointer2, Palette, PanelLeft, PanelRight,
+  Package, Paperclip, Pause, PawPrint, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Radio, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scale, Scan, ScanEye, ScanLine, Search, Send, Server, Settings, Settings2, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
+  SlidersHorizontal, Sparkles, Square, SquareDashedMousePointer, SquarePen, Star, Target, Terminal, ThumbsDown, ThumbsUp, Timer, Trash2, TriangleAlert, Undo2, Upload, UserCheck, UserRound, UsersRound,
+  Wand2, Workflow, Wrench, X, Zap, ZoomIn, ZoomOut,
+  type LucideIcon,
 } from 'lucide-react';
 
 // One icon per standard action across the whole app (Apple HIG "Standard icons").
@@ -34,6 +39,206 @@ export const AppIcons = {
   loading: LoaderCircle,
   mixed: Minus,
   selectorChevrons: ChevronsUpDown,
+  sidebar: PanelLeft,
+  rightPanel: PanelRight,
+  back: ArrowLeft,
+  import: FolderInput,
+  remove: Minus,
+  fileTree: ListTree,
+  // Sidebar destinations
+  team: UsersRound,
+  extensions: Puzzle,
+  automation: Workflow,
+  todos: CheckSquare,
+  inbox: Inbox,
+  webPage: Globe,
+  // Projects and task rows
+  folderOpen: FolderOpen,
+  pin: Pin,
+  unpin: PinOff,
+  archive: Archive,
+  conversation: MessageSquare,
+  // App switcher
+  discoverApps: Compass,
+  appMarket: LayoutGrid,
+  createApp: Wand2,
+  // Account menu
+  account: UserRound,
+  language: Globe,
+  appearance: Palette,
+  help: CircleHelp,
+  feedback: MessageCircle,
+  restart: RotateCcw,
+  signIn: LogIn,
+  signOut: LogOut,
+  // Chat: message content
+  collapse: ChevronUp,
+  viewSource: Code,
+  preview: Eye,
+  enlarge: Maximize2,
+  zoomIn: ZoomIn,
+  zoomOut: ZoomOut,
+  // Chat: messages
+  thinking: Brain,
+  skill: Wand2,
+  mention: AtSign,
+  file: FileText,
+  fileCode: FileCode,
+  fileImage: FileImage,
+  fileJson: FileJson,
+  fileSlides: Presentation,
+  fileSheet: Sheet,
+  fileDocument: FileType2,
+  filePdf: FileSearch,
+  fileGeneric: File,
+  fileMissing: FileX,
+  fileNotBackedUp: FileWarning,
+  imageMissing: ImageOff,
+  thumbsUp: ThumbsUp,
+  thumbsDown: ThumbsDown,
+  newTaskFromMessage: MessageSquarePlus,
+  compact: Minimize2,
+  sparkles: Sparkles,
+  // Chat: tool steps
+  tool: Wrench,
+  terminal: Terminal,
+  plug: Plug,
+  clock: Clock,
+  fileRead: FileSearch,
+  fileEdit: FilePen,
+  fileCreate: FilePlus,
+  stopped: CircleStop,
+  awaitingAnswer: MessageSquare,
+  // Chat: cards
+  monitor: Monitor,
+  stop: Square,
+  block: Ban,
+  shield: ShieldAlert,
+  userCheck: UserCheck,
+  plan: ListChecks,
+  // Chat: approvals and notices
+  hint: Lightbulb,
+  queued: CornerDownRight,
+  channel: Hash,
+  capability: Shield,
+  trigger: Zap,
+  sandbox: MonitorCog,
+  sandboxReady: ShieldCheck,
+  continue: Play,
+  goal: Target,
+  openIn: ArrowUpRight,
+  previous: ChevronLeft,
+  customAnswer: Pencil,
+  // Chat: composer selectors
+  favorite: Star,
+  permissionAsk: Hand,
+  permissionReview: ScanEye,
+  // Chat: composer
+  send: ArrowUp,
+  // Chat: frame
+  history: History,
+  chart: BarChart3,
+  write: PenLine,
+  link: Link2,
+  // Right panel: tabs
+  agent: Bot,
+  // Right panel: preview
+  reload: RotateCw,
+  selectElement: SquareDashedMousePointer,
+  exitFullscreen: Minimize2,
+  saveAs: Save,
+  commentToChat: MessageSquarePlus,
+  quoteToChat: MessageSquare,
+  // Right panel: file renderers
+  rotateLeft: RotateCcw,
+  rotateRight: RotateCw,
+  fitView: Scan,
+  fitWidth: ScanLine,
+  next: ChevronRight,
+  // Right panel: browser
+  forward: ArrowRight,
+  // Right panel: experts
+  appendInstruction: MessageSquarePlus,
+  // Right panel: file tree
+  newFolder: FolderPlus,
+  // Settings: navigation
+  preferences: SlidersHorizontal,
+  capabilities: Zap,
+  security: Shield,
+  imChannels: Radio,
+  labs: FlaskConical,
+  models: Settings2,
+  memory: Brain,
+  soul: Heart,
+  pet: PawPrint,
+  diagnostic: Activity,
+  enterprise: Building2,
+  // Settings: security
+  appWindow: AppWindow,
+  // Settings: capabilities
+  chrome: Chrome,
+  computerUse: MonitorCog,
+  screenRead: Eye,
+  uiControl: MousePointer2,
+  // Settings: models
+  showSecret: Eye,
+  hideSecret: EyeOff,
+  imageGen: ImageIcon,
+  // Settings: memory
+  private: Lock,
+  allProjects: Globe,
+  tidyUp: ListChecks,
+  // Settings: support
+  upload: Upload,
+  bundle: Package,
+  addImage: ImagePlus,
+  notChecked: CircleMinus,
+  dataAccess: FolderLock,
+  // Pages: extensions, experts, automation, inbox, todos
+  connector: Server,
+  pause: Pause,
+  timer: Timer,
+  todoOpen: Circle,
+  deliver: Send,
+  save: Save,
+  startChat: MessageCircle,
+  askAbu: Wand2,
+  fileArchive: FileArchive,
+  // Voice input
+  microphone: Mic,
+  // Dialogs, viewers and notices (batch 8)
+  camera: Camera,
+  visible: Eye,
+  hidden: EyeOff,
+  // Connection state
+  offline: CloudOff,
 } as const satisfies Record<string, LucideIcon>;
 
 export type AppIconName = keyof typeof AppIcons;
+
+// The glyphs an expert or a team can carry as its avatar. They are data: the stored avatar
+// names of `core/team/avatarPresets.ts` point at these, so no entry is renamed or removed.
+export const AvatarGlyphs = {
+  bot: Bot,
+  chartBar: ChartBar,
+  code: Code,
+  flask: FlaskConical,
+  pen: PenLine,
+  shield: ShieldCheck,
+  users: UsersRound,
+  search: Search,
+  database: Database,
+  palette: Palette,
+  compass: Compass,
+  wrench: Wrench,
+  book: BookOpen,
+  megaphone: Megaphone,
+  scale: Scale,
+  sparkles: Sparkles,
+  cpu: Cpu,
+  globe: Globe,
+  camera: Camera,
+  calculator: Calculator,
+} as const satisfies Record<string, LucideIcon>;
+
+export type AvatarGlyph = (typeof AvatarGlyphs)[keyof typeof AvatarGlyphs];

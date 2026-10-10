@@ -1,37 +1,45 @@
 import { useState } from 'react';
-import { useTriggerStore } from '@/stores/triggerStore';
+import { Button, IconButton } from '@/components/ds/button';
+import { useConfirm } from '@/components/ds/confirm-context';
+import { AppIcons } from '@/components/ds/icons';
+import { ScrollArea } from '@/components/ds/scroll-area';
+import { StatusIcon } from '@/components/ds/status-icon';
+import { Tag } from '@/components/ds/tag';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
-import { useI18n } from '@/i18n';
-import {
-  ArrowLeft,
-  Pencil,
-  Pause,
-  Play,
-  Trash2,
-  Copy,
-  Check,
-  Zap,
-} from 'lucide-react';
-import { useToastStore } from '@/stores/toastStore';
-import { useIMChannelStore } from '@/stores/imChannelStore';
-import { cn } from '@/lib/utils';
-import TriggerRunHistory from './TriggerRunHistory';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
-import type { TriggerCapability } from '@/types/trigger';
 import { normalizeTriggerCapability } from '@/core/trigger/triggerCapability';
+import { useI18n } from '@/i18n';
+import { cn } from '@/lib/utils';
+import { useIMChannelStore } from '@/stores/imChannelStore';
+import { useToastStore } from '@/stores/toastStore';
+import { useTriggerStore } from '@/stores/triggerStore';
+import type { TriggerCapability } from '@/types/trigger';
+import TriggerRunHistory from './TriggerRunHistory';
 
-export default function TriggerDetail() {
+// A flat box for one group of facts about the listener.
+const SECTION = 'rounded-panel border border-separator p-4';
+const SECTION_TITLE = 'text-ui-sm text-label-tertiary';
+// One fact: its label and its value share this row, label left and value right.
+const FACT = 'flex items-center justify-between gap-3';
+const FACT_VALUE = 'text-ui text-label';
+// One count of the run statistics.
+const STAT = 'rounded-panel border border-separator p-3 text-center';
+const STAT_NUMBER = 'text-title text-label';
+const STAT_LABEL = 'mt-1 flex items-center justify-center gap-1 text-caption text-label-tertiary';
+
+export default function TriggerDetail({ onQuestionClosed }: {
+  // Called once the delete question has gone, whatever the answer: the page may have left under it.
+  onQuestionClosed?: () => void;
+}) {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const {
     triggers,
     selectedTriggerId,
     setSelectedTriggerId,
     setTriggerStatus,
-    deleteTrigger,
     openEditor,
   } = useTriggerStore();
 
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const trigger = selectedTriggerId ? triggers[selectedTriggerId] : null;
@@ -54,9 +62,19 @@ export default function TriggerDetail() {
     }
   };
 
-  const confirmDelete = () => {
-    setShowDeleteConfirm(false);
-    deleteTrigger(trigger.id);
+  // Deleting cannot be taken back, so it is asked first, naming the listener. The answer acts on
+  // the store as it is at that moment: nothing is deleted once the listener has left it.
+  const handleDelete = async () => {
+    const id = trigger.id;
+    const confirmed = await confirm({
+      title: t.trigger.delete,
+      message: `${t.trigger.deleteConfirm}\n${trigger.name}`,
+      confirmLabel: t.common.confirm,
+      tone: 'danger',
+    });
+    const store = useTriggerStore.getState();
+    if (confirmed && store.triggers[id]) store.deleteTrigger(id);
+    onQuestionClosed?.();
   };
 
   const handleBack = () => {
@@ -99,91 +117,77 @@ export default function TriggerDetail() {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-[var(--abu-border)] bg-[var(--abu-bg-base)]">
-        <button
-          onClick={handleBack}
-          className="p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <h1 className="text-h-md text-[var(--abu-text-primary)] flex-1 truncate">
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Header: the way back, the listener's name, edit. */}
+      <div className="flex items-center gap-3 border-b border-separator px-6 py-4">
+        <IconButton icon={AppIcons.back} label={t.schedule.backToList} data-automation-back onClick={handleBack} />
+        <h1 className="min-w-0 flex-1 truncate text-title text-label">
           {trigger.name}
         </h1>
-        <button
-          onClick={() => openEditor(trigger.id)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-        >
-          <Pencil className="h-3.5 w-3.5" />
+        <Button variant="secondary" size="sm" icon={AppIcons.rename} onClick={() => openEditor(trigger.id)}>
           {t.trigger.edit}
-        </button>
+        </Button>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-auto">
-        <div className="px-6 py-5 space-y-5">
-          {/* Info section */}
-          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.status}</span>
-              <span className="flex items-center gap-1.5">
-                <span className={cn('w-2 h-2 rounded-full', isPaused ? 'bg-neutral-300' : 'bg-[var(--abu-success-solid)]')} />
-                <span className={cn('text-body font-medium', isPaused ? 'text-[var(--abu-text-tertiary)]' : 'text-[var(--abu-success)]')}>
-                  {isPaused ? t.trigger.statusPaused : t.trigger.statusActive}
-                </span>
-              </span>
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="space-y-5 px-6 py-5">
+          <div data-trigger-section className={cn(SECTION, 'space-y-3')}>
+            <div className={FACT}>
+              <span className={SECTION_TITLE}>{t.trigger.status}</span>
+              {isPaused
+                ? <Tag>{t.trigger.statusPaused}</Tag>
+                : <Tag tone="success">{t.trigger.statusActive}</Tag>}
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.sourceType}</span>
-              <span className="text-body text-[var(--abu-text-primary)]">
+            <div className={FACT}>
+              <span className={SECTION_TITLE}>{t.trigger.sourceType}</span>
+              <span className={FACT_VALUE}>
                 {trigger.source.type === 'http' ? t.trigger.sourceHttp : trigger.source.type === 'file' ? t.trigger.sourceFile : trigger.source.type === 'im' ? t.trigger.imSource : t.trigger.sourceCron}
               </span>
             </div>
             {trigger.source.type === 'file' && (
-              <div className="flex items-center justify-between">
-                <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.filePath}</span>
-                <span className="text-body text-[var(--abu-text-primary)] truncate max-w-[200px]" title={trigger.source.path}>{trigger.source.path}</span>
+              <div className={FACT}>
+                <span className={SECTION_TITLE}>{t.trigger.filePath}</span>
+                <span className={cn(FACT_VALUE, 'max-w-50 truncate')} title={trigger.source.path}>{trigger.source.path}</span>
               </div>
             )}
             {trigger.source.type === 'cron' && (
-              <div className="flex items-center justify-between">
-                <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.cronInterval}</span>
-                <span className="text-body text-[var(--abu-text-primary)]">{t.trigger.cronIntervalSeconds.replace('{n}', String(trigger.source.intervalSeconds))}</span>
+              <div className={FACT}>
+                <span className={SECTION_TITLE}>{t.trigger.cronInterval}</span>
+                <span className={FACT_VALUE}>{t.trigger.cronIntervalSeconds.replace('{n}', String(trigger.source.intervalSeconds))}</span>
               </div>
             )}
             {trigger.source.type === 'im' && (
               <IMSourceDetail channelId={trigger.source.channelId} />
             )}
-            <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.filter}</span>
-              <span className="text-body text-[var(--abu-text-primary)]">{filterDesc}</span>
+            <div className={FACT}>
+              <span className={SECTION_TITLE}>{t.trigger.filter}</span>
+              <span className={FACT_VALUE}>{filterDesc}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.capability}</span>
-              <span className="text-body text-[var(--abu-text-primary)]">{capabilityLabels[effectiveCapability]}</span>
+            <div className={FACT}>
+              <span className={SECTION_TITLE}>{t.trigger.capability}</span>
+              <span className={FACT_VALUE}>{capabilityLabels[effectiveCapability]}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.debounce}</span>
-              <span className="text-body text-[var(--abu-text-primary)]">
+            <div className={FACT}>
+              <span className={SECTION_TITLE}>{t.trigger.debounce}</span>
+              <span className={FACT_VALUE}>
                 {trigger.debounce.enabled ? t.trigger.debounceSeconds.replace('{n}', String(trigger.debounce.windowSeconds)) : t.trigger.debounceOff}
               </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.quietHours}</span>
-              <span className="text-body text-[var(--abu-text-primary)]">
+            <div className={FACT}>
+              <span className={SECTION_TITLE}>{t.trigger.quietHours}</span>
+              <span className={FACT_VALUE}>
                 {trigger.quietHours?.enabled
                   ? `${trigger.quietHours.start} ~ ${trigger.quietHours.end}`
                   : t.trigger.debounceOff}
               </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.totalRuns}</span>
-              <span className="text-body text-[var(--abu-text-primary)]">{t.trigger.totalRunsCount.replace('{n}', String(trigger.totalRuns))}</span>
+            <div className={FACT}>
+              <span className={SECTION_TITLE}>{t.trigger.totalRuns}</span>
+              <span className={FACT_VALUE}>{t.trigger.totalRunsCount.replace('{n}', String(trigger.totalRuns))}</span>
             </div>
           </div>
 
-          {/* Statistics */}
+          {/* How the recent runs ended. The numbers are plain; worked and failed carry their shape. */}
           {trigger.runs.length > 0 && (() => {
             const completed = trigger.runs.filter((r) => r.status === 'completed').length;
             const errors = trigger.runs.filter((r) => r.status === 'error').length;
@@ -192,121 +196,97 @@ export default function TriggerDetail() {
             const successRate = total > 0 ? Math.round((completed / total) * 100) : 0;
             return (
               <div className="grid grid-cols-4 gap-2">
-                <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-3 text-center">
-                  <div className="text-h-md text-[var(--abu-text-primary)]">{total > 0 ? `${successRate}%` : t.trigger.statsAvgNotAvailable}</div>
-                  <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.trigger.statsSuccessRate}</div>
+                <div data-trigger-stat className={STAT}>
+                  <div className={STAT_NUMBER}>{total > 0 ? `${successRate}%` : t.trigger.statsAvgNotAvailable}</div>
+                  <div className={STAT_LABEL}>{t.trigger.statsSuccessRate}</div>
                 </div>
-                <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-3 text-center">
-                  <div className="text-h-md text-[var(--abu-success)]">{completed}</div>
-                  <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.trigger.statsCompleted}</div>
+                <div data-trigger-stat className={STAT}>
+                  <div className={STAT_NUMBER}>{completed}</div>
+                  <div className={STAT_LABEL}><StatusIcon tone="success" size="sm" />{t.trigger.statsCompleted}</div>
                 </div>
-                <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-3 text-center">
-                  <div className="text-h-md text-[var(--abu-danger)]">{errors}</div>
-                  <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.trigger.statsErrors}</div>
+                <div data-trigger-stat className={STAT}>
+                  <div className={STAT_NUMBER}>{errors}</div>
+                  <div className={STAT_LABEL}><StatusIcon tone="danger" size="sm" />{t.trigger.statsErrors}</div>
                 </div>
-                <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-3 text-center">
-                  <div className="text-h-md text-[var(--abu-text-muted)]">{filtered}</div>
-                  <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.trigger.statsFiltered}</div>
+                <div data-trigger-stat className={STAT}>
+                  <div className={STAT_NUMBER}>{filtered}</div>
+                  <div className={STAT_LABEL}>{t.trigger.statsFiltered}</div>
                 </div>
               </div>
             );
           })()}
 
-          {/* HTTP Endpoint — only for HTTP triggers */}
-          {trigger.source.type === 'http' && <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4">
-            <div className="text-body text-[var(--abu-text-tertiary)] mb-2">{t.trigger.httpEndpoint}</div>
-            <div className="flex items-center gap-2 mb-3">
-              <code className="flex-1 text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] rounded-lg px-3 py-2 font-mono truncate">
-                POST {endpoint}
-              </code>
-              <button
-                onClick={handleCopyEndpoint}
-                className="p-2 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] hover:text-[var(--abu-text-primary)] transition-colors shrink-0"
-                title={t.trigger.copyEndpoint}
-              >
-                {copied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
-              </button>
+          {/* Where an HTTP listener receives its events. The address is shown as text here and
+              goes to the clipboard on request; it is in no attribute of any element. */}
+          {trigger.source.type === 'http' && (
+            <div data-trigger-section className={SECTION}>
+              <div className={cn(SECTION_TITLE, 'mb-2')}>{t.trigger.httpEndpoint}</div>
+              <div className="mb-3 flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate rounded-control bg-code px-3 py-2 font-code text-ui-sm text-label">
+                  POST {endpoint}
+                </code>
+                <span className="flex shrink-0">
+                  <IconButton
+                    size="sm"
+                    icon={copied ? AppIcons.done : AppIcons.copy}
+                    label={t.trigger.copyEndpoint}
+                    onClick={() => { void handleCopyEndpoint(); }}
+                  />
+                </span>
+              </div>
+              <div className={cn(SECTION_TITLE, 'mb-1')}>{t.trigger.curlExample}</div>
+              <pre className="rounded-control bg-code p-3 font-code text-ui-sm text-label whitespace-pre-wrap break-all">
+                {curlExample}
+              </pre>
             </div>
-            <div className="text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.curlExample}</div>
-            <pre className="text-minor text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] rounded-lg p-3 font-mono whitespace-pre-wrap overflow-x-auto">
-              {curlExample}
-            </pre>
-          </div>}
+          )}
 
-          {/* Description */}
           {trigger.description && (
-            <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4">
-              <div className="text-body text-[var(--abu-text-tertiary)] mb-1.5">{t.trigger.description}</div>
-              <p className="text-body text-[var(--abu-text-primary)] leading-relaxed whitespace-pre-wrap">
+            <div data-trigger-section className={SECTION}>
+              <div className={cn(SECTION_TITLE, 'mb-2')}>{t.trigger.description}</div>
+              <p className="whitespace-pre-wrap text-ui text-label">
                 {trigger.description}
               </p>
             </div>
           )}
 
-          {/* Prompt */}
-          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4">
-            <div className="text-body text-[var(--abu-text-tertiary)] mb-1.5">{t.trigger.prompt}</div>
-            <p className="text-body text-[var(--abu-text-primary)] leading-relaxed whitespace-pre-wrap font-mono bg-[var(--abu-bg-base)] rounded-lg p-3">
+          <div data-trigger-section className={SECTION}>
+            <div className={cn(SECTION_TITLE, 'mb-2')}>{t.trigger.prompt}</div>
+            <p className="rounded-control bg-code p-3 font-code text-ui-sm text-label whitespace-pre-wrap break-words">
               {trigger.action.prompt}
             </p>
           </div>
 
-          {/* Action buttons */}
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="secondary"
+              icon={isPaused ? AppIcons.continue : AppIcons.pause}
               onClick={() => setTriggerStatus(trigger.id, isPaused ? 'active' : 'paused')}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
             >
-              {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
               {isPaused ? t.trigger.resume : t.trigger.pause}
-            </button>
-            <button
-              onClick={handleTestTrigger}
-              disabled={isPaused}
-              className={cn(
-                'flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium transition-colors',
-                isPaused
-                  ? 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-muted)] cursor-not-allowed'
-                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-              )}
-            >
-              <Zap className="h-3.5 w-3.5" />
+            </Button>
+            {/* A paused listener takes no event, a test one included. */}
+            <Button variant="secondary" icon={AppIcons.trigger} disabled={isPaused} onClick={handleTestTrigger}>
               {t.trigger.testTrigger}
-            </button>
+            </Button>
 
             <div className="flex-1" />
 
-            <button
-              onClick={() => setShowDeleteConfirm(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
+            <Button variant="danger" icon={AppIcons.delete} onClick={() => { void handleDelete(); }}>
               {t.trigger.delete}
-            </button>
+            </Button>
           </div>
 
-          {/* Run history */}
-          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] overflow-hidden">
-            <div className="px-4 py-3 border-b border-[var(--abu-border)]">
-              <h3 className="text-h-sm font-medium text-[var(--abu-text-primary)]">
+          <div data-trigger-section className="overflow-hidden rounded-panel border border-separator">
+            <div className="border-b border-separator px-4 py-3">
+              <h3 className="text-ui font-medium text-label">
                 {t.trigger.runHistory}
               </h3>
             </div>
             <TriggerRunHistory runs={trigger.runs} />
           </div>
         </div>
-      </div>
-
-      <ConfirmDialog
-        open={showDeleteConfirm}
-        title={t.trigger.delete}
-        message={t.trigger.deleteConfirm}
-        confirmText={t.common.confirm}
-        cancelText={t.common.cancel}
-        onConfirm={confirmDelete}
-        onCancel={() => setShowDeleteConfirm(false)}
-        variant="danger"
-      />
+      </ScrollArea>
     </div>
   );
 }
@@ -316,9 +296,9 @@ function IMSourceDetail({ channelId }: { channelId: string }) {
   const channel = useIMChannelStore((s) => s.channels[channelId]);
   const { t } = useI18n();
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.imSelectChannel}</span>
-      <span className="text-body text-[var(--abu-text-primary)]">
+    <div className={FACT}>
+      <span className={SECTION_TITLE}>{t.trigger.imSelectChannel}</span>
+      <span className={FACT_VALUE}>
         {channel ? `${channel.name} (${channel.platform})` : channelId}
       </span>
     </div>

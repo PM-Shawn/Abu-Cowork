@@ -1,18 +1,22 @@
-import { useState, useEffect, useMemo } from 'react';
-import { useVisibleTeams } from '@/core/team/useVisibleTeams';
+import { useState, useEffect, useId, useMemo } from 'react';
+import { Button } from '@/components/ds/button';
+import { Combobox, type ComboboxOption } from '@/components/ds/combobox';
+import { Dialog, DialogClose } from '@/components/ds/dialog';
+import { SegmentedControl } from '@/components/ds/segmented-control';
+import { Select } from '@/components/ds/select';
+import { TextArea } from '@/components/ds/text-area';
+import { TextField } from '@/components/ds/text-field';
 import TeamAvatar from '@/components/team/TeamAvatar';
-import { SearchSelect } from '@/components/ui/search-select';
-import { useScheduleStore } from '@/stores/scheduleStore';
-import { useIMChannelStore } from '@/stores/imChannelStore';
-import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useProjectStore } from '@/stores/projectStore';
+import { useVisibleTeams } from '@/core/team/useVisibleTeams';
 import { useI18n } from '@/i18n';
-import { X } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { Select } from '@/components/ui/select';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { useIMChannelStore } from '@/stores/imChannelStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { useScheduleStore } from '@/stores/scheduleStore';
 import type {
   ScheduleFrequency,
   ScheduleConfig,
+  ScheduledTask,
 } from '@/types/schedule';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
 
@@ -23,13 +27,72 @@ const FREQUENCIES: ScheduleFrequency[] = ['hourly', 'daily', 'weekly', 'weekdays
  *  `undefined` sentinel), which is the default. */
 const PERMISSION_MODES: PermissionMode[] = ['standard', 'smart', 'autonomous'];
 
-/** Select component values are strings; '' is the sentinel for "follow
- *  settings" (permissionMode === undefined). */
-const FOLLOW_SETTINGS_VALUE = '';
+/** What a list shows as chosen while the field holds nothing: no expert team, no skill, no
+ *  project, no channel, "follow settings". A list option cannot have an empty value. */
+const NONE = '__none__';
 
-export default function ScheduleEditor() {
+const twoDigits = (count: number) => Array.from({ length: count }, (_, i) => ({
+  value: String(i),
+  label: i.toString().padStart(2, '0'),
+}));
+const HOUR_OPTIONS = twoDigits(24);
+const MINUTE_OPTIONS = twoDigits(60);
+
+/** What the form holds. The window asks before closing once a field differs from what it opened with. */
+interface Fields {
+  name: string;
+  description: string;
+  prompt: string;
+  frequency: ScheduleFrequency;
+  hour: number;
+  minute: number;
+  dayOfWeek: number;
+  skillName: string;
+  teamId: string;
+  workspacePath: string;
+  projectId: string;
+  outputChannelId: string;
+  outputChatIds: string;
+  outputUserIds: string;
+  // undefined = follow the global settings permission mode (the default).
+  permissionMode: PermissionMode | undefined;
+}
+
+function fieldsOf(task: ScheduledTask | null): Fields {
+  return {
+    name: task?.name ?? '',
+    description: task?.description ?? '',
+    prompt: task?.prompt ?? '',
+    frequency: task?.schedule.frequency ?? 'daily',
+    hour: task?.schedule.time?.hour ?? 9,
+    minute: task?.schedule.time?.minute ?? 0,
+    dayOfWeek: task?.schedule.dayOfWeek ?? 1,
+    skillName: task?.skillName ?? '',
+    teamId: task?.teamId ?? '',
+    workspacePath: task?.workspacePath ?? '',
+    projectId: task?.projectId ?? '',
+    outputChannelId: task?.outputChannelId ?? '',
+    outputChatIds: task?.outputChatIds ?? '',
+    outputUserIds: task?.outputUserIds ?? '',
+    permissionMode: task?.permissionMode,
+  };
+}
+
+const FIELD_LABEL = 'mb-1 block text-ui-sm font-medium text-label-secondary';
+const HINT = 'mt-1 text-caption text-label-tertiary';
+
+/**
+ * The window that creates a scheduled task or edits one. It stays mounted and is closed, not
+ * removed, so it fades out showing what it showed; a save pressed in the fading window does
+ * nothing. It asks before it discards what was typed.
+ */
+export default function ScheduleEditor({ onCloseAutoFocus }: {
+  // Runs once the window has gone, before the focus returns to what opened it (ds `Dialog`).
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
   const { t } = useI18n();
-  const { showEditor, editingTaskId, closeEditor, createTask, updateTask, tasks } =
+  const id = useId();
+  const { showEditor, editingTaskId, closeEditor, createTask, updateTask } =
     useScheduleStore();
   const skills = useDiscoveryStore((s) => s.skills);
   const channelsMap = useIMChannelStore((s) => s.channels);
@@ -39,8 +102,6 @@ export default function ScheduleEditor() {
     Object.values(projectsMap).filter((p) => !p.archived).sort((a, b) => b.lastActiveAt - a.lastActiveAt),
     [projectsMap]
   );
-
-  const editingTask = editingTaskId ? tasks[editingTaskId] : null;
 
   // Form state
   const [name, setName] = useState('');
@@ -54,7 +115,8 @@ export default function ScheduleEditor() {
   // Team executor (labs-gated): when set, the prompt is handed to this team
   // as a task goal instead of running a plain conversation.
   const [teamId, setTeamId] = useState('');
-  const teams = useVisibleTeams().filter(team => !team.managed || team.managed.ready);
+  const visibleTeams = useVisibleTeams();
+  const teams = useMemo(() => visibleTeams.filter(team => !team.managed || team.managed.ready), [visibleTeams]);
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectId, setProjectId] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');
@@ -62,55 +124,44 @@ export default function ScheduleEditor() {
   const [outputUserIds, setOutputUserIds] = useState('');
   // undefined = follow the global settings permission mode (the default).
   const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(undefined);
+  // What the fields held when the window opened, and whether it opened on an existing task.
+  // Both stay as they are while the window fades out, like the fields.
+  const [opened, setOpened] = useState<Fields | null>(null);
+  const [editing, setEditing] = useState(false);
 
-  // Initialize form when editing task changes
-  useEffect(() => {
-    if (editingTask) {
-      setName(editingTask.name);
-      setDescription(editingTask.description ?? '');
-      setPrompt(editingTask.prompt);
-      setFrequency(editingTask.schedule.frequency);
-      setHour(editingTask.schedule.time?.hour ?? 9);
-      setMinute(editingTask.schedule.time?.minute ?? 0);
-      setDayOfWeek(editingTask.schedule.dayOfWeek ?? 1);
-      setSkillName(editingTask.skillName ?? '');
-      setTeamId(editingTask.teamId ?? '');
-      setWorkspacePath(editingTask.workspacePath ?? '');
-      setProjectId(editingTask.projectId ?? '');
-      setOutputChannelId(editingTask.outputChannelId ?? '');
-      setOutputChatIds(editingTask.outputChatIds ?? '');
-      setOutputUserIds(editingTask.outputUserIds ?? '');
-      setPermissionMode(editingTask.permissionMode);
-    } else {
-      setName('');
-      setDescription('');
-      setPrompt('');
-      setFrequency('daily');
-      setHour(9);
-      setMinute(0);
-      setDayOfWeek(1);
-      setSkillName('');
-      setTeamId('');
-      setWorkspacePath('');
-      setProjectId('');
-      setOutputChannelId('');
-      setOutputChatIds('');
-      setOutputUserIds('');
-      setPermissionMode(undefined);
-    }
-  }, [editingTask, showEditor]);
-
-  // Close on Escape key
+  // Initialize the form when the window opens, or moves to another task. A run of the task that
+  // starts or ends while the window is open leaves the form alone: the task is read from the
+  // store here, not subscribed to.
   useEffect(() => {
     if (!showEditor) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeEditor();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showEditor, closeEditor]);
+    const editingTask = editingTaskId
+      ? useScheduleStore.getState().tasks[editingTaskId] ?? null
+      : null;
+    const fields = fieldsOf(editingTask);
+    setName(fields.name);
+    setDescription(fields.description);
+    setPrompt(fields.prompt);
+    setFrequency(fields.frequency);
+    setHour(fields.hour);
+    setMinute(fields.minute);
+    setDayOfWeek(fields.dayOfWeek);
+    setSkillName(fields.skillName);
+    setTeamId(fields.teamId);
+    setWorkspacePath(fields.workspacePath);
+    setProjectId(fields.projectId);
+    setOutputChannelId(fields.outputChannelId);
+    setOutputChatIds(fields.outputChatIds);
+    setOutputUserIds(fields.outputUserIds);
+    setPermissionMode(fields.permissionMode);
+    setOpened(fields);
+    setEditing(editingTask !== null);
+  }, [editingTaskId, showEditor]);
 
-  if (!showEditor) return null;
+  // Stable option objects: the list rows are compared by them.
+  const teamOptions = useMemo<ComboboxOption[]>(() => [
+    { value: NONE, label: t.schedule.teamExecutorNone },
+    ...teams.map((team) => ({ value: team.id, label: team.name, icon: <TeamAvatar avatar={team.avatar} size="sm" /> })),
+  ], [teams, t]);
 
   const frequencyLabels: Record<ScheduleFrequency, string> = {
     hourly: t.schedule.frequencyHourly,
@@ -142,7 +193,15 @@ export default function ScheduleEditor() {
   const showHourSelector = frequency !== 'hourly';
   const showDaySelector = frequency === 'weekly';
 
+  const current: Fields = {
+    name, description, prompt, frequency, hour, minute, dayOfWeek, skillName, teamId, workspacePath,
+    projectId, outputChannelId, outputChatIds, outputUserIds, permissionMode,
+  };
+  const dirty = showEditor && opened !== null && (Object.keys(opened) as (keyof Fields)[]).some((key) => current[key] !== opened[key]);
+
   const handleSave = () => {
+    // The window stays on the page while it fades out; a key press there saves nothing.
+    if (!showEditor) return;
     if (!name.trim()) return;
     if (!prompt.trim()) return;
 
@@ -194,326 +253,253 @@ export default function ScheduleEditor() {
   };
 
   return (
-    <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) closeEditor(); }}>
-      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-bg-active)] shrink-0">
-          <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-            {editingTaskId ? t.schedule.editTask : t.schedule.newTask}
-          </h2>
-          <button
-            onClick={closeEditor}
-            className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
+    <Dialog
+      open={showEditor}
+      onOpenChange={(next) => { if (!next) closeEditor(); }}
+      title={editing ? t.schedule.editTask : t.schedule.newTask}
+      // Wide enough for the seven weekdays in one row, in English as well.
+      size="lg"
+      closeButton
+      dirty={dirty}
+      onCloseAutoFocus={onCloseAutoFocus}
+      footer={(
+        <>
+          <DialogClose asChild><Button variant="plain">{t.common.cancel}</Button></DialogClose>
+          <Button variant="primary" disabled={!name.trim() || !prompt.trim()} onClick={handleSave}>
+            {t.common.save}
+          </Button>
+        </>
+      )}
+    >
+      <div className="space-y-4">
+        <div>
+          <label htmlFor={`${id}-name`} className={FIELD_LABEL}>{t.schedule.taskName}</label>
+          <TextField
+            id={`${id}-name`}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t.schedule.taskNamePlaceholder}
+          />
         </div>
 
-        {/* Form */}
-        <div className="px-6 py-4 space-y-4 overflow-auto flex-1">
-          {/* Task name */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.schedule.taskName}
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t.schedule.taskNamePlaceholder}
-              className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-            />
-          </div>
+        <div>
+          <label htmlFor={`${id}-description`} className={FIELD_LABEL}>{t.schedule.description}</label>
+          <TextArea
+            id={`${id}-description`}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder={t.schedule.descriptionPlaceholder}
+            rows={2}
+          />
+        </div>
 
-          {/* Task description */}
+        {/* Team executor: the run becomes a scheduled conversation pinned to the team */}
+        {teams.length > 0 && (
           <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.schedule.description}
-            </label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder={t.schedule.descriptionPlaceholder}
-              rows={2}
-              className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none"
-            />
-          </div>
-
-          {/* Team executor: the run becomes a scheduled conversation pinned to the team */}
-          {teams.length > 0 && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.schedule.teamExecutor}
-              </label>
-              <SearchSelect
-                value={teamId || null}
-                onChange={(v) => setTeamId(v === teamId ? '' : v)}
-                options={[
-                  { value: '', label: t.schedule.teamExecutorNone },
-                  ...teams.map((team) => ({ value: team.id, label: team.name, icon: <TeamAvatar avatar={team.avatar} size="sm" /> })),
-                ]}
+            <div className={FIELD_LABEL}>{t.schedule.teamExecutor}</div>
+            {/* A column stretches the combobox to the width of the form. */}
+            <div className="flex flex-col" data-testid="schedule-team-select">
+              <Combobox
+                label={t.schedule.teamExecutor}
+                value={teamId || NONE}
+                // Picking the team that is already chosen takes it off again.
+                onValueChange={(picked) => setTeamId(picked === NONE || picked === teamId ? '' : picked)}
+                options={teamOptions}
                 placeholder={t.schedule.teamExecutorNone}
                 searchPlaceholder={t.schedule.teamExecutorSearch}
                 emptyText={t.schedule.teamExecutorEmpty}
-                testId="schedule-team-select"
               />
-              <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.schedule.teamExecutorHint}</p>
             </div>
-          )}
+            <p className={HINT}>{t.schedule.teamExecutorHint}</p>
+          </div>
+        )}
 
+        <div>
+          <label htmlFor={`${id}-prompt`} className={FIELD_LABEL}>{t.schedule.taskPrompt}</label>
+          <TextArea
+            id={`${id}-prompt`}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={t.schedule.taskPromptPlaceholder}
+            rows={4}
+          />
+        </div>
+
+        <div>
+          <div className={FIELD_LABEL}>{t.schedule.frequency}</div>
+          <SegmentedControl
+            label={t.schedule.frequency}
+            value={frequency}
+            onValueChange={(next) => setFrequency(next as ScheduleFrequency)}
+            options={FREQUENCIES.map((freq) => ({ value: freq, label: frequencyLabels[freq] }))}
+          />
+        </div>
+
+        {showTimeSelector && (
           <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.schedule.taskPrompt}
-            </label>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder={t.schedule.taskPromptPlaceholder}
-              rows={4}
-              className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none"
+            <div className={FIELD_LABEL}>
+              {frequency === 'hourly' ? t.schedule.minuteOfHour : t.schedule.executionTime}
+            </div>
+            <div className="flex items-center gap-2">
+              {showHourSelector && (
+                <>
+                  <div className="w-20">
+                    <Select
+                      fullWidth
+                      label={t.schedule.executionTime}
+                      value={String(hour)}
+                      onValueChange={(v) => setHour(Number(v))}
+                      options={HOUR_OPTIONS}
+                    />
+                  </div>
+                  <span className="text-label-tertiary">:</span>
+                </>
+              )}
+              <div className="w-20">
+                <Select
+                  fullWidth
+                  label={t.schedule.minuteOfHour}
+                  value={String(minute)}
+                  onValueChange={(v) => setMinute(Number(v))}
+                  options={MINUTE_OPTIONS}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showDaySelector && (
+          <div>
+            <div className={FIELD_LABEL}>{t.schedule.dayOfWeek}</div>
+            <SegmentedControl
+              label={t.schedule.dayOfWeek}
+              value={String(dayOfWeek)}
+              onValueChange={(next) => setDayOfWeek(Number(next))}
+              options={dayLabels.map((label, idx) => ({ value: String(idx), label }))}
             />
           </div>
+        )}
 
-          {/* Frequency selector */}
+        {skills.length > 0 && (
           <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.schedule.frequency}
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {FREQUENCIES.map((freq) => (
-                <button
-                  key={freq}
-                  onClick={() => setFrequency(freq)}
-                  className={cn(
-                    'px-3 py-1.5 rounded-lg text-minor font-medium transition-colors',
-                    frequency === freq
-                      ? 'bg-[var(--abu-clay)] text-white'
-                      : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                  )}
-                >
-                  {frequencyLabels[freq]}
-                </button>
-              ))}
-            </div>
+            <div className={FIELD_LABEL}>{t.schedule.bindSkill}</div>
+            <Select
+              fullWidth
+              label={t.schedule.bindSkill}
+              value={skillName || NONE}
+              onValueChange={(next) => setSkillName(next === NONE ? '' : next)}
+              options={[
+                { value: NONE, label: t.schedule.bindSkillNone },
+                ...skills
+                  .filter((s) => s.userInvocable)
+                  .map((s) => ({ value: s.name, label: s.name })),
+              ]}
+            />
           </div>
+        )}
 
-          {/* Time selector */}
-          {showTimeSelector && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {frequency === 'hourly' ? t.schedule.minuteOfHour : t.schedule.executionTime}
-              </label>
-              <div className="flex items-center gap-2">
-                {showHourSelector && (
-                  <>
-                    <Select
-                      value={String(hour)}
-                      onChange={(v) => setHour(Number(v))}
-                      options={Array.from({ length: 24 }, (_, i) => ({
-                        value: String(i),
-                        label: i.toString().padStart(2, '0'),
-                      }))}
-                      className="w-20"
-                    />
-                    <span className="text-[var(--abu-text-tertiary)]">:</span>
-                  </>
-                )}
-                <Select
-                  value={String(minute)}
-                  onChange={(v) => setMinute(Number(v))}
-                  options={Array.from({ length: 60 }, (_, i) => ({
-                    value: String(i),
-                    label: i.toString().padStart(2, '0'),
-                  }))}
-                  className="w-20"
+        {activeProjects.length > 0 && (
+          <div>
+            <div className={FIELD_LABEL}>{t.project.projectLabel}</div>
+            <Select
+              fullWidth
+              label={t.project.projectLabel}
+              value={projectId || NONE}
+              onValueChange={(next) => {
+                const val = next === NONE ? '' : next;
+                setProjectId(val);
+                // Auto-fill workspace from project
+                if (val) {
+                  const proj = useProjectStore.getState().projects[val];
+                  if (proj) setWorkspacePath(proj.workspacePath);
+                }
+              }}
+              options={[
+                { value: NONE, label: t.project.projectNone },
+                ...activeProjects.map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                })),
+              ]}
+            />
+          </div>
+        )}
+
+        <div>
+          <label htmlFor={`${id}-workspace`} className={FIELD_LABEL}>{t.schedule.workspacePath}</label>
+          <TextField
+            id={`${id}-workspace`}
+            value={projectId ? (useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath) : workspacePath}
+            onChange={(e) => setWorkspacePath(e.target.value)}
+            placeholder={t.schedule.workspacePathPlaceholder}
+            disabled={!!projectId}
+          />
+        </div>
+
+        {/* Autonomy tier — the ceiling for this unattended run. Reuses
+            chat's own standard/smart/autonomous wording (plus a
+            schedule-only "follow settings" option) rather than a fourth
+            vocabulary. */}
+        <div>
+          <div className={FIELD_LABEL}>{t.schedule.permissionMode}</div>
+          <Select
+            fullWidth
+            label={t.schedule.permissionMode}
+            value={permissionMode ?? NONE}
+            onValueChange={(next) => setPermissionMode(next === NONE ? undefined : (next as PermissionMode))}
+            options={[
+              { value: NONE, label: t.schedule.permissionModeFollowSettings },
+              ...PERMISSION_MODES.map((mode) => ({
+                value: mode,
+                label: permissionModeInfo[mode].label,
+                description: permissionModeInfo[mode].description,
+              })),
+            ]}
+          />
+          <p className={HINT}>{t.schedule.permissionModeHint}</p>
+        </div>
+
+        {/* Output to IM channel */}
+        <div>
+          <div className={FIELD_LABEL}>{t.schedule.outputChannel}</div>
+          <Select
+            fullWidth
+            label={t.schedule.outputChannel}
+            value={outputChannelId || NONE}
+            onValueChange={(next) => setOutputChannelId(next === NONE ? '' : next)}
+            options={[
+              { value: NONE, label: t.schedule.outputChannelNone },
+              ...imChannels.map((c) => ({
+                value: c.id,
+                label: `${c.name} (${c.platform})`,
+              })),
+            ]}
+          />
+          <p className={HINT}>{t.schedule.outputChannelHint}</p>
+          {outputChannelId && (
+            <div className="mt-2 space-y-2">
+              <div>
+                <label htmlFor={`${id}-chats`} className={FIELD_LABEL}>{t.schedule.outputToGroup}</label>
+                <TextField
+                  id={`${id}-chats`}
+                  value={outputChatIds}
+                  onChange={(e) => setOutputChatIds(e.target.value)}
+                  placeholder={t.schedule.outputChatIdPlaceholder}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${id}-users`} className={FIELD_LABEL}>{t.schedule.outputToDM}</label>
+                <TextField
+                  id={`${id}-users`}
+                  value={outputUserIds}
+                  onChange={(e) => setOutputUserIds(e.target.value)}
+                  placeholder={t.schedule.outputUserIdPlaceholder}
                 />
               </div>
             </div>
           )}
-
-          {/* Day of week selector */}
-          {showDaySelector && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.schedule.dayOfWeek}
-              </label>
-              <div className="flex flex-wrap gap-1.5">
-                {dayLabels.map((label, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => setDayOfWeek(idx)}
-                    className={cn(
-                      'px-3 py-1.5 rounded-lg text-minor font-medium transition-colors',
-                      dayOfWeek === idx
-                        ? 'bg-[var(--abu-clay)] text-white'
-                        : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Skill binding */}
-          {skills.length > 0 && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.schedule.bindSkill}
-              </label>
-              <Select
-                value={skillName}
-                onChange={setSkillName}
-                placeholder={t.schedule.bindSkillNone}
-                options={[
-                  { value: '', label: t.schedule.bindSkillNone },
-                  ...skills
-                    .filter((s) => s.userInvocable)
-                    .map((s) => ({ value: s.name, label: s.name })),
-                ]}
-              />
-            </div>
-          )}
-
-          {/* Project selector */}
-          {activeProjects.length > 0 && (
-            <div>
-              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-                {t.project.projectLabel}
-              </label>
-              <Select
-                value={projectId}
-                onChange={(val) => {
-                  setProjectId(val);
-                  // Auto-fill workspace from project
-                  if (val) {
-                    const proj = useProjectStore.getState().projects[val];
-                    if (proj) setWorkspacePath(proj.workspacePath);
-                  }
-                }}
-                options={[
-                  { value: '', label: t.project.projectNone },
-                  ...activeProjects.map((p) => ({
-                    value: p.id,
-                    label: p.name,
-                  })),
-                ]}
-              />
-            </div>
-          )}
-
-          {/* Workspace path */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.schedule.workspacePath}
-            </label>
-            <input
-              type="text"
-              value={projectId ? (useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath) : workspacePath}
-              onChange={(e) => setWorkspacePath(e.target.value)}
-              placeholder={t.schedule.workspacePathPlaceholder}
-              disabled={!!projectId}
-              className={cn(
-                'w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
-                projectId && 'opacity-60 cursor-not-allowed'
-              )}
-            />
-          </div>
-
-          {/* Autonomy tier — the ceiling for this unattended run. Reuses
-              chat's own standard/smart/autonomous wording (plus a
-              schedule-only "follow settings" option) rather than a fourth
-              vocabulary. */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.schedule.permissionMode}
-            </label>
-            <Select
-              value={permissionMode ?? FOLLOW_SETTINGS_VALUE}
-              onChange={(v) =>
-                setPermissionMode(v === FOLLOW_SETTINGS_VALUE ? undefined : (v as PermissionMode))
-              }
-              options={[
-                { value: FOLLOW_SETTINGS_VALUE, label: t.schedule.permissionModeFollowSettings },
-                ...PERMISSION_MODES.map((mode) => ({
-                  value: mode,
-                  label: `${permissionModeInfo[mode].label} — ${permissionModeInfo[mode].description}`,
-                })),
-              ]}
-            />
-            <p className="text-caption text-[var(--abu-text-muted)] mt-1">
-              {t.schedule.permissionModeHint}
-            </p>
-          </div>
-
-          {/* Output to IM channel */}
-          <div>
-            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
-              {t.schedule.outputChannel}
-            </label>
-            <Select
-              value={outputChannelId}
-              onChange={setOutputChannelId}
-              placeholder={t.schedule.outputChannelNone}
-              options={[
-                { value: '', label: t.schedule.outputChannelNone },
-                ...imChannels.map((c) => ({
-                  value: c.id,
-                  label: `${c.name} (${c.platform})`,
-                })),
-              ]}
-            />
-            <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.schedule.outputChannelHint}</p>
-            {outputChannelId && (
-              <div className="space-y-2 mt-2">
-                <div>
-                  <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.schedule.outputToGroup}</label>
-                  <input
-                    type="text"
-                    value={outputChatIds}
-                    onChange={(e) => setOutputChatIds(e.target.value)}
-                    placeholder={t.schedule.outputChatIdPlaceholder}
-                    className="w-full h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.schedule.outputToDM}</label>
-                  <input
-                    type="text"
-                    value={outputUserIds}
-                    onChange={(e) => setOutputUserIds(e.target.value)}
-                    placeholder={t.schedule.outputUserIdPlaceholder}
-                    className="w-full h-9 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-[var(--abu-bg-active)] shrink-0">
-          <button
-            onClick={closeEditor}
-            className="px-4 py-2 rounded-lg text-body text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-          >
-            {t.common.cancel}
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!name.trim() || !prompt.trim()}
-            className={cn(
-              'px-4 py-2 rounded-lg text-body font-medium transition-colors',
-              name.trim() && prompt.trim()
-                ? 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
-                : 'bg-[var(--abu-border)] text-[var(--abu-text-tertiary)] cursor-not-allowed'
-            )}
-          >
-            {t.common.save}
-          </button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

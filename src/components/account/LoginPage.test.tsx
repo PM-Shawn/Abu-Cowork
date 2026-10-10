@@ -63,8 +63,65 @@ describe('LoginPage', () => {
       />,
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent(copy);
+    expect(screen.getByRole('alert')).toHaveTextContent(copy);
     expect(screen.getByRole('button', { name: '个人账号登录' })).toBeInTheDocument();
+  });
+
+  it('waits for the browser with a still icon: nothing spins while the user is the one acting', () => {
+    render(
+      <LoginPage
+        status="awaiting_browser"
+        error={null}
+        hasAccount={false}
+        onPersonalLogin={() => {}}
+        onEnterpriseLogin={() => {}}
+        onCancel={() => {}}
+        onSignOut={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('请在浏览器中完成登录')).toBeInTheDocument();
+    expect(document.querySelector('[data-ds-spinner]')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(document.querySelectorAll('svg')).toHaveLength(1);
+  });
+
+  it('shows one spinner with its sentence while the sign-in is being completed', () => {
+    render(
+      <LoginPage
+        status="exchanging"
+        error={null}
+        hasAccount={false}
+        onPersonalLogin={() => {}}
+        onEnterpriseLogin={() => {}}
+        onCancel={() => {}}
+        onSignOut={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('正在完成登录...');
+    expect(document.querySelectorAll('[data-ds-spinner]')).toHaveLength(1);
+    expect(screen.queryByText('请在浏览器中完成登录')).toBeNull();
+    expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument();
+  });
+
+  it('fills one button only, the personal sign-in, and stretches every button across the window', () => {
+    render(
+      <LoginPage
+        status="expired"
+        error="session_expired"
+        hasAccount
+        onPersonalLogin={() => {}}
+        onEnterpriseLogin={() => {}}
+        onCancel={() => {}}
+        onSignOut={() => {}}
+      />,
+    );
+
+    const buttons = screen.getAllByRole('button');
+    expect(buttons.filter((button) => button.classList.contains('bg-emphasis'))).toEqual([screen.getByRole('button', { name: '重新登录' })]);
+    expect(screen.getByRole('button', { name: '退出登录' })).toHaveClass('bg-fill');
+    for (const button of buttons) expect(button).toHaveClass('w-full');
   });
 
   it('offers retry and sign-out for an expired stored session', () => {

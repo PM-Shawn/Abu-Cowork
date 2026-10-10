@@ -54,8 +54,14 @@ describe('DesignPreview', () => {
     root.style.setProperty('--ds-focus', '#111111');
     try {
       render(<DesignPreview />);
-      for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft']) {
+      for (const name of ['on-emphasis', 'brand-ink', 'separator', 'control-border', 'focus', 'surface', 'label', 'danger-soft', 'page-canvas', 'heat-1', 'heat-2', 'heat-3', 'heat-4']) {
         expect(document.querySelector(`[data-token="${name}"]`), name).not.toBeNull();
+      }
+      for (const name of ['selection', 'page-selection']) {
+        expect(document.querySelector(`[data-preview-selection] [data-token="${name}"] [data-token-value]`), name).not.toBeNull();
+      }
+      for (const name of ['syntax-comment', 'syntax-keyword', 'syntax-string', 'syntax-number', 'syntax-function', 'syntax-property']) {
+        expect(document.querySelector(`[data-preview-syntax] [data-token="${name}"] [data-token-value]`), name).not.toBeNull();
       }
       const focusValue = () => document.querySelector('[data-token="focus"] [data-token-value]')?.textContent;
       expect(focusValue()).toBe('#111111');
@@ -71,9 +77,18 @@ describe('DesignPreview', () => {
     render(<DesignPreview />);
     const tokens = within(document.querySelector('[data-preview-section="tokens"]') as HTMLElement);
     const table = tokens.getByRole('table', { name: 'Scales' });
-    for (const name of ['z-sticky', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip', 'duration-fast', 'duration-base', 'duration-slow', 'ease-enter', 'ease-exit', 'rounded-window', 'rounded-panel', 'rounded-control', 'shadow-panel', 'shadow-float', 'shadow-dialog']) {
+    for (const name of ['z-sticky', 'z-fullscreen', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip', 'duration-fast', 'duration-base', 'duration-slow', 'ease-enter', 'ease-exit', 'rounded-window', 'rounded-panel', 'rounded-control', 'shadow-panel', 'shadow-float', 'shadow-dialog', 'shadow-composer']) {
       expect(within(table).getByText(name), name).toBeInTheDocument();
     }
+  });
+
+  it('lists the six layer levels from the page upward', () => {
+    render(<DesignPreview />);
+    const tokens = within(document.querySelector('[data-preview-section="tokens"]') as HTMLElement);
+    const names = [...tokens.getByRole('table', { name: 'Scales' }).querySelectorAll('[data-scale-sample]')]
+      .map((sample) => sample.getAttribute('data-scale-sample'))
+      .filter((name) => name?.startsWith('z-'));
+    expect(names).toEqual(['z-sticky', 'z-fullscreen', 'z-popover', 'z-dialog', 'z-toast', 'z-tooltip']);
   });
 
   it('shows the disabled, invalid and size variants', () => {
@@ -95,6 +110,13 @@ describe('DesignPreview', () => {
     expect(screen.getByRole('button', { name: 'Small dialog' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Large dialog' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirm (default tone)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dialog with a select inside' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Settings-size dialog' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Site access' })).toHaveTextContent('Ask every time');
+    const group = screen.getByRole('heading', { level: 4, name: 'Tasks' }).parentElement as HTMLElement;
+    expect(within(group).getByRole('combobox', { name: 'Default model' })).toHaveClass('w-full');
+    expect(within(group).getByRole('combobox', { name: 'Site access in tasks' })).toHaveClass('w-full');
+    expect(within(group).getByRole('switch', { name: 'Notify when done' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Renew' })).toBeInTheDocument();
     const basics = within(document.querySelector('[data-preview-section="basics"]') as HTMLElement);
     expect(basics.getAllByRole('separator').map((node) => node.getAttribute('aria-orientation') ?? 'horizontal').sort()).toEqual(['horizontal', 'vertical']);

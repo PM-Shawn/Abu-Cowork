@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/ds/empty-state';
 import { AppIcons } from '@/components/ds/icons';
 import { ScrollArea } from '@/components/ds/scroll-area';
 import { Spinner } from '@/components/ds/spinner';
+import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { getBaseName } from '@/utils/pathUtils';
 import { useFitToWidth } from '@/hooks/useFitToWidth';
 import { cn } from '@/lib/utils';
@@ -89,20 +90,7 @@ export default function PptxPreview({ filePath, data }: { filePath: string; data
 
   const handleOpenWithDefaultApp = async () => {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const platform = navigator.platform.toLowerCase();
-      const command = platform.includes('win')
-        ? `start "" "${filePath}"`
-        : platform.includes('linux')
-          ? `xdg-open "${filePath}"`
-          : `open "${filePath}"`;
-      await invoke('run_shell_command', {
-        command,
-        cwd: null,
-        background: true,
-        timeout: 5,
-        sandboxEnabled: false,
-      });
+      await openWithDefaultApp(filePath);
     } catch (err) {
       console.error('[PptxPreview] Failed to open with default app:', err);
     }

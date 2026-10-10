@@ -2,7 +2,8 @@
 /// <reference types="@testing-library/jest-dom" />
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import { invoke } from '@tauri-apps/api/core';
+import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { initLanguage } from '@/i18n';
 import PptxPreview from './PptxPreview';
 
@@ -80,6 +81,21 @@ describe('PptxPreview', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show in File Manager' }));
     await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith('/work/汇报材料.pptx'));
+  });
+
+  it('hands the deck to its default application by path alone, whatever characters the name holds', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(openPath).mockClear();
+    vi.mocked(invoke).mockClear();
+    deck.preview.mockRejectedValue(new Error('not a zip file'));
+    const path = '/work/Q3 "final" $HOME `draft`.pptx';
+    render(<PptxPreview filePath={path} data={bytes('Quarterly review')} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in PowerPoint' }));
+
+    await waitFor(() => expect(openPath).toHaveBeenCalledTimes(1));
+    expect(openPath).toHaveBeenCalledWith(path);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('draws the slides again from new bytes without a loading state, and leaves the ways out once a deck draws', async () => {

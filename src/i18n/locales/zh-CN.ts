@@ -677,6 +677,7 @@ const zhCN: TranslationDict = {
     executedCommands: '执行了 {count} 个命令',
     calledTool: '调用了工具',
     calledTools: '调用了 {count} 个工具',
+    presentedFiles: '交付了文件',
     executedOperations: '执行了 {count} 个操作',
     thoughtFor: '思考了 {seconds} 秒',
     executedIn: '耗时 {seconds}s',

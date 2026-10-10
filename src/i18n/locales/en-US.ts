@@ -676,6 +676,7 @@ const enUS: TranslationDict = {
     executedCommands: 'Executed {count} commands',
     calledTool: 'Called tool',
     calledTools: 'Called {count} tools',
+    presentedFiles: 'Presented files',
     executedOperations: 'Executed {count} operations',
     thoughtFor: 'Thought for {seconds} seconds',
     executedIn: 'in {seconds}s',

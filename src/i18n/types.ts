@@ -829,6 +829,7 @@ export interface TranslationDict {
     executedCommands: string;
     calledTool: string;
     calledTools: string;
+    presentedFiles: string;
     executedOperations: string;
     thoughtFor: string;
     executedIn: string;

@@ -349,7 +349,10 @@ describe('module name', () => {
 
 ## 7. CI Integration
 
-The CI workflow (`.github/workflows/ci.yml`) has one blocking job, `check`, plus two advisory jobs.
+The CI workflow (`.github/workflows/ci.yml`) runs its gate jobs in parallel — `leak-guard`, `lint`,
+`typecheck`, `test`, `build` and `security-test` — and the `check` facade (the required status
+check on `dev` and `main`, `if: always()`) fails unless every one of them succeeded. Two further
+jobs are advisory.
 
 **`check` job — gate steps.** The quality gate is split into **independent steps**:
 Lint → Type check → Test with coverage (`npm run test:coverage`) → Test-infra scripts
@@ -364,6 +367,13 @@ coverage, inventory and freshness checks. It skips `test:infra`, the production 
 tracked extension sync comparison. CI builds both browser runtimes, compares the extension
 bundle with its tracked copy, and stamps that copy only after the comparison succeeds. Run it before
 opening a PR.
+
+**`security-test` job.** Runs `npm run electron:security-test` (the `node --test` security-boundary
+suite: plugin git / snapshot / registry / operations, filesystem, computer-use permissions,
+attachments, raw IPC bodies) on `macos-15` after a root `npm ci`. The tests themselves take about
+12 seconds; the whole job, including the install, takes about one minute.
+Its result gates `check`, so a security-boundary regression blocks the PR. The same script also
+runs in the macOS and Windows release builds (`electron-build.yml`); `verify:full` does not run it.
 
 **`check` job — report steps.** These run even when the test step is red:
 - `coverage-report` and `test-results` artifacts (`coverage/`, `test-results/`, 14-day retention).
@@ -392,6 +402,7 @@ Steps that are NOT part of verify (and must be kept):
   inventory generator; not wired into `verify:full`.
 - Build frontend (`npm run build`) — separate from tests, validates production bundle.
 - Chrome extension bundle sync check — validates committed extension artifact is up to date.
+- Electron security-boundary tests (`npm run electron:security-test`) — the `security-test` job.
 
 ---
 

@@ -588,6 +588,7 @@ The private repository's interface files use the same components and tokens, and
 - **Timer tests**: Use `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()`, not `runAllTimers`.
 - **Structure**: `describe('feature') > describe('action') > it('description')`.
 - **Coverage**: `v8` provider, `src/components/` excluded.
+- **CI 门禁**：`ci.yml` 并行运行 `leak-guard`、`lint`、`typecheck`、`test`、`build`、`security-test` 六个 job，汇总 job `check`（`dev`、`main` 的必需检查）要求六个全部成功。`security-test` 在 macOS 上运行 `npm run electron:security-test`（Electron 安全边界测试），`verify:full` 不包含它，改了 `electron/` 下的安全边界代码请在本地单独运行一次。详见 TESTING.md §7。
 
 ### 12. File System & OS Access (Electron boundary model)
 - **This is an Electron app.** File system / OS / process access lives in the privileged tiers — `electron/main.cjs` (main process + native services), `electron/preload.cjs` (the narrow renderer bridge), and `sidecar/` (Node sidecar hosting agent/runtime work). Node built-ins (`fs`, `child_process`, `path`, …) **are appropriate in `electron/` and `sidecar/`** when needed.

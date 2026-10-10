@@ -34,6 +34,18 @@ function getFileName(path: string): string {
   return segments[segments.length - 1] || path;
 }
 
+/** File names listed in a present_files input, in order. */
+export function presentedFileNames(toolInput: Record<string, unknown>): string[] {
+  if (!Array.isArray(toolInput.files)) return [];
+  const names: string[] = [];
+  for (const entry of toolInput.files as unknown[]) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const path = (entry as Record<string, unknown>).path;
+    if (typeof path === 'string' && path.trim()) names.push(getFileName(path.trim()));
+  }
+  return names;
+}
+
 /**
  * Produce the display label (and optional detail) for a tool call in the given
  * locale. Locale defaults to 'zh' only as a defensive fallback — callers should
@@ -188,6 +200,16 @@ export function getToolLabel(
       return {
         label: isZh ? (dirName ? `列出 ${dirName}` : '列出目录') : (dirName ? `List ${dirName}` : 'List directory'),
         detail: dirPath,
+      };
+    }
+
+    case TOOL_NAMES.PRESENT_FILES: {
+      const names = presentedFileNames(toolInput);
+      return {
+        label: isZh
+          ? `交付了 ${names.length} 个文件`
+          : `Presented ${names.length} ${names.length === 1 ? 'file' : 'files'}`,
+        detail: names.length > 0 ? names.join(isZh ? '、' : ', ') : undefined,
       };
     }
 

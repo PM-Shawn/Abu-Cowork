@@ -5,8 +5,6 @@ import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Spinner } from '@/components/ds/spinner';
-import zhCN from '@/i18n/locales/zh-CN';
-import enUS from '@/i18n/locales/en-US';
 import HtmlWidgetBlock from './HtmlWidgetBlock';
 import { wrapSvgAsHtml } from './transforms';
 import {
@@ -15,25 +13,7 @@ import {
   validateWidgetCode,
   SHOW_WIDGET_OK_MARKER,
 } from '@/core/tools/definitions/widgetTools';
-import {
-  TOOL_RESULT_CANCELLED_MARKER,
-  TOOL_RESULT_HOOK_BLOCKED_MARKER,
-} from '@/core/agent/toolExecutor';
-
-/**
- * Every result string that means "this call never ran / was stopped".
- * Includes BOTH locale dictionaries' Stop-backfill value (chatStore's
- * cancelStreaming writes `getI18n().task.cancelled` — zh '[已取消]',
- * en '[Cancelled]'): history may have been persisted under either locale,
- * so matching only the active locale would misclassify the other locale's
- * backfills.
- */
-const CANCELLED_RESULTS: ReadonlySet<string> = new Set([
-  TOOL_RESULT_CANCELLED_MARKER,
-  TOOL_RESULT_HOOK_BLOCKED_MARKER,
-  zhCN.task.cancelled,
-  enUS.task.cancelled,
-]);
+import { isToolResultNotRun } from '@/core/agent/toolResultMarkers';
 
 /** Interval for cycling the skeleton captions (loading_messages). */
 const LOADING_MESSAGE_CYCLE_MS = 2500;
@@ -109,7 +89,7 @@ function WidgetSkeleton({ messages, fallback }: { messages: string[]; fallback: 
  * - result undefined, not executing     → stale persisted state (crash/reload):
  *                                         render from input through the gate
  * - result starts with SHOW_WIDGET_OK_MARKER → widget (through the gate)
- * - result in CANCELLED_RESULTS         → muted "cancelled" row
+ * - result in NOT_RUN_TOOL_RESULTS      → muted "cancelled" row
  * - ANY other defined result            → muted "failed" row (param-error
  *   strings, registry-caught validation throws, enterprise policy denials —
  *   all come back with the error flag unset, so "not an error" is NOT a
@@ -145,7 +125,7 @@ export default function ShowWidgetCard({ toolCall }: { toolCall: ToolCall }) {
     // Cancelled/stopped (either locale's backfill) vs. everything else
     // (validation throws surfaced as "Error executing tool…", policy
     // denials, param errors) — both are status rows, different wording.
-    const cancelled = toolCall.result !== undefined && CANCELLED_RESULTS.has(toolCall.result);
+    const cancelled = toolCall.result !== undefined && isToolResultNotRun(toolCall.result);
     return (
       <WidgetStatusRow
         label={cancelled ? t.chat.widgetCardCancelled : t.chat.widgetCardError}

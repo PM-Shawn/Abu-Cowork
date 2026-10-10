@@ -65,6 +65,19 @@ describe('workflowExtractor', () => {
       expect(steps[0].label).toContain('写入');
     });
 
+    it('labels present_files with the count and lists the file names', () => {
+      const toolCalls: ToolCall[] = [{
+        id: 'tc1', name: 'present_files',
+        input: { files: [{ path: '/out/report.md' }, { path: '/out/chart.png' }] },
+        result: 'Presented /out/report.md\nPresented /out/chart.png',
+      }];
+      const steps = extractWorkflowSteps(toolCalls);
+      expect(steps[0].type).toBe('tool');
+      expect(steps[0].label).toBe('交付了 2 个文件');
+      expect(steps[0].detail).toBe('report.md、chart.png');
+      expect(steps[0].status).toBe('completed');
+    });
+
     it('maps command tools correctly', () => {
       const toolCalls: ToolCall[] = [{
         id: 'tc1', name: 'bash',

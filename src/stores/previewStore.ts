@@ -68,7 +68,10 @@ function expandRightPanel(): void {
  */
 export type WorkspaceTab = (
   | { id: string; kind: 'summary' }
-  | { id: string; kind: 'preview'; filePath: string }
+  // `line` is the 1-based line the latest open request asked the source view to show;
+  // `lineRequest` counts the requests that named a line, so the same line asked for
+  // again is a new request.
+  | { id: string; kind: 'preview'; filePath: string; line?: number; lineRequest?: number }
   // Agent views carry main's ownerKey; user-created tabs inherit the current conversation.
   | { id: string; kind: 'browser'; url: string }
   | { id: string; kind: 'terminal' }
@@ -209,7 +212,9 @@ interface PreviewState {
   openSummary: () => void;
   // Open (or activate an existing) preview tab for `filePath`. Call sites
   // (~11 across the app) are unchanged from the pre-tabs single-preview API.
-  openPreview: (filePath: string) => void;
+  // `options.line` asks the source view to show that line; the tab keeps the
+  // line of the latest request, so a request without one clears it.
+  openPreview: (filePath: string, options?: { line?: number }) => void;
   // Open (or activate an existing) browser tab for `url` (default ''). Main
   // may supply an id when adopting an agent-created Electron browser view, plus
   // the conversation that view belongs to (omitted for the legacy shared pool).
@@ -388,16 +393,28 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     commitTabs(nextTabs, id);
   },
 
-  openPreview: (filePath) => {
+  openPreview: (filePath, options) => {
     const { tabs } = get();
+    const line = options?.line;
     const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
-      commitTabs(tabs, existing.id);
+      let nextTabs = tabs;
+      if (existing.kind === 'preview' && line !== undefined) {
+        const moved: WorkspaceTab = { ...existing, line, lineRequest: (existing.lineRequest ?? 0) + 1 };
+        nextTabs = tabs.map((t) => (t.id === existing.id ? moved : t));
+      } else if (existing.kind === 'preview' && existing.line !== undefined) {
+        const cleared: WorkspaceTab = { ...existing, line: undefined };
+        nextTabs = tabs.map((t) => (t.id === existing.id ? cleared : t));
+      }
+      commitTabs(nextTabs, existing.id);
       expandRightPanel();
       return;
     }
     const id = genId();
-    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'preview', filePath, ...ownerScope() }];
+    const nextTabs: WorkspaceTab[] = [
+      ...tabs,
+      { id, kind: 'preview', filePath, ...(line !== undefined ? { line, lineRequest: 1 } : {}), ...ownerScope() },
+    ];
     commitTabs(nextTabs, id);
     expandRightPanel();
   },

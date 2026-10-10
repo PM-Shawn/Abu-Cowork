@@ -167,7 +167,7 @@ function isAbsolutePath(p: string): boolean {
  * The AI sometimes emits ~/... paths in chat narrative even though they're not real
  * filesystem paths until expanded.
  */
-async function expandTilde(p: string): Promise<string> {
+export async function expandTilde(p: string): Promise<string> {
   if (!p.startsWith('~/') && p !== '~') return p;
   try {
     if (!cachedHomeDir) {

@@ -65,6 +65,9 @@ export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/co
 // --- IM outbound tools ---
 import { sendFileTool } from './definitions/imTools';
 
+// --- Deliverable tools ---
+import { presentFilesTool } from './definitions/presentTools';
+
 export function registerBuiltinTools(): void {
   toolRegistry.register(preparePluginTool);
   toolRegistry.register(prepareAppTool);
@@ -108,6 +111,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(clipboardWriteTool);
   toolRegistry.register(systemNotifyTool);
   toolRegistry.register(sendFileTool);
+  toolRegistry.register(presentFilesTool);
   toolRegistry.register(computerTool);
   toolRegistry.register(requestWorkspaceTool);
   toolRegistry.register(askUserQuestionTool);

@@ -161,6 +161,31 @@ describe('applyDeltaFrames', () => {
       expect(snapshotMessageRevisionMock.mock.calls[0][1]).toMatchObject({ executionSteps: grafted });
     });
 
+    it('session frames keep the file-cards marker the shell put on an assistant message', async () => {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(convId, { id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1' });
+      const mirrorCopy = {
+        id: 'a1', role: 'assistant' as const, content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+        toolCalls: [{ id: 'call-1', name: 'write_file', input: { path: '/ws/a.md', content: 'a' }, result: 'ok' }],
+      };
+      await applyDeltaFrames([
+        { p: 'session', m: 'replaceMessageById', a: [convId, mirrorCopy] },
+        { p: 'session', m: 'snapshotMessageRevision', a: [convId, mirrorCopy] },
+      ]);
+      expect(replaceMessageByIdMock.mock.calls[0][1]).toMatchObject({ id: 'a1', fileCards: 'declared', toolCalls: mirrorCopy.toolCalls });
+      expect(snapshotMessageRevisionMock.mock.calls[0][1]).toMatchObject({ id: 'a1', fileCards: 'declared' });
+    });
+
+    it('session frames add no file-cards marker to a message the shell holds without one', async () => {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.setState((state) => {
+        state.conversations[convId].messages.push({ id: 'old', role: 'assistant', content: 'done', timestamp: FIXED_TIMESTAMP, loopId: 'loop-0' });
+      });
+      const mirrorCopy = { id: 'old', role: 'assistant' as const, content: 'done', timestamp: FIXED_TIMESTAMP, loopId: 'loop-0' };
+      await applyDeltaFrames([{ p: 'session', m: 'replaceMessageById', a: [convId, mirrorCopy] }]);
+      expect(replaceMessageByIdMock.mock.calls[0][1]).not.toHaveProperty('fileCards');
+    });
+
     it('setExecutionStepsSnapshot frame leaves a snapshot untouched when it already carries child steps', async () => {
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {
@@ -262,7 +287,7 @@ describe('applyDeltaFrames', () => {
 
         releaseAppend();
         await applying;
-        expect(replaceMessageByIdMock).toHaveBeenCalledWith(convId, message);
+        expect(replaceMessageByIdMock).toHaveBeenCalledWith(convId, { ...message, fileCards: 'declared' });
       } finally {
         vi.mocked(invoke).mockReset();
       }
@@ -305,7 +330,7 @@ describe('applyDeltaFrames', () => {
 
         releaseAppend();
         await applying;
-        expect(snapshotMessageRevisionMock).toHaveBeenCalledWith(convId, message);
+        expect(snapshotMessageRevisionMock).toHaveBeenCalledWith(convId, { ...message, fileCards: 'declared' });
       } finally {
         vi.mocked(invoke).mockReset();
       }

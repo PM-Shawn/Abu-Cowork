@@ -41,6 +41,7 @@ import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 import { isMacOS } from '../../utils/platform';
 import { isToolResultError } from './toolResultErrors';
+import { TOOL_RESULT_CANCELLED_MARKER, TOOL_RESULT_HOOK_BLOCKED_MARKER } from './toolResultMarkers';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
 import { getExecutionPort } from './ports/executionPort';
 import { firstImageContent } from '../tools/toolResultContent';
@@ -48,16 +49,7 @@ import { snapshotResultImage } from '../session/outputSnapshots';
 
 const logger = createLogger('toolExecutor');
 
-/**
- * Result markers for tool calls that never actually executed. Written with
- * error:false (they are not model mistakes), so consumers that need to
- * distinguish "skipped" from "succeeded" must compare against these
- * constants — e.g. ShowWidgetCard renders a muted "cancelled" row instead
- * of mounting the widget. Pre-existing literal values kept verbatim (they
- * are persisted in conversation history).
- */
-export const TOOL_RESULT_CANCELLED_MARKER = '[已取消]';
-export const TOOL_RESULT_HOOK_BLOCKED_MARKER = '[被 hook 拦截]';
+export { TOOL_RESULT_CANCELLED_MARKER, TOOL_RESULT_HOOK_BLOCKED_MARKER };
 
 /** Human-readable description of a computer use action for the status bar. */
 function actionToDescription(action: string, input: Record<string, unknown>): string {

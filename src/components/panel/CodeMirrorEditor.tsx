@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { langs } from '@uiw/codemirror-extensions-langs';
 import type { Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { CODE_EDITOR_THEME } from './codeMirrorTheme';
 
 /**
@@ -44,18 +45,38 @@ export default function CodeMirrorEditor({
   language,
   onChange,
   readOnly = false,
+  line,
+  lineRequest,
 }: {
   value: string;
   language: string;
   onChange: (value: string) => void;
   readOnly?: boolean;
+  /** 1-based line to show: the editor scrolls to it and puts the cursor at its start. */
+  line?: number;
+  /** Count of the requests for a line; a new count shows `line` again. */
+  lineRequest?: number;
 }) {
   const extensions = useMemo(() => [...CODE_EDITOR_THEME, ...resolveLanguageExtensions(language)], [language]);
+  const [view, setView] = useState<EditorView | null>(null);
+
+  // Runs when the editor exists (it is created with the loaded text) and with
+  // each request for a line; typing does not bring the cursor back.
+  useEffect(() => {
+    if (!view || line === undefined) return;
+    const { doc } = view.state;
+    const target = doc.line(Math.min(Math.max(line, 1), doc.lines));
+    view.dispatch({
+      selection: { anchor: target.from },
+      effects: EditorView.scrollIntoView(target.from, { y: 'center' }),
+    });
+  }, [view, line, lineRequest]);
 
   return (
     <CodeMirror
       value={value}
       onChange={onChange}
+      onCreateEditor={setView}
       theme="none"
       extensions={extensions}
       readOnly={readOnly}

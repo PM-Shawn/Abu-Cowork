@@ -830,10 +830,12 @@ interface ChatActions {
   // Export/Import
   exportConversation: (convId: string) => string | null;
   /**
-   * `keepPermissionMode` is for JSON this session produced itself (the undo of
-   * a delete). Without it a raw conversation JSON never sets a permission mode.
+   * `restoringDeleted` marks JSON this session produced itself (the undo of a
+   * delete): the conversation comes back with its workspace, permission mode
+   * and other local bindings. Without it a raw conversation JSON is a file
+   * from disk and carries none of them.
    */
-  importConversation: (json: string, options?: { keepPermissionMode?: boolean }) => string | null;
+  importConversation: (json: string, options?: { restoringDeleted?: boolean }) => string | null;
   /**
    * Build a redacted, portable share bundle for the given conversation.
    * Returns null if the conversation does not exist. Caller is responsible
@@ -1355,7 +1357,9 @@ export const useChatStore = create<ChatStore>()(
         if (get().loadFailures[convId]) return;
         let newTitle: string | undefined;
         let welcome: Message | undefined;
-        let persistedMessage = message;
+        let persistedMessage: Message = message.role === 'assistant' && message.fileCards === undefined
+          ? { ...message, fileCards: 'declared' }
+          : message;
         set((state) => {
           // Clear expert intro banner once the conversation has any real
           // content — welcome screen is gone, banner has nothing to render on.
@@ -2699,22 +2703,52 @@ export const useChatStore = create<ChatStore>()(
             return conv.id;
           }
 
-          // ── Legacy raw conversation path (undo-delete) ──────────────────
+          // ── Raw conversation path (undo-delete, or a file picked from disk) ──
           const conv = parsed as Conversation;
           if (!conv.id || !conv.messages) return null;
 
           // A permission mode is kept only for JSON this session produced
           // itself (the undo of a delete), and only if the setter would
-          // accept it. A file picked from disk never sets one.
-          const { permissionMode: rawPermissionMode, ...rawConversation } = conv;
-          const keptPermissionMode = options?.keepPermissionMode
+          // accept it. The same import drops every binding to this machine
+          // (the share bundle path drops the same set): a file from disk
+          // names a workspace the user never chose here.
+          const {
+            permissionMode: rawPermissionMode,
+            workspacePath: rawWorkspacePath,
+            projectId: rawProjectId,
+            scheduledTaskId: rawScheduledTaskId,
+            triggerId: rawTriggerId,
+            imChannelId: rawImChannelId,
+            imPlatform: rawImPlatform,
+            activeSkills: rawActiveSkills,
+            enabledMCPServers: rawEnabledMCPServers,
+            // An app binding carries text that joins the system prompt.
+            appBinding: rawAppBinding,
+            ...rawConversation
+          } = conv;
+          const restoringDeleted = options?.restoringDeleted === true;
+          const keptPermissionMode = restoringDeleted
             ? acceptConversationPermissionMode(rawPermissionMode)
             : undefined;
+          const keptBindings: Partial<Conversation> = restoringDeleted
+            ? {
+              ...(rawWorkspacePath !== undefined ? { workspacePath: rawWorkspacePath } : {}),
+              ...(rawProjectId !== undefined ? { projectId: rawProjectId } : {}),
+              ...(rawScheduledTaskId !== undefined ? { scheduledTaskId: rawScheduledTaskId } : {}),
+              ...(rawTriggerId !== undefined ? { triggerId: rawTriggerId } : {}),
+              ...(rawImChannelId !== undefined ? { imChannelId: rawImChannelId } : {}),
+              ...(rawImPlatform !== undefined ? { imPlatform: rawImPlatform } : {}),
+              ...(rawActiveSkills !== undefined ? { activeSkills: rawActiveSkills } : {}),
+              ...(rawEnabledMCPServers !== undefined ? { enabledMCPServers: rawEnabledMCPServers } : {}),
+              ...(rawAppBinding !== undefined ? { appBinding: rawAppBinding } : {}),
+            }
+            : {};
 
           // Generate new ID to avoid conflicts
           const newId = generateId();
           const imported: Conversation = {
             ...rawConversation,
+            ...keptBindings,
             ...(keptPermissionMode ? { permissionMode: keptPermissionMode } : {}),
             id: newId,
             status: 'idle',
@@ -2731,12 +2765,12 @@ export const useChatStore = create<ChatStore>()(
             createdAt: imported.createdAt,
             updatedAt: imported.updatedAt,
             messageCount: imported.messages.length,
-            workspacePath: imported.workspacePath,
-            imChannelId: imported.imChannelId,
-            imPlatform: imported.imPlatform,
-            scheduledTaskId: imported.scheduledTaskId,
-            triggerId: imported.triggerId,
-            projectId: imported.projectId,
+            ...(imported.workspacePath !== undefined ? { workspacePath: imported.workspacePath } : {}),
+            ...(imported.imChannelId !== undefined ? { imChannelId: imported.imChannelId } : {}),
+            ...(imported.imPlatform !== undefined ? { imPlatform: imported.imPlatform } : {}),
+            ...(imported.scheduledTaskId !== undefined ? { scheduledTaskId: imported.scheduledTaskId } : {}),
+            ...(imported.triggerId !== undefined ? { triggerId: imported.triggerId } : {}),
+            ...(imported.projectId !== undefined ? { projectId: imported.projectId } : {}),
             readOnly: imported.readOnly,
             importedFrom: imported.importedFrom,
             ...(keptPermissionMode ? { permissionMode: keptPermissionMode } : {}),

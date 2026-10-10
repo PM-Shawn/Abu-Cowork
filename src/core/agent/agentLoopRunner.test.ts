@@ -5159,7 +5159,7 @@ describe('agentLoopRunner', () => {
       const running = runAgentLoopDispatched('conv-1', 'read only');
       await waitForCall(sidecarRequestMock);
       const params = sidecarRequestMock.mock.calls[0][1] as { runId: string; options: Record<string, unknown> };
-      expect(getRunSession(params.runId)?.agentToolPolicy).toEqual({ tools: ['read_file'], disallowedTools: undefined, protocolTools: ['report_plan', 'delegate_to_agent', 'run_agent_batch', 'manage_goal'] });
+      expect(getRunSession(params.runId)?.agentToolPolicy).toEqual({ tools: ['read_file'], disallowedTools: undefined, protocolTools: ['report_plan', 'delegate_to_agent', 'run_agent_batch', 'manage_goal', 'present_files'] });
       expect(params.options).not.toHaveProperty('agentToolPolicy');
       await expect(handlerFor(onSidecarRequest, 'approval.check')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);
       await expect(handlerFor(onSidecarRequest, 'tool.invoke')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);

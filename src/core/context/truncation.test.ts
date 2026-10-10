@@ -8,6 +8,12 @@ describe('truncation', () => {
       expect(truncateToolResult('read_file', '')).toBe('');
     });
 
+    it('returns a present_files result of eight maximum-length paths whole under full context pressure', () => {
+      const longPath = `/${'d'.repeat(4000)}/report.md`;
+      const result = Array.from({ length: 8 }, () => `Presented ${longPath}`).join('\n');
+      expect(truncateToolResult('present_files', result, 99)).toBe(result);
+    });
+
     it('returns short result as-is for read_file', () => {
       const short = 'Hello world\nLine 2';
       expect(truncateToolResult('read_file', short)).toBe(short);

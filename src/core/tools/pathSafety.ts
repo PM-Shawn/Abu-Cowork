@@ -6,6 +6,7 @@
 import { homeDir, tempDir } from '@tauri-apps/api/path';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
+import { normalizeLexicalPath, normalizeSeparators } from '../../utils/pathUtils';
 import { isMacOS, isWindows } from '../../utils/platform';
 import { createLogger } from '../logging/logger';
 
@@ -229,12 +230,26 @@ export function hasFullShellAuthorizationScope(scopeId: AuthorizationScopeId | u
   return authorizationScopePolicies.get(scopeId)?.shell === 'full';
 }
 
+/**
+ * The one spelling a workspace grant is keyed by: `.` segments, duplicate and
+ * trailing separators are folded away, so every spelling of one folder maps
+ * to one table entry for authorize, lookup and revoke alike.
+ */
 function normalizeWorkspacePath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalizeLexicalPath(path);
 }
 
+/**
+ * A grant that would cover a whole filesystem root (`/`, `C:/`, a bare UNC
+ * prefix) or that climbs with a `..` segment never enters the table. Every
+ * legitimate producer hands over a plain absolute folder, so a climbing
+ * spelling is refused outright.
+ */
 function isBlankWorkspaceGrant(path: string): boolean {
-  return path.trim().length === 0;
+  const normalized = normalizeWorkspacePath(path);
+  if (normalized.trim().length === 0 || normalized === '/' || normalized === '//') return true;
+  if (/^[A-Za-z]:\/?$/.test(normalized)) return true;
+  return normalizeSeparators(path).split('/').includes('..');
 }
 
 function getAuthorizationMap(

@@ -1,4 +1,4 @@
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -12,6 +12,9 @@ import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from '
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import type { SearchResult } from '@/types';
+import { usePreviewStore } from '@/stores/previewStore';
+import { getBaseName } from '@/utils/pathUtils';
+import type { FileMention } from '@/utils/turnFileMentions';
 import { Button, IconButton } from '@/components/ds/button';
 import { AppIcons } from '@/components/ds/icons';
 import { Link } from '@/components/ds/link';
@@ -289,12 +292,35 @@ const remarkPluginsStable: PluggableList = [[remarkGfm, { singleTilde: false }],
 const SAFE_URL_PATTERN = /^(https?:\/\/|mailto:|tel:|#)/i;
 
 type MarkdownVariant = 'assistant' | 'user';
+type FileMentionResolver = (text: string) => FileMention | null;
 
-/** Build markdown component overrides, optionally citation-aware */
+// react-markdown reads the drive letter of `C:/…` as a URL scheme and empties the
+// link target; a drive path is kept so it can be matched against the turn's files.
+const WINDOWS_DRIVE_PATH = /^[A-Za-z]:\//;
+function keepLocalPathTargets(url: string): string {
+  return WINDOWS_DRIVE_PATH.test(url) ? url : defaultUrlTransform(url);
+}
+
+/** A file name or path in a reply that opens the file in the side preview. */
+function FileMentionButton({ mention, children }: { mention: FileMention; children?: ReactNode }) {
+  const { t } = useI18n();
+  return (
+    <Pressable
+      onClick={() => usePreviewStore.getState().openPreview(mention.path, { line: mention.line })}
+      aria-label={format(t.chat.openFileInPreview, { name: getBaseName(mention.path) })}
+      className="inline max-w-full break-all rounded-control text-left text-link underline-offset-2 hover:underline"
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+/** Build markdown component overrides, optionally citation-aware and file-mention-aware */
 function buildMarkdownComponents(
   searchResults: SearchResult[] | null,
   onCitationClick?: (index: number) => void,
   variant: MarkdownVariant = 'assistant',
+  resolveFileMention?: FileMentionResolver,
 ) {
   const sr = searchResults && searchResults.length > 0 ? searchResults : null;
   const isUser = variant === 'user';
@@ -306,6 +332,14 @@ function buildMarkdownComponents(
       const isInline = !match && !codeString.includes('\n');
 
       if (isInline) {
+        const mention = resolveFileMention ? resolveFileMention(codeString) : null;
+        if (mention) {
+          return (
+            <FileMentionButton mention={mention}>
+              <code className="rounded-control bg-code px-1 font-code text-code-inline text-link">{children}</code>
+            </FileMentionButton>
+          );
+        }
         // Detect hex color codes and show a swatch
         const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(codeString.trim());
         return (
@@ -371,6 +405,9 @@ function buildMarkdownComponents(
       );
     },
     a({ href, children }: { href?: string; children?: ReactNode }) {
+      // A target that is no web address may be a local path of this turn's files.
+      const mention = resolveFileMention && href && !SAFE_URL_PATTERN.test(href) ? resolveFileMention(href) : null;
+      if (mention) return <FileMentionButton mention={mention}>{children}</FileMentionButton>;
       const safeHref = SAFE_URL_PATTERN.test(href ?? '') ? href : undefined;
       return (
         <Link
@@ -417,20 +454,27 @@ interface MarkdownRendererProps {
   searchResults?: SearchResult[];
   onCitationClick?: (index: number) => void;
   variant?: MarkdownVariant;
+  /**
+   * Names the file of the turn that an inline code span or a link target refers
+   * to; such a span or link opens that file in the side preview. Pass a stable
+   * function: a new one rebuilds every rendered node.
+   */
+  resolveFileMention?: FileMentionResolver;
 }
 
-export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant' }: MarkdownRendererProps) {
+export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant', resolveFileMention }: MarkdownRendererProps) {
   const components = useMemo(
-    () => (searchResults && searchResults.length > 0)
-      ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant)
+    () => ((searchResults && searchResults.length > 0) || resolveFileMention)
+      ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant, resolveFileMention)
       : variant === 'user' ? defaultUserComponents : defaultAssistantComponents,
-    [searchResults, onCitationClick, variant]
+    [searchResults, onCitationClick, variant, resolveFileMention]
   );
 
   return (
     <ReactMarkdown
       remarkPlugins={remarkPluginsStable}
       components={components}
+      urlTransform={resolveFileMention ? keepLocalPathTargets : undefined}
     >
       {closeOpenFences(content)}
     </ReactMarkdown>

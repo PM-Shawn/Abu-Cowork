@@ -28,6 +28,12 @@ describe('CsvPreview', () => {
     expect(rows()).toEqual([['Ada', 'likes, commas'], ['Grace', 'a\tb']]);
   });
 
+  it('opens a quoted section at a quote anywhere in a comma-separated cell', () => {
+    render(<CsvPreview content={'size,note\n5" pipe,A\n6" pipe,B\nlast,"x"y"z"\n'} />);
+    expect(headers()).toEqual(['size', 'note']);
+    expect(rows()).toEqual([['5 pipe,A\n6 pipe', 'B'], ['last', 'xyz']]);
+  });
+
   describe('with the tab delimiter', () => {
     it('splits on tabs and keeps a comma inside a cell', () => {
       render(<CsvPreview content={'name\tvalue\tnote\nAda\t1\thas, comma\n'} delimiter={'\t'} />);
@@ -44,6 +50,22 @@ describe('CsvPreview', () => {
       render(<CsvPreview content={'name\tnote\r\nAda\t"first\tsecond"\r\nGrace\t"line one\nline two"\r\n'} delimiter={'\t'} />);
       expect(headers()).toEqual(['name', 'note']);
       expect(rows()).toEqual([['Ada', 'first\tsecond'], ['Grace', 'line one\nline two']]);
+    });
+
+    it('reads a lone quote inside a cell as text and keeps the rows apart', () => {
+      render(<CsvPreview content={'尺寸\t名称\n5" 管\tA\n6" 管\tB\n'} delimiter={'\t'} />);
+      expect(headers()).toEqual(['尺寸', '名称']);
+      expect(rows()).toEqual([['5" 管', 'A'], ['6" 管', 'B']]);
+    });
+
+    it('reads quotes that open after the first character of a cell as text', () => {
+      render(<CsvPreview content={'size\tnote\n5"\tsaid "hi" twice\n12" x 8"\tend"\n'} delimiter={'\t'} />);
+      expect(rows()).toEqual([['5"', 'said "hi" twice'], ['12" x 8"', 'end"']]);
+    });
+
+    it('reads a quote after a quoted field has closed as text', () => {
+      render(<CsvPreview content={'a\tb\n"x"y"\tz\n'} delimiter={'\t'} />);
+      expect(rows()).toEqual([['xy"', 'z']]);
     });
 
     it('reads Chinese headers and cells', () => {

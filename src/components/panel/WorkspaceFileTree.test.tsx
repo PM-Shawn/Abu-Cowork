@@ -1104,6 +1104,170 @@ describe('WorkspaceFileTree menus and rows', () => {
     });
   });
 
+  // A touch or a pen that stays down opens the right-click menu after LONG_PRESS_MS, with no
+  // right-click event.
+  describe('a long press', () => {
+    const LONG_PRESS_MS = 700;
+    const FILE_ITEMS = [copy.revealInFinder, copy.addToChat, copy.copyPath, copy.rename, copy.delete];
+    const FOLDER_ITEMS = [copy.revealInFinder, copy.copyPath, copy.rename, copy.newFile, copy.newFolder, copy.delete];
+
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    async function rightClickThenClose(entry: WorkspaceTreeEntry) {
+      fireEvent.contextMenu(row(entry));
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    }
+
+    function hold(target: HTMLElement, pointerType: string) {
+      fireEvent.pointerDown(target, { button: 0, pointerType });
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS); });
+    }
+
+    it.each(['touch', 'pen'])('opens the menu of the pressed row after another row was right-clicked, and Delete there asks about that row (%s)', async (pointerType) => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderTree();
+      await rightClickThenClose(NOTES);
+
+      hold(row(PLAN), pointerType);
+
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(menuItemNames()).toEqual(FILE_ITEMS);
+      expect(row(PLAN)).toHaveClass('bg-fill-hover');
+      expect(row(NOTES)).not.toHaveClass('bg-fill-hover');
+
+      await user.click(screen.getByRole('menuitem', { name: copy.delete }));
+
+      const dialog = await screen.findByRole('alertdialog', { name: copy.confirmDelete });
+      expect(dialog).toHaveTextContent('plan.md');
+      expect(dialog).not.toHaveTextContent('notes.md');
+      passSettleInterval();
+      await user.click(within(dialog).getByRole('button', { name: copy.moveToTrash }));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: PLAN.path });
+    });
+
+    it('offers the folder actions for a pressed folder after a file was right-clicked', async () => {
+      renderTree();
+      await rightClickThenClose(NOTES);
+
+      hold(row(DOCS), 'touch');
+
+      expect(menuItemNames()).toEqual(FOLDER_ITEMS);
+    });
+
+    it('renames the pressed row after another row was right-clicked', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderTree();
+      await rightClickThenClose(NOTES);
+
+      hold(row(PLAN), 'touch');
+      await user.click(screen.getByRole('menuitem', { name: copy.rename }));
+
+      expect(await screen.findByRole('textbox')).toHaveValue('plan.md');
+      expect(row(NOTES)).toBeInTheDocument();
+    });
+
+    it('opens the menu of the pressed row when no row was right-clicked before', () => {
+      renderTree();
+
+      hold(row(PLAN), 'touch');
+
+      expect(menuItemNames()).toEqual(FILE_ITEMS);
+      expect(row(PLAN)).toHaveClass('bg-fill-hover');
+    });
+
+    it('opens nothing for a press that is not on a row', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const empty: WorkspaceTreeEntry = { name: 'empty', path: '/work/site/empty', isDirectory: true, isSymlink: false };
+      setTree({
+        rootEntries: [DOCS, empty, NOTES],
+        expandedPaths: new Set([empty.path]),
+        childrenByPath: new Map([[empty.path, []]]),
+      });
+      renderTree();
+      // A row was right-clicked before, so the menu has a row to show if it opened.
+      await rightClickThenClose(NOTES);
+
+      hold(row(NOTES).parentElement as HTMLElement, 'touch');
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+      hold(screen.getByText(copy.empty), 'touch');
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+      await chooseFromRowMenu(user, NOTES, copy.rename);
+      hold(await screen.findByRole('textbox'), 'touch');
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('opens nothing between the rows after a row was pressed and released', () => {
+      renderTree();
+      fireEvent.pointerDown(row(NOTES), { button: 0, pointerType: 'touch' });
+      fireEvent.pointerUp(row(NOTES), { button: 0, pointerType: 'touch' });
+
+      hold(row(NOTES).parentElement as HTMLElement, 'touch');
+
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('opens the right-clicked row after a refused long press', () => {
+      renderTree();
+      hold(row(NOTES).parentElement as HTMLElement, 'touch');
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+      fireEvent.contextMenu(row(DOCS));
+
+      expect(menuItemNames()).toEqual(FOLDER_ITEMS);
+      expect(row(DOCS)).toHaveClass('bg-fill-hover');
+    });
+
+    it('opens nothing when the press ends before the time is up', () => {
+      renderTree();
+      fireEvent.pointerDown(row(PLAN), { button: 0, pointerType: 'touch' });
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS - 1); });
+      fireEvent.pointerUp(row(PLAN), { button: 0, pointerType: 'touch' });
+
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS); });
+
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('opens nothing for a mouse button that stays down', async () => {
+      renderTree();
+      await rightClickThenClose(NOTES);
+
+      hold(row(PLAN), 'mouse');
+
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('keeps the menu of the right-clicked row while another row is pressed', () => {
+      renderTree();
+      fireEvent.contextMenu(row(DOCS));
+
+      fireEvent.pointerDown(row(NOTES), { button: 0, pointerType: 'touch' });
+
+      expect(menuItemNames()).toEqual(FOLDER_ITEMS);
+      expect(row(DOCS)).toHaveClass('bg-fill-hover');
+      expect(row(NOTES)).not.toHaveClass('bg-fill-hover');
+    });
+
+    it('opens the row of the mouse right-click made while a touch is held on another row', () => {
+      renderTree();
+      fireEvent.pointerDown(row(NOTES), { button: 0, pointerType: 'touch' });
+
+      fireEvent.pointerDown(row(DOCS), { button: 2, pointerType: 'mouse' });
+      fireEvent.contextMenu(row(DOCS));
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS); });
+
+      expect(screen.getAllByRole('menu')).toHaveLength(1);
+      expect(menuItemNames()).toEqual(FOLDER_ITEMS);
+    });
+  });
+
   describe('the delete question', () => {
     it('names the file it is about and keeps its row marked while it is open', async () => {
       const user = userEvent.setup();

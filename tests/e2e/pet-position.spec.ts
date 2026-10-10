@@ -11,6 +11,9 @@
  *     `show()` / `unminimize()` / `setFocus()`, which had no handler and were
  *     silently stubbed to null.
  *
+ * Plus the pet's own frame changes: the window grows for the right-click menu
+ * and shrinks back, and the pet must be exactly where it was afterwards.
+ *
  * The pet is moved from the main process with BrowserWindow.setPosition — the
  * same call the Electron drag stand-in (start_dragging) makes on every cursor
  * tick, so it takes the same 'move' → `tauri://move` path as a real drag.
@@ -152,6 +155,81 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
       await closeAbuElectron(launched.app);
     }
   } finally {
+    removeElectronDataRoot(dataRoot);
+  }
+});
+
+test('closing the right-click menu leaves the pet, and its saved position, where they were', async () => {
+  const dataRoot = createElectronDataRoot();
+  const launched = await launchAbuElectron(dataRoot, { recordMainProcess: true });
+  try {
+    const main = await launched.app.firstWindow();
+    await waitForApp(main);
+    await dismissFirstRunOverlays(main);
+    await enablePet(main);
+    await expect.poll(() => petBounds(launched.app), { timeout: 20_000 }).not.toBeNull();
+    await expect
+      .poll(() => windowListenerRegistered(launched.app, '/pet.html', 'tauri://move'), {
+        timeout: 20_000,
+        message: 'the pet renderer subscribed to tauri://move',
+      })
+      .toBe(true);
+    const pet = launched.app.windows().find((w) => w.url().endsWith('/pet.html'));
+    expect(pet, 'the pet window is a page Playwright can drive').toBeDefined();
+
+    const display = await launched.app.evaluate(({ screen }) => {
+      const d = screen.getPrimaryDisplay();
+      return { workArea: d.workArea, scaleFactor: d.scaleFactor };
+    });
+    const wa = display.workArea;
+    const closeButton = pet!.getByRole('button', { name: '关闭菜单' });
+    // Left half, right half, and a spot so close to the bottom edge that the
+    // menu frame has to be pushed up to stay inside the work area.
+    const journeys = [
+      { spot: { x: wa.x + 240, y: wa.y + 300 }, close: () => closeButton.click() },
+      {
+        spot: { x: wa.x + wa.width - 320, y: wa.y + 300 },
+        close: () => pet!.getByRole('button', { name: '打开主窗口' }).click(),
+      },
+      {
+        spot: { x: wa.x + wa.width - 320, y: wa.y + wa.height - 100 },
+        // The menu frame's top-left corner: outside the menu, and outside the
+        // avatar, which sits in the top-right corner on the right half.
+        close: () => pet!.mouse.click(20, 20),
+      },
+    ];
+
+    for (const { spot, close } of journeys) {
+      const home = { ...spot, width: 80, height: 80 };
+      const savedSpot = {
+        x: Math.round(spot.x * display.scaleFactor),
+        y: Math.round(spot.y * display.scaleFactor),
+      };
+      await launched.app.evaluate(({ BrowserWindow }, to) => {
+        const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/pet.html'));
+        if (!win) throw new Error('pet window missing');
+        win.setPosition(to.x, to.y);
+      }, spot);
+      await expect.poll(() => persistedPetPosition(main), { timeout: 10_000 }).toEqual(savedSpot);
+      expect(await petBounds(launched.app)).toEqual(home);
+
+      await pet!.locator('[data-pet-avatar]').click({ button: 'right' });
+      await expect(closeButton).toBeVisible();
+      const menuFrame = await petBounds(launched.app);
+      expect(menuFrame).toMatchObject({ width: 200, height: 260 });
+      expect(menuFrame!.y + menuFrame!.height).toBeLessThanOrEqual(wa.y + wa.height);
+
+      await close();
+      await expect(closeButton).toBeHidden();
+      await expect.poll(() => petBounds(launched.app), { timeout: 5_000 }).toEqual(home);
+      // Past the pet's 220 ms move debounce, so a position saved from the
+      // closing frame change would have arrived by now.
+      await main.waitForTimeout(800);
+      expect(await petBounds(launched.app)).toEqual(home);
+      expect(await persistedPetPosition(main)).toEqual(savedSpot);
+    }
+  } finally {
+    await closeAbuElectron(launched.app);
     removeElectronDataRoot(dataRoot);
   }
 });

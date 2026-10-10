@@ -315,13 +315,24 @@ describe('buildShareBundle', () => {
   });
 
   describe('Standard tier — attachment classification', () => {
+    // Every fixture entry carries refId 'r1': the tool call below for a tool
+    // output, the user message below for an upload.
+    const toolOutputOwner: Message = {
+      id: 'm1',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 1,
+      toolCalls: [{ id: 'r1', name: 'write_file', input: { path: '/Users/alice/out' }, result: 'ok' }],
+    };
+    const uploadOwner: Message = { id: 'r1', role: 'user', content: 'here', timestamp: 1 };
+
     it('embeds tool-output attachments as base64', async () => {
       mockListSnapshots.mockResolvedValue([
         snapshot({ source: 'tool-output', basename: 'report.xlsx', originalPath: '/Users/alice/report.xlsx' }),
       ]);
       mockReadSnapshotBytes.mockResolvedValue(new Uint8Array([1, 2, 3, 4, 5]));
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([toolOutputOwner]));
       const att = Object.values(bundle.attachments)[0];
       expect(att.source).toBe('tool-output');
       expect(att.data).toBeTruthy();
@@ -334,7 +345,7 @@ describe('buildShareBundle', () => {
         snapshot({ source: 'user-upload', basename: 'secret.pdf', originalPath: '/Users/alice/secret.pdf' }),
       ]);
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([uploadOwner]));
       const att = Object.values(bundle.attachments)[0];
       expect(att.data).toBeUndefined();
       expect(att.skipReason).toBe('user-upload-excluded');
@@ -347,7 +358,7 @@ describe('buildShareBundle', () => {
       ]);
       mockReadSnapshotBytes.mockResolvedValue(null);
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([toolOutputOwner]));
       const att = Object.values(bundle.attachments)[0];
       expect(att.skipReason).toBe('missing');
     });
@@ -358,9 +369,22 @@ describe('buildShareBundle', () => {
       ]);
       mockReadSnapshotBytes.mockResolvedValue(new Uint8Array([1]));
 
-      const bundle = await buildShareBundle(makeConv([]));
+      const bundle = await buildShareBundle(makeConv([toolOutputOwner]));
       const keys = Object.keys(bundle.attachments);
       expect(keys[0]).toBe('~/file.png');
+    });
+
+    it('leaves out an attachment no exported message accounts for', async () => {
+      mockListSnapshots.mockResolvedValue([
+        snapshot({ source: 'tool-output', basename: 'report.xlsx', originalPath: '/Users/alice/report.xlsx' }),
+        snapshot({ source: 'user-upload', basename: 'secret.pdf', originalPath: '/Users/alice/secret.pdf' }),
+      ]);
+      mockReadSnapshotBytes.mockResolvedValue(new Uint8Array([1, 2, 3, 4, 5]));
+
+      const bundle = await buildShareBundle(makeConv([{ id: 'm2', role: 'user', content: 'hi', timestamp: 1 }]));
+      expect(bundle.attachments).toEqual({});
+      expect(bundle.stats.attachmentCount).toBe(0);
+      expect(bundle.stats.embeddedCount).toBe(0);
     });
   });
 

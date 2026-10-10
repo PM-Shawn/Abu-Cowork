@@ -415,7 +415,7 @@ describe('Sidebar — Recents row menu', () => {
       await act(() => vi.advanceTimersByTimeAsync(600));
       await user.click(within(offer()!).getByRole('button', { name: '撤销' }));
 
-      expect(chat.state.importConversation).toHaveBeenCalledWith('{"id":"c1"}', { keepPermissionMode: true });
+      expect(chat.state.importConversation).toHaveBeenCalledWith('{"id":"c1"}', { restoringDeleted: true });
       expect(offer()).toBeNull();
     });
 
@@ -478,7 +478,7 @@ describe('Sidebar — Recents row menu', () => {
       await user.click(screen.getByRole('button', { name: '撤销' }));
 
       expect(chat.state.importConversation).toHaveBeenCalledTimes(1);
-      expect(chat.state.importConversation).toHaveBeenCalledWith('{"id":"c2"}', { keepPermissionMode: true });
+      expect(chat.state.importConversation).toHaveBeenCalledWith('{"id":"c2"}', { restoringDeleted: true });
       expect(offer()).toBeNull();
     });
 
@@ -517,7 +517,7 @@ describe('Sidebar — Recents row menu', () => {
         await user.click(within(offer()!).getByRole('button', { name: '撤销' }));
 
         expect(chat.state.importConversation).toHaveBeenCalledTimes(1);
-        expect(chat.state.importConversation).toHaveBeenCalledWith('{"id":"c1"}', { keepPermissionMode: true });
+        expect(chat.state.importConversation).toHaveBeenCalledWith('{"id":"c1"}', { restoringDeleted: true });
         expect(offer()).toBeNull();
       } finally {
         act(() => setToastPlacesForDecision(false));

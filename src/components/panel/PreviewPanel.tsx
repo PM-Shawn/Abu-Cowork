@@ -30,7 +30,7 @@ import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
 import { isMacOS, isWindows } from '@/utils/platform';
 import { getToolbarButtons } from './previewToolbarConfig';
-import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
+import { isRunByDefaultRefusal, openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { isValidInspectSelection, resolveReferencePath } from '@/utils/inspectMessage';
 import { generateId } from '@/lib/utils';
@@ -159,6 +159,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   onRevertVersion,
   onReload,
   onOpenInApp,
+  openRefused,
   onReveal,
   onCopyPath,
   onSaveAs,
@@ -180,6 +181,8 @@ const PreviewToolbar = memo(function PreviewToolbar({
   onRevertVersion: (id: string) => Promise<void>;
   onReload: () => void;
   onOpenInApp: () => void;
+  /** The main process refused to open this file: only the file manager is offered for it. */
+  openRefused: boolean;
   onReveal: () => void;
   onCopyPath: () => void;
   onSaveAs: () => void;
@@ -191,7 +194,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   const { t } = useI18n();
   const dataUrl = isDataUrl(filePath);
   const fileIcon = dataUrl ? AppIcons.fileImage : getFileIcon(filePath);
-  const toolbarButtons = getToolbarButtons(rendererType);
+  const toolbarButtons = getToolbarButtons(rendererType, filePath);
 
   return (
     <div className={cn(
@@ -259,7 +262,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
             onRevert={onRevertVersion}
           />
         )}
-        {toolbarButtons.openInApp && (
+        {toolbarButtons.openInApp && !openRefused && (
           <IconButton size="sm" tooltipSide="bottom" icon={AppIcons.openIn} label={t.panel.openInApp} onClick={onOpenInApp} />
         )}
         {!dataUrl && (
@@ -326,6 +329,8 @@ export default function PreviewPanel({
   // covering the whole window instead of just its column in RightPanel.
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('saved');
+  // The file the main process refused to open with its default application.
+  const [refusedOpenPath, setRefusedOpenPath] = useState<string | null>(null);
 
   // "Select element" inspect mode (see docs/2026-07-19-preview-element-select-design.md).
   // The iframe is cross-origin (loopback http://127.0.0.1 vs the app shell),
@@ -776,6 +781,7 @@ export default function PreviewPanel({
       await openWithDefaultApp(previewFilePath);
     } catch (err) {
       console.error('[PreviewPanel] open in app failed:', err);
+      if (isRunByDefaultRefusal(err)) setRefusedOpenPath(previewFilePath);
       useToastStore.getState().addToast({
         type: 'error',
         title: t.chat.openFailed,
@@ -858,6 +864,7 @@ export default function PreviewPanel({
         onRevertVersion={handleRevertVersion}
         onReload={handleReload}
         onOpenInApp={handleOpenInApp}
+        openRefused={refusedOpenPath === previewFilePath}
         onReveal={handleOpenInFinder}
         onCopyPath={handleCopyPath}
         onSaveAs={handleSaveAs}

@@ -18,6 +18,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 - **Appearance follows the system by default.** Abu now shows light or dark as your computer does, and switches with it while running, without a restart. With this update every existing appearance setting is changed to System once: an earlier version wrote Light into everyone's settings, so a setting you picked yourself cannot be told apart from that one. If your computer is set to dark, Abu opens dark the first time after the update. To keep one appearance, pick Light or Dark under Settings → Preferences → Appearance, or under Appearance in the account menu; after that Abu no longer follows the system.
 
+### 🐛 Fixes
+
+- **Opening a file from Abu no longer starts a program or a script.** The "Open" button on a file card and "Open in default app" in the preview hand the file to the system, and for a program, an installer, a shortcut or a script the system's way of opening it is to run it: one click ran a file in the workspace, outside command approval. Abu now refuses to open those files on macOS and Windows, also when a link with a document's name points to one, and both places offer "Show in File Manager" for them. Documents open as before.
+
 ## v0.50.0 · 2026-09-16
 
 ### ✨ Features
